@@ -15042,5 +15042,2488 @@ for public_name in _SECTION_14_PUBLIC_NAMES:
 
 
 
+# =============================================================================
+# Section 15 — Self Tests
+# =============================================================================
 
+
+# -----------------------------------------------------------------------------
+# Self-test helpers
+# -----------------------------------------------------------------------------
+
+def _assert_true(
+    condition: Any,
+    message: str,
+) -> None:
+    """
+    Assert that a condition is true.
+
+    Parameters
+    ----------
+    condition : Any
+        Condition to evaluate.
+    message : str
+        Error message raised when the assertion fails.
+
+    Raises
+    ------
+    AssertionError
+        If the condition evaluates to ``False``.
+    """
+
+    if not bool(
+        condition
+    ):
+        raise AssertionError(
+            message
+        )
+
+
+def _assert_equal(
+    actual: Any,
+    expected: Any,
+    message: str,
+) -> None:
+    """
+    Assert exact equality between two values.
+
+    Parameters
+    ----------
+    actual : Any
+        Observed value.
+    expected : Any
+        Expected value.
+    message : str
+        Error message raised when values differ.
+
+    Raises
+    ------
+    AssertionError
+        If the values are not equal.
+    """
+
+    if actual != expected:
+        raise AssertionError(
+            f"{message}\n"
+            f"Expected: {expected!r}\n"
+            f"Actual:   {actual!r}"
+        )
+
+
+def _assert_close(
+    actual: Any,
+    expected: Any,
+    *,
+    tolerance: float = 1e-7,
+    message: str = "Values are not sufficiently close.",
+) -> None:
+    """
+    Assert numerical closeness between scalar or array-like values.
+
+    Parameters
+    ----------
+    actual : Any
+        Observed numeric value.
+    expected : Any
+        Expected numeric value.
+    tolerance : float, optional
+        Absolute and relative comparison tolerance.
+    message : str, optional
+        Error message raised when values differ.
+
+    Raises
+    ------
+    AssertionError
+        If values are not numerically close.
+    """
+
+    try:
+        actual_array = np.asarray(
+            actual,
+            dtype=np.float64,
+        )
+
+        expected_array = np.asarray(
+            expected,
+            dtype=np.float64,
+        )
+
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+    ) as error:
+        raise AssertionError(
+            f"{message}\n"
+            "Values could not be converted to "
+            "numeric arrays."
+        ) from error
+
+    if not np.allclose(
+        actual_array,
+        expected_array,
+        rtol=tolerance,
+        atol=tolerance,
+        equal_nan=False,
+    ):
+        maximum_difference = float(
+            np.max(
+                np.abs(
+                    actual_array
+                    - expected_array
+                )
+            )
+        )
+
+        raise AssertionError(
+            f"{message}\n"
+            f"Expected: {expected_array!r}\n"
+            f"Actual:   {actual_array!r}\n"
+            f"Maximum difference: "
+            f"{maximum_difference:.12g}"
+        )
+
+
+def _assert_shape(
+    value: Any,
+    expected_shape: Tuple[
+        int,
+        ...,
+    ],
+    message: str,
+) -> None:
+    """
+    Assert the shape of an array-like value.
+
+    Parameters
+    ----------
+    value : Any
+        Array-like value.
+    expected_shape : tuple of int
+        Required shape.
+    message : str
+        Error message raised when the shape differs.
+
+    Raises
+    ------
+    AssertionError
+        If the observed shape differs from the expected shape.
+    """
+
+    actual_shape = np.asarray(
+        value
+    ).shape
+
+    if actual_shape != expected_shape:
+        raise AssertionError(
+            f"{message}\n"
+            f"Expected shape: {expected_shape}\n"
+            f"Actual shape:   {actual_shape}"
+        )
+
+
+def _assert_raises(
+    exception_type: type,
+    function: Callable[
+        ...,
+        Any,
+    ],
+    *args: Any,
+    message: str = (
+        "Expected exception was not raised."
+    ),
+    **kwargs: Any,
+) -> BaseException:
+    """
+    Assert that a callable raises a selected exception.
+
+    Parameters
+    ----------
+    exception_type : type
+        Expected exception class.
+    function : callable
+        Function to execute.
+    *args : Any
+        Positional arguments passed to the function.
+    message : str, optional
+        Error message used when no expected exception is raised.
+    **kwargs : Any
+        Keyword arguments passed to the function.
+
+    Returns
+    -------
+    BaseException
+        Captured exception.
+
+    Raises
+    ------
+    AssertionError
+        If no exception is raised or a different exception type is raised.
+    """
+
+    try:
+        function(
+            *args,
+            **kwargs,
+        )
+
+    except exception_type as error:
+        return error
+
+    except Exception as error:
+        raise AssertionError(
+            f"{message}\n"
+            f"Expected exception: "
+            f"{exception_type.__name__}\n"
+            f"Actual exception: "
+            f"{type(error).__name__}: {error}"
+        ) from error
+
+    raise AssertionError(
+        f"{message}\n"
+        f"Expected exception: "
+        f"{exception_type.__name__}"
+    )
+
+
+def _run_test_group(
+    name: str,
+    function: Callable[
+        [],
+        None,
+    ],
+    *,
+    verbose: bool = True,
+) -> Tuple[
+    str,
+    bool,
+    Optional[str],
+]:
+    """
+    Execute one self-test group.
+
+    Parameters
+    ----------
+    name : str
+        Test-group name.
+    function : callable
+        Test function requiring no arguments.
+    verbose : bool, optional
+        Whether status messages should be printed.
+
+    Returns
+    -------
+    tuple
+        ``(name, passed, error_message)``.
+    """
+
+    try:
+        function()
+
+    except Exception as error:
+        if verbose:
+            print(
+                f"[FAIL] {name}"
+            )
+
+            print(
+                f"       {type(error).__name__}: "
+                f"{error}"
+            )
+
+        return (
+            name,
+            False,
+            (
+                f"{type(error).__name__}: "
+                f"{error}"
+            ),
+        )
+
+    if verbose:
+        print(
+            f"[PASS] {name}"
+        )
+
+    return (
+        name,
+        True,
+        None,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Coordinate and vector tests
+# -----------------------------------------------------------------------------
+
+def _test_coordinates_and_vectors() -> None:
+    """
+    Test coordinate conversion and vector operations.
+    """
+
+    coordinate = as_coordinate(
+        [
+            1.0,
+            2.0,
+            3.0,
+        ]
+    )
+
+    _assert_shape(
+        coordinate,
+        (
+            3,
+        ),
+        "Coordinate conversion returned "
+        "an invalid shape.",
+    )
+
+    _assert_true(
+        coordinate.dtype
+        == np.float64,
+        "Coordinates must use numpy.float64.",
+    )
+
+    coordinate_matrix = (
+        as_coordinate_matrix(
+            [
+                [
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
+                [
+                    1.0,
+                    2.0,
+                    3.0,
+                ],
+            ]
+        )
+    )
+
+    _assert_shape(
+        coordinate_matrix,
+        (
+            2,
+            3,
+        ),
+        "Coordinate matrix conversion returned "
+        "an invalid shape.",
+    )
+
+    vector = vector_between(
+        [
+            1.0,
+            1.0,
+            1.0,
+        ],
+        [
+            4.0,
+            5.0,
+            1.0,
+        ],
+    )
+
+    _assert_close(
+        vector,
+        [
+            3.0,
+            4.0,
+            0.0,
+        ],
+        message="vector_between() returned "
+        "an incorrect vector.",
+    )
+
+    _assert_close(
+        vector_norm(
+            vector
+        ),
+        5.0,
+        message="vector_norm() returned "
+        "an incorrect magnitude.",
+    )
+
+    _assert_close(
+        vector_norm(
+            vector,
+            squared=True,
+        ),
+        25.0,
+        message="Squared vector norm is incorrect.",
+    )
+
+    normalized = unit_vector(
+        vector
+    )
+
+    _assert_close(
+        vector_norm(
+            normalized
+        ),
+        1.0,
+        message="unit_vector() did not produce "
+        "a unit-length vector.",
+    )
+
+    _assert_close(
+        dot_product(
+            [
+                1.0,
+                0.0,
+                0.0,
+            ],
+            [
+                0.0,
+                1.0,
+                0.0,
+            ],
+        ),
+        0.0,
+        message="Orthogonal vectors must have "
+        "zero dot product.",
+    )
+
+    _assert_close(
+        cross_product(
+            [
+                1.0,
+                0.0,
+                0.0,
+            ],
+            [
+                0.0,
+                1.0,
+                0.0,
+            ],
+        ),
+        [
+            0.0,
+            0.0,
+            1.0,
+        ],
+        message="cross_product() returned "
+        "an incorrect orientation.",
+    )
+
+    projected = project_vector(
+        [
+            2.0,
+            2.0,
+            0.0,
+        ],
+        [
+            1.0,
+            0.0,
+            0.0,
+        ],
+    )
+
+    rejected = reject_vector(
+        [
+            2.0,
+            2.0,
+            0.0,
+        ],
+        [
+            1.0,
+            0.0,
+            0.0,
+        ],
+    )
+
+    _assert_close(
+        projected,
+        [
+            2.0,
+            0.0,
+            0.0,
+        ],
+        message="Vector projection is incorrect.",
+    )
+
+    _assert_close(
+        rejected,
+        [
+            0.0,
+            2.0,
+            0.0,
+        ],
+        message="Vector rejection is incorrect.",
+    )
+
+    projected_point = project_point_on_line(
+        [
+            1.0,
+            2.0,
+            0.0,
+        ],
+        [
+            0.0,
+            0.0,
+            0.0,
+        ],
+        line_end=[
+            3.0,
+            0.0,
+            0.0,
+        ],
+    )
+
+    _assert_close(
+        projected_point,
+        [
+            1.0,
+            0.0,
+            0.0,
+        ],
+        message="Point projection onto line "
+        "is incorrect.",
+    )
+
+    _assert_raises(
+        ValueError,
+        unit_vector,
+        [
+            0.0,
+            0.0,
+            0.0,
+        ],
+        message="unit_vector() must reject "
+        "a zero-length vector.",
+    )
+
+
+# -----------------------------------------------------------------------------
+# Distance and angle tests
+# -----------------------------------------------------------------------------
+
+def _test_distances_and_angles() -> None:
+    """
+    Test distance, angle and dihedral calculations.
+    """
+
+    first_point = np.asarray(
+        [
+            0.0,
+            0.0,
+            0.0,
+        ],
+        dtype=np.float64,
+    )
+
+    second_point = np.asarray(
+        [
+            3.0,
+            4.0,
+            0.0,
+        ],
+        dtype=np.float64,
+    )
+
+    _assert_close(
+        squared_distance(
+            first_point,
+            second_point,
+        ),
+        25.0,
+        message="squared_distance() returned "
+        "an incorrect value.",
+    )
+
+    _assert_close(
+        atom_distance(
+            first_point,
+            second_point,
+        ),
+        5.0,
+        message="atom_distance() returned "
+        "an incorrect value.",
+    )
+
+    first_collection = np.asarray(
+        [
+            [
+                0.0,
+                0.0,
+                0.0,
+            ],
+            [
+                2.0,
+                0.0,
+                0.0,
+            ],
+        ],
+        dtype=np.float64,
+    )
+
+    second_collection = np.asarray(
+        [
+            [
+                1.0,
+                0.0,
+                0.0,
+            ],
+            [
+                5.0,
+                0.0,
+                0.0,
+            ],
+        ],
+        dtype=np.float64,
+    )
+
+    distances = distance_matrix(
+        first_collection,
+        second_collection,
+    )
+
+    _assert_close(
+        distances,
+        [
+            [
+                1.0,
+                5.0,
+            ],
+            [
+                1.0,
+                3.0,
+            ],
+        ],
+        message="distance_matrix() returned "
+        "incorrect distances.",
+    )
+
+    (
+        closest_first,
+        closest_second,
+        closest_distance_value,
+        closest_indices,
+    ) = closest_point_pair(
+        first_collection,
+        second_collection,
+        return_distance=True,
+        return_indices=True,
+    )
+
+    _assert_close(
+        closest_distance_value,
+        1.0,
+        message="closest_point_pair() returned "
+        "an incorrect minimum distance.",
+    )
+
+    _assert_equal(
+        closest_indices,
+        (
+            0,
+            0,
+        ),
+        "closest_point_pair() returned "
+        "unexpected indices.",
+    )
+
+    _assert_close(
+        closest_first,
+        first_collection[0],
+        message="Incorrect first closest point.",
+    )
+
+    _assert_close(
+        closest_second,
+        second_collection[0],
+        message="Incorrect second closest point.",
+    )
+
+    _assert_close(
+        minimum_distance(
+            first_collection,
+            second_collection,
+        ),
+        1.0,
+        message="minimum_distance() returned "
+        "an incorrect value.",
+    )
+
+    _assert_close(
+        point_line_distance(
+            [
+                1.0,
+                2.0,
+                0.0,
+            ],
+            [
+                0.0,
+                0.0,
+                0.0,
+            ],
+            line_end=[
+                3.0,
+                0.0,
+                0.0,
+            ],
+        ),
+        2.0,
+        message="point_line_distance() returned "
+        "an incorrect value.",
+    )
+
+    _assert_close(
+        vector_angle(
+            [
+                1.0,
+                0.0,
+                0.0,
+            ],
+            [
+                0.0,
+                1.0,
+                0.0,
+            ],
+        ),
+        90.0,
+        message="vector_angle() returned "
+        "an incorrect right angle.",
+    )
+
+    _assert_close(
+        bond_angle(
+            [
+                1.0,
+                0.0,
+                0.0,
+            ],
+            [
+                0.0,
+                0.0,
+                0.0,
+            ],
+            [
+                0.0,
+                1.0,
+                0.0,
+            ],
+        ),
+        90.0,
+        message="bond_angle() returned "
+        "an incorrect angle.",
+    )
+
+    dihedral = dihedral_angle(
+        [
+            1.0,
+            0.0,
+            0.0,
+        ],
+        [
+            0.0,
+            0.0,
+            0.0,
+        ],
+        [
+            0.0,
+            1.0,
+            0.0,
+        ],
+        [
+            0.0,
+            1.0,
+            1.0,
+        ],
+    )
+
+    _assert_close(
+        abs(
+            dihedral
+        ),
+        90.0,
+        message="dihedral_angle() returned "
+        "an incorrect magnitude.",
+    )
+
+    torsion = torsion_angle(
+        [
+            1.0,
+            0.0,
+            0.0,
+        ],
+        [
+            0.0,
+            0.0,
+            0.0,
+        ],
+        [
+            0.0,
+            1.0,
+            0.0,
+        ],
+        [
+            0.0,
+            1.0,
+            1.0,
+        ],
+        signed=False,
+        positive=True,
+    )
+
+    _assert_close(
+        torsion,
+        90.0,
+        message="torsion_angle() returned "
+        "an incorrect positive angle.",
+    )
+
+
+# -----------------------------------------------------------------------------
+# Plane tests
+# -----------------------------------------------------------------------------
+
+def _test_planes() -> None:
+    """
+    Test plane fitting and plane-related operations.
+    """
+
+    planar_points = np.asarray(
+        [
+            [
+                -1.0,
+                -1.0,
+                2.0,
+            ],
+            [
+                1.0,
+                -1.0,
+                2.0,
+            ],
+            [
+                1.0,
+                1.0,
+                2.0,
+            ],
+            [
+                -1.0,
+                1.0,
+                2.0,
+            ],
+        ],
+        dtype=np.float64,
+    )
+
+    fitted_plane = fit_plane(
+        planar_points,
+        reference_normal=[
+            0.0,
+            0.0,
+            1.0,
+        ],
+    )
+
+    _assert_true(
+        isinstance(
+            fitted_plane,
+            Plane,
+        ),
+        "fit_plane() must return Plane.",
+    )
+
+    _assert_close(
+        fitted_plane.point,
+        [
+            0.0,
+            0.0,
+            2.0,
+        ],
+        message="Plane point is incorrect.",
+    )
+
+    _assert_close(
+        fitted_plane.normal,
+        [
+            0.0,
+            0.0,
+            1.0,
+        ],
+        message="Plane normal is incorrect.",
+    )
+
+    _assert_close(
+        fitted_plane.rmsd,
+        0.0,
+        message="Perfectly planar coordinates "
+        "must have zero plane RMSD.",
+    )
+
+    _assert_close(
+        plane_normal(
+            planar_points,
+            reference_normal=[
+                0.0,
+                0.0,
+                1.0,
+            ],
+        ),
+        [
+            0.0,
+            0.0,
+            1.0,
+        ],
+        message="plane_normal() returned "
+        "an incorrect normal.",
+    )
+
+    _assert_close(
+        point_plane_distance(
+            [
+                0.0,
+                0.0,
+                5.0,
+            ],
+            fitted_plane,
+        ),
+        3.0,
+        message="point_plane_distance() returned "
+        "an incorrect value.",
+    )
+
+    _assert_close(
+        project_point_on_plane(
+            [
+                1.0,
+                1.0,
+                5.0,
+            ],
+            fitted_plane,
+        ),
+        [
+            1.0,
+            1.0,
+            2.0,
+        ],
+        message="project_point_on_plane() returned "
+        "an incorrect point.",
+    )
+
+    second_plane = Plane(
+        point=np.zeros(
+            3,
+            dtype=np.float64,
+        ),
+        normal=[
+            1.0,
+            0.0,
+            0.0,
+        ],
+        point_count=3,
+    )
+
+    _assert_close(
+        angle_between_planes(
+            fitted_plane,
+            second_plane,
+        ),
+        90.0,
+        message="angle_between_planes() returned "
+        "an incorrect angle.",
+    )
+
+    plane_dictionary = (
+        fitted_plane.to_dict()
+    )
+
+    _assert_true(
+        isinstance(
+            plane_dictionary,
+            dict,
+        ),
+        "Plane.to_dict() must return a dictionary.",
+    )
+
+
+# -----------------------------------------------------------------------------
+# Ring and pi-interaction tests
+# -----------------------------------------------------------------------------
+
+def _synthetic_hexagonal_ring(
+    *,
+    center: Coordinate,
+    radius: float = 1.4,
+    plane: str = "xy",
+) -> FloatArray:
+    """
+    Construct a synthetic regular six-membered ring.
+
+    Parameters
+    ----------
+    center : Coordinate
+        Ring center.
+    radius : float, optional
+        Ring radius.
+    plane : {"xy", "xz", "yz"}, optional
+        Ring plane.
+
+    Returns
+    -------
+    numpy.ndarray
+        Ring coordinates with shape ``(6, 3)``.
+    """
+
+    center_coordinate = as_coordinate(
+        center,
+        scene=False,
+        name="Ring center",
+        copy=False,
+    )
+
+    angles = np.linspace(
+        0.0,
+        2.0 * np.pi,
+        num=6,
+        endpoint=False,
+        dtype=np.float64,
+    )
+
+    first_component = (
+        radius
+        * np.cos(
+            angles
+        )
+    )
+
+    second_component = (
+        radius
+        * np.sin(
+            angles
+        )
+    )
+
+    coordinates = np.zeros(
+        (
+            6,
+            3,
+        ),
+        dtype=np.float64,
+    )
+
+    if plane == "xy":
+        coordinates[
+            :,
+            0,
+        ] = first_component
+
+        coordinates[
+            :,
+            1,
+        ] = second_component
+
+    elif plane == "xz":
+        coordinates[
+            :,
+            0,
+        ] = first_component
+
+        coordinates[
+            :,
+            2,
+        ] = second_component
+
+    elif plane == "yz":
+        coordinates[
+            :,
+            1,
+        ] = first_component
+
+        coordinates[
+            :,
+            2,
+        ] = second_component
+
+    else:
+        raise ValueError(
+            "plane must be 'xy', 'xz' or 'yz'."
+        )
+
+    coordinates += center_coordinate
+
+    return coordinates
+
+
+def _test_rings_and_pi_interactions() -> None:
+    """
+    Test aromatic-ring and pi-interaction geometry.
+    """
+
+    first_ring_coordinates = (
+        _synthetic_hexagonal_ring(
+            center=[
+                0.0,
+                0.0,
+                0.0,
+            ],
+        )
+    )
+
+    second_ring_coordinates = (
+        _synthetic_hexagonal_ring(
+            center=[
+                0.0,
+                0.0,
+                3.5,
+            ],
+        )
+    )
+
+    first_ring = RingGeometry(
+        coordinates=(
+            first_ring_coordinates
+        )
+    )
+
+    second_ring = RingGeometry(
+        coordinates=(
+            second_ring_coordinates
+        )
+    )
+
+    _assert_close(
+        first_ring.centroid,
+        [
+            0.0,
+            0.0,
+            0.0,
+        ],
+        message="Ring centroid is incorrect.",
+    )
+
+    _assert_close(
+        first_ring.radius,
+        1.4,
+        message="Ring radius is incorrect.",
+    )
+
+    _assert_close(
+        first_ring.planarity_rmsd,
+        0.0,
+        message="Synthetic ring must be planar.",
+    )
+
+    _assert_close(
+        ring_centroid(
+            first_ring_coordinates
+        ),
+        [
+            0.0,
+            0.0,
+            0.0,
+        ],
+        message="ring_centroid() returned "
+        "an incorrect result.",
+    )
+
+    _assert_close(
+        abs(
+            ring_normal(
+                first_ring_coordinates
+            )[2]
+        ),
+        1.0,
+        message="ring_normal() returned "
+        "an incorrect orientation.",
+    )
+
+    _assert_close(
+        ring_radius(
+            first_ring_coordinates
+        ),
+        1.4,
+        message="ring_radius() returned "
+        "an incorrect value.",
+    )
+
+    _assert_close(
+        ring_planarity(
+            first_ring_coordinates
+        ),
+        0.0,
+        message="ring_planarity() returned "
+        "an incorrect value.",
+    )
+
+    stacking = pi_stack_geometry(
+        first_ring,
+        second_ring,
+        maximum_centroid_distance=5.0,
+    )
+
+    _assert_true(
+        isinstance(
+            stacking,
+            PiStackGeometry,
+        ),
+        "pi_stack_geometry() must return "
+        "PiStackGeometry.",
+    )
+
+    _assert_close(
+        stacking.centroid_distance,
+        3.5,
+        message="Pi-stack centroid distance "
+        "is incorrect.",
+    )
+
+    _assert_close(
+        stacking.plane_angle,
+        0.0,
+        message="Parallel rings must have "
+        "zero plane angle.",
+    )
+
+    _assert_equal(
+        stacking.classification,
+        "parallel",
+        "Synthetic stacked rings should be "
+        "classified as parallel.",
+    )
+
+    _assert_true(
+        stacking.distance_compatible,
+        "Synthetic stacked rings should satisfy "
+        "the distance criterion.",
+    )
+
+    cation_geometry = cation_pi_geometry(
+        first_ring,
+        [
+            0.0,
+            0.0,
+            2.0,
+        ],
+        maximum_distance=6.0,
+        maximum_lateral_offset=2.0,
+    )
+
+    _assert_close(
+        cation_geometry[
+            "centroid_distance"
+        ],
+        2.0,
+        message="Cation-pi centroid distance "
+        "is incorrect.",
+    )
+
+    _assert_close(
+        cation_geometry[
+            "lateral_offset"
+        ],
+        0.0,
+        message="Centered cation must have "
+        "zero lateral offset.",
+    )
+
+    _assert_true(
+        cation_geometry[
+            "geometry_compatible"
+        ],
+        "Centered synthetic cation-pi geometry "
+        "should be compatible.",
+    )
+
+
+# -----------------------------------------------------------------------------
+# Hydrogen-bond tests
+# -----------------------------------------------------------------------------
+
+def _test_hydrogen_bonds() -> None:
+    """
+    Test hydrogen-bond geometry.
+    """
+
+    donor = np.asarray(
+        [
+            0.0,
+            0.0,
+            0.0,
+        ],
+        dtype=np.float64,
+    )
+
+    hydrogen = np.asarray(
+        [
+            1.0,
+            0.0,
+            0.0,
+        ],
+        dtype=np.float64,
+    )
+
+    acceptor = np.asarray(
+        [
+            2.8,
+            0.0,
+            0.0,
+        ],
+        dtype=np.float64,
+    )
+
+    angle_value = (
+        donor_hydrogen_acceptor_angle(
+            donor,
+            hydrogen,
+            acceptor,
+        )
+    )
+
+    _assert_close(
+        angle_value,
+        180.0,
+        message="Linear hydrogen bond must have "
+        "a 180-degree angle.",
+    )
+
+    geometry = hydrogen_bond_geometry(
+        donor,
+        acceptor,
+        hydrogen,
+    )
+
+    _assert_true(
+        isinstance(
+            geometry,
+            HydrogenBondGeometry,
+        ),
+        "hydrogen_bond_geometry() must return "
+        "HydrogenBondGeometry.",
+    )
+
+    _assert_close(
+        geometry.donor_acceptor_distance,
+        2.8,
+        message="D-A distance is incorrect.",
+    )
+
+    _assert_close(
+        geometry.hydrogen_acceptor_distance,
+        1.8,
+        message="H-A distance is incorrect.",
+    )
+
+    _assert_close(
+        geometry.donor_hydrogen_distance,
+        1.0,
+        message="D-H distance is incorrect.",
+    )
+
+    _assert_close(
+        geometry.donor_hydrogen_acceptor_angle,
+        180.0,
+        message="D-H-A angle is incorrect.",
+    )
+
+    _assert_true(
+        geometry.geometry_compatible,
+        "Synthetic hydrogen bond should be "
+        "geometrically compatible.",
+    )
+
+    distance_only_geometry = (
+        hydrogen_bond_geometry(
+            donor,
+            acceptor,
+        )
+    )
+
+    _assert_true(
+        distance_only_geometry.is_distance_only,
+        "Hydrogen-free analysis must be marked "
+        "as distance-only.",
+    )
+
+    _assert_true(
+        distance_only_geometry.angle_compatible
+        is None,
+        "Angle compatibility must be None "
+        "without an explicit hydrogen.",
+    )
+
+    _assert_raises(
+        ValueError,
+        hydrogen_bond_geometry,
+        donor,
+        acceptor,
+        require_explicit_hydrogen=True,
+        message="Explicit-hydrogen mode must reject "
+        "a missing hydrogen.",
+    )
+
+
+# -----------------------------------------------------------------------------
+# Contact tests
+# -----------------------------------------------------------------------------
+
+def _test_contacts() -> None:
+    """
+    Test contact geometry and closest-pair detection.
+    """
+
+    first_atom = np.asarray(
+        [
+            0.0,
+            0.0,
+            0.0,
+        ],
+        dtype=np.float64,
+    )
+
+    second_atom = np.asarray(
+        [
+            3.0,
+            0.0,
+            0.0,
+        ],
+        dtype=np.float64,
+    )
+
+    contact = contact_geometry(
+        first_atom,
+        second_atom,
+        cutoff=4.0,
+    )
+
+    _assert_true(
+        isinstance(
+            contact,
+            ContactGeometry,
+        ),
+        "contact_geometry() must return "
+        "ContactGeometry.",
+    )
+
+    _assert_close(
+        contact.distance,
+        3.0,
+        message="Contact distance is incorrect.",
+    )
+
+    _assert_true(
+        contact.is_contact,
+        "The pair should lie inside "
+        "the contact cutoff.",
+    )
+
+    _assert_close(
+        contact.margin_to_cutoff,
+        1.0,
+        message="Contact cutoff margin is incorrect.",
+    )
+
+    _assert_close(
+        contact.midpoint,
+        [
+            1.5,
+            0.0,
+            0.0,
+        ],
+        message="Contact midpoint is incorrect.",
+    )
+
+    first_collection = [
+        np.asarray(
+            [
+                0.0,
+                0.0,
+                0.0,
+            ],
+            dtype=np.float64,
+        ),
+        np.asarray(
+            [
+                10.0,
+                0.0,
+                0.0,
+            ],
+            dtype=np.float64,
+        ),
+    ]
+
+    second_collection = [
+        np.asarray(
+            [
+                3.0,
+                0.0,
+                0.0,
+            ],
+            dtype=np.float64,
+        ),
+        np.asarray(
+            [
+                20.0,
+                0.0,
+                0.0,
+            ],
+            dtype=np.float64,
+        ),
+    ]
+
+    closest_contact = closest_atoms(
+        first_collection,
+        second_collection,
+        cutoff=4.0,
+    )
+
+    _assert_close(
+        closest_contact.distance,
+        3.0,
+        message="closest_atoms() returned "
+        "an incorrect distance.",
+    )
+
+    _assert_equal(
+        closest_contact.index_1,
+        0,
+        "closest_atoms() returned "
+        "an incorrect first index.",
+    )
+
+    _assert_equal(
+        closest_contact.index_2,
+        0,
+        "closest_atoms() returned "
+        "an incorrect second index.",
+    )
+
+    (
+        closest_with_matrix,
+        complete_matrix,
+    ) = closest_atoms(
+        first_collection,
+        second_collection,
+        return_distance_matrix=True,
+    )
+
+    _assert_shape(
+        complete_matrix,
+        (
+            2,
+            2,
+        ),
+        "Closest-contact distance matrix "
+        "has an invalid shape.",
+    )
+
+    _assert_close(
+        closest_with_matrix.distance,
+        np.min(
+            complete_matrix
+        ),
+        message="Closest contact does not match "
+        "the minimum matrix value.",
+    )
+
+    self_contact = closest_atoms(
+        first_collection,
+        first_collection,
+        exclude_identical_objects=True,
+        exclude_same_index=True,
+    )
+
+    _assert_true(
+        self_contact.distance > 0.0,
+        "Self-comparison exclusions must prevent "
+        "zero-distance self-pairs.",
+    )
+
+
+# -----------------------------------------------------------------------------
+# RMSD and alignment tests
+# -----------------------------------------------------------------------------
+
+def _test_rmsd_and_alignment() -> None:
+    """
+    Test RMSD, centering and Kabsch alignment.
+    """
+
+    reference = np.asarray(
+        [
+            [
+                0.0,
+                0.0,
+                0.0,
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+            ],
+            [
+                0.0,
+                1.0,
+                0.0,
+            ],
+            [
+                0.0,
+                0.0,
+                1.0,
+            ],
+        ],
+        dtype=np.float64,
+    )
+
+    known_rotation = np.asarray(
+        [
+            [
+                0.0,
+                -1.0,
+                0.0,
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+            ],
+            [
+                0.0,
+                0.0,
+                1.0,
+            ],
+        ],
+        dtype=np.float64,
+    )
+
+    known_translation = np.asarray(
+        [
+            5.0,
+            -3.0,
+            2.0,
+        ],
+        dtype=np.float64,
+    )
+
+    mobile = (
+        reference
+        @ known_rotation
+        + known_translation
+    )
+
+    initial_rmsd = calculate_rmsd(
+        reference,
+        mobile,
+    )
+
+    _assert_true(
+        initial_rmsd > 1.0,
+        "Synthetic unaligned RMSD should "
+        "be clearly non-zero.",
+    )
+
+    centered_reference, centroid = (
+        center_coordinates(
+            reference,
+            return_centroid=True,
+        )
+    )
+
+    _assert_close(
+        np.mean(
+            centered_reference,
+            axis=0,
+        ),
+        np.zeros(
+            3,
+            dtype=np.float64,
+        ),
+        message="Centered coordinates must have "
+        "zero geometric mean.",
+    )
+
+    _assert_close(
+        centroid,
+        np.mean(
+            reference,
+            axis=0,
+        ),
+        message="center_coordinates() returned "
+        "an incorrect centroid.",
+    )
+
+    rotation = kabsch_rotation(
+        reference,
+        mobile,
+    )
+
+    _assert_shape(
+        rotation,
+        (
+            3,
+            3,
+        ),
+        "Kabsch rotation has an invalid shape.",
+    )
+
+    _assert_close(
+        rotation.T
+        @ rotation,
+        np.eye(
+            3,
+            dtype=np.float64,
+        ),
+        message="Kabsch rotation must be orthogonal.",
+    )
+
+    _assert_close(
+        np.linalg.det(
+            rotation
+        ),
+        1.0,
+        message="Kabsch rotation must have "
+        "determinant +1.",
+    )
+
+    alignment = kabsch_alignment(
+        reference,
+        mobile,
+    )
+
+    _assert_true(
+        isinstance(
+            alignment,
+            AlignmentResult,
+        ),
+        "kabsch_alignment() must return "
+        "AlignmentResult.",
+    )
+
+    _assert_close(
+        alignment.aligned_coordinates,
+        reference,
+        tolerance=1e-6,
+        message="Kabsch alignment did not recover "
+        "the reference coordinates.",
+    )
+
+    _assert_close(
+        alignment.final_rmsd,
+        0.0,
+        tolerance=1e-6,
+        message="Rigidly transformed coordinates "
+        "must align with near-zero RMSD.",
+    )
+
+    _assert_true(
+        alignment.initial_rmsd
+        > alignment.final_rmsd,
+        "Alignment must reduce RMSD.",
+    )
+
+    transformed = alignment.transform(
+        mobile
+    )
+
+    _assert_close(
+        transformed,
+        reference,
+        tolerance=1e-6,
+        message="AlignmentResult.transform() "
+        "returned incorrect coordinates.",
+    )
+
+    restored = alignment.inverse_transform(
+        transformed
+    )
+
+    _assert_close(
+        restored,
+        mobile,
+        tolerance=1e-6,
+        message="Alignment inverse transformation "
+        "did not restore mobile coordinates.",
+    )
+
+    aligned_value = aligned_rmsd(
+        reference,
+        mobile,
+    )
+
+    _assert_close(
+        aligned_value,
+        0.0,
+        tolerance=1e-6,
+        message="aligned_rmsd() returned "
+        "an incorrect value.",
+    )
+
+    weighted_value = aligned_rmsd(
+        reference,
+        mobile,
+        weights=[
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+        ],
+    )
+
+    _assert_close(
+        weighted_value,
+        0.0,
+        tolerance=1e-6,
+        message="Weighted aligned RMSD "
+        "should be near zero.",
+    )
+
+
+# -----------------------------------------------------------------------------
+# Bounding-geometry tests
+# -----------------------------------------------------------------------------
+
+def _test_bounding_geometry() -> None:
+    """
+    Test bounding boxes, centers and radius of gyration.
+    """
+
+    coordinates = np.asarray(
+        [
+            [
+                -1.0,
+                -2.0,
+                -3.0,
+            ],
+            [
+                3.0,
+                4.0,
+                5.0,
+            ],
+            [
+                1.0,
+                0.0,
+                2.0,
+            ],
+        ],
+        dtype=np.float64,
+    )
+
+    minimum, maximum = bounding_box(
+        coordinates
+    )
+
+    _assert_close(
+        minimum,
+        [
+            -1.0,
+            -2.0,
+            -3.0,
+        ],
+        message="Bounding-box minimum is incorrect.",
+    )
+
+    _assert_close(
+        maximum,
+        [
+            3.0,
+            4.0,
+            5.0,
+        ],
+        message="Bounding-box maximum is incorrect.",
+    )
+
+    (
+        padded_minimum,
+        padded_maximum,
+        corners,
+    ) = bounding_box(
+        coordinates,
+        padding=1.0,
+        return_corners=True,
+    )
+
+    _assert_close(
+        padded_minimum,
+        [
+            -2.0,
+            -3.0,
+            -4.0,
+        ],
+        message="Padded bounding-box minimum "
+        "is incorrect.",
+    )
+
+    _assert_close(
+        padded_maximum,
+        [
+            4.0,
+            5.0,
+            6.0,
+        ],
+        message="Padded bounding-box maximum "
+        "is incorrect.",
+    )
+
+    _assert_shape(
+        corners,
+        (
+            8,
+            3,
+        ),
+        "Bounding-box corners have "
+        "an invalid shape.",
+    )
+
+    box_center = bounding_box_center(
+        minimum=minimum,
+        maximum=maximum,
+    )
+
+    _assert_close(
+        box_center,
+        [
+            1.0,
+            1.0,
+            1.0,
+        ],
+        message="Bounding-box center is incorrect.",
+    )
+
+    size, volume, diagonal = (
+        bounding_box_size(
+            minimum=minimum,
+            maximum=maximum,
+            return_volume=True,
+            return_diagonal=True,
+        )
+    )
+
+    _assert_close(
+        size,
+        [
+            4.0,
+            6.0,
+            8.0,
+        ],
+        message="Bounding-box size is incorrect.",
+    )
+
+    _assert_close(
+        volume,
+        192.0,
+        message="Bounding-box volume is incorrect.",
+    )
+
+    _assert_close(
+        diagonal,
+        math.sqrt(
+            116.0
+        ),
+        message="Bounding-box diagonal is incorrect.",
+    )
+
+    geometric_center_value = (
+        geometric_center(
+            coordinates
+        )
+    )
+
+    _assert_close(
+        geometric_center_value,
+        np.mean(
+            coordinates,
+            axis=0,
+        ),
+        message="geometric_center() returned "
+        "an incorrect value.",
+    )
+
+    masses = np.asarray(
+        [
+            1.0,
+            2.0,
+            1.0,
+        ],
+        dtype=np.float64,
+    )
+
+    (
+        mass_center,
+        total_mass,
+    ) = center_of_mass(
+        coordinates,
+        masses=masses,
+        return_total_mass=True,
+    )
+
+    expected_mass_center = np.sum(
+        coordinates
+        * masses[
+            :,
+            np.newaxis,
+        ],
+        axis=0,
+    ) / np.sum(
+        masses
+    )
+
+    _assert_close(
+        mass_center,
+        expected_mass_center,
+        message="center_of_mass() returned "
+        "an incorrect value.",
+    )
+
+    _assert_close(
+        total_mass,
+        4.0,
+        message="Total mass is incorrect.",
+    )
+
+    simple_coordinates = np.asarray(
+        [
+            [
+                -1.0,
+                0.0,
+                0.0,
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+            ],
+        ],
+        dtype=np.float64,
+    )
+
+    unweighted_rg = radius_of_gyration(
+        simple_coordinates,
+        mass_weighted=False,
+    )
+
+    _assert_close(
+        unweighted_rg,
+        1.0,
+        message="Unweighted radius of gyration "
+        "is incorrect.",
+    )
+
+    weighted_rg = radius_of_gyration(
+        simple_coordinates,
+        masses=[
+            1.0,
+            1.0,
+        ],
+        mass_weighted=True,
+    )
+
+    _assert_close(
+        weighted_rg,
+        1.0,
+        message="Mass-weighted radius of gyration "
+        "is incorrect.",
+    )
+
+
+# -----------------------------------------------------------------------------
+# Structured-result tests
+# -----------------------------------------------------------------------------
+
+def _test_structured_results() -> None:
+    """
+    Test structured result serialization.
+    """
+
+    coordinates = np.asarray(
+        [
+            [
+                -1.0,
+                -2.0,
+                -3.0,
+            ],
+            [
+                3.0,
+                4.0,
+                5.0,
+            ],
+        ],
+        dtype=np.float64,
+    )
+
+    structured_box = create_bounding_box(
+        coordinates,
+        padding=1.0,
+        metadata={
+            "test": True,
+        },
+    )
+
+    _assert_true(
+        isinstance(
+            structured_box,
+            BoundingBox,
+        ),
+        "create_bounding_box() must return "
+        "BoundingBox.",
+    )
+
+    _assert_close(
+        structured_box.minimum,
+        [
+            -2.0,
+            -3.0,
+            -4.0,
+        ],
+        message="Structured bounding-box minimum "
+        "is incorrect.",
+    )
+
+    _assert_close(
+        structured_box.maximum,
+        [
+            4.0,
+            5.0,
+            6.0,
+        ],
+        message="Structured bounding-box maximum "
+        "is incorrect.",
+    )
+
+    _assert_close(
+        structured_box.center,
+        [
+            1.0,
+            1.0,
+            1.0,
+        ],
+        message="Structured bounding-box center "
+        "is incorrect.",
+    )
+
+    _assert_true(
+        structured_box.contains(
+            [
+                0.0,
+                0.0,
+                0.0,
+            ]
+        ),
+        "BoundingBox.contains() rejected "
+        "an internal point.",
+    )
+
+    _assert_true(
+        not structured_box.contains(
+            [
+                20.0,
+                0.0,
+                0.0,
+            ]
+        ),
+        "BoundingBox.contains() accepted "
+        "an external point.",
+    )
+
+    box_dictionary = (
+        structured_box.to_dict(
+            include_corners=True,
+        )
+    )
+
+    _assert_true(
+        isinstance(
+            box_dictionary,
+            dict,
+        ),
+        "BoundingBox.to_dict() must return "
+        "a dictionary.",
+    )
+
+    _assert_true(
+        "corners"
+        in box_dictionary,
+        "BoundingBox.to_dict() did not include "
+        "requested corners.",
+    )
+
+    serialized_box = (
+        structural_result_to_dict(
+            structured_box,
+            serialization_options={
+                "include_corners": True,
+            },
+        )
+    )
+
+    _assert_true(
+        isinstance(
+            serialized_box[
+                "minimum"
+            ],
+            list,
+        ),
+        "Structural serialization must convert "
+        "NumPy coordinates to lists.",
+    )
+
+    _assert_true(
+        is_structural_result(
+            structured_box
+        ),
+        "BoundingBox must satisfy the "
+        "structured-result interface.",
+    )
+
+    validated_result = (
+        validate_structural_result(
+            structured_box
+        )
+    )
+
+    _assert_true(
+        validated_result
+        is structured_box,
+        "validate_structural_result() must "
+        "return the original object.",
+    )
+
+    _assert_raises(
+        TypeError,
+        validate_structural_result,
+        object(),
+        message="Objects without to_dict() must "
+        "be rejected.",
+    )
+
+
+# -----------------------------------------------------------------------------
+# Public self-test runner
+# -----------------------------------------------------------------------------
+
+def run_self_tests(
+    *,
+    verbose: bool = True,
+    raise_on_failure: bool = True,
+) -> Dict[str, Any]:
+    """
+    Run the geometry module's internal synthetic tests.
+
+    Parameters
+    ----------
+    verbose : bool, optional
+        Whether individual test-group results should be printed.
+    raise_on_failure : bool, optional
+        Whether an ``AssertionError`` should be raised when one or more test
+        groups fail.
+
+    Returns
+    -------
+    dict
+        Test summary containing:
+
+        - ``passed``;
+        - ``failed``;
+        - ``total``;
+        - ``success``;
+        - ``results``.
+
+    Raises
+    ------
+    AssertionError
+        If at least one group fails and ``raise_on_failure=True``.
+
+    Notes
+    -----
+    These tests use only synthetic coordinates and NumPy. ChimeraX is not
+    required.
+    """
+
+    test_groups: List[
+        Tuple[
+            str,
+            Callable[
+                [],
+                None,
+            ],
+        ]
+    ] = [
+        (
+            "Coordinates and vectors",
+            _test_coordinates_and_vectors,
+        ),
+        (
+            "Distances and angles",
+            _test_distances_and_angles,
+        ),
+        (
+            "Planes",
+            _test_planes,
+        ),
+        (
+            "Rings and pi interactions",
+            _test_rings_and_pi_interactions,
+        ),
+        (
+            "Hydrogen bonds",
+            _test_hydrogen_bonds,
+        ),
+        (
+            "Contacts",
+            _test_contacts,
+        ),
+        (
+            "RMSD and alignment",
+            _test_rmsd_and_alignment,
+        ),
+        (
+            "Bounding geometry",
+            _test_bounding_geometry,
+        ),
+        (
+            "Structured results",
+            _test_structured_results,
+        ),
+    ]
+
+    if verbose:
+        print()
+        print(
+            "=" * 72
+        )
+        print(
+            "DockAnalyzer geometry.py self-test"
+        )
+        print(
+            "=" * 72
+        )
+
+    results: List[
+        Dict[str, Any]
+    ] = []
+
+    for test_name, test_function in test_groups:
+        (
+            result_name,
+            passed,
+            error_message,
+        ) = _run_test_group(
+            test_name,
+            test_function,
+            verbose=verbose,
+        )
+
+        results.append(
+            {
+                "name": result_name,
+                "passed": passed,
+                "error": error_message,
+            }
+        )
+
+    passed_count = sum(
+        1
+        for result in results
+        if result[
+            "passed"
+        ]
+    )
+
+    failed_count = (
+        len(
+            results
+        )
+        - passed_count
+    )
+
+    success = (
+        failed_count == 0
+    )
+
+    summary: Dict[str, Any] = {
+        "passed": passed_count,
+        "failed": failed_count,
+        "total": len(
+            results
+        ),
+        "success": success,
+        "results": results,
+    }
+
+    if verbose:
+        print(
+            "-" * 72
+        )
+
+        print(
+            f"Passed: {passed_count}"
+        )
+
+        print(
+            f"Failed: {failed_count}"
+        )
+
+        print(
+            f"Total:  {len(results)}"
+        )
+
+        if success:
+            print(
+                "Result: ALL TESTS PASSED"
+            )
+
+        else:
+            print(
+                "Result: TEST FAILURE"
+            )
+
+        print(
+            "=" * 72
+        )
+        print()
+
+    if (
+        not success
+        and raise_on_failure
+    ):
+        failed_names = [
+            result[
+                "name"
+            ]
+            for result in results
+            if not result[
+                "passed"
+            ]
+        ]
+
+        raise AssertionError(
+            "geometry.py self-test failed in: "
+            + ", ".join(
+                failed_names
+            )
+        )
+
+    return summary
+
+
+# -----------------------------------------------------------------------------
+# Public module interface
+# -----------------------------------------------------------------------------
+
+_SECTION_15_PUBLIC_NAMES = [
+    "run_self_tests",
+]
+
+for public_name in _SECTION_15_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(
+            public_name
+        )
+
+
+# -----------------------------------------------------------------------------
+# Standalone execution
+# -----------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    run_self_tests(
+        verbose=True,
+        raise_on_failure=True,
+    )
+
+
+# =============================================================================
+# End of Section 15
+# =============================================================================
 
