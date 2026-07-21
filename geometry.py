@@ -166,6 +166,8046 @@ __all__ = [
 # -----------------------------------------------------------------------------
 
 
+# =============================================================================
+# Section 2 — Geometric Constants
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Numerical tolerances
+# -----------------------------------------------------------------------------
+
+DEFAULT_TOLERANCE: float = 1.0e-8
+"""
+Default numerical tolerance used in general geometric comparisons.
+
+This value is intended for operations involving normalized vectors, matrix
+comparisons, degeneracy checks and floating-point equality tests.
+"""
+
+
+DEFAULT_DISTANCE_TOLERANCE: float = 1.0e-6
+"""
+Default tolerance for distance comparisons, expressed in the same coordinate
+unit used by the input data.
+
+For molecular structures, coordinates are normally expressed in ångströms.
+This constant is intended primarily for numerical comparisons rather than
+physical interaction cutoffs.
+"""
+
+
+DEFAULT_ANGLE_TOLERANCE: float = 1.0e-6
+"""
+Default tolerance for angular comparisons.
+
+The tolerance is expressed in degrees unless a function explicitly operates
+in radians. It is intended for floating-point comparisons and not for
+classifying molecular interaction geometries.
+"""
+
+
+# -----------------------------------------------------------------------------
+# Angular conversion constants
+# -----------------------------------------------------------------------------
+
+DEGREES_PER_RADIAN: float = 180.0 / math.pi
+"""
+Number of degrees in one radian.
+
+Equivalent to approximately 57.295779513 degrees.
+"""
+
+
+RADIANS_PER_DEGREE: float = math.pi / 180.0
+"""
+Number of radians in one degree.
+
+Equivalent to approximately 0.01745329252 radians.
+"""
+
+
+# -----------------------------------------------------------------------------
+# Public module interface
+# -----------------------------------------------------------------------------
+
+_SECTION_2_PUBLIC_NAMES = [
+    "DEFAULT_TOLERANCE",
+    "DEFAULT_DISTANCE_TOLERANCE",
+    "DEFAULT_ANGLE_TOLERANCE",
+    "DEGREES_PER_RADIAN",
+    "RADIANS_PER_DEGREE",
+]
+
+for public_name in _SECTION_2_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(
+            public_name
+        )
+
+
+# =============================================================================
+# End of Section 2
+# =============================================================================
+
+
+# =============================================================================
+# Section 3 — Coordinate Conversion and Validation
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Coordinate attribute priorities
+# -----------------------------------------------------------------------------
+
+_SINGLE_COORDINATE_ATTRIBUTES: Tuple[str, ...] = (
+    "scene_coord",
+    "coord",
+    "coordinate",
+    "position",
+)
+
+_MULTIPLE_COORDINATE_ATTRIBUTES: Tuple[str, ...] = (
+    "scene_coords",
+    "coords",
+    "coordinates",
+    "positions",
+)
+
+
+# -----------------------------------------------------------------------------
+# Internal coordinate helpers
+# -----------------------------------------------------------------------------
+
+def _is_scalar_coordinate_component(
+    value: Any,
+) -> bool:
+    """
+    Return whether a value can represent one coordinate component.
+
+    Parameters
+    ----------
+    value : Any
+        Value to inspect.
+
+    Returns
+    -------
+    bool
+        ``True`` when the value is a finite numeric scalar.
+    """
+
+    if isinstance(
+        value,
+        (
+            bool,
+            np.bool_,
+        ),
+    ):
+        return False
+
+    try:
+        numeric_value = float(
+            value
+        )
+
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+    ):
+        return False
+
+    return math.isfinite(
+        numeric_value
+    )
+
+
+def _extract_xyz_attributes(
+    value: Any,
+) -> Optional[FloatArray]:
+    """
+    Extract coordinates from ``x``, ``y`` and ``z`` attributes.
+
+    Parameters
+    ----------
+    value : Any
+        Object potentially exposing Cartesian components.
+
+    Returns
+    -------
+    numpy.ndarray or None
+        Coordinate vector when extraction succeeds.
+    """
+
+    if not all(
+        hasattr(
+            value,
+            attribute_name,
+        )
+        for attribute_name in (
+            "x",
+            "y",
+            "z",
+        )
+    ):
+        return None
+
+    try:
+        components = [
+            getattr(
+                value,
+                "x",
+            ),
+            getattr(
+                value,
+                "y",
+            ),
+            getattr(
+                value,
+                "z",
+            ),
+        ]
+
+    except Exception:
+        return None
+
+    if not all(
+        _is_scalar_coordinate_component(
+            component
+        )
+        for component in components
+    ):
+        return None
+
+    return np.asarray(
+        components,
+        dtype=np.float64,
+    )
+
+
+def _extract_coordinate_attribute(
+    value: Any,
+    *,
+    scene: bool = True,
+) -> Optional[Any]:
+    """
+    Extract one coordinate-like attribute from an object.
+
+    Parameters
+    ----------
+    value : Any
+        Object to inspect.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+
+    Returns
+    -------
+    Any or None
+        Extracted coordinate-like value.
+    """
+
+    if scene:
+        attribute_order = (
+            "scene_coord",
+            "coord",
+            "coordinate",
+            "position",
+        )
+
+    else:
+        attribute_order = (
+            "coord",
+            "scene_coord",
+            "coordinate",
+            "position",
+        )
+
+    for attribute_name in attribute_order:
+        if not hasattr(
+            value,
+            attribute_name,
+        ):
+            continue
+
+        try:
+            attribute_value = getattr(
+                value,
+                attribute_name,
+            )
+
+        except Exception:
+            continue
+
+        if callable(
+            attribute_value
+        ):
+            try:
+                attribute_value = (
+                    attribute_value()
+                )
+
+            except Exception:
+                continue
+
+        if attribute_value is not None:
+            return attribute_value
+
+    return None
+
+
+def _extract_coordinate_collection_attribute(
+    value: Any,
+    *,
+    scene: bool = True,
+) -> Optional[Any]:
+    """
+    Extract a coordinate-matrix-like attribute from an object.
+
+    Parameters
+    ----------
+    value : Any
+        Object to inspect.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+
+    Returns
+    -------
+    Any or None
+        Extracted coordinate collection.
+    """
+
+    if scene:
+        attribute_order = (
+            "scene_coords",
+            "coords",
+            "coordinates",
+            "positions",
+        )
+
+    else:
+        attribute_order = (
+            "coords",
+            "scene_coords",
+            "coordinates",
+            "positions",
+        )
+
+    for attribute_name in attribute_order:
+        if not hasattr(
+            value,
+            attribute_name,
+        ):
+            continue
+
+        try:
+            attribute_value = getattr(
+                value,
+                attribute_name,
+            )
+
+        except Exception:
+            continue
+
+        if callable(
+            attribute_value
+        ):
+            try:
+                attribute_value = (
+                    attribute_value()
+                )
+
+            except Exception:
+                continue
+
+        if attribute_value is not None:
+            return attribute_value
+
+    return None
+
+
+def _coordinate_error_prefix(
+    name: Optional[str],
+) -> str:
+    """
+    Build a readable coordinate validation prefix.
+
+    Parameters
+    ----------
+    name : str or None
+        User-facing value name.
+
+    Returns
+    -------
+    str
+        Error-message prefix.
+    """
+
+    if name is None:
+        return "Coordinate"
+
+    normalized_name = str(
+        name
+    ).strip()
+
+    if not normalized_name:
+        return "Coordinate"
+
+    return normalized_name
+
+
+# -----------------------------------------------------------------------------
+# Coordinate validation
+# -----------------------------------------------------------------------------
+
+def validate_coordinate(
+    coordinate: Any,
+    *,
+    name: Optional[str] = None,
+    require_finite: bool = True,
+    copy: bool = False,
+) -> FloatArray:
+    """
+    Validate a three-dimensional Cartesian coordinate.
+
+    Parameters
+    ----------
+    coordinate : Any
+        Coordinate-like value already convertible to a NumPy array.
+    name : str, optional
+        User-facing name used in validation messages.
+    require_finite : bool, optional
+        Whether NaN and infinite values should be rejected.
+    copy : bool, optional
+        Whether a new array must always be returned.
+
+    Returns
+    -------
+    numpy.ndarray
+        One-dimensional ``float64`` array with shape ``(3,)``.
+
+    Raises
+    ------
+    TypeError
+        If the value cannot be converted to a numeric array.
+    ValueError
+        If the coordinate does not contain exactly three components or
+        contains invalid values.
+
+    Examples
+    --------
+    >>> validate_coordinate([1, 2, 3])
+    array([1., 2., 3.])
+    """
+
+    value_name = _coordinate_error_prefix(
+        name
+    )
+
+    try:
+        array = np.asarray(
+            coordinate,
+            dtype=np.float64,
+        )
+
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+    ) as error:
+        raise TypeError(
+            f"{value_name} must be convertible "
+            "to three numeric components."
+        ) from error
+
+    if array.ndim == 0:
+        raise ValueError(
+            f"{value_name} must contain exactly "
+            "three components; a scalar was provided."
+        )
+
+    array = np.ravel(
+        array
+    )
+
+    if array.size != 3:
+        raise ValueError(
+            f"{value_name} must contain exactly "
+            f"three components; received {array.size}."
+        )
+
+    if require_finite and not np.all(
+        np.isfinite(
+            array
+        )
+    ):
+        raise ValueError(
+            f"{value_name} contains NaN or "
+            "infinite values."
+        )
+
+    if copy:
+        return np.array(
+            array,
+            dtype=np.float64,
+            copy=True,
+        )
+
+    return array.astype(
+        np.float64,
+        copy=False,
+    )
+
+
+def validate_coordinate_matrix(
+    coordinates: Any,
+    *,
+    name: Optional[str] = None,
+    minimum_rows: int = 1,
+    allow_empty: bool = False,
+    require_finite: bool = True,
+    copy: bool = False,
+) -> FloatArray:
+    """
+    Validate a matrix of three-dimensional coordinates.
+
+    Parameters
+    ----------
+    coordinates : Any
+        Coordinate collection convertible to an ``N × 3`` array.
+    name : str, optional
+        User-facing name used in validation messages.
+    minimum_rows : int, optional
+        Minimum number of coordinate rows.
+    allow_empty : bool, optional
+        Whether an empty ``(0, 3)`` array is accepted.
+    require_finite : bool, optional
+        Whether NaN and infinite values should be rejected.
+    copy : bool, optional
+        Whether a new array must always be returned.
+
+    Returns
+    -------
+    numpy.ndarray
+        Two-dimensional ``float64`` array with shape ``(N, 3)``.
+
+    Raises
+    ------
+    TypeError
+        If the value is not numeric or ``minimum_rows`` is invalid.
+    ValueError
+        If the array shape or numerical values are invalid.
+    """
+
+    value_name = (
+        str(name).strip()
+        if name is not None
+        else "Coordinate matrix"
+    )
+
+    if not value_name:
+        value_name = "Coordinate matrix"
+
+    if isinstance(
+        minimum_rows,
+        (
+            bool,
+            np.bool_,
+        ),
+    ) or not isinstance(
+        minimum_rows,
+        (
+            int,
+            np.integer,
+        ),
+    ):
+        raise TypeError(
+            "minimum_rows must be an integer."
+        )
+
+    minimum_rows = int(
+        minimum_rows
+    )
+
+    if minimum_rows < 0:
+        raise ValueError(
+            "minimum_rows cannot be negative."
+        )
+
+    try:
+        array = np.asarray(
+            coordinates,
+            dtype=np.float64,
+        )
+
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+    ) as error:
+        raise TypeError(
+            f"{value_name} must be convertible "
+            "to a numeric N × 3 array."
+        ) from error
+
+    if array.ndim == 1:
+        if array.size == 0:
+            array = np.empty(
+                (
+                    0,
+                    3,
+                ),
+                dtype=np.float64,
+            )
+
+        elif array.size == 3:
+            array = array.reshape(
+                1,
+                3,
+            )
+
+        else:
+            raise ValueError(
+                f"{value_name} must have shape "
+                f"(N, 3); received {array.shape}."
+            )
+
+    elif array.ndim != 2:
+        raise ValueError(
+            f"{value_name} must be two-dimensional; "
+            f"received an array with {array.ndim} dimensions."
+        )
+
+    if array.shape[1] != 3:
+        raise ValueError(
+            f"{value_name} must have exactly "
+            f"three columns; received shape {array.shape}."
+        )
+
+    row_count = int(
+        array.shape[0]
+    )
+
+    if row_count == 0 and not allow_empty:
+        raise ValueError(
+            f"{value_name} cannot be empty."
+        )
+
+    effective_minimum = (
+        0
+        if allow_empty
+        else minimum_rows
+    )
+
+    if row_count < effective_minimum:
+        raise ValueError(
+            f"{value_name} must contain at least "
+            f"{effective_minimum} coordinate rows; "
+            f"received {row_count}."
+        )
+
+    if require_finite and not np.all(
+        np.isfinite(
+            array
+        )
+    ):
+        raise ValueError(
+            f"{value_name} contains NaN or "
+            "infinite values."
+        )
+
+    if copy:
+        return np.array(
+            array,
+            dtype=np.float64,
+            copy=True,
+        )
+
+    return array.astype(
+        np.float64,
+        copy=False,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Coordinate conversion
+# -----------------------------------------------------------------------------
+
+def as_coordinate(
+    value: Coordinate,
+    *,
+    scene: bool = True,
+    name: Optional[str] = None,
+    require_finite: bool = True,
+    copy: bool = False,
+) -> FloatArray:
+    """
+    Convert a coordinate-like object to a validated Cartesian vector.
+
+    Parameters
+    ----------
+    value : Coordinate
+        Coordinate-like object. Supported inputs include:
+
+        - lists, tuples and NumPy arrays;
+        - objects exposing ``scene_coord``;
+        - objects exposing ``coord``;
+        - objects exposing ``coordinate`` or ``position``;
+        - objects exposing numeric ``x``, ``y`` and ``z`` attributes.
+    scene : bool, optional
+        Whether ``scene_coord`` should be preferred over ``coord``.
+    name : str, optional
+        User-facing name used in validation messages.
+    require_finite : bool, optional
+        Whether NaN and infinite values should be rejected.
+    copy : bool, optional
+        Whether a new array must always be returned.
+
+    Returns
+    -------
+    numpy.ndarray
+        Coordinate array with shape ``(3,)`` and dtype ``float64``.
+
+    Raises
+    ------
+    TypeError
+        If no coordinate representation can be extracted.
+    ValueError
+        If the extracted coordinate is invalid.
+
+    Examples
+    --------
+    >>> as_coordinate((1, 2, 3))
+    array([1., 2., 3.])
+
+    >>> as_coordinate(atom)
+    array([12.4, 18.1,  7.3])
+    """
+
+    if value is None:
+        raise TypeError(
+            f"{_coordinate_error_prefix(name)} "
+            "cannot be None."
+        )
+
+    extracted_value = (
+        _extract_coordinate_attribute(
+            value,
+            scene=scene,
+        )
+    )
+
+    if extracted_value is not None:
+        return validate_coordinate(
+            extracted_value,
+            name=name,
+            require_finite=(
+                require_finite
+            ),
+            copy=copy,
+        )
+
+    xyz_coordinate = (
+        _extract_xyz_attributes(
+            value
+        )
+    )
+
+    if xyz_coordinate is not None:
+        return validate_coordinate(
+            xyz_coordinate,
+            name=name,
+            require_finite=(
+                require_finite
+            ),
+            copy=copy,
+        )
+
+    try:
+        return validate_coordinate(
+            value,
+            name=name,
+            require_finite=(
+                require_finite
+            ),
+            copy=copy,
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ) as error:
+        raise TypeError(
+            f"{_coordinate_error_prefix(name)} "
+            "could not be extracted from "
+            f"{type(value).__name__}."
+        ) from error
+
+
+def as_coordinate_matrix(
+    values: CoordinateCollection,
+    *,
+    scene: bool = True,
+    name: Optional[str] = None,
+    minimum_rows: int = 1,
+    allow_empty: bool = False,
+    require_finite: bool = True,
+    copy: bool = False,
+) -> FloatArray:
+    """
+    Convert coordinate-like values to a validated ``N × 3`` matrix.
+
+    Parameters
+    ----------
+    values : CoordinateCollection
+        Collection of coordinates or object exposing coordinate arrays.
+        Supported inputs include:
+
+        - NumPy ``N × 3`` arrays;
+        - lists or tuples of coordinates;
+        - atom collections exposing ``scene_coords`` or ``coords``;
+        - iterables of atom-like objects.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    name : str, optional
+        User-facing name used in validation messages.
+    minimum_rows : int, optional
+        Minimum accepted number of coordinates.
+    allow_empty : bool, optional
+        Whether an empty coordinate matrix is accepted.
+    require_finite : bool, optional
+        Whether NaN and infinite values should be rejected.
+    copy : bool, optional
+        Whether a new matrix must always be returned.
+
+    Returns
+    -------
+    numpy.ndarray
+        Coordinate matrix with shape ``(N, 3)`` and dtype ``float64``.
+
+    Raises
+    ------
+    TypeError
+        If coordinates cannot be extracted.
+    ValueError
+        If the resulting coordinate matrix is invalid.
+    """
+
+    if values is None:
+        raise TypeError(
+            f"{name or 'Coordinate collection'} "
+            "cannot be None."
+        )
+
+    extracted_values = (
+        _extract_coordinate_collection_attribute(
+            values,
+            scene=scene,
+        )
+    )
+
+    if extracted_values is not None:
+        return validate_coordinate_matrix(
+            extracted_values,
+            name=name,
+            minimum_rows=minimum_rows,
+            allow_empty=allow_empty,
+            require_finite=(
+                require_finite
+            ),
+            copy=copy,
+        )
+
+    try:
+        return validate_coordinate_matrix(
+            values,
+            name=name,
+            minimum_rows=minimum_rows,
+            allow_empty=allow_empty,
+            require_finite=(
+                require_finite
+            ),
+            copy=copy,
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        pass
+
+    if isinstance(
+        values,
+        (
+            str,
+            bytes,
+            bytearray,
+        ),
+    ):
+        raise TypeError(
+            f"{name or 'Coordinate collection'} "
+            "cannot be created from a string-like object."
+        )
+
+    try:
+        value_list = list(
+            values
+        )
+
+    except TypeError as error:
+        raise TypeError(
+            f"{name or 'Coordinate collection'} "
+            "must be an iterable of coordinate-like objects."
+        ) from error
+
+    if not value_list:
+        return validate_coordinate_matrix(
+            np.empty(
+                (
+                    0,
+                    3,
+                ),
+                dtype=np.float64,
+            ),
+            name=name,
+            minimum_rows=minimum_rows,
+            allow_empty=allow_empty,
+            require_finite=(
+                require_finite
+            ),
+            copy=copy,
+        )
+
+    converted_coordinates: List[
+        FloatArray
+    ] = []
+
+    for index, item in enumerate(
+        value_list
+    ):
+        try:
+            converted_coordinate = (
+                as_coordinate(
+                    item,
+                    scene=scene,
+                    name=(
+                        f"{name or 'Coordinate collection'}"
+                        f"[{index}]"
+                    ),
+                    require_finite=(
+                        require_finite
+                    ),
+                    copy=False,
+                )
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ) as error:
+            raise TypeError(
+                f"Could not convert item {index} "
+                f"of {name or 'coordinate collection'} "
+                "to a three-dimensional coordinate."
+            ) from error
+
+        converted_coordinates.append(
+            converted_coordinate
+        )
+
+    matrix = np.vstack(
+        converted_coordinates
+    ).astype(
+        np.float64,
+        copy=False,
+    )
+
+    return validate_coordinate_matrix(
+        matrix,
+        name=name,
+        minimum_rows=minimum_rows,
+        allow_empty=allow_empty,
+        require_finite=(
+            require_finite
+        ),
+        copy=copy,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Atom-coordinate extraction
+# -----------------------------------------------------------------------------
+
+def get_atom_coordinate(
+    atom: Any,
+    *,
+    scene: bool = True,
+    name: Optional[str] = None,
+    require_finite: bool = True,
+    copy: bool = False,
+) -> FloatArray:
+    """
+    Return the Cartesian coordinate of an atom-like object.
+
+    Parameters
+    ----------
+    atom : Any
+        Atom-like object or coordinate-like value.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    name : str, optional
+        User-facing atom name used in validation messages.
+    require_finite : bool, optional
+        Whether NaN and infinite coordinates should be rejected.
+    copy : bool, optional
+        Whether a new coordinate array must be returned.
+
+    Returns
+    -------
+    numpy.ndarray
+        Atom coordinate with shape ``(3,)``.
+
+    Raises
+    ------
+    TypeError
+        If the atom is missing or has no usable coordinate.
+    ValueError
+        If the extracted coordinate is invalid.
+
+    Notes
+    -----
+    This function intentionally accepts plain coordinates as well as atom-like
+    objects. This makes geometry functions testable outside ChimeraX.
+    """
+
+    if atom is None:
+        raise TypeError(
+            f"{name or 'Atom'} cannot be None."
+        )
+
+    atom_name = name
+
+    if atom_name is None:
+        for attribute_name in (
+            "atomspec",
+            "name",
+        ):
+            if not hasattr(
+                atom,
+                attribute_name,
+            ):
+                continue
+
+            try:
+                attribute_value = getattr(
+                    atom,
+                    attribute_name,
+                )
+
+            except Exception:
+                continue
+
+            if attribute_value:
+                atom_name = (
+                    f"Atom {attribute_value}"
+                )
+                break
+
+    if atom_name is None:
+        atom_name = "Atom coordinate"
+
+    try:
+        return as_coordinate(
+            atom,
+            scene=scene,
+            name=atom_name,
+            require_finite=(
+                require_finite
+            ),
+            copy=copy,
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ) as error:
+        raise TypeError(
+            f"Could not obtain coordinates "
+            f"from {atom_name}."
+        ) from error
+
+
+def get_coordinates(
+    objects: Any,
+    *,
+    scene: bool = True,
+    name: Optional[str] = None,
+    minimum_rows: int = 1,
+    allow_empty: bool = False,
+    require_finite: bool = True,
+    copy: bool = False,
+    ignore_none: bool = False,
+) -> FloatArray:
+    """
+    Return coordinates from atoms, atom collections or coordinate values.
+
+    Parameters
+    ----------
+    objects : Any
+        Coordinate matrix, atom collection, iterable of atoms, or iterable of
+        coordinate-like values.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    name : str, optional
+        User-facing collection name used in validation messages.
+    minimum_rows : int, optional
+        Minimum accepted number of coordinate rows.
+    allow_empty : bool, optional
+        Whether an empty result is accepted.
+    require_finite : bool, optional
+        Whether NaN and infinite values should be rejected.
+    copy : bool, optional
+        Whether a new matrix must always be returned.
+    ignore_none : bool, optional
+        Whether ``None`` items in iterables should be skipped.
+
+    Returns
+    -------
+    numpy.ndarray
+        Coordinate matrix with shape ``(N, 3)``.
+
+    Raises
+    ------
+    TypeError
+        If coordinates cannot be extracted.
+    ValueError
+        If the resulting coordinate matrix is invalid.
+
+    Examples
+    --------
+    >>> get_coordinates([[0, 0, 0], [1, 1, 1]])
+    array([[0., 0., 0.],
+           [1., 1., 1.]])
+
+    >>> get_coordinates(atoms)
+    array([[...], [...], ...])
+    """
+
+    collection_name = (
+        str(name).strip()
+        if name is not None
+        else "Coordinates"
+    )
+
+    if not collection_name:
+        collection_name = "Coordinates"
+
+    if objects is None:
+        if allow_empty:
+            return validate_coordinate_matrix(
+                np.empty(
+                    (
+                        0,
+                        3,
+                    ),
+                    dtype=np.float64,
+                ),
+                name=collection_name,
+                minimum_rows=minimum_rows,
+                allow_empty=True,
+                require_finite=(
+                    require_finite
+                ),
+                copy=copy,
+            )
+
+        raise TypeError(
+            f"{collection_name} cannot be None."
+        )
+
+    extracted_values = (
+        _extract_coordinate_collection_attribute(
+            objects,
+            scene=scene,
+        )
+    )
+
+    if extracted_values is not None:
+        return validate_coordinate_matrix(
+            extracted_values,
+            name=collection_name,
+            minimum_rows=minimum_rows,
+            allow_empty=allow_empty,
+            require_finite=(
+                require_finite
+            ),
+            copy=copy,
+        )
+
+    try:
+        return as_coordinate_matrix(
+            objects,
+            scene=scene,
+            name=collection_name,
+            minimum_rows=minimum_rows,
+            allow_empty=allow_empty,
+            require_finite=(
+                require_finite
+            ),
+            copy=copy,
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ) as direct_error:
+        if isinstance(
+            objects,
+            (
+                str,
+                bytes,
+                bytearray,
+            ),
+        ):
+            raise TypeError(
+                f"{collection_name} cannot be "
+                "extracted from a string-like object."
+            ) from direct_error
+
+    try:
+        object_list = list(
+            objects
+        )
+
+    except TypeError as error:
+        raise TypeError(
+            f"{collection_name} must be a "
+            "coordinate collection or iterable "
+            "of atom-like objects."
+        ) from error
+
+    coordinates: List[
+        FloatArray
+    ] = []
+
+    for index, object_value in enumerate(
+        object_list
+    ):
+        if object_value is None:
+            if ignore_none:
+                continue
+
+            raise TypeError(
+                f"{collection_name}[{index}] "
+                "is None."
+            )
+
+        try:
+            coordinate = get_atom_coordinate(
+                object_value,
+                scene=scene,
+                name=(
+                    f"{collection_name}[{index}]"
+                ),
+                require_finite=(
+                    require_finite
+                ),
+                copy=False,
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ) as error:
+            raise TypeError(
+                f"Could not extract a coordinate "
+                f"from {collection_name}[{index}]."
+            ) from error
+
+        coordinates.append(
+            coordinate
+        )
+
+    if coordinates:
+        coordinate_matrix = np.vstack(
+            coordinates
+        )
+
+    else:
+        coordinate_matrix = np.empty(
+            (
+                0,
+                3,
+            ),
+            dtype=np.float64,
+        )
+
+    return validate_coordinate_matrix(
+        coordinate_matrix,
+        name=collection_name,
+        minimum_rows=minimum_rows,
+        allow_empty=allow_empty,
+        require_finite=(
+            require_finite
+        ),
+        copy=copy,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Public module interface
+# -----------------------------------------------------------------------------
+
+_SECTION_3_PUBLIC_NAMES = [
+    "as_coordinate",
+    "as_coordinate_matrix",
+    "validate_coordinate",
+    "validate_coordinate_matrix",
+    "get_atom_coordinate",
+    "get_coordinates",
+]
+
+for public_name in _SECTION_3_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(
+            public_name
+        )
+
+
+# =============================================================================
+# End of Section 3
+# =============================================================================
+
+
+
+
+# =============================================================================
+# Section 4 — Vector Operations
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Vector construction
+# -----------------------------------------------------------------------------
+
+def vector_between(
+    start: Coordinate,
+    end: Coordinate,
+    *,
+    scene: bool = True,
+    normalize_result: bool = False,
+    tolerance: float = DEFAULT_TOLERANCE,
+    copy: bool = False,
+) -> Vector3D:
+    """
+    Return the vector directed from one point to another.
+
+    The vector is calculated as:
+
+    ``end - start``
+
+    Parameters
+    ----------
+    start : Coordinate
+        Starting point or coordinate-like object.
+    end : Coordinate
+        Ending point or coordinate-like object.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred when
+        coordinate-like objects expose both ``scene_coord`` and ``coord``.
+    normalize_result : bool, optional
+        Whether the resulting vector should be normalized.
+    tolerance : float, optional
+        Minimum accepted vector norm when ``normalize_result=True``.
+    copy : bool, optional
+        Whether a new array must always be returned.
+
+    Returns
+    -------
+    numpy.ndarray
+        Vector with shape ``(3,)`` and dtype ``float64``.
+
+    Raises
+    ------
+    TypeError
+        If either input cannot be converted to a coordinate.
+    ValueError
+        If normalization is requested for a near-zero vector.
+
+    Examples
+    --------
+    >>> vector_between([0, 0, 0], [1, 2, 3])
+    array([1., 2., 3.])
+
+    >>> vector_between(
+    ...     [0, 0, 0],
+    ...     [2, 0, 0],
+    ...     normalize_result=True,
+    ... )
+    array([1., 0., 0.])
+    """
+
+    start_coordinate = as_coordinate(
+        start,
+        scene=scene,
+        name="Start coordinate",
+        copy=False,
+    )
+
+    end_coordinate = as_coordinate(
+        end,
+        scene=scene,
+        name="End coordinate",
+        copy=False,
+    )
+
+    result = (
+        end_coordinate
+        - start_coordinate
+    ).astype(
+        np.float64,
+        copy=False,
+    )
+
+    if normalize_result:
+        result = unit_vector(
+            result,
+            tolerance=tolerance,
+            copy=False,
+        )
+
+    if copy:
+        return np.array(
+            result,
+            dtype=np.float64,
+            copy=True,
+        )
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# Vector magnitude and normalization
+# -----------------------------------------------------------------------------
+
+def vector_norm(
+    vector: Coordinate,
+    *,
+    squared: bool = False,
+    scene: bool = True,
+) -> float:
+    """
+    Return the Euclidean norm of a three-dimensional vector.
+
+    Parameters
+    ----------
+    vector : Coordinate
+        Vector or coordinate-like object.
+    squared : bool, optional
+        Whether the squared norm should be returned without calculating the
+        square root.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+
+    Returns
+    -------
+    float
+        Vector magnitude or squared magnitude.
+
+    Examples
+    --------
+    >>> vector_norm([3, 4, 0])
+    5.0
+
+    >>> vector_norm([3, 4, 0], squared=True)
+    25.0
+    """
+
+    vector_array = as_coordinate(
+        vector,
+        scene=scene,
+        name="Vector",
+        copy=False,
+    )
+
+    squared_norm = float(
+        np.dot(
+            vector_array,
+            vector_array,
+        )
+    )
+
+    if squared:
+        return squared_norm
+
+    return float(
+        math.sqrt(
+            max(
+                squared_norm,
+                0.0,
+            )
+        )
+    )
+
+
+def unit_vector(
+    vector: Coordinate,
+    *,
+    tolerance: float = DEFAULT_TOLERANCE,
+    scene: bool = True,
+    copy: bool = False,
+) -> Vector3D:
+    """
+    Return the normalized form of a three-dimensional vector.
+
+    Parameters
+    ----------
+    vector : Coordinate
+        Vector or coordinate-like object.
+    tolerance : float, optional
+        Minimum norm required for normalization.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    copy : bool, optional
+        Whether a new array must always be returned.
+
+    Returns
+    -------
+    numpy.ndarray
+        Unit vector with shape ``(3,)``.
+
+    Raises
+    ------
+    TypeError
+        If ``tolerance`` is not numeric.
+    ValueError
+        If ``tolerance`` is negative or the vector norm is too small.
+
+    Notes
+    -----
+    This function provides the specialized public interface for vector
+    normalization in ``geometry.py``. The imported ``normalize()`` function
+    remains available for compatibility with ``utils.py``.
+    """
+
+    if isinstance(
+        tolerance,
+        (
+            bool,
+            np.bool_,
+        ),
+    ):
+        raise TypeError(
+            "tolerance must be a numeric value."
+        )
+
+    try:
+        numeric_tolerance = float(
+            tolerance
+        )
+
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+    ) as error:
+        raise TypeError(
+            "tolerance must be a numeric value."
+        ) from error
+
+    if not math.isfinite(
+        numeric_tolerance
+    ):
+        raise ValueError(
+            "tolerance must be finite."
+        )
+
+    if numeric_tolerance < 0.0:
+        raise ValueError(
+            "tolerance cannot be negative."
+        )
+
+    vector_array = as_coordinate(
+        vector,
+        scene=scene,
+        name="Vector",
+        copy=False,
+    )
+
+    magnitude = vector_norm(
+        vector_array,
+        squared=False,
+        scene=False,
+    )
+
+    if magnitude <= numeric_tolerance:
+        raise ValueError(
+            "Cannot normalize a zero or near-zero "
+            f"vector with norm {magnitude:.6g}."
+        )
+
+    normalized_vector = (
+        vector_array
+        / magnitude
+    ).astype(
+        np.float64,
+        copy=False,
+    )
+
+    if copy:
+        return np.array(
+            normalized_vector,
+            dtype=np.float64,
+            copy=True,
+        )
+
+    return normalized_vector
+
+
+# -----------------------------------------------------------------------------
+# Vector products
+# -----------------------------------------------------------------------------
+
+def dot_product(
+    vector_1: Coordinate,
+    vector_2: Coordinate,
+    *,
+    scene: bool = True,
+) -> float:
+    """
+    Return the scalar dot product of two three-dimensional vectors.
+
+    Parameters
+    ----------
+    vector_1 : Coordinate
+        First vector.
+    vector_2 : Coordinate
+        Second vector.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+
+    Returns
+    -------
+    float
+        Scalar dot product.
+
+    Examples
+    --------
+    >>> dot_product([1, 0, 0], [0, 1, 0])
+    0.0
+
+    >>> dot_product([1, 2, 3], [4, 5, 6])
+    32.0
+    """
+
+    first_vector = as_coordinate(
+        vector_1,
+        scene=scene,
+        name="First vector",
+        copy=False,
+    )
+
+    second_vector = as_coordinate(
+        vector_2,
+        scene=scene,
+        name="Second vector",
+        copy=False,
+    )
+
+    return float(
+        np.dot(
+            first_vector,
+            second_vector,
+        )
+    )
+
+
+def cross_product(
+    vector_1: Coordinate,
+    vector_2: Coordinate,
+    *,
+    scene: bool = True,
+    normalize_result: bool = False,
+    tolerance: float = DEFAULT_TOLERANCE,
+    copy: bool = False,
+) -> Vector3D:
+    """
+    Return the cross product of two three-dimensional vectors.
+
+    Parameters
+    ----------
+    vector_1 : Coordinate
+        First vector.
+    vector_2 : Coordinate
+        Second vector.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    normalize_result : bool, optional
+        Whether the resulting vector should be normalized.
+    tolerance : float, optional
+        Minimum norm accepted when normalization is requested.
+    copy : bool, optional
+        Whether a new array must always be returned.
+
+    Returns
+    -------
+    numpy.ndarray
+        Cross-product vector with shape ``(3,)``.
+
+    Raises
+    ------
+    ValueError
+        If normalization is requested for parallel or near-parallel vectors.
+
+    Examples
+    --------
+    >>> cross_product([1, 0, 0], [0, 1, 0])
+    array([0., 0., 1.])
+    """
+
+    first_vector = as_coordinate(
+        vector_1,
+        scene=scene,
+        name="First vector",
+        copy=False,
+    )
+
+    second_vector = as_coordinate(
+        vector_2,
+        scene=scene,
+        name="Second vector",
+        copy=False,
+    )
+
+    result = np.cross(
+        first_vector,
+        second_vector,
+    ).astype(
+        np.float64,
+        copy=False,
+    )
+
+    if normalize_result:
+        result = unit_vector(
+            result,
+            tolerance=tolerance,
+            scene=False,
+            copy=False,
+        )
+
+    if copy:
+        return np.array(
+            result,
+            dtype=np.float64,
+            copy=True,
+        )
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# Vector projection and rejection
+# -----------------------------------------------------------------------------
+
+def project_vector(
+    vector: Coordinate,
+    onto: Coordinate,
+    *,
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    copy: bool = False,
+) -> Vector3D:
+    """
+    Project one vector onto another vector.
+
+    Parameters
+    ----------
+    vector : Coordinate
+        Vector being projected.
+    onto : Coordinate
+        Vector defining the projection direction.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Minimum squared norm accepted for the projection direction.
+    copy : bool, optional
+        Whether a new array must always be returned.
+
+    Returns
+    -------
+    numpy.ndarray
+        Component of ``vector`` parallel to ``onto``.
+
+    Raises
+    ------
+    TypeError
+        If ``tolerance`` is not numeric.
+    ValueError
+        If ``onto`` is zero or near zero.
+
+    Notes
+    -----
+    The projection is calculated as:
+
+    ``dot(vector, onto) / dot(onto, onto) * onto``
+
+    Examples
+    --------
+    >>> project_vector([2, 2, 0], [1, 0, 0])
+    array([2., 0., 0.])
+    """
+
+    vector_array = as_coordinate(
+        vector,
+        scene=scene,
+        name="Projected vector",
+        copy=False,
+    )
+
+    projection_axis = as_coordinate(
+        onto,
+        scene=scene,
+        name="Projection vector",
+        copy=False,
+    )
+
+    try:
+        numeric_tolerance = float(
+            tolerance
+        )
+
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+    ) as error:
+        raise TypeError(
+            "tolerance must be a numeric value."
+        ) from error
+
+    if not math.isfinite(
+        numeric_tolerance
+    ):
+        raise ValueError(
+            "tolerance must be finite."
+        )
+
+    if numeric_tolerance < 0.0:
+        raise ValueError(
+            "tolerance cannot be negative."
+        )
+
+    axis_squared_norm = dot_product(
+        projection_axis,
+        projection_axis,
+        scene=False,
+    )
+
+    if axis_squared_norm <= (
+        numeric_tolerance ** 2
+    ):
+        raise ValueError(
+            "Cannot project onto a zero or "
+            "near-zero vector."
+        )
+
+    scalar_component = (
+        dot_product(
+            vector_array,
+            projection_axis,
+            scene=False,
+        )
+        / axis_squared_norm
+    )
+
+    projection = (
+        scalar_component
+        * projection_axis
+    ).astype(
+        np.float64,
+        copy=False,
+    )
+
+    if copy:
+        return np.array(
+            projection,
+            dtype=np.float64,
+            copy=True,
+        )
+
+    return projection
+
+
+def reject_vector(
+    vector: Coordinate,
+    from_vector: Coordinate,
+    *,
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    copy: bool = False,
+) -> Vector3D:
+    """
+    Return the component of a vector perpendicular to another vector.
+
+    Vector rejection is calculated as:
+
+    ``vector - project_vector(vector, from_vector)``
+
+    Parameters
+    ----------
+    vector : Coordinate
+        Vector being decomposed.
+    from_vector : Coordinate
+        Vector defining the parallel direction to remove.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Minimum norm accepted for ``from_vector``.
+    copy : bool, optional
+        Whether a new array must always be returned.
+
+    Returns
+    -------
+    numpy.ndarray
+        Component of ``vector`` perpendicular to ``from_vector``.
+
+    Raises
+    ------
+    ValueError
+        If ``from_vector`` is zero or near zero.
+
+    Examples
+    --------
+    >>> reject_vector([2, 2, 0], [1, 0, 0])
+    array([0., 2., 0.])
+    """
+
+    vector_array = as_coordinate(
+        vector,
+        scene=scene,
+        name="Rejected vector",
+        copy=False,
+    )
+
+    parallel_component = project_vector(
+        vector_array,
+        from_vector,
+        scene=scene,
+        tolerance=tolerance,
+        copy=False,
+    )
+
+    rejection = (
+        vector_array
+        - parallel_component
+    ).astype(
+        np.float64,
+        copy=False,
+    )
+
+    if copy:
+        return np.array(
+            rejection,
+            dtype=np.float64,
+            copy=True,
+        )
+
+    return rejection
+
+
+# -----------------------------------------------------------------------------
+# Point projection onto a line
+# -----------------------------------------------------------------------------
+
+def project_point_on_line(
+    point: Coordinate,
+    line_start: Coordinate,
+    line_end: Optional[Coordinate] = None,
+    *,
+    direction: Optional[Coordinate] = None,
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    clamp_to_segment: bool = False,
+    return_parameter: bool = False,
+    copy: bool = False,
+) -> Union[
+    Vector3D,
+    Tuple[
+        Vector3D,
+        float,
+    ],
+]:
+    """
+    Project a point orthogonally onto a three-dimensional line.
+
+    The line may be defined using either:
+
+    - ``line_start`` and ``line_end``; or
+    - ``line_start`` and ``direction``.
+
+    Parameters
+    ----------
+    point : Coordinate
+        Point to project.
+    line_start : Coordinate
+        Point located on the line.
+    line_end : Coordinate, optional
+        Second point defining the line.
+    direction : Coordinate, optional
+        Explicit line-direction vector. Exactly one of ``line_end`` and
+        ``direction`` must be provided.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Minimum accepted norm for the line direction.
+    clamp_to_segment : bool, optional
+        Whether the projection parameter should be restricted to the interval
+        from zero to one. This converts projection onto an infinite line into
+        projection onto the finite segment from ``line_start`` to
+        ``line_end``.
+    return_parameter : bool, optional
+        Whether the scalar line parameter should also be returned.
+    copy : bool, optional
+        Whether a new coordinate array must always be returned.
+
+    Returns
+    -------
+    numpy.ndarray
+        Projected coordinate.
+
+    tuple
+        ``(projected_coordinate, parameter)`` when
+        ``return_parameter=True``.
+
+    Raises
+    ------
+    ValueError
+        If neither or both line definitions are supplied, if the direction is
+        near zero, or if segment clamping is requested without ``line_end``.
+
+    Notes
+    -----
+    The projected point is calculated as:
+
+    ``line_start + t * line_direction``
+
+    where:
+
+    ``t = dot(point - line_start, line_direction) / |line_direction|²``
+
+    For a line defined by two points:
+
+    - ``t = 0`` corresponds to ``line_start``;
+    - ``t = 1`` corresponds to ``line_end``;
+    - values outside this interval lie beyond the finite segment.
+
+    Examples
+    --------
+    >>> project_point_on_line(
+    ...     [1, 2, 0],
+    ...     [0, 0, 0],
+    ...     [3, 0, 0],
+    ... )
+    array([1., 0., 0.])
+
+    >>> project_point_on_line(
+    ...     [5, 2, 0],
+    ...     [0, 0, 0],
+    ...     [3, 0, 0],
+    ...     clamp_to_segment=True,
+    ... )
+    array([3., 0., 0.])
+    """
+
+    has_line_end = (
+        line_end is not None
+    )
+
+    has_direction = (
+        direction is not None
+    )
+
+    if has_line_end == has_direction:
+        raise ValueError(
+            "Provide exactly one of line_end "
+            "or direction."
+        )
+
+    if (
+        clamp_to_segment
+        and not has_line_end
+    ):
+        raise ValueError(
+            "clamp_to_segment=True requires "
+            "line_end to define a finite segment."
+        )
+
+    point_coordinate = as_coordinate(
+        point,
+        scene=scene,
+        name="Projected point",
+        copy=False,
+    )
+
+    start_coordinate = as_coordinate(
+        line_start,
+        scene=scene,
+        name="Line start",
+        copy=False,
+    )
+
+    if has_line_end:
+        end_coordinate = as_coordinate(
+            line_end,
+            scene=scene,
+            name="Line end",
+            copy=False,
+        )
+
+        line_direction = vector_between(
+            start_coordinate,
+            end_coordinate,
+            scene=False,
+            normalize_result=False,
+            copy=False,
+        )
+
+    else:
+        line_direction = as_coordinate(
+            direction,
+            scene=scene,
+            name="Line direction",
+            copy=False,
+        )
+
+    try:
+        numeric_tolerance = float(
+            tolerance
+        )
+
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+    ) as error:
+        raise TypeError(
+            "tolerance must be a numeric value."
+        ) from error
+
+    if not math.isfinite(
+        numeric_tolerance
+    ):
+        raise ValueError(
+            "tolerance must be finite."
+        )
+
+    if numeric_tolerance < 0.0:
+        raise ValueError(
+            "tolerance cannot be negative."
+        )
+
+    direction_squared_norm = (
+        vector_norm(
+            line_direction,
+            squared=True,
+            scene=False,
+        )
+    )
+
+    if direction_squared_norm <= (
+        numeric_tolerance ** 2
+    ):
+        raise ValueError(
+            "Cannot project onto a line with "
+            "a zero or near-zero direction."
+        )
+
+    point_offset = vector_between(
+        start_coordinate,
+        point_coordinate,
+        scene=False,
+        normalize_result=False,
+        copy=False,
+    )
+
+    parameter = (
+        dot_product(
+            point_offset,
+            line_direction,
+            scene=False,
+        )
+        / direction_squared_norm
+    )
+
+    if clamp_to_segment:
+        parameter = float(
+            np.clip(
+                parameter,
+                0.0,
+                1.0,
+            )
+        )
+
+    projected_coordinate = (
+        start_coordinate
+        + parameter
+        * line_direction
+    ).astype(
+        np.float64,
+        copy=False,
+    )
+
+    if copy:
+        projected_coordinate = np.array(
+            projected_coordinate,
+            dtype=np.float64,
+            copy=True,
+        )
+
+    if return_parameter:
+        return (
+            projected_coordinate,
+            float(parameter),
+        )
+
+    return projected_coordinate
+
+
+# -----------------------------------------------------------------------------
+# Public module interface
+# -----------------------------------------------------------------------------
+
+_SECTION_4_PUBLIC_NAMES = [
+    "vector_between",
+    "vector_norm",
+    "unit_vector",
+    "dot_product",
+    "cross_product",
+    "project_vector",
+    "reject_vector",
+    "project_point_on_line",
+]
+
+for public_name in _SECTION_4_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(
+            public_name
+        )
+
+
+# =============================================================================
+# End of Section 4
+# =============================================================================
+
+
+# =============================================================================
+# Section 5 — Distance Operations
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Point and atom distances
+# -----------------------------------------------------------------------------
+
+def squared_distance(
+    point_1: Coordinate,
+    point_2: Coordinate,
+    *,
+    scene: bool = True,
+) -> float:
+    """
+    Return the squared Euclidean distance between two points.
+
+    Parameters
+    ----------
+    point_1 : Coordinate
+        First point or coordinate-like object.
+    point_2 : Coordinate
+        Second point or coordinate-like object.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred when the
+        inputs expose both ``scene_coord`` and ``coord``.
+
+    Returns
+    -------
+    float
+        Squared Euclidean distance between the points.
+
+    Notes
+    -----
+    This function avoids calculating a square root and is therefore useful
+    for distance comparisons and cutoff screening.
+
+    The squared distance is calculated as:
+
+    ``dot(point_2 - point_1, point_2 - point_1)``
+
+    Examples
+    --------
+    >>> squared_distance([0, 0, 0], [3, 4, 0])
+    25.0
+    """
+
+    first_coordinate = as_coordinate(
+        point_1,
+        scene=scene,
+        name="First point",
+        copy=False,
+    )
+
+    second_coordinate = as_coordinate(
+        point_2,
+        scene=scene,
+        name="Second point",
+        copy=False,
+    )
+
+    displacement = (
+        second_coordinate
+        - first_coordinate
+    )
+
+    result = float(
+        np.dot(
+            displacement,
+            displacement,
+        )
+    )
+
+    # Floating-point roundoff should not produce a physically meaningful
+    # negative squared distance. The maximum protects against values such as
+    # -1e-16 arising from future alternative implementations.
+    return max(
+        result,
+        0.0,
+    )
+
+
+def atom_distance(
+    atom_1: Any,
+    atom_2: Any,
+    *,
+    scene: bool = True,
+    squared: bool = False,
+) -> float:
+    """
+    Return the Euclidean distance between two atom-like objects.
+
+    Parameters
+    ----------
+    atom_1 : Any
+        First atom-like object or coordinate-like value.
+    atom_2 : Any
+        Second atom-like object or coordinate-like value.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    squared : bool, optional
+        Whether the squared distance should be returned.
+
+    Returns
+    -------
+    float
+        Distance between the atoms. For molecular structures, the unit is
+        normally ångströms.
+
+    Raises
+    ------
+    TypeError
+        If either atom has no usable coordinate.
+    ValueError
+        If an extracted coordinate is invalid.
+
+    Notes
+    -----
+    Plain coordinate arrays are accepted to keep this function testable
+    outside ChimeraX.
+
+    Examples
+    --------
+    >>> atom_distance([0, 0, 0], [0, 0, 2])
+    2.0
+    """
+
+    first_coordinate = get_atom_coordinate(
+        atom_1,
+        scene=scene,
+        name="First atom",
+        copy=False,
+    )
+
+    second_coordinate = get_atom_coordinate(
+        atom_2,
+        scene=scene,
+        name="Second atom",
+        copy=False,
+    )
+
+    distance_squared = squared_distance(
+        first_coordinate,
+        second_coordinate,
+        scene=False,
+    )
+
+    if squared:
+        return distance_squared
+
+    return float(
+        math.sqrt(
+            distance_squared
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# Pairwise distance matrices
+# -----------------------------------------------------------------------------
+
+def distance_matrix(
+    points_1: CoordinateCollection,
+    points_2: Optional[
+        CoordinateCollection
+    ] = None,
+    *,
+    scene: bool = True,
+    squared: bool = False,
+    minimum_rows: int = 1,
+    allow_empty: bool = False,
+    copy: bool = False,
+) -> FloatArray:
+    """
+    Calculate pairwise distances between two coordinate collections.
+
+    Parameters
+    ----------
+    points_1 : CoordinateCollection
+        First coordinate collection containing ``N`` points.
+    points_2 : CoordinateCollection, optional
+        Second coordinate collection containing ``M`` points. When omitted,
+        distances are calculated between all pairs in ``points_1``.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    squared : bool, optional
+        Whether squared distances should be returned.
+    minimum_rows : int, optional
+        Minimum number of coordinates required in each collection.
+    allow_empty : bool, optional
+        Whether empty coordinate collections should be accepted.
+    copy : bool, optional
+        Whether a new result array must always be returned.
+
+    Returns
+    -------
+    numpy.ndarray
+        Distance matrix with shape ``(N, M)``. When ``points_2`` is omitted,
+        the result has shape ``(N, N)``.
+
+    Raises
+    ------
+    TypeError
+        If either collection cannot be converted to coordinates.
+    ValueError
+        If either coordinate matrix is invalid.
+
+    Notes
+    -----
+    The implementation uses NumPy broadcasting:
+
+    ``difference[i, j] = points_1[i] - points_2[j]``
+
+    This avoids explicit Python loops and is suitable for typical docking
+    analysis datasets.
+
+    Examples
+    --------
+    >>> distance_matrix(
+    ...     [[0, 0, 0], [1, 0, 0]],
+    ...     [[0, 1, 0], [2, 0, 0]],
+    ... )
+    array([[1.        , 2.        ],
+           [1.41421356, 1.        ]])
+    """
+
+    first_coordinates = get_coordinates(
+        points_1,
+        scene=scene,
+        name="First coordinate collection",
+        minimum_rows=minimum_rows,
+        allow_empty=allow_empty,
+        copy=False,
+    )
+
+    if points_2 is None:
+        second_coordinates = (
+            first_coordinates
+        )
+
+    else:
+        second_coordinates = get_coordinates(
+            points_2,
+            scene=scene,
+            name="Second coordinate collection",
+            minimum_rows=minimum_rows,
+            allow_empty=allow_empty,
+            copy=False,
+        )
+
+    differences = (
+        first_coordinates[:, np.newaxis, :]
+        - second_coordinates[np.newaxis, :, :]
+    )
+
+    squared_distances = np.einsum(
+        "ijk,ijk->ij",
+        differences,
+        differences,
+        optimize=True,
+    ).astype(
+        np.float64,
+        copy=False,
+    )
+
+    # Eliminate possible negative zero or negligible negative roundoff.
+    np.maximum(
+        squared_distances,
+        0.0,
+        out=squared_distances,
+    )
+
+    if squared:
+        result = squared_distances
+
+    else:
+        result = np.sqrt(
+            squared_distances
+        )
+
+    if copy:
+        return np.array(
+            result,
+            dtype=np.float64,
+            copy=True,
+        )
+
+    return result.astype(
+        np.float64,
+        copy=False,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Minimum distances and closest pairs
+# -----------------------------------------------------------------------------
+
+def closest_point_pair(
+    points_1: CoordinateCollection,
+    points_2: CoordinateCollection,
+    *,
+    scene: bool = True,
+    return_indices: bool = False,
+    return_distance: bool = False,
+    squared: bool = False,
+    copy: bool = False,
+) -> Union[
+    Tuple[
+        Vector3D,
+        Vector3D,
+    ],
+    Tuple[
+        Vector3D,
+        Vector3D,
+        float,
+    ],
+    Tuple[
+        Vector3D,
+        Vector3D,
+        Tuple[int, int],
+    ],
+    Tuple[
+        Vector3D,
+        Vector3D,
+        float,
+        Tuple[int, int],
+    ],
+]:
+    """
+    Return the closest pair of points from two coordinate collections.
+
+    Parameters
+    ----------
+    points_1 : CoordinateCollection
+        First non-empty coordinate collection.
+    points_2 : CoordinateCollection
+        Second non-empty coordinate collection.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    return_indices : bool, optional
+        Whether the source indices of the closest points should be returned.
+    return_distance : bool, optional
+        Whether the minimum distance should also be returned.
+    squared : bool, optional
+        Whether the returned distance should be squared. This option only
+        affects the value returned when ``return_distance=True``.
+    copy : bool, optional
+        Whether the returned coordinate arrays must be copied.
+
+    Returns
+    -------
+    tuple
+        By default, returns:
+
+        ``(closest_point_1, closest_point_2)``
+
+        With ``return_distance=True``:
+
+        ``(closest_point_1, closest_point_2, distance)``
+
+        With ``return_indices=True``:
+
+        ``(closest_point_1, closest_point_2, (index_1, index_2))``
+
+        With both options enabled:
+
+        ``(closest_point_1, closest_point_2, distance, (index_1, index_2))``
+
+    Raises
+    ------
+    TypeError
+        If either collection cannot be converted to coordinates.
+    ValueError
+        If either collection is empty or invalid.
+
+    Notes
+    -----
+    When multiple point pairs have the same minimum distance, NumPy's
+    row-major ordering selects the first pair.
+
+    Examples
+    --------
+    >>> closest_point_pair(
+    ...     [[0, 0, 0], [5, 0, 0]],
+    ...     [[2, 0, 0], [8, 0, 0]],
+    ...     return_distance=True,
+    ...     return_indices=True,
+    ... )
+    (array([0., 0., 0.]),
+     array([2., 0., 0.]),
+     2.0,
+     (0, 0))
+    """
+
+    first_coordinates = get_coordinates(
+        points_1,
+        scene=scene,
+        name="First coordinate collection",
+        minimum_rows=1,
+        allow_empty=False,
+        copy=False,
+    )
+
+    second_coordinates = get_coordinates(
+        points_2,
+        scene=scene,
+        name="Second coordinate collection",
+        minimum_rows=1,
+        allow_empty=False,
+        copy=False,
+    )
+
+    squared_distances = distance_matrix(
+        first_coordinates,
+        second_coordinates,
+        scene=False,
+        squared=True,
+        minimum_rows=1,
+        allow_empty=False,
+        copy=False,
+    )
+
+    flat_index = int(
+        np.argmin(
+            squared_distances
+        )
+    )
+
+    first_index, second_index = (
+        np.unravel_index(
+            flat_index,
+            squared_distances.shape,
+        )
+    )
+
+    first_index = int(
+        first_index
+    )
+
+    second_index = int(
+        second_index
+    )
+
+    first_point = first_coordinates[
+        first_index
+    ]
+
+    second_point = second_coordinates[
+        second_index
+    ]
+
+    if copy:
+        first_point = np.array(
+            first_point,
+            dtype=np.float64,
+            copy=True,
+        )
+
+        second_point = np.array(
+            second_point,
+            dtype=np.float64,
+            copy=True,
+        )
+
+    output: List[Any] = [
+        first_point,
+        second_point,
+    ]
+
+    if return_distance:
+        minimum_squared_distance = float(
+            squared_distances[
+                first_index,
+                second_index,
+            ]
+        )
+
+        if squared:
+            minimum_value = (
+                minimum_squared_distance
+            )
+
+        else:
+            minimum_value = float(
+                math.sqrt(
+                    minimum_squared_distance
+                )
+            )
+
+        output.append(
+            minimum_value
+        )
+
+    if return_indices:
+        output.append(
+            (
+                first_index,
+                second_index,
+            )
+        )
+
+    return tuple(
+        output
+    )
+
+
+def minimum_distance(
+    points_1: CoordinateCollection,
+    points_2: CoordinateCollection,
+    *,
+    scene: bool = True,
+    squared: bool = False,
+    return_indices: bool = False,
+    return_points: bool = False,
+    copy: bool = False,
+) -> Union[
+    float,
+    Tuple[
+        float,
+        Tuple[int, int],
+    ],
+    Tuple[
+        float,
+        Vector3D,
+        Vector3D,
+    ],
+    Tuple[
+        float,
+        Vector3D,
+        Vector3D,
+        Tuple[int, int],
+    ],
+]:
+    """
+    Return the minimum distance between two coordinate collections.
+
+    Parameters
+    ----------
+    points_1 : CoordinateCollection
+        First non-empty coordinate collection.
+    points_2 : CoordinateCollection
+        Second non-empty coordinate collection.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    squared : bool, optional
+        Whether the squared minimum distance should be returned.
+    return_indices : bool, optional
+        Whether the indices of the closest pair should also be returned.
+    return_points : bool, optional
+        Whether the two closest coordinates should also be returned.
+    copy : bool, optional
+        Whether returned point arrays must be copied.
+
+    Returns
+    -------
+    float
+        Minimum distance by default.
+
+    tuple
+        Optional return forms are:
+
+        - ``(distance, (index_1, index_2))``;
+        - ``(distance, point_1, point_2)``;
+        - ``(distance, point_1, point_2, (index_1, index_2))``.
+
+    Raises
+    ------
+    TypeError
+        If either collection cannot be converted to coordinates.
+    ValueError
+        If either collection is empty or invalid.
+
+    Examples
+    --------
+    >>> minimum_distance(
+    ...     [[0, 0, 0], [5, 0, 0]],
+    ...     [[2, 0, 0], [8, 0, 0]],
+    ... )
+    2.0
+    """
+
+    closest_result = closest_point_pair(
+        points_1,
+        points_2,
+        scene=scene,
+        return_indices=True,
+        return_distance=True,
+        squared=squared,
+        copy=copy,
+    )
+
+    (
+        first_point,
+        second_point,
+        minimum_value,
+        indices,
+    ) = closest_result
+
+    if not return_points and not return_indices:
+        return float(
+            minimum_value
+        )
+
+    output: List[Any] = [
+        float(
+            minimum_value
+        ),
+    ]
+
+    if return_points:
+        output.extend(
+            [
+                first_point,
+                second_point,
+            ]
+        )
+
+    if return_indices:
+        output.append(
+            indices
+        )
+
+    return tuple(
+        output
+    )
+
+
+# -----------------------------------------------------------------------------
+# Point-to-line distance
+# -----------------------------------------------------------------------------
+
+def point_line_distance(
+    point: Coordinate,
+    line_start: Coordinate,
+    line_end: Optional[Coordinate] = None,
+    *,
+    direction: Optional[Coordinate] = None,
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    clamp_to_segment: bool = False,
+    squared: bool = False,
+    return_projection: bool = False,
+    return_parameter: bool = False,
+    copy: bool = False,
+) -> Union[
+    float,
+    Tuple[
+        float,
+        Vector3D,
+    ],
+    Tuple[
+        float,
+        float,
+    ],
+    Tuple[
+        float,
+        Vector3D,
+        float,
+    ],
+]:
+    """
+    Return the shortest distance from a point to a line or segment.
+
+    The line may be defined using either:
+
+    - ``line_start`` and ``line_end``; or
+    - ``line_start`` and ``direction``.
+
+    Parameters
+    ----------
+    point : Coordinate
+        Point whose distance should be calculated.
+    line_start : Coordinate
+        Point located on the line.
+    line_end : Coordinate, optional
+        Second point defining the line or segment.
+    direction : Coordinate, optional
+        Explicit line-direction vector. Exactly one of ``line_end`` and
+        ``direction`` must be provided.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Minimum accepted norm for the line direction.
+    clamp_to_segment : bool, optional
+        Whether the closest point should be restricted to the segment between
+        ``line_start`` and ``line_end``.
+    squared : bool, optional
+        Whether the squared distance should be returned.
+    return_projection : bool, optional
+        Whether the closest projected point should also be returned.
+    return_parameter : bool, optional
+        Whether the scalar line parameter should also be returned.
+    copy : bool, optional
+        Whether the returned projected coordinate must be copied.
+
+    Returns
+    -------
+    float
+        Point-to-line distance by default.
+
+    tuple
+        Optional return forms are:
+
+        - ``(distance, projected_point)``;
+        - ``(distance, parameter)``;
+        - ``(distance, projected_point, parameter)``.
+
+    Raises
+    ------
+    TypeError
+        If a coordinate or tolerance value is invalid.
+    ValueError
+        If the line definition is ambiguous or degenerate.
+
+    Notes
+    -----
+    For a line defined by two points, the parameter has the following
+    interpretation:
+
+    - ``t = 0`` at ``line_start``;
+    - ``t = 1`` at ``line_end``;
+    - ``0 < t < 1`` inside the segment.
+
+    When ``clamp_to_segment=True``, the parameter is restricted to
+    ``[0, 1]``.
+
+    Examples
+    --------
+    >>> point_line_distance(
+    ...     [1, 2, 0],
+    ...     [0, 0, 0],
+    ...     [3, 0, 0],
+    ... )
+    2.0
+    """
+
+    point_coordinate = as_coordinate(
+        point,
+        scene=scene,
+        name="Point",
+        copy=False,
+    )
+
+    projected_point, parameter = (
+        project_point_on_line(
+            point_coordinate,
+            line_start,
+            line_end,
+            direction=direction,
+            scene=scene,
+            tolerance=tolerance,
+            clamp_to_segment=(
+                clamp_to_segment
+            ),
+            return_parameter=True,
+            copy=copy,
+        )
+    )
+
+    distance_squared = squared_distance(
+        point_coordinate,
+        projected_point,
+        scene=False,
+    )
+
+    if squared:
+        distance_value = (
+            distance_squared
+        )
+
+    else:
+        distance_value = float(
+            math.sqrt(
+                distance_squared
+            )
+        )
+
+    if (
+        not return_projection
+        and not return_parameter
+    ):
+        return distance_value
+
+    output: List[Any] = [
+        distance_value,
+    ]
+
+    if return_projection:
+        output.append(
+            projected_point
+        )
+
+    if return_parameter:
+        output.append(
+            float(
+                parameter
+            )
+        )
+
+    return tuple(
+        output
+    )
+
+
+# -----------------------------------------------------------------------------
+# Public module interface
+# -----------------------------------------------------------------------------
+
+_SECTION_5_PUBLIC_NAMES = [
+    "atom_distance",
+    "squared_distance",
+    "distance_matrix",
+    "minimum_distance",
+    "closest_point_pair",
+    "point_line_distance",
+]
+
+for public_name in _SECTION_5_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(
+            public_name
+        )
+
+
+# =============================================================================
+# End of Section 5
+# =============================================================================
+
+
+
+# =============================================================================
+# Section 6 — Angles and Dihedrals
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Internal angular helpers
+# -----------------------------------------------------------------------------
+
+def _validate_angle_unit(
+    unit: AngleUnit,
+) -> AngleUnit:
+    """
+    Validate and normalize an angular unit.
+
+    Parameters
+    ----------
+    unit : {"degrees", "radians"}
+        Angular unit to validate.
+
+    Returns
+    -------
+    {"degrees", "radians"}
+        Normalized angular unit.
+
+    Raises
+    ------
+    TypeError
+        If ``unit`` is not a string.
+    ValueError
+        If ``unit`` is not ``"degrees"`` or ``"radians"``.
+    """
+
+    if not isinstance(
+        unit,
+        str,
+    ):
+        raise TypeError(
+            "unit must be a string."
+        )
+
+    normalized_unit = unit.strip().lower()
+
+    if normalized_unit not in {
+        "degrees",
+        "radians",
+    }:
+        raise ValueError(
+            "unit must be either "
+            "'degrees' or 'radians'."
+        )
+
+    return normalized_unit  # type: ignore[return-value]
+
+
+def _validate_angular_tolerance(
+    tolerance: float,
+    *,
+    name: str = "tolerance",
+) -> float:
+    """
+    Validate a non-negative finite tolerance.
+
+    Parameters
+    ----------
+    tolerance : float
+        Tolerance value.
+    name : str, optional
+        Parameter name used in validation messages.
+
+    Returns
+    -------
+    float
+        Validated tolerance.
+
+    Raises
+    ------
+    TypeError
+        If the value is not numeric.
+    ValueError
+        If the value is negative or non-finite.
+    """
+
+    if isinstance(
+        tolerance,
+        (
+            bool,
+            np.bool_,
+        ),
+    ):
+        raise TypeError(
+            f"{name} must be a numeric value."
+        )
+
+    try:
+        numeric_tolerance = float(
+            tolerance
+        )
+
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+    ) as error:
+        raise TypeError(
+            f"{name} must be a numeric value."
+        ) from error
+
+    if not math.isfinite(
+        numeric_tolerance
+    ):
+        raise ValueError(
+            f"{name} must be finite."
+        )
+
+    if numeric_tolerance < 0.0:
+        raise ValueError(
+            f"{name} cannot be negative."
+        )
+
+    return numeric_tolerance
+
+
+def _convert_angle_from_radians(
+    angle_radians: float,
+    *,
+    unit: AngleUnit,
+) -> float:
+    """
+    Convert an angle in radians to the requested unit.
+
+    Parameters
+    ----------
+    angle_radians : float
+        Angle expressed in radians.
+    unit : {"degrees", "radians"}
+        Requested output unit.
+
+    Returns
+    -------
+    float
+        Converted angle.
+    """
+
+    normalized_unit = _validate_angle_unit(
+        unit
+    )
+
+    if normalized_unit == "radians":
+        return float(
+            angle_radians
+        )
+
+    return float(
+        angle_radians
+        * DEGREES_PER_RADIAN
+    )
+
+
+def _wrap_signed_angle(
+    angle: float,
+    *,
+    unit: AngleUnit,
+) -> float:
+    """
+    Wrap an angle to its conventional signed interval.
+
+    Parameters
+    ----------
+    angle : float
+        Angle to wrap.
+    unit : {"degrees", "radians"}
+        Angular unit.
+
+    Returns
+    -------
+    float
+        Angle wrapped to ``[-180, 180]`` degrees or ``[-π, π]`` radians.
+    """
+
+    normalized_unit = _validate_angle_unit(
+        unit
+    )
+
+    if normalized_unit == "degrees":
+        period = 360.0
+        half_period = 180.0
+
+    else:
+        period = 2.0 * math.pi
+        half_period = math.pi
+
+    wrapped = (
+        angle + half_period
+    ) % period - half_period
+
+    # Preserve positive 180° or π instead of converting it to the negative
+    # boundary when the original angle was positive.
+    if (
+        math.isclose(
+            wrapped,
+            -half_period,
+            abs_tol=DEFAULT_ANGLE_TOLERANCE,
+        )
+        and angle > 0.0
+    ):
+        wrapped = half_period
+
+    return float(
+        wrapped
+    )
+
+
+def _normalize_positive_angle(
+    angle: float,
+    *,
+    unit: AngleUnit,
+) -> float:
+    """
+    Convert a signed angle to a non-negative full-circle interval.
+
+    Parameters
+    ----------
+    angle : float
+        Signed angle.
+    unit : {"degrees", "radians"}
+        Angular unit.
+
+    Returns
+    -------
+    float
+        Angle in ``[0, 360)`` degrees or ``[0, 2π)`` radians.
+    """
+
+    normalized_unit = _validate_angle_unit(
+        unit
+    )
+
+    period = (
+        360.0
+        if normalized_unit == "degrees"
+        else 2.0 * math.pi
+    )
+
+    normalized_angle = angle % period
+
+    if math.isclose(
+        normalized_angle,
+        period,
+        abs_tol=DEFAULT_ANGLE_TOLERANCE,
+    ):
+        normalized_angle = 0.0
+
+    return float(
+        normalized_angle
+    )
+
+
+# -----------------------------------------------------------------------------
+# Angle between vectors
+# -----------------------------------------------------------------------------
+
+def vector_angle(
+    vector_1: Coordinate,
+    vector_2: Coordinate,
+    *,
+    unit: AngleUnit = "degrees",
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+) -> float:
+    """
+    Return the smallest angle between two three-dimensional vectors.
+
+    Parameters
+    ----------
+    vector_1 : Coordinate
+        First vector.
+    vector_2 : Coordinate
+        Second vector.
+    unit : {"degrees", "radians"}, optional
+        Unit used for the returned angle.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Minimum vector norm accepted for the calculation.
+
+    Returns
+    -------
+    float
+        Smallest angle between the vectors, in the interval ``[0, 180]``
+        degrees or ``[0, π]`` radians.
+
+    Raises
+    ------
+    TypeError
+        If an input or parameter has an invalid type.
+    ValueError
+        If either vector is zero or numerically degenerate.
+
+    Notes
+    -----
+    The angle is calculated using ``atan2``:
+
+    ``atan2(|v1 × v2|, v1 · v2)``
+
+    This formulation is generally more numerically stable near zero and
+    180 degrees than calculating the inverse cosine directly.
+
+    Examples
+    --------
+    >>> vector_angle([1, 0, 0], [0, 1, 0])
+    90.0
+
+    >>> vector_angle([1, 0, 0], [-1, 0, 0])
+    180.0
+    """
+
+    normalized_unit = _validate_angle_unit(
+        unit
+    )
+
+    numeric_tolerance = (
+        _validate_angular_tolerance(
+            tolerance
+        )
+    )
+
+    first_vector = as_coordinate(
+        vector_1,
+        scene=scene,
+        name="First vector",
+        copy=False,
+    )
+
+    second_vector = as_coordinate(
+        vector_2,
+        scene=scene,
+        name="Second vector",
+        copy=False,
+    )
+
+    first_norm = vector_norm(
+        first_vector,
+        scene=False,
+    )
+
+    second_norm = vector_norm(
+        second_vector,
+        scene=False,
+    )
+
+    if first_norm <= numeric_tolerance:
+        raise ValueError(
+            "Cannot calculate an angle using "
+            "a zero or near-zero first vector."
+        )
+
+    if second_norm <= numeric_tolerance:
+        raise ValueError(
+            "Cannot calculate an angle using "
+            "a zero or near-zero second vector."
+        )
+
+    cross_magnitude = vector_norm(
+        cross_product(
+            first_vector,
+            second_vector,
+            scene=False,
+            copy=False,
+        ),
+        scene=False,
+    )
+
+    scalar_product = dot_product(
+        first_vector,
+        second_vector,
+        scene=False,
+    )
+
+    angle_radians = math.atan2(
+        cross_magnitude,
+        scalar_product,
+    )
+
+    return _convert_angle_from_radians(
+        angle_radians,
+        unit=normalized_unit,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Bond angles
+# -----------------------------------------------------------------------------
+
+def bond_angle(
+    point_1: Coordinate,
+    vertex: Coordinate,
+    point_3: Coordinate,
+    *,
+    unit: AngleUnit = "degrees",
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+) -> float:
+    """
+    Return the angle formed by three points.
+
+    The angle is measured at ``vertex`` using the vectors:
+
+    ``point_1 - vertex``
+
+    and:
+
+    ``point_3 - vertex``
+
+    Parameters
+    ----------
+    point_1 : Coordinate
+        First endpoint or atom-like object.
+    vertex : Coordinate
+        Central point or atom where the angle is measured.
+    point_3 : Coordinate
+        Second endpoint or atom-like object.
+    unit : {"degrees", "radians"}, optional
+        Unit used for the returned angle.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Minimum accepted length of either bond vector.
+
+    Returns
+    -------
+    float
+        Bond angle in ``[0, 180]`` degrees or ``[0, π]`` radians.
+
+    Raises
+    ------
+    TypeError
+        If a coordinate or parameter is invalid.
+    ValueError
+        If an endpoint coincides with the central point.
+
+    Examples
+    --------
+    >>> bond_angle(
+    ...     [1, 0, 0],
+    ...     [0, 0, 0],
+    ...     [0, 1, 0],
+    ... )
+    90.0
+    """
+
+    first_coordinate = as_coordinate(
+        point_1,
+        scene=scene,
+        name="First angle point",
+        copy=False,
+    )
+
+    vertex_coordinate = as_coordinate(
+        vertex,
+        scene=scene,
+        name="Angle vertex",
+        copy=False,
+    )
+
+    third_coordinate = as_coordinate(
+        point_3,
+        scene=scene,
+        name="Third angle point",
+        copy=False,
+    )
+
+    first_bond_vector = vector_between(
+        vertex_coordinate,
+        first_coordinate,
+        scene=False,
+        copy=False,
+    )
+
+    second_bond_vector = vector_between(
+        vertex_coordinate,
+        third_coordinate,
+        scene=False,
+        copy=False,
+    )
+
+    return vector_angle(
+        first_bond_vector,
+        second_bond_vector,
+        unit=unit,
+        scene=False,
+        tolerance=tolerance,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Dihedral and torsion angles
+# -----------------------------------------------------------------------------
+
+def dihedral_angle(
+    point_1: Coordinate,
+    point_2: Coordinate,
+    point_3: Coordinate,
+    point_4: Coordinate,
+    *,
+    unit: AngleUnit = "degrees",
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    signed: bool = True,
+) -> float:
+    """
+    Return the dihedral angle defined by four ordered points.
+
+    The angle describes the rotation between the planes formed by:
+
+    - ``point_1, point_2, point_3``;
+    - ``point_2, point_3, point_4``.
+
+    Parameters
+    ----------
+    point_1 : Coordinate
+        First point or atom-like object.
+    point_2 : Coordinate
+        Second point, defining the start of the central bond.
+    point_3 : Coordinate
+        Third point, defining the end of the central bond.
+    point_4 : Coordinate
+        Fourth point or atom-like object.
+    unit : {"degrees", "radians"}, optional
+        Unit used for the returned angle.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Minimum accepted norm for the central bond and projected vectors.
+    signed : bool, optional
+        Whether the oriented angle should be returned.
+
+        When ``True``, the result lies in ``[-180, 180]`` degrees or
+        ``[-π, π]`` radians.
+
+        When ``False``, the absolute dihedral lies in ``[0, 180]`` degrees
+        or ``[0, π]`` radians.
+
+    Returns
+    -------
+    float
+        Signed or unsigned dihedral angle.
+
+    Raises
+    ------
+    TypeError
+        If a coordinate or parameter is invalid.
+    ValueError
+        If the central bond is degenerate or either plane cannot be defined.
+
+    Notes
+    -----
+    The implementation projects the two outer bond vectors onto the plane
+    perpendicular to the central bond and calculates the oriented angle using
+    ``atan2``.
+
+    Reversing the order of the four points reverses the sign convention only
+    when the resulting orientation changes under the selected ordering.
+
+    Examples
+    --------
+    >>> dihedral_angle(
+    ...     [1, 0, 0],
+    ...     [0, 0, 0],
+    ...     [0, 1, 0],
+    ...     [0, 1, 1],
+    ... )
+    -90.0
+    """
+
+    normalized_unit = _validate_angle_unit(
+        unit
+    )
+
+    numeric_tolerance = (
+        _validate_angular_tolerance(
+            tolerance
+        )
+    )
+
+    first_coordinate = as_coordinate(
+        point_1,
+        scene=scene,
+        name="First dihedral point",
+        copy=False,
+    )
+
+    second_coordinate = as_coordinate(
+        point_2,
+        scene=scene,
+        name="Second dihedral point",
+        copy=False,
+    )
+
+    third_coordinate = as_coordinate(
+        point_3,
+        scene=scene,
+        name="Third dihedral point",
+        copy=False,
+    )
+
+    fourth_coordinate = as_coordinate(
+        point_4,
+        scene=scene,
+        name="Fourth dihedral point",
+        copy=False,
+    )
+
+    first_bond = vector_between(
+        first_coordinate,
+        second_coordinate,
+        scene=False,
+        copy=False,
+    )
+
+    central_bond = vector_between(
+        second_coordinate,
+        third_coordinate,
+        scene=False,
+        copy=False,
+    )
+
+    third_bond = vector_between(
+        third_coordinate,
+        fourth_coordinate,
+        scene=False,
+        copy=False,
+    )
+
+    central_norm = vector_norm(
+        central_bond,
+        scene=False,
+    )
+
+    if central_norm <= numeric_tolerance:
+        raise ValueError(
+            "Cannot calculate a dihedral angle "
+            "because the central bond is zero or near zero."
+        )
+
+    central_unit = unit_vector(
+        central_bond,
+        tolerance=numeric_tolerance,
+        scene=False,
+        copy=False,
+    )
+
+    # Remove the components parallel to the central bond. The remaining
+    # vectors lie in the plane perpendicular to the rotation axis.
+    first_projected = reject_vector(
+        first_bond,
+        central_unit,
+        scene=False,
+        tolerance=numeric_tolerance,
+        copy=False,
+    )
+
+    third_projected = reject_vector(
+        third_bond,
+        central_unit,
+        scene=False,
+        tolerance=numeric_tolerance,
+        copy=False,
+    )
+
+    first_projected_norm = vector_norm(
+        first_projected,
+        scene=False,
+    )
+
+    third_projected_norm = vector_norm(
+        third_projected,
+        scene=False,
+    )
+
+    if first_projected_norm <= numeric_tolerance:
+        raise ValueError(
+            "Cannot define the first dihedral plane: "
+            "the first three points are collinear or degenerate."
+        )
+
+    if third_projected_norm <= numeric_tolerance:
+        raise ValueError(
+            "Cannot define the second dihedral plane: "
+            "the last three points are collinear or degenerate."
+        )
+
+    first_unit = unit_vector(
+        first_projected,
+        tolerance=numeric_tolerance,
+        scene=False,
+        copy=False,
+    )
+
+    third_unit = unit_vector(
+        third_projected,
+        tolerance=numeric_tolerance,
+        scene=False,
+        copy=False,
+    )
+
+    x_component = dot_product(
+        first_unit,
+        third_unit,
+        scene=False,
+    )
+
+    y_component = dot_product(
+        cross_product(
+            first_unit,
+            third_unit,
+            scene=False,
+            copy=False,
+        ),
+        central_unit,
+        scene=False,
+    )
+
+    # Protect against tiny numerical drift outside the expected dot-product
+    # range. atan2 itself is stable, but clipping keeps the input interpretable.
+    x_component = float(
+        np.clip(
+            x_component,
+            -1.0,
+            1.0,
+        )
+    )
+
+    angle_radians = math.atan2(
+        y_component,
+        x_component,
+    )
+
+    angle_value = _convert_angle_from_radians(
+        angle_radians,
+        unit=normalized_unit,
+    )
+
+    angle_value = _wrap_signed_angle(
+        angle_value,
+        unit=normalized_unit,
+    )
+
+    if signed:
+        return angle_value
+
+    return abs(
+        angle_value
+    )
+
+
+def torsion_angle(
+    point_1: Coordinate,
+    point_2: Coordinate,
+    point_3: Coordinate,
+    point_4: Coordinate,
+    *,
+    unit: AngleUnit = "degrees",
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    signed: bool = True,
+    positive: bool = False,
+) -> float:
+    """
+    Return the torsion angle defined by four ordered points.
+
+    Parameters
+    ----------
+    point_1 : Coordinate
+        First point or atom-like object.
+    point_2 : Coordinate
+        Second point.
+    point_3 : Coordinate
+        Third point.
+    point_4 : Coordinate
+        Fourth point.
+    unit : {"degrees", "radians"}, optional
+        Unit used for the returned angle.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Minimum accepted norm for the vectors defining the torsion.
+    signed : bool, optional
+        Whether the signed torsion should be preserved.
+    positive : bool, optional
+        Whether a signed result should be converted to a full positive-circle
+        interval.
+
+        In degrees, the result is converted from ``[-180, 180]`` to
+        ``[0, 360)``.
+
+        In radians, the result is converted from ``[-π, π]`` to
+        ``[0, 2π)``.
+
+        This option requires ``signed=True``.
+
+    Returns
+    -------
+    float
+        Torsion angle in the requested representation.
+
+    Raises
+    ------
+    TypeError
+        If a coordinate or parameter is invalid.
+    ValueError
+        If the geometry is degenerate or incompatible options are selected.
+
+    Notes
+    -----
+    In molecular geometry, ``torsion_angle`` and ``dihedral_angle`` usually
+    describe the same geometric quantity. This function provides a
+    domain-specific interface and optionally converts signed negative angles
+    to a positive full-circle representation.
+
+    Examples
+    --------
+    Signed representation:
+
+    >>> torsion_angle(
+    ...     [1, 0, 0],
+    ...     [0, 0, 0],
+    ...     [0, 1, 0],
+    ...     [0, 1, 1],
+    ... )
+    -90.0
+
+    Positive full-circle representation:
+
+    >>> torsion_angle(
+    ...     [1, 0, 0],
+    ...     [0, 0, 0],
+    ...     [0, 1, 0],
+    ...     [0, 1, 1],
+    ...     positive=True,
+    ... )
+    270.0
+    """
+
+    normalized_unit = _validate_angle_unit(
+        unit
+    )
+
+    if positive and not signed:
+        raise ValueError(
+            "positive=True requires signed=True."
+        )
+
+    angle_value = dihedral_angle(
+        point_1,
+        point_2,
+        point_3,
+        point_4,
+        unit=normalized_unit,
+        scene=scene,
+        tolerance=tolerance,
+        signed=signed,
+    )
+
+    if positive:
+        return _normalize_positive_angle(
+            angle_value,
+            unit=normalized_unit,
+        )
+
+    return angle_value
+
+
+# -----------------------------------------------------------------------------
+# Public module interface
+# -----------------------------------------------------------------------------
+
+_SECTION_6_PUBLIC_NAMES = [
+    "vector_angle",
+    "bond_angle",
+    "dihedral_angle",
+    "torsion_angle",
+]
+
+for public_name in _SECTION_6_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(
+            public_name
+        )
+
+
+# =============================================================================
+# End of Section 6
+# =============================================================================
+
+
+# =============================================================================
+# Section 7 — Molecular Planes
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Plane representation
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Plane:
+    """
+    Represent a three-dimensional geometric plane.
+
+    A plane is defined by one point and one unit normal vector. Its implicit
+    Cartesian equation is:
+
+    ``normal · x + offset = 0``
+
+    where:
+
+    ``offset = -normal · point``
+
+    Parameters
+    ----------
+    point : Coordinate
+        Any point located on the plane.
+    normal : Coordinate
+        Vector perpendicular to the plane. It is normalized automatically.
+    rmsd : float, optional
+        Root-mean-square distance of the fitted input points from the plane.
+        This value is normally populated by :func:`fit_plane`.
+    maximum_deviation : float, optional
+        Maximum absolute distance of any fitted input point from the plane.
+    singular_values : array-like, optional
+        Singular values obtained during plane fitting.
+    point_count : int, optional
+        Number of points used to construct or fit the plane.
+    metadata : Mapping[str, Any], optional
+        Additional descriptive information.
+
+    Attributes
+    ----------
+    point : numpy.ndarray
+        Reference point on the plane with shape ``(3,)``.
+    normal : numpy.ndarray
+        Unit normal vector with shape ``(3,)``.
+    rmsd : float or None
+        RMS deviation of fitted points from the plane.
+    maximum_deviation : float or None
+        Maximum absolute deviation from the plane.
+    singular_values : numpy.ndarray or None
+        Singular values from the fitting procedure.
+    point_count : int or None
+        Number of points used in the fit.
+    metadata : dict
+        Additional metadata.
+
+    Notes
+    -----
+    The normal direction is oriented but geometrically ambiguous: ``normal``
+    and ``-normal`` describe the same unoriented plane. Functions comparing
+    planes account for this ambiguity unless an oriented comparison is
+    explicitly requested.
+    """
+
+    point: Coordinate
+    normal: Coordinate
+    rmsd: Optional[float] = None
+    maximum_deviation: Optional[float] = None
+    singular_values: Optional[ArrayLike] = None
+    point_count: Optional[int] = None
+    metadata: GeometryMetadata = field(
+        default_factory=dict
+    )
+
+    def __post_init__(
+        self,
+    ) -> None:
+        """
+        Validate and normalize plane attributes.
+        """
+
+        validated_point = as_coordinate(
+            self.point,
+            scene=False,
+            name="Plane point",
+            copy=True,
+        )
+
+        validated_normal = unit_vector(
+            self.normal,
+            scene=False,
+            tolerance=DEFAULT_TOLERANCE,
+            copy=True,
+        )
+
+        validated_point.setflags(
+            write=False
+        )
+
+        validated_normal.setflags(
+            write=False
+        )
+
+        object.__setattr__(
+            self,
+            "point",
+            validated_point,
+        )
+
+        object.__setattr__(
+            self,
+            "normal",
+            validated_normal,
+        )
+
+        if self.rmsd is not None:
+            rmsd_value = _validate_nonnegative_finite_value(
+                self.rmsd,
+                name="rmsd",
+            )
+
+            object.__setattr__(
+                self,
+                "rmsd",
+                rmsd_value,
+            )
+
+        if self.maximum_deviation is not None:
+            maximum_deviation_value = (
+                _validate_nonnegative_finite_value(
+                    self.maximum_deviation,
+                    name="maximum_deviation",
+                )
+            )
+
+            object.__setattr__(
+                self,
+                "maximum_deviation",
+                maximum_deviation_value,
+            )
+
+        if self.singular_values is not None:
+            try:
+                singular_values_array = np.asarray(
+                    self.singular_values,
+                    dtype=np.float64,
+                )
+
+            except (
+                TypeError,
+                ValueError,
+                OverflowError,
+            ) as error:
+                raise TypeError(
+                    "singular_values must be convertible "
+                    "to a numeric one-dimensional array."
+                ) from error
+
+            singular_values_array = np.ravel(
+                singular_values_array
+            )
+
+            if singular_values_array.size == 0:
+                raise ValueError(
+                    "singular_values cannot be empty."
+                )
+
+            if not np.all(
+                np.isfinite(
+                    singular_values_array
+                )
+            ):
+                raise ValueError(
+                    "singular_values contains NaN or "
+                    "infinite values."
+                )
+
+            if np.any(
+                singular_values_array < 0.0
+            ):
+                raise ValueError(
+                    "singular_values cannot contain "
+                    "negative values."
+                )
+
+            singular_values_array = np.array(
+                singular_values_array,
+                dtype=np.float64,
+                copy=True,
+            )
+
+            singular_values_array.setflags(
+                write=False
+            )
+
+            object.__setattr__(
+                self,
+                "singular_values",
+                singular_values_array,
+            )
+
+        if self.point_count is not None:
+            if isinstance(
+                self.point_count,
+                (
+                    bool,
+                    np.bool_,
+                ),
+            ) or not isinstance(
+                self.point_count,
+                (
+                    int,
+                    np.integer,
+                ),
+            ):
+                raise TypeError(
+                    "point_count must be an integer."
+                )
+
+            point_count_value = int(
+                self.point_count
+            )
+
+            if point_count_value < 1:
+                raise ValueError(
+                    "point_count must be at least 1."
+                )
+
+            object.__setattr__(
+                self,
+                "point_count",
+                point_count_value,
+            )
+
+        if self.metadata is None:
+            metadata_value: Dict[str, Any] = {}
+
+        elif isinstance(
+            self.metadata,
+            Mapping,
+        ):
+            metadata_value = dict(
+                self.metadata
+            )
+
+        else:
+            raise TypeError(
+                "metadata must be a mapping or None."
+            )
+
+        object.__setattr__(
+            self,
+            "metadata",
+            metadata_value,
+        )
+
+    @property
+    def offset(
+        self,
+    ) -> float:
+        """
+        Return the constant term of the implicit plane equation.
+
+        Returns
+        -------
+        float
+            Value ``d`` in ``ax + by + cz + d = 0``.
+        """
+
+        return -dot_product(
+            self.normal,
+            self.point,
+            scene=False,
+        )
+
+    @property
+    def coefficients(
+        self,
+    ) -> Tuple[
+        float,
+        float,
+        float,
+        float,
+    ]:
+        """
+        Return the normalized Cartesian plane coefficients.
+
+        Returns
+        -------
+        tuple of float
+            Coefficients ``(a, b, c, d)`` from:
+
+            ``ax + by + cz + d = 0``.
+        """
+
+        return (
+            float(
+                self.normal[0]
+            ),
+            float(
+                self.normal[1]
+            ),
+            float(
+                self.normal[2]
+            ),
+            self.offset,
+        )
+
+    def signed_distance(
+        self,
+        point: Coordinate,
+        *,
+        scene: bool = True,
+    ) -> float:
+        """
+        Return the oriented distance from a point to this plane.
+
+        Parameters
+        ----------
+        point : Coordinate
+            Point or coordinate-like object.
+        scene : bool, optional
+            Whether scene-transformed coordinates should be preferred.
+
+        Returns
+        -------
+        float
+            Signed distance. Positive and negative values correspond to
+            opposite sides of the plane according to the normal direction.
+        """
+
+        point_coordinate = as_coordinate(
+            point,
+            scene=scene,
+            name="Point",
+            copy=False,
+        )
+
+        displacement = vector_between(
+            self.point,
+            point_coordinate,
+            scene=False,
+            copy=False,
+        )
+
+        return dot_product(
+            displacement,
+            self.normal,
+            scene=False,
+        )
+
+    def distance(
+        self,
+        point: Coordinate,
+        *,
+        scene: bool = True,
+    ) -> float:
+        """
+        Return the absolute distance from a point to this plane.
+
+        Parameters
+        ----------
+        point : Coordinate
+            Point or coordinate-like object.
+        scene : bool, optional
+            Whether scene-transformed coordinates should be preferred.
+
+        Returns
+        -------
+        float
+            Non-negative point-to-plane distance.
+        """
+
+        return abs(
+            self.signed_distance(
+                point,
+                scene=scene,
+            )
+        )
+
+    def project(
+        self,
+        point: Coordinate,
+        *,
+        scene: bool = True,
+        copy: bool = False,
+    ) -> Vector3D:
+        """
+        Project a point orthogonally onto this plane.
+
+        Parameters
+        ----------
+        point : Coordinate
+            Point or coordinate-like object.
+        scene : bool, optional
+            Whether scene-transformed coordinates should be preferred.
+        copy : bool, optional
+            Whether a copied result must be returned.
+
+        Returns
+        -------
+        numpy.ndarray
+            Projected point with shape ``(3,)``.
+        """
+
+        return project_point_on_plane(
+            point,
+            self,
+            scene=scene,
+            copy=copy,
+        )
+
+    def to_dict(
+        self,
+    ) -> Dict[str, Any]:
+        """
+        Convert the plane to a JSON-compatible dictionary.
+
+        Returns
+        -------
+        dict
+            Serialized plane data.
+        """
+
+        return {
+            "point": self.point.tolist(),
+            "normal": self.normal.tolist(),
+            "offset": self.offset,
+            "coefficients": list(
+                self.coefficients
+            ),
+            "rmsd": self.rmsd,
+            "maximum_deviation": (
+                self.maximum_deviation
+            ),
+            "singular_values": (
+                None
+                if self.singular_values is None
+                else self.singular_values.tolist()
+            ),
+            "point_count": self.point_count,
+            "metadata": dict(
+                self.metadata
+            ),
+        }
+
+
+# -----------------------------------------------------------------------------
+# Internal plane helpers
+# -----------------------------------------------------------------------------
+
+def _validate_nonnegative_finite_value(
+    value: Any,
+    *,
+    name: str,
+) -> float:
+    """
+    Validate a finite, non-negative numeric value.
+
+    Parameters
+    ----------
+    value : Any
+        Value to validate.
+    name : str
+        Parameter name used in error messages.
+
+    Returns
+    -------
+    float
+        Validated numeric value.
+    """
+
+    if isinstance(
+        value,
+        (
+            bool,
+            np.bool_,
+        ),
+    ):
+        raise TypeError(
+            f"{name} must be numeric."
+        )
+
+    try:
+        numeric_value = float(
+            value
+        )
+
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+    ) as error:
+        raise TypeError(
+            f"{name} must be numeric."
+        ) from error
+
+    if not math.isfinite(
+        numeric_value
+    ):
+        raise ValueError(
+            f"{name} must be finite."
+        )
+
+    if numeric_value < 0.0:
+        raise ValueError(
+            f"{name} cannot be negative."
+        )
+
+    return numeric_value
+
+
+def _coerce_plane(
+    plane: Any,
+    *,
+    point: Optional[Coordinate] = None,
+    normal: Optional[Coordinate] = None,
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    name: str = "Plane",
+) -> Plane:
+    """
+    Convert a plane-like definition to a :class:`Plane`.
+
+    Parameters
+    ----------
+    plane : Any
+        Existing ``Plane`` instance or plane-like object.
+    point : Coordinate, optional
+        Explicit point on the plane.
+    normal : Coordinate, optional
+        Explicit plane normal.
+    scene : bool, optional
+        Whether scene coordinates should be preferred.
+    tolerance : float, optional
+        Minimum accepted normal magnitude.
+    name : str, optional
+        Name used in validation errors.
+
+    Returns
+    -------
+    Plane
+        Validated plane object.
+    """
+
+    if isinstance(
+        plane,
+        Plane,
+    ):
+        if point is not None or normal is not None:
+            raise ValueError(
+                f"{name} was provided as a Plane instance; "
+                "point and normal must therefore be omitted."
+            )
+
+        return plane
+
+    if plane is not None:
+        if point is not None or normal is not None:
+            raise ValueError(
+                f"{name} cannot be combined with explicit "
+                "point or normal arguments."
+            )
+
+        if isinstance(
+            plane,
+            Mapping,
+        ):
+            if (
+                "point" not in plane
+                or "normal" not in plane
+            ):
+                raise ValueError(
+                    f"{name} mapping must contain "
+                    "'point' and 'normal'."
+                )
+
+            point = plane[
+                "point"
+            ]
+
+            normal = plane[
+                "normal"
+            ]
+
+        elif (
+            hasattr(
+                plane,
+                "point",
+            )
+            and hasattr(
+                plane,
+                "normal",
+            )
+        ):
+            point = getattr(
+                plane,
+                "point"
+            )
+
+            normal = getattr(
+                plane,
+                "normal"
+            )
+
+        else:
+            raise TypeError(
+                f"{name} must be a Plane, a mapping with "
+                "'point' and 'normal', or an object exposing "
+                "point and normal attributes."
+            )
+
+    if point is None or normal is None:
+        raise ValueError(
+            f"{name} requires both a point and a normal."
+        )
+
+    point_coordinate = as_coordinate(
+        point,
+        scene=scene,
+        name=f"{name} point",
+        copy=True,
+    )
+
+    normal_vector = unit_vector(
+        normal,
+        scene=scene,
+        tolerance=tolerance,
+        copy=True,
+    )
+
+    return Plane(
+        point=point_coordinate,
+        normal=normal_vector,
+    )
+
+
+def _orient_plane_normal(
+    normal: Coordinate,
+    *,
+    reference_normal: Optional[
+        Coordinate
+    ] = None,
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+) -> Vector3D:
+    """
+    Apply a deterministic or reference-based orientation to a plane normal.
+
+    Parameters
+    ----------
+    normal : Coordinate
+        Normal vector to orient.
+    reference_normal : Coordinate, optional
+        Preferred orientation. The fitted normal is flipped when its dot
+        product with this vector is negative.
+    scene : bool, optional
+        Whether scene coordinates should be preferred.
+    tolerance : float, optional
+        Minimum vector norm.
+
+    Returns
+    -------
+    numpy.ndarray
+        Oriented unit normal.
+    """
+
+    oriented_normal = unit_vector(
+        normal,
+        scene=scene,
+        tolerance=tolerance,
+        copy=True,
+    )
+
+    if reference_normal is not None:
+        reference = unit_vector(
+            reference_normal,
+            scene=scene,
+            tolerance=tolerance,
+            copy=False,
+        )
+
+        if dot_product(
+            oriented_normal,
+            reference,
+            scene=False,
+        ) < 0.0:
+            oriented_normal *= -1.0
+
+        return oriented_normal
+
+    # A fitted plane has two equivalent normal directions. Without an explicit
+    # reference, use a deterministic convention based on the first component
+    # whose absolute value is larger than the numerical tolerance.
+    for component in oriented_normal:
+        if abs(
+            float(component)
+        ) <= tolerance:
+            continue
+
+        if component < 0.0:
+            oriented_normal *= -1.0
+
+        break
+
+    return oriented_normal
+
+
+# -----------------------------------------------------------------------------
+# Plane fitting
+# -----------------------------------------------------------------------------
+
+def fit_plane(
+    points: CoordinateCollection,
+    *,
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    reference_normal: Optional[
+        Coordinate
+    ] = None,
+    weights: Optional[ArrayLike] = None,
+    metadata: Optional[
+        Mapping[str, Any]
+    ] = None,
+) -> Plane:
+    """
+    Fit a least-squares plane to three or more points.
+
+    Parameters
+    ----------
+    points : CoordinateCollection
+        Coordinate collection containing at least three non-collinear points.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Numerical tolerance used to detect degenerate geometries.
+    reference_normal : Coordinate, optional
+        Vector used to orient the fitted normal. The normal is flipped when
+        necessary to point toward the same hemisphere as this reference.
+    weights : array-like, optional
+        Non-negative weights for the input points. The array must contain one
+        weight per coordinate and have a positive total.
+    metadata : Mapping[str, Any], optional
+        Additional metadata stored in the returned ``Plane``.
+
+    Returns
+    -------
+    Plane
+        Best-fitting plane.
+
+    Raises
+    ------
+    TypeError
+        If coordinates, weights or metadata have invalid types.
+    ValueError
+        If fewer than three points are supplied, the points are collinear,
+        or the weighting scheme is invalid.
+
+    Notes
+    -----
+    The fit uses singular value decomposition of the centered coordinate
+    matrix. The right singular vector associated with the smallest singular
+    value is the plane normal.
+
+    For weighted fitting, each centered coordinate is multiplied by the square
+    root of its normalized weight before SVD.
+    """
+
+    numeric_tolerance = (
+        _validate_angular_tolerance(
+            tolerance,
+            name="tolerance",
+        )
+    )
+
+    coordinates = get_coordinates(
+        points,
+        scene=scene,
+        name="Plane fitting points",
+        minimum_rows=3,
+        allow_empty=False,
+        copy=False,
+    )
+
+    point_count = int(
+        coordinates.shape[0]
+    )
+
+    normalized_weights: Optional[
+        FloatArray
+    ]
+
+    if weights is None:
+        normalized_weights = None
+
+        plane_point = np.mean(
+            coordinates,
+            axis=0,
+            dtype=np.float64,
+        )
+
+        centered_coordinates = (
+            coordinates
+            - plane_point
+        )
+
+        fitting_matrix = (
+            centered_coordinates
+        )
+
+    else:
+        try:
+            weight_array = np.asarray(
+                weights,
+                dtype=np.float64,
+            )
+
+        except (
+            TypeError,
+            ValueError,
+            OverflowError,
+        ) as error:
+            raise TypeError(
+                "weights must be convertible to a "
+                "numeric one-dimensional array."
+            ) from error
+
+        weight_array = np.ravel(
+            weight_array
+        )
+
+        if weight_array.size != point_count:
+            raise ValueError(
+                "weights must contain exactly one value "
+                f"per point; expected {point_count}, "
+                f"received {weight_array.size}."
+            )
+
+        if not np.all(
+            np.isfinite(
+                weight_array
+            )
+        ):
+            raise ValueError(
+                "weights contains NaN or infinite values."
+            )
+
+        if np.any(
+            weight_array < 0.0
+        ):
+            raise ValueError(
+                "weights cannot contain negative values."
+            )
+
+        total_weight = float(
+            np.sum(
+                weight_array
+            )
+        )
+
+        if total_weight <= numeric_tolerance:
+            raise ValueError(
+                "weights must have a positive total."
+            )
+
+        positive_weight_count = int(
+            np.count_nonzero(
+                weight_array
+                > numeric_tolerance
+            )
+        )
+
+        if positive_weight_count < 3:
+            raise ValueError(
+                "At least three points must have "
+                "positive weights."
+            )
+
+        normalized_weights = (
+            weight_array
+            / total_weight
+        )
+
+        plane_point = np.average(
+            coordinates,
+            axis=0,
+            weights=normalized_weights,
+        )
+
+        centered_coordinates = (
+            coordinates
+            - plane_point
+        )
+
+        fitting_matrix = (
+            centered_coordinates
+            * np.sqrt(
+                normalized_weights
+            )[:, np.newaxis]
+        )
+
+    try:
+        (
+            _,
+            singular_values,
+            right_singular_vectors,
+        ) = np.linalg.svd(
+            fitting_matrix,
+            full_matrices=False,
+        )
+
+    except np.linalg.LinAlgError as error:
+        raise ValueError(
+            "Plane fitting failed because singular "
+            "value decomposition did not converge."
+        ) from error
+
+    if singular_values.size < 2:
+        raise ValueError(
+            "Plane fitting did not produce enough "
+            "independent geometric directions."
+        )
+
+    largest_singular_value = float(
+        singular_values[0]
+    )
+
+    second_singular_value = float(
+        singular_values[1]
+    )
+
+    rank_threshold = max(
+        numeric_tolerance,
+        largest_singular_value
+        * numeric_tolerance,
+    )
+
+    if second_singular_value <= rank_threshold:
+        raise ValueError(
+            "Cannot fit a unique plane because the "
+            "input points are collinear or degenerate."
+        )
+
+    fitted_normal = (
+        right_singular_vectors[-1]
+    )
+
+    fitted_normal = _orient_plane_normal(
+        fitted_normal,
+        reference_normal=reference_normal,
+        scene=scene,
+        tolerance=numeric_tolerance,
+    )
+
+    signed_deviations = (
+        centered_coordinates
+        @ fitted_normal
+    )
+
+    absolute_deviations = np.abs(
+        signed_deviations
+    )
+
+    if normalized_weights is None:
+        mean_squared_deviation = float(
+            np.mean(
+                signed_deviations ** 2
+            )
+        )
+
+    else:
+        mean_squared_deviation = float(
+            np.sum(
+                normalized_weights
+                * signed_deviations ** 2
+            )
+        )
+
+    rmsd_value = float(
+        math.sqrt(
+            max(
+                mean_squared_deviation,
+                0.0,
+            )
+        )
+    )
+
+    maximum_deviation_value = float(
+        np.max(
+            absolute_deviations
+        )
+    )
+
+    plane_metadata: Dict[str, Any] = {}
+
+    if metadata is not None:
+        if not isinstance(
+            metadata,
+            Mapping,
+        ):
+            raise TypeError(
+                "metadata must be a mapping or None."
+            )
+
+        plane_metadata.update(
+            metadata
+        )
+
+    plane_metadata.setdefault(
+        "fit_method",
+        (
+            "weighted_svd"
+            if normalized_weights is not None
+            else "svd"
+        ),
+    )
+
+    plane_metadata.setdefault(
+        "weighted",
+        normalized_weights is not None,
+    )
+
+    return Plane(
+        point=plane_point,
+        normal=fitted_normal,
+        rmsd=rmsd_value,
+        maximum_deviation=(
+            maximum_deviation_value
+        ),
+        singular_values=singular_values,
+        point_count=point_count,
+        metadata=plane_metadata,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Plane normal
+# -----------------------------------------------------------------------------
+
+def plane_normal(
+    points: CoordinateCollection,
+    *,
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    reference_normal: Optional[
+        Coordinate
+    ] = None,
+    weights: Optional[ArrayLike] = None,
+    copy: bool = False,
+) -> Vector3D:
+    """
+    Return the unit normal of a plane fitted to a coordinate collection.
+
+    Parameters
+    ----------
+    points : CoordinateCollection
+        Three or more points defining or approximating a plane.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Numerical tolerance used to detect degenerate point arrangements.
+    reference_normal : Coordinate, optional
+        Preferred orientation for the returned normal.
+    weights : array-like, optional
+        Optional non-negative fitting weights.
+    copy : bool, optional
+        Whether a copied normal vector must be returned.
+
+    Returns
+    -------
+    numpy.ndarray
+        Unit plane normal with shape ``(3,)``.
+
+    Raises
+    ------
+    ValueError
+        If the points cannot define a unique plane.
+    """
+
+    fitted_plane = fit_plane(
+        points,
+        scene=scene,
+        tolerance=tolerance,
+        reference_normal=reference_normal,
+        weights=weights,
+    )
+
+    if copy:
+        return np.array(
+            fitted_plane.normal,
+            dtype=np.float64,
+            copy=True,
+        )
+
+    return fitted_plane.normal
+
+
+# -----------------------------------------------------------------------------
+# Point-to-plane distance
+# -----------------------------------------------------------------------------
+
+def point_plane_distance(
+    point: Coordinate,
+    plane: Optional[Any] = None,
+    *,
+    plane_point: Optional[
+        Coordinate
+    ] = None,
+    plane_normal_vector: Optional[
+        Coordinate
+    ] = None,
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    signed: bool = False,
+    squared: bool = False,
+) -> float:
+    """
+    Return the shortest distance from a point to a plane.
+
+    The plane may be supplied as:
+
+    - a :class:`Plane` instance;
+    - an object or mapping containing ``point`` and ``normal``;
+    - explicit ``plane_point`` and ``plane_normal_vector`` arguments.
+
+    Parameters
+    ----------
+    point : Coordinate
+        Point or coordinate-like object.
+    plane : Any, optional
+        Plane-like object.
+    plane_point : Coordinate, optional
+        Explicit point located on the plane.
+    plane_normal_vector : Coordinate, optional
+        Explicit normal vector.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Minimum accepted normal magnitude.
+    signed : bool, optional
+        Whether the oriented distance should be returned.
+    squared : bool, optional
+        Whether the squared distance should be returned. Squaring removes the
+        sign, so ``signed=True`` and ``squared=True`` cannot be combined.
+
+    Returns
+    -------
+    float
+        Point-to-plane distance.
+
+    Raises
+    ------
+    ValueError
+        If the plane definition is missing, ambiguous or degenerate, or if
+        incompatible options are selected.
+
+    Examples
+    --------
+    >>> plane = Plane(
+    ...     point=[0, 0, 0],
+    ...     normal=[0, 0, 1],
+    ... )
+    >>> point_plane_distance(
+    ...     [1, 2, 3],
+    ...     plane,
+    ... )
+    3.0
+    """
+
+    if signed and squared:
+        raise ValueError(
+            "signed=True cannot be combined with "
+            "squared=True because squaring removes "
+            "the distance sign."
+        )
+
+    plane_object = _coerce_plane(
+        plane,
+        point=plane_point,
+        normal=plane_normal_vector,
+        scene=scene,
+        tolerance=tolerance,
+        name="Plane",
+    )
+
+    point_coordinate = as_coordinate(
+        point,
+        scene=scene,
+        name="Point",
+        copy=False,
+    )
+
+    signed_distance_value = (
+        plane_object.signed_distance(
+            point_coordinate,
+            scene=False,
+        )
+    )
+
+    if signed:
+        return float(
+            signed_distance_value
+        )
+
+    absolute_distance = abs(
+        signed_distance_value
+    )
+
+    if squared:
+        return float(
+            absolute_distance
+            * absolute_distance
+        )
+
+    return float(
+        absolute_distance
+    )
+
+
+# -----------------------------------------------------------------------------
+# Point projection onto a plane
+# -----------------------------------------------------------------------------
+
+def project_point_on_plane(
+    point: Coordinate,
+    plane: Optional[Any] = None,
+    *,
+    plane_point: Optional[
+        Coordinate
+    ] = None,
+    plane_normal_vector: Optional[
+        Coordinate
+    ] = None,
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    return_distance: bool = False,
+    copy: bool = False,
+) -> Union[
+    Vector3D,
+    Tuple[
+        Vector3D,
+        float,
+    ],
+]:
+    """
+    Project a point orthogonally onto a plane.
+
+    Parameters
+    ----------
+    point : Coordinate
+        Point to project.
+    plane : Any, optional
+        Plane-like object.
+    plane_point : Coordinate, optional
+        Explicit point located on the plane.
+    plane_normal_vector : Coordinate, optional
+        Explicit plane normal.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Minimum accepted normal magnitude.
+    return_distance : bool, optional
+        Whether the signed displacement from the plane to the original point
+        should also be returned.
+    copy : bool, optional
+        Whether a copied coordinate must be returned.
+
+    Returns
+    -------
+    numpy.ndarray
+        Projected coordinate.
+
+    tuple
+        ``(projected_coordinate, signed_distance)`` when
+        ``return_distance=True``.
+
+    Notes
+    -----
+    The projection is calculated as:
+
+    ``projected = point - signed_distance * normal``
+
+    where the plane normal is a unit vector.
+    """
+
+    plane_object = _coerce_plane(
+        plane,
+        point=plane_point,
+        normal=plane_normal_vector,
+        scene=scene,
+        tolerance=tolerance,
+        name="Plane",
+    )
+
+    point_coordinate = as_coordinate(
+        point,
+        scene=scene,
+        name="Projected point",
+        copy=False,
+    )
+
+    signed_distance_value = (
+        plane_object.signed_distance(
+            point_coordinate,
+            scene=False,
+        )
+    )
+
+    projected_coordinate = (
+        point_coordinate
+        - signed_distance_value
+        * plane_object.normal
+    ).astype(
+        np.float64,
+        copy=False,
+    )
+
+    if copy:
+        projected_coordinate = np.array(
+            projected_coordinate,
+            dtype=np.float64,
+            copy=True,
+        )
+
+    if return_distance:
+        return (
+            projected_coordinate,
+            float(
+                signed_distance_value
+            ),
+        )
+
+    return projected_coordinate
+
+
+# -----------------------------------------------------------------------------
+# Angle between planes
+# -----------------------------------------------------------------------------
+
+def angle_between_planes(
+    plane_1: Any,
+    plane_2: Any,
+    *,
+    unit: AngleUnit = "degrees",
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    oriented: bool = False,
+) -> float:
+    """
+    Return the angle between two planes.
+
+    Parameters
+    ----------
+    plane_1 : Any
+        First plane-like object.
+    plane_2 : Any
+        Second plane-like object.
+    unit : {"degrees", "radians"}, optional
+        Unit used for the returned angle.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Minimum accepted normal magnitude.
+    oriented : bool, optional
+        Whether the orientations of the normal vectors should be preserved.
+
+        When ``False``, opposite normals are treated as representing the same
+        plane orientation and the result lies in ``[0, 90]`` degrees or
+        ``[0, π/2]`` radians.
+
+        When ``True``, the result is the ordinary angle between the oriented
+        normals and lies in ``[0, 180]`` degrees or ``[0, π]`` radians.
+
+    Returns
+    -------
+    float
+        Angle between the planes.
+
+    Notes
+    -----
+    Molecular plane comparisons normally use ``oriented=False`` because a
+    plane does not intrinsically distinguish between ``normal`` and
+    ``-normal``. This is appropriate for aromatic-ring plane comparisons.
+    """
+
+    first_plane = _coerce_plane(
+        plane_1,
+        scene=scene,
+        tolerance=tolerance,
+        name="First plane",
+    )
+
+    second_plane = _coerce_plane(
+        plane_2,
+        scene=scene,
+        tolerance=tolerance,
+        name="Second plane",
+    )
+
+    normal_angle = vector_angle(
+        first_plane.normal,
+        second_plane.normal,
+        unit=unit,
+        scene=False,
+        tolerance=tolerance,
+    )
+
+    if oriented:
+        return normal_angle
+
+    normalized_unit = _validate_angle_unit(
+        unit
+    )
+
+    half_turn = (
+        180.0
+        if normalized_unit == "degrees"
+        else math.pi
+    )
+
+    acute_plane_angle = min(
+        normal_angle,
+        half_turn - normal_angle,
+    )
+
+    # Remove tiny negative values caused by floating-point rounding.
+    if acute_plane_angle < 0.0 and math.isclose(
+        acute_plane_angle,
+        0.0,
+        abs_tol=DEFAULT_ANGLE_TOLERANCE,
+    ):
+        acute_plane_angle = 0.0
+
+    return float(
+        acute_plane_angle
+    )
+
+
+# -----------------------------------------------------------------------------
+# Public module interface
+# -----------------------------------------------------------------------------
+
+_SECTION_7_PUBLIC_NAMES = [
+    "Plane",
+    "fit_plane",
+    "plane_normal",
+    "point_plane_distance",
+    "project_point_on_plane",
+    "angle_between_planes",
+]
+
+for public_name in _SECTION_7_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(
+            public_name
+        )
+
+
+# =============================================================================
+# End of Section 7
+# =============================================================================
+
+
+
+# =============================================================================
+# Section 8 — Aromatic Ring Geometry
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Internal ring helpers
+# -----------------------------------------------------------------------------
+
+def _validate_ring_coordinates(
+    points: CoordinateCollection,
+    *,
+    scene: bool = True,
+    minimum_atoms: int = 3,
+    tolerance: float = DEFAULT_TOLERANCE,
+    name: str = "Ring coordinates",
+    copy: bool = False,
+) -> FloatArray:
+    """
+    Validate a coordinate collection representing a molecular ring.
+
+    Parameters
+    ----------
+    points : CoordinateCollection
+        Ring atoms or coordinate-like values.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    minimum_atoms : int, optional
+        Minimum number of atoms required.
+    tolerance : float, optional
+        Numerical tolerance used to detect coincident coordinates.
+    name : str, optional
+        User-facing collection name.
+    copy : bool, optional
+        Whether the resulting coordinate matrix must be copied.
+
+    Returns
+    -------
+    numpy.ndarray
+        Validated coordinate matrix with shape ``(N, 3)``.
+
+    Raises
+    ------
+    TypeError
+        If ``minimum_atoms`` is not an integer.
+    ValueError
+        If too few atoms are supplied, coordinates are duplicated, or the
+        geometry cannot define a ring plane.
+    """
+
+    if isinstance(
+        minimum_atoms,
+        (
+            bool,
+            np.bool_,
+        ),
+    ) or not isinstance(
+        minimum_atoms,
+        (
+            int,
+            np.integer,
+        ),
+    ):
+        raise TypeError(
+            "minimum_atoms must be an integer."
+        )
+
+    minimum_atoms = int(
+        minimum_atoms
+    )
+
+    if minimum_atoms < 3:
+        raise ValueError(
+            "minimum_atoms must be at least 3."
+        )
+
+    numeric_tolerance = (
+        _validate_angular_tolerance(
+            tolerance,
+            name="tolerance",
+        )
+    )
+
+    coordinates = get_coordinates(
+        points,
+        scene=scene,
+        name=name,
+        minimum_rows=minimum_atoms,
+        allow_empty=False,
+        require_finite=True,
+        copy=copy,
+    )
+
+    if coordinates.shape[0] < minimum_atoms:
+        raise ValueError(
+            f"{name} must contain at least "
+            f"{minimum_atoms} atoms."
+        )
+
+    if coordinates.shape[0] > 1:
+        pairwise_squared = distance_matrix(
+            coordinates,
+            scene=False,
+            squared=True,
+            minimum_rows=1,
+            allow_empty=False,
+            copy=False,
+        )
+
+        upper_triangle = np.triu_indices(
+            coordinates.shape[0],
+            k=1,
+        )
+
+        duplicate_mask = (
+            pairwise_squared[
+                upper_triangle
+            ]
+            <= numeric_tolerance ** 2
+        )
+
+        if np.any(
+            duplicate_mask
+        ):
+            first_duplicate_position = int(
+                np.flatnonzero(
+                    duplicate_mask
+                )[0]
+            )
+
+            first_index = int(
+                upper_triangle[0][
+                    first_duplicate_position
+                ]
+            )
+
+            second_index = int(
+                upper_triangle[1][
+                    first_duplicate_position
+                ]
+            )
+
+            raise ValueError(
+                f"{name} contains coincident or "
+                "near-coincident coordinates at indices "
+                f"{first_index} and {second_index}."
+            )
+
+    # Fitting also validates that the coordinates are not collinear.
+    fit_plane(
+        coordinates,
+        scene=False,
+        tolerance=numeric_tolerance,
+    )
+
+    return coordinates
+
+
+def _ring_radial_distances(
+    coordinates: CoordinateCollection,
+    *,
+    center: Optional[Coordinate] = None,
+    plane: Optional[Plane] = None,
+    scene: bool = True,
+    projected: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+) -> FloatArray:
+    """
+    Return radial distances of ring atoms from a ring center.
+
+    Parameters
+    ----------
+    coordinates : CoordinateCollection
+        Ring coordinate collection.
+    center : Coordinate, optional
+        Center used for the radial calculation. When omitted, the coordinate
+        centroid is used.
+    plane : Plane, optional
+        Ring plane. When omitted and ``projected=True``, a plane is fitted.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    projected : bool, optional
+        Whether coordinates should be projected onto the ring plane before
+        calculating radial distances.
+    tolerance : float, optional
+        Numerical tolerance used during plane fitting.
+
+    Returns
+    -------
+    numpy.ndarray
+        One-dimensional array containing one radial distance per atom.
+    """
+
+    coordinate_matrix = get_coordinates(
+        coordinates,
+        scene=scene,
+        name="Ring coordinates",
+        minimum_rows=3,
+        allow_empty=False,
+        copy=False,
+    )
+
+    if center is None:
+        center_coordinate = np.mean(
+            coordinate_matrix,
+            axis=0,
+            dtype=np.float64,
+        )
+
+    else:
+        center_coordinate = as_coordinate(
+            center,
+            scene=scene,
+            name="Ring center",
+            copy=False,
+        )
+
+    if projected:
+        if plane is None:
+            plane_object = fit_plane(
+                coordinate_matrix,
+                scene=False,
+                tolerance=tolerance,
+            )
+
+        elif isinstance(
+            plane,
+            Plane,
+        ):
+            plane_object = plane
+
+        else:
+            plane_object = _coerce_plane(
+                plane,
+                scene=scene,
+                tolerance=tolerance,
+                name="Ring plane",
+            )
+
+        projected_center = project_point_on_plane(
+            center_coordinate,
+            plane_object,
+            scene=False,
+            copy=False,
+        )
+
+        projected_coordinates = np.vstack(
+            [
+                project_point_on_plane(
+                    coordinate,
+                    plane_object,
+                    scene=False,
+                    copy=False,
+                )
+                for coordinate in coordinate_matrix
+            ]
+        )
+
+        displacements = (
+            projected_coordinates
+            - projected_center
+        )
+
+    else:
+        displacements = (
+            coordinate_matrix
+            - center_coordinate
+        )
+
+    squared_radii = np.einsum(
+        "ij,ij->i",
+        displacements,
+        displacements,
+        optimize=True,
+    )
+
+    np.maximum(
+        squared_radii,
+        0.0,
+        out=squared_radii,
+    )
+
+    return np.sqrt(
+        squared_radii
+    ).astype(
+        np.float64,
+        copy=False,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Ring geometry representation
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RingGeometry:
+    """
+    Represent the geometric properties of a molecular ring.
+
+    Parameters
+    ----------
+    coordinates : CoordinateCollection
+        Coordinates of the atoms forming the ring.
+    centroid : Coordinate, optional
+        Ring centroid. When omitted, it is calculated from ``coordinates``.
+    plane : Plane, optional
+        Best-fitting ring plane. When omitted, it is calculated automatically.
+    radius : float, optional
+        Mean projected radial distance of the ring atoms from the centroid.
+    minimum_radius : float, optional
+        Minimum projected radial distance.
+    maximum_radius : float, optional
+        Maximum projected radial distance.
+    radius_std : float, optional
+        Standard deviation of projected radial distances.
+    planarity_rmsd : float, optional
+        Root-mean-square atom deviation from the fitted ring plane.
+    maximum_planarity_deviation : float, optional
+        Maximum absolute atom deviation from the ring plane.
+    atom_count : int, optional
+        Number of atoms defining the ring.
+    metadata : Mapping[str, Any], optional
+        Additional ring information, such as residue name, ring type or atom
+        identifiers.
+
+    Attributes
+    ----------
+    coordinates : numpy.ndarray
+        Ring coordinate matrix with shape ``(N, 3)``.
+    centroid : numpy.ndarray
+        Ring centroid.
+    plane : Plane
+        Best-fitting plane.
+    normal : numpy.ndarray
+        Unit normal of the fitted plane.
+    radius : float
+        Mean projected ring radius.
+    planarity_rmsd : float
+        RMS deviation from the fitted plane.
+
+    Notes
+    -----
+    This class describes ring geometry only. Aromaticity perception and ring
+    atom detection should be performed by a separate chemical-topology layer.
+    """
+
+    coordinates: CoordinateCollection
+    centroid: Optional[Coordinate] = None
+    plane: Optional[Plane] = None
+    radius: Optional[float] = None
+    minimum_radius: Optional[float] = None
+    maximum_radius: Optional[float] = None
+    radius_std: Optional[float] = None
+    planarity_rmsd: Optional[float] = None
+    maximum_planarity_deviation: Optional[float] = None
+    atom_count: Optional[int] = None
+    metadata: GeometryMetadata = field(
+        default_factory=dict
+    )
+
+    def __post_init__(
+        self,
+    ) -> None:
+        """
+        Validate coordinates and calculate missing ring properties.
+        """
+
+        coordinate_matrix = (
+            _validate_ring_coordinates(
+                self.coordinates,
+                scene=False,
+                minimum_atoms=3,
+                tolerance=DEFAULT_TOLERANCE,
+                name="Ring coordinates",
+                copy=True,
+            )
+        )
+
+        coordinate_matrix.setflags(
+            write=False
+        )
+
+        object.__setattr__(
+            self,
+            "coordinates",
+            coordinate_matrix,
+        )
+
+        calculated_atom_count = int(
+            coordinate_matrix.shape[0]
+        )
+
+        if self.atom_count is None:
+            atom_count_value = (
+                calculated_atom_count
+            )
+
+        else:
+            if isinstance(
+                self.atom_count,
+                (
+                    bool,
+                    np.bool_,
+                ),
+            ) or not isinstance(
+                self.atom_count,
+                (
+                    int,
+                    np.integer,
+                ),
+            ):
+                raise TypeError(
+                    "atom_count must be an integer."
+                )
+
+            atom_count_value = int(
+                self.atom_count
+            )
+
+            if (
+                atom_count_value
+                != calculated_atom_count
+            ):
+                raise ValueError(
+                    "atom_count does not match the "
+                    "number of coordinate rows."
+                )
+
+        object.__setattr__(
+            self,
+            "atom_count",
+            atom_count_value,
+        )
+
+        if self.plane is None:
+            plane_object = fit_plane(
+                coordinate_matrix,
+                scene=False,
+                tolerance=DEFAULT_TOLERANCE,
+                metadata={
+                    "geometry_type": (
+                        "molecular_ring"
+                    ),
+                },
+            )
+
+        elif isinstance(
+            self.plane,
+            Plane,
+        ):
+            plane_object = self.plane
+
+        else:
+            plane_object = _coerce_plane(
+                self.plane,
+                scene=False,
+                tolerance=DEFAULT_TOLERANCE,
+                name="Ring plane",
+            )
+
+        object.__setattr__(
+            self,
+            "plane",
+            plane_object,
+        )
+
+        if self.centroid is None:
+            centroid_coordinate = np.mean(
+                coordinate_matrix,
+                axis=0,
+                dtype=np.float64,
+            )
+
+            # Ensure that the stored ring center belongs exactly to the
+            # best-fitting plane, even for slightly non-planar rings.
+            centroid_coordinate = (
+                project_point_on_plane(
+                    centroid_coordinate,
+                    plane_object,
+                    scene=False,
+                    copy=True,
+                )
+            )
+
+        else:
+            centroid_coordinate = as_coordinate(
+                self.centroid,
+                scene=False,
+                name="Ring centroid",
+                copy=True,
+            )
+
+            centroid_coordinate = (
+                project_point_on_plane(
+                    centroid_coordinate,
+                    plane_object,
+                    scene=False,
+                    copy=True,
+                )
+            )
+
+        centroid_coordinate.setflags(
+            write=False
+        )
+
+        object.__setattr__(
+            self,
+            "centroid",
+            centroid_coordinate,
+        )
+
+        radial_distances = (
+            _ring_radial_distances(
+                coordinate_matrix,
+                center=centroid_coordinate,
+                plane=plane_object,
+                scene=False,
+                projected=True,
+            )
+        )
+
+        calculated_radius = float(
+            np.mean(
+                radial_distances
+            )
+        )
+
+        calculated_minimum_radius = float(
+            np.min(
+                radial_distances
+            )
+        )
+
+        calculated_maximum_radius = float(
+            np.max(
+                radial_distances
+            )
+        )
+
+        calculated_radius_std = float(
+            np.std(
+                radial_distances,
+                ddof=0,
+            )
+        )
+
+        radius_values = {
+            "radius": (
+                self.radius,
+                calculated_radius,
+            ),
+            "minimum_radius": (
+                self.minimum_radius,
+                calculated_minimum_radius,
+            ),
+            "maximum_radius": (
+                self.maximum_radius,
+                calculated_maximum_radius,
+            ),
+            "radius_std": (
+                self.radius_std,
+                calculated_radius_std,
+            ),
+        }
+
+        for (
+            attribute_name,
+            (
+                supplied_value,
+                calculated_value,
+            ),
+        ) in radius_values.items():
+            if supplied_value is None:
+                final_value = calculated_value
+
+            else:
+                final_value = (
+                    _validate_nonnegative_finite_value(
+                        supplied_value,
+                        name=attribute_name,
+                    )
+                )
+
+            object.__setattr__(
+                self,
+                attribute_name,
+                final_value,
+            )
+
+        signed_deviations = (
+            (
+                coordinate_matrix
+                - plane_object.point
+            )
+            @ plane_object.normal
+        )
+
+        absolute_deviations = np.abs(
+            signed_deviations
+        )
+
+        calculated_planarity_rmsd = float(
+            math.sqrt(
+                max(
+                    float(
+                        np.mean(
+                            signed_deviations ** 2
+                        )
+                    ),
+                    0.0,
+                )
+            )
+        )
+
+        calculated_maximum_deviation = float(
+            np.max(
+                absolute_deviations
+            )
+        )
+
+        if self.planarity_rmsd is None:
+            planarity_rmsd_value = (
+                calculated_planarity_rmsd
+            )
+
+        else:
+            planarity_rmsd_value = (
+                _validate_nonnegative_finite_value(
+                    self.planarity_rmsd,
+                    name="planarity_rmsd",
+                )
+            )
+
+        if (
+            self.maximum_planarity_deviation
+            is None
+        ):
+            maximum_planarity_value = (
+                calculated_maximum_deviation
+            )
+
+        else:
+            maximum_planarity_value = (
+                _validate_nonnegative_finite_value(
+                    self.maximum_planarity_deviation,
+                    name=(
+                        "maximum_planarity_deviation"
+                    ),
+                )
+            )
+
+        object.__setattr__(
+            self,
+            "planarity_rmsd",
+            planarity_rmsd_value,
+        )
+
+        object.__setattr__(
+            self,
+            "maximum_planarity_deviation",
+            maximum_planarity_value,
+        )
+
+        if self.metadata is None:
+            metadata_value: Dict[str, Any] = {}
+
+        elif isinstance(
+            self.metadata,
+            Mapping,
+        ):
+            metadata_value = dict(
+                self.metadata
+            )
+
+        else:
+            raise TypeError(
+                "metadata must be a mapping or None."
+            )
+
+        metadata_value.setdefault(
+            "geometry_type",
+            "aromatic_ring",
+        )
+
+        object.__setattr__(
+            self,
+            "metadata",
+            metadata_value,
+        )
+
+    @property
+    def normal(
+        self,
+    ) -> Vector3D:
+        """
+        Return the unit normal of the ring plane.
+
+        Returns
+        -------
+        numpy.ndarray
+            Read-only plane normal.
+        """
+
+        return self.plane.normal
+
+    @property
+    def diameter(
+        self,
+    ) -> float:
+        """
+        Return twice the mean ring radius.
+
+        Returns
+        -------
+        float
+            Approximate ring diameter.
+        """
+
+        return 2.0 * float(
+            self.radius
+        )
+
+    @property
+    def radius_range(
+        self,
+    ) -> float:
+        """
+        Return the range of projected ring radii.
+
+        Returns
+        -------
+        float
+            Difference between maximum and minimum radii.
+        """
+
+        return float(
+            self.maximum_radius
+            - self.minimum_radius
+        )
+
+    @property
+    def is_planar(
+        self,
+    ) -> bool:
+        """
+        Return whether the ring satisfies a default planarity criterion.
+
+        Returns
+        -------
+        bool
+            ``True`` when the RMS deviation is no greater than
+            ``DEFAULT_DISTANCE_TOLERANCE``.
+
+        Notes
+        -----
+        ``DEFAULT_DISTANCE_TOLERANCE`` is a numerical tolerance, not a
+        chemically validated aromatic-ring cutoff. Interaction analyses
+        should normally use :meth:`check_planarity` with an explicit cutoff.
+        """
+
+        return bool(
+            self.planarity_rmsd
+            <= DEFAULT_DISTANCE_TOLERANCE
+        )
+
+    def check_planarity(
+        self,
+        *,
+        rmsd_cutoff: Optional[float] = None,
+        maximum_deviation_cutoff: Optional[
+            float
+        ] = None,
+    ) -> bool:
+        """
+        Test the ring against explicit planarity cutoffs.
+
+        Parameters
+        ----------
+        rmsd_cutoff : float, optional
+            Maximum accepted RMS deviation.
+        maximum_deviation_cutoff : float, optional
+            Maximum accepted single-atom deviation.
+
+        Returns
+        -------
+        bool
+            Whether all supplied criteria are satisfied.
+
+        Raises
+        ------
+        ValueError
+            If neither cutoff is supplied.
+        """
+
+        if (
+            rmsd_cutoff is None
+            and maximum_deviation_cutoff is None
+        ):
+            raise ValueError(
+                "Provide rmsd_cutoff, "
+                "maximum_deviation_cutoff, or both."
+            )
+
+        results: List[bool] = []
+
+        if rmsd_cutoff is not None:
+            validated_rmsd_cutoff = (
+                _validate_nonnegative_finite_value(
+                    rmsd_cutoff,
+                    name="rmsd_cutoff",
+                )
+            )
+
+            results.append(
+                self.planarity_rmsd
+                <= validated_rmsd_cutoff
+            )
+
+        if (
+            maximum_deviation_cutoff
+            is not None
+        ):
+            validated_maximum_cutoff = (
+                _validate_nonnegative_finite_value(
+                    maximum_deviation_cutoff,
+                    name=(
+                        "maximum_deviation_cutoff"
+                    ),
+                )
+            )
+
+            results.append(
+                self.maximum_planarity_deviation
+                <= validated_maximum_cutoff
+            )
+
+        return all(
+            results
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_coordinates: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Convert the ring geometry to a JSON-compatible dictionary.
+
+        Parameters
+        ----------
+        include_coordinates : bool, optional
+            Whether atomic coordinates should be included.
+
+        Returns
+        -------
+        dict
+            Serialized ring geometry.
+        """
+
+        result: Dict[str, Any] = {
+            "centroid": self.centroid.tolist(),
+            "normal": self.normal.tolist(),
+            "radius": self.radius,
+            "minimum_radius": (
+                self.minimum_radius
+            ),
+            "maximum_radius": (
+                self.maximum_radius
+            ),
+            "radius_std": self.radius_std,
+            "diameter": self.diameter,
+            "radius_range": (
+                self.radius_range
+            ),
+            "planarity_rmsd": (
+                self.planarity_rmsd
+            ),
+            "maximum_planarity_deviation": (
+                self.maximum_planarity_deviation
+            ),
+            "atom_count": self.atom_count,
+            "plane": self.plane.to_dict(),
+            "metadata": dict(
+                self.metadata
+            ),
+        }
+
+        if include_coordinates:
+            result[
+                "coordinates"
+            ] = self.coordinates.tolist()
+
+        return result
+
+
+# -----------------------------------------------------------------------------
+# Ring centroid
+# -----------------------------------------------------------------------------
+
+def ring_centroid(
+    ring: Union[
+        RingGeometry,
+        CoordinateCollection,
+    ],
+    *,
+    scene: bool = True,
+    project_to_plane: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    copy: bool = False,
+) -> Vector3D:
+    """
+    Return the geometric centroid of a molecular ring.
+
+    Parameters
+    ----------
+    ring : RingGeometry or CoordinateCollection
+        Existing ring geometry or ring atoms.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    project_to_plane : bool, optional
+        Whether the arithmetic centroid should be projected onto the fitted
+        ring plane.
+    tolerance : float, optional
+        Numerical tolerance used during plane fitting.
+    copy : bool, optional
+        Whether a copied coordinate must be returned.
+
+    Returns
+    -------
+    numpy.ndarray
+        Ring centroid with shape ``(3,)``.
+    """
+
+    if isinstance(
+        ring,
+        RingGeometry,
+    ):
+        result = ring.centroid
+
+    else:
+        coordinates = (
+            _validate_ring_coordinates(
+                ring,
+                scene=scene,
+                minimum_atoms=3,
+                tolerance=tolerance,
+                name="Ring coordinates",
+                copy=False,
+            )
+        )
+
+        result = np.mean(
+            coordinates,
+            axis=0,
+            dtype=np.float64,
+        )
+
+        if project_to_plane:
+            fitted_plane = fit_plane(
+                coordinates,
+                scene=False,
+                tolerance=tolerance,
+            )
+
+            result = project_point_on_plane(
+                result,
+                fitted_plane,
+                scene=False,
+                copy=False,
+            )
+
+    if copy:
+        return np.array(
+            result,
+            dtype=np.float64,
+            copy=True,
+        )
+
+    return np.asarray(
+        result,
+        dtype=np.float64,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Ring normal
+# -----------------------------------------------------------------------------
+
+def ring_normal(
+    ring: Union[
+        RingGeometry,
+        CoordinateCollection,
+    ],
+    *,
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    reference_normal: Optional[
+        Coordinate
+    ] = None,
+    copy: bool = False,
+) -> Vector3D:
+    """
+    Return the unit normal of a molecular ring.
+
+    Parameters
+    ----------
+    ring : RingGeometry or CoordinateCollection
+        Existing ring geometry or ring atoms.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Numerical tolerance used during plane fitting.
+    reference_normal : Coordinate, optional
+        Preferred normal orientation.
+    copy : bool, optional
+        Whether a copied vector must be returned.
+
+    Returns
+    -------
+    numpy.ndarray
+        Unit ring normal.
+    """
+
+    if isinstance(
+        ring,
+        RingGeometry,
+    ):
+        normal_vector = ring.normal
+
+        if reference_normal is not None:
+            normal_vector = (
+                _orient_plane_normal(
+                    normal_vector,
+                    reference_normal=(
+                        reference_normal
+                    ),
+                    scene=scene,
+                    tolerance=tolerance,
+                )
+            )
+
+    else:
+        normal_vector = plane_normal(
+            ring,
+            scene=scene,
+            tolerance=tolerance,
+            reference_normal=(
+                reference_normal
+            ),
+            copy=False,
+        )
+
+    if copy:
+        return np.array(
+            normal_vector,
+            dtype=np.float64,
+            copy=True,
+        )
+
+    return np.asarray(
+        normal_vector,
+        dtype=np.float64,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Ring radius
+# -----------------------------------------------------------------------------
+
+def ring_radius(
+    ring: Union[
+        RingGeometry,
+        CoordinateCollection,
+    ],
+    *,
+    scene: bool = True,
+    method: Literal[
+        "mean",
+        "median",
+        "minimum",
+        "maximum",
+        "rms",
+    ] = "mean",
+    projected: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    return_all: bool = False,
+) -> Union[
+    float,
+    Tuple[
+        float,
+        FloatArray,
+    ],
+]:
+    """
+    Return a representative molecular-ring radius.
+
+    Parameters
+    ----------
+    ring : RingGeometry or CoordinateCollection
+        Existing ring geometry or ring atoms.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    method : {"mean", "median", "minimum", "maximum", "rms"}, optional
+        Reduction applied to atom-centroid radial distances.
+    projected : bool, optional
+        Whether atoms and centroid should be projected onto the ring plane
+        before calculating distances.
+    tolerance : float, optional
+        Numerical tolerance used during plane fitting.
+    return_all : bool, optional
+        Whether all atom-specific radial distances should also be returned.
+
+    Returns
+    -------
+    float
+        Representative ring radius.
+
+    tuple
+        ``(radius, radial_distances)`` when ``return_all=True``.
+
+    Raises
+    ------
+    ValueError
+        If ``method`` is unsupported.
+    """
+
+    if not isinstance(
+        method,
+        str,
+    ):
+        raise TypeError(
+            "method must be a string."
+        )
+
+    normalized_method = (
+        method.strip().lower()
+    )
+
+    supported_methods = {
+        "mean",
+        "median",
+        "minimum",
+        "maximum",
+        "rms",
+    }
+
+    if (
+        normalized_method
+        not in supported_methods
+    ):
+        raise ValueError(
+            "method must be one of: "
+            "'mean', 'median', 'minimum', "
+            "'maximum' or 'rms'."
+        )
+
+    if (
+        isinstance(
+            ring,
+            RingGeometry,
+        )
+        and projected
+    ):
+        coordinates = ring.coordinates
+        center_coordinate = ring.centroid
+        plane_object = ring.plane
+
+    else:
+        coordinates = (
+            _validate_ring_coordinates(
+                ring.coordinates
+                if isinstance(
+                    ring,
+                    RingGeometry,
+                )
+                else ring,
+                scene=scene,
+                minimum_atoms=3,
+                tolerance=tolerance,
+                name="Ring coordinates",
+                copy=False,
+            )
+        )
+
+        plane_object = (
+            fit_plane(
+                coordinates,
+                scene=False,
+                tolerance=tolerance,
+            )
+            if projected
+            else None
+        )
+
+        center_coordinate = np.mean(
+            coordinates,
+            axis=0,
+            dtype=np.float64,
+        )
+
+    radial_distances = (
+        _ring_radial_distances(
+            coordinates,
+            center=center_coordinate,
+            plane=plane_object,
+            scene=False,
+            projected=projected,
+            tolerance=tolerance,
+        )
+    )
+
+    if normalized_method == "mean":
+        radius_value = float(
+            np.mean(
+                radial_distances
+            )
+        )
+
+    elif normalized_method == "median":
+        radius_value = float(
+            np.median(
+                radial_distances
+            )
+        )
+
+    elif normalized_method == "minimum":
+        radius_value = float(
+            np.min(
+                radial_distances
+            )
+        )
+
+    elif normalized_method == "maximum":
+        radius_value = float(
+            np.max(
+                radial_distances
+            )
+        )
+
+    else:
+        radius_value = float(
+            math.sqrt(
+                float(
+                    np.mean(
+                        radial_distances ** 2
+                    )
+                )
+            )
+        )
+
+    if return_all:
+        return (
+            radius_value,
+            radial_distances,
+        )
+
+    return radius_value
+
+
+# -----------------------------------------------------------------------------
+# Ring planarity
+# -----------------------------------------------------------------------------
+
+def ring_planarity(
+    ring: Union[
+        RingGeometry,
+        CoordinateCollection,
+    ],
+    *,
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    metric: Literal[
+        "rmsd",
+        "maximum",
+        "mean",
+        "median",
+    ] = "rmsd",
+    return_deviations: bool = False,
+) -> Union[
+    float,
+    Tuple[
+        float,
+        FloatArray,
+    ],
+]:
+    """
+    Quantify the deviation of ring atoms from their best-fitting plane.
+
+    Parameters
+    ----------
+    ring : RingGeometry or CoordinateCollection
+        Existing ring geometry or ring atoms.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Numerical tolerance used during plane fitting.
+    metric : {"rmsd", "maximum", "mean", "median"}, optional
+        Statistic calculated from absolute atom-to-plane deviations.
+    return_deviations : bool, optional
+        Whether individual absolute deviations should also be returned.
+
+    Returns
+    -------
+    float
+        Ring planarity metric. Smaller values indicate greater planarity.
+
+    tuple
+        ``(planarity_value, absolute_deviations)`` when
+        ``return_deviations=True``.
+
+    Notes
+    -----
+    This function returns a geometric deviation, not a boolean aromaticity or
+    planarity classification. Chemical cutoffs should be selected explicitly
+    by the interaction-analysis layer.
+    """
+
+    if not isinstance(
+        metric,
+        str,
+    ):
+        raise TypeError(
+            "metric must be a string."
+        )
+
+    normalized_metric = (
+        metric.strip().lower()
+    )
+
+    supported_metrics = {
+        "rmsd",
+        "maximum",
+        "mean",
+        "median",
+    }
+
+    if (
+        normalized_metric
+        not in supported_metrics
+    ):
+        raise ValueError(
+            "metric must be one of: "
+            "'rmsd', 'maximum', 'mean' "
+            "or 'median'."
+        )
+
+    if isinstance(
+        ring,
+        RingGeometry,
+    ):
+        coordinates = ring.coordinates
+        plane_object = ring.plane
+
+    else:
+        coordinates = (
+            _validate_ring_coordinates(
+                ring,
+                scene=scene,
+                minimum_atoms=3,
+                tolerance=tolerance,
+                name="Ring coordinates",
+                copy=False,
+            )
+        )
+
+        plane_object = fit_plane(
+            coordinates,
+            scene=False,
+            tolerance=tolerance,
+        )
+
+    signed_deviations = (
+        (
+            coordinates
+            - plane_object.point
+        )
+        @ plane_object.normal
+    )
+
+    absolute_deviations = np.abs(
+        signed_deviations
+    ).astype(
+        np.float64,
+        copy=False,
+    )
+
+    if normalized_metric == "rmsd":
+        planarity_value = float(
+            math.sqrt(
+                max(
+                    float(
+                        np.mean(
+                            signed_deviations ** 2
+                        )
+                    ),
+                    0.0,
+                )
+            )
+        )
+
+    elif normalized_metric == "maximum":
+        planarity_value = float(
+            np.max(
+                absolute_deviations
+            )
+        )
+
+    elif normalized_metric == "mean":
+        planarity_value = float(
+            np.mean(
+                absolute_deviations
+            )
+        )
+
+    else:
+        planarity_value = float(
+            np.median(
+                absolute_deviations
+            )
+        )
+
+    if return_deviations:
+        return (
+            planarity_value,
+            absolute_deviations,
+        )
+
+    return planarity_value
+
+
+# -----------------------------------------------------------------------------
+# Public module interface
+# -----------------------------------------------------------------------------
+
+_SECTION_8_PUBLIC_NAMES = [
+    "RingGeometry",
+    "ring_centroid",
+    "ring_normal",
+    "ring_radius",
+    "ring_planarity",
+]
+
+for public_name in _SECTION_8_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(
+            public_name
+        )
+
+
+# =============================================================================
+# End of Section 8
+# =============================================================================
+
+
+
+# =============================================================================
+# Section 9 — Pi Interactions
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Pi-stacking geometry representation
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class PiStackGeometry:
+    """
+    Represent the geometric relationship between two molecular rings.
+
+    Parameters
+    ----------
+    ring_1 : RingGeometry
+        First ring geometry.
+    ring_2 : RingGeometry
+        Second ring geometry.
+    centroid_distance : float
+        Euclidean distance between ring centroids.
+    plane_angle : float
+        Unoriented angle between the ring planes.
+    normal_angle : float
+        Oriented angle between the ring normals.
+    interplanar_distance_1 : float
+        Absolute distance from the second-ring centroid to the first-ring
+        plane.
+    interplanar_distance_2 : float
+        Absolute distance from the first-ring centroid to the second-ring
+        plane.
+    lateral_offset_1 : float
+        Distance between the second-ring centroid projection on the first-ring
+        plane and the first-ring centroid.
+    lateral_offset_2 : float
+        Distance between the first-ring centroid projection on the second-ring
+        plane and the second-ring centroid.
+    mean_interplanar_distance : float
+        Mean of the two centroid-to-plane distances.
+    mean_lateral_offset : float
+        Mean of the two lateral offsets.
+    minimum_atom_distance : float, optional
+        Minimum distance between atoms from the two rings.
+    classification : str
+        Geometric classification of the interaction.
+    distance_compatible : bool
+        Whether the centroid distance satisfies the supplied distance cutoff.
+    metadata : Mapping[str, Any], optional
+        Additional interaction metadata.
+
+    Notes
+    -----
+    The geometric classification is based primarily on the angle between the
+    ring planes and the lateral displacement between their centroids.
+
+    Distance compatibility is stored separately because geometric orientation
+    and interaction plausibility are distinct concepts. Two distant rings may
+    be parallel without constituting a physically relevant pi interaction.
+    """
+
+    ring_1: RingGeometry
+    ring_2: RingGeometry
+
+    centroid_distance: float
+    plane_angle: float
+    normal_angle: float
+
+    interplanar_distance_1: float
+    interplanar_distance_2: float
+
+    lateral_offset_1: float
+    lateral_offset_2: float
+
+    mean_interplanar_distance: float
+    mean_lateral_offset: float
+
+    minimum_atom_distance: Optional[
+        float
+    ] = None
+
+    classification: Literal[
+        "parallel",
+        "parallel-displaced",
+        "T-shaped",
+        "intermediate",
+    ] = "intermediate"
+
+    distance_compatible: bool = True
+
+    metadata: GeometryMetadata = field(
+        default_factory=dict
+    )
+
+    def __post_init__(
+        self,
+    ) -> None:
+        """
+        Validate interaction geometry attributes.
+        """
+
+        if not isinstance(
+            self.ring_1,
+            RingGeometry,
+        ):
+            raise TypeError(
+                "ring_1 must be a RingGeometry instance."
+            )
+
+        if not isinstance(
+            self.ring_2,
+            RingGeometry,
+        ):
+            raise TypeError(
+                "ring_2 must be a RingGeometry instance."
+            )
+
+        nonnegative_attributes = (
+            "centroid_distance",
+            "plane_angle",
+            "normal_angle",
+            "interplanar_distance_1",
+            "interplanar_distance_2",
+            "lateral_offset_1",
+            "lateral_offset_2",
+            "mean_interplanar_distance",
+            "mean_lateral_offset",
+        )
+
+        for attribute_name in (
+            nonnegative_attributes
+        ):
+            validated_value = (
+                _validate_nonnegative_finite_value(
+                    getattr(
+                        self,
+                        attribute_name,
+                    ),
+                    name=attribute_name,
+                )
+            )
+
+            object.__setattr__(
+                self,
+                attribute_name,
+                validated_value,
+            )
+
+        if self.minimum_atom_distance is not None:
+            minimum_atom_distance_value = (
+                _validate_nonnegative_finite_value(
+                    self.minimum_atom_distance,
+                    name="minimum_atom_distance",
+                )
+            )
+
+            object.__setattr__(
+                self,
+                "minimum_atom_distance",
+                minimum_atom_distance_value,
+            )
+
+        supported_classifications = {
+            "parallel",
+            "parallel-displaced",
+            "T-shaped",
+            "intermediate",
+        }
+
+        if (
+            self.classification
+            not in supported_classifications
+        ):
+            raise ValueError(
+                "classification must be one of: "
+                "'parallel', 'parallel-displaced', "
+                "'T-shaped' or 'intermediate'."
+            )
+
+        if not isinstance(
+            self.distance_compatible,
+            (
+                bool,
+                np.bool_,
+            ),
+        ):
+            raise TypeError(
+                "distance_compatible must be boolean."
+            )
+
+        object.__setattr__(
+            self,
+            "distance_compatible",
+            bool(
+                self.distance_compatible
+            ),
+        )
+
+        if self.metadata is None:
+            metadata_value: Dict[str, Any] = {}
+
+        elif isinstance(
+            self.metadata,
+            Mapping,
+        ):
+            metadata_value = dict(
+                self.metadata
+            )
+
+        else:
+            raise TypeError(
+                "metadata must be a mapping or None."
+            )
+
+        metadata_value.setdefault(
+            "geometry_type",
+            "pi_stacking",
+        )
+
+        object.__setattr__(
+            self,
+            "metadata",
+            metadata_value,
+        )
+
+    @property
+    def is_parallel_like(
+        self,
+    ) -> bool:
+        """
+        Return whether the rings have a parallel-like arrangement.
+
+        Returns
+        -------
+        bool
+            ``True`` for parallel and parallel-displaced geometries.
+        """
+
+        return self.classification in {
+            "parallel",
+            "parallel-displaced",
+        }
+
+    @property
+    def is_t_shaped(
+        self,
+    ) -> bool:
+        """
+        Return whether the rings have a T-shaped arrangement.
+
+        Returns
+        -------
+        bool
+            ``True`` when the interaction is classified as T-shaped.
+        """
+
+        return (
+            self.classification
+            == "T-shaped"
+        )
+
+    @property
+    def is_interaction_candidate(
+        self,
+    ) -> bool:
+        """
+        Return whether the geometry is distance-compatible.
+
+        Returns
+        -------
+        bool
+            Distance compatibility flag.
+
+        Notes
+        -----
+        This property does not independently validate chemical aromaticity,
+        atom types or energetic favorability.
+        """
+
+        return self.distance_compatible
+
+    def to_dict(
+        self,
+        *,
+        include_rings: bool = False,
+        include_coordinates: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Convert the pi-stacking geometry to a serializable dictionary.
+
+        Parameters
+        ----------
+        include_rings : bool, optional
+            Whether serialized ring geometries should be included.
+        include_coordinates : bool, optional
+            Whether ring coordinates should be included when
+            ``include_rings=True``.
+
+        Returns
+        -------
+        dict
+            Serialized interaction geometry.
+        """
+
+        result: Dict[str, Any] = {
+            "classification": (
+                self.classification
+            ),
+            "distance_compatible": (
+                self.distance_compatible
+            ),
+            "centroid_distance": (
+                self.centroid_distance
+            ),
+            "plane_angle": (
+                self.plane_angle
+            ),
+            "normal_angle": (
+                self.normal_angle
+            ),
+            "interplanar_distance_1": (
+                self.interplanar_distance_1
+            ),
+            "interplanar_distance_2": (
+                self.interplanar_distance_2
+            ),
+            "mean_interplanar_distance": (
+                self.mean_interplanar_distance
+            ),
+            "lateral_offset_1": (
+                self.lateral_offset_1
+            ),
+            "lateral_offset_2": (
+                self.lateral_offset_2
+            ),
+            "mean_lateral_offset": (
+                self.mean_lateral_offset
+            ),
+            "minimum_atom_distance": (
+                self.minimum_atom_distance
+            ),
+            "metadata": dict(
+                self.metadata
+            ),
+        }
+
+        if include_rings:
+            result["ring_1"] = (
+                self.ring_1.to_dict(
+                    include_coordinates=(
+                        include_coordinates
+                    ),
+                )
+            )
+
+            result["ring_2"] = (
+                self.ring_2.to_dict(
+                    include_coordinates=(
+                        include_coordinates
+                    ),
+                )
+            )
+
+        return result
+
+
+# -----------------------------------------------------------------------------
+# Internal pi-interaction helpers
+# -----------------------------------------------------------------------------
+
+def _coerce_ring_geometry(
+    ring: Union[
+        RingGeometry,
+        CoordinateCollection,
+    ],
+    *,
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    name: str = "Ring",
+) -> RingGeometry:
+    """
+    Convert a ring-like input to :class:`RingGeometry`.
+
+    Parameters
+    ----------
+    ring : RingGeometry or CoordinateCollection
+        Existing ring geometry or ring coordinates.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Numerical geometry tolerance.
+    name : str, optional
+        Name used in validation messages.
+
+    Returns
+    -------
+    RingGeometry
+        Validated ring geometry.
+    """
+
+    if isinstance(
+        ring,
+        RingGeometry,
+    ):
+        return ring
+
+    try:
+        coordinates = (
+            _validate_ring_coordinates(
+                ring,
+                scene=scene,
+                minimum_atoms=3,
+                tolerance=tolerance,
+                name=f"{name} coordinates",
+                copy=True,
+            )
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ) as error:
+        raise type(error)(
+            f"Invalid {name.lower()}: {error}"
+        ) from error
+
+    return RingGeometry(
+        coordinates=coordinates,
+        metadata={
+            "source": "coordinate_collection",
+        },
+    )
+
+
+def _classify_pi_stack(
+    plane_angle: float,
+    lateral_offset: float,
+    *,
+    parallel_angle_cutoff: float,
+    parallel_offset_cutoff: float,
+    t_shaped_angle_cutoff: float,
+) -> Literal[
+    "parallel",
+    "parallel-displaced",
+    "T-shaped",
+    "intermediate",
+]:
+    """
+    Classify a ring-ring orientation.
+
+    Parameters
+    ----------
+    plane_angle : float
+        Unoriented angle between planes in degrees.
+    lateral_offset : float
+        Representative lateral centroid displacement.
+    parallel_angle_cutoff : float
+        Maximum plane angle accepted as parallel-like.
+    parallel_offset_cutoff : float
+        Maximum lateral displacement accepted as directly parallel.
+    t_shaped_angle_cutoff : float
+        Minimum plane angle accepted as T-shaped.
+
+    Returns
+    -------
+    str
+        Pi-stacking classification.
+    """
+
+    if plane_angle <= parallel_angle_cutoff:
+        if (
+            lateral_offset
+            <= parallel_offset_cutoff
+        ):
+            return "parallel"
+
+        return "parallel-displaced"
+
+    if plane_angle >= t_shaped_angle_cutoff:
+        return "T-shaped"
+
+    return "intermediate"
+
+
+def _validate_pi_angle_cutoff(
+    value: Any,
+    *,
+    name: str,
+) -> float:
+    """
+    Validate an angular cutoff in degrees.
+
+    Parameters
+    ----------
+    value : Any
+        Angular cutoff.
+    name : str
+        Parameter name.
+
+    Returns
+    -------
+    float
+        Validated angle in degrees.
+    """
+
+    validated_value = (
+        _validate_nonnegative_finite_value(
+            value,
+            name=name,
+        )
+    )
+
+    if validated_value > 90.0:
+        raise ValueError(
+            f"{name} cannot exceed 90 degrees "
+            "for an unoriented plane angle."
+        )
+
+    return validated_value
+
+
+# -----------------------------------------------------------------------------
+# Pi-stacking geometry
+# -----------------------------------------------------------------------------
+
+def pi_stack_geometry(
+    ring_1: Union[
+        RingGeometry,
+        CoordinateCollection,
+    ],
+    ring_2: Union[
+        RingGeometry,
+        CoordinateCollection,
+    ],
+    *,
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    parallel_angle_cutoff: float = 30.0,
+    parallel_offset_cutoff: float = 1.5,
+    t_shaped_angle_cutoff: float = 60.0,
+    maximum_centroid_distance: Optional[
+        float
+    ] = 6.0,
+    calculate_minimum_atom_distance: bool = True,
+    metadata: Optional[
+        Mapping[str, Any]
+    ] = None,
+) -> PiStackGeometry:
+    """
+    Calculate and classify the geometry between two molecular rings.
+
+    Parameters
+    ----------
+    ring_1 : RingGeometry or CoordinateCollection
+        First ring.
+    ring_2 : RingGeometry or CoordinateCollection
+        Second ring.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Numerical tolerance used in geometric operations.
+    parallel_angle_cutoff : float, optional
+        Maximum angle between planes for a parallel-like arrangement.
+    parallel_offset_cutoff : float, optional
+        Maximum representative lateral displacement for classification as
+        directly parallel. Larger displacements remain parallel-like but are
+        classified as parallel-displaced.
+    t_shaped_angle_cutoff : float, optional
+        Minimum plane angle for a T-shaped arrangement.
+    maximum_centroid_distance : float, optional
+        Maximum centroid distance considered compatible with a candidate
+        interaction. Set to ``None`` to disable distance screening.
+    calculate_minimum_atom_distance : bool, optional
+        Whether the minimum interatomic ring-ring distance should be
+        calculated.
+    metadata : Mapping[str, Any], optional
+        Additional interaction metadata.
+
+    Returns
+    -------
+    PiStackGeometry
+        Structured ring-ring interaction geometry.
+
+    Raises
+    ------
+    ValueError
+        If cutoffs are invalid or geometrically inconsistent.
+
+    Notes
+    -----
+    Classification rules are:
+
+    - ``parallel``:
+      plane angle is at most ``parallel_angle_cutoff`` and lateral offset is
+      at most ``parallel_offset_cutoff``;
+    - ``parallel-displaced``:
+      plane angle is at most ``parallel_angle_cutoff`` but lateral offset is
+      larger than ``parallel_offset_cutoff``;
+    - ``T-shaped``:
+      plane angle is at least ``t_shaped_angle_cutoff``;
+    - ``intermediate``:
+      geometry lies between the parallel-like and T-shaped angular regions.
+
+    The default cutoffs are configurable geometric defaults. They should not
+    be interpreted as universal physicochemical criteria.
+    """
+
+    numeric_tolerance = (
+        _validate_angular_tolerance(
+            tolerance,
+            name="tolerance",
+        )
+    )
+
+    parallel_angle_value = (
+        _validate_pi_angle_cutoff(
+            parallel_angle_cutoff,
+            name="parallel_angle_cutoff",
+        )
+    )
+
+    t_shaped_angle_value = (
+        _validate_pi_angle_cutoff(
+            t_shaped_angle_cutoff,
+            name="t_shaped_angle_cutoff",
+        )
+    )
+
+    if (
+        parallel_angle_value
+        >= t_shaped_angle_value
+    ):
+        raise ValueError(
+            "parallel_angle_cutoff must be smaller "
+            "than t_shaped_angle_cutoff."
+        )
+
+    parallel_offset_value = (
+        _validate_nonnegative_finite_value(
+            parallel_offset_cutoff,
+            name="parallel_offset_cutoff",
+        )
+    )
+
+    if maximum_centroid_distance is None:
+        maximum_centroid_distance_value = None
+
+    else:
+        maximum_centroid_distance_value = (
+            _validate_nonnegative_finite_value(
+                maximum_centroid_distance,
+                name="maximum_centroid_distance",
+            )
+        )
+
+    first_ring = _coerce_ring_geometry(
+        ring_1,
+        scene=scene,
+        tolerance=numeric_tolerance,
+        name="First ring",
+    )
+
+    second_ring = _coerce_ring_geometry(
+        ring_2,
+        scene=scene,
+        tolerance=numeric_tolerance,
+        name="Second ring",
+    )
+
+    centroid_distance_value = float(
+        distance(
+            first_ring.centroid,
+            second_ring.centroid,
+        )
+    )
+
+    plane_angle_value = (
+        angle_between_planes(
+            first_ring.plane,
+            second_ring.plane,
+            unit="degrees",
+            scene=False,
+            tolerance=numeric_tolerance,
+            oriented=False,
+        )
+    )
+
+    normal_angle_value = vector_angle(
+        first_ring.normal,
+        second_ring.normal,
+        unit="degrees",
+        scene=False,
+        tolerance=numeric_tolerance,
+    )
+
+    projected_second_on_first = (
+        project_point_on_plane(
+            second_ring.centroid,
+            first_ring.plane,
+            scene=False,
+            copy=False,
+        )
+    )
+
+    projected_first_on_second = (
+        project_point_on_plane(
+            first_ring.centroid,
+            second_ring.plane,
+            scene=False,
+            copy=False,
+        )
+    )
+
+    interplanar_distance_1 = (
+        point_plane_distance(
+            second_ring.centroid,
+            first_ring.plane,
+            scene=False,
+            signed=False,
+        )
+    )
+
+    interplanar_distance_2 = (
+        point_plane_distance(
+            first_ring.centroid,
+            second_ring.plane,
+            scene=False,
+            signed=False,
+        )
+    )
+
+    lateral_offset_1 = float(
+        distance(
+            first_ring.centroid,
+            projected_second_on_first,
+        )
+    )
+
+    lateral_offset_2 = float(
+        distance(
+            second_ring.centroid,
+            projected_first_on_second,
+        )
+    )
+
+    mean_interplanar_distance = float(
+        (
+            interplanar_distance_1
+            + interplanar_distance_2
+        )
+        / 2.0
+    )
+
+    mean_lateral_offset = float(
+        (
+            lateral_offset_1
+            + lateral_offset_2
+        )
+        / 2.0
+    )
+
+    classification = _classify_pi_stack(
+        plane_angle_value,
+        mean_lateral_offset,
+        parallel_angle_cutoff=(
+            parallel_angle_value
+        ),
+        parallel_offset_cutoff=(
+            parallel_offset_value
+        ),
+        t_shaped_angle_cutoff=(
+            t_shaped_angle_value
+        ),
+    )
+
+    if maximum_centroid_distance_value is None:
+        distance_compatible = True
+
+    else:
+        distance_compatible = (
+            centroid_distance_value
+            <= maximum_centroid_distance_value
+        )
+
+    if calculate_minimum_atom_distance:
+        minimum_atom_distance_value = (
+            minimum_distance(
+                first_ring.coordinates,
+                second_ring.coordinates,
+                scene=False,
+                squared=False,
+            )
+        )
+
+    else:
+        minimum_atom_distance_value = None
+
+    interaction_metadata: Dict[
+        str,
+        Any,
+    ] = {}
+
+    if metadata is not None:
+        if not isinstance(
+            metadata,
+            Mapping,
+        ):
+            raise TypeError(
+                "metadata must be a mapping or None."
+            )
+
+        interaction_metadata.update(
+            metadata
+        )
+
+    interaction_metadata.setdefault(
+        "parallel_angle_cutoff",
+        parallel_angle_value,
+    )
+
+    interaction_metadata.setdefault(
+        "parallel_offset_cutoff",
+        parallel_offset_value,
+    )
+
+    interaction_metadata.setdefault(
+        "t_shaped_angle_cutoff",
+        t_shaped_angle_value,
+    )
+
+    interaction_metadata.setdefault(
+        "maximum_centroid_distance",
+        maximum_centroid_distance_value,
+    )
+
+    return PiStackGeometry(
+        ring_1=first_ring,
+        ring_2=second_ring,
+        centroid_distance=(
+            centroid_distance_value
+        ),
+        plane_angle=plane_angle_value,
+        normal_angle=normal_angle_value,
+        interplanar_distance_1=(
+            interplanar_distance_1
+        ),
+        interplanar_distance_2=(
+            interplanar_distance_2
+        ),
+        lateral_offset_1=(
+            lateral_offset_1
+        ),
+        lateral_offset_2=(
+            lateral_offset_2
+        ),
+        mean_interplanar_distance=(
+            mean_interplanar_distance
+        ),
+        mean_lateral_offset=(
+            mean_lateral_offset
+        ),
+        minimum_atom_distance=(
+            minimum_atom_distance_value
+        ),
+        classification=classification,
+        distance_compatible=(
+            distance_compatible
+        ),
+        metadata=interaction_metadata,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Cation-pi geometry
+# -----------------------------------------------------------------------------
+
+def cation_pi_geometry(
+    ring: Union[
+        RingGeometry,
+        CoordinateCollection,
+    ],
+    cation: Coordinate,
+    *,
+    scene: bool = True,
+    tolerance: float = DEFAULT_TOLERANCE,
+    maximum_distance: Optional[
+        float
+    ] = 6.0,
+    maximum_lateral_offset: Optional[
+        float
+    ] = None,
+    return_projection: bool = True,
+    metadata: Optional[
+        Mapping[str, Any]
+    ] = None,
+) -> Dict[str, Any]:
+    """
+    Calculate the geometry between a cation and a molecular ring.
+
+    Parameters
+    ----------
+    ring : RingGeometry or CoordinateCollection
+        Aromatic or pi-system ring.
+    cation : Coordinate
+        Cation position or atom-like object.
+    scene : bool, optional
+        Whether scene-transformed coordinates should be preferred.
+    tolerance : float, optional
+        Numerical geometry tolerance.
+    maximum_distance : float, optional
+        Maximum centroid-to-cation distance considered compatible with a
+        candidate interaction. Set to ``None`` to disable this criterion.
+    maximum_lateral_offset : float, optional
+        Maximum accepted in-plane displacement from the ring centroid. When
+        omitted, the ring's maximum radius is used.
+    return_projection : bool, optional
+        Whether the projected cation coordinate should be included.
+    metadata : Mapping[str, Any], optional
+        Additional metadata.
+
+    Returns
+    -------
+    dict
+        Dictionary containing:
+
+        - ``centroid_distance``;
+        - ``plane_distance``;
+        - ``lateral_offset``;
+        - ``approach_angle``;
+        - ``signed_plane_distance``;
+        - ``within_ring_projection``;
+        - ``distance_compatible``;
+        - ``geometry_compatible``;
+        - ``projected_point`` when requested.
+
+    Notes
+    -----
+    ``approach_angle`` is the acute angle between the centroid-to-cation
+    vector and the ring normal:
+
+    - values near 0 degrees indicate a face-on approach;
+    - values near 90 degrees indicate an edge-on approach.
+    """
+
+    numeric_tolerance = (
+        _validate_angular_tolerance(
+            tolerance,
+            name="tolerance",
+        )
+    )
+
+    ring_geometry = _coerce_ring_geometry(
+        ring,
+        scene=scene,
+        tolerance=numeric_tolerance,
+        name="Ring",
+    )
+
+    cation_coordinate = as_coordinate(
+        cation,
+        scene=scene,
+        name="Cation coordinate",
+        copy=False,
+    )
+
+    centroid_to_cation = vector_between(
+        ring_geometry.centroid,
+        cation_coordinate,
+        scene=False,
+        copy=False,
+    )
+
+    centroid_distance_value = vector_norm(
+        centroid_to_cation,
+        scene=False,
+    )
+
+    if centroid_distance_value <= numeric_tolerance:
+        approach_angle_value = 0.0
+
+    else:
+        oriented_angle = vector_angle(
+            centroid_to_cation,
+            ring_geometry.normal,
+            unit="degrees",
+            scene=False,
+            tolerance=numeric_tolerance,
+        )
+
+        approach_angle_value = min(
+            oriented_angle,
+            180.0 - oriented_angle,
+        )
+
+    (
+        projected_point,
+        signed_plane_distance,
+    ) = project_point_on_plane(
+        cation_coordinate,
+        ring_geometry.plane,
+        scene=False,
+        return_distance=True,
+        copy=True,
+    )
+
+    plane_distance_value = abs(
+        signed_plane_distance
+    )
+
+    lateral_offset_value = float(
+        distance(
+            projected_point,
+            ring_geometry.centroid,
+        )
+    )
+
+    if maximum_distance is None:
+        maximum_distance_value = None
+        distance_compatible = True
+
+    else:
+        maximum_distance_value = (
+            _validate_nonnegative_finite_value(
+                maximum_distance,
+                name="maximum_distance",
+            )
+        )
+
+        distance_compatible = (
+            centroid_distance_value
+            <= maximum_distance_value
+        )
+
+    if maximum_lateral_offset is None:
+        maximum_lateral_offset_value = (
+            float(
+                ring_geometry.maximum_radius
+            )
+        )
+
+    else:
+        maximum_lateral_offset_value = (
+            _validate_nonnegative_finite_value(
+                maximum_lateral_offset,
+                name="maximum_lateral_offset",
+            )
+        )
+
+    within_ring_projection = (
+        lateral_offset_value
+        <= maximum_lateral_offset_value
+    )
+
+    geometry_compatible = (
+        distance_compatible
+        and within_ring_projection
+    )
+
+    interaction_metadata: Dict[
+        str,
+        Any,
+    ] = {}
+
+    if metadata is not None:
+        if not isinstance(
+            metadata,
+            Mapping,
+        ):
+            raise TypeError(
+                "metadata must be a mapping or None."
+            )
+
+        interaction_metadata.update(
+            metadata
+        )
+
+    interaction_metadata.setdefault(
+        "geometry_type",
+        "cation_pi",
+    )
+
+    interaction_metadata.setdefault(
+        "maximum_distance",
+        maximum_distance_value,
+    )
+
+    interaction_metadata.setdefault(
+        "maximum_lateral_offset",
+        maximum_lateral_offset_value,
+    )
+
+    result: Dict[str, Any] = {
+        "ring_centroid": (
+            ring_geometry.centroid.tolist()
+        ),
+        "ring_normal": (
+            ring_geometry.normal.tolist()
+        ),
+        "cation_coordinate": (
+            cation_coordinate.tolist()
+        ),
+        "centroid_distance": float(
+            centroid_distance_value
+        ),
+        "plane_distance": float(
+            plane_distance_value
+        ),
+        "signed_plane_distance": float(
+            signed_plane_distance
+        ),
+        "lateral_offset": float(
+            lateral_offset_value
+        ),
+        "approach_angle": float(
+            approach_angle_value
+        ),
+        "within_ring_projection": bool(
+            within_ring_projection
+        ),
+        "distance_compatible": bool(
+            distance_compatible
+        ),
+        "geometry_compatible": bool(
+            geometry_compatible
+        ),
+        "metadata": (
+            interaction_metadata
+        ),
+    }
+
+    if return_projection:
+        result["projected_point"] = (
+            projected_point.tolist()
+        )
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# Public module interface
+# -----------------------------------------------------------------------------
+
+_SECTION_9_PUBLIC_NAMES = [
+    "PiStackGeometry",
+    "pi_stack_geometry",
+    "cation_pi_geometry",
+]
+
+for public_name in _SECTION_9_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(
+            public_name
+        )
+
+
+# =============================================================================
+# End of Section 9
+# =============================================================================
+
+
+
 
 
 
