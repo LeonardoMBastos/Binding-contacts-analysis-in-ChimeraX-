@@ -23300,3 +23300,20784 @@ for public_name in _SECTION_10_PUBLIC_NAMES:
 # =============================================================================
 
 
+# =============================================================================
+# Section 11 — DockModel integration
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# DockModel integration constants
+# -----------------------------------------------------------------------------
+
+DEFAULT_DOCKMODEL_HBOND_RESULT_ATTRIBUTE: Final[
+    str
+] = "hydrogen_bond_result"
+
+DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE: Final[
+    str
+] = "hydrogen_bond_results"
+
+DEFAULT_DOCKMODEL_ACTIVE_POSE_ATTRIBUTE: Final[
+    str
+] = "active_pose"
+
+DEFAULT_DOCKMODEL_RECEPTOR_ATTRIBUTE_CANDIDATES: Final[
+    Tuple[
+        str,
+        ...,
+    ]
+] = (
+    "receptor",
+    "receptor_model",
+    "protein",
+    "target",
+    "macromolecule",
+)
+
+DEFAULT_DOCKMODEL_LIGAND_ATTRIBUTE_CANDIDATES: Final[
+    Tuple[
+        str,
+        ...,
+    ]
+] = (
+    "ligand",
+    "ligand_model",
+    "pose",
+    "active_ligand",
+    "current_ligand",
+)
+
+DEFAULT_DOCKMODEL_POSE_ATTRIBUTE_CANDIDATES: Final[
+    Tuple[
+        str,
+        ...,
+    ]
+] = (
+    "poses",
+    "ligand_poses",
+    "docked_poses",
+    "models",
+    "ligands",
+)
+
+DEFAULT_DOCKMODEL_POSE_RESULT_KEY_PREFIX: Final[
+    str
+] = "pose"
+
+DEFAULT_ATTACH_HBOND_METHODS_TO_DOCKMODEL: Final[
+    bool
+] = True
+
+DEFAULT_STORE_HBOND_RESULTS_ON_DOCKMODEL: Final[
+    bool
+] = True
+
+DEFAULT_CONTINUE_ON_POSE_ERROR: Final[
+    bool
+] = True
+
+
+# -----------------------------------------------------------------------------
+# DockModel result container
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class DockModelHydrogenBondResults:
+    """
+    Hydrogen-bond results associated with multiple docking poses.
+
+    Parameters
+    ----------
+    results : mapping
+        Mapping from pose identifiers to
+        :class:`HydrogenBondAnalysisResult` objects.
+    pose_order : sequence of str, optional
+        Deterministic pose-key order.
+    failed_poses : mapping, optional
+        Mapping from pose identifiers to error messages.
+    metadata : mapping, optional
+        Additional analysis metadata.
+
+    Notes
+    -----
+    This container is immutable. The underlying mappings are converted to
+    read-only mapping proxies.
+    """
+
+    results: Mapping[
+        str,
+        HydrogenBondAnalysisResult,
+    ]
+
+    pose_order: Sequence[
+        str
+    ] = field(
+        default_factory=tuple
+    )
+
+    failed_poses: Mapping[
+        str,
+        str,
+    ] = field(
+        default_factory=dict
+    )
+
+    metadata: Mapping[
+        str,
+        Any,
+    ] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(
+        self,
+    ) -> None:
+        """Validate and freeze multi-pose results."""
+
+        normalized_results: Dict[
+            str,
+            HydrogenBondAnalysisResult,
+        ] = {}
+
+        for key, result in self.results.items():
+            normalized_key = str(
+                key
+            ).strip()
+
+            if not normalized_key:
+                raise ValueError(
+                    "Pose result keys cannot be empty."
+                )
+
+            if not isinstance(
+                result,
+                HydrogenBondAnalysisResult,
+            ):
+                raise TypeError(
+                    "All DockModel hydrogen-bond results must be "
+                    "HydrogenBondAnalysisResult instances."
+                )
+
+            normalized_results[
+                normalized_key
+            ] = result
+
+        normalized_pose_order = tuple(
+            str(
+                key
+            ).strip()
+            for key in self.pose_order
+            if str(
+                key
+            ).strip()
+        )
+
+        if not normalized_pose_order:
+            normalized_pose_order = tuple(
+                normalized_results
+            )
+
+        unknown_keys = [
+            key
+            for key in normalized_pose_order
+            if key not in normalized_results
+        ]
+
+        if unknown_keys:
+            raise ValueError(
+                "pose_order contains keys that are absent from results: "
+                + ", ".join(
+                    unknown_keys
+                )
+            )
+
+        missing_order_keys = [
+            key
+            for key in normalized_results
+            if key not in normalized_pose_order
+        ]
+
+        if missing_order_keys:
+            normalized_pose_order = (
+                normalized_pose_order
+                + tuple(
+                    missing_order_keys
+                )
+            )
+
+        normalized_failed_poses = {
+            str(
+                key
+            ).strip(): str(
+                message
+            )
+            for key, message
+            in self.failed_poses.items()
+            if str(
+                key
+            ).strip()
+        }
+
+        object.__setattr__(
+            self,
+            "results",
+            MappingProxyType(
+                normalized_results
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "pose_order",
+            normalized_pose_order,
+        )
+
+        object.__setattr__(
+            self,
+            "failed_poses",
+            MappingProxyType(
+                normalized_failed_poses
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_metadata(
+                self.metadata
+            ),
+        )
+
+    def __len__(
+        self,
+    ) -> int:
+        """Return the number of successful pose analyses."""
+
+        return len(
+            self.results
+        )
+
+    def __iter__(
+        self,
+    ) -> Iterator[
+        str
+    ]:
+        """Iterate over successful pose keys."""
+
+        return iter(
+            self.pose_order
+        )
+
+    def __getitem__(
+        self,
+        pose_key: str,
+    ) -> HydrogenBondAnalysisResult:
+        """
+        Return a result by pose key.
+
+        Parameters
+        ----------
+        pose_key : str
+            Pose identifier.
+
+        Returns
+        -------
+        HydrogenBondAnalysisResult
+            Pose analysis result.
+        """
+
+        return self.results[
+            str(
+                pose_key
+            )
+        ]
+
+    @property
+    def successful_pose_count(
+        self,
+    ) -> int:
+        """Return the number of successfully analyzed poses."""
+
+        return len(
+            self.results
+        )
+
+    @property
+    def failed_pose_count(
+        self,
+    ) -> int:
+        """Return the number of failed pose analyses."""
+
+        return len(
+            self.failed_poses
+        )
+
+    @property
+    def total_hydrogen_bond_count(
+        self,
+    ) -> int:
+        """Return the sum of hydrogen bonds across all poses."""
+
+        return sum(
+            len(
+                result.hydrogen_bonds
+            )
+            for result in self.results.values()
+        )
+
+    @property
+    def mean_hydrogen_bond_count(
+        self,
+    ) -> Optional[
+        np.float64
+    ]:
+        """
+        Return the mean number of hydrogen bonds per successful pose.
+
+        Returns
+        -------
+        numpy.float64 or None
+            Mean interaction count.
+        """
+
+        if not self.results:
+            return None
+
+        return np.float64(
+            self.total_hydrogen_bond_count
+            / len(
+                self.results
+            )
+        )
+
+    def get(
+        self,
+        pose_key: str,
+        default: Optional[
+            HydrogenBondAnalysisResult
+        ] = None,
+    ) -> Optional[
+        HydrogenBondAnalysisResult
+    ]:
+        """
+        Return a pose result with a default fallback.
+
+        Parameters
+        ----------
+        pose_key : str
+            Pose identifier.
+        default : HydrogenBondAnalysisResult or None, optional
+            Fallback value.
+
+        Returns
+        -------
+        HydrogenBondAnalysisResult or None
+            Matching result or fallback.
+        """
+
+        return self.results.get(
+            str(
+                pose_key
+            ),
+            default,
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_full_results: bool = False,
+    ) -> Dict[
+        str,
+        Any,
+    ]:
+        """
+        Serialize multi-pose hydrogen-bond results.
+
+        Parameters
+        ----------
+        include_full_results : bool, optional
+            Whether each complete analysis result should be serialized.
+
+        Returns
+        -------
+        dict
+            Serializable representation.
+        """
+
+        serialized_results: Dict[
+            str,
+            Any,
+        ] = {}
+
+        for pose_key in self.pose_order:
+            result = self.results[
+                pose_key
+            ]
+
+            if include_full_results:
+                serialized_results[
+                    pose_key
+                ] = result.to_dict()
+
+            else:
+                serialized_results[
+                    pose_key
+                ] = {
+                    "hydrogen_bond_count": len(
+                        result.hydrogen_bonds
+                    ),
+                    "residue_group_count": len(
+                        result.residue_hydrogen_bonds
+                    ),
+                    "statistics": (
+                        serialize_hydrogen_bond_statistics(
+                            result.statistics
+                        )
+                        if result.statistics
+                        else {}
+                    ),
+                }
+
+        return {
+            "results": serialized_results,
+            "pose_order": list(
+                self.pose_order
+            ),
+            "failed_poses": dict(
+                self.failed_poses
+            ),
+            "successful_pose_count": (
+                self.successful_pose_count
+            ),
+            "failed_pose_count": (
+                self.failed_pose_count
+            ),
+            "total_hydrogen_bond_count": (
+                self.total_hydrogen_bond_count
+            ),
+            "mean_hydrogen_bond_count": (
+                None
+                if self.mean_hydrogen_bond_count
+                is None
+                else float(
+                    self.mean_hydrogen_bond_count
+                )
+            ),
+            "metadata": dict(
+                self.metadata
+            ),
+        }
+
+
+# -----------------------------------------------------------------------------
+# Generic DockModel attribute helpers
+# -----------------------------------------------------------------------------
+
+def _get_first_available_attribute(
+    obj: Any,
+    attribute_names: Iterable[
+        str
+    ],
+    *,
+    default: Any = None,
+) -> Any:
+    """
+    Return the first non-None attribute found on an object.
+
+    Parameters
+    ----------
+    obj : Any
+        Object to inspect.
+    attribute_names : iterable of str
+        Candidate attribute names.
+    default : Any, optional
+        Fallback value.
+
+    Returns
+    -------
+    Any
+        First resolved attribute value or ``default``.
+    """
+
+    for attribute_name in attribute_names:
+        try:
+            value = getattr(
+                obj,
+                attribute_name,
+            )
+
+        except Exception:
+            continue
+
+        if value is not None:
+            return value
+
+    return default
+
+
+def _set_attribute_defensively(
+    obj: Any,
+    attribute_name: str,
+    value: Any,
+) -> bool:
+    """
+    Set an attribute defensively.
+
+    Parameters
+    ----------
+    obj : Any
+        Target object.
+    attribute_name : str
+        Attribute name.
+    value : Any
+        Attribute value.
+
+    Returns
+    -------
+    bool
+        Whether the attribute was successfully assigned.
+    """
+
+    try:
+        setattr(
+            obj,
+            attribute_name,
+            value,
+        )
+
+    except Exception:
+        return False
+
+    return True
+
+
+def _dockmodel_has_mapping_storage(
+    dock_model: Any,
+) -> bool:
+    """
+    Determine whether a DockModel exposes mutable metadata storage.
+
+    Parameters
+    ----------
+    dock_model : Any
+        DockModel-like object.
+
+    Returns
+    -------
+    bool
+        Mapping-storage availability.
+    """
+
+    try:
+        metadata = getattr(
+            dock_model,
+            "metadata",
+        )
+
+    except Exception:
+        return False
+
+    return isinstance(
+        metadata,
+        MutableMapping,
+    )
+
+
+def _store_dockmodel_metadata_value(
+    dock_model: Any,
+    key: str,
+    value: Any,
+) -> bool:
+    """
+    Store a value in DockModel metadata.
+
+    Parameters
+    ----------
+    dock_model : Any
+        DockModel-like object.
+    key : str
+        Metadata key.
+    value : Any
+        Metadata value.
+
+    Returns
+    -------
+    bool
+        Whether storage succeeded.
+    """
+
+    if not _dockmodel_has_mapping_storage(
+        dock_model
+    ):
+        return False
+
+    try:
+        dock_model.metadata[
+            key
+        ] = value
+
+    except Exception:
+        return False
+
+    return True
+
+
+# -----------------------------------------------------------------------------
+# Atom extraction
+# -----------------------------------------------------------------------------
+
+def _extract_atoms_from_structure_like(
+    structure: Any,
+    *,
+    name: str,
+) -> Tuple[
+    AtomLike,
+    ...,
+]:
+    """
+    Extract atoms from a structure-like object.
+
+    Parameters
+    ----------
+    structure : Any
+        Structure, atomic model, residue collection or atom collection.
+    name : str
+        Human-readable object name.
+
+    Returns
+    -------
+    tuple of atom-like
+        Extracted atoms.
+
+    Raises
+    ------
+    ValueError
+        If atoms cannot be extracted.
+    """
+
+    if structure is None:
+        raise ValueError(
+            f"{name} cannot be None."
+        )
+
+    # Direct atom collection.
+    try:
+        normalized_atoms = validate_atom_collection(
+            structure,
+            allow_empty=True,
+            require_coordinate=True,
+        )
+
+    except Exception:
+        normalized_atoms = None
+
+    if normalized_atoms is not None:
+        return tuple(
+            normalized_atoms
+        )
+
+    # ChimeraX AtomicStructure and similar models commonly expose .atoms.
+    atoms_value = _get_first_available_attribute(
+        structure,
+        (
+            "atoms",
+            "all_atoms",
+            "atom_collection",
+        ),
+        default=None,
+    )
+
+    if atoms_value is not None:
+        try:
+            normalized_atoms = validate_atom_collection(
+                atoms_value,
+                allow_empty=True,
+                require_coordinate=True,
+            )
+
+        except Exception as error:
+            raise ValueError(
+                f"Could not validate atoms extracted from {name}."
+            ) from error
+
+        return tuple(
+            normalized_atoms
+        )
+
+    # Residue collections.
+    residues_value = _get_first_available_attribute(
+        structure,
+        (
+            "residues",
+            "all_residues",
+        ),
+        default=None,
+    )
+
+    if residues_value is not None:
+        collected_atoms: List[
+            AtomLike
+        ] = []
+
+        try:
+            residues = tuple(
+                residues_value
+            )
+
+        except TypeError as error:
+            raise ValueError(
+                f"Could not iterate through residues in {name}."
+            ) from error
+
+        for residue in residues:
+            residue_atoms = _get_first_available_attribute(
+                residue,
+                (
+                    "atoms",
+                    "all_atoms",
+                ),
+                default=None,
+            )
+
+            if residue_atoms is None:
+                continue
+
+            try:
+                collected_atoms.extend(
+                    tuple(
+                        residue_atoms
+                    )
+                )
+
+            except TypeError:
+                continue
+
+        if collected_atoms:
+            return tuple(
+                validate_atom_collection(
+                    collected_atoms,
+                    allow_empty=False,
+                    require_coordinate=True,
+                )
+            )
+
+    raise ValueError(
+        f"Could not extract atoms from {name}."
+    )
+
+
+def get_dockmodel_receptor(
+    dock_model: DockModel,
+) -> Any:
+    """
+    Return the receptor object stored in a DockModel.
+
+    Parameters
+    ----------
+    dock_model : DockModel
+        DockModel instance.
+
+    Returns
+    -------
+    Any
+        Receptor structure-like object.
+
+    Raises
+    ------
+    ValueError
+        If a receptor cannot be resolved.
+    """
+
+    receptor = _get_first_available_attribute(
+        dock_model,
+        DEFAULT_DOCKMODEL_RECEPTOR_ATTRIBUTE_CANDIDATES,
+        default=None,
+    )
+
+    if receptor is None:
+        raise ValueError(
+            "Could not resolve a receptor from DockModel. "
+            "Expected one of the attributes: "
+            + ", ".join(
+                DEFAULT_DOCKMODEL_RECEPTOR_ATTRIBUTE_CANDIDATES
+            )
+            + "."
+        )
+
+    return receptor
+
+
+def get_dockmodel_receptor_atoms(
+    dock_model: DockModel,
+) -> Tuple[
+    AtomLike,
+    ...,
+]:
+    """
+    Extract receptor atoms from a DockModel.
+
+    Parameters
+    ----------
+    dock_model : DockModel
+        DockModel instance.
+
+    Returns
+    -------
+    tuple of atom-like
+        Receptor atoms.
+    """
+
+    receptor = get_dockmodel_receptor(
+        dock_model
+    )
+
+    atoms = _extract_atoms_from_structure_like(
+        receptor,
+        name="DockModel receptor",
+    )
+
+    if not atoms:
+        raise ValueError(
+            "The DockModel receptor contains no valid atoms."
+        )
+
+    return atoms
+
+
+def get_dockmodel_active_ligand(
+    dock_model: DockModel,
+) -> Any:
+    """
+    Return the active ligand or pose stored in a DockModel.
+
+    Parameters
+    ----------
+    dock_model : DockModel
+        DockModel instance.
+
+    Returns
+    -------
+    Any
+        Active ligand-like object.
+
+    Raises
+    ------
+    ValueError
+        If an active ligand cannot be resolved.
+    """
+
+    ligand = _get_first_available_attribute(
+        dock_model,
+        DEFAULT_DOCKMODEL_LIGAND_ATTRIBUTE_CANDIDATES,
+        default=None,
+    )
+
+    if ligand is not None:
+        return ligand
+
+    active_pose = _get_first_available_attribute(
+        dock_model,
+        (
+            DEFAULT_DOCKMODEL_ACTIVE_POSE_ATTRIBUTE,
+            "pose_index",
+            "active_pose_index",
+            "current_pose_index",
+        ),
+        default=None,
+    )
+
+    poses = get_dockmodel_poses(
+        dock_model,
+        allow_empty=True,
+    )
+
+    if not poses:
+        raise ValueError(
+            "Could not resolve an active ligand or pose from DockModel."
+        )
+
+    if active_pose is None:
+        return poses[
+            0
+        ][
+            1
+        ]
+
+    if isinstance(
+        active_pose,
+        (
+            int,
+            np.integer,
+        ),
+    ):
+        normalized_index = int(
+            active_pose
+        )
+
+        if (
+            0
+            <= normalized_index
+            < len(
+                poses
+            )
+        ):
+            return poses[
+                normalized_index
+            ][
+                1
+            ]
+
+        # Support one-based pose indices.
+        one_based_index = (
+            normalized_index
+            - 1
+        )
+
+        if (
+            0
+            <= one_based_index
+            < len(
+                poses
+            )
+        ):
+            return poses[
+                one_based_index
+            ][
+                1
+            ]
+
+    normalized_active_key = str(
+        active_pose
+    )
+
+    for pose_key, pose in poses:
+        if pose_key == normalized_active_key:
+            return pose
+
+    raise ValueError(
+        f"Could not resolve active pose {active_pose!r}."
+    )
+
+
+def get_dockmodel_active_ligand_atoms(
+    dock_model: DockModel,
+) -> Tuple[
+    AtomLike,
+    ...,
+]:
+    """
+    Extract atoms from the active DockModel ligand.
+
+    Parameters
+    ----------
+    dock_model : DockModel
+        DockModel instance.
+
+    Returns
+    -------
+    tuple of atom-like
+        Active ligand atoms.
+    """
+
+    ligand = get_dockmodel_active_ligand(
+        dock_model
+    )
+
+    atoms = _extract_atoms_from_structure_like(
+        ligand,
+        name="DockModel active ligand",
+    )
+
+    if not atoms:
+        raise ValueError(
+            "The active DockModel ligand contains no valid atoms."
+        )
+
+    return atoms
+
+
+# -----------------------------------------------------------------------------
+# Pose discovery and normalization
+# -----------------------------------------------------------------------------
+
+def _make_dockmodel_pose_key(
+    pose: Any,
+    index: int,
+) -> str:
+    """
+    Create a deterministic pose identifier.
+
+    Parameters
+    ----------
+    pose : Any
+        Pose-like object.
+    index : int
+        Zero-based pose index.
+
+    Returns
+    -------
+    str
+        Pose key.
+    """
+
+    candidate = _get_first_available_attribute(
+        pose,
+        (
+            "name",
+            "id_string",
+            "identifier",
+            "pose_id",
+            "model_id",
+            "id",
+        ),
+        default=None,
+    )
+
+    if candidate is not None:
+        normalized_candidate = str(
+            candidate
+        ).strip()
+
+        if normalized_candidate:
+            return normalized_candidate
+
+    return (
+        f"{DEFAULT_DOCKMODEL_POSE_RESULT_KEY_PREFIX}_"
+        f"{index + 1}"
+    )
+
+
+def _normalize_pose_mapping(
+    poses: Mapping[
+        Any,
+        Any,
+    ],
+) -> Tuple[
+    Tuple[
+        str,
+        Any,
+    ],
+    ...,
+]:
+    """
+    Normalize mapping-based poses.
+
+    Parameters
+    ----------
+    poses : mapping
+        Pose mapping.
+
+    Returns
+    -------
+    tuple
+        ``(pose_key, pose)`` entries.
+    """
+
+    normalized_entries: List[
+        Tuple[
+            str,
+            Any,
+        ]
+    ] = []
+
+    seen_keys: Set[
+        str
+    ] = set()
+
+    for index, (
+        raw_key,
+        pose,
+    ) in enumerate(
+        poses.items()
+    ):
+        pose_key = str(
+            raw_key
+        ).strip()
+
+        if not pose_key:
+            pose_key = _make_dockmodel_pose_key(
+                pose,
+                index,
+            )
+
+        original_key = pose_key
+        suffix = 2
+
+        while pose_key in seen_keys:
+            pose_key = (
+                f"{original_key}_{suffix}"
+            )
+            suffix += 1
+
+        seen_keys.add(
+            pose_key
+        )
+
+        normalized_entries.append(
+            (
+                pose_key,
+                pose,
+            )
+        )
+
+    return tuple(
+        normalized_entries
+    )
+
+
+def _normalize_pose_sequence(
+    poses: Iterable[
+        Any
+    ],
+) -> Tuple[
+    Tuple[
+        str,
+        Any,
+    ],
+    ...,
+]:
+    """
+    Normalize sequence-based poses.
+
+    Parameters
+    ----------
+    poses : iterable
+        Pose sequence.
+
+    Returns
+    -------
+    tuple
+        ``(pose_key, pose)`` entries.
+    """
+
+    normalized_entries: List[
+        Tuple[
+            str,
+            Any,
+        ]
+    ] = []
+
+    seen_keys: Set[
+        str
+    ] = set()
+
+    for index, pose in enumerate(
+        poses
+    ):
+        pose_key = _make_dockmodel_pose_key(
+            pose,
+            index,
+        )
+
+        original_key = pose_key
+        suffix = 2
+
+        while pose_key in seen_keys:
+            pose_key = (
+                f"{original_key}_{suffix}"
+            )
+            suffix += 1
+
+        seen_keys.add(
+            pose_key
+        )
+
+        normalized_entries.append(
+            (
+                pose_key,
+                pose,
+            )
+        )
+
+    return tuple(
+        normalized_entries
+    )
+
+
+def get_dockmodel_poses(
+    dock_model: DockModel,
+    *,
+    allow_empty: bool = False,
+) -> Tuple[
+    Tuple[
+        str,
+        Any,
+    ],
+    ...,
+]:
+    """
+    Return all poses stored in a DockModel.
+
+    Parameters
+    ----------
+    dock_model : DockModel
+        DockModel instance.
+    allow_empty : bool, optional
+        Whether an empty pose collection is allowed.
+
+    Returns
+    -------
+    tuple
+        ``(pose_key, pose_object)`` entries.
+
+    Raises
+    ------
+    ValueError
+        If poses cannot be resolved and ``allow_empty`` is ``False``.
+    """
+
+    poses_value = _get_first_available_attribute(
+        dock_model,
+        DEFAULT_DOCKMODEL_POSE_ATTRIBUTE_CANDIDATES,
+        default=None,
+    )
+
+    if poses_value is None:
+        active_ligand = _get_first_available_attribute(
+            dock_model,
+            DEFAULT_DOCKMODEL_LIGAND_ATTRIBUTE_CANDIDATES,
+            default=None,
+        )
+
+        if active_ligand is not None:
+            return (
+                (
+                    _make_dockmodel_pose_key(
+                        active_ligand,
+                        0,
+                    ),
+                    active_ligand,
+                ),
+            )
+
+        if allow_empty:
+            return ()
+
+        raise ValueError(
+            "Could not resolve docking poses from DockModel. "
+            "Expected one of the attributes: "
+            + ", ".join(
+                DEFAULT_DOCKMODEL_POSE_ATTRIBUTE_CANDIDATES
+            )
+            + "."
+        )
+
+    if isinstance(
+        poses_value,
+        Mapping,
+    ):
+        normalized_poses = _normalize_pose_mapping(
+            poses_value
+        )
+
+    else:
+        try:
+            normalized_poses = _normalize_pose_sequence(
+                poses_value
+            )
+
+        except TypeError:
+            normalized_poses = (
+                (
+                    _make_dockmodel_pose_key(
+                        poses_value,
+                        0,
+                    ),
+                    poses_value,
+                ),
+            )
+
+    if not normalized_poses and not allow_empty:
+        raise ValueError(
+            "DockModel contains no docking poses."
+        )
+
+    return normalized_poses
+
+
+def get_dockmodel_pose(
+    dock_model: DockModel,
+    pose: Union[
+        int,
+        str,
+        Any,
+    ],
+) -> Tuple[
+    str,
+    Any,
+]:
+    """
+    Resolve one DockModel pose.
+
+    Parameters
+    ----------
+    dock_model : DockModel
+        DockModel instance.
+    pose : int, str or pose-like
+        Pose index, pose key or pose object.
+
+    Returns
+    -------
+    tuple
+        ``(pose_key, pose_object)``.
+
+    Raises
+    ------
+    IndexError
+        If a numeric pose index is invalid.
+    KeyError
+        If a pose key is not found.
+    """
+
+    poses = get_dockmodel_poses(
+        dock_model
+    )
+
+    if isinstance(
+        pose,
+        (
+            int,
+            np.integer,
+        ),
+    ):
+        pose_index = int(
+            pose
+        )
+
+        if (
+            0
+            <= pose_index
+            < len(
+                poses
+            )
+        ):
+            return poses[
+                pose_index
+            ]
+
+        one_based_index = pose_index - 1
+
+        if (
+            0
+            <= one_based_index
+            < len(
+                poses
+            )
+        ):
+            return poses[
+                one_based_index
+            ]
+
+        raise IndexError(
+            f"Pose index {pose_index} is outside the valid range."
+        )
+
+    if isinstance(
+        pose,
+        str,
+    ):
+        normalized_key = pose.strip()
+
+        for pose_key, pose_object in poses:
+            if pose_key == normalized_key:
+                return (
+                    pose_key,
+                    pose_object,
+                )
+
+        raise KeyError(
+            f"Pose key {pose!r} was not found."
+        )
+
+    for pose_key, pose_object in poses:
+        if pose_object is pose:
+            return (
+                pose_key,
+                pose_object,
+            )
+
+    return (
+        _make_dockmodel_pose_key(
+            pose,
+            len(
+                poses
+            ),
+        ),
+        pose,
+    )
+
+
+def get_dockmodel_pose_atoms(
+    dock_model: DockModel,
+    pose: Union[
+        int,
+        str,
+        Any,
+    ],
+) -> Tuple[
+    str,
+    Tuple[
+        AtomLike,
+        ...,
+    ],
+]:
+    """
+    Resolve one pose and extract its atoms.
+
+    Parameters
+    ----------
+    dock_model : DockModel
+        DockModel instance.
+    pose : int, str or pose-like
+        Pose selector.
+
+    Returns
+    -------
+    tuple
+        Pose key and atom tuple.
+    """
+
+    pose_key, pose_object = get_dockmodel_pose(
+        dock_model,
+        pose,
+    )
+
+    atoms = _extract_atoms_from_structure_like(
+        pose_object,
+        name=f"DockModel pose {pose_key!r}",
+    )
+
+    if not atoms:
+        raise ValueError(
+            f"DockModel pose {pose_key!r} contains no valid atoms."
+        )
+
+    return (
+        pose_key,
+        atoms,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Result storage and retrieval
+# -----------------------------------------------------------------------------
+
+def store_dockmodel_hydrogen_bond_result(
+    dock_model: DockModel,
+    result: HydrogenBondAnalysisResult,
+    *,
+    pose_key: Optional[
+        str
+    ] = None,
+) -> bool:
+    """
+    Store a hydrogen-bond result on a DockModel.
+
+    Parameters
+    ----------
+    dock_model : DockModel
+        DockModel instance.
+    result : HydrogenBondAnalysisResult
+        Analysis result.
+    pose_key : str or None, optional
+        Pose key. When omitted, the result is stored as the active result.
+
+    Returns
+    -------
+    bool
+        Whether at least one storage strategy succeeded.
+    """
+
+    if not isinstance(
+        result,
+        HydrogenBondAnalysisResult,
+    ):
+        raise TypeError(
+            "result must be a HydrogenBondAnalysisResult instance."
+        )
+
+    storage_succeeded = False
+
+    if pose_key is None:
+        storage_succeeded |= _set_attribute_defensively(
+            dock_model,
+            DEFAULT_DOCKMODEL_HBOND_RESULT_ATTRIBUTE,
+            result,
+        )
+
+        storage_succeeded |= _store_dockmodel_metadata_value(
+            dock_model,
+            DEFAULT_DOCKMODEL_HBOND_RESULT_ATTRIBUTE,
+            result,
+        )
+
+        return storage_succeeded
+
+    normalized_pose_key = str(
+        pose_key
+    ).strip()
+
+    if not normalized_pose_key:
+        raise ValueError(
+            "pose_key cannot be empty."
+        )
+
+    existing_results = getattr(
+        dock_model,
+        DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE,
+        None,
+    )
+
+    if isinstance(
+        existing_results,
+        MutableMapping,
+    ):
+        try:
+            existing_results[
+                normalized_pose_key
+            ] = result
+
+            storage_succeeded = True
+
+        except Exception:
+            pass
+
+    else:
+        results_mapping = {
+            normalized_pose_key: result
+        }
+
+        storage_succeeded |= _set_attribute_defensively(
+            dock_model,
+            DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE,
+            results_mapping,
+        )
+
+    if _dockmodel_has_mapping_storage(
+        dock_model
+    ):
+        try:
+            metadata_results = dock_model.metadata.get(
+                DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE
+            )
+
+            if not isinstance(
+                metadata_results,
+                MutableMapping,
+            ):
+                metadata_results = {}
+
+                dock_model.metadata[
+                    DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE
+                ] = metadata_results
+
+            metadata_results[
+                normalized_pose_key
+            ] = result
+
+            storage_succeeded = True
+
+        except Exception:
+            pass
+
+    return storage_succeeded
+
+
+def store_dockmodel_hydrogen_bond_results(
+    dock_model: DockModel,
+    results: DockModelHydrogenBondResults,
+) -> bool:
+    """
+    Store multi-pose hydrogen-bond results on a DockModel.
+
+    Parameters
+    ----------
+    dock_model : DockModel
+        DockModel instance.
+    results : DockModelHydrogenBondResults
+        Multi-pose results.
+
+    Returns
+    -------
+    bool
+        Whether storage succeeded.
+    """
+
+    if not isinstance(
+        results,
+        DockModelHydrogenBondResults,
+    ):
+        raise TypeError(
+            "results must be a DockModelHydrogenBondResults instance."
+        )
+
+    storage_succeeded = _set_attribute_defensively(
+        dock_model,
+        DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE,
+        results,
+    )
+
+    storage_succeeded |= _store_dockmodel_metadata_value(
+        dock_model,
+        DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE,
+        results,
+    )
+
+    return storage_succeeded
+
+
+def get_stored_dockmodel_hydrogen_bond_result(
+    dock_model: DockModel,
+    *,
+    pose_key: Optional[
+        str
+    ] = None,
+    default: Any = None,
+) -> Any:
+    """
+    Retrieve a previously stored DockModel hydrogen-bond result.
+
+    Parameters
+    ----------
+    dock_model : DockModel
+        DockModel instance.
+    pose_key : str or None, optional
+        Pose key. When omitted, the active result is returned.
+    default : Any, optional
+        Fallback value.
+
+    Returns
+    -------
+    Any
+        Stored result or fallback.
+    """
+
+    if pose_key is None:
+        direct_result = getattr(
+            dock_model,
+            DEFAULT_DOCKMODEL_HBOND_RESULT_ATTRIBUTE,
+            None,
+        )
+
+        if isinstance(
+            direct_result,
+            HydrogenBondAnalysisResult,
+        ):
+            return direct_result
+
+        if _dockmodel_has_mapping_storage(
+            dock_model
+        ):
+            metadata_result = dock_model.metadata.get(
+                DEFAULT_DOCKMODEL_HBOND_RESULT_ATTRIBUTE
+            )
+
+            if isinstance(
+                metadata_result,
+                HydrogenBondAnalysisResult,
+            ):
+                return metadata_result
+
+        return default
+
+    normalized_pose_key = str(
+        pose_key
+    ).strip()
+
+    stored_results = getattr(
+        dock_model,
+        DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE,
+        None,
+    )
+
+    if isinstance(
+        stored_results,
+        DockModelHydrogenBondResults,
+    ):
+        return stored_results.get(
+            normalized_pose_key,
+            default,
+        )
+
+    if isinstance(
+        stored_results,
+        Mapping,
+    ):
+        return stored_results.get(
+            normalized_pose_key,
+            default,
+        )
+
+    if _dockmodel_has_mapping_storage(
+        dock_model
+    ):
+        metadata_results = dock_model.metadata.get(
+            DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE
+        )
+
+        if isinstance(
+            metadata_results,
+            DockModelHydrogenBondResults,
+        ):
+            return metadata_results.get(
+                normalized_pose_key,
+                default,
+            )
+
+        if isinstance(
+            metadata_results,
+            Mapping,
+        ):
+            return metadata_results.get(
+                normalized_pose_key,
+                default,
+            )
+
+    return default
+
+
+# -----------------------------------------------------------------------------
+# Single-pose DockModel analysis
+# -----------------------------------------------------------------------------
+
+def analyze_dockmodel_hydrogen_bonds(
+    dock_model: DockModel,
+    *,
+    ligand: Optional[
+        Any
+    ] = None,
+    receptor: Optional[
+        Any
+    ] = None,
+    store_result: bool = (
+        DEFAULT_STORE_HBOND_RESULTS_ON_DOCKMODEL
+    ),
+    residue_side: str = (
+        DEFAULT_RESIDUE_GROUP_SIDE
+    ),
+    classification_config: HydrogenBondClassificationConfig = (
+        DEFAULT_HBOND_CLASSIFICATION_CONFIG
+    ),
+    include_rejected: bool = False,
+    sort_by_strength: bool = True,
+    calculate_statistics: bool = True,
+    **analysis_kwargs: Any,
+) -> HydrogenBondAnalysisResult:
+    """
+    Analyze hydrogen bonds for the active DockModel ligand.
+
+    Parameters
+    ----------
+    dock_model : DockModel
+        DockModel instance.
+    ligand : Any or None, optional
+        Ligand override. When omitted, the active DockModel ligand is used.
+    receptor : Any or None, optional
+        Receptor override. When omitted, the DockModel receptor is used.
+    store_result : bool, optional
+        Whether the result should be attached to the DockModel.
+    residue_side : str, optional
+        Residue grouping side.
+    classification_config : HydrogenBondClassificationConfig, optional
+        Geometric classification configuration.
+    include_rejected : bool, optional
+        Whether rejected geometric interactions should be retained.
+    sort_by_strength : bool, optional
+        Whether interactions should be sorted by geometric strength.
+    calculate_statistics : bool, optional
+        Whether full statistics should be calculated.
+    **analysis_kwargs : Any
+        Additional arguments forwarded to hydrogen-bond detection.
+
+    Returns
+    -------
+    HydrogenBondAnalysisResult
+        Complete active-pose analysis result.
+    """
+
+    receptor_object = (
+        get_dockmodel_receptor(
+            dock_model
+        )
+        if receptor is None
+        else receptor
+    )
+
+    ligand_object = (
+        get_dockmodel_active_ligand(
+            dock_model
+        )
+        if ligand is None
+        else ligand
+    )
+
+    receptor_atoms = _extract_atoms_from_structure_like(
+        receptor_object,
+        name="DockModel receptor",
+    )
+
+    ligand_atoms = _extract_atoms_from_structure_like(
+        ligand_object,
+        name="DockModel ligand",
+    )
+
+    result_metadata = {
+        "dockmodel_integration": True,
+        "dockmodel_analysis_scope": (
+            "active_pose"
+        ),
+        "ligand_atom_count": len(
+            ligand_atoms
+        ),
+        "receptor_atom_count": len(
+            receptor_atoms
+        ),
+    }
+
+    supplied_metadata = analysis_kwargs.pop(
+        "metadata",
+        None,
+    )
+
+    if supplied_metadata:
+        result_metadata.update(
+            dict(
+                supplied_metadata
+            )
+        )
+
+    if calculate_statistics:
+        result = (
+            analyze_group_classify_and_summarize_hydrogen_bonds(
+                ligand_atoms,
+                receptor_atoms,
+                residue_side=residue_side,
+                classification_config=(
+                    classification_config
+                ),
+                include_rejected=include_rejected,
+                sort_by_strength=(
+                    sort_by_strength
+                ),
+                metadata=result_metadata,
+                **analysis_kwargs,
+            )
+        )
+
+    else:
+        result = (
+            analyze_group_and_classify_hydrogen_bonds(
+                ligand_atoms,
+                receptor_atoms,
+                residue_side=residue_side,
+                classification_config=(
+                    classification_config
+                ),
+                include_rejected=include_rejected,
+                sort_by_strength=(
+                    sort_by_strength
+                ),
+                metadata=result_metadata,
+                **analysis_kwargs,
+            )
+        )
+
+    if store_result:
+        store_dockmodel_hydrogen_bond_result(
+            dock_model,
+            result,
+        )
+
+    return result
+
+
+def analyze_dockmodel_pose_hydrogen_bonds(
+    dock_model: DockModel,
+    pose: Union[
+        int,
+        str,
+        Any,
+    ],
+    *,
+    receptor: Optional[
+        Any
+    ] = None,
+    store_result: bool = (
+        DEFAULT_STORE_HBOND_RESULTS_ON_DOCKMODEL
+    ),
+    residue_side: str = (
+        DEFAULT_RESIDUE_GROUP_SIDE
+    ),
+    classification_config: HydrogenBondClassificationConfig = (
+        DEFAULT_HBOND_CLASSIFICATION_CONFIG
+    ),
+    include_rejected: bool = False,
+    sort_by_strength: bool = True,
+    calculate_statistics: bool = True,
+    **analysis_kwargs: Any,
+) -> HydrogenBondAnalysisResult:
+    """
+    Analyze hydrogen bonds for one selected DockModel pose.
+
+    Parameters
+    ----------
+    dock_model : DockModel
+        DockModel instance.
+    pose : int, str or pose-like
+        Pose index, key or object.
+    receptor : Any or None, optional
+        Receptor override.
+    store_result : bool, optional
+        Whether the result should be stored by pose key.
+    residue_side : str, optional
+        Residue grouping side.
+    classification_config : HydrogenBondClassificationConfig, optional
+        Classification configuration.
+    include_rejected : bool, optional
+        Whether rejected interactions should be retained.
+    sort_by_strength : bool, optional
+        Whether interactions should be strength-sorted.
+    calculate_statistics : bool, optional
+        Whether statistics should be calculated.
+    **analysis_kwargs : Any
+        Additional detection arguments.
+
+    Returns
+    -------
+    HydrogenBondAnalysisResult
+        Selected-pose analysis result.
+    """
+
+    pose_key, ligand_atoms = get_dockmodel_pose_atoms(
+        dock_model,
+        pose,
+    )
+
+    receptor_object = (
+        get_dockmodel_receptor(
+            dock_model
+        )
+        if receptor is None
+        else receptor
+    )
+
+    receptor_atoms = _extract_atoms_from_structure_like(
+        receptor_object,
+        name="DockModel receptor",
+    )
+
+    result_metadata = {
+        "dockmodel_integration": True,
+        "dockmodel_analysis_scope": (
+            "single_pose"
+        ),
+        "pose_key": pose_key,
+        "ligand_atom_count": len(
+            ligand_atoms
+        ),
+        "receptor_atom_count": len(
+            receptor_atoms
+        ),
+    }
+
+    supplied_metadata = analysis_kwargs.pop(
+        "metadata",
+        None,
+    )
+
+    if supplied_metadata:
+        result_metadata.update(
+            dict(
+                supplied_metadata
+            )
+        )
+
+    if calculate_statistics:
+        result = (
+            analyze_group_classify_and_summarize_hydrogen_bonds(
+                ligand_atoms,
+                receptor_atoms,
+                residue_side=residue_side,
+                classification_config=(
+                    classification_config
+                ),
+                include_rejected=include_rejected,
+                sort_by_strength=(
+                    sort_by_strength
+                ),
+                metadata=result_metadata,
+                **analysis_kwargs,
+            )
+        )
+
+    else:
+        result = (
+            analyze_group_and_classify_hydrogen_bonds(
+                ligand_atoms,
+                receptor_atoms,
+                residue_side=residue_side,
+                classification_config=(
+                    classification_config
+                ),
+                include_rejected=include_rejected,
+                sort_by_strength=(
+                    sort_by_strength
+                ),
+                metadata=result_metadata,
+                **analysis_kwargs,
+            )
+        )
+
+    if store_result:
+        store_dockmodel_hydrogen_bond_result(
+            dock_model,
+            result,
+            pose_key=pose_key,
+        )
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# Multi-pose DockModel analysis
+# -----------------------------------------------------------------------------
+
+def analyze_all_dockmodel_pose_hydrogen_bonds(
+    dock_model: DockModel,
+    *,
+    receptor: Optional[
+        Any
+    ] = None,
+    pose_keys: Optional[
+        Iterable[
+            Union[
+                str,
+                int,
+            ]
+        ]
+    ] = None,
+    store_results: bool = (
+        DEFAULT_STORE_HBOND_RESULTS_ON_DOCKMODEL
+    ),
+    continue_on_error: bool = (
+        DEFAULT_CONTINUE_ON_POSE_ERROR
+    ),
+    residue_side: str = (
+        DEFAULT_RESIDUE_GROUP_SIDE
+    ),
+    classification_config: HydrogenBondClassificationConfig = (
+        DEFAULT_HBOND_CLASSIFICATION_CONFIG
+    ),
+    include_rejected: bool = False,
+    sort_by_strength: bool = True,
+    calculate_statistics: bool = True,
+    **analysis_kwargs: Any,
+) -> DockModelHydrogenBondResults:
+    """
+    Analyze hydrogen bonds for all DockModel poses.
+
+    Parameters
+    ----------
+    dock_model : DockModel
+        DockModel instance.
+    receptor : Any or None, optional
+        Receptor override.
+    pose_keys : iterable of str or int, optional
+        Selected poses. When omitted, all poses are analyzed.
+    store_results : bool, optional
+        Whether the multi-pose result should be attached to the DockModel.
+    continue_on_error : bool, optional
+        Whether analysis should continue after one pose fails.
+    residue_side : str, optional
+        Residue grouping side.
+    classification_config : HydrogenBondClassificationConfig, optional
+        Classification configuration.
+    include_rejected : bool, optional
+        Whether rejected interactions should be retained.
+    sort_by_strength : bool, optional
+        Whether interactions should be strength-sorted.
+    calculate_statistics : bool, optional
+        Whether full statistics should be calculated per pose.
+    **analysis_kwargs : Any
+        Additional detection arguments.
+
+    Returns
+    -------
+    DockModelHydrogenBondResults
+        Multi-pose result container.
+    """
+
+    available_poses = get_dockmodel_poses(
+        dock_model
+    )
+
+    if pose_keys is None:
+        selected_poses = available_poses
+
+    else:
+        selected_entries: List[
+            Tuple[
+                str,
+                Any,
+            ]
+        ] = []
+
+        seen_keys: Set[
+            str
+        ] = set()
+
+        for selector in pose_keys:
+            pose_key, pose_object = get_dockmodel_pose(
+                dock_model,
+                selector,
+            )
+
+            if pose_key in seen_keys:
+                continue
+
+            seen_keys.add(
+                pose_key
+            )
+
+            selected_entries.append(
+                (
+                    pose_key,
+                    pose_object,
+                )
+            )
+
+        selected_poses = tuple(
+            selected_entries
+        )
+
+    receptor_object = (
+        get_dockmodel_receptor(
+            dock_model
+        )
+        if receptor is None
+        else receptor
+    )
+
+    receptor_atoms = _extract_atoms_from_structure_like(
+        receptor_object,
+        name="DockModel receptor",
+    )
+
+    successful_results: Dict[
+        str,
+        HydrogenBondAnalysisResult,
+    ] = {}
+
+    failed_poses: Dict[
+        str,
+        str,
+    ] = {}
+
+    pose_order: List[
+        str
+    ] = []
+
+    for pose_key, pose_object in selected_poses:
+        pose_order.append(
+            pose_key
+        )
+
+        try:
+            ligand_atoms = _extract_atoms_from_structure_like(
+                pose_object,
+                name=f"DockModel pose {pose_key!r}",
+            )
+
+            pose_metadata = {
+                "dockmodel_integration": True,
+                "dockmodel_analysis_scope": (
+                    "all_poses"
+                ),
+                "pose_key": pose_key,
+                "ligand_atom_count": len(
+                    ligand_atoms
+                ),
+                "receptor_atom_count": len(
+                    receptor_atoms
+                ),
+            }
+
+            supplied_metadata = analysis_kwargs.get(
+                "metadata"
+            )
+
+            if supplied_metadata:
+                pose_metadata.update(
+                    dict(
+                        supplied_metadata
+                    )
+                )
+
+            pose_analysis_kwargs = dict(
+                analysis_kwargs
+            )
+
+            pose_analysis_kwargs[
+                "metadata"
+            ] = pose_metadata
+
+            if calculate_statistics:
+                result = (
+                    analyze_group_classify_and_summarize_hydrogen_bonds(
+                        ligand_atoms,
+                        receptor_atoms,
+                        residue_side=residue_side,
+                        classification_config=(
+                            classification_config
+                        ),
+                        include_rejected=(
+                            include_rejected
+                        ),
+                        sort_by_strength=(
+                            sort_by_strength
+                        ),
+                        **pose_analysis_kwargs,
+                    )
+                )
+
+            else:
+                result = (
+                    analyze_group_and_classify_hydrogen_bonds(
+                        ligand_atoms,
+                        receptor_atoms,
+                        residue_side=residue_side,
+                        classification_config=(
+                            classification_config
+                        ),
+                        include_rejected=(
+                            include_rejected
+                        ),
+                        sort_by_strength=(
+                            sort_by_strength
+                        ),
+                        **pose_analysis_kwargs,
+                    )
+                )
+
+            successful_results[
+                pose_key
+            ] = result
+
+        except Exception as error:
+            failed_poses[
+                pose_key
+            ] = (
+                f"{type(error).__name__}: {error}"
+            )
+
+            try:
+                _LOGGER.warning(
+                    "Hydrogen-bond analysis failed for pose "
+                    f"{pose_key!r}: {error}"
+                )
+
+            except Exception:
+                pass
+
+            if not continue_on_error:
+                raise
+
+    successful_pose_order = tuple(
+        pose_key
+        for pose_key in pose_order
+        if pose_key in successful_results
+    )
+
+    multi_pose_result = DockModelHydrogenBondResults(
+        results=successful_results,
+        pose_order=successful_pose_order,
+        failed_poses=failed_poses,
+        metadata={
+            "dockmodel_integration": True,
+            "requested_pose_count": len(
+                selected_poses
+            ),
+            "successful_pose_count": len(
+                successful_results
+            ),
+            "failed_pose_count": len(
+                failed_poses
+            ),
+            "residue_grouping_side": (
+                residue_side
+            ),
+            "statistics_calculated": bool(
+                calculate_statistics
+            ),
+            "include_rejected": bool(
+                include_rejected
+            ),
+            "sorted_by_strength": bool(
+                sort_by_strength
+            ),
+        },
+    )
+
+    if store_results:
+        store_dockmodel_hydrogen_bond_results(
+            dock_model,
+            multi_pose_result,
+        )
+
+    return multi_pose_result
+
+
+# -----------------------------------------------------------------------------
+# Multi-pose statistics and ranking
+# -----------------------------------------------------------------------------
+
+def rank_dockmodel_poses_by_hydrogen_bonds(
+    results: DockModelHydrogenBondResults,
+    *,
+    metric: str = "hydrogen_bond_count",
+    strongest_first: bool = True,
+) -> Tuple[
+    Tuple[
+        str,
+        HydrogenBondAnalysisResult,
+    ],
+    ...,
+]:
+    """
+    Rank docking poses by a hydrogen-bond metric.
+
+    Parameters
+    ----------
+    results : DockModelHydrogenBondResults
+        Multi-pose results.
+    metric : str, optional
+        Ranking metric. Supported values are:
+
+        - ``"hydrogen_bond_count"``;
+        - ``"strong_count"``;
+        - ``"accepted_count"``;
+        - ``"mean_strength"``;
+        - ``"maximum_strength"``.
+    strongest_first : bool, optional
+        Whether higher metric values should appear first.
+
+    Returns
+    -------
+    tuple
+        ``(pose_key, result)`` entries ordered by the selected metric.
+    """
+
+    if not isinstance(
+        results,
+        DockModelHydrogenBondResults,
+    ):
+        raise TypeError(
+            "results must be a DockModelHydrogenBondResults instance."
+        )
+
+    normalized_metric = str(
+        metric
+    ).strip().lower()
+
+    valid_metrics = {
+        "hydrogen_bond_count",
+        "strong_count",
+        "accepted_count",
+        "mean_strength",
+        "maximum_strength",
+    }
+
+    if normalized_metric not in valid_metrics:
+        raise ValueError(
+            f"Unsupported pose ranking metric {metric!r}. "
+            "Expected one of: "
+            + ", ".join(
+                sorted(
+                    valid_metrics
+                )
+            )
+            + "."
+        )
+
+    def metric_value(
+        result: HydrogenBondAnalysisResult,
+    ) -> np.float64:
+        if normalized_metric == "hydrogen_bond_count":
+            return np.float64(
+                len(
+                    result.hydrogen_bonds
+                )
+            )
+
+        statistics = result.statistics
+
+        if not statistics:
+            statistics = (
+                calculate_hydrogen_bond_statistics(
+                    result.hydrogen_bonds,
+                    residue_groups=(
+                        result.residue_hydrogen_bonds
+                    ),
+                )
+            )
+
+        if normalized_metric == "strong_count":
+            return np.float64(
+                statistics.get(
+                    "classification_counts",
+                    {},
+                ).get(
+                    HBOND_TYPE_STRONG,
+                    0,
+                )
+            )
+
+        if normalized_metric == "accepted_count":
+            return np.float64(
+                statistics.get(
+                    "accepted_hydrogen_bond_count",
+                    0,
+                )
+            )
+
+        strength_statistics = statistics.get(
+            "strength_statistics",
+            {},
+        )
+
+        if normalized_metric == "mean_strength":
+            value = strength_statistics.get(
+                "mean"
+            )
+
+        else:
+            value = strength_statistics.get(
+                "maximum"
+            )
+
+        if value is None:
+            return np.float64(
+                -np.inf
+            )
+
+        return np.float64(
+            value
+        )
+
+    ranked_entries = sorted(
+        (
+            (
+                pose_key,
+                results.results[
+                    pose_key
+                ],
+            )
+            for pose_key
+            in results.pose_order
+        ),
+        key=lambda entry: (
+            -float(
+                metric_value(
+                    entry[
+                        1
+                    ]
+                )
+            ),
+            entry[
+                0
+            ],
+        ),
+    )
+
+    if strongest_first:
+        return tuple(
+            ranked_entries
+        )
+
+    return tuple(
+        reversed(
+            ranked_entries
+        )
+    )
+
+
+def summarize_dockmodel_hydrogen_bond_results(
+    results: DockModelHydrogenBondResults,
+    *,
+    decimal_places: int = (
+        DEFAULT_SUMMARY_DECIMAL_PLACES
+    ),
+    include_pose_lines: bool = True,
+) -> str:
+    """
+    Produce a readable multi-pose hydrogen-bond summary.
+
+    Parameters
+    ----------
+    results : DockModelHydrogenBondResults
+        Multi-pose results.
+    decimal_places : int, optional
+        Decimal places for numeric values.
+    include_pose_lines : bool, optional
+        Whether one line per pose should be included.
+
+    Returns
+    -------
+    str
+        Human-readable summary.
+    """
+
+    if not isinstance(
+        results,
+        DockModelHydrogenBondResults,
+    ):
+        raise TypeError(
+            "results must be a DockModelHydrogenBondResults instance."
+        )
+
+    normalized_decimal_places = (
+        _optional_nonnegative_integer(
+            decimal_places,
+            name="summary decimal places",
+        )
+    )
+
+    if normalized_decimal_places is None:
+        normalized_decimal_places = (
+            DEFAULT_SUMMARY_DECIMAL_PLACES
+        )
+
+    lines = [
+        (
+            "DockModel hydrogen-bond analysis: "
+            f"{results.successful_pose_count} successful pose(s), "
+            f"{results.failed_pose_count} failed pose(s)."
+        ),
+        (
+            "Total hydrogen bonds: "
+            f"{results.total_hydrogen_bond_count}."
+        ),
+        (
+            "Mean hydrogen bonds per successful pose: "
+            + (
+                "n/a."
+                if results.mean_hydrogen_bond_count is None
+                else (
+                    f"{float(results.mean_hydrogen_bond_count):."
+                    f"{normalized_decimal_places}f}."
+                )
+            )
+        ),
+    ]
+
+    if include_pose_lines:
+        ranked_poses = (
+            rank_dockmodel_poses_by_hydrogen_bonds(
+                results,
+                metric="hydrogen_bond_count",
+            )
+        )
+
+        for pose_key, result in ranked_poses:
+            statistics = result.statistics
+
+            if not statistics:
+                statistics = (
+                    calculate_hydrogen_bond_statistics(
+                        result.hydrogen_bonds,
+                        residue_groups=(
+                            result
+                            .residue_hydrogen_bonds
+                        ),
+                    )
+                )
+
+            strong_count = statistics.get(
+                "classification_counts",
+                {},
+            ).get(
+                HBOND_TYPE_STRONG,
+                0,
+            )
+
+            strength_mean = statistics.get(
+                "strength_statistics",
+                {},
+            ).get(
+                "mean"
+            )
+
+            formatted_mean = (
+                "n/a"
+                if strength_mean is None
+                else (
+                    f"{float(strength_mean):."
+                    f"{normalized_decimal_places}f}"
+                )
+            )
+
+            lines.append(
+                (
+                    f"- {pose_key}: "
+                    f"{len(result.hydrogen_bonds)} hydrogen bond(s), "
+                    f"{strong_count} strong, "
+                    f"mean geometric score {formatted_mean}."
+                )
+            )
+
+    if results.failed_poses:
+        lines.append(
+            "Failed poses:"
+        )
+
+        for pose_key, error_message in (
+            results.failed_poses.items()
+        ):
+            lines.append(
+                f"- {pose_key}: {error_message}"
+            )
+
+    return "\n".join(
+        lines
+    )
+
+
+# -----------------------------------------------------------------------------
+# DockModel-bound method wrappers
+# -----------------------------------------------------------------------------
+
+def _dockmodel_analyze_hydrogen_bonds_method(
+    self: DockModel,
+    **kwargs: Any,
+) -> HydrogenBondAnalysisResult:
+    """
+    DockModel-bound wrapper for active-pose hydrogen-bond analysis.
+
+    Parameters
+    ----------
+    **kwargs : Any
+        Arguments forwarded to :func:`analyze_dockmodel_hydrogen_bonds`.
+
+    Returns
+    -------
+    HydrogenBondAnalysisResult
+        Active-pose result.
+    """
+
+    return analyze_dockmodel_hydrogen_bonds(
+        self,
+        **kwargs,
+    )
+
+
+def _dockmodel_analyze_pose_hydrogen_bonds_method(
+    self: DockModel,
+    pose: Union[
+        int,
+        str,
+        Any,
+    ],
+    **kwargs: Any,
+) -> HydrogenBondAnalysisResult:
+    """
+    DockModel-bound wrapper for one selected pose.
+
+    Parameters
+    ----------
+    pose : int, str or pose-like
+        Pose selector.
+    **kwargs : Any
+        Analysis arguments.
+
+    Returns
+    -------
+    HydrogenBondAnalysisResult
+        Pose result.
+    """
+
+    return analyze_dockmodel_pose_hydrogen_bonds(
+        self,
+        pose,
+        **kwargs,
+    )
+
+
+def _dockmodel_analyze_all_pose_hydrogen_bonds_method(
+    self: DockModel,
+    **kwargs: Any,
+) -> DockModelHydrogenBondResults:
+    """
+    DockModel-bound wrapper for all-pose analysis.
+
+    Parameters
+    ----------
+    **kwargs : Any
+        Analysis arguments.
+
+    Returns
+    -------
+    DockModelHydrogenBondResults
+        Multi-pose results.
+    """
+
+    return analyze_all_dockmodel_pose_hydrogen_bonds(
+        self,
+        **kwargs,
+    )
+
+
+def _dockmodel_get_hydrogen_bond_result_method(
+    self: DockModel,
+    pose_key: Optional[
+        str
+    ] = None,
+    default: Any = None,
+) -> Any:
+    """
+    DockModel-bound wrapper for stored-result retrieval.
+
+    Parameters
+    ----------
+    pose_key : str or None, optional
+        Pose key.
+    default : Any, optional
+        Fallback value.
+
+    Returns
+    -------
+    Any
+        Stored result or fallback.
+    """
+
+    return get_stored_dockmodel_hydrogen_bond_result(
+        self,
+        pose_key=pose_key,
+        default=default,
+    )
+
+
+def _dockmodel_hydrogen_bond_summary_method(
+    self: DockModel,
+    *,
+    pose_key: Optional[
+        str
+    ] = None,
+    decimal_places: int = (
+        DEFAULT_SUMMARY_DECIMAL_PLACES
+    ),
+) -> str:
+    """
+    Return a readable summary of stored DockModel results.
+
+    Parameters
+    ----------
+    pose_key : str or None, optional
+        Selected pose key. When omitted, the active or multi-pose result is
+        summarized.
+    decimal_places : int, optional
+        Number of decimal places.
+
+    Returns
+    -------
+    str
+        Human-readable summary.
+    """
+
+    if pose_key is not None:
+        result = (
+            get_stored_dockmodel_hydrogen_bond_result(
+                self,
+                pose_key=pose_key,
+                default=None,
+            )
+        )
+
+        if not isinstance(
+            result,
+            HydrogenBondAnalysisResult,
+        ):
+            raise ValueError(
+                f"No stored hydrogen-bond result exists for pose "
+                f"{pose_key!r}."
+            )
+
+        return summarize_hydrogen_bond_analysis_result(
+            result,
+            decimal_places=decimal_places,
+        )
+
+    multi_pose_results = getattr(
+        self,
+        DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE,
+        None,
+    )
+
+    if isinstance(
+        multi_pose_results,
+        DockModelHydrogenBondResults,
+    ):
+        return summarize_dockmodel_hydrogen_bond_results(
+            multi_pose_results,
+            decimal_places=decimal_places,
+        )
+
+    active_result = (
+        get_stored_dockmodel_hydrogen_bond_result(
+            self,
+            default=None,
+        )
+    )
+
+    if isinstance(
+        active_result,
+        HydrogenBondAnalysisResult,
+    ):
+        return summarize_hydrogen_bond_analysis_result(
+            active_result,
+            decimal_places=decimal_places,
+        )
+
+    raise ValueError(
+        "DockModel contains no stored hydrogen-bond analysis result."
+    )
+
+
+# -----------------------------------------------------------------------------
+# Dynamic DockModel method attachment
+# -----------------------------------------------------------------------------
+
+def attach_hydrogen_bond_methods_to_dockmodel(
+    dockmodel_class: Type[
+        Any
+    ] = DockModel,
+    *,
+    overwrite: bool = False,
+) -> Tuple[
+    str,
+    ...,
+]:
+    """
+    Attach hydrogen-bond analysis methods to ``DockModel``.
+
+    Parameters
+    ----------
+    dockmodel_class : type, optional
+        DockModel class or compatible class.
+    overwrite : bool, optional
+        Whether existing methods may be replaced.
+
+    Returns
+    -------
+    tuple of str
+        Method names successfully attached.
+
+    Notes
+    -----
+    The following methods are attached:
+
+    - ``analyze_hydrogen_bonds``;
+    - ``analyze_pose_hydrogen_bonds``;
+    - ``analyze_all_pose_hydrogen_bonds``;
+    - ``get_hydrogen_bond_result``;
+    - ``hydrogen_bond_summary``.
+    """
+
+    if not isinstance(
+        dockmodel_class,
+        type,
+    ):
+        raise TypeError(
+            "dockmodel_class must be a class."
+        )
+
+    method_mapping: Dict[
+        str,
+        Callable[
+            ...,
+            Any,
+        ],
+    ] = {
+        "analyze_hydrogen_bonds": (
+            _dockmodel_analyze_hydrogen_bonds_method
+        ),
+        "analyze_pose_hydrogen_bonds": (
+            _dockmodel_analyze_pose_hydrogen_bonds_method
+        ),
+        "analyze_all_pose_hydrogen_bonds": (
+            _dockmodel_analyze_all_pose_hydrogen_bonds_method
+        ),
+        "get_hydrogen_bond_result": (
+            _dockmodel_get_hydrogen_bond_result_method
+        ),
+        "hydrogen_bond_summary": (
+            _dockmodel_hydrogen_bond_summary_method
+        ),
+    }
+
+    attached_methods: List[
+        str
+    ] = []
+
+    for method_name, method in method_mapping.items():
+        if (
+            hasattr(
+                dockmodel_class,
+                method_name,
+            )
+            and not overwrite
+        ):
+            continue
+
+        try:
+            setattr(
+                dockmodel_class,
+                method_name,
+                method,
+            )
+
+        except Exception:
+            continue
+
+        attached_methods.append(
+            method_name
+        )
+
+    return tuple(
+        attached_methods
+    )
+
+
+def dockmodel_hydrogen_bond_methods_are_attached(
+    dockmodel_class: Type[
+        Any
+    ] = DockModel,
+) -> bool:
+    """
+    Determine whether all hydrogen-bond methods are attached.
+
+    Parameters
+    ----------
+    dockmodel_class : type, optional
+        DockModel class.
+
+    Returns
+    -------
+    bool
+        Attachment status.
+    """
+
+    required_methods = (
+        "analyze_hydrogen_bonds",
+        "analyze_pose_hydrogen_bonds",
+        "analyze_all_pose_hydrogen_bonds",
+        "get_hydrogen_bond_result",
+        "hydrogen_bond_summary",
+    )
+
+    return all(
+        callable(
+            getattr(
+                dockmodel_class,
+                method_name,
+                None,
+            )
+        )
+        for method_name in required_methods
+    )
+
+
+# -----------------------------------------------------------------------------
+# Automatic method attachment
+# -----------------------------------------------------------------------------
+
+_DOCKMODEL_ATTACHED_HBOND_METHODS: Tuple[
+    str,
+    ...,
+] = ()
+
+if DEFAULT_ATTACH_HBOND_METHODS_TO_DOCKMODEL:
+    try:
+        _DOCKMODEL_ATTACHED_HBOND_METHODS = (
+            attach_hydrogen_bond_methods_to_dockmodel(
+                DockModel,
+                overwrite=False,
+            )
+        )
+
+    except Exception as error:
+        try:
+            _LOGGER.warning(
+                "Could not attach hydrogen-bond methods to DockModel: "
+                f"{error}"
+            )
+
+        except Exception:
+            pass
+
+
+# -----------------------------------------------------------------------------
+# Public interface
+# -----------------------------------------------------------------------------
+
+_SECTION_11_PUBLIC_NAMES: Final[
+    Tuple[
+        str,
+        ...,
+    ]
+] = (
+    "DEFAULT_DOCKMODEL_HBOND_RESULT_ATTRIBUTE",
+    "DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE",
+    "DEFAULT_DOCKMODEL_ACTIVE_POSE_ATTRIBUTE",
+    "DEFAULT_DOCKMODEL_RECEPTOR_ATTRIBUTE_CANDIDATES",
+    "DEFAULT_DOCKMODEL_LIGAND_ATTRIBUTE_CANDIDATES",
+    "DEFAULT_DOCKMODEL_POSE_ATTRIBUTE_CANDIDATES",
+    "DEFAULT_DOCKMODEL_POSE_RESULT_KEY_PREFIX",
+    "DEFAULT_ATTACH_HBOND_METHODS_TO_DOCKMODEL",
+    "DEFAULT_STORE_HBOND_RESULTS_ON_DOCKMODEL",
+    "DEFAULT_CONTINUE_ON_POSE_ERROR",
+    "DockModelHydrogenBondResults",
+    "get_dockmodel_receptor",
+    "get_dockmodel_receptor_atoms",
+    "get_dockmodel_active_ligand",
+    "get_dockmodel_active_ligand_atoms",
+    "get_dockmodel_poses",
+    "get_dockmodel_pose",
+    "get_dockmodel_pose_atoms",
+    "store_dockmodel_hydrogen_bond_result",
+    "store_dockmodel_hydrogen_bond_results",
+    "get_stored_dockmodel_hydrogen_bond_result",
+    "analyze_dockmodel_hydrogen_bonds",
+    "analyze_dockmodel_pose_hydrogen_bonds",
+    "analyze_all_dockmodel_pose_hydrogen_bonds",
+    "rank_dockmodel_poses_by_hydrogen_bonds",
+    "summarize_dockmodel_hydrogen_bond_results",
+    "attach_hydrogen_bond_methods_to_dockmodel",
+    "dockmodel_hydrogen_bond_methods_are_attached",
+)
+
+for public_name in _SECTION_11_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(
+            public_name
+        )
+
+
+# =============================================================================
+# End of Section 11
+# =============================================================================
+
+# =============================================================================
+# Section 12.1 — Self-test infrastructure
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Self-test constants
+# -----------------------------------------------------------------------------
+
+SELF_TEST_FLOAT_TOLERANCE: Final[
+    np.float64
+] = np.float64(
+    1.0e-8
+)
+
+SELF_TEST_COORDINATE_TOLERANCE: Final[
+    np.float64
+] = np.float64(
+    1.0e-6
+)
+
+SELF_TEST_ANGLE_TOLERANCE: Final[
+    np.float64
+] = np.float64(
+    1.0e-6
+)
+
+SELF_TEST_DEFAULT_CHAIN_ID: Final[
+    str
+] = "A"
+
+SELF_TEST_DEFAULT_LIGAND_CHAIN_ID: Final[
+    str
+] = "L"
+
+SELF_TEST_DEFAULT_RECEPTOR_NAME: Final[
+    str
+] = "fake_receptor"
+
+SELF_TEST_DEFAULT_LIGAND_NAME: Final[
+    str
+] = "fake_ligand"
+
+SELF_TEST_DEFAULT_POSE_PREFIX: Final[
+    str
+] = "pose"
+
+SELF_TEST_SUCCESS_STATUS: Final[
+    str
+] = "passed"
+
+SELF_TEST_FAILURE_STATUS: Final[
+    str
+] = "failed"
+
+SELF_TEST_SKIP_STATUS: Final[
+    str
+] = "skipped"
+
+
+# -----------------------------------------------------------------------------
+# Fake chemical element
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class FakeElement:
+    """
+    Minimal chemical-element object used by self-tests.
+
+    Parameters
+    ----------
+    name : str
+        Element symbol.
+    atomic_number : int
+        Atomic number.
+    """
+
+    name: str
+    atomic_number: int
+
+    def __post_init__(
+        self,
+    ) -> None:
+        """Normalize element attributes."""
+
+        normalized_name = str(
+            self.name
+        ).strip().upper()
+
+        if not normalized_name:
+            raise ValueError(
+                "FakeElement name cannot be empty."
+            )
+
+        if isinstance(
+            self.atomic_number,
+            bool,
+        ) or not isinstance(
+            self.atomic_number,
+            (
+                int,
+                np.integer,
+            ),
+        ):
+            raise TypeError(
+                "FakeElement atomic_number must be an integer."
+            )
+
+        normalized_atomic_number = int(
+            self.atomic_number
+        )
+
+        if normalized_atomic_number < 0:
+            raise ValueError(
+                "FakeElement atomic_number must be nonnegative."
+            )
+
+        object.__setattr__(
+            self,
+            "name",
+            normalized_name,
+        )
+
+        object.__setattr__(
+            self,
+            "atomic_number",
+            normalized_atomic_number,
+        )
+
+    @property
+    def symbol(
+        self,
+    ) -> str:
+        """Return the element symbol."""
+
+        return self.name
+
+
+_SELF_TEST_ELEMENT_DATA: Final[
+    Mapping[
+        str,
+        Tuple[
+            str,
+            int,
+        ],
+    ]
+] = MappingProxyType(
+    {
+        "H": (
+            "H",
+            1,
+        ),
+        "C": (
+            "C",
+            6,
+        ),
+        "N": (
+            "N",
+            7,
+        ),
+        "O": (
+            "O",
+            8,
+        ),
+        "F": (
+            "F",
+            9,
+        ),
+        "P": (
+            "P",
+            15,
+        ),
+        "S": (
+            "S",
+            16,
+        ),
+        "CL": (
+            "CL",
+            17,
+        ),
+        "BR": (
+            "BR",
+            35,
+        ),
+        "I": (
+            "I",
+            53,
+        ),
+        "NA": (
+            "NA",
+            11,
+        ),
+        "MG": (
+            "MG",
+            12,
+        ),
+        "CA": (
+            "CA",
+            20,
+        ),
+        "ZN": (
+            "ZN",
+            30,
+        ),
+        "FE": (
+            "FE",
+            26,
+        ),
+    }
+)
+
+
+def make_fake_element(
+    symbol: str,
+) -> FakeElement:
+    """
+    Create a fake chemical element.
+
+    Parameters
+    ----------
+    symbol : str
+        Element symbol.
+
+    Returns
+    -------
+    FakeElement
+        Element object.
+    """
+
+    normalized_symbol = str(
+        symbol
+    ).strip().upper()
+
+    if not normalized_symbol:
+        raise ValueError(
+            "Element symbol cannot be empty."
+        )
+
+    element_name, atomic_number = (
+        _SELF_TEST_ELEMENT_DATA.get(
+            normalized_symbol,
+            (
+                normalized_symbol,
+                0,
+            ),
+        )
+    )
+
+    return FakeElement(
+        name=element_name,
+        atomic_number=atomic_number,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Fake residue
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    slots=True,
+    eq=False,
+)
+class FakeResidue:
+    """
+    Minimal residue-like object for hydrogen-bond self-tests.
+
+    Parameters
+    ----------
+    name : str
+        Residue name.
+    number : int
+        Residue number.
+    chain_id : str, optional
+        Chain identifier.
+    insertion_code : str, optional
+        Insertion code.
+    polymer_type : str or None, optional
+        Polymer classification.
+    atoms : list, optional
+        Residue atoms.
+    """
+
+    name: str
+    number: int
+    chain_id: str = SELF_TEST_DEFAULT_CHAIN_ID
+    insertion_code: str = ""
+    polymer_type: Optional[
+        str
+    ] = "amino"
+    atoms: List[
+        "FakeAtom"
+    ] = field(
+        default_factory=list,
+        repr=False,
+    )
+
+    def __post_init__(
+        self,
+    ) -> None:
+        """Normalize residue attributes."""
+
+        self.name = str(
+            self.name
+        ).strip().upper()
+
+        if not self.name:
+            raise ValueError(
+                "FakeResidue name cannot be empty."
+            )
+
+        if isinstance(
+            self.number,
+            bool,
+        ) or not isinstance(
+            self.number,
+            (
+                int,
+                np.integer,
+            ),
+        ):
+            raise TypeError(
+                "FakeResidue number must be an integer."
+            )
+
+        self.number = int(
+            self.number
+        )
+
+        self.chain_id = str(
+            self.chain_id
+        ).strip()
+
+        self.insertion_code = str(
+            self.insertion_code
+        ).strip()
+
+        if self.polymer_type is not None:
+            self.polymer_type = str(
+                self.polymer_type
+            ).strip().lower()
+
+    @property
+    def id(
+        self,
+    ) -> int:
+        """Return the residue number."""
+
+        return self.number
+
+    @property
+    def chain(
+        self,
+    ) -> str:
+        """Return the chain identifier."""
+
+        return self.chain_id
+
+    @property
+    def atomspec(
+        self,
+    ) -> str:
+        """Return a compact ChimeraX-like residue specification."""
+
+        chain_component = (
+            f"/{self.chain_id}"
+            if self.chain_id
+            else ""
+        )
+
+        insertion_component = (
+            self.insertion_code
+            if self.insertion_code
+            else ""
+        )
+
+        return (
+            f"{chain_component}:"
+            f"{self.number}{insertion_component}"
+        )
+
+    def add_atom(
+        self,
+        atom: "FakeAtom",
+    ) -> None:
+        """
+        Add an atom to the residue.
+
+        Parameters
+        ----------
+        atom : FakeAtom
+            Atom to add.
+        """
+
+        if not isinstance(
+            atom,
+            FakeAtom,
+        ):
+            raise TypeError(
+                "atom must be a FakeAtom instance."
+            )
+
+        if atom not in self.atoms:
+            self.atoms.append(
+                atom
+            )
+
+        atom.residue = self
+
+
+# -----------------------------------------------------------------------------
+# Fake atom
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    slots=True,
+    eq=False,
+)
+class FakeAtom:
+    """
+    Minimal ChimeraX-like atom used by self-tests.
+
+    Parameters
+    ----------
+    name : str
+        Atom name.
+    element : str or FakeElement
+        Chemical element.
+    coord : array-like
+        Cartesian coordinate in angstroms.
+    residue : FakeResidue or None, optional
+        Parent residue.
+    atom_type : str or None, optional
+        Atom-type label.
+    formal_charge : Number, optional
+        Formal charge.
+    aromatic : bool, optional
+        Aromaticity flag.
+    index : int or None, optional
+        Atom index.
+    serial_number : int or None, optional
+        Serial number.
+    structure : Any, optional
+        Parent structure.
+    metadata : mapping, optional
+        Additional attributes.
+    """
+
+    name: str
+    element: Union[
+        str,
+        FakeElement,
+    ]
+    coord: Coordinate
+    residue: Optional[
+        FakeResidue
+    ] = None
+    atom_type: Optional[
+        str
+    ] = None
+    formal_charge: np.float64 = np.float64(
+        0.0
+    )
+    aromatic: bool = False
+    index: Optional[
+        int
+    ] = None
+    serial_number: Optional[
+        int
+    ] = None
+    structure: Any = None
+    metadata: MutableMapping[
+        str,
+        Any,
+    ] = field(
+        default_factory=dict,
+        repr=False,
+    )
+    bonds: List[
+        "FakeBond"
+    ] = field(
+        default_factory=list,
+        repr=False,
+    )
+
+    def __post_init__(
+        self,
+    ) -> None:
+        """Normalize atom attributes."""
+
+        self.name = str(
+            self.name
+        ).strip().upper()
+
+        if not self.name:
+            raise ValueError(
+                "FakeAtom name cannot be empty."
+            )
+
+        if isinstance(
+            self.element,
+            FakeElement,
+        ):
+            normalized_element = self.element
+
+        else:
+            normalized_element = make_fake_element(
+                str(
+                    self.element
+                )
+            )
+
+        self.element = normalized_element
+
+        normalized_coord = np.asarray(
+            self.coord,
+            dtype=np.float64,
+        )
+
+        if normalized_coord.shape != (
+            3,
+        ):
+            raise ValueError(
+                "FakeAtom coord must have shape (3,)."
+            )
+
+        if not np.all(
+            np.isfinite(
+                normalized_coord
+            )
+        ):
+            raise ValueError(
+                "FakeAtom coord must contain finite values."
+            )
+
+        self.coord = normalized_coord.copy()
+
+        self.formal_charge = np.float64(
+            self.formal_charge
+        )
+
+        if not np.isfinite(
+            self.formal_charge
+        ):
+            raise ValueError(
+                "FakeAtom formal_charge must be finite."
+            )
+
+        self.aromatic = bool(
+            self.aromatic
+        )
+
+        if self.atom_type is not None:
+            self.atom_type = str(
+                self.atom_type
+            ).strip()
+
+        if self.index is not None:
+            self.index = int(
+                self.index
+            )
+
+        if self.serial_number is not None:
+            self.serial_number = int(
+                self.serial_number
+            )
+
+        if self.residue is not None:
+            self.residue.add_atom(
+                self
+            )
+
+    @property
+    def scene_coord(
+        self,
+    ) -> Coordinate:
+        """Return a ChimeraX-like scene coordinate."""
+
+        return np.asarray(
+            self.coord,
+            dtype=np.float64,
+        )
+
+    @scene_coord.setter
+    def scene_coord(
+        self,
+        value: Coordinate,
+    ) -> None:
+        """Set the scene coordinate."""
+
+        self.coord = np.asarray(
+            value,
+            dtype=np.float64,
+        ).copy()
+
+    @property
+    def idatm_type(
+        self,
+    ) -> Optional[
+        str
+    ]:
+        """Return the atom-type label."""
+
+        return self.atom_type
+
+    @property
+    def neighbors(
+        self,
+    ) -> Tuple[
+        "FakeAtom",
+        ...,
+    ]:
+        """Return directly bonded neighboring atoms."""
+
+        neighboring_atoms: List[
+            FakeAtom
+        ] = []
+
+        for bond in self.bonds:
+            other_atom = bond.other_atom(
+                self
+            )
+
+            if other_atom is not None:
+                neighboring_atoms.append(
+                    other_atom
+                )
+
+        return tuple(
+            neighboring_atoms
+        )
+
+    @property
+    def bonded_atoms(
+        self,
+    ) -> Tuple[
+        "FakeAtom",
+        ...,
+    ]:
+        """Return bonded atoms."""
+
+        return self.neighbors
+
+    @property
+    def num_bonds(
+        self,
+    ) -> int:
+        """Return the number of bonds."""
+
+        return len(
+            self.bonds
+        )
+
+    @property
+    def is_aromatic(
+        self,
+    ) -> bool:
+        """Return aromaticity."""
+
+        return self.aromatic
+
+    @property
+    def atomspec(
+        self,
+    ) -> str:
+        """Return a compact ChimeraX-like atom specification."""
+
+        if self.residue is None:
+            return f"@{self.name}"
+
+        return (
+            f"{self.residue.atomspec}"
+            f"@{self.name}"
+        )
+
+    def add_bond(
+        self,
+        bond: "FakeBond",
+    ) -> None:
+        """
+        Add a bond to the atom.
+
+        Parameters
+        ----------
+        bond : FakeBond
+            Bond to add.
+        """
+
+        if not isinstance(
+            bond,
+            FakeBond,
+        ):
+            raise TypeError(
+                "bond must be a FakeBond instance."
+            )
+
+        if bond not in self.bonds:
+            self.bonds.append(
+                bond
+            )
+
+    def set_coord(
+        self,
+        coordinate: Coordinate,
+    ) -> None:
+        """
+        Set the atom coordinate.
+
+        Parameters
+        ----------
+        coordinate : array-like
+            New Cartesian coordinate.
+        """
+
+        normalized_coordinate = np.asarray(
+            coordinate,
+            dtype=np.float64,
+        )
+
+        if normalized_coordinate.shape != (
+            3,
+        ):
+            raise ValueError(
+                "coordinate must have shape (3,)."
+            )
+
+        self.coord = normalized_coordinate.copy()
+
+
+# -----------------------------------------------------------------------------
+# Fake bond
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    slots=True,
+    eq=False,
+)
+class FakeBond:
+    """
+    Minimal bond-like object for self-tests.
+
+    Parameters
+    ----------
+    atom1 : FakeAtom
+        First atom.
+    atom2 : FakeAtom
+        Second atom.
+    order : Number, optional
+        Bond order.
+    aromatic : bool, optional
+        Aromaticity flag.
+    """
+
+    atom1: FakeAtom
+    atom2: FakeAtom
+    order: np.float64 = np.float64(
+        1.0
+    )
+    aromatic: bool = False
+
+    def __post_init__(
+        self,
+    ) -> None:
+        """Validate the bond and attach it to both atoms."""
+
+        if not isinstance(
+            self.atom1,
+            FakeAtom,
+        ) or not isinstance(
+            self.atom2,
+            FakeAtom,
+        ):
+            raise TypeError(
+                "FakeBond atoms must be FakeAtom instances."
+            )
+
+        if self.atom1 is self.atom2:
+            raise ValueError(
+                "A FakeBond cannot connect an atom to itself."
+            )
+
+        self.order = np.float64(
+            self.order
+        )
+
+        if (
+            not np.isfinite(
+                self.order
+            )
+            or self.order <= 0.0
+        ):
+            raise ValueError(
+                "FakeBond order must be finite and positive."
+            )
+
+        self.aromatic = bool(
+            self.aromatic
+        )
+
+        self.atom1.add_bond(
+            self
+        )
+
+        self.atom2.add_bond(
+            self
+        )
+
+    @property
+    def atoms(
+        self,
+    ) -> Tuple[
+        FakeAtom,
+        FakeAtom,
+    ]:
+        """Return the bonded atoms."""
+
+        return (
+            self.atom1,
+            self.atom2,
+        )
+
+    @property
+    def bond_order(
+        self,
+    ) -> np.float64:
+        """Return the bond order."""
+
+        return self.order
+
+    @property
+    def is_aromatic(
+        self,
+    ) -> bool:
+        """Return aromaticity."""
+
+        return self.aromatic
+
+    def other_atom(
+        self,
+        atom: FakeAtom,
+    ) -> Optional[
+        FakeAtom
+    ]:
+        """
+        Return the atom on the opposite side of the bond.
+
+        Parameters
+        ----------
+        atom : FakeAtom
+            Query atom.
+
+        Returns
+        -------
+        FakeAtom or None
+            Opposite atom.
+        """
+
+        if atom is self.atom1:
+            return self.atom2
+
+        if atom is self.atom2:
+            return self.atom1
+
+        return None
+
+
+# -----------------------------------------------------------------------------
+# Fake atomic structure
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    slots=True,
+    eq=False,
+)
+class FakeStructure:
+    """
+    Minimal atomic structure compatible with self-test pipelines.
+
+    Parameters
+    ----------
+    name : str
+        Structure name.
+    atoms : sequence of FakeAtom, optional
+        Structure atoms.
+    residues : sequence of FakeResidue, optional
+        Structure residues.
+    model_id : str or int or None, optional
+        Model identifier.
+    metadata : mapping, optional
+        Additional data.
+    """
+
+    name: str
+    atoms: List[
+        FakeAtom
+    ] = field(
+        default_factory=list,
+    )
+    residues: List[
+        FakeResidue
+    ] = field(
+        default_factory=list,
+    )
+    model_id: Optional[
+        Union[
+            str,
+            int,
+        ]
+    ] = None
+    metadata: MutableMapping[
+        str,
+        Any,
+    ] = field(
+        default_factory=dict,
+        repr=False,
+    )
+
+    def __post_init__(
+        self,
+    ) -> None:
+        """Normalize structure data."""
+
+        self.name = str(
+            self.name
+        ).strip()
+
+        if not self.name:
+            raise ValueError(
+                "FakeStructure name cannot be empty."
+            )
+
+        initial_atoms = list(
+            self.atoms
+        )
+
+        initial_residues = list(
+            self.residues
+        )
+
+        self.atoms = []
+        self.residues = []
+
+        for residue in initial_residues:
+            self.add_residue(
+                residue
+            )
+
+        for atom in initial_atoms:
+            self.add_atom(
+                atom
+            )
+
+    @property
+    def id_string(
+        self,
+    ) -> str:
+        """Return a string model identifier."""
+
+        if self.model_id is None:
+            return self.name
+
+        return str(
+            self.model_id
+        )
+
+    @property
+    def num_atoms(
+        self,
+    ) -> int:
+        """Return the atom count."""
+
+        return len(
+            self.atoms
+        )
+
+    @property
+    def num_residues(
+        self,
+    ) -> int:
+        """Return the residue count."""
+
+        return len(
+            self.residues
+        )
+
+    def add_residue(
+        self,
+        residue: FakeResidue,
+    ) -> None:
+        """
+        Add a residue to the structure.
+
+        Parameters
+        ----------
+        residue : FakeResidue
+            Residue to add.
+        """
+
+        if not isinstance(
+            residue,
+            FakeResidue,
+        ):
+            raise TypeError(
+                "residue must be a FakeResidue instance."
+            )
+
+        if residue not in self.residues:
+            self.residues.append(
+                residue
+            )
+
+        for atom in tuple(
+            residue.atoms
+        ):
+            self.add_atom(
+                atom
+            )
+
+    def add_atom(
+        self,
+        atom: FakeAtom,
+    ) -> None:
+        """
+        Add an atom to the structure.
+
+        Parameters
+        ----------
+        atom : FakeAtom
+            Atom to add.
+        """
+
+        if not isinstance(
+            atom,
+            FakeAtom,
+        ):
+            raise TypeError(
+                "atom must be a FakeAtom instance."
+            )
+
+        if atom not in self.atoms:
+            self.atoms.append(
+                atom
+            )
+
+        atom.structure = self
+
+        if atom.index is None:
+            atom.index = self.atoms.index(
+                atom
+            )
+
+        if atom.serial_number is None:
+            atom.serial_number = (
+                atom.index
+                + 1
+            )
+
+        if atom.residue is not None:
+            if atom.residue not in self.residues:
+                self.residues.append(
+                    atom.residue
+                )
+
+            if atom not in atom.residue.atoms:
+                atom.residue.atoms.append(
+                    atom
+                )
+
+    def add_bond(
+        self,
+        atom1: FakeAtom,
+        atom2: FakeAtom,
+        *,
+        order: Number = 1.0,
+        aromatic: bool = False,
+    ) -> FakeBond:
+        """
+        Create a bond between two structure atoms.
+
+        Parameters
+        ----------
+        atom1 : FakeAtom
+            First atom.
+        atom2 : FakeAtom
+            Second atom.
+        order : Number, optional
+            Bond order.
+        aromatic : bool, optional
+            Aromaticity flag.
+
+        Returns
+        -------
+        FakeBond
+            Created bond.
+        """
+
+        if atom1 not in self.atoms:
+            self.add_atom(
+                atom1
+            )
+
+        if atom2 not in self.atoms:
+            self.add_atom(
+                atom2
+            )
+
+        return FakeBond(
+            atom1=atom1,
+            atom2=atom2,
+            order=np.float64(
+                order
+            ),
+            aromatic=aromatic,
+        )
+
+    def copy(
+        self,
+        *,
+        name: Optional[
+            str
+        ] = None,
+        coordinate_offset: Coordinate = (
+            0.0,
+            0.0,
+            0.0,
+        ),
+    ) -> "FakeStructure":
+        """
+        Create a deep structural copy.
+
+        Parameters
+        ----------
+        name : str or None, optional
+            New structure name.
+        coordinate_offset : array-like, optional
+            Coordinate translation.
+
+        Returns
+        -------
+        FakeStructure
+            Independent structure copy.
+        """
+
+        offset = np.asarray(
+            coordinate_offset,
+            dtype=np.float64,
+        )
+
+        if offset.shape != (
+            3,
+        ):
+            raise ValueError(
+                "coordinate_offset must have shape (3,)."
+            )
+
+        copied_structure = FakeStructure(
+            name=(
+                self.name
+                if name is None
+                else name
+            ),
+            model_id=self.model_id,
+            metadata=dict(
+                self.metadata
+            ),
+        )
+
+        residue_mapping: Dict[
+            FakeResidue,
+            FakeResidue,
+        ] = {}
+
+        atom_mapping: Dict[
+            FakeAtom,
+            FakeAtom,
+        ] = {}
+
+        for residue in self.residues:
+            copied_residue = FakeResidue(
+                name=residue.name,
+                number=residue.number,
+                chain_id=residue.chain_id,
+                insertion_code=(
+                    residue.insertion_code
+                ),
+                polymer_type=(
+                    residue.polymer_type
+                ),
+            )
+
+            copied_structure.add_residue(
+                copied_residue
+            )
+
+            residue_mapping[
+                residue
+            ] = copied_residue
+
+        for atom in self.atoms:
+            copied_atom = FakeAtom(
+                name=atom.name,
+                element=atom.element,
+                coord=(
+                    np.asarray(
+                        atom.coord,
+                        dtype=np.float64,
+                    )
+                    + offset
+                ),
+                residue=(
+                    None
+                    if atom.residue is None
+                    else residue_mapping[
+                        atom.residue
+                    ]
+                ),
+                atom_type=atom.atom_type,
+                formal_charge=(
+                    atom.formal_charge
+                ),
+                aromatic=atom.aromatic,
+                index=atom.index,
+                serial_number=(
+                    atom.serial_number
+                ),
+                metadata=dict(
+                    atom.metadata
+                ),
+            )
+
+            copied_structure.add_atom(
+                copied_atom
+            )
+
+            atom_mapping[
+                atom
+            ] = copied_atom
+
+        seen_bonds: Set[
+            int
+        ] = set()
+
+        for atom in self.atoms:
+            for bond in atom.bonds:
+                bond_identity = id(
+                    bond
+                )
+
+                if bond_identity in seen_bonds:
+                    continue
+
+                seen_bonds.add(
+                    bond_identity
+                )
+
+                copied_structure.add_bond(
+                    atom_mapping[
+                        bond.atom1
+                    ],
+                    atom_mapping[
+                        bond.atom2
+                    ],
+                    order=bond.order,
+                    aromatic=bond.aromatic,
+                )
+
+        return copied_structure
+
+
+# -----------------------------------------------------------------------------
+# Fake DockModel
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    slots=True,
+    eq=False,
+)
+class FakeDockModel:
+    """
+    Minimal DockModel-like object for integration self-tests.
+
+    Parameters
+    ----------
+    receptor : Any
+        Receptor structure.
+    ligand : Any or None, optional
+        Active ligand.
+    poses : mapping or sequence, optional
+        Docking poses.
+    active_pose : int or str or None, optional
+        Active-pose selector.
+    name : str, optional
+        Model name.
+    metadata : mapping, optional
+        Mutable metadata storage.
+    """
+
+    receptor: Any
+    ligand: Any = None
+    poses: Any = field(
+        default_factory=list
+    )
+    active_pose: Optional[
+        Union[
+            int,
+            str,
+        ]
+    ] = None
+    name: str = "fake_dock_model"
+    metadata: MutableMapping[
+        str,
+        Any,
+    ] = field(
+        default_factory=dict
+    )
+
+    hydrogen_bond_result: Optional[
+        HydrogenBondAnalysisResult
+    ] = None
+
+    hydrogen_bond_results: Any = None
+
+    def __post_init__(
+        self,
+    ) -> None:
+        """Normalize fake DockModel data."""
+
+        self.name = str(
+            self.name
+        ).strip()
+
+        if not self.name:
+            raise ValueError(
+                "FakeDockModel name cannot be empty."
+            )
+
+        if self.poses is None:
+            self.poses = []
+
+        if self.ligand is None:
+            if isinstance(
+                self.poses,
+                Mapping,
+            ) and self.poses:
+                self.ligand = next(
+                    iter(
+                        self.poses.values()
+                    )
+                )
+
+            else:
+                try:
+                    pose_sequence = tuple(
+                        self.poses
+                    )
+
+                except TypeError:
+                    pose_sequence = ()
+
+                if pose_sequence:
+                    self.ligand = (
+                        pose_sequence[
+                            0
+                        ]
+                    )
+
+    @property
+    def receptor_model(
+        self,
+    ) -> Any:
+        """Return receptor alias."""
+
+        return self.receptor
+
+    @property
+    def ligand_model(
+        self,
+    ) -> Any:
+        """Return ligand alias."""
+
+        return self.ligand
+
+    @property
+    def ligand_poses(
+        self,
+    ) -> Any:
+        """Return poses alias."""
+
+        return self.poses
+
+
+# -----------------------------------------------------------------------------
+# Fake logger
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    slots=True,
+)
+class FakeLogger:
+    """
+    Minimal logger used to capture messages during self-tests.
+    """
+
+    debug_messages: List[
+        str
+    ] = field(
+        default_factory=list
+    )
+
+    info_messages: List[
+        str
+    ] = field(
+        default_factory=list
+    )
+
+    warning_messages: List[
+        str
+    ] = field(
+        default_factory=list
+    )
+
+    error_messages: List[
+        str
+    ] = field(
+        default_factory=list
+    )
+
+    def debug(
+        self,
+        message: Any,
+    ) -> None:
+        """Record a debug message."""
+
+        self.debug_messages.append(
+            str(
+                message
+            )
+        )
+
+    def info(
+        self,
+        message: Any,
+    ) -> None:
+        """Record an informational message."""
+
+        self.info_messages.append(
+            str(
+                message
+            )
+        )
+
+    def warning(
+        self,
+        message: Any,
+    ) -> None:
+        """Record a warning message."""
+
+        self.warning_messages.append(
+            str(
+                message
+            )
+        )
+
+    def error(
+        self,
+        message: Any,
+    ) -> None:
+        """Record an error message."""
+
+        self.error_messages.append(
+            str(
+                message
+            )
+        )
+
+
+# -----------------------------------------------------------------------------
+# Test-result dataclasses
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class SelfTestCaseResult:
+    """
+    Result of one self-test case.
+
+    Parameters
+    ----------
+    name : str
+        Test name.
+    status : str
+        ``passed``, ``failed`` or ``skipped``.
+    duration_seconds : Number
+        Execution duration.
+    message : str, optional
+        Result message.
+    exception_type : str or None, optional
+        Exception class name.
+    metadata : mapping, optional
+        Additional test metadata.
+    """
+
+    name: str
+    status: str
+    duration_seconds: np.float64
+    message: str = ""
+    exception_type: Optional[
+        str
+    ] = None
+    metadata: Mapping[
+        str,
+        Any,
+    ] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(
+        self,
+    ) -> None:
+        """Validate and normalize a test result."""
+
+        normalized_name = str(
+            self.name
+        ).strip()
+
+        if not normalized_name:
+            raise ValueError(
+                "Self-test name cannot be empty."
+            )
+
+        normalized_status = str(
+            self.status
+        ).strip().lower()
+
+        valid_statuses = {
+            SELF_TEST_SUCCESS_STATUS,
+            SELF_TEST_FAILURE_STATUS,
+            SELF_TEST_SKIP_STATUS,
+        }
+
+        if normalized_status not in valid_statuses:
+            raise ValueError(
+                f"Unsupported self-test status {self.status!r}."
+            )
+
+        normalized_duration = np.float64(
+            self.duration_seconds
+        )
+
+        if (
+            not np.isfinite(
+                normalized_duration
+            )
+            or normalized_duration < 0.0
+        ):
+            raise ValueError(
+                "Self-test duration must be finite and nonnegative."
+            )
+
+        object.__setattr__(
+            self,
+            "name",
+            normalized_name,
+        )
+
+        object.__setattr__(
+            self,
+            "status",
+            normalized_status,
+        )
+
+        object.__setattr__(
+            self,
+            "duration_seconds",
+            normalized_duration,
+        )
+
+        object.__setattr__(
+            self,
+            "message",
+            str(
+                self.message
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "exception_type",
+            (
+                None
+                if self.exception_type is None
+                else str(
+                    self.exception_type
+                )
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_metadata(
+                self.metadata
+            ),
+        )
+
+    @property
+    def passed(
+        self,
+    ) -> bool:
+        """Whether the test passed."""
+
+        return self.status == SELF_TEST_SUCCESS_STATUS
+
+    @property
+    def failed(
+        self,
+    ) -> bool:
+        """Whether the test failed."""
+
+        return self.status == SELF_TEST_FAILURE_STATUS
+
+    @property
+    def skipped(
+        self,
+    ) -> bool:
+        """Whether the test was skipped."""
+
+        return self.status == SELF_TEST_SKIP_STATUS
+
+    def to_dict(
+        self,
+    ) -> Dict[
+        str,
+        Any,
+    ]:
+        """
+        Serialize the test result.
+
+        Returns
+        -------
+        dict
+            Serializable result.
+        """
+
+        return {
+            "name": self.name,
+            "status": self.status,
+            "duration_seconds": float(
+                self.duration_seconds
+            ),
+            "message": self.message,
+            "exception_type": (
+                self.exception_type
+            ),
+            "metadata": dict(
+                self.metadata
+            ),
+        }
+
+
+@dataclass(
+    slots=True,
+)
+class SelfTestReport:
+    """
+    Mutable collection of self-test results.
+
+    Parameters
+    ----------
+    module_name : str
+        Tested module name.
+    results : list, optional
+        Test-case results.
+    metadata : mapping, optional
+        Report metadata.
+    """
+
+    module_name: str = _MODULE_NAME
+    results: List[
+        SelfTestCaseResult
+    ] = field(
+        default_factory=list
+    )
+    metadata: MutableMapping[
+        str,
+        Any,
+    ] = field(
+        default_factory=dict
+    )
+
+    def __post_init__(
+        self,
+    ) -> None:
+        """Normalize report attributes."""
+
+        self.module_name = str(
+            self.module_name
+        ).strip()
+
+        if not self.module_name:
+            raise ValueError(
+                "SelfTestReport module_name cannot be empty."
+            )
+
+    @property
+    def total_count(
+        self,
+    ) -> int:
+        """Return the total number of tests."""
+
+        return len(
+            self.results
+        )
+
+    @property
+    def passed_count(
+        self,
+    ) -> int:
+        """Return the number of passed tests."""
+
+        return sum(
+            result.passed
+            for result in self.results
+        )
+
+    @property
+    def failed_count(
+        self,
+    ) -> int:
+        """Return the number of failed tests."""
+
+        return sum(
+            result.failed
+            for result in self.results
+        )
+
+    @property
+    def skipped_count(
+        self,
+    ) -> int:
+        """Return the number of skipped tests."""
+
+        return sum(
+            result.skipped
+            for result in self.results
+        )
+
+    @property
+    def passed(
+        self,
+    ) -> bool:
+        """Whether the complete report passed."""
+
+        return (
+            self.failed_count == 0
+            and self.total_count > 0
+        )
+
+    @property
+    def total_duration_seconds(
+        self,
+    ) -> np.float64:
+        """Return the total test duration."""
+
+        return np.float64(
+            sum(
+                float(
+                    result.duration_seconds
+                )
+                for result in self.results
+            )
+        )
+
+    def add(
+        self,
+        result: SelfTestCaseResult,
+    ) -> None:
+        """
+        Add a test result.
+
+        Parameters
+        ----------
+        result : SelfTestCaseResult
+            Result to add.
+        """
+
+        if not isinstance(
+            result,
+            SelfTestCaseResult,
+        ):
+            raise TypeError(
+                "result must be a SelfTestCaseResult instance."
+            )
+
+        self.results.append(
+            result
+        )
+
+    def extend(
+        self,
+        results: Iterable[
+            SelfTestCaseResult
+        ],
+    ) -> None:
+        """
+        Add multiple test results.
+
+        Parameters
+        ----------
+        results : iterable of SelfTestCaseResult
+            Results to add.
+        """
+
+        for result in results:
+            self.add(
+                result
+            )
+
+    def failures(
+        self,
+    ) -> Tuple[
+        SelfTestCaseResult,
+        ...,
+    ]:
+        """
+        Return failed tests.
+
+        Returns
+        -------
+        tuple of SelfTestCaseResult
+            Failed results.
+        """
+
+        return tuple(
+            result
+            for result in self.results
+            if result.failed
+        )
+
+    def to_dict(
+        self,
+    ) -> Dict[
+        str,
+        Any,
+    ]:
+        """
+        Serialize the self-test report.
+
+        Returns
+        -------
+        dict
+            Serializable report.
+        """
+
+        return {
+            "module_name": self.module_name,
+            "total_count": self.total_count,
+            "passed_count": self.passed_count,
+            "failed_count": self.failed_count,
+            "skipped_count": self.skipped_count,
+            "passed": self.passed,
+            "total_duration_seconds": float(
+                self.total_duration_seconds
+            ),
+            "results": [
+                result.to_dict()
+                for result in self.results
+            ],
+            "metadata": dict(
+                self.metadata
+            ),
+        }
+
+    def format(
+        self,
+        *,
+        include_passed: bool = True,
+        include_skipped: bool = True,
+    ) -> str:
+        """
+        Format the report as readable text.
+
+        Parameters
+        ----------
+        include_passed : bool, optional
+            Whether passed test lines should be included.
+        include_skipped : bool, optional
+            Whether skipped test lines should be included.
+
+        Returns
+        -------
+        str
+            Formatted report.
+        """
+
+        lines = [
+            (
+                f"{self.module_name} self-tests: "
+                f"{self.passed_count} passed, "
+                f"{self.failed_count} failed, "
+                f"{self.skipped_count} skipped "
+                f"({self.total_count} total)."
+            ),
+            (
+                "Duration: "
+                f"{float(self.total_duration_seconds):.6f} s."
+            ),
+        ]
+
+        for result in self.results:
+            if (
+                result.passed
+                and not include_passed
+            ):
+                continue
+
+            if (
+                result.skipped
+                and not include_skipped
+            ):
+                continue
+
+            status_label = result.status.upper()
+
+            line = (
+                f"[{status_label}] "
+                f"{result.name} "
+                f"({float(result.duration_seconds):.6f} s)"
+            )
+
+            if result.message:
+                line += f": {result.message}"
+
+            lines.append(
+                line
+            )
+
+        return "\n".join(
+            lines
+        )
+
+
+# -----------------------------------------------------------------------------
+# Assertion helpers
+# -----------------------------------------------------------------------------
+
+def self_test_assert(
+    condition: Any,
+    message: str = "Self-test assertion failed.",
+) -> None:
+    """
+    Assert that a condition is true.
+
+    Parameters
+    ----------
+    condition : Any
+        Evaluated condition.
+    message : str, optional
+        Failure message.
+
+    Raises
+    ------
+    AssertionError
+        If the condition is false.
+    """
+
+    if not bool(
+        condition
+    ):
+        raise AssertionError(
+            message
+        )
+
+
+def self_test_assert_equal(
+    actual: Any,
+    expected: Any,
+    message: Optional[
+        str
+    ] = None,
+) -> None:
+    """
+    Assert exact equality.
+
+    Parameters
+    ----------
+    actual : Any
+        Actual value.
+    expected : Any
+        Expected value.
+    message : str or None, optional
+        Failure message.
+    """
+
+    if actual != expected:
+        raise AssertionError(
+            message
+            or (
+                f"Expected {expected!r}, "
+                f"received {actual!r}."
+            )
+        )
+
+
+def self_test_assert_not_equal(
+    actual: Any,
+    unexpected: Any,
+    message: Optional[
+        str
+    ] = None,
+) -> None:
+    """
+    Assert inequality.
+
+    Parameters
+    ----------
+    actual : Any
+        Actual value.
+    unexpected : Any
+        Unexpected value.
+    message : str or None, optional
+        Failure message.
+    """
+
+    if actual == unexpected:
+        raise AssertionError(
+            message
+            or (
+                f"Did not expect {unexpected!r}."
+            )
+        )
+
+
+def self_test_assert_is(
+    actual: Any,
+    expected: Any,
+    message: Optional[
+        str
+    ] = None,
+) -> None:
+    """
+    Assert object identity.
+
+    Parameters
+    ----------
+    actual : Any
+        Actual object.
+    expected : Any
+        Expected object.
+    message : str or None, optional
+        Failure message.
+    """
+
+    if actual is not expected:
+        raise AssertionError(
+            message
+            or "Objects are not identical."
+        )
+
+
+def self_test_assert_is_not(
+    actual: Any,
+    unexpected: Any,
+    message: Optional[
+        str
+    ] = None,
+) -> None:
+    """
+    Assert nonidentity.
+
+    Parameters
+    ----------
+    actual : Any
+        Actual object.
+    unexpected : Any
+        Unexpected object.
+    message : str or None, optional
+        Failure message.
+    """
+
+    if actual is unexpected:
+        raise AssertionError(
+            message
+            or "Objects unexpectedly share identity."
+        )
+
+
+def self_test_assert_isinstance(
+    value: Any,
+    expected_type: Union[
+        Type[
+            Any
+        ],
+        Tuple[
+            Type[
+                Any
+            ],
+            ...,
+        ],
+    ],
+    message: Optional[
+        str
+    ] = None,
+) -> None:
+    """
+    Assert object type.
+
+    Parameters
+    ----------
+    value : Any
+        Value to test.
+    expected_type : type or tuple of type
+        Expected type.
+    message : str or None, optional
+        Failure message.
+    """
+
+    if not isinstance(
+        value,
+        expected_type,
+    ):
+        raise AssertionError(
+            message
+            or (
+                f"Expected type {expected_type!r}, "
+                f"received {type(value)!r}."
+            )
+        )
+
+
+def self_test_assert_almost_equal(
+    actual: Number,
+    expected: Number,
+    *,
+    tolerance: Number = SELF_TEST_FLOAT_TOLERANCE,
+    message: Optional[
+        str
+    ] = None,
+) -> None:
+    """
+    Assert approximate scalar equality.
+
+    Parameters
+    ----------
+    actual : Number
+        Actual value.
+    expected : Number
+        Expected value.
+    tolerance : Number, optional
+        Absolute tolerance.
+    message : str or None, optional
+        Failure message.
+    """
+
+    actual_value = np.float64(
+        actual
+    )
+
+    expected_value = np.float64(
+        expected
+    )
+
+    tolerance_value = np.float64(
+        tolerance
+    )
+
+    if not np.isclose(
+        actual_value,
+        expected_value,
+        rtol=0.0,
+        atol=tolerance_value,
+        equal_nan=False,
+    ):
+        raise AssertionError(
+            message
+            or (
+                f"Expected {float(expected_value)!r}, "
+                f"received {float(actual_value)!r}, "
+                f"tolerance={float(tolerance_value)!r}."
+            )
+        )
+
+
+def self_test_assert_array_equal(
+    actual: Any,
+    expected: Any,
+    *,
+    tolerance: Number = SELF_TEST_COORDINATE_TOLERANCE,
+    message: Optional[
+        str
+    ] = None,
+) -> None:
+    """
+    Assert approximate array equality.
+
+    Parameters
+    ----------
+    actual : array-like
+        Actual values.
+    expected : array-like
+        Expected values.
+    tolerance : Number, optional
+        Absolute tolerance.
+    message : str or None, optional
+        Failure message.
+    """
+
+    actual_array = np.asarray(
+        actual,
+        dtype=np.float64,
+    )
+
+    expected_array = np.asarray(
+        expected,
+        dtype=np.float64,
+    )
+
+    if actual_array.shape != expected_array.shape:
+        raise AssertionError(
+            message
+            or (
+                "Array shapes differ: "
+                f"{actual_array.shape!r} != "
+                f"{expected_array.shape!r}."
+            )
+        )
+
+    if not np.allclose(
+        actual_array,
+        expected_array,
+        rtol=0.0,
+        atol=np.float64(
+            tolerance
+        ),
+        equal_nan=False,
+    ):
+        raise AssertionError(
+            message
+            or (
+                f"Arrays differ.\n"
+                f"Expected: {expected_array!r}\n"
+                f"Actual: {actual_array!r}"
+            )
+        )
+
+
+def self_test_assert_between(
+    value: Number,
+    minimum: Number,
+    maximum: Number,
+    *,
+    inclusive: bool = True,
+    message: Optional[
+        str
+    ] = None,
+) -> None:
+    """
+    Assert that a numeric value lies within an interval.
+
+    Parameters
+    ----------
+    value : Number
+        Value to test.
+    minimum : Number
+        Lower bound.
+    maximum : Number
+        Upper bound.
+    inclusive : bool, optional
+        Whether bounds are inclusive.
+    message : str or None, optional
+        Failure message.
+    """
+
+    normalized_value = np.float64(
+        value
+    )
+
+    normalized_minimum = np.float64(
+        minimum
+    )
+
+    normalized_maximum = np.float64(
+        maximum
+    )
+
+    if inclusive:
+        valid = (
+            normalized_minimum
+            <= normalized_value
+            <= normalized_maximum
+        )
+
+    else:
+        valid = (
+            normalized_minimum
+            < normalized_value
+            < normalized_maximum
+        )
+
+    if not valid:
+        raise AssertionError(
+            message
+            or (
+                f"Value {float(normalized_value)} is outside "
+                f"[{float(normalized_minimum)}, "
+                f"{float(normalized_maximum)}]."
+            )
+        )
+
+
+def self_test_assert_mapping_contains(
+    mapping: Mapping[
+        Any,
+        Any,
+    ],
+    keys: Iterable[
+        Any
+    ],
+    message: Optional[
+        str
+    ] = None,
+) -> None:
+    """
+    Assert that a mapping contains required keys.
+
+    Parameters
+    ----------
+    mapping : mapping
+        Mapping to inspect.
+    keys : iterable
+        Required keys.
+    message : str or None, optional
+        Failure message.
+    """
+
+    if not isinstance(
+        mapping,
+        Mapping,
+    ):
+        raise AssertionError(
+            "Expected a mapping."
+        )
+
+    missing_keys = [
+        key
+        for key in keys
+        if key not in mapping
+    ]
+
+    if missing_keys:
+        raise AssertionError(
+            message
+            or (
+                "Mapping is missing keys: "
+                + ", ".join(
+                    repr(
+                        key
+                    )
+                    for key in missing_keys
+                )
+            )
+        )
+
+
+# -----------------------------------------------------------------------------
+# Exception assertion context
+# -----------------------------------------------------------------------------
+
+class SelfTestRaises:
+    """
+    Context manager asserting that an exception is raised.
+
+    Parameters
+    ----------
+    exception_type : type
+        Expected exception type.
+    message_contains : str or None, optional
+        Required substring in the exception message.
+    """
+
+    def __init__(
+        self,
+        exception_type: Type[
+            BaseException
+        ],
+        *,
+        message_contains: Optional[
+            str
+        ] = None,
+    ) -> None:
+        """Initialize the context manager."""
+
+        if not isinstance(
+            exception_type,
+            type,
+        ) or not issubclass(
+            exception_type,
+            BaseException,
+        ):
+            raise TypeError(
+                "exception_type must be an exception class."
+            )
+
+        self.exception_type = (
+            exception_type
+        )
+
+        self.message_contains = (
+            None
+            if message_contains is None
+            else str(
+                message_contains
+            )
+        )
+
+        self.exception: Optional[
+            BaseException
+        ] = None
+
+    def __enter__(
+        self,
+    ) -> "SelfTestRaises":
+        """Enter the exception assertion context."""
+
+        return self
+
+    def __exit__(
+        self,
+        exception_class: Optional[
+            Type[
+                BaseException
+            ]
+        ],
+        exception: Optional[
+            BaseException
+        ],
+        traceback: Any,
+    ) -> bool:
+        """Validate the raised exception."""
+
+        if exception is None:
+            raise AssertionError(
+                f"Expected {self.exception_type.__name__} "
+                "to be raised."
+            )
+
+        if not isinstance(
+            exception,
+            self.exception_type,
+        ):
+            return False
+
+        if (
+            self.message_contains is not None
+            and self.message_contains
+            not in str(
+                exception
+            )
+        ):
+            raise AssertionError(
+                "Exception message does not contain "
+                f"{self.message_contains!r}. "
+                f"Actual message: {str(exception)!r}."
+            )
+
+        self.exception = exception
+
+        return True
+
+
+def self_test_raises(
+    exception_type: Type[
+        BaseException
+    ],
+    *,
+    message_contains: Optional[
+        str
+    ] = None,
+) -> SelfTestRaises:
+    """
+    Create an exception assertion context.
+
+    Parameters
+    ----------
+    exception_type : type
+        Expected exception type.
+    message_contains : str or None, optional
+        Required exception-message substring.
+
+    Returns
+    -------
+    SelfTestRaises
+        Context manager.
+    """
+
+    return SelfTestRaises(
+        exception_type,
+        message_contains=message_contains,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Test execution helpers
+# -----------------------------------------------------------------------------
+
+def run_self_test_case(
+    name: str,
+    test_function: Callable[
+        [],
+        Any,
+    ],
+    *,
+    raise_on_failure: bool = False,
+    metadata: Optional[
+        Mapping[
+            str,
+            Any,
+        ]
+    ] = None,
+) -> SelfTestCaseResult:
+    """
+    Execute one self-test case.
+
+    Parameters
+    ----------
+    name : str
+        Test name.
+    test_function : callable
+        Zero-argument test function.
+    raise_on_failure : bool, optional
+        Whether failures should be reraised.
+    metadata : mapping or None, optional
+        Test metadata.
+
+    Returns
+    -------
+    SelfTestCaseResult
+        Test result.
+    """
+
+    if not callable(
+        test_function
+    ):
+        raise TypeError(
+            "test_function must be callable."
+        )
+
+    start_time = time.perf_counter()
+
+    try:
+        test_function()
+
+    except Exception as error:
+        duration = np.float64(
+            time.perf_counter()
+            - start_time
+        )
+
+        result = SelfTestCaseResult(
+            name=name,
+            status=SELF_TEST_FAILURE_STATUS,
+            duration_seconds=duration,
+            message=str(
+                error
+            ),
+            exception_type=(
+                type(
+                    error
+                ).__name__
+            ),
+            metadata=(
+                {}
+                if metadata is None
+                else metadata
+            ),
+        )
+
+        if raise_on_failure:
+            raise
+
+        return result
+
+    duration = np.float64(
+        time.perf_counter()
+        - start_time
+    )
+
+    return SelfTestCaseResult(
+        name=name,
+        status=SELF_TEST_SUCCESS_STATUS,
+        duration_seconds=duration,
+        metadata=(
+            {}
+            if metadata is None
+            else metadata
+        ),
+    )
+
+
+def make_skipped_self_test_result(
+    name: str,
+    reason: str,
+    *,
+    metadata: Optional[
+        Mapping[
+            str,
+            Any,
+        ]
+    ] = None,
+) -> SelfTestCaseResult:
+    """
+    Create a skipped test result.
+
+    Parameters
+    ----------
+    name : str
+        Test name.
+    reason : str
+        Skip reason.
+    metadata : mapping or None, optional
+        Test metadata.
+
+    Returns
+    -------
+    SelfTestCaseResult
+        Skipped result.
+    """
+
+    return SelfTestCaseResult(
+        name=name,
+        status=SELF_TEST_SKIP_STATUS,
+        duration_seconds=np.float64(
+            0.0
+        ),
+        message=str(
+            reason
+        ),
+        metadata=(
+            {}
+            if metadata is None
+            else metadata
+        ),
+    )
+
+
+def run_self_test_group(
+    test_cases: Iterable[
+        Tuple[
+            str,
+            Callable[
+                [],
+                Any,
+            ],
+        ]
+    ],
+    *,
+    module_name: str = _MODULE_NAME,
+    raise_on_failure: bool = False,
+    metadata: Optional[
+        Mapping[
+            str,
+            Any,
+        ]
+    ] = None,
+) -> SelfTestReport:
+    """
+    Execute a group of self-tests.
+
+    Parameters
+    ----------
+    test_cases : iterable
+        ``(name, callable)`` test definitions.
+    module_name : str, optional
+        Tested module name.
+    raise_on_failure : bool, optional
+        Whether the first failure should be reraised.
+    metadata : mapping or None, optional
+        Report metadata.
+
+    Returns
+    -------
+    SelfTestReport
+        Test report.
+    """
+
+    report = SelfTestReport(
+        module_name=module_name,
+        metadata=(
+            {}
+            if metadata is None
+            else dict(
+                metadata
+            )
+        ),
+    )
+
+    for test_name, test_function in test_cases:
+        result = run_self_test_case(
+            test_name,
+            test_function,
+            raise_on_failure=(
+                raise_on_failure
+            ),
+        )
+
+        report.add(
+            result
+        )
+
+    return report
+
+
+# -----------------------------------------------------------------------------
+# Atom and structure factory helpers
+# -----------------------------------------------------------------------------
+
+def make_fake_atom(
+    name: str,
+    element: str,
+    coordinate: Coordinate,
+    *,
+    residue: Optional[
+        FakeResidue
+    ] = None,
+    atom_type: Optional[
+        str
+    ] = None,
+    formal_charge: Number = 0.0,
+    aromatic: bool = False,
+    index: Optional[
+        int
+    ] = None,
+) -> FakeAtom:
+    """
+    Create a fake atom.
+
+    Parameters
+    ----------
+    name : str
+        Atom name.
+    element : str
+        Element symbol.
+    coordinate : array-like
+        Cartesian coordinate.
+    residue : FakeResidue or None, optional
+        Parent residue.
+    atom_type : str or None, optional
+        Atom type.
+    formal_charge : Number, optional
+        Formal charge.
+    aromatic : bool, optional
+        Aromaticity flag.
+    index : int or None, optional
+        Atom index.
+
+    Returns
+    -------
+    FakeAtom
+        Created atom.
+    """
+
+    return FakeAtom(
+        name=name,
+        element=element,
+        coord=np.asarray(
+            coordinate,
+            dtype=np.float64,
+        ),
+        residue=residue,
+        atom_type=atom_type,
+        formal_charge=np.float64(
+            formal_charge
+        ),
+        aromatic=aromatic,
+        index=index,
+    )
+
+
+def make_fake_residue(
+    name: str,
+    number: int,
+    *,
+    chain_id: str = (
+        SELF_TEST_DEFAULT_CHAIN_ID
+    ),
+    polymer_type: Optional[
+        str
+    ] = "amino",
+) -> FakeResidue:
+    """
+    Create a fake residue.
+
+    Parameters
+    ----------
+    name : str
+        Residue name.
+    number : int
+        Residue number.
+    chain_id : str, optional
+        Chain identifier.
+    polymer_type : str or None, optional
+        Polymer type.
+
+    Returns
+    -------
+    FakeResidue
+        Created residue.
+    """
+
+    return FakeResidue(
+        name=name,
+        number=number,
+        chain_id=chain_id,
+        polymer_type=polymer_type,
+    )
+
+
+def connect_fake_atoms(
+    atom1: FakeAtom,
+    atom2: FakeAtom,
+    *,
+    order: Number = 1.0,
+    aromatic: bool = False,
+) -> FakeBond:
+    """
+    Connect two fake atoms.
+
+    Parameters
+    ----------
+    atom1 : FakeAtom
+        First atom.
+    atom2 : FakeAtom
+        Second atom.
+    order : Number, optional
+        Bond order.
+    aromatic : bool, optional
+        Aromaticity flag.
+
+    Returns
+    -------
+    FakeBond
+        Created bond.
+    """
+
+    return FakeBond(
+        atom1=atom1,
+        atom2=atom2,
+        order=np.float64(
+            order
+        ),
+        aromatic=aromatic,
+    )
+
+
+def make_fake_structure(
+    name: str,
+    atoms: Iterable[
+        FakeAtom
+    ],
+    *,
+    residues: Optional[
+        Iterable[
+            FakeResidue
+        ]
+    ] = None,
+    model_id: Optional[
+        Union[
+            str,
+            int,
+        ]
+    ] = None,
+) -> FakeStructure:
+    """
+    Create a fake atomic structure.
+
+    Parameters
+    ----------
+    name : str
+        Structure name.
+    atoms : iterable of FakeAtom
+        Atoms.
+    residues : iterable of FakeResidue or None, optional
+        Residues.
+    model_id : str, int or None, optional
+        Model identifier.
+
+    Returns
+    -------
+    FakeStructure
+        Created structure.
+    """
+
+    return FakeStructure(
+        name=name,
+        atoms=list(
+            atoms
+        ),
+        residues=(
+            []
+            if residues is None
+            else list(
+                residues
+            )
+        ),
+        model_id=model_id,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Chemical-system factories
+# -----------------------------------------------------------------------------
+
+def make_explicit_linear_hbond_system(
+    *,
+    donor_acceptor_distance: Number = 2.80,
+    donor_hydrogen_distance: Number = 1.00,
+    donor_element: str = "N",
+    acceptor_element: str = "O",
+    donor_residue_name: str = "LYS",
+    acceptor_residue_name: str = "ASP",
+    ligand_is_donor: bool = True,
+) -> Dict[
+    str,
+    Any,
+]:
+    """
+    Create a linear explicit D-H...A hydrogen-bond system.
+
+    Parameters
+    ----------
+    donor_acceptor_distance : Number, optional
+        D...A distance.
+    donor_hydrogen_distance : Number, optional
+        D-H distance.
+    donor_element : str, optional
+        Donor element.
+    acceptor_element : str, optional
+        Acceptor element.
+    donor_residue_name : str, optional
+        Donor residue name.
+    acceptor_residue_name : str, optional
+        Acceptor residue name.
+    ligand_is_donor : bool, optional
+        Whether the ligand contains the donor.
+
+    Returns
+    -------
+    dict
+        Artificial hydrogen-bond system.
+    """
+
+    normalized_da_distance = np.float64(
+        donor_acceptor_distance
+    )
+
+    normalized_dh_distance = np.float64(
+        donor_hydrogen_distance
+    )
+
+    donor_residue = make_fake_residue(
+        donor_residue_name,
+        1,
+        chain_id=(
+            SELF_TEST_DEFAULT_LIGAND_CHAIN_ID
+            if ligand_is_donor
+            else SELF_TEST_DEFAULT_CHAIN_ID
+        ),
+        polymer_type=(
+            None
+            if ligand_is_donor
+            else "amino"
+        ),
+    )
+
+    acceptor_residue = make_fake_residue(
+        acceptor_residue_name,
+        101,
+        chain_id=(
+            SELF_TEST_DEFAULT_CHAIN_ID
+            if ligand_is_donor
+            else SELF_TEST_DEFAULT_LIGAND_CHAIN_ID
+        ),
+        polymer_type=(
+            "amino"
+            if ligand_is_donor
+            else None
+        ),
+    )
+
+    donor = make_fake_atom(
+        "D",
+        donor_element,
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        residue=donor_residue,
+        atom_type=(
+            "N3"
+            if donor_element.upper() == "N"
+            else None
+        ),
+    )
+
+    hydrogen = make_fake_atom(
+        "H",
+        "H",
+        (
+            normalized_dh_distance,
+            0.0,
+            0.0,
+        ),
+        residue=donor_residue,
+    )
+
+    acceptor = make_fake_atom(
+        "A",
+        acceptor_element,
+        (
+            normalized_da_distance,
+            0.0,
+            0.0,
+        ),
+        residue=acceptor_residue,
+        atom_type=(
+            "O2"
+            if acceptor_element.upper() == "O"
+            else None
+        ),
+    )
+
+    donor_hydrogen_bond = connect_fake_atoms(
+        donor,
+        hydrogen,
+        order=1.0,
+    )
+
+    donor_structure = make_fake_structure(
+        (
+            SELF_TEST_DEFAULT_LIGAND_NAME
+            if ligand_is_donor
+            else SELF_TEST_DEFAULT_RECEPTOR_NAME
+        ),
+        (
+            donor,
+            hydrogen,
+        ),
+        residues=(
+            donor_residue,
+        ),
+    )
+
+    acceptor_structure = make_fake_structure(
+        (
+            SELF_TEST_DEFAULT_RECEPTOR_NAME
+            if ligand_is_donor
+            else SELF_TEST_DEFAULT_LIGAND_NAME
+        ),
+        (
+            acceptor,
+        ),
+        residues=(
+            acceptor_residue,
+        ),
+    )
+
+    ligand_structure = (
+        donor_structure
+        if ligand_is_donor
+        else acceptor_structure
+    )
+
+    receptor_structure = (
+        acceptor_structure
+        if ligand_is_donor
+        else donor_structure
+    )
+
+    return {
+        "donor": donor,
+        "hydrogen": hydrogen,
+        "acceptor": acceptor,
+        "donor_residue": donor_residue,
+        "acceptor_residue": acceptor_residue,
+        "donor_hydrogen_bond": (
+            donor_hydrogen_bond
+        ),
+        "donor_structure": donor_structure,
+        "acceptor_structure": (
+            acceptor_structure
+        ),
+        "ligand": ligand_structure,
+        "receptor": receptor_structure,
+        "ligand_atoms": tuple(
+            ligand_structure.atoms
+        ),
+        "receptor_atoms": tuple(
+            receptor_structure.atoms
+        ),
+        "ligand_is_donor": bool(
+            ligand_is_donor
+        ),
+        "expected_donor_acceptor_distance": (
+            normalized_da_distance
+        ),
+        "expected_donor_hydrogen_distance": (
+            normalized_dh_distance
+        ),
+        "expected_hydrogen_acceptor_distance": (
+            np.float64(
+                normalized_da_distance
+                - normalized_dh_distance
+            )
+        ),
+        "expected_dha_angle": np.float64(
+            180.0
+        ),
+    }
+
+
+def make_explicit_bent_hbond_system(
+    *,
+    donor_acceptor_distance: Number = 2.80,
+    donor_hydrogen_distance: Number = 1.00,
+    dha_angle: Number = 120.0,
+    ligand_is_donor: bool = True,
+) -> Dict[
+    str,
+    Any,
+]:
+    """
+    Create an explicit hydrogen-bond system with a selected D-H...A angle.
+
+    Parameters
+    ----------
+    donor_acceptor_distance : Number, optional
+        D...A distance.
+    donor_hydrogen_distance : Number, optional
+        D-H distance.
+    dha_angle : Number, optional
+        Desired D-H...A angle.
+    ligand_is_donor : bool, optional
+        Whether ligand is the donor.
+
+    Returns
+    -------
+    dict
+        Artificial bent hydrogen-bond system.
+    """
+
+    system = make_explicit_linear_hbond_system(
+        donor_acceptor_distance=(
+            donor_acceptor_distance
+        ),
+        donor_hydrogen_distance=(
+            donor_hydrogen_distance
+        ),
+        ligand_is_donor=(
+            ligand_is_donor
+        ),
+    )
+
+    angle_radians = np.deg2rad(
+        np.float64(
+            180.0
+        )
+        - np.float64(
+            dha_angle
+        )
+    )
+
+    donor_coordinate = np.asarray(
+        system[
+            "donor"
+        ].coord,
+        dtype=np.float64,
+    )
+
+    hydrogen_coordinate = np.asarray(
+        system[
+            "hydrogen"
+        ].coord,
+        dtype=np.float64,
+    )
+
+    donor_acceptor_distance_value = (
+        np.float64(
+            donor_acceptor_distance
+        )
+    )
+
+    acceptor_coordinate = np.asarray(
+        (
+            donor_acceptor_distance_value
+            * np.cos(
+                angle_radians
+            ),
+            donor_acceptor_distance_value
+            * np.sin(
+                angle_radians
+            ),
+            0.0,
+        ),
+        dtype=np.float64,
+    )
+
+    system[
+        "acceptor"
+    ].set_coord(
+        acceptor_coordinate
+    )
+
+    hydrogen_acceptor_distance = np.float64(
+        np.linalg.norm(
+            acceptor_coordinate
+            - hydrogen_coordinate
+        )
+    )
+
+    system.update(
+        {
+            "expected_donor_acceptor_distance": (
+                np.float64(
+                    np.linalg.norm(
+                        acceptor_coordinate
+                        - donor_coordinate
+                    )
+                )
+            ),
+            "expected_hydrogen_acceptor_distance": (
+                hydrogen_acceptor_distance
+            ),
+            "expected_dha_angle": np.float64(
+                dha_angle
+            ),
+        }
+    )
+
+    return system
+
+
+def make_inferred_hbond_system(
+    *,
+    donor_acceptor_distance: Number = 2.90,
+    donor_neighbor_distance: Number = 1.45,
+    ligand_is_donor: bool = True,
+) -> Dict[
+    str,
+    Any,
+]:
+    """
+    Create a hydrogen-free system suitable for inferred-mode tests.
+
+    Parameters
+    ----------
+    donor_acceptor_distance : Number, optional
+        D...A distance.
+    donor_neighbor_distance : Number, optional
+        Distance from donor to its heavy bonded neighbor.
+    ligand_is_donor : bool, optional
+        Whether ligand contains the donor.
+
+    Returns
+    -------
+    dict
+        Artificial inferred-mode system.
+    """
+
+    donor_residue = make_fake_residue(
+        "LYS",
+        1,
+        chain_id=(
+            SELF_TEST_DEFAULT_LIGAND_CHAIN_ID
+            if ligand_is_donor
+            else SELF_TEST_DEFAULT_CHAIN_ID
+        ),
+        polymer_type=(
+            None
+            if ligand_is_donor
+            else "amino"
+        ),
+    )
+
+    acceptor_residue = make_fake_residue(
+        "ASP",
+        101,
+        chain_id=(
+            SELF_TEST_DEFAULT_CHAIN_ID
+            if ligand_is_donor
+            else SELF_TEST_DEFAULT_LIGAND_CHAIN_ID
+        ),
+        polymer_type=(
+            "amino"
+            if ligand_is_donor
+            else None
+        ),
+    )
+
+    donor = make_fake_atom(
+        "N",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        residue=donor_residue,
+        atom_type="N3",
+    )
+
+    donor_neighbor = make_fake_atom(
+        "C",
+        "C",
+        (
+            -np.float64(
+                donor_neighbor_distance
+            ),
+            0.0,
+            0.0,
+        ),
+        residue=donor_residue,
+        atom_type="C3",
+    )
+
+    acceptor = make_fake_atom(
+        "O",
+        "O",
+        (
+            np.float64(
+                donor_acceptor_distance
+            ),
+            0.0,
+            0.0,
+        ),
+        residue=acceptor_residue,
+        atom_type="O2",
+    )
+
+    connect_fake_atoms(
+        donor,
+        donor_neighbor,
+    )
+
+    donor_structure = make_fake_structure(
+        (
+            SELF_TEST_DEFAULT_LIGAND_NAME
+            if ligand_is_donor
+            else SELF_TEST_DEFAULT_RECEPTOR_NAME
+        ),
+        (
+            donor,
+            donor_neighbor,
+        ),
+        residues=(
+            donor_residue,
+        ),
+    )
+
+    acceptor_structure = make_fake_structure(
+        (
+            SELF_TEST_DEFAULT_RECEPTOR_NAME
+            if ligand_is_donor
+            else SELF_TEST_DEFAULT_LIGAND_NAME
+        ),
+        (
+            acceptor,
+        ),
+        residues=(
+            acceptor_residue,
+        ),
+    )
+
+    ligand_structure = (
+        donor_structure
+        if ligand_is_donor
+        else acceptor_structure
+    )
+
+    receptor_structure = (
+        acceptor_structure
+        if ligand_is_donor
+        else donor_structure
+    )
+
+    return {
+        "donor": donor,
+        "donor_neighbor": donor_neighbor,
+        "acceptor": acceptor,
+        "donor_residue": donor_residue,
+        "acceptor_residue": acceptor_residue,
+        "ligand": ligand_structure,
+        "receptor": receptor_structure,
+        "ligand_atoms": tuple(
+            ligand_structure.atoms
+        ),
+        "receptor_atoms": tuple(
+            receptor_structure.atoms
+        ),
+        "ligand_is_donor": bool(
+            ligand_is_donor
+        ),
+        "expected_donor_acceptor_distance": (
+            np.float64(
+                donor_acceptor_distance
+            )
+        ),
+        "expected_donor_deviation_angle": (
+            np.float64(
+                0.0
+            )
+        ),
+    }
+
+
+def make_non_hbond_system(
+    *,
+    donor_acceptor_distance: Number = 6.0,
+    ligand_is_donor: bool = True,
+) -> Dict[
+    str,
+    Any,
+]:
+    """
+    Create an explicit system outside normal H-bond distance cutoffs.
+
+    Parameters
+    ----------
+    donor_acceptor_distance : Number, optional
+        D...A distance.
+    ligand_is_donor : bool, optional
+        Whether ligand is the donor.
+
+    Returns
+    -------
+    dict
+        Artificial noninteracting system.
+    """
+
+    return make_explicit_linear_hbond_system(
+        donor_acceptor_distance=(
+            donor_acceptor_distance
+        ),
+        donor_hydrogen_distance=1.0,
+        ligand_is_donor=(
+            ligand_is_donor
+        ),
+    )
+
+
+def make_multiple_hbond_system(
+    *,
+    ligand_is_donor: bool = True,
+) -> Dict[
+    str,
+    Any,
+]:
+    """
+    Create a system containing multiple donor-acceptor pairs.
+
+    Parameters
+    ----------
+    ligand_is_donor : bool, optional
+        Whether ligand contains the donors.
+
+    Returns
+    -------
+    dict
+        Multi-interaction artificial system.
+    """
+
+    donor_residue = make_fake_residue(
+        "LIG",
+        1,
+        chain_id=(
+            SELF_TEST_DEFAULT_LIGAND_CHAIN_ID
+        ),
+        polymer_type=None,
+    )
+
+    receptor_residue_1 = make_fake_residue(
+        "ASP",
+        101,
+        chain_id=(
+            SELF_TEST_DEFAULT_CHAIN_ID
+        ),
+        polymer_type="amino",
+    )
+
+    receptor_residue_2 = make_fake_residue(
+        "GLU",
+        102,
+        chain_id=(
+            SELF_TEST_DEFAULT_CHAIN_ID
+        ),
+        polymer_type="amino",
+    )
+
+    donor_1 = make_fake_atom(
+        "N1",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        residue=donor_residue,
+        atom_type="N3",
+    )
+
+    hydrogen_1 = make_fake_atom(
+        "H1",
+        "H",
+        (
+            1.0,
+            0.0,
+            0.0,
+        ),
+        residue=donor_residue,
+    )
+
+    donor_2 = make_fake_atom(
+        "N2",
+        "N",
+        (
+            0.0,
+            4.0,
+            0.0,
+        ),
+        residue=donor_residue,
+        atom_type="N3",
+    )
+
+    hydrogen_2 = make_fake_atom(
+        "H2",
+        "H",
+        (
+            1.0,
+            4.0,
+            0.0,
+        ),
+        residue=donor_residue,
+    )
+
+    acceptor_1 = make_fake_atom(
+        "OD1",
+        "O",
+        (
+            2.8,
+            0.0,
+            0.0,
+        ),
+        residue=receptor_residue_1,
+        atom_type="O2",
+    )
+
+    acceptor_2 = make_fake_atom(
+        "OE1",
+        "O",
+        (
+            3.1,
+            4.0,
+            0.0,
+        ),
+        residue=receptor_residue_2,
+        atom_type="O2",
+    )
+
+    connect_fake_atoms(
+        donor_1,
+        hydrogen_1,
+    )
+
+    connect_fake_atoms(
+        donor_2,
+        hydrogen_2,
+    )
+
+    ligand_structure = make_fake_structure(
+        SELF_TEST_DEFAULT_LIGAND_NAME,
+        (
+            donor_1,
+            hydrogen_1,
+            donor_2,
+            hydrogen_2,
+        ),
+        residues=(
+            donor_residue,
+        ),
+    )
+
+    receptor_structure = make_fake_structure(
+        SELF_TEST_DEFAULT_RECEPTOR_NAME,
+        (
+            acceptor_1,
+            acceptor_2,
+        ),
+        residues=(
+            receptor_residue_1,
+            receptor_residue_2,
+        ),
+    )
+
+    if not ligand_is_donor:
+        ligand_structure, receptor_structure = (
+            receptor_structure,
+            ligand_structure,
+        )
+
+    return {
+        "donors": (
+            donor_1,
+            donor_2,
+        ),
+        "hydrogens": (
+            hydrogen_1,
+            hydrogen_2,
+        ),
+        "acceptors": (
+            acceptor_1,
+            acceptor_2,
+        ),
+        "ligand": ligand_structure,
+        "receptor": receptor_structure,
+        "ligand_atoms": tuple(
+            ligand_structure.atoms
+        ),
+        "receptor_atoms": tuple(
+            receptor_structure.atoms
+        ),
+        "receptor_residues": (
+            receptor_residue_1,
+            receptor_residue_2,
+        ),
+        "ligand_is_donor": bool(
+            ligand_is_donor
+        ),
+    }
+
+
+def make_fake_dockmodel_system(
+    *,
+    pose_count: int = 3,
+    include_invalid_pose: bool = False,
+) -> Dict[
+    str,
+    Any,
+]:
+    """
+    Create a fake DockModel with multiple ligand poses.
+
+    Parameters
+    ----------
+    pose_count : int, optional
+        Number of valid poses.
+    include_invalid_pose : bool, optional
+        Whether an invalid pose should be appended.
+
+    Returns
+    -------
+    dict
+        Fake DockModel test system.
+    """
+
+    normalized_pose_count = (
+        _optional_nonnegative_integer(
+            pose_count,
+            name="pose count",
+        )
+    )
+
+    if (
+        normalized_pose_count is None
+        or normalized_pose_count == 0
+    ):
+        raise ValueError(
+            "pose_count must be at least one."
+        )
+
+    base_system = (
+        make_explicit_linear_hbond_system(
+            ligand_is_donor=True
+        )
+    )
+
+    receptor = base_system[
+        "receptor"
+    ]
+
+    base_ligand = base_system[
+        "ligand"
+    ]
+
+    poses: Dict[
+        str,
+        Any,
+    ] = {}
+
+    for pose_index in range(
+        normalized_pose_count
+    ):
+        offset = np.asarray(
+            (
+                np.float64(
+                    pose_index
+                )
+                * np.float64(
+                    0.15
+                ),
+                0.0,
+                0.0,
+            ),
+            dtype=np.float64,
+        )
+
+        pose_key = (
+            f"{SELF_TEST_DEFAULT_POSE_PREFIX}_"
+            f"{pose_index + 1}"
+        )
+
+        pose = base_ligand.copy(
+            name=pose_key,
+            coordinate_offset=offset,
+        )
+
+        poses[
+            pose_key
+        ] = pose
+
+    if include_invalid_pose:
+        poses[
+            "invalid_pose"
+        ] = object()
+
+    dock_model = FakeDockModel(
+        receptor=receptor,
+        ligand=next(
+            iter(
+                poses.values()
+            )
+        ),
+        poses=poses,
+        active_pose=next(
+            iter(
+                poses
+            )
+        ),
+    )
+
+    return {
+        "dock_model": dock_model,
+        "receptor": receptor,
+        "poses": poses,
+        "pose_keys": tuple(
+            poses
+        ),
+        "valid_pose_count": (
+            normalized_pose_count
+        ),
+        "include_invalid_pose": bool(
+            include_invalid_pose
+        ),
+    }
+
+
+# -----------------------------------------------------------------------------
+# Manual geometric-object factories
+# -----------------------------------------------------------------------------
+
+def make_fake_explicit_geometry(
+    *,
+    donor_acceptor_distance: Number = 2.80,
+    hydrogen_acceptor_distance: Number = 1.80,
+    donor_hydrogen_distance: Number = 1.00,
+    dha_angle: Number = 180.0,
+    donor_angle: Optional[
+        Number
+    ] = None,
+    acceptor_angle: Optional[
+        Number
+    ] = None,
+) -> HydrogenBondGeometry:
+    """
+    Create an explicit HydrogenBondGeometry instance.
+
+    Parameters
+    ----------
+    donor_acceptor_distance : Number, optional
+        D...A distance.
+    hydrogen_acceptor_distance : Number, optional
+        H...A distance.
+    donor_hydrogen_distance : Number, optional
+        D-H distance.
+    dha_angle : Number, optional
+        D-H...A angle.
+    donor_angle : Number or None, optional
+        Donor deviation angle.
+    acceptor_angle : Number or None, optional
+        Acceptor deviation angle.
+
+    Returns
+    -------
+    HydrogenBondGeometry
+        Geometry object.
+    """
+
+    return HydrogenBondGeometry(
+        donor_acceptor_distance=np.float64(
+            donor_acceptor_distance
+        ),
+        hydrogen_acceptor_distance=np.float64(
+            hydrogen_acceptor_distance
+        ),
+        donor_hydrogen_distance=np.float64(
+            donor_hydrogen_distance
+        ),
+        dha_angle=np.float64(
+            dha_angle
+        ),
+        donor_angle=(
+            None
+            if donor_angle is None
+            else np.float64(
+                donor_angle
+            )
+        ),
+        acceptor_angle=(
+            None
+            if acceptor_angle is None
+            else np.float64(
+                acceptor_angle
+            )
+        ),
+        metadata={
+            "self_test": True,
+        },
+    )
+
+
+def make_fake_inferred_geometry(
+    *,
+    donor_acceptor_distance: Number = 2.90,
+    donor_angle: Number = 0.0,
+    acceptor_angle: Optional[
+        Number
+    ] = 0.0,
+) -> HydrogenBondGeometry:
+    """
+    Create an inferred HydrogenBondGeometry instance.
+
+    Parameters
+    ----------
+    donor_acceptor_distance : Number, optional
+        D...A distance.
+    donor_angle : Number, optional
+        Donor deviation angle.
+    acceptor_angle : Number or None, optional
+        Acceptor deviation angle.
+
+    Returns
+    -------
+    HydrogenBondGeometry
+        Geometry object.
+    """
+
+    return HydrogenBondGeometry(
+        donor_acceptor_distance=np.float64(
+            donor_acceptor_distance
+        ),
+        hydrogen_acceptor_distance=None,
+        donor_hydrogen_distance=None,
+        dha_angle=None,
+        donor_angle=np.float64(
+            donor_angle
+        ),
+        acceptor_angle=(
+            None
+            if acceptor_angle is None
+            else np.float64(
+                acceptor_angle
+            )
+        ),
+        metadata={
+            "self_test": True,
+        },
+    )
+
+
+def make_fake_hydrogen_bond(
+    *,
+    mode: HydrogenBondMode = (
+        HBOND_MODE_EXPLICIT
+    ),
+    direction: HydrogenBondDirection = (
+        HBOND_DIRECTION_LIGAND_DONOR
+    ),
+    classification: HydrogenBondClassification = (
+        HBOND_TYPE_UNKNOWN
+    ),
+    donor_acceptor_distance: Number = 2.80,
+    hydrogen_acceptor_distance: Number = 1.80,
+    donor_hydrogen_distance: Number = 1.00,
+    dha_angle: Number = 180.0,
+    donor_angle: Number = 0.0,
+    acceptor_angle: Optional[
+        Number
+    ] = 0.0,
+) -> HydrogenBond:
+    """
+    Create a complete artificial HydrogenBond object.
+
+    Parameters
+    ----------
+    mode : HydrogenBondMode, optional
+        Explicit or inferred mode.
+    direction : HydrogenBondDirection, optional
+        Interaction direction.
+    classification : HydrogenBondClassification, optional
+        Initial classification.
+    donor_acceptor_distance : Number, optional
+        D...A distance.
+    hydrogen_acceptor_distance : Number, optional
+        H...A distance.
+    donor_hydrogen_distance : Number, optional
+        D-H distance.
+    dha_angle : Number, optional
+        D-H...A angle.
+    donor_angle : Number, optional
+        Donor deviation angle.
+    acceptor_angle : Number or None, optional
+        Acceptor deviation angle.
+
+    Returns
+    -------
+    HydrogenBond
+        Artificial hydrogen bond.
+    """
+
+    normalized_mode = (
+        validate_hydrogen_bond_mode(
+            mode
+        )
+    )
+
+    ligand_is_donor = (
+        direction
+        == HBOND_DIRECTION_LIGAND_DONOR
+    )
+
+    system = make_explicit_linear_hbond_system(
+        donor_acceptor_distance=(
+            donor_acceptor_distance
+        ),
+        donor_hydrogen_distance=(
+            donor_hydrogen_distance
+        ),
+        ligand_is_donor=(
+            ligand_is_donor
+        ),
+    )
+
+    if normalized_mode == HBOND_MODE_EXPLICIT:
+        geometry = make_fake_explicit_geometry(
+            donor_acceptor_distance=(
+                donor_acceptor_distance
+            ),
+            hydrogen_acceptor_distance=(
+                hydrogen_acceptor_distance
+            ),
+            donor_hydrogen_distance=(
+                donor_hydrogen_distance
+            ),
+            dha_angle=dha_angle,
+            donor_angle=donor_angle,
+            acceptor_angle=(
+                acceptor_angle
+            ),
+        )
+
+        hydrogen = system[
+            "hydrogen"
+        ]
+
+        hydrogen_index = (
+            hydrogen.index
+        )
+
+    else:
+        geometry = make_fake_inferred_geometry(
+            donor_acceptor_distance=(
+                donor_acceptor_distance
+            ),
+            donor_angle=donor_angle,
+            acceptor_angle=(
+                acceptor_angle
+            ),
+        )
+
+        hydrogen = None
+        hydrogen_index = None
+
+    donor = system[
+        "donor"
+    ]
+
+    acceptor = system[
+        "acceptor"
+    ]
+
+    return HydrogenBond(
+        donor=donor,
+        acceptor=acceptor,
+        hydrogen=hydrogen,
+        geometry=geometry,
+        mode=normalized_mode,
+        direction=direction,
+        classification=classification,
+        donor_index=donor.index,
+        acceptor_index=acceptor.index,
+        hydrogen_index=hydrogen_index,
+        donor_residue=donor.residue,
+        acceptor_residue=(
+            acceptor.residue
+        ),
+        donor_residue_key=(
+            _safe_residue_key_from_atom(
+                donor
+            )
+        ),
+        acceptor_residue_key=(
+            _safe_residue_key_from_atom(
+                acceptor
+            )
+        ),
+        metadata={
+            "self_test": True,
+        },
+    )
+
+
+def make_fake_analysis_result(
+    *,
+    hydrogen_bonds: Optional[
+        Iterable[
+            HydrogenBond
+        ]
+    ] = None,
+    include_residue_groups: bool = True,
+    include_statistics: bool = False,
+) -> HydrogenBondAnalysisResult:
+    """
+    Create an artificial HydrogenBondAnalysisResult.
+
+    Parameters
+    ----------
+    hydrogen_bonds : iterable of HydrogenBond or None, optional
+        Interactions. A default explicit interaction is created when omitted.
+    include_residue_groups : bool, optional
+        Whether receptor residue groups should be attached.
+    include_statistics : bool, optional
+        Whether statistics should be calculated.
+
+    Returns
+    -------
+    HydrogenBondAnalysisResult
+        Artificial analysis result.
+    """
+
+    if hydrogen_bonds is None:
+        normalized_bonds = (
+            make_fake_hydrogen_bond(),
+        )
+
+    else:
+        normalized_bonds = tuple(
+            hydrogen_bonds
+        )
+
+    ligand_atoms: List[
+        AtomLike
+    ] = []
+
+    receptor_atoms: List[
+        AtomLike
+    ] = []
+
+    for hydrogen_bond in normalized_bonds:
+        if (
+            hydrogen_bond.direction
+            == HBOND_DIRECTION_LIGAND_DONOR
+        ):
+            ligand_atoms.append(
+                hydrogen_bond.donor
+            )
+
+            if hydrogen_bond.hydrogen is not None:
+                ligand_atoms.append(
+                    hydrogen_bond.hydrogen
+                )
+
+            receptor_atoms.append(
+                hydrogen_bond.acceptor
+            )
+
+        elif (
+            hydrogen_bond.direction
+            == HBOND_DIRECTION_RECEPTOR_DONOR
+        ):
+            receptor_atoms.append(
+                hydrogen_bond.donor
+            )
+
+            if hydrogen_bond.hydrogen is not None:
+                receptor_atoms.append(
+                    hydrogen_bond.hydrogen
+                )
+
+            ligand_atoms.append(
+                hydrogen_bond.acceptor
+            )
+
+    residue_groups = (
+        group_hydrogen_bonds_by_residue(
+            normalized_bonds,
+            side=RESIDUE_GROUP_SIDE_RECEPTOR,
+        )
+        if include_residue_groups
+        else ()
+    )
+
+    statistics = (
+        calculate_hydrogen_bond_statistics(
+            normalized_bonds,
+            residue_groups=residue_groups,
+        )
+        if include_statistics
+        else {}
+    )
+
+    return HydrogenBondAnalysisResult(
+        hydrogen_bonds=normalized_bonds,
+        residue_hydrogen_bonds=(
+            residue_groups
+        ),
+        ligand_atoms=tuple(
+            ligand_atoms
+        ),
+        receptor_atoms=tuple(
+            receptor_atoms
+        ),
+        donor_acceptor_cutoff=np.float64(
+            DEFAULT_MAXIMUM_DONOR_ACCEPTOR_DISTANCE
+        ),
+        hydrogen_acceptor_cutoff=np.float64(
+            DEFAULT_MAXIMUM_HYDROGEN_ACCEPTOR_DISTANCE
+        ),
+        minimum_dha_angle=np.float64(
+            DEFAULT_MINIMUM_DHA_ANGLE
+        ),
+        minimum_inferred_angle=np.float64(
+            DEFAULT_MINIMUM_INFERRED_ANGLE
+        ),
+        statistics=statistics,
+        metadata={
+            "self_test": True,
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# Infrastructure smoke tests
+# -----------------------------------------------------------------------------
+
+def _self_test_infrastructure_fake_element(
+) -> None:
+    """Test FakeElement creation."""
+
+    oxygen = make_fake_element(
+        "O"
+    )
+
+    self_test_assert_equal(
+        oxygen.name,
+        "O",
+    )
+
+    self_test_assert_equal(
+        oxygen.atomic_number,
+        8,
+    )
+
+
+def _self_test_infrastructure_fake_atoms_and_bonds(
+) -> None:
+    """Test fake atom connectivity."""
+
+    residue = make_fake_residue(
+        "SER",
+        10,
+    )
+
+    oxygen = make_fake_atom(
+        "OG",
+        "O",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+    )
+
+    hydrogen = make_fake_atom(
+        "HG",
+        "H",
+        (
+            1.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+    )
+
+    bond = connect_fake_atoms(
+        oxygen,
+        hydrogen,
+    )
+
+    self_test_assert(
+        hydrogen in oxygen.neighbors
+    )
+
+    self_test_assert(
+        oxygen in hydrogen.neighbors
+    )
+
+    self_test_assert_is(
+        bond.other_atom(
+            oxygen
+        ),
+        hydrogen,
+    )
+
+
+def _self_test_infrastructure_structure_copy(
+) -> None:
+    """Test deep structure copying."""
+
+    system = make_explicit_linear_hbond_system()
+
+    ligand = system[
+        "ligand"
+    ]
+
+    copied_ligand = ligand.copy(
+        name="copied_ligand",
+        coordinate_offset=(
+            1.0,
+            2.0,
+            3.0,
+        ),
+    )
+
+    self_test_assert_is_not(
+        ligand,
+        copied_ligand,
+    )
+
+    self_test_assert_equal(
+        len(
+            ligand.atoms
+        ),
+        len(
+            copied_ligand.atoms
+        ),
+    )
+
+    self_test_assert_array_equal(
+        copied_ligand.atoms[
+            0
+        ].coord,
+        ligand.atoms[
+            0
+        ].coord
+        + np.asarray(
+            (
+                1.0,
+                2.0,
+                3.0,
+            ),
+            dtype=np.float64,
+        ),
+    )
+
+
+def _self_test_infrastructure_linear_system(
+) -> None:
+    """Test explicit linear-system geometry."""
+
+    system = make_explicit_linear_hbond_system(
+        donor_acceptor_distance=2.8,
+        donor_hydrogen_distance=1.0,
+    )
+
+    self_test_assert_almost_equal(
+        np.linalg.norm(
+            system[
+                "donor"
+            ].coord
+            - system[
+                "acceptor"
+            ].coord
+        ),
+        2.8,
+    )
+
+    self_test_assert_almost_equal(
+        np.linalg.norm(
+            system[
+                "hydrogen"
+            ].coord
+            - system[
+                "acceptor"
+            ].coord
+        ),
+        1.8,
+    )
+
+
+def _self_test_infrastructure_report(
+) -> None:
+    """Test report construction."""
+
+    report = SelfTestReport(
+        module_name="test_module"
+    )
+
+    report.add(
+        SelfTestCaseResult(
+            name="passing_test",
+            status=SELF_TEST_SUCCESS_STATUS,
+            duration_seconds=np.float64(
+                0.001
+            ),
+        )
+    )
+
+    report.add(
+        make_skipped_self_test_result(
+            "skipped_test",
+            "not required",
+        )
+    )
+
+    self_test_assert_equal(
+        report.total_count,
+        2,
+    )
+
+    self_test_assert_equal(
+        report.passed_count,
+        1,
+    )
+
+    self_test_assert_equal(
+        report.skipped_count,
+        1,
+    )
+
+    self_test_assert_equal(
+        report.failed_count,
+        0,
+    )
+
+
+def run_self_test_infrastructure_tests(
+    *,
+    raise_on_failure: bool = False,
+) -> SelfTestReport:
+    """
+    Run the Section 12.1 infrastructure smoke tests.
+
+    Parameters
+    ----------
+    raise_on_failure : bool, optional
+        Whether the first failing test should be reraised.
+
+    Returns
+    -------
+    SelfTestReport
+        Infrastructure test report.
+    """
+
+    test_cases = (
+        (
+            "infrastructure.fake_element",
+            _self_test_infrastructure_fake_element,
+        ),
+        (
+            "infrastructure.fake_atoms_and_bonds",
+            _self_test_infrastructure_fake_atoms_and_bonds,
+        ),
+        (
+            "infrastructure.structure_copy",
+            _self_test_infrastructure_structure_copy,
+        ),
+        (
+            "infrastructure.linear_system",
+            _self_test_infrastructure_linear_system,
+        ),
+        (
+            "infrastructure.report",
+            _self_test_infrastructure_report,
+        ),
+    )
+
+    return run_self_test_group(
+        test_cases,
+        module_name=f"{_MODULE_NAME}.section_12_1",
+        raise_on_failure=raise_on_failure,
+        metadata={
+            "section": "12.1",
+            "description": (
+                "Self-test infrastructure"
+            ),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# Public interface
+# -----------------------------------------------------------------------------
+
+_SECTION_12_1_PUBLIC_NAMES: Final[
+    Tuple[
+        str,
+        ...,
+    ]
+] = (
+    "SELF_TEST_FLOAT_TOLERANCE",
+    "SELF_TEST_COORDINATE_TOLERANCE",
+    "SELF_TEST_ANGLE_TOLERANCE",
+    "SELF_TEST_DEFAULT_CHAIN_ID",
+    "SELF_TEST_DEFAULT_LIGAND_CHAIN_ID",
+    "SELF_TEST_DEFAULT_RECEPTOR_NAME",
+    "SELF_TEST_DEFAULT_LIGAND_NAME",
+    "SELF_TEST_DEFAULT_POSE_PREFIX",
+    "SELF_TEST_SUCCESS_STATUS",
+    "SELF_TEST_FAILURE_STATUS",
+    "SELF_TEST_SKIP_STATUS",
+    "FakeElement",
+    "FakeResidue",
+    "FakeAtom",
+    "FakeBond",
+    "FakeStructure",
+    "FakeDockModel",
+    "FakeLogger",
+    "SelfTestCaseResult",
+    "SelfTestReport",
+    "SelfTestRaises",
+    "make_fake_element",
+    "make_fake_atom",
+    "make_fake_residue",
+    "connect_fake_atoms",
+    "make_fake_structure",
+    "make_explicit_linear_hbond_system",
+    "make_explicit_bent_hbond_system",
+    "make_inferred_hbond_system",
+    "make_non_hbond_system",
+    "make_multiple_hbond_system",
+    "make_fake_dockmodel_system",
+    "make_fake_explicit_geometry",
+    "make_fake_inferred_geometry",
+    "make_fake_hydrogen_bond",
+    "make_fake_analysis_result",
+    "self_test_assert",
+    "self_test_assert_equal",
+    "self_test_assert_not_equal",
+    "self_test_assert_is",
+    "self_test_assert_is_not",
+    "self_test_assert_isinstance",
+    "self_test_assert_almost_equal",
+    "self_test_assert_array_equal",
+    "self_test_assert_between",
+    "self_test_assert_mapping_contains",
+    "self_test_raises",
+    "run_self_test_case",
+    "make_skipped_self_test_result",
+    "run_self_test_group",
+    "run_self_test_infrastructure_tests",
+)
+
+for public_name in _SECTION_12_1_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(
+            public_name
+        )
+
+
+# =============================================================================
+# End of Section 12.1
+# =============================================================================
+
+
+# =============================================================================
+# Section 12.2 — Tests for Sections 1–5
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Section 12.2 constants
+# -----------------------------------------------------------------------------
+
+SELF_TEST_SECTION_12_2_NAME: Final[
+    str
+] = "hbonds.section_12_2"
+
+SELF_TEST_SECTION_12_2_DESCRIPTION: Final[
+    str
+] = (
+        "Dataclasses, donor/acceptor perception and "
+        "donor-bound hydrogen identification"
+    )
+
+
+# -----------------------------------------------------------------------------
+# Generic Section 12.2 helpers
+# -----------------------------------------------------------------------------
+
+def _self_test_make_residue_group(
+    hydrogen_bonds: Optional[
+        Iterable[
+            HydrogenBond
+        ]
+    ] = None,
+    *,
+    side: str = RESIDUE_GROUP_SIDE_RECEPTOR,
+) -> ResidueHydrogenBond:
+    """
+    Create a residue-level hydrogen-bond group for self-tests.
+
+    Parameters
+    ----------
+    hydrogen_bonds : iterable of HydrogenBond or None, optional
+        Interactions included in the group.
+    side : str, optional
+        Grouping side.
+
+    Returns
+    -------
+    ResidueHydrogenBond
+        Artificial residue group.
+    """
+
+    if hydrogen_bonds is None:
+        normalized_bonds = (
+            make_fake_hydrogen_bond(),
+        )
+
+    else:
+        normalized_bonds = tuple(
+            hydrogen_bonds
+        )
+
+    if not normalized_bonds:
+        raise ValueError(
+            "At least one hydrogen bond is required."
+        )
+
+    first_bond = normalized_bonds[
+        0
+    ]
+
+    if side == RESIDUE_GROUP_SIDE_RECEPTOR:
+        residue = get_hbond_receptor_residue(
+            first_bond
+        )
+
+        key = get_hbond_receptor_residue_key(
+            first_bond
+        )
+
+    elif side == RESIDUE_GROUP_SIDE_DONOR:
+        residue = first_bond.donor_residue
+        key = first_bond.donor_residue_key
+
+    elif side == RESIDUE_GROUP_SIDE_ACCEPTOR:
+        residue = first_bond.acceptor_residue
+        key = first_bond.acceptor_residue_key
+
+    else:
+        residue = get_hbond_receptor_residue(
+            first_bond
+        )
+
+        key = get_hbond_receptor_residue_key(
+            first_bond
+        )
+
+    return ResidueHydrogenBond(
+        residue=residue,
+        key=key,
+        hydrogen_bonds=normalized_bonds,
+        side=side,
+        metadata={
+            "self_test": True,
+        },
+    )
+
+
+def _self_test_make_donor_with_hydrogens(
+    *,
+    hydrogen_count: int = 1,
+    donor_element: str = "N",
+    donor_atom_type: Optional[
+        str
+    ] = "N3",
+    donor_residue_name: str = "LYS",
+    hydrogen_distance: Number = 1.0,
+) -> Dict[
+    str,
+    Any,
+]:
+    """
+    Create a donor with a selected number of bonded hydrogens.
+
+    Parameters
+    ----------
+    hydrogen_count : int, optional
+        Number of hydrogens.
+    donor_element : str, optional
+        Donor element.
+    donor_atom_type : str or None, optional
+        Donor atom type.
+    donor_residue_name : str, optional
+        Donor residue.
+    hydrogen_distance : Number, optional
+        D-H distance.
+
+    Returns
+    -------
+    dict
+        Donor system.
+    """
+
+    normalized_count = _optional_nonnegative_integer(
+        hydrogen_count,
+        name="hydrogen count",
+    )
+
+    if normalized_count is None:
+        normalized_count = 0
+
+    residue = make_fake_residue(
+        donor_residue_name,
+        1,
+        chain_id=SELF_TEST_DEFAULT_LIGAND_CHAIN_ID,
+        polymer_type=None,
+    )
+
+    donor = make_fake_atom(
+        "D",
+        donor_element,
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+        atom_type=donor_atom_type,
+    )
+
+    hydrogens: List[
+        FakeAtom
+    ] = []
+
+    bonds: List[
+        FakeBond
+    ] = []
+
+    for hydrogen_index in range(
+        normalized_count
+    ):
+        angle = (
+            2.0
+            * np.pi
+            * hydrogen_index
+            / max(
+                normalized_count,
+                1,
+            )
+        )
+
+        hydrogen = make_fake_atom(
+            f"H{hydrogen_index + 1}",
+            "H",
+            (
+                np.float64(
+                    hydrogen_distance
+                )
+                * np.cos(
+                    angle
+                ),
+                np.float64(
+                    hydrogen_distance
+                )
+                * np.sin(
+                    angle
+                ),
+                0.0,
+            ),
+            residue=residue,
+        )
+
+        bond = connect_fake_atoms(
+            donor,
+            hydrogen,
+        )
+
+        hydrogens.append(
+            hydrogen
+        )
+
+        bonds.append(
+            bond
+        )
+
+    structure = make_fake_structure(
+        "donor_system",
+        (
+            donor,
+            *hydrogens,
+        ),
+        residues=(
+            residue,
+        ),
+    )
+
+    return {
+        "donor": donor,
+        "hydrogens": tuple(
+            hydrogens
+        ),
+        "bonds": tuple(
+            bonds
+        ),
+        "residue": residue,
+        "structure": structure,
+    }
+
+
+def _self_test_make_generic_acceptor(
+    *,
+    element: str = "O",
+    atom_type: Optional[
+        str
+    ] = "O2",
+    formal_charge: Number = 0.0,
+    aromatic: bool = False,
+    bonded_hydrogen: bool = False,
+) -> Dict[
+    str,
+    Any,
+]:
+    """
+    Create a generic acceptor test system.
+
+    Parameters
+    ----------
+    element : str, optional
+        Acceptor element.
+    atom_type : str or None, optional
+        Atom-type label.
+    formal_charge : Number, optional
+        Formal charge.
+    aromatic : bool, optional
+        Aromaticity.
+    bonded_hydrogen : bool, optional
+        Whether a hydrogen should be attached.
+
+    Returns
+    -------
+    dict
+        Acceptor system.
+    """
+
+    residue = make_fake_residue(
+        "LIG",
+        1,
+        chain_id=SELF_TEST_DEFAULT_LIGAND_CHAIN_ID,
+        polymer_type=None,
+    )
+
+    acceptor = make_fake_atom(
+        "A",
+        element,
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+        atom_type=atom_type,
+        formal_charge=formal_charge,
+        aromatic=aromatic,
+    )
+
+    atoms: List[
+        FakeAtom
+    ] = [
+        acceptor,
+    ]
+
+    hydrogen: Optional[
+        FakeAtom
+    ] = None
+
+    if bonded_hydrogen:
+        hydrogen = make_fake_atom(
+            "H",
+            "H",
+            (
+                1.0,
+                0.0,
+                0.0,
+            ),
+            residue=residue,
+        )
+
+        connect_fake_atoms(
+            acceptor,
+            hydrogen,
+        )
+
+        atoms.append(
+            hydrogen
+        )
+
+    structure = make_fake_structure(
+        "acceptor_system",
+        atoms,
+        residues=(
+            residue,
+        ),
+    )
+
+    return {
+        "acceptor": acceptor,
+        "hydrogen": hydrogen,
+        "residue": residue,
+        "structure": structure,
+    }
+
+
+# -----------------------------------------------------------------------------
+# Dataclass tests — HydrogenBondGeometry
+# -----------------------------------------------------------------------------
+
+def _self_test_geometry_dataclass_explicit(
+) -> None:
+    """Test explicit HydrogenBondGeometry construction."""
+
+    geometry = make_fake_explicit_geometry(
+        donor_acceptor_distance=2.8,
+        hydrogen_acceptor_distance=1.8,
+        donor_hydrogen_distance=1.0,
+        dha_angle=180.0,
+    )
+
+    self_test_assert_isinstance(
+        geometry,
+        HydrogenBondGeometry,
+    )
+
+    self_test_assert_almost_equal(
+        geometry.donor_acceptor_distance,
+        2.8,
+    )
+
+    self_test_assert_almost_equal(
+        geometry.hydrogen_acceptor_distance,
+        1.8,
+    )
+
+    self_test_assert_almost_equal(
+        geometry.donor_hydrogen_distance,
+        1.0,
+    )
+
+    self_test_assert_almost_equal(
+        geometry.dha_angle,
+        180.0,
+    )
+
+
+def _self_test_geometry_dataclass_inferred(
+) -> None:
+    """Test inferred HydrogenBondGeometry construction."""
+
+    geometry = make_fake_inferred_geometry(
+        donor_acceptor_distance=2.9,
+        donor_angle=10.0,
+        acceptor_angle=20.0,
+    )
+
+    self_test_assert_almost_equal(
+        geometry.donor_acceptor_distance,
+        2.9,
+    )
+
+    self_test_assert_equal(
+        geometry.hydrogen_acceptor_distance,
+        None,
+    )
+
+    self_test_assert_equal(
+        geometry.donor_hydrogen_distance,
+        None,
+    )
+
+    self_test_assert_equal(
+        geometry.dha_angle,
+        None,
+    )
+
+    self_test_assert_almost_equal(
+        geometry.donor_angle,
+        10.0,
+    )
+
+    self_test_assert_almost_equal(
+        geometry.acceptor_angle,
+        20.0,
+    )
+
+
+def _self_test_geometry_dataclass_numpy_float64(
+) -> None:
+    """Test numeric normalization to numpy.float64."""
+
+    geometry = make_fake_explicit_geometry()
+
+    self_test_assert_isinstance(
+        geometry.donor_acceptor_distance,
+        np.float64,
+    )
+
+    self_test_assert_isinstance(
+        geometry.hydrogen_acceptor_distance,
+        np.float64,
+    )
+
+    self_test_assert_isinstance(
+        geometry.donor_hydrogen_distance,
+        np.float64,
+    )
+
+    self_test_assert_isinstance(
+        geometry.dha_angle,
+        np.float64,
+    )
+
+
+def _self_test_geometry_dataclass_metadata_frozen(
+) -> None:
+    """Test read-only geometry metadata."""
+
+    geometry = make_fake_explicit_geometry()
+
+    self_test_assert_isinstance(
+        geometry.metadata,
+        Mapping,
+    )
+
+    with self_test_raises(
+        TypeError
+    ):
+        geometry.metadata[
+            "new_key"
+        ] = "value"
+
+
+def _self_test_geometry_dataclass_serialization(
+) -> None:
+    """Test geometry serialization."""
+
+    geometry = make_fake_explicit_geometry()
+
+    serialized = geometry.to_dict()
+
+    self_test_assert_mapping_contains(
+        serialized,
+        (
+            "donor_acceptor_distance",
+            "hydrogen_acceptor_distance",
+            "donor_hydrogen_distance",
+            "dha_angle",
+            "donor_angle",
+            "acceptor_angle",
+            "metadata",
+        ),
+    )
+
+    self_test_assert_almost_equal(
+        serialized[
+            "donor_acceptor_distance"
+        ],
+        2.8,
+    )
+
+
+def _self_test_geometry_dataclass_rejects_negative_distance(
+) -> None:
+    """Test rejection of negative distances."""
+
+    with self_test_raises(
+        ValueError
+    ):
+        HydrogenBondGeometry(
+            donor_acceptor_distance=np.float64(
+                -1.0
+            )
+        )
+
+
+def _self_test_geometry_dataclass_rejects_invalid_angle(
+) -> None:
+    """Test rejection of angles outside 0–180 degrees."""
+
+    with self_test_raises(
+        ValueError
+    ):
+        HydrogenBondGeometry(
+            donor_acceptor_distance=np.float64(
+                2.8
+            ),
+            dha_angle=np.float64(
+                200.0
+            ),
+        )
+
+
+# -----------------------------------------------------------------------------
+# Dataclass tests — HydrogenBond
+# -----------------------------------------------------------------------------
+
+def _self_test_hbond_dataclass_explicit(
+) -> None:
+    """Test explicit HydrogenBond construction."""
+
+    hydrogen_bond = make_fake_hydrogen_bond(
+        mode=HBOND_MODE_EXPLICIT,
+    )
+
+    self_test_assert_isinstance(
+        hydrogen_bond,
+        HydrogenBond,
+    )
+
+    self_test_assert_equal(
+        hydrogen_bond.mode,
+        HBOND_MODE_EXPLICIT,
+    )
+
+    self_test_assert(
+        hydrogen_bond.hydrogen
+        is not None
+    )
+
+    self_test_assert_almost_equal(
+        hydrogen_bond.donor_acceptor_distance,
+        2.8,
+    )
+
+    self_test_assert_almost_equal(
+        hydrogen_bond.hydrogen_acceptor_distance,
+        1.8,
+    )
+
+    self_test_assert_almost_equal(
+        hydrogen_bond.dha_angle,
+        180.0,
+    )
+
+
+def _self_test_hbond_dataclass_inferred(
+) -> None:
+    """Test inferred HydrogenBond construction."""
+
+    hydrogen_bond = make_fake_hydrogen_bond(
+        mode=HBOND_MODE_INFERRED,
+    )
+
+    self_test_assert_equal(
+        hydrogen_bond.mode,
+        HBOND_MODE_INFERRED,
+    )
+
+    self_test_assert_equal(
+        hydrogen_bond.hydrogen,
+        None,
+    )
+
+    self_test_assert_equal(
+        hydrogen_bond.hydrogen_index,
+        None,
+    )
+
+    self_test_assert_equal(
+        hydrogen_bond.dha_angle,
+        None,
+    )
+
+
+def _self_test_hbond_dataclass_direction(
+) -> None:
+    """Test hydrogen-bond direction storage."""
+
+    ligand_donor = make_fake_hydrogen_bond(
+        direction=HBOND_DIRECTION_LIGAND_DONOR,
+    )
+
+    receptor_donor = make_fake_hydrogen_bond(
+        direction=HBOND_DIRECTION_RECEPTOR_DONOR,
+    )
+
+    self_test_assert_equal(
+        ligand_donor.direction,
+        HBOND_DIRECTION_LIGAND_DONOR,
+    )
+
+    self_test_assert_equal(
+        receptor_donor.direction,
+        HBOND_DIRECTION_RECEPTOR_DONOR,
+    )
+
+
+def _self_test_hbond_dataclass_residue_keys(
+) -> None:
+    """Test donor and acceptor residue identifiers."""
+
+    hydrogen_bond = make_fake_hydrogen_bond()
+
+    self_test_assert(
+        hydrogen_bond.donor_residue_key
+        is not None
+    )
+
+    self_test_assert(
+        hydrogen_bond.acceptor_residue_key
+        is not None
+    )
+
+    self_test_assert_equal(
+        hydrogen_bond.donor_residue_key[
+            0
+        ],
+        hydrogen_bond.donor.residue.name,
+    )
+
+    self_test_assert_equal(
+        hydrogen_bond.acceptor_residue_key[
+            0
+        ],
+        hydrogen_bond.acceptor.residue.name,
+    )
+
+
+def _self_test_hbond_dataclass_identifier(
+) -> None:
+    """Test stable hydrogen-bond identifier generation."""
+
+    hydrogen_bond = make_fake_hydrogen_bond()
+
+    identifier = hydrogen_bond.identifier
+
+    self_test_assert(
+        identifier is not None
+    )
+
+    self_test_assert(
+        len(
+            identifier
+        )
+        >= 2
+    )
+
+
+def _self_test_hbond_dataclass_serialization(
+) -> None:
+    """Test HydrogenBond serialization."""
+
+    hydrogen_bond = make_fake_hydrogen_bond()
+
+    serialized = hydrogen_bond.to_dict()
+
+    self_test_assert_mapping_contains(
+        serialized,
+        (
+            "donor",
+            "acceptor",
+            "hydrogen",
+            "geometry",
+            "mode",
+            "direction",
+            "classification",
+            "metadata",
+        ),
+    )
+
+    self_test_assert_equal(
+        serialized[
+            "mode"
+        ],
+        HBOND_MODE_EXPLICIT,
+    )
+
+
+def _self_test_hbond_dataclass_metadata_frozen(
+) -> None:
+    """Test HydrogenBond metadata immutability."""
+
+    hydrogen_bond = make_fake_hydrogen_bond()
+
+    with self_test_raises(
+        TypeError
+    ):
+        hydrogen_bond.metadata[
+            "new_key"
+        ] = True
+
+
+def _self_test_hbond_dataclass_invalid_mode(
+) -> None:
+    """Test invalid HydrogenBond mode rejection."""
+
+    system = make_explicit_linear_hbond_system()
+
+    with self_test_raises(
+        ValueError
+    ):
+        HydrogenBond(
+            donor=system[
+                "donor"
+            ],
+            acceptor=system[
+                "acceptor"
+            ],
+            hydrogen=system[
+                "hydrogen"
+            ],
+            geometry=make_fake_explicit_geometry(),
+            mode="invalid_mode",
+            direction=HBOND_DIRECTION_LIGAND_DONOR,
+            classification=HBOND_TYPE_UNKNOWN,
+        )
+
+
+# -----------------------------------------------------------------------------
+# Dataclass tests — ResidueHydrogenBond
+# -----------------------------------------------------------------------------
+
+def _self_test_residue_hbond_dataclass_basic(
+) -> None:
+    """Test ResidueHydrogenBond construction."""
+
+    group = _self_test_make_residue_group()
+
+    self_test_assert_isinstance(
+        group,
+        ResidueHydrogenBond,
+    )
+
+    self_test_assert_equal(
+        len(
+            group.hydrogen_bonds
+        ),
+        1,
+    )
+
+    self_test_assert_equal(
+        group.side,
+        RESIDUE_GROUP_SIDE_RECEPTOR,
+    )
+
+
+def _self_test_residue_hbond_dataclass_count(
+) -> None:
+    """Test residue-group interaction count."""
+
+    hydrogen_bonds = (
+        make_fake_hydrogen_bond(),
+        make_fake_hydrogen_bond(),
+    )
+
+    group = _self_test_make_residue_group(
+        hydrogen_bonds
+    )
+
+    self_test_assert_equal(
+        group.count,
+        2,
+    )
+
+
+def _self_test_residue_hbond_dataclass_classification_counts(
+) -> None:
+    """Test residue-group classification counts."""
+
+    strong_bond = make_fake_hydrogen_bond(
+        classification=HBOND_TYPE_STRONG,
+    )
+
+    weak_bond = make_fake_hydrogen_bond(
+        classification=HBOND_TYPE_WEAK,
+    )
+
+    group = _self_test_make_residue_group(
+        (
+            strong_bond,
+            weak_bond,
+        )
+    )
+
+    self_test_assert_equal(
+        group.strong_count,
+        1,
+    )
+
+    self_test_assert_equal(
+        group.weak_count,
+        1,
+    )
+
+
+def _self_test_residue_hbond_dataclass_mode_counts(
+) -> None:
+    """Test explicit and inferred counts."""
+
+    explicit_bond = make_fake_hydrogen_bond(
+        mode=HBOND_MODE_EXPLICIT,
+    )
+
+    inferred_bond = make_fake_hydrogen_bond(
+        mode=HBOND_MODE_INFERRED,
+    )
+
+    group = _self_test_make_residue_group(
+        (
+            explicit_bond,
+            inferred_bond,
+        )
+    )
+
+    self_test_assert_equal(
+        group.explicit_count,
+        1,
+    )
+
+    self_test_assert_equal(
+        group.inferred_count,
+        1,
+    )
+
+
+def _self_test_residue_hbond_dataclass_serialization(
+) -> None:
+    """Test residue-group serialization."""
+
+    group = _self_test_make_residue_group()
+
+    serialized = group.to_dict()
+
+    self_test_assert_mapping_contains(
+        serialized,
+        (
+            "residue",
+            "key",
+            "hydrogen_bonds",
+            "side",
+            "metadata",
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# Dataclass tests — HydrogenBondAnalysisResult
+# -----------------------------------------------------------------------------
+
+def _self_test_analysis_result_dataclass_basic(
+) -> None:
+    """Test HydrogenBondAnalysisResult construction."""
+
+    result = make_fake_analysis_result()
+
+    self_test_assert_isinstance(
+        result,
+        HydrogenBondAnalysisResult,
+    )
+
+    self_test_assert_equal(
+        len(
+            result.hydrogen_bonds
+        ),
+        1,
+    )
+
+    self_test_assert_equal(
+        result.hydrogen_bond_count,
+        1,
+    )
+
+
+def _self_test_analysis_result_dataclass_empty(
+) -> None:
+    """Test empty HydrogenBondAnalysisResult."""
+
+    result = HydrogenBondAnalysisResult(
+        hydrogen_bonds=(),
+        residue_hydrogen_bonds=(),
+        ligand_atoms=(),
+        receptor_atoms=(),
+        donor_acceptor_cutoff=np.float64(
+            3.6
+        ),
+        hydrogen_acceptor_cutoff=np.float64(
+            2.8
+        ),
+        minimum_dha_angle=np.float64(
+            110.0
+        ),
+        minimum_inferred_angle=np.float64(
+            110.0
+        ),
+        statistics={},
+        metadata={
+            "self_test": True,
+        },
+    )
+
+    self_test_assert_equal(
+        result.hydrogen_bond_count,
+        0,
+    )
+
+    self_test_assert_equal(
+        result.residue_count,
+        0,
+    )
+
+
+def _self_test_analysis_result_dataclass_classification_counts(
+) -> None:
+    """Test result classification properties."""
+
+    strong_bond = make_fake_hydrogen_bond(
+        classification=HBOND_TYPE_STRONG,
+    )
+
+    moderate_bond = make_fake_hydrogen_bond(
+        classification=HBOND_TYPE_MODERATE,
+    )
+
+    weak_bond = make_fake_hydrogen_bond(
+        classification=HBOND_TYPE_WEAK,
+    )
+
+    result = make_fake_analysis_result(
+        hydrogen_bonds=(
+            strong_bond,
+            moderate_bond,
+            weak_bond,
+        ),
+    )
+
+    self_test_assert_equal(
+        result.strong_count,
+        1,
+    )
+
+    self_test_assert_equal(
+        result.moderate_count,
+        1,
+    )
+
+    self_test_assert_equal(
+        result.weak_count,
+        1,
+    )
+
+
+def _self_test_analysis_result_dataclass_mode_counts(
+) -> None:
+    """Test result explicit and inferred counts."""
+
+    result = make_fake_analysis_result(
+        hydrogen_bonds=(
+            make_fake_hydrogen_bond(
+                mode=HBOND_MODE_EXPLICIT
+            ),
+            make_fake_hydrogen_bond(
+                mode=HBOND_MODE_INFERRED
+            ),
+        ),
+    )
+
+    self_test_assert_equal(
+        result.explicit_count,
+        1,
+    )
+
+    self_test_assert_equal(
+        result.inferred_count,
+        1,
+    )
+
+
+def _self_test_analysis_result_dataclass_filters(
+) -> None:
+    """Test result filtering helpers."""
+
+    strong_bond = make_fake_hydrogen_bond(
+        classification=HBOND_TYPE_STRONG,
+    )
+
+    weak_bond = make_fake_hydrogen_bond(
+        classification=HBOND_TYPE_WEAK,
+    )
+
+    result = make_fake_analysis_result(
+        hydrogen_bonds=(
+            strong_bond,
+            weak_bond,
+        ),
+    )
+
+    strong_bonds = result.by_classification(
+        HBOND_TYPE_STRONG
+    )
+
+    self_test_assert_equal(
+        len(
+            strong_bonds
+        ),
+        1,
+    )
+
+    self_test_assert_is(
+        strong_bonds[
+            0
+        ],
+        strong_bond,
+    )
+
+
+def _self_test_analysis_result_dataclass_serialization(
+) -> None:
+    """Test analysis-result serialization."""
+
+    result = make_fake_analysis_result(
+        include_statistics=True
+    )
+
+    serialized = result.to_dict()
+
+    self_test_assert_mapping_contains(
+        serialized,
+        (
+            "hydrogen_bonds",
+            "residue_hydrogen_bonds",
+            "ligand_atoms",
+            "receptor_atoms",
+            "cutoffs",
+            "statistics",
+            "metadata",
+        ),
+    )
+
+
+def _self_test_analysis_result_metadata_frozen(
+) -> None:
+    """Test analysis-result metadata immutability."""
+
+    result = make_fake_analysis_result()
+
+    with self_test_raises(
+        TypeError
+    ):
+        result.metadata[
+            "new_key"
+        ] = True
+
+
+# -----------------------------------------------------------------------------
+# Chemical helper tests
+# -----------------------------------------------------------------------------
+
+def _self_test_get_hbond_residue_name(
+) -> None:
+    """Test residue-name extraction."""
+
+    residue = make_fake_residue(
+        "ser",
+        1,
+    )
+
+    atom = make_fake_atom(
+        "OG",
+        "O",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+    )
+
+    self_test_assert_equal(
+        get_hbond_residue_name(
+            atom
+        ),
+        "SER",
+    )
+
+
+def _self_test_get_atom_type(
+) -> None:
+    """Test atom-type extraction."""
+
+    atom = make_fake_atom(
+        "N",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        atom_type="N3",
+    )
+
+    self_test_assert_equal(
+        get_atom_type(
+            atom
+        ),
+        "N3",
+    )
+
+
+def _self_test_get_atom_formal_charge(
+) -> None:
+    """Test formal-charge extraction."""
+
+    atom = make_fake_atom(
+        "N",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        formal_charge=1.0,
+    )
+
+    self_test_assert_almost_equal(
+        get_atom_formal_charge(
+            atom
+        ),
+        1.0,
+    )
+
+
+def _self_test_atom_is_aromatic(
+) -> None:
+    """Test aromaticity extraction."""
+
+    atom = make_fake_atom(
+        "C1",
+        "C",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        aromatic=True,
+    )
+
+    self_test_assert(
+        atom_is_aromatic(
+            atom
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# Connectivity tests
+# -----------------------------------------------------------------------------
+
+def _self_test_get_bonded_neighbors(
+) -> None:
+    """Test bonded-neighbor extraction."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=2
+    )
+
+    neighbors = get_bonded_neighbors(
+        system[
+            "donor"
+        ]
+    )
+
+    self_test_assert_equal(
+        len(
+            neighbors
+        ),
+        2,
+    )
+
+    for hydrogen in system[
+        "hydrogens"
+    ]:
+        self_test_assert(
+            hydrogen in neighbors
+        )
+
+
+def _self_test_get_bonded_hydrogens(
+) -> None:
+    """Test bonded-hydrogen extraction."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=3
+    )
+
+    hydrogens = get_bonded_hydrogens(
+        system[
+            "donor"
+        ]
+    )
+
+    self_test_assert_equal(
+        len(
+            hydrogens
+        ),
+        3,
+    )
+
+    self_test_assert(
+        all(
+            hydrogen.element.name == "H"
+            for hydrogen in hydrogens
+        )
+    )
+
+
+def _self_test_get_bonded_heavy_atoms(
+) -> None:
+    """Test bonded-heavy-atom extraction."""
+
+    residue = make_fake_residue(
+        "LIG",
+        1,
+        polymer_type=None,
+    )
+
+    nitrogen = make_fake_atom(
+        "N",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+    )
+
+    carbon = make_fake_atom(
+        "C",
+        "C",
+        (
+            1.4,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+    )
+
+    hydrogen = make_fake_atom(
+        "H",
+        "H",
+        (
+            -1.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+    )
+
+    connect_fake_atoms(
+        nitrogen,
+        carbon,
+    )
+
+    connect_fake_atoms(
+        nitrogen,
+        hydrogen,
+    )
+
+    heavy_atoms = get_bonded_heavy_atoms(
+        nitrogen
+    )
+
+    self_test_assert_equal(
+        len(
+            heavy_atoms
+        ),
+        1,
+    )
+
+    self_test_assert_is(
+        heavy_atoms[
+            0
+        ],
+        carbon,
+    )
+
+
+def _self_test_atom_has_explicit_hydrogen(
+) -> None:
+    """Test explicit-hydrogen predicate."""
+
+    with_hydrogen = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1
+    )
+
+    without_hydrogen = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=0
+    )
+
+    self_test_assert(
+        atom_has_explicit_hydrogen(
+            with_hydrogen[
+                "donor"
+            ]
+        )
+    )
+
+    self_test_assert(
+        not atom_has_explicit_hydrogen(
+            without_hydrogen[
+                "donor"
+            ]
+        )
+    )
+
+
+def _self_test_get_bond_order(
+) -> None:
+    """Test bond-order extraction."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1
+    )
+
+    bond = system[
+        "bonds"
+    ][
+        0
+    ]
+
+    self_test_assert_almost_equal(
+        get_bond_order(
+            bond
+        ),
+        1.0,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Protein perception tests
+# -----------------------------------------------------------------------------
+
+def _self_test_is_protein_residue_true(
+) -> None:
+    """Test protein-residue recognition."""
+
+    residue = make_fake_residue(
+        "SER",
+        10,
+        polymer_type="amino",
+    )
+
+    self_test_assert(
+        is_protein_residue(
+            residue
+        )
+    )
+
+
+def _self_test_is_protein_residue_false(
+) -> None:
+    """Test nonprotein residue recognition."""
+
+    residue = make_fake_residue(
+        "LIG",
+        1,
+        polymer_type=None,
+    )
+
+    self_test_assert(
+        not is_protein_residue(
+            residue
+        )
+    )
+
+
+def _self_test_is_protein_backbone_atom(
+) -> None:
+    """Test protein-backbone atom recognition."""
+
+    residue = make_fake_residue(
+        "ALA",
+        10,
+        polymer_type="amino",
+    )
+
+    backbone_nitrogen = make_fake_atom(
+        "N",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+    )
+
+    sidechain_carbon = make_fake_atom(
+        "CB",
+        "C",
+        (
+            1.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+    )
+
+    self_test_assert(
+        is_protein_backbone_atom(
+            backbone_nitrogen
+        )
+    )
+
+    self_test_assert(
+        not is_protein_backbone_atom(
+            sidechain_carbon
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# Donor perception tests
+# -----------------------------------------------------------------------------
+
+def _self_test_protein_backbone_nitrogen_is_donor(
+) -> None:
+    """Test backbone amide nitrogen donor perception."""
+
+    residue = make_fake_residue(
+        "ALA",
+        10,
+        polymer_type="amino",
+    )
+
+    nitrogen = make_fake_atom(
+        "N",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+        atom_type="Npl",
+    )
+
+    hydrogen = make_fake_atom(
+        "H",
+        "H",
+        (
+            1.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+    )
+
+    connect_fake_atoms(
+        nitrogen,
+        hydrogen,
+    )
+
+    self_test_assert(
+        is_hbond_donor(
+            nitrogen
+        )
+    )
+
+
+def _self_test_serine_oxygen_is_donor(
+) -> None:
+    """Test serine hydroxyl donor perception."""
+
+    residue = make_fake_residue(
+        "SER",
+        10,
+        polymer_type="amino",
+    )
+
+    oxygen = make_fake_atom(
+        "OG",
+        "O",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+        atom_type="O3",
+    )
+
+    hydrogen = make_fake_atom(
+        "HG",
+        "H",
+        (
+            1.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+    )
+
+    connect_fake_atoms(
+        oxygen,
+        hydrogen,
+    )
+
+    self_test_assert(
+        is_hbond_donor(
+            oxygen
+        )
+    )
+
+
+def _self_test_lysine_nitrogen_is_donor(
+) -> None:
+    """Test lysine side-chain donor perception."""
+
+    residue = make_fake_residue(
+        "LYS",
+        10,
+        polymer_type="amino",
+    )
+
+    nitrogen = make_fake_atom(
+        "NZ",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+        atom_type="N3",
+        formal_charge=1.0,
+    )
+
+    hydrogen = make_fake_atom(
+        "HZ1",
+        "H",
+        (
+            1.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+    )
+
+    connect_fake_atoms(
+        nitrogen,
+        hydrogen,
+    )
+
+    self_test_assert(
+        is_hbond_donor(
+            nitrogen
+        )
+    )
+
+
+def _self_test_generic_amine_is_donor(
+) -> None:
+    """Test generic amine donor perception."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1,
+        donor_element="N",
+        donor_atom_type="N3",
+        donor_residue_name="LIG",
+    )
+
+    self_test_assert(
+        is_hbond_donor(
+            system[
+                "donor"
+            ]
+        )
+    )
+
+
+def _self_test_hydroxyl_oxygen_without_hydrogen_not_donor_explicit(
+) -> None:
+    """Test explicit-mode donor requirement."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=0,
+        donor_element="O",
+        donor_atom_type="O3",
+        donor_residue_name="LIG",
+    )
+
+    self_test_assert(
+        not is_hbond_donor(
+            system[
+                "donor"
+            ],
+            require_hydrogen=True,
+        )
+    )
+
+
+def _self_test_inferred_donor_without_explicit_hydrogen(
+) -> None:
+    """Test inferred donor perception without explicit hydrogen."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=0,
+        donor_element="N",
+        donor_atom_type="N3",
+        donor_residue_name="LIG",
+    )
+
+    self_test_assert(
+        is_hbond_donor(
+            system[
+                "donor"
+            ],
+            require_hydrogen=False,
+        )
+    )
+
+
+def _self_test_carbon_is_not_donor(
+) -> None:
+    """Test rejection of ordinary carbon as donor."""
+
+    atom = make_fake_atom(
+        "C1",
+        "C",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        atom_type="C3",
+    )
+
+    self_test_assert(
+        not is_hbond_donor(
+            atom
+        )
+    )
+
+
+def _self_test_select_hbond_donors(
+) -> None:
+    """Test donor selection from a mixed atom collection."""
+
+    donor_system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1
+    )
+
+    carbon = make_fake_atom(
+        "C",
+        "C",
+        (
+            5.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    atoms = (
+        donor_system[
+            "donor"
+        ],
+        *donor_system[
+            "hydrogens"
+        ],
+        carbon,
+    )
+
+    donors = select_hbond_donors(
+        atoms
+    )
+
+    self_test_assert_equal(
+        len(
+            donors
+        ),
+        1,
+    )
+
+    self_test_assert_is(
+        donors[
+            0
+        ],
+        donor_system[
+            "donor"
+        ],
+    )
+
+
+# -----------------------------------------------------------------------------
+# Acceptor perception tests
+# -----------------------------------------------------------------------------
+
+def _self_test_carbonyl_oxygen_is_acceptor(
+) -> None:
+    """Test carbonyl oxygen acceptor perception."""
+
+    residue = make_fake_residue(
+        "LIG",
+        1,
+        polymer_type=None,
+    )
+
+    carbon = make_fake_atom(
+        "C",
+        "C",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+        atom_type="C2",
+    )
+
+    oxygen = make_fake_atom(
+        "O",
+        "O",
+        (
+            1.2,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+        atom_type="O2",
+    )
+
+    connect_fake_atoms(
+        carbon,
+        oxygen,
+        order=2.0,
+    )
+
+    self_test_assert(
+        is_hbond_acceptor(
+            oxygen
+        )
+    )
+
+
+def _self_test_aspartate_oxygen_is_acceptor(
+) -> None:
+    """Test aspartate side-chain oxygen acceptor perception."""
+
+    residue = make_fake_residue(
+        "ASP",
+        10,
+        polymer_type="amino",
+    )
+
+    oxygen = make_fake_atom(
+        "OD1",
+        "O",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+        atom_type="O2",
+        formal_charge=-1.0,
+    )
+
+    self_test_assert(
+        is_hbond_acceptor(
+            oxygen
+        )
+    )
+
+
+def _self_test_histidine_nitrogen_is_acceptor(
+) -> None:
+    """Test neutral histidine nitrogen acceptor perception."""
+
+    residue = make_fake_residue(
+        "HIS",
+        10,
+        polymer_type="amino",
+    )
+
+    nitrogen = make_fake_atom(
+        "ND1",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+        atom_type="N2",
+        aromatic=True,
+    )
+
+    self_test_assert(
+        is_hbond_acceptor(
+            nitrogen
+        )
+    )
+
+
+def _self_test_protonated_nitrogen_not_acceptor(
+) -> None:
+    """Test rejection of positively charged nitrogen as acceptor."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1
+    )
+
+    donor = system[
+        "donor"
+    ]
+
+    donor.formal_charge = np.float64(
+        1.0
+    )
+
+    self_test_assert(
+        not is_hbond_acceptor(
+            donor
+        )
+    )
+
+
+def _self_test_amide_nitrogen_not_acceptor(
+) -> None:
+    """Test rejection of an amide nitrogen as acceptor."""
+
+    residue = make_fake_residue(
+        "LIG",
+        1,
+        polymer_type=None,
+    )
+
+    carbonyl_carbon = make_fake_atom(
+        "C",
+        "C",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+        atom_type="C2",
+    )
+
+    carbonyl_oxygen = make_fake_atom(
+        "O",
+        "O",
+        (
+            1.2,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+        atom_type="O2",
+    )
+
+    amide_nitrogen = make_fake_atom(
+        "N",
+        "N",
+        (
+            -1.3,
+            0.0,
+            0.0,
+        ),
+        residue=residue,
+        atom_type="Npl",
+    )
+
+    connect_fake_atoms(
+        carbonyl_carbon,
+        carbonyl_oxygen,
+        order=2.0,
+    )
+
+    connect_fake_atoms(
+        carbonyl_carbon,
+        amide_nitrogen,
+        order=1.0,
+    )
+
+    self_test_assert(
+        not is_hbond_acceptor(
+            amide_nitrogen
+        )
+    )
+
+
+def _self_test_hydroxyl_oxygen_role(
+) -> None:
+    """Test hydroxyl oxygen donor/acceptor roles."""
+
+    system = _self_test_make_generic_acceptor(
+        element="O",
+        atom_type="O3",
+        bonded_hydrogen=True,
+    )
+
+    oxygen = system[
+        "acceptor"
+    ]
+
+    self_test_assert(
+        is_hbond_donor(
+            oxygen
+        )
+    )
+
+    self_test_assert(
+        is_hbond_acceptor(
+            oxygen
+        )
+    )
+
+
+def _self_test_sulfur_acceptor(
+) -> None:
+    """Test generic sulfur acceptor perception."""
+
+    system = _self_test_make_generic_acceptor(
+        element="S",
+        atom_type="S2",
+    )
+
+    self_test_assert(
+        is_hbond_acceptor(
+            system[
+                "acceptor"
+            ]
+        )
+    )
+
+
+def _self_test_halogen_not_acceptor(
+) -> None:
+    """Test rejection of halogen as conventional H-bond acceptor."""
+
+    atom = make_fake_atom(
+        "CL",
+        "CL",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    self_test_assert(
+        not is_hbond_acceptor(
+            atom
+        )
+    )
+
+
+def _self_test_select_hbond_acceptors(
+) -> None:
+    """Test acceptor selection from mixed atoms."""
+
+    oxygen_system = _self_test_make_generic_acceptor()
+
+    carbon = make_fake_atom(
+        "C",
+        "C",
+        (
+            5.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    acceptors = select_hbond_acceptors(
+        (
+            oxygen_system[
+                "acceptor"
+            ],
+            carbon,
+        )
+    )
+
+    self_test_assert_equal(
+        len(
+            acceptors
+        ),
+        1,
+    )
+
+    self_test_assert_is(
+        acceptors[
+            0
+        ],
+        oxygen_system[
+            "acceptor"
+        ],
+    )
+
+
+# -----------------------------------------------------------------------------
+# Role-classification tests
+# -----------------------------------------------------------------------------
+
+def _self_test_get_hbond_atom_roles_donor_only(
+) -> None:
+    """Test donor-only role classification."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1,
+        donor_element="N",
+        donor_atom_type="N3",
+    )
+
+    roles = get_hbond_atom_roles(
+        system[
+            "donor"
+        ]
+    )
+
+    self_test_assert(
+        HBOND_ROLE_DONOR
+        in roles
+    )
+
+    self_test_assert(
+        HBOND_ROLE_ACCEPTOR
+        not in roles
+    )
+
+
+def _self_test_get_hbond_atom_roles_acceptor_only(
+) -> None:
+    """Test acceptor-only role classification."""
+
+    system = _self_test_make_generic_acceptor(
+        element="O",
+        atom_type="O2",
+    )
+
+    roles = get_hbond_atom_roles(
+        system[
+            "acceptor"
+        ]
+    )
+
+    self_test_assert(
+        HBOND_ROLE_ACCEPTOR
+        in roles
+    )
+
+    self_test_assert(
+        HBOND_ROLE_DONOR
+        not in roles
+    )
+
+
+def _self_test_get_hbond_atom_roles_both(
+) -> None:
+    """Test donor-and-acceptor role classification."""
+
+    system = _self_test_make_generic_acceptor(
+        element="O",
+        atom_type="O3",
+        bonded_hydrogen=True,
+    )
+
+    roles = get_hbond_atom_roles(
+        system[
+            "acceptor"
+        ]
+    )
+
+    self_test_assert(
+        HBOND_ROLE_DONOR
+        in roles
+    )
+
+    self_test_assert(
+        HBOND_ROLE_ACCEPTOR
+        in roles
+    )
+
+
+def _self_test_get_hbond_atom_roles_none(
+) -> None:
+    """Test atom with no H-bond role."""
+
+    carbon = make_fake_atom(
+        "C",
+        "C",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    roles = get_hbond_atom_roles(
+        carbon
+    )
+
+    self_test_assert_equal(
+        tuple(
+            roles
+        ),
+        (),
+    )
+
+
+def _self_test_get_primary_hbond_atom_role(
+) -> None:
+    """Test primary-role selection."""
+
+    donor_system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1
+    )
+
+    role = get_primary_hbond_atom_role(
+        donor_system[
+            "donor"
+        ]
+    )
+
+    self_test_assert_equal(
+        role,
+        HBOND_ROLE_DONOR,
+    )
+
+
+def _self_test_classify_hbond_atom_roles(
+) -> None:
+    """Test collection role classification."""
+
+    donor_system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1
+    )
+
+    acceptor_system = _self_test_make_generic_acceptor()
+
+    carbon = make_fake_atom(
+        "C",
+        "C",
+        (
+            5.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    classification = classify_hbond_atom_roles(
+        (
+            donor_system[
+                "donor"
+            ],
+            acceptor_system[
+                "acceptor"
+            ],
+            carbon,
+        )
+    )
+
+    self_test_assert_mapping_contains(
+        classification,
+        (
+            HBOND_ROLE_DONOR,
+            HBOND_ROLE_ACCEPTOR,
+        ),
+    )
+
+    self_test_assert(
+        donor_system[
+            "donor"
+        ]
+        in classification[
+            HBOND_ROLE_DONOR
+        ]
+    )
+
+    self_test_assert(
+        acceptor_system[
+            "acceptor"
+        ]
+        in classification[
+            HBOND_ROLE_ACCEPTOR
+        ]
+    )
+
+
+def _self_test_hbond_role_counts(
+) -> None:
+    """Test atom-role counts."""
+
+    donor_system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1
+    )
+
+    acceptor_system = _self_test_make_generic_acceptor()
+
+    counts = hbond_role_counts(
+        (
+            donor_system[
+                "donor"
+            ],
+            acceptor_system[
+                "acceptor"
+            ],
+        )
+    )
+
+    self_test_assert_equal(
+        counts[
+            HBOND_ROLE_DONOR
+        ],
+        1,
+    )
+
+    self_test_assert_equal(
+        counts[
+            HBOND_ROLE_ACCEPTOR
+        ],
+        1,
+    )
+
+
+# -----------------------------------------------------------------------------
+# DonorHydrogenAssignment dataclass tests
+# -----------------------------------------------------------------------------
+
+def _self_test_assignment_dataclass_basic(
+) -> None:
+    """Test DonorHydrogenAssignment construction."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1
+    )
+
+    assignment = DonorHydrogenAssignment(
+        donor=system[
+            "donor"
+        ],
+        hydrogen=system[
+            "hydrogens"
+        ][
+            0
+        ],
+        distance=np.float64(
+            1.0
+        ),
+        donor_index=0,
+        hydrogen_index=1,
+        assignment_method="topology",
+        is_ambiguous=False,
+        alternative_donors=(),
+        metadata={
+            "self_test": True,
+        },
+    )
+
+    self_test_assert_isinstance(
+        assignment,
+        DonorHydrogenAssignment,
+    )
+
+    self_test_assert_is(
+        assignment.donor,
+        system[
+            "donor"
+        ],
+    )
+
+    self_test_assert_is(
+        assignment.hydrogen,
+        system[
+            "hydrogens"
+        ][
+            0
+        ],
+    )
+
+    self_test_assert_almost_equal(
+        assignment.distance,
+        1.0,
+    )
+
+
+def _self_test_assignment_dataclass_metadata_frozen(
+) -> None:
+    """Test assignment metadata immutability."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1
+    )
+
+    assignment = DonorHydrogenAssignment(
+        donor=system[
+            "donor"
+        ],
+        hydrogen=system[
+            "hydrogens"
+        ][
+            0
+        ],
+        distance=np.float64(
+            1.0
+        ),
+        assignment_method="topology",
+        metadata={
+            "self_test": True,
+        },
+    )
+
+    with self_test_raises(
+        TypeError
+    ):
+        assignment.metadata[
+            "new_key"
+        ] = True
+
+
+def _self_test_assignment_dataclass_rejects_negative_distance(
+) -> None:
+    """Test negative D-H distance rejection."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1
+    )
+
+    with self_test_raises(
+        ValueError
+    ):
+        DonorHydrogenAssignment(
+            donor=system[
+                "donor"
+            ],
+            hydrogen=system[
+                "hydrogens"
+            ][
+                0
+            ],
+            distance=np.float64(
+                -1.0
+            ),
+            assignment_method="topology",
+        )
+
+
+# -----------------------------------------------------------------------------
+# Donor-hydrogen distance tests
+# -----------------------------------------------------------------------------
+
+def _self_test_calculate_atom_distance(
+) -> None:
+    """Test internal atom-distance helper."""
+
+    atom_1 = make_fake_atom(
+        "A1",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    atom_2 = make_fake_atom(
+        "A2",
+        "H",
+        (
+            1.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    self_test_assert_almost_equal(
+        _calculate_atom_distance(
+            atom_1,
+            atom_2,
+        ),
+        1.0,
+    )
+
+
+def _self_test_get_donor_hydrogen_distance_bounds_nitrogen(
+) -> None:
+    """Test nitrogen D-H distance bounds."""
+
+    donor = make_fake_atom(
+        "N",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    minimum_distance, maximum_distance = (
+        get_donor_hydrogen_distance_bounds(
+            donor
+        )
+    )
+
+    self_test_assert(
+        minimum_distance
+        < maximum_distance
+    )
+
+    self_test_assert(
+        minimum_distance
+        <= 1.0
+        <= maximum_distance
+    )
+
+
+def _self_test_get_donor_hydrogen_distance_bounds_oxygen(
+) -> None:
+    """Test oxygen D-H distance bounds."""
+
+    donor = make_fake_atom(
+        "O",
+        "O",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    minimum_distance, maximum_distance = (
+        get_donor_hydrogen_distance_bounds(
+            donor
+        )
+    )
+
+    self_test_assert(
+        minimum_distance
+        < maximum_distance
+    )
+
+
+def _self_test_valid_donor_hydrogen_distance(
+) -> None:
+    """Test valid D-H distance."""
+
+    donor = make_fake_atom(
+        "N",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    self_test_assert(
+        is_valid_donor_hydrogen_distance(
+            donor,
+            1.0,
+        )
+    )
+
+
+def _self_test_invalid_donor_hydrogen_distance(
+) -> None:
+    """Test invalid D-H distance."""
+
+    donor = make_fake_atom(
+        "N",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    self_test_assert(
+        not is_valid_donor_hydrogen_distance(
+            donor,
+            3.0,
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# Topology-based hydrogen identification tests
+# -----------------------------------------------------------------------------
+
+def _self_test_get_topology_bonded_hydrogens(
+) -> None:
+    """Test topology-based bonded-hydrogen retrieval."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=2
+    )
+
+    hydrogens = get_topology_bonded_hydrogens(
+        system[
+            "donor"
+        ]
+    )
+
+    self_test_assert_equal(
+        len(
+            hydrogens
+        ),
+        2,
+    )
+
+
+def _self_test_build_topology_hydrogen_assignments_single(
+) -> None:
+    """Test one topology-derived assignment."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1
+    )
+
+    assignments = build_topology_hydrogen_assignments(
+        (
+            system[
+                "donor"
+            ],
+        )
+    )
+
+    self_test_assert_equal(
+        len(
+            assignments
+        ),
+        1,
+    )
+
+    assignment = assignments[
+        0
+    ]
+
+    self_test_assert_is(
+        assignment.donor,
+        system[
+            "donor"
+        ],
+    )
+
+    self_test_assert_is(
+        assignment.hydrogen,
+        system[
+            "hydrogens"
+        ][
+            0
+        ],
+    )
+
+    self_test_assert_equal(
+        assignment.assignment_method,
+        "topology",
+    )
+
+
+def _self_test_build_topology_hydrogen_assignments_multiple(
+) -> None:
+    """Test multiple topology-derived assignments."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=3
+    )
+
+    assignments = build_topology_hydrogen_assignments(
+        (
+            system[
+                "donor"
+            ],
+        )
+    )
+
+    self_test_assert_equal(
+        len(
+            assignments
+        ),
+        3,
+    )
+
+
+def _self_test_build_topology_hydrogen_assignments_none(
+) -> None:
+    """Test donor without topology hydrogens."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=0
+    )
+
+    assignments = build_topology_hydrogen_assignments(
+        (
+            system[
+                "donor"
+            ],
+        )
+    )
+
+    self_test_assert_equal(
+        assignments,
+        (),
+    )
+
+
+def _self_test_topology_assignment_distance(
+) -> None:
+    """Test topology assignment D-H distance."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1,
+        hydrogen_distance=1.05,
+    )
+
+    assignments = build_topology_hydrogen_assignments(
+        (
+            system[
+                "donor"
+            ],
+        )
+    )
+
+    self_test_assert_almost_equal(
+        assignments[
+            0
+        ].distance,
+        1.05,
+        tolerance=SELF_TEST_COORDINATE_TOLERANCE,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Distance-based assignment tests
+# -----------------------------------------------------------------------------
+
+def _self_test_find_candidate_donors_for_hydrogen(
+) -> None:
+    """Test geometric candidate-donor search."""
+
+    donor_1 = make_fake_atom(
+        "N1",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        atom_type="N3",
+    )
+
+    donor_2 = make_fake_atom(
+        "N2",
+        "N",
+        (
+            5.0,
+            0.0,
+            0.0,
+        ),
+        atom_type="N3",
+    )
+
+    hydrogen = make_fake_atom(
+        "H",
+        "H",
+        (
+            1.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    candidates = find_candidate_donors_for_hydrogen(
+        hydrogen,
+        (
+            donor_1,
+            donor_2,
+        ),
+    )
+
+    self_test_assert_equal(
+        len(
+            candidates
+        ),
+        1,
+    )
+
+    candidate_donor = candidates[
+        0
+    ][
+        0
+    ]
+
+    self_test_assert_is(
+        candidate_donor,
+        donor_1,
+    )
+
+
+def _self_test_assign_hydrogen_by_distance_unique(
+) -> None:
+    """Test unique distance-based assignment."""
+
+    donor = make_fake_atom(
+        "N",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        atom_type="N3",
+    )
+
+    hydrogen = make_fake_atom(
+        "H",
+        "H",
+        (
+            1.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    assignment = assign_hydrogen_by_distance(
+        hydrogen,
+        (
+            donor,
+        ),
+    )
+
+    self_test_assert(
+        assignment is not None
+    )
+
+    self_test_assert_is(
+        assignment.donor,
+        donor,
+    )
+
+    self_test_assert_is(
+        assignment.hydrogen,
+        hydrogen,
+    )
+
+    self_test_assert(
+        not assignment.is_ambiguous
+    )
+
+    self_test_assert_equal(
+        assignment.assignment_method,
+        "distance",
+    )
+
+
+def _self_test_assign_hydrogen_by_distance_none(
+) -> None:
+    """Test absence of a valid geometric donor."""
+
+    donor = make_fake_atom(
+        "N",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        atom_type="N3",
+    )
+
+    hydrogen = make_fake_atom(
+        "H",
+        "H",
+        (
+            5.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    assignment = assign_hydrogen_by_distance(
+        hydrogen,
+        (
+            donor,
+        ),
+    )
+
+    self_test_assert_equal(
+        assignment,
+        None,
+    )
+
+
+def _self_test_assign_hydrogen_by_distance_ambiguous(
+) -> None:
+    """Test ambiguous distance-based assignment."""
+
+    donor_1 = make_fake_atom(
+        "N1",
+        "N",
+        (
+            -1.0,
+            0.0,
+            0.0,
+        ),
+        atom_type="N3",
+    )
+
+    donor_2 = make_fake_atom(
+        "N2",
+        "N",
+        (
+            1.0,
+            0.0,
+            0.0,
+        ),
+        atom_type="N3",
+    )
+
+    hydrogen = make_fake_atom(
+        "H",
+        "H",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    assignment = assign_hydrogen_by_distance(
+        hydrogen,
+        (
+            donor_1,
+            donor_2,
+        ),
+    )
+
+    self_test_assert(
+        assignment is not None
+    )
+
+    self_test_assert(
+        assignment.is_ambiguous
+    )
+
+    self_test_assert_equal(
+        len(
+            assignment.alternative_donors
+        ),
+        1,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Full hydrogen-identification pipeline tests
+# -----------------------------------------------------------------------------
+
+def _self_test_identify_assignments_topology_preferred(
+) -> None:
+    """Test topology-first hydrogen assignment."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1
+    )
+
+    assignments = identify_donor_hydrogen_assignments(
+        (
+            system[
+                "donor"
+            ],
+        ),
+        system[
+            "hydrogens"
+        ],
+        allow_distance_based=True,
+    )
+
+    self_test_assert_equal(
+        len(
+            assignments
+        ),
+        1,
+    )
+
+    self_test_assert_equal(
+        assignments[
+            0
+        ].assignment_method,
+        "topology",
+    )
+
+
+def _self_test_identify_assignments_distance_fallback(
+) -> None:
+    """Test distance fallback without bond topology."""
+
+    donor = make_fake_atom(
+        "N",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        atom_type="N3",
+    )
+
+    hydrogen = make_fake_atom(
+        "H",
+        "H",
+        (
+            1.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    assignments = identify_donor_hydrogen_assignments(
+        (
+            donor,
+        ),
+        (
+            hydrogen,
+        ),
+        allow_distance_based=True,
+    )
+
+    self_test_assert_equal(
+        len(
+            assignments
+        ),
+        1,
+    )
+
+    self_test_assert_equal(
+        assignments[
+            0
+        ].assignment_method,
+        "distance",
+    )
+
+
+def _self_test_identify_assignments_no_distance_fallback(
+) -> None:
+    """Test disabled distance fallback."""
+
+    donor = make_fake_atom(
+        "N",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        atom_type="N3",
+    )
+
+    hydrogen = make_fake_atom(
+        "H",
+        "H",
+        (
+            1.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    assignments = identify_donor_hydrogen_assignments(
+        (
+            donor,
+        ),
+        (
+            hydrogen,
+        ),
+        allow_distance_based=False,
+    )
+
+    self_test_assert_equal(
+        assignments,
+        (),
+    )
+
+
+def _self_test_identify_assignments_no_duplicates(
+) -> None:
+    """Test duplicate assignment prevention."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1
+    )
+
+    assignments = identify_donor_hydrogen_assignments(
+        (
+            system[
+                "donor"
+            ],
+            system[
+                "donor"
+            ],
+        ),
+        (
+            system[
+                "hydrogens"
+            ][
+                0
+            ],
+            system[
+                "hydrogens"
+            ][
+                0
+            ],
+        ),
+        allow_distance_based=True,
+    )
+
+    assignment_keys = {
+        (
+            id(
+                assignment.donor
+            ),
+            id(
+                assignment.hydrogen
+            ),
+        )
+        for assignment
+        in assignments
+    }
+
+    self_test_assert_equal(
+        len(
+            assignment_keys
+        ),
+        len(
+            assignments
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# Assignment grouping tests
+# -----------------------------------------------------------------------------
+
+def _self_test_group_assignments_by_donor(
+) -> None:
+    """Test assignment grouping by donor."""
+
+    system_1 = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=2
+    )
+
+    system_2 = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1
+    )
+
+    system_2[
+        "donor"
+    ].set_coord(
+        (
+            10.0,
+            0.0,
+            0.0,
+        )
+    )
+
+    for hydrogen_index, hydrogen in enumerate(
+        system_2[
+            "hydrogens"
+        ]
+    ):
+        hydrogen.set_coord(
+            (
+                11.0,
+                float(
+                    hydrogen_index
+                ),
+                0.0,
+            )
+        )
+
+    assignments = (
+        build_topology_hydrogen_assignments(
+            (
+                system_1[
+                    "donor"
+                ],
+                system_2[
+                    "donor"
+                ],
+            )
+        )
+    )
+
+    grouped = group_hydrogen_assignments_by_donor(
+        assignments
+    )
+
+    self_test_assert_equal(
+        len(
+            grouped
+        ),
+        2,
+    )
+
+    self_test_assert_equal(
+        len(
+            grouped[
+                system_1[
+                    "donor"
+                ]
+            ]
+        ),
+        2,
+    )
+
+    self_test_assert_equal(
+        len(
+            grouped[
+                system_2[
+                    "donor"
+                ]
+            ]
+        ),
+        1,
+    )
+
+
+def _self_test_group_hydrogens_by_donor(
+) -> None:
+    """Test hydrogen grouping by donor."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=2
+    )
+
+    assignments = build_topology_hydrogen_assignments(
+        (
+            system[
+                "donor"
+            ],
+        )
+    )
+
+    grouped = group_hydrogens_by_donor(
+        assignments
+    )
+
+    self_test_assert_equal(
+        len(
+            grouped[
+                system[
+                    "donor"
+                ]
+            ]
+        ),
+        2,
+    )
+
+
+def _self_test_get_assignments_for_donor(
+) -> None:
+    """Test donor-specific assignment retrieval."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=2
+    )
+
+    assignments = build_topology_hydrogen_assignments(
+        (
+            system[
+                "donor"
+            ],
+        )
+    )
+
+    selected = get_assignments_for_donor(
+        system[
+            "donor"
+        ],
+        assignments,
+    )
+
+    self_test_assert_equal(
+        len(
+            selected
+        ),
+        2,
+    )
+
+
+def _self_test_get_assigned_hydrogens_for_donor(
+) -> None:
+    """Test donor-specific hydrogen retrieval."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=2
+    )
+
+    assignments = build_topology_hydrogen_assignments(
+        (
+            system[
+                "donor"
+            ],
+        )
+    )
+
+    hydrogens = get_assigned_hydrogens_for_donor(
+        system[
+            "donor"
+        ],
+        assignments,
+    )
+
+    self_test_assert_equal(
+        len(
+            hydrogens
+        ),
+        2,
+    )
+
+    for hydrogen in system[
+        "hydrogens"
+    ]:
+        self_test_assert(
+            hydrogen in hydrogens
+        )
+
+
+def _self_test_donor_has_assigned_hydrogen(
+) -> None:
+    """Test assigned-hydrogen donor predicate."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1
+    )
+
+    assignments = build_topology_hydrogen_assignments(
+        (
+            system[
+                "donor"
+            ],
+        )
+    )
+
+    self_test_assert(
+        donor_has_assigned_hydrogen(
+            system[
+                "donor"
+            ],
+            assignments,
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# Assignment diagnostic tests
+# -----------------------------------------------------------------------------
+
+def _self_test_find_unassigned_hydrogens(
+) -> None:
+    """Test detection of unassigned hydrogens."""
+
+    system = _self_test_make_donor_with_hydrogens(
+        hydrogen_count=1
+    )
+
+    unassigned_hydrogen = make_fake_atom(
+        "HU",
+        "H",
+        (
+            10.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    assignments = build_topology_hydrogen_assignments(
+        (
+            system[
+                "donor"
+            ],
+        )
+    )
+
+    unassigned = find_unassigned_hydrogens(
+        (
+            system[
+                "hydrogens"
+            ][
+                0
+            ],
+            unassigned_hydrogen,
+        ),
+        assignments,
+    )
+
+    self_test_assert_equal(
+        len(
+            unassigned
+        ),
+        1,
+    )
+
+    self_test_assert_is(
+        unassigned[
+            0
+        ],
+        unassigned_hydrogen,
+    )
+
+
+def _self_test_find_ambiguous_assignments(
+) -> None:
+    """Test ambiguous-assignment filtering."""
+
+    donor_1 = make_fake_atom(
+        "N1",
+        "N",
+        (
+            -1.0,
+            0.0,
+            0.0,
+        ),
+        atom_type="N3",
+    )
+
+    donor_2 = make_fake_atom(
+        "N2",
+        "N",
+        (
+            1.0,
+            0.0,
+            0.0,
+        ),
+        atom_type="N3",
+    )
+
+    hydrogen = make_fake_atom(
+        "H",
+        "H",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    assignment = assign_hydrogen_by_distance(
+        hydrogen,
+        (
+            donor_1,
+            donor_2,
+        ),
+    )
+
+    self_test_assert(
+        assignment is not None
+    )
+
+    ambiguous = find_ambiguous_hydrogen_assignments(
+        (
+            assignment,
+        )
+    )
+
+    self_test_assert_equal(
+        len(
+            ambiguous
+        ),
+        1,
+    )
+
+    self_test_assert_is(
+        ambiguous[
+            0
+        ],
+        assignment,
+    )
+
+
+def _self_test_assignment_statistics(
+) -> None:
+    """Test hydrogen-assignment statistics."""
+
+    topology_system = (
+        _self_test_make_donor_with_hydrogens(
+            hydrogen_count=1
+        )
+    )
+
+    topology_assignments = (
+        build_topology_hydrogen_assignments(
+            (
+                topology_system[
+                    "donor"
+                ],
+            )
+        )
+    )
+
+    distance_donor = make_fake_atom(
+        "N2",
+        "N",
+        (
+            10.0,
+            0.0,
+            0.0,
+        ),
+        atom_type="N3",
+    )
+
+    distance_hydrogen = make_fake_atom(
+        "H2",
+        "H",
+        (
+            11.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    distance_assignment = assign_hydrogen_by_distance(
+        distance_hydrogen,
+        (
+            distance_donor,
+        ),
+    )
+
+    self_test_assert(
+        distance_assignment is not None
+    )
+
+    statistics = hydrogen_assignment_statistics(
+        (
+            *topology_assignments,
+            distance_assignment,
+        )
+    )
+
+    self_test_assert_mapping_contains(
+        statistics,
+        (
+            "assignment_count",
+            "topology_assignment_count",
+            "distance_assignment_count",
+            "ambiguous_assignment_count",
+            "unique_donor_count",
+            "unique_hydrogen_count",
+        ),
+    )
+
+    self_test_assert_equal(
+        statistics[
+            "assignment_count"
+        ],
+        2,
+    )
+
+    self_test_assert_equal(
+        statistics[
+            "topology_assignment_count"
+        ],
+        1,
+    )
+
+    self_test_assert_equal(
+        statistics[
+            "distance_assignment_count"
+        ],
+        1,
+    )
+
+
+def _self_test_assignment_statistics_empty(
+) -> None:
+    """Test empty assignment statistics."""
+
+    statistics = hydrogen_assignment_statistics(
+        ()
+    )
+
+    self_test_assert_equal(
+        statistics[
+            "assignment_count"
+        ],
+        0,
+    )
+
+    self_test_assert_equal(
+        statistics[
+            "unique_donor_count"
+        ],
+        0,
+    )
+
+    self_test_assert_equal(
+        statistics[
+            "unique_hydrogen_count"
+        ],
+        0,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 12.2 grouped runners
+# -----------------------------------------------------------------------------
+
+def run_hbond_dataclass_self_tests(
+    *,
+    raise_on_failure: bool = False,
+) -> SelfTestReport:
+    """
+    Run dataclass tests from Sections 1–3.
+
+    Parameters
+    ----------
+    raise_on_failure : bool, optional
+        Whether failures should be reraised.
+
+    Returns
+    -------
+    SelfTestReport
+        Dataclass test report.
+    """
+
+    test_cases = (
+        (
+            "dataclasses.geometry.explicit",
+            _self_test_geometry_dataclass_explicit,
+        ),
+        (
+            "dataclasses.geometry.inferred",
+            _self_test_geometry_dataclass_inferred,
+        ),
+        (
+            "dataclasses.geometry.numpy_float64",
+            _self_test_geometry_dataclass_numpy_float64,
+        ),
+        (
+            "dataclasses.geometry.metadata_frozen",
+            _self_test_geometry_dataclass_metadata_frozen,
+        ),
+        (
+            "dataclasses.geometry.serialization",
+            _self_test_geometry_dataclass_serialization,
+        ),
+        (
+            "dataclasses.geometry.negative_distance",
+            _self_test_geometry_dataclass_rejects_negative_distance,
+        ),
+        (
+            "dataclasses.geometry.invalid_angle",
+            _self_test_geometry_dataclass_rejects_invalid_angle,
+        ),
+        (
+            "dataclasses.hbond.explicit",
+            _self_test_hbond_dataclass_explicit,
+        ),
+        (
+            "dataclasses.hbond.inferred",
+            _self_test_hbond_dataclass_inferred,
+        ),
+        (
+            "dataclasses.hbond.direction",
+            _self_test_hbond_dataclass_direction,
+        ),
+        (
+            "dataclasses.hbond.residue_keys",
+            _self_test_hbond_dataclass_residue_keys,
+        ),
+        (
+            "dataclasses.hbond.identifier",
+            _self_test_hbond_dataclass_identifier,
+        ),
+        (
+            "dataclasses.hbond.serialization",
+            _self_test_hbond_dataclass_serialization,
+        ),
+        (
+            "dataclasses.hbond.metadata_frozen",
+            _self_test_hbond_dataclass_metadata_frozen,
+        ),
+        (
+            "dataclasses.hbond.invalid_mode",
+            _self_test_hbond_dataclass_invalid_mode,
+        ),
+        (
+            "dataclasses.residue_group.basic",
+            _self_test_residue_hbond_dataclass_basic,
+        ),
+        (
+            "dataclasses.residue_group.count",
+            _self_test_residue_hbond_dataclass_count,
+        ),
+        (
+            "dataclasses.residue_group.classification_counts",
+            _self_test_residue_hbond_dataclass_classification_counts,
+        ),
+        (
+            "dataclasses.residue_group.mode_counts",
+            _self_test_residue_hbond_dataclass_mode_counts,
+        ),
+        (
+            "dataclasses.residue_group.serialization",
+            _self_test_residue_hbond_dataclass_serialization,
+        ),
+        (
+            "dataclasses.analysis_result.basic",
+            _self_test_analysis_result_dataclass_basic,
+        ),
+        (
+            "dataclasses.analysis_result.empty",
+            _self_test_analysis_result_dataclass_empty,
+        ),
+        (
+            "dataclasses.analysis_result.classification_counts",
+            _self_test_analysis_result_dataclass_classification_counts,
+        ),
+        (
+            "dataclasses.analysis_result.mode_counts",
+            _self_test_analysis_result_dataclass_mode_counts,
+        ),
+        (
+            "dataclasses.analysis_result.filters",
+            _self_test_analysis_result_dataclass_filters,
+        ),
+        (
+            "dataclasses.analysis_result.serialization",
+            _self_test_analysis_result_dataclass_serialization,
+        ),
+        (
+            "dataclasses.analysis_result.metadata_frozen",
+            _self_test_analysis_result_metadata_frozen,
+        ),
+        (
+            "dataclasses.assignment.basic",
+            _self_test_assignment_dataclass_basic,
+        ),
+        (
+            "dataclasses.assignment.metadata_frozen",
+            _self_test_assignment_dataclass_metadata_frozen,
+        ),
+        (
+            "dataclasses.assignment.negative_distance",
+            _self_test_assignment_dataclass_rejects_negative_distance,
+        ),
+    )
+
+    return run_self_test_group(
+        test_cases,
+        module_name=(
+            f"{SELF_TEST_SECTION_12_2_NAME}.dataclasses"
+        ),
+        raise_on_failure=raise_on_failure,
+        metadata={
+            "section": "12.2",
+            "group": "dataclasses",
+        },
+    )
+
+
+def run_hbond_donor_acceptor_self_tests(
+    *,
+    raise_on_failure: bool = False,
+) -> SelfTestReport:
+    """
+    Run donor and acceptor perception tests.
+
+    Parameters
+    ----------
+    raise_on_failure : bool, optional
+        Whether failures should be reraised.
+
+    Returns
+    -------
+    SelfTestReport
+        Donor/acceptor test report.
+    """
+
+    test_cases = (
+        (
+            "chemistry.residue_name",
+            _self_test_get_hbond_residue_name,
+        ),
+        (
+            "chemistry.atom_type",
+            _self_test_get_atom_type,
+        ),
+        (
+            "chemistry.formal_charge",
+            _self_test_get_atom_formal_charge,
+        ),
+        (
+            "chemistry.aromaticity",
+            _self_test_atom_is_aromatic,
+        ),
+        (
+            "connectivity.bonded_neighbors",
+            _self_test_get_bonded_neighbors,
+        ),
+        (
+            "connectivity.bonded_hydrogens",
+            _self_test_get_bonded_hydrogens,
+        ),
+        (
+            "connectivity.bonded_heavy_atoms",
+            _self_test_get_bonded_heavy_atoms,
+        ),
+        (
+            "connectivity.explicit_hydrogen",
+            _self_test_atom_has_explicit_hydrogen,
+        ),
+        (
+            "connectivity.bond_order",
+            _self_test_get_bond_order,
+        ),
+        (
+            "protein.protein_residue_true",
+            _self_test_is_protein_residue_true,
+        ),
+        (
+            "protein.protein_residue_false",
+            _self_test_is_protein_residue_false,
+        ),
+        (
+            "protein.backbone_atom",
+            _self_test_is_protein_backbone_atom,
+        ),
+        (
+            "donor.backbone_nitrogen",
+            _self_test_protein_backbone_nitrogen_is_donor,
+        ),
+        (
+            "donor.serine_oxygen",
+            _self_test_serine_oxygen_is_donor,
+        ),
+        (
+            "donor.lysine_nitrogen",
+            _self_test_lysine_nitrogen_is_donor,
+        ),
+        (
+            "donor.generic_amine",
+            _self_test_generic_amine_is_donor,
+        ),
+        (
+            "donor.explicit_hydrogen_required",
+            _self_test_hydroxyl_oxygen_without_hydrogen_not_donor_explicit,
+        ),
+        (
+            "donor.inferred_without_hydrogen",
+            _self_test_inferred_donor_without_explicit_hydrogen,
+        ),
+        (
+            "donor.carbon_rejected",
+            _self_test_carbon_is_not_donor,
+        ),
+        (
+            "donor.selection",
+            _self_test_select_hbond_donors,
+        ),
+        (
+            "acceptor.carbonyl_oxygen",
+            _self_test_carbonyl_oxygen_is_acceptor,
+        ),
+        (
+            "acceptor.aspartate_oxygen",
+            _self_test_aspartate_oxygen_is_acceptor,
+        ),
+        (
+            "acceptor.histidine_nitrogen",
+            _self_test_histidine_nitrogen_is_acceptor,
+        ),
+        (
+            "acceptor.protonated_nitrogen_rejected",
+            _self_test_protonated_nitrogen_not_acceptor,
+        ),
+        (
+            "acceptor.amide_nitrogen_rejected",
+            _self_test_amide_nitrogen_not_acceptor,
+        ),
+        (
+            "acceptor.hydroxyl_oxygen_roles",
+            _self_test_hydroxyl_oxygen_role,
+        ),
+        (
+            "acceptor.sulfur",
+            _self_test_sulfur_acceptor,
+        ),
+        (
+            "acceptor.halogen_rejected",
+            _self_test_halogen_not_acceptor,
+        ),
+        (
+            "acceptor.selection",
+            _self_test_select_hbond_acceptors,
+        ),
+        (
+            "roles.donor_only",
+            _self_test_get_hbond_atom_roles_donor_only,
+        ),
+        (
+            "roles.acceptor_only",
+            _self_test_get_hbond_atom_roles_acceptor_only,
+        ),
+        (
+            "roles.both",
+            _self_test_get_hbond_atom_roles_both,
+        ),
+        (
+            "roles.none",
+            _self_test_get_hbond_atom_roles_none,
+        ),
+        (
+            "roles.primary",
+            _self_test_get_primary_hbond_atom_role,
+        ),
+        (
+            "roles.classification",
+            _self_test_classify_hbond_atom_roles,
+        ),
+        (
+            "roles.counts",
+            _self_test_hbond_role_counts,
+        ),
+    )
+
+    return run_self_test_group(
+        test_cases,
+        module_name=(
+            f"{SELF_TEST_SECTION_12_2_NAME}.donors_acceptors"
+        ),
+        raise_on_failure=raise_on_failure,
+        metadata={
+            "section": "12.2",
+            "group": "donors_acceptors",
+        },
+    )
+
+
+def run_hbond_hydrogen_assignment_self_tests(
+    *,
+    raise_on_failure: bool = False,
+) -> SelfTestReport:
+    """
+    Run donor-bound hydrogen identification tests.
+
+    Parameters
+    ----------
+    raise_on_failure : bool, optional
+        Whether failures should be reraised.
+
+    Returns
+    -------
+    SelfTestReport
+        Hydrogen-assignment test report.
+    """
+
+    test_cases = (
+        (
+            "hydrogens.atom_distance",
+            _self_test_calculate_atom_distance,
+        ),
+        (
+            "hydrogens.distance_bounds_nitrogen",
+            _self_test_get_donor_hydrogen_distance_bounds_nitrogen,
+        ),
+        (
+            "hydrogens.distance_bounds_oxygen",
+            _self_test_get_donor_hydrogen_distance_bounds_oxygen,
+        ),
+        (
+            "hydrogens.valid_distance",
+            _self_test_valid_donor_hydrogen_distance,
+        ),
+        (
+            "hydrogens.invalid_distance",
+            _self_test_invalid_donor_hydrogen_distance,
+        ),
+        (
+            "hydrogens.topology_bonded",
+            _self_test_get_topology_bonded_hydrogens,
+        ),
+        (
+            "hydrogens.topology_assignment_single",
+            _self_test_build_topology_hydrogen_assignments_single,
+        ),
+        (
+            "hydrogens.topology_assignment_multiple",
+            _self_test_build_topology_hydrogen_assignments_multiple,
+        ),
+        (
+            "hydrogens.topology_assignment_none",
+            _self_test_build_topology_hydrogen_assignments_none,
+        ),
+        (
+            "hydrogens.topology_assignment_distance",
+            _self_test_topology_assignment_distance,
+        ),
+        (
+            "hydrogens.candidate_donors",
+            _self_test_find_candidate_donors_for_hydrogen,
+        ),
+        (
+            "hydrogens.distance_assignment_unique",
+            _self_test_assign_hydrogen_by_distance_unique,
+        ),
+        (
+            "hydrogens.distance_assignment_none",
+            _self_test_assign_hydrogen_by_distance_none,
+        ),
+        (
+            "hydrogens.distance_assignment_ambiguous",
+            _self_test_assign_hydrogen_by_distance_ambiguous,
+        ),
+        (
+            "hydrogens.pipeline_topology_preferred",
+            _self_test_identify_assignments_topology_preferred,
+        ),
+        (
+            "hydrogens.pipeline_distance_fallback",
+            _self_test_identify_assignments_distance_fallback,
+        ),
+        (
+            "hydrogens.pipeline_no_distance_fallback",
+            _self_test_identify_assignments_no_distance_fallback,
+        ),
+        (
+            "hydrogens.pipeline_no_duplicates",
+            _self_test_identify_assignments_no_duplicates,
+        ),
+        (
+            "hydrogens.group_assignments",
+            _self_test_group_assignments_by_donor,
+        ),
+        (
+            "hydrogens.group_hydrogens",
+            _self_test_group_hydrogens_by_donor,
+        ),
+        (
+            "hydrogens.assignments_for_donor",
+            _self_test_get_assignments_for_donor,
+        ),
+        (
+            "hydrogens.hydrogens_for_donor",
+            _self_test_get_assigned_hydrogens_for_donor,
+        ),
+        (
+            "hydrogens.donor_has_assignment",
+            _self_test_donor_has_assigned_hydrogen,
+        ),
+        (
+            "hydrogens.unassigned",
+            _self_test_find_unassigned_hydrogens,
+        ),
+        (
+            "hydrogens.ambiguous",
+            _self_test_find_ambiguous_assignments,
+        ),
+        (
+            "hydrogens.statistics",
+            _self_test_assignment_statistics,
+        ),
+        (
+            "hydrogens.statistics_empty",
+            _self_test_assignment_statistics_empty,
+        ),
+    )
+
+    return run_self_test_group(
+        test_cases,
+        module_name=(
+            f"{SELF_TEST_SECTION_12_2_NAME}.hydrogens"
+        ),
+        raise_on_failure=raise_on_failure,
+        metadata={
+            "section": "12.2",
+            "group": "hydrogens",
+        },
+    )
+
+
+def run_section_12_2_self_tests(
+    *,
+    raise_on_failure: bool = False,
+) -> SelfTestReport:
+    """
+    Run all Section 12.2 self-tests.
+
+    Parameters
+    ----------
+    raise_on_failure : bool, optional
+        Whether the first failure should be reraised.
+
+    Returns
+    -------
+    SelfTestReport
+        Combined Section 12.2 report.
+    """
+
+    combined_report = SelfTestReport(
+        module_name=SELF_TEST_SECTION_12_2_NAME,
+        metadata={
+            "section": "12.2",
+            "description": (
+                SELF_TEST_SECTION_12_2_DESCRIPTION
+            ),
+        },
+    )
+
+    dataclass_report = (
+        run_hbond_dataclass_self_tests(
+            raise_on_failure=raise_on_failure,
+        )
+    )
+
+    donor_acceptor_report = (
+        run_hbond_donor_acceptor_self_tests(
+            raise_on_failure=raise_on_failure,
+        )
+    )
+
+    hydrogen_report = (
+        run_hbond_hydrogen_assignment_self_tests(
+            raise_on_failure=raise_on_failure,
+        )
+    )
+
+    combined_report.extend(
+        dataclass_report.results
+    )
+
+    combined_report.extend(
+        donor_acceptor_report.results
+    )
+
+    combined_report.extend(
+        hydrogen_report.results
+    )
+
+    combined_report.metadata.update(
+        {
+            "dataclass_test_count": (
+                dataclass_report.total_count
+            ),
+            "donor_acceptor_test_count": (
+                donor_acceptor_report.total_count
+            ),
+            "hydrogen_assignment_test_count": (
+                hydrogen_report.total_count
+            ),
+        }
+    )
+
+    return combined_report
+
+
+# -----------------------------------------------------------------------------
+# Public interface
+# -----------------------------------------------------------------------------
+
+_SECTION_12_2_PUBLIC_NAMES: Final[
+    Tuple[
+        str,
+        ...,
+    ]
+] = (
+    "SELF_TEST_SECTION_12_2_NAME",
+    "SELF_TEST_SECTION_12_2_DESCRIPTION",
+    "run_hbond_dataclass_self_tests",
+    "run_hbond_donor_acceptor_self_tests",
+    "run_hbond_hydrogen_assignment_self_tests",
+    "run_section_12_2_self_tests",
+)
+
+for public_name in _SECTION_12_2_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(
+            public_name
+        )
+
+
+# =============================================================================
+# End of Section 12.2
+# =============================================================================
+
+# =============================================================================
+# Section 12.3 — Tests for Sections 6–9
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Section 12.3 constants
+# -----------------------------------------------------------------------------
+
+SELF_TEST_SECTION_12_3_NAME: Final[
+    str
+] = "hbonds.section_12_3"
+
+SELF_TEST_SECTION_12_3_DESCRIPTION: Final[
+    str
+] = (
+        "Hydrogen-bond geometry, detection, residue grouping and "
+        "geometric-strength classification"
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 12.3 helper factories
+# -----------------------------------------------------------------------------
+
+def _self_test_make_geometry_assignment(
+    *,
+    donor_acceptor_distance: Number = 2.80,
+    donor_hydrogen_distance: Number = 1.00,
+) -> Tuple[
+    Dict[
+        str,
+        Any,
+    ],
+    DonorHydrogenAssignment,
+]:
+    """
+    Create an explicit hydrogen-bond system and donor-hydrogen assignment.
+
+    Parameters
+    ----------
+    donor_acceptor_distance : Number, optional
+        D...A distance.
+    donor_hydrogen_distance : Number, optional
+        D-H distance.
+
+    Returns
+    -------
+    tuple
+        Artificial system and donor-hydrogen assignment.
+    """
+
+    system = make_explicit_linear_hbond_system(
+        donor_acceptor_distance=(
+            donor_acceptor_distance
+        ),
+        donor_hydrogen_distance=(
+            donor_hydrogen_distance
+        ),
+        ligand_is_donor=True,
+    )
+
+    assignment = DonorHydrogenAssignment(
+        donor=system[
+            "donor"
+        ],
+        hydrogen=system[
+            "hydrogen"
+        ],
+        distance=np.float64(
+            donor_hydrogen_distance
+        ),
+        donor_index=system[
+            "donor"
+        ].index,
+        hydrogen_index=system[
+            "hydrogen"
+        ].index,
+        assignment_method="topology",
+        is_ambiguous=False,
+        alternative_donors=(),
+        metadata={
+            "self_test": True,
+        },
+    )
+
+    return (
+        system,
+        assignment,
+    )
+
+
+def _self_test_make_classified_bond(
+    classification: HydrogenBondClassification,
+    *,
+    mode: HydrogenBondMode = HBOND_MODE_EXPLICIT,
+    direction: HydrogenBondDirection = (
+        HBOND_DIRECTION_LIGAND_DONOR
+    ),
+    donor_acceptor_distance: Number = 2.80,
+    hydrogen_acceptor_distance: Number = 1.80,
+    dha_angle: Number = 180.0,
+    donor_angle: Number = 0.0,
+    acceptor_angle: Number = 0.0,
+) -> HydrogenBond:
+    """
+    Create a hydrogen bond with a selected classification.
+
+    Parameters
+    ----------
+    classification : HydrogenBondClassification
+        Stored classification.
+    mode : HydrogenBondMode, optional
+        Explicit or inferred mode.
+    direction : HydrogenBondDirection, optional
+        Donor direction.
+    donor_acceptor_distance : Number, optional
+        D...A distance.
+    hydrogen_acceptor_distance : Number, optional
+        H...A distance.
+    dha_angle : Number, optional
+        D-H...A angle.
+    donor_angle : Number, optional
+        Inferred donor deviation angle.
+    acceptor_angle : Number, optional
+        Inferred acceptor deviation angle.
+
+    Returns
+    -------
+    HydrogenBond
+        Artificial interaction.
+    """
+
+    return make_fake_hydrogen_bond(
+        mode=mode,
+        direction=direction,
+        classification=classification,
+        donor_acceptor_distance=(
+            donor_acceptor_distance
+        ),
+        hydrogen_acceptor_distance=(
+            hydrogen_acceptor_distance
+        ),
+        donor_hydrogen_distance=1.0,
+        dha_angle=dha_angle,
+        donor_angle=donor_angle,
+        acceptor_angle=acceptor_angle,
+    )
+
+
+def _self_test_make_residue_grouping_bonds(
+) -> Tuple[
+    HydrogenBond,
+    ...,
+]:
+    """
+    Create hydrogen bonds involving two receptor residues.
+
+    Returns
+    -------
+    tuple of HydrogenBond
+        Artificial interactions.
+    """
+
+    multi_system = make_multiple_hbond_system(
+        ligand_is_donor=True
+    )
+
+    donor_1, donor_2 = multi_system[
+        "donors"
+    ]
+
+    hydrogen_1, hydrogen_2 = multi_system[
+        "hydrogens"
+    ]
+
+    acceptor_1, acceptor_2 = multi_system[
+        "acceptors"
+    ]
+
+    geometry_1 = HydrogenBondGeometry(
+        donor_acceptor_distance=np.float64(
+            2.80
+        ),
+        hydrogen_acceptor_distance=np.float64(
+            1.80
+        ),
+        donor_hydrogen_distance=np.float64(
+            1.00
+        ),
+        dha_angle=np.float64(
+            180.0
+        ),
+        metadata={
+            "self_test": True,
+        },
+    )
+
+    geometry_2 = HydrogenBondGeometry(
+        donor_acceptor_distance=np.float64(
+            3.10
+        ),
+        hydrogen_acceptor_distance=np.float64(
+            2.10
+        ),
+        donor_hydrogen_distance=np.float64(
+            1.00
+        ),
+        dha_angle=np.float64(
+            180.0
+        ),
+        metadata={
+            "self_test": True,
+        },
+    )
+
+    bond_1 = HydrogenBond(
+        donor=donor_1,
+        hydrogen=hydrogen_1,
+        acceptor=acceptor_1,
+        geometry=geometry_1,
+        mode=HBOND_MODE_EXPLICIT,
+        direction=HBOND_DIRECTION_LIGAND_DONOR,
+        classification=HBOND_TYPE_STRONG,
+        donor_index=donor_1.index,
+        hydrogen_index=hydrogen_1.index,
+        acceptor_index=acceptor_1.index,
+        donor_residue=donor_1.residue,
+        acceptor_residue=acceptor_1.residue,
+        donor_residue_key=(
+            _safe_residue_key_from_atom(
+                donor_1
+            )
+        ),
+        acceptor_residue_key=(
+            _safe_residue_key_from_atom(
+                acceptor_1
+            )
+        ),
+        metadata={
+            "self_test": True,
+        },
+    )
+
+    bond_2 = HydrogenBond(
+        donor=donor_2,
+        hydrogen=hydrogen_2,
+        acceptor=acceptor_2,
+        geometry=geometry_2,
+        mode=HBOND_MODE_EXPLICIT,
+        direction=HBOND_DIRECTION_LIGAND_DONOR,
+        classification=HBOND_TYPE_MODERATE,
+        donor_index=donor_2.index,
+        hydrogen_index=hydrogen_2.index,
+        acceptor_index=acceptor_2.index,
+        donor_residue=donor_2.residue,
+        acceptor_residue=acceptor_2.residue,
+        donor_residue_key=(
+            _safe_residue_key_from_atom(
+                donor_2
+            )
+        ),
+        acceptor_residue_key=(
+            _safe_residue_key_from_atom(
+                acceptor_2
+            )
+        ),
+        metadata={
+            "self_test": True,
+        },
+    )
+
+    return (
+        bond_1,
+        bond_2,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Geometry tests — distances
+# -----------------------------------------------------------------------------
+
+def _self_test_geometry_donor_acceptor_distance(
+) -> None:
+    """Test D...A distance calculation."""
+
+    system = make_explicit_linear_hbond_system(
+        donor_acceptor_distance=2.80
+    )
+
+    distance = calculate_donor_acceptor_distance(
+        system[
+            "donor"
+        ],
+        system[
+            "acceptor"
+        ],
+    )
+
+    self_test_assert_isinstance(
+        distance,
+        np.float64,
+    )
+
+    self_test_assert_almost_equal(
+        distance,
+        2.80,
+    )
+
+
+def _self_test_geometry_hydrogen_acceptor_distance(
+) -> None:
+    """Test H...A distance calculation."""
+
+    system = make_explicit_linear_hbond_system(
+        donor_acceptor_distance=2.80,
+        donor_hydrogen_distance=1.00,
+    )
+
+    distance = calculate_hydrogen_acceptor_distance(
+        system[
+            "hydrogen"
+        ],
+        system[
+            "acceptor"
+        ],
+    )
+
+    self_test_assert_almost_equal(
+        distance,
+        1.80,
+    )
+
+
+def _self_test_geometry_donor_hydrogen_distance(
+) -> None:
+    """Test D-H distance calculation."""
+
+    system = make_explicit_linear_hbond_system(
+        donor_hydrogen_distance=1.05
+    )
+
+    distance = calculate_donor_hydrogen_distance(
+        system[
+            "donor"
+        ],
+        system[
+            "hydrogen"
+        ],
+    )
+
+    self_test_assert_almost_equal(
+        distance,
+        1.05,
+    )
+
+
+def _self_test_geometry_distance_symmetry(
+) -> None:
+    """Test distance symmetry."""
+
+    system = make_explicit_linear_hbond_system()
+
+    forward_distance = (
+        calculate_donor_acceptor_distance(
+            system[
+                "donor"
+            ],
+            system[
+                "acceptor"
+            ],
+        )
+    )
+
+    reverse_distance = (
+        calculate_donor_acceptor_distance(
+            system[
+                "acceptor"
+            ],
+            system[
+                "donor"
+            ],
+        )
+    )
+
+    self_test_assert_almost_equal(
+        forward_distance,
+        reverse_distance,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Geometry tests — angles
+# -----------------------------------------------------------------------------
+
+def _self_test_geometry_linear_dha_angle(
+) -> None:
+    """Test a linear D-H...A angle."""
+
+    system = make_explicit_linear_hbond_system()
+
+    angle = calculate_dha_angle(
+        system[
+            "donor"
+        ],
+        system[
+            "hydrogen"
+        ],
+        system[
+            "acceptor"
+        ],
+    )
+
+    self_test_assert_almost_equal(
+        angle,
+        180.0,
+        tolerance=SELF_TEST_ANGLE_TOLERANCE,
+    )
+
+
+def _self_test_geometry_bent_dha_angle(
+) -> None:
+    """Test a bent D-H...A angle."""
+
+    system = make_explicit_bent_hbond_system(
+        donor_acceptor_distance=2.8,
+        donor_hydrogen_distance=1.0,
+        dha_angle=120.0,
+    )
+
+    angle = calculate_dha_angle(
+        system[
+            "donor"
+        ],
+        system[
+            "hydrogen"
+        ],
+        system[
+            "acceptor"
+        ],
+    )
+
+    self_test_assert_almost_equal(
+        angle,
+        120.0,
+        tolerance=1.0e-5,
+    )
+
+
+def _self_test_geometry_dha_angle_range(
+) -> None:
+    """Test that a calculated angle lies in the valid interval."""
+
+    system = make_explicit_bent_hbond_system(
+        dha_angle=145.0
+    )
+
+    angle = calculate_dha_angle(
+        system[
+            "donor"
+        ],
+        system[
+            "hydrogen"
+        ],
+        system[
+            "acceptor"
+        ],
+    )
+
+    self_test_assert_between(
+        angle,
+        0.0,
+        180.0,
+    )
+
+
+def _self_test_geometry_degenerate_angle_rejected(
+) -> None:
+    """Test rejection of a degenerate angle."""
+
+    donor = make_fake_atom(
+        "D",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    hydrogen = make_fake_atom(
+        "H",
+        "H",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    acceptor = make_fake_atom(
+        "A",
+        "O",
+        (
+            2.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    with self_test_raises(
+        ValueError
+    ):
+        calculate_dha_angle(
+            donor,
+            hydrogen,
+            acceptor,
+        )
+
+
+# -----------------------------------------------------------------------------
+# Geometry tests — inferred vectors
+# -----------------------------------------------------------------------------
+
+def _self_test_geometry_infer_open_valence_vector(
+) -> None:
+    """Test inferred donor open-valence vector."""
+
+    system = make_inferred_hbond_system()
+
+    vector = infer_open_valence_vector(
+        system[
+            "donor"
+        ],
+        bonded_neighbors=(
+            system[
+                "donor_neighbor"
+            ],
+        ),
+    )
+
+    self_test_assert_isinstance(
+        vector,
+        np.ndarray,
+    )
+
+    self_test_assert_array_equal(
+        vector,
+        (
+            1.0,
+            0.0,
+            0.0,
+        ),
+        tolerance=1.0e-6,
+    )
+
+
+def _self_test_geometry_infer_vector_normalized(
+) -> None:
+    """Test normalization of inferred vectors."""
+
+    system = make_inferred_hbond_system()
+
+    vector = infer_open_valence_vector(
+        system[
+            "donor"
+        ],
+        bonded_neighbors=(
+            system[
+                "donor_neighbor"
+            ],
+        ),
+    )
+
+    self_test_assert_almost_equal(
+        np.linalg.norm(
+            vector
+        ),
+        1.0,
+    )
+
+
+def _self_test_geometry_infer_vector_without_neighbors(
+) -> None:
+    """Test inferred-vector behavior without neighbors."""
+
+    atom = make_fake_atom(
+        "N",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    result = infer_open_valence_vector(
+        atom,
+        bonded_neighbors=(),
+    )
+
+    self_test_assert(
+        result is None
+        or isinstance(
+            result,
+            np.ndarray,
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# Geometry-construction tests
+# -----------------------------------------------------------------------------
+
+def _self_test_geometry_calculate_explicit(
+) -> None:
+    """Test complete explicit geometry calculation."""
+
+    system = make_explicit_linear_hbond_system()
+
+    geometry = calculate_explicit_hbond_geometry(
+        system[
+            "donor"
+        ],
+        system[
+            "hydrogen"
+        ],
+        system[
+            "acceptor"
+        ],
+    )
+
+    self_test_assert_isinstance(
+        geometry,
+        HydrogenBondGeometry,
+    )
+
+    self_test_assert_almost_equal(
+        geometry.donor_acceptor_distance,
+        2.80,
+    )
+
+    self_test_assert_almost_equal(
+        geometry.hydrogen_acceptor_distance,
+        1.80,
+    )
+
+    self_test_assert_almost_equal(
+        geometry.donor_hydrogen_distance,
+        1.00,
+    )
+
+    self_test_assert_almost_equal(
+        geometry.dha_angle,
+        180.0,
+    )
+
+
+def _self_test_geometry_calculate_from_assignment(
+) -> None:
+    """Test explicit geometry calculation from an assignment."""
+
+    system, assignment = (
+        _self_test_make_geometry_assignment()
+    )
+
+    geometry = calculate_assignment_hbond_geometry(
+        assignment,
+        system[
+            "acceptor"
+        ],
+    )
+
+    self_test_assert_almost_equal(
+        geometry.donor_acceptor_distance,
+        2.80,
+    )
+
+    self_test_assert_almost_equal(
+        geometry.dha_angle,
+        180.0,
+    )
+
+
+def _self_test_geometry_calculate_inferred(
+) -> None:
+    """Test complete inferred geometry calculation."""
+
+    system = make_inferred_hbond_system(
+        donor_acceptor_distance=2.90
+    )
+
+    geometry = calculate_inferred_hbond_geometry(
+        system[
+            "donor"
+        ],
+        system[
+            "acceptor"
+        ],
+    )
+
+    self_test_assert_isinstance(
+        geometry,
+        HydrogenBondGeometry,
+    )
+
+    self_test_assert_almost_equal(
+        geometry.donor_acceptor_distance,
+        2.90,
+    )
+
+    self_test_assert_equal(
+        geometry.hydrogen_acceptor_distance,
+        None,
+    )
+
+    self_test_assert_equal(
+        geometry.dha_angle,
+        None,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Geometry-evaluation tests
+# -----------------------------------------------------------------------------
+
+def _self_test_geometry_evaluation_dataclass(
+) -> None:
+    """Test HydrogenBondGeometryEvaluation construction."""
+
+    evaluation = HydrogenBondGeometryEvaluation(
+        geometry=make_fake_explicit_geometry(),
+        is_valid=True,
+        passed_criteria=(
+            "donor_acceptor_distance",
+            "hydrogen_acceptor_distance",
+            "dha_angle",
+        ),
+        failed_criteria=(),
+        metadata={
+            "self_test": True,
+        },
+    )
+
+    self_test_assert_isinstance(
+        evaluation,
+        HydrogenBondGeometryEvaluation,
+    )
+
+    self_test_assert(
+        evaluation.is_valid
+    )
+
+    self_test_assert_equal(
+        len(
+            evaluation.failed_criteria
+        ),
+        0,
+    )
+
+
+def _self_test_geometry_evaluate_explicit_valid(
+) -> None:
+    """Test valid explicit geometry evaluation."""
+
+    geometry = make_fake_explicit_geometry(
+        donor_acceptor_distance=2.80,
+        hydrogen_acceptor_distance=1.80,
+        dha_angle=180.0,
+    )
+
+    evaluation = evaluate_explicit_hbond_geometry(
+        geometry
+    )
+
+    self_test_assert(
+        evaluation.is_valid
+    )
+
+    self_test_assert_equal(
+        tuple(
+            evaluation.failed_criteria
+        ),
+        (),
+    )
+
+
+def _self_test_geometry_evaluate_explicit_distance_invalid(
+) -> None:
+    """Test explicit geometry rejected by D...A distance."""
+
+    geometry = make_fake_explicit_geometry(
+        donor_acceptor_distance=5.0,
+        hydrogen_acceptor_distance=4.0,
+        dha_angle=180.0,
+    )
+
+    evaluation = evaluate_explicit_hbond_geometry(
+        geometry
+    )
+
+    self_test_assert(
+        not evaluation.is_valid
+    )
+
+    self_test_assert(
+        "donor_acceptor_distance"
+        in evaluation.failed_criteria
+    )
+
+
+def _self_test_geometry_evaluate_explicit_angle_invalid(
+) -> None:
+    """Test explicit geometry rejected by D-H...A angle."""
+
+    geometry = make_fake_explicit_geometry(
+        donor_acceptor_distance=2.8,
+        hydrogen_acceptor_distance=1.8,
+        dha_angle=70.0,
+    )
+
+    evaluation = evaluate_explicit_hbond_geometry(
+        geometry
+    )
+
+    self_test_assert(
+        not evaluation.is_valid
+    )
+
+    self_test_assert(
+        "dha_angle"
+        in evaluation.failed_criteria
+    )
+
+
+def _self_test_geometry_evaluate_inferred_valid(
+) -> None:
+    """Test valid inferred geometry evaluation."""
+
+    geometry = make_fake_inferred_geometry(
+        donor_acceptor_distance=2.90,
+        donor_angle=0.0,
+        acceptor_angle=0.0,
+    )
+
+    evaluation = evaluate_inferred_hbond_geometry(
+        geometry
+    )
+
+    self_test_assert(
+        evaluation.is_valid
+    )
+
+
+def _self_test_geometry_evaluate_inferred_distance_invalid(
+) -> None:
+    """Test inferred geometry rejected by distance."""
+
+    geometry = make_fake_inferred_geometry(
+        donor_acceptor_distance=5.0,
+        donor_angle=0.0,
+        acceptor_angle=0.0,
+    )
+
+    evaluation = evaluate_inferred_hbond_geometry(
+        geometry
+    )
+
+    self_test_assert(
+        not evaluation.is_valid
+    )
+
+
+def _self_test_geometry_evaluate_dispatch_explicit(
+) -> None:
+    """Test explicit evaluation dispatch."""
+
+    evaluation = evaluate_hbond_geometry(
+        make_fake_explicit_geometry(),
+        mode=HBOND_MODE_EXPLICIT,
+    )
+
+    self_test_assert(
+        evaluation.is_valid
+    )
+
+
+def _self_test_geometry_evaluate_dispatch_inferred(
+) -> None:
+    """Test inferred evaluation dispatch."""
+
+    evaluation = evaluate_hbond_geometry(
+        make_fake_inferred_geometry(),
+        mode=HBOND_MODE_INFERRED,
+    )
+
+    self_test_assert(
+        evaluation.is_valid
+    )
+
+
+def _self_test_geometry_explicit_predicate(
+) -> None:
+    """Test explicit geometry validity predicate."""
+
+    self_test_assert(
+        explicit_hbond_geometry_is_valid(
+            make_fake_explicit_geometry()
+        )
+    )
+
+
+def _self_test_geometry_inferred_predicate(
+) -> None:
+    """Test inferred geometry validity predicate."""
+
+    self_test_assert(
+        inferred_hbond_geometry_is_valid(
+            make_fake_inferred_geometry()
+        )
+    )
+
+
+def _self_test_geometry_explicit_batch(
+) -> None:
+    """Test batch explicit geometry calculation."""
+
+    system, assignment = (
+        _self_test_make_geometry_assignment()
+    )
+
+    valid_acceptor = system[
+        "acceptor"
+    ]
+
+    distant_acceptor = make_fake_atom(
+        "O2",
+        "O",
+        (
+            8.0,
+            0.0,
+            0.0,
+        ),
+        atom_type="O2",
+    )
+
+    geometries = (
+        calculate_explicit_geometries_for_acceptors(
+            assignment,
+            (
+                valid_acceptor,
+                distant_acceptor,
+            ),
+        )
+    )
+
+    self_test_assert_equal(
+        len(
+            geometries
+        ),
+        2,
+    )
+
+
+def _self_test_geometry_inferred_batch(
+) -> None:
+    """Test batch inferred geometry calculation."""
+
+    system = make_inferred_hbond_system()
+
+    second_acceptor = make_fake_atom(
+        "O2",
+        "O",
+        (
+            5.0,
+            0.0,
+            0.0,
+        ),
+        atom_type="O2",
+    )
+
+    geometries = (
+        calculate_inferred_geometries_for_acceptors(
+            system[
+                "donor"
+            ],
+            (
+                system[
+                    "acceptor"
+                ],
+                second_acceptor,
+            ),
+        )
+    )
+
+    self_test_assert_equal(
+        len(
+            geometries
+        ),
+        2,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Detection tests — candidate search
+# -----------------------------------------------------------------------------
+
+def _self_test_detection_candidate_pairs_single(
+) -> None:
+    """Test candidate donor-acceptor pair discovery."""
+
+    system = make_explicit_linear_hbond_system()
+
+    pairs = find_hbond_candidate_pairs(
+        (
+            system[
+                "donor"
+            ],
+        ),
+        (
+            system[
+                "acceptor"
+            ],
+        ),
+    )
+
+    self_test_assert_equal(
+        len(
+            pairs
+        ),
+        1,
+    )
+
+
+def _self_test_detection_candidate_pairs_outside_cutoff(
+) -> None:
+    """Test candidate exclusion beyond the distance cutoff."""
+
+    system = make_non_hbond_system(
+        donor_acceptor_distance=6.0
+    )
+
+    pairs = find_hbond_candidate_pairs(
+        (
+            system[
+                "donor"
+            ],
+        ),
+        (
+            system[
+                "acceptor"
+            ],
+        ),
+    )
+
+    self_test_assert_equal(
+        pairs,
+        (),
+    )
+
+
+def _self_test_detection_candidate_pairs_multiple(
+) -> None:
+    """Test discovery of multiple donor-acceptor pairs."""
+
+    system = make_multiple_hbond_system()
+
+    pairs = find_hbond_candidate_pairs(
+        system[
+            "donors"
+        ],
+        system[
+            "acceptors"
+        ],
+    )
+
+    self_test_assert(
+        len(
+            pairs
+        )
+        >= 2
+    )
+
+
+def _self_test_detection_candidate_pairs_no_self_pair(
+) -> None:
+    """Test prevention of atom self-pairs."""
+
+    atom = make_fake_atom(
+        "N",
+        "N",
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        atom_type="N2",
+    )
+
+    pairs = find_hbond_candidate_pairs(
+        (
+            atom,
+        ),
+        (
+            atom,
+        ),
+    )
+
+    self_test_assert_equal(
+        pairs,
+        (),
+    )
+
+
+# -----------------------------------------------------------------------------
+# Detection tests — explicit mode
+# -----------------------------------------------------------------------------
+
+def _self_test_detection_explicit_valid(
+) -> None:
+    """Test valid explicit hydrogen-bond detection."""
+
+    system, assignment = (
+        _self_test_make_geometry_assignment()
+    )
+
+    hydrogen_bonds = detect_explicit_hydrogen_bonds(
+        (
+            assignment,
+        ),
+        (
+            system[
+                "acceptor"
+            ],
+        ),
+        direction=(
+            HBOND_DIRECTION_LIGAND_DONOR
+        ),
+    )
+
+    self_test_assert_equal(
+        len(
+            hydrogen_bonds
+        ),
+        1,
+    )
+
+    hydrogen_bond = hydrogen_bonds[
+        0
+    ]
+
+    self_test_assert_equal(
+        hydrogen_bond.mode,
+        HBOND_MODE_EXPLICIT,
+    )
+
+    self_test_assert_equal(
+        hydrogen_bond.direction,
+        HBOND_DIRECTION_LIGAND_DONOR,
+    )
+
+    self_test_assert_is(
+        hydrogen_bond.hydrogen,
+        system[
+            "hydrogen"
+        ],
+    )
+
+
+def _self_test_detection_explicit_invalid_distance(
+) -> None:
+    """Test explicit detection rejection by distance."""
+
+    system = make_non_hbond_system(
+        donor_acceptor_distance=6.0
+    )
+
+    assignment = DonorHydrogenAssignment(
+        donor=system[
+            "donor"
+        ],
+        hydrogen=system[
+            "hydrogen"
+        ],
+        distance=np.float64(
+            1.0
+        ),
+        assignment_method="topology",
+    )
+
+    hydrogen_bonds = detect_explicit_hydrogen_bonds(
+        (
+            assignment,
+        ),
+        (
+            system[
+                "acceptor"
+            ],
+        ),
+        direction=(
+            HBOND_DIRECTION_LIGAND_DONOR
+        ),
+    )
+
+    self_test_assert_equal(
+        hydrogen_bonds,
+        (),
+    )
+
+
+def _self_test_detection_explicit_invalid_angle(
+) -> None:
+    """Test explicit detection rejection by angle."""
+
+    system = make_explicit_bent_hbond_system(
+        dha_angle=60.0
+    )
+
+    assignment = DonorHydrogenAssignment(
+        donor=system[
+            "donor"
+        ],
+        hydrogen=system[
+            "hydrogen"
+        ],
+        distance=np.float64(
+            1.0
+        ),
+        assignment_method="topology",
+    )
+
+    hydrogen_bonds = detect_explicit_hydrogen_bonds(
+        (
+            assignment,
+        ),
+        (
+            system[
+                "acceptor"
+            ],
+        ),
+        direction=(
+            HBOND_DIRECTION_LIGAND_DONOR
+        ),
+    )
+
+    self_test_assert_equal(
+        hydrogen_bonds,
+        (),
+    )
+
+
+def _self_test_detection_explicit_ambiguous_excluded(
+) -> None:
+    """Test exclusion of ambiguous hydrogen assignments."""
+
+    system = make_explicit_linear_hbond_system()
+
+    alternative_donor = make_fake_atom(
+        "N2",
+        "N",
+        (
+            0.0,
+            0.2,
+            0.0,
+        ),
+        atom_type="N3",
+    )
+
+    assignment = DonorHydrogenAssignment(
+        donor=system[
+            "donor"
+        ],
+        hydrogen=system[
+            "hydrogen"
+        ],
+        distance=np.float64(
+            1.0
+        ),
+        assignment_method="distance",
+        is_ambiguous=True,
+        alternative_donors=(
+            alternative_donor,
+        ),
+    )
+
+    hydrogen_bonds = detect_explicit_hydrogen_bonds(
+        (
+            assignment,
+        ),
+        (
+            system[
+                "acceptor"
+            ],
+        ),
+        direction=(
+            HBOND_DIRECTION_LIGAND_DONOR
+        ),
+        include_ambiguous_assignments=False,
+    )
+
+    self_test_assert_equal(
+        hydrogen_bonds,
+        (),
+    )
+
+
+def _self_test_detection_explicit_ambiguous_included(
+) -> None:
+    """Test inclusion of ambiguous hydrogen assignments."""
+
+    system = make_explicit_linear_hbond_system()
+
+    alternative_donor = make_fake_atom(
+        "N2",
+        "N",
+        (
+            0.0,
+            0.2,
+            0.0,
+        ),
+        atom_type="N3",
+    )
+
+    assignment = DonorHydrogenAssignment(
+        donor=system[
+            "donor"
+        ],
+        hydrogen=system[
+            "hydrogen"
+        ],
+        distance=np.float64(
+            1.0
+        ),
+        assignment_method="distance",
+        is_ambiguous=True,
+        alternative_donors=(
+            alternative_donor,
+        ),
+    )
+
+    hydrogen_bonds = detect_explicit_hydrogen_bonds(
+        (
+            assignment,
+        ),
+        (
+            system[
+                "acceptor"
+            ],
+        ),
+        direction=(
+            HBOND_DIRECTION_LIGAND_DONOR
+        ),
+        include_ambiguous_assignments=True,
+    )
+
+    self_test_assert_equal(
+        len(
+            hydrogen_bonds
+        ),
+        1,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Detection tests — inferred mode
+# -----------------------------------------------------------------------------
+
+def _self_test_detection_inferred_valid(
+) -> None:
+    """Test valid inferred hydrogen-bond detection."""
+
+    system = make_inferred_hbond_system(
+        donor_acceptor_distance=2.90
+    )
+
+    hydrogen_bonds = detect_inferred_hydrogen_bonds(
+        (
+            system[
+                "donor"
+            ],
+        ),
+        (
+            system[
+                "acceptor"
+            ],
+        ),
+        direction=(
+            HBOND_DIRECTION_LIGAND_DONOR
+        ),
+    )
+
+    self_test_assert_equal(
+        len(
+            hydrogen_bonds
+        ),
+        1,
+    )
+
+    hydrogen_bond = hydrogen_bonds[
+        0
+    ]
+
+    self_test_assert_equal(
+        hydrogen_bond.mode,
+        HBOND_MODE_INFERRED,
+    )
+
+    self_test_assert_equal(
+        hydrogen_bond.hydrogen,
+        None,
+    )
+
+
+def _self_test_detection_inferred_invalid_distance(
+) -> None:
+    """Test inferred detection rejection by distance."""
+
+    system = make_inferred_hbond_system(
+        donor_acceptor_distance=6.0
+    )
+
+    hydrogen_bonds = detect_inferred_hydrogen_bonds(
+        (
+            system[
+                "donor"
+            ],
+        ),
+        (
+            system[
+                "acceptor"
+            ],
+        ),
+        direction=(
+            HBOND_DIRECTION_LIGAND_DONOR
+        ),
+    )
+
+    self_test_assert_equal(
+        hydrogen_bonds,
+        (),
+    )
+
+
+# -----------------------------------------------------------------------------
+# Detection tests — deduplication and high-level pipeline
+# -----------------------------------------------------------------------------
+
+def _self_test_detection_pair_key_explicit(
+) -> None:
+    """Test explicit hydrogen-bond duplicate key."""
+
+    hydrogen_bond = make_fake_hydrogen_bond(
+        mode=HBOND_MODE_EXPLICIT
+    )
+
+    key = get_hydrogen_bond_pair_key(
+        hydrogen_bond
+    )
+
+    self_test_assert(
+        key is not None
+    )
+
+    self_test_assert(
+        len(
+            key
+        )
+        >= 2
+    )
+
+
+def _self_test_detection_deduplicate_identical(
+) -> None:
+    """Test removal of identical hydrogen bonds."""
+
+    hydrogen_bond = make_fake_hydrogen_bond()
+
+    deduplicated = deduplicate_hydrogen_bonds(
+        (
+            hydrogen_bond,
+            hydrogen_bond,
+        )
+    )
+
+    self_test_assert_equal(
+        len(
+            deduplicated
+        ),
+        1,
+    )
+
+
+def _self_test_detection_deduplicate_preserves_distinct(
+) -> None:
+    """Test preservation of distinct interactions."""
+
+    hydrogen_bond_1 = make_fake_hydrogen_bond(
+        direction=(
+            HBOND_DIRECTION_LIGAND_DONOR
+        )
+    )
+
+    hydrogen_bond_2 = make_fake_hydrogen_bond(
+        direction=(
+            HBOND_DIRECTION_RECEPTOR_DONOR
+        )
+    )
+
+    deduplicated = deduplicate_hydrogen_bonds(
+        (
+            hydrogen_bond_1,
+            hydrogen_bond_2,
+        )
+    )
+
+    self_test_assert_equal(
+        len(
+            deduplicated
+        ),
+        2,
+    )
+
+
+def _self_test_detection_directional_explicit(
+) -> None:
+    """Test directional explicit detection pipeline."""
+
+    system = make_explicit_linear_hbond_system(
+        ligand_is_donor=True
+    )
+
+    hydrogen_bonds = detect_directional_hydrogen_bonds(
+        system[
+            "ligand_atoms"
+        ],
+        system[
+            "receptor_atoms"
+        ],
+        direction=(
+            HBOND_DIRECTION_LIGAND_DONOR
+        ),
+        mode=HBOND_MODE_EXPLICIT,
+    )
+
+    self_test_assert_equal(
+        len(
+            hydrogen_bonds
+        ),
+        1,
+    )
+
+
+def _self_test_detection_directional_inferred(
+) -> None:
+    """Test directional inferred detection pipeline."""
+
+    system = make_inferred_hbond_system(
+        ligand_is_donor=True
+    )
+
+    hydrogen_bonds = detect_directional_hydrogen_bonds(
+        system[
+            "ligand_atoms"
+        ],
+        system[
+            "receptor_atoms"
+        ],
+        direction=(
+            HBOND_DIRECTION_LIGAND_DONOR
+        ),
+        mode=HBOND_MODE_INFERRED,
+    )
+
+    self_test_assert_equal(
+        len(
+            hydrogen_bonds
+        ),
+        1,
+    )
+
+
+def _self_test_detection_bidirectional_ligand_donor(
+) -> None:
+    """Test complete detection when ligand is the donor."""
+
+    system = make_explicit_linear_hbond_system(
+        ligand_is_donor=True
+    )
+
+    hydrogen_bonds = detect_hydrogen_bonds(
+        system[
+            "ligand_atoms"
+        ],
+        system[
+            "receptor_atoms"
+        ],
+        mode=HBOND_MODE_EXPLICIT,
+    )
+
+    self_test_assert_equal(
+        len(
+            hydrogen_bonds
+        ),
+        1,
+    )
+
+    self_test_assert_equal(
+        hydrogen_bonds[
+            0
+        ].direction,
+        HBOND_DIRECTION_LIGAND_DONOR,
+    )
+
+
+def _self_test_detection_bidirectional_receptor_donor(
+) -> None:
+    """Test complete detection when receptor is the donor."""
+
+    system = make_explicit_linear_hbond_system(
+        ligand_is_donor=False
+    )
+
+    hydrogen_bonds = detect_hydrogen_bonds(
+        system[
+            "ligand_atoms"
+        ],
+        system[
+            "receptor_atoms"
+        ],
+        mode=HBOND_MODE_EXPLICIT,
+    )
+
+    self_test_assert_equal(
+        len(
+            hydrogen_bonds
+        ),
+        1,
+    )
+
+    self_test_assert_equal(
+        hydrogen_bonds[
+            0
+        ].direction,
+        HBOND_DIRECTION_RECEPTOR_DONOR,
+    )
+
+
+def _self_test_detection_empty_collections(
+) -> None:
+    """Test detection with empty atom collections."""
+
+    hydrogen_bonds = detect_hydrogen_bonds(
+        (),
+        (),
+        mode=HBOND_MODE_EXPLICIT,
+    )
+
+    self_test_assert_equal(
+        hydrogen_bonds,
+        (),
+    )
+
+
+def _self_test_detection_analysis_result(
+) -> None:
+    """Test high-level analysis result construction."""
+
+    system = make_explicit_linear_hbond_system()
+
+    result = analyze_hydrogen_bonds(
+        system[
+            "ligand_atoms"
+        ],
+        system[
+            "receptor_atoms"
+        ],
+        mode=HBOND_MODE_EXPLICIT,
+    )
+
+    self_test_assert_isinstance(
+        result,
+        HydrogenBondAnalysisResult,
+    )
+
+    self_test_assert_equal(
+        len(
+            result.hydrogen_bonds
+        ),
+        1,
+    )
+
+    self_test_assert_equal(
+        tuple(
+            result.residue_hydrogen_bonds
+        ),
+        (),
+    )
+
+
+def _self_test_detection_inferred_fallback(
+) -> None:
+    """Test inferred fallback when explicit hydrogens are absent."""
+
+    system = make_inferred_hbond_system()
+
+    result = analyze_hydrogen_bonds(
+        system[
+            "ligand_atoms"
+        ],
+        system[
+            "receptor_atoms"
+        ],
+        mode=HBOND_MODE_EXPLICIT,
+        allow_inferred_fallback=True,
+    )
+
+    self_test_assert_equal(
+        len(
+            result.hydrogen_bonds
+        ),
+        1,
+    )
+
+    self_test_assert_equal(
+        result.hydrogen_bonds[
+            0
+        ].mode,
+        HBOND_MODE_INFERRED,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Grouping tests
+# -----------------------------------------------------------------------------
+
+def _self_test_grouping_receptor_side(
+) -> None:
+    """Test grouping by receptor residue."""
+
+    hydrogen_bonds = (
+        _self_test_make_residue_grouping_bonds()
+    )
+
+    groups = group_hydrogen_bonds_by_residue(
+        hydrogen_bonds,
+        side=RESIDUE_GROUP_SIDE_RECEPTOR,
+    )
+
+    self_test_assert_equal(
+        len(
+            groups
+        ),
+        2,
+    )
+
+    self_test_assert(
+        all(
+            group.side
+            == RESIDUE_GROUP_SIDE_RECEPTOR
+            for group in groups
+        )
+    )
+
+
+def _self_test_grouping_ligand_side(
+) -> None:
+    """Test grouping by ligand residue."""
+
+    hydrogen_bonds = (
+        _self_test_make_residue_grouping_bonds()
+    )
+
+    groups = group_hydrogen_bonds_by_residue(
+        hydrogen_bonds,
+        side=RESIDUE_GROUP_SIDE_LIGAND,
+    )
+
+    self_test_assert_equal(
+        len(
+            groups
+        ),
+        1,
+    )
+
+
+def _self_test_grouping_donor_side(
+) -> None:
+    """Test grouping by donor residue."""
+
+    hydrogen_bonds = (
+        _self_test_make_residue_grouping_bonds()
+    )
+
+    groups = group_hydrogen_bonds_by_residue(
+        hydrogen_bonds,
+        side=RESIDUE_GROUP_SIDE_DONOR,
+    )
+
+    self_test_assert_equal(
+        len(
+            groups
+        ),
+        1,
+    )
+
+
+def _self_test_grouping_acceptor_side(
+) -> None:
+    """Test grouping by acceptor residue."""
+
+    hydrogen_bonds = (
+        _self_test_make_residue_grouping_bonds()
+    )
+
+    groups = group_hydrogen_bonds_by_residue(
+        hydrogen_bonds,
+        side=RESIDUE_GROUP_SIDE_ACCEPTOR,
+    )
+
+    self_test_assert_equal(
+        len(
+            groups
+        ),
+        2,
+    )
+
+
+def _self_test_grouping_empty(
+) -> None:
+    """Test empty residue grouping."""
+
+    groups = group_hydrogen_bonds_by_residue(
+        (),
+        side=RESIDUE_GROUP_SIDE_RECEPTOR,
+    )
+
+    self_test_assert_equal(
+        groups,
+        (),
+    )
+
+
+def _self_test_grouping_preserves_interactions(
+) -> None:
+    """Test that grouping preserves every interaction."""
+
+    hydrogen_bonds = (
+        _self_test_make_residue_grouping_bonds()
+    )
+
+    groups = group_hydrogen_bonds_by_residue(
+        hydrogen_bonds,
+        side=RESIDUE_GROUP_SIDE_RECEPTOR,
+    )
+
+    grouped_bonds = tuple(
+        hydrogen_bond
+        for group in groups
+        for hydrogen_bond
+        in group.hydrogen_bonds
+    )
+
+    self_test_assert_equal(
+        len(
+            grouped_bonds
+        ),
+        len(
+            hydrogen_bonds
+        ),
+    )
+
+    for hydrogen_bond in hydrogen_bonds:
+        self_test_assert(
+            hydrogen_bond
+            in grouped_bonds
+        )
+
+
+def _self_test_grouping_result_integration(
+) -> None:
+    """Test grouping of an existing analysis result."""
+
+    hydrogen_bonds = (
+        _self_test_make_residue_grouping_bonds()
+    )
+
+    result = make_fake_analysis_result(
+        hydrogen_bonds=hydrogen_bonds,
+        include_residue_groups=False,
+    )
+
+    grouped_result = group_analysis_result_by_residue(
+        result,
+        side=RESIDUE_GROUP_SIDE_RECEPTOR,
+    )
+
+    self_test_assert_isinstance(
+        grouped_result,
+        HydrogenBondAnalysisResult,
+    )
+
+    self_test_assert_equal(
+        len(
+            grouped_result.residue_hydrogen_bonds
+        ),
+        2,
+    )
+
+    self_test_assert_equal(
+        grouped_result.hydrogen_bonds,
+        result.hydrogen_bonds,
+    )
+
+
+def _self_test_grouping_analyze_pipeline(
+) -> None:
+    """Test detection and grouping in one pipeline."""
+
+    system = make_multiple_hbond_system()
+
+    result = group_and_analyze_hydrogen_bonds(
+        system[
+            "ligand_atoms"
+        ],
+        system[
+            "receptor_atoms"
+        ],
+        side=RESIDUE_GROUP_SIDE_RECEPTOR,
+        mode=HBOND_MODE_EXPLICIT,
+    )
+
+    self_test_assert_isinstance(
+        result,
+        HydrogenBondAnalysisResult,
+    )
+
+    self_test_assert(
+        len(
+            result.hydrogen_bonds
+        )
+        >= 2
+    )
+
+    self_test_assert_equal(
+        len(
+            result.residue_hydrogen_bonds
+        ),
+        2,
+    )
+
+
+def _self_test_grouping_top_residues(
+) -> None:
+    """Test top residue-group selection."""
+
+    hydrogen_bonds = (
+        _self_test_make_residue_grouping_bonds()
+    )
+
+    groups = group_hydrogen_bonds_by_residue(
+        hydrogen_bonds,
+        side=RESIDUE_GROUP_SIDE_RECEPTOR,
+    )
+
+    top_groups = get_top_hbond_residues(
+        groups,
+        limit=1,
+    )
+
+    self_test_assert_equal(
+        len(
+            top_groups
+        ),
+        1,
+    )
+
+
+def _self_test_grouping_filter_minimum_count(
+) -> None:
+    """Test residue-group filtering by interaction count."""
+
+    hydrogen_bonds = (
+        _self_test_make_residue_grouping_bonds()
+    )
+
+    groups = group_hydrogen_bonds_by_residue(
+        hydrogen_bonds,
+        side=RESIDUE_GROUP_SIDE_RECEPTOR,
+    )
+
+    filtered_groups = filter_hbond_residue_groups(
+        groups,
+        minimum_count=2,
+    )
+
+    self_test_assert_equal(
+        filtered_groups,
+        (),
+    )
+
+
+def _self_test_grouping_deduplicates_bonds(
+) -> None:
+    """Test grouping-time interaction deduplication."""
+
+    hydrogen_bond = make_fake_hydrogen_bond()
+
+    groups = group_hydrogen_bonds_by_residue(
+        (
+            hydrogen_bond,
+            hydrogen_bond,
+        ),
+        side=RESIDUE_GROUP_SIDE_RECEPTOR,
+        deduplicate=True,
+    )
+
+    self_test_assert_equal(
+        len(
+            groups
+        ),
+        1,
+    )
+
+    self_test_assert_equal(
+        len(
+            groups[
+                0
+            ].hydrogen_bonds
+        ),
+        1,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Classification configuration tests
+# -----------------------------------------------------------------------------
+
+def _self_test_classification_config_default(
+) -> None:
+    """Test default classification configuration."""
+
+    config = (
+        DEFAULT_HBOND_CLASSIFICATION_CONFIG
+    )
+
+    self_test_assert_isinstance(
+        config,
+        HydrogenBondClassificationConfig,
+    )
+
+    self_test_assert(
+        config.strong_score_threshold
+        >= config.moderate_score_threshold
+    )
+
+    self_test_assert(
+        config.moderate_score_threshold
+        >= config.weak_score_threshold
+    )
+
+
+def _self_test_classification_config_validation(
+) -> None:
+    """Test classification configuration validation."""
+
+    config = validate_hydrogen_bond_classification_config(
+        DEFAULT_HBOND_CLASSIFICATION_CONFIG
+    )
+
+    self_test_assert_isinstance(
+        config,
+        HydrogenBondClassificationConfig,
+    )
+
+
+def _self_test_classification_config_invalid_threshold(
+) -> None:
+    """Test rejection of an invalid score threshold."""
+
+    with self_test_raises(
+        ValueError
+    ):
+        HydrogenBondClassificationConfig(
+            strong_score_threshold=np.float64(
+                1.5
+            )
+        )
+
+
+def _self_test_classification_name_validation(
+) -> None:
+    """Test hydrogen-bond classification-name validation."""
+
+    classification = (
+        validate_hydrogen_bond_classification(
+            HBOND_TYPE_STRONG
+        )
+    )
+
+    self_test_assert_equal(
+        classification,
+        HBOND_TYPE_STRONG,
+    )
+
+
+def _self_test_classification_invalid_name(
+) -> None:
+    """Test rejection of an invalid classification name."""
+
+    with self_test_raises(
+        ValueError
+    ):
+        validate_hydrogen_bond_classification(
+            "invalid_classification"
+        )
+
+
+# -----------------------------------------------------------------------------
+# Classification score-component tests
+# -----------------------------------------------------------------------------
+
+def _self_test_classification_clamp_unit_interval(
+) -> None:
+    """Test unit-interval clamping."""
+
+    self_test_assert_almost_equal(
+        _clamp_unit_interval(
+            -1.0
+        ),
+        0.0,
+    )
+
+    self_test_assert_almost_equal(
+        _clamp_unit_interval(
+            2.0
+        ),
+        1.0,
+    )
+
+    self_test_assert_almost_equal(
+        _clamp_unit_interval(
+            0.5
+        ),
+        0.5,
+    )
+
+
+def _self_test_classification_distance_score_best(
+) -> None:
+    """Test high score for a short favorable distance."""
+
+    score = calculate_distance_geometry_score(
+        2.6,
+        ideal_distance=2.6,
+        maximum_distance=3.6,
+    )
+
+    self_test_assert_almost_equal(
+        score,
+        1.0,
+    )
+
+
+def _self_test_classification_distance_score_cutoff(
+) -> None:
+    """Test zero score at or beyond maximum distance."""
+
+    score = calculate_distance_geometry_score(
+        4.0,
+        ideal_distance=2.6,
+        maximum_distance=3.6,
+    )
+
+    self_test_assert_almost_equal(
+        score,
+        0.0,
+    )
+
+
+def _self_test_classification_donor_angle_score_best(
+) -> None:
+    """Test best explicit donor-angle score."""
+
+    score = calculate_donor_angle_geometry_score(
+        180.0,
+        mode=HBOND_MODE_EXPLICIT,
+    )
+
+    self_test_assert_almost_equal(
+        score,
+        1.0,
+    )
+
+
+def _self_test_classification_donor_angle_score_poor(
+) -> None:
+    """Test poor explicit donor-angle score."""
+
+    score = calculate_donor_angle_geometry_score(
+        60.0,
+        mode=HBOND_MODE_EXPLICIT,
+    )
+
+    self_test_assert_between(
+        score,
+        0.0,
+        0.5,
+    )
+
+
+def _self_test_classification_inferred_angle_score_best(
+) -> None:
+    """Test best inferred donor-deviation score."""
+
+    score = calculate_donor_angle_geometry_score(
+        0.0,
+        mode=HBOND_MODE_INFERRED,
+    )
+
+    self_test_assert_almost_equal(
+        score,
+        1.0,
+    )
+
+
+def _self_test_classification_acceptor_angle_score(
+) -> None:
+    """Test acceptor-angle component score."""
+
+    score = calculate_acceptor_angle_geometry_score(
+        0.0
+    )
+
+    self_test_assert_almost_equal(
+        score,
+        1.0,
+    )
+
+
+def _self_test_classification_complete_geometric_score(
+) -> None:
+    """Test complete geometric score calculation."""
+
+    hydrogen_bond = make_fake_hydrogen_bond(
+        donor_acceptor_distance=2.70,
+        hydrogen_acceptor_distance=1.70,
+        dha_angle=180.0,
+    )
+
+    score = calculate_hydrogen_bond_geometric_score(
+        hydrogen_bond
+    )
+
+    self_test_assert_between(
+        score,
+        0.0,
+        1.0,
+    )
+
+    self_test_assert(
+        score > 0.7
+    )
+
+
+def _self_test_classification_inferred_mode_penalty(
+) -> None:
+    """Test inferred-mode score factor."""
+
+    explicit_bond = make_fake_hydrogen_bond(
+        mode=HBOND_MODE_EXPLICIT,
+        donor_acceptor_distance=2.8,
+        hydrogen_acceptor_distance=1.8,
+        dha_angle=180.0,
+    )
+
+    inferred_bond = make_fake_hydrogen_bond(
+        mode=HBOND_MODE_INFERRED,
+        donor_acceptor_distance=2.8,
+        donor_angle=0.0,
+        acceptor_angle=0.0,
+    )
+
+    explicit_score = (
+        calculate_hydrogen_bond_geometric_score(
+            explicit_bond
+        )
+    )
+
+    inferred_score = (
+        calculate_hydrogen_bond_geometric_score(
+            inferred_bond
+        )
+    )
+
+    self_test_assert(
+        inferred_score
+        <= explicit_score
+    )
+
+
+# -----------------------------------------------------------------------------
+# Threshold and score classification tests
+# -----------------------------------------------------------------------------
+
+def _self_test_classification_threshold_strong(
+) -> None:
+    """Test threshold-based strong classification."""
+
+    hydrogen_bond = make_fake_hydrogen_bond(
+        donor_acceptor_distance=2.65,
+        hydrogen_acceptor_distance=1.65,
+        dha_angle=175.0,
+    )
+
+    classification = (
+        classify_hydrogen_bond_by_thresholds(
+            hydrogen_bond
+        )
+    )
+
+    self_test_assert_equal(
+        classification,
+        HBOND_TYPE_STRONG,
+    )
+
+
+def _self_test_classification_threshold_rejected(
+) -> None:
+    """Test threshold-based rejected classification."""
+
+    hydrogen_bond = make_fake_hydrogen_bond(
+        donor_acceptor_distance=5.0,
+        hydrogen_acceptor_distance=4.0,
+        dha_angle=50.0,
+    )
+
+    classification = (
+        classify_hydrogen_bond_by_thresholds(
+            hydrogen_bond
+        )
+    )
+
+    self_test_assert_equal(
+        classification,
+        HBOND_TYPE_REJECTED,
+    )
+
+
+def _self_test_classification_score_strong(
+) -> None:
+    """Test score-to-class strong conversion."""
+
+    classification = classify_hydrogen_bond_score(
+        0.95
+    )
+
+    self_test_assert_equal(
+        classification,
+        HBOND_TYPE_STRONG,
+    )
+
+
+def _self_test_classification_score_moderate(
+) -> None:
+    """Test score-to-class moderate conversion."""
+
+    config = (
+        DEFAULT_HBOND_CLASSIFICATION_CONFIG
+    )
+
+    score = np.float64(
+        (
+            config.strong_score_threshold
+            + config.moderate_score_threshold
+        )
+        / 2.0
+    )
+
+    classification = classify_hydrogen_bond_score(
+        score,
+        config=config,
+    )
+
+    self_test_assert_equal(
+        classification,
+        HBOND_TYPE_MODERATE,
+    )
+
+
+def _self_test_classification_score_weak(
+) -> None:
+    """Test score-to-class weak conversion."""
+
+    config = (
+        DEFAULT_HBOND_CLASSIFICATION_CONFIG
+    )
+
+    score = np.float64(
+        (
+            config.moderate_score_threshold
+            + config.weak_score_threshold
+        )
+        / 2.0
+    )
+
+    classification = classify_hydrogen_bond_score(
+        score,
+        config=config,
+    )
+
+    self_test_assert_equal(
+        classification,
+        HBOND_TYPE_WEAK,
+    )
+
+
+def _self_test_classification_score_rejected(
+) -> None:
+    """Test score-to-class rejected conversion."""
+
+    classification = classify_hydrogen_bond_score(
+        0.0
+    )
+
+    self_test_assert(
+        classification
+        in (
+            HBOND_TYPE_REJECTED,
+            HBOND_TYPE_GEOMETRIC_ONLY,
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# HydrogenBondStrength tests
+# -----------------------------------------------------------------------------
+
+def _self_test_strength_dataclass_basic(
+) -> None:
+    """Test HydrogenBondStrength construction through the public API."""
+
+    hydrogen_bond = make_fake_hydrogen_bond()
+
+    strength = get_hydrogen_bond_strength(
+        hydrogen_bond
+    )
+
+    self_test_assert_isinstance(
+        strength,
+        HydrogenBondStrength,
+    )
+
+    self_test_assert_between(
+        strength.score,
+        0.0,
+        1.0,
+    )
+
+
+def _self_test_strength_component_ranges(
+) -> None:
+    """Test HydrogenBondStrength component ranges."""
+
+    strength = get_hydrogen_bond_strength(
+        make_fake_hydrogen_bond()
+    )
+
+    for component in (
+        strength.distance_score,
+        strength.donor_angle_score,
+        strength.acceptor_angle_score,
+        strength.mode_factor,
+        strength.ambiguity_factor,
+    ):
+        self_test_assert_between(
+            component,
+            0.0,
+            1.0,
+        )
+
+
+def _self_test_strength_classifications_valid(
+) -> None:
+    """Test validity of strength classifications."""
+
+    strength = get_hydrogen_bond_strength(
+        make_fake_hydrogen_bond()
+    )
+
+    self_test_assert(
+        strength.threshold_classification
+        in VALID_HYDROGEN_BOND_CLASSIFICATIONS
+    )
+
+    self_test_assert(
+        strength.score_classification
+        in VALID_HYDROGEN_BOND_CLASSIFICATIONS
+    )
+
+    self_test_assert(
+        strength.classification
+        in VALID_HYDROGEN_BOND_CLASSIFICATIONS
+    )
+
+
+def _self_test_strength_metadata_frozen(
+) -> None:
+    """Test HydrogenBondStrength metadata immutability."""
+
+    strength = get_hydrogen_bond_strength(
+        make_fake_hydrogen_bond()
+    )
+
+    with self_test_raises(
+        TypeError
+    ):
+        strength.metadata[
+            "new_key"
+        ] = True
+
+
+# -----------------------------------------------------------------------------
+# Public classification-pipeline tests
+# -----------------------------------------------------------------------------
+
+def _self_test_classify_single_hydrogen_bond(
+) -> None:
+    """Test classification of a single interaction."""
+
+    original = make_fake_hydrogen_bond(
+        classification=HBOND_TYPE_UNKNOWN,
+        donor_acceptor_distance=2.65,
+        hydrogen_acceptor_distance=1.65,
+        dha_angle=175.0,
+    )
+
+    classified = classify_hydrogen_bond(
+        original
+    )
+
+    self_test_assert_isinstance(
+        classified,
+        HydrogenBond,
+    )
+
+    self_test_assert(
+        classified.classification
+        != HBOND_TYPE_UNKNOWN
+    )
+
+    self_test_assert_is(
+        classified.donor,
+        original.donor,
+    )
+
+    self_test_assert_is(
+        classified.acceptor,
+        original.acceptor,
+    )
+
+
+def _self_test_classify_collection(
+) -> None:
+    """Test classification of multiple interactions."""
+
+    hydrogen_bonds = (
+        make_fake_hydrogen_bond(
+            donor_acceptor_distance=2.65,
+            hydrogen_acceptor_distance=1.65,
+            dha_angle=175.0,
+        ),
+        make_fake_hydrogen_bond(
+            donor_acceptor_distance=3.3,
+            hydrogen_acceptor_distance=2.3,
+            dha_angle=120.0,
+        ),
+    )
+
+    classified = classify_hydrogen_bonds(
+        hydrogen_bonds
+    )
+
+    self_test_assert_equal(
+        len(
+            classified
+        ),
+        2,
+    )
+
+    self_test_assert(
+        all(
+            hydrogen_bond.classification
+            != HBOND_TYPE_UNKNOWN
+            for hydrogen_bond
+            in classified
+        )
+    )
+
+
+def _self_test_classification_filter_by_class(
+) -> None:
+    """Test filtering by classification."""
+
+    hydrogen_bonds = (
+        _self_test_make_classified_bond(
+            HBOND_TYPE_STRONG
+        ),
+        _self_test_make_classified_bond(
+            HBOND_TYPE_MODERATE
+        ),
+        _self_test_make_classified_bond(
+            HBOND_TYPE_WEAK
+        ),
+    )
+
+    filtered = (
+        filter_hydrogen_bonds_by_classification(
+            hydrogen_bonds,
+            (
+                HBOND_TYPE_STRONG,
+                HBOND_TYPE_MODERATE,
+            ),
+        )
+    )
+
+    self_test_assert_equal(
+        len(
+            filtered
+        ),
+        2,
+    )
+
+
+def _self_test_classification_filter_by_strength(
+) -> None:
+    """Test filtering by minimum geometric score."""
+
+    strong_bond = make_fake_hydrogen_bond(
+        donor_acceptor_distance=2.65,
+        hydrogen_acceptor_distance=1.65,
+        dha_angle=175.0,
+    )
+
+    poor_bond = make_fake_hydrogen_bond(
+        donor_acceptor_distance=3.5,
+        hydrogen_acceptor_distance=2.5,
+        dha_angle=105.0,
+    )
+
+    filtered = filter_hydrogen_bonds_by_strength(
+        (
+            strong_bond,
+            poor_bond,
+        ),
+        minimum_score=0.7,
+    )
+
+    self_test_assert_equal(
+        len(
+            filtered
+        ),
+        1,
+    )
+
+    self_test_assert_is(
+        filtered[
+            0
+        ].donor,
+        strong_bond.donor,
+    )
+
+
+def _self_test_classification_counts(
+) -> None:
+    """Test classification counts."""
+
+    hydrogen_bonds = (
+        _self_test_make_classified_bond(
+            HBOND_TYPE_STRONG
+        ),
+        _self_test_make_classified_bond(
+            HBOND_TYPE_STRONG
+        ),
+        _self_test_make_classified_bond(
+            HBOND_TYPE_WEAK
+        ),
+    )
+
+    counts = hydrogen_bond_classification_counts(
+        hydrogen_bonds
+    )
+
+    self_test_assert_equal(
+        counts[
+            HBOND_TYPE_STRONG
+        ],
+        2,
+    )
+
+    self_test_assert_equal(
+        counts[
+            HBOND_TYPE_WEAK
+        ],
+        1,
+    )
+
+
+def _self_test_classification_strength_statistics(
+) -> None:
+    """Test geometric-strength statistics."""
+
+    hydrogen_bonds = (
+        make_fake_hydrogen_bond(
+            donor_acceptor_distance=2.65,
+            hydrogen_acceptor_distance=1.65,
+            dha_angle=175.0,
+        ),
+        make_fake_hydrogen_bond(
+            donor_acceptor_distance=3.2,
+            hydrogen_acceptor_distance=2.2,
+            dha_angle=130.0,
+        ),
+    )
+
+    statistics = hydrogen_bond_strength_statistics(
+        hydrogen_bonds
+    )
+
+    self_test_assert_mapping_contains(
+        statistics,
+        (
+            "count",
+            "minimum",
+            "maximum",
+            "mean",
+            "median",
+        ),
+    )
+
+    self_test_assert_equal(
+        statistics[
+            "count"
+        ],
+        2,
+    )
+
+
+def _self_test_classification_residue_group(
+) -> None:
+    """Test classification of one residue group."""
+
+    hydrogen_bond = make_fake_hydrogen_bond(
+        classification=HBOND_TYPE_UNKNOWN
+    )
+
+    group = ResidueHydrogenBond(
+        residue=(
+            get_hbond_receptor_residue(
+                hydrogen_bond
+            )
+        ),
+        key=(
+            get_hbond_receptor_residue_key(
+                hydrogen_bond
+            )
+        ),
+        hydrogen_bonds=(
+            hydrogen_bond,
+        ),
+        side=RESIDUE_GROUP_SIDE_RECEPTOR,
+    )
+
+    classified_group = (
+        classify_residue_hydrogen_bond_group(
+            group
+        )
+    )
+
+    self_test_assert_isinstance(
+        classified_group,
+        ResidueHydrogenBond,
+    )
+
+    self_test_assert(
+        classified_group.hydrogen_bonds[
+            0
+        ].classification
+        != HBOND_TYPE_UNKNOWN
+    )
+
+
+def _self_test_classification_residue_groups(
+) -> None:
+    """Test classification of multiple residue groups."""
+
+    hydrogen_bonds = (
+        _self_test_make_residue_grouping_bonds()
+    )
+
+    unknown_bonds = tuple(
+        replace(
+            hydrogen_bond,
+            classification=HBOND_TYPE_UNKNOWN,
+        )
+        for hydrogen_bond
+        in hydrogen_bonds
+    )
+
+    groups = group_hydrogen_bonds_by_residue(
+        unknown_bonds,
+        side=RESIDUE_GROUP_SIDE_RECEPTOR,
+    )
+
+    classified_groups = (
+        classify_residue_hydrogen_bond_groups(
+            groups
+        )
+    )
+
+    self_test_assert_equal(
+        len(
+            classified_groups
+        ),
+        2,
+    )
+
+    self_test_assert(
+        all(
+            hydrogen_bond.classification
+            != HBOND_TYPE_UNKNOWN
+            for group in classified_groups
+            for hydrogen_bond
+            in group.hydrogen_bonds
+        )
+    )
+
+
+def _self_test_classification_analysis_result(
+) -> None:
+    """Test classification of a complete analysis result."""
+
+    result = make_fake_analysis_result(
+        hydrogen_bonds=(
+            make_fake_hydrogen_bond(
+                classification=(
+                    HBOND_TYPE_UNKNOWN
+                )
+            ),
+        ),
+        include_residue_groups=True,
+    )
+
+    classified_result = (
+        classify_hydrogen_bond_analysis_result(
+            result
+        )
+    )
+
+    self_test_assert_isinstance(
+        classified_result,
+        HydrogenBondAnalysisResult,
+    )
+
+    self_test_assert(
+        classified_result.hydrogen_bonds[
+            0
+        ].classification
+        != HBOND_TYPE_UNKNOWN
+    )
+
+
+def _self_test_classification_complete_pipeline(
+) -> None:
+    """Test detection, grouping and classification pipeline."""
+
+    system = make_explicit_linear_hbond_system()
+
+    result = (
+        analyze_group_and_classify_hydrogen_bonds(
+            system[
+                "ligand_atoms"
+            ],
+            system[
+                "receptor_atoms"
+            ],
+            residue_side=(
+                RESIDUE_GROUP_SIDE_RECEPTOR
+            ),
+            mode=HBOND_MODE_EXPLICIT,
+            include_rejected=True,
+        )
+    )
+
+    self_test_assert_isinstance(
+        result,
+        HydrogenBondAnalysisResult,
+    )
+
+    self_test_assert_equal(
+        len(
+            result.hydrogen_bonds
+        ),
+        1,
+    )
+
+    self_test_assert_equal(
+        len(
+            result.residue_hydrogen_bonds
+        ),
+        1,
+    )
+
+    self_test_assert(
+        result.hydrogen_bonds[
+            0
+        ].classification
+        != HBOND_TYPE_UNKNOWN
+    )
+
+
+def _self_test_classification_pipeline_excludes_rejected(
+) -> None:
+    """Test removal of rejected interactions."""
+
+    poor_bond = make_fake_hydrogen_bond(
+        classification=HBOND_TYPE_UNKNOWN,
+        donor_acceptor_distance=5.0,
+        hydrogen_acceptor_distance=4.0,
+        dha_angle=50.0,
+    )
+
+    result = make_fake_analysis_result(
+        hydrogen_bonds=(
+            poor_bond,
+        ),
+        include_residue_groups=False,
+    )
+
+    classified_result = (
+        classify_hydrogen_bond_analysis_result(
+            result,
+            include_rejected=False,
+        )
+    )
+
+    self_test_assert_equal(
+        classified_result.hydrogen_bonds,
+        (),
+    )
+
+
+# -----------------------------------------------------------------------------
+# Grouped Section 12.3 runners
+# -----------------------------------------------------------------------------
+
+def run_hbond_geometry_self_tests(
+    *,
+    raise_on_failure: bool = False,
+) -> SelfTestReport:
+    """
+    Run Section 6 geometry self-tests.
+
+    Parameters
+    ----------
+    raise_on_failure : bool, optional
+        Whether the first failure should be reraised.
+
+    Returns
+    -------
+    SelfTestReport
+        Geometry test report.
+    """
+
+    test_cases = (
+        (
+            "geometry.distance.donor_acceptor",
+            _self_test_geometry_donor_acceptor_distance,
+        ),
+        (
+            "geometry.distance.hydrogen_acceptor",
+            _self_test_geometry_hydrogen_acceptor_distance,
+        ),
+        (
+            "geometry.distance.donor_hydrogen",
+            _self_test_geometry_donor_hydrogen_distance,
+        ),
+        (
+            "geometry.distance.symmetry",
+            _self_test_geometry_distance_symmetry,
+        ),
+        (
+            "geometry.angle.linear",
+            _self_test_geometry_linear_dha_angle,
+        ),
+        (
+            "geometry.angle.bent",
+            _self_test_geometry_bent_dha_angle,
+        ),
+        (
+            "geometry.angle.range",
+            _self_test_geometry_dha_angle_range,
+        ),
+        (
+            "geometry.angle.degenerate",
+            _self_test_geometry_degenerate_angle_rejected,
+        ),
+        (
+            "geometry.inferred.open_valence_vector",
+            _self_test_geometry_infer_open_valence_vector,
+        ),
+        (
+            "geometry.inferred.vector_normalized",
+            _self_test_geometry_infer_vector_normalized,
+        ),
+        (
+            "geometry.inferred.no_neighbors",
+            _self_test_geometry_infer_vector_without_neighbors,
+        ),
+        (
+            "geometry.construction.explicit",
+            _self_test_geometry_calculate_explicit,
+        ),
+        (
+            "geometry.construction.assignment",
+            _self_test_geometry_calculate_from_assignment,
+        ),
+        (
+            "geometry.construction.inferred",
+            _self_test_geometry_calculate_inferred,
+        ),
+        (
+            "geometry.evaluation.dataclass",
+            _self_test_geometry_evaluation_dataclass,
+        ),
+        (
+            "geometry.evaluation.explicit_valid",
+            _self_test_geometry_evaluate_explicit_valid,
+        ),
+        (
+            "geometry.evaluation.explicit_distance_invalid",
+            _self_test_geometry_evaluate_explicit_distance_invalid,
+        ),
+        (
+            "geometry.evaluation.explicit_angle_invalid",
+            _self_test_geometry_evaluate_explicit_angle_invalid,
+        ),
+        (
+            "geometry.evaluation.inferred_valid",
+            _self_test_geometry_evaluate_inferred_valid,
+        ),
+        (
+            "geometry.evaluation.inferred_distance_invalid",
+            _self_test_geometry_evaluate_inferred_distance_invalid,
+        ),
+        (
+            "geometry.evaluation.dispatch_explicit",
+            _self_test_geometry_evaluate_dispatch_explicit,
+        ),
+        (
+            "geometry.evaluation.dispatch_inferred",
+            _self_test_geometry_evaluate_dispatch_inferred,
+        ),
+        (
+            "geometry.predicate.explicit",
+            _self_test_geometry_explicit_predicate,
+        ),
+        (
+            "geometry.predicate.inferred",
+            _self_test_geometry_inferred_predicate,
+        ),
+        (
+            "geometry.batch.explicit",
+            _self_test_geometry_explicit_batch,
+        ),
+        (
+            "geometry.batch.inferred",
+            _self_test_geometry_inferred_batch,
+        ),
+    )
+
+    return run_self_test_group(
+        test_cases,
+        module_name=(
+            f"{SELF_TEST_SECTION_12_3_NAME}.geometry"
+        ),
+        raise_on_failure=raise_on_failure,
+        metadata={
+            "section": "12.3",
+            "group": "geometry",
+        },
+    )
+
+
+def run_hbond_detection_self_tests(
+    *,
+    raise_on_failure: bool = False,
+) -> SelfTestReport:
+    """
+    Run Section 7 detection self-tests.
+
+    Parameters
+    ----------
+    raise_on_failure : bool, optional
+        Whether the first failure should be reraised.
+
+    Returns
+    -------
+    SelfTestReport
+        Detection test report.
+    """
+
+    test_cases = (
+        (
+            "detection.candidates.single",
+            _self_test_detection_candidate_pairs_single,
+        ),
+        (
+            "detection.candidates.outside_cutoff",
+            _self_test_detection_candidate_pairs_outside_cutoff,
+        ),
+        (
+            "detection.candidates.multiple",
+            _self_test_detection_candidate_pairs_multiple,
+        ),
+        (
+            "detection.candidates.no_self_pair",
+            _self_test_detection_candidate_pairs_no_self_pair,
+        ),
+        (
+            "detection.explicit.valid",
+            _self_test_detection_explicit_valid,
+        ),
+        (
+            "detection.explicit.invalid_distance",
+            _self_test_detection_explicit_invalid_distance,
+        ),
+        (
+            "detection.explicit.invalid_angle",
+            _self_test_detection_explicit_invalid_angle,
+        ),
+        (
+            "detection.explicit.ambiguous_excluded",
+            _self_test_detection_explicit_ambiguous_excluded,
+        ),
+        (
+            "detection.explicit.ambiguous_included",
+            _self_test_detection_explicit_ambiguous_included,
+        ),
+        (
+            "detection.inferred.valid",
+            _self_test_detection_inferred_valid,
+        ),
+        (
+            "detection.inferred.invalid_distance",
+            _self_test_detection_inferred_invalid_distance,
+        ),
+        (
+            "detection.duplicate_key.explicit",
+            _self_test_detection_pair_key_explicit,
+        ),
+        (
+            "detection.deduplicate.identical",
+            _self_test_detection_deduplicate_identical,
+        ),
+        (
+            "detection.deduplicate.distinct",
+            _self_test_detection_deduplicate_preserves_distinct,
+        ),
+        (
+            "detection.directional.explicit",
+            _self_test_detection_directional_explicit,
+        ),
+        (
+            "detection.directional.inferred",
+            _self_test_detection_directional_inferred,
+        ),
+        (
+            "detection.bidirectional.ligand_donor",
+            _self_test_detection_bidirectional_ligand_donor,
+        ),
+        (
+            "detection.bidirectional.receptor_donor",
+            _self_test_detection_bidirectional_receptor_donor,
+        ),
+        (
+            "detection.empty",
+            _self_test_detection_empty_collections,
+        ),
+        (
+            "detection.analysis_result",
+            _self_test_detection_analysis_result,
+        ),
+        (
+            "detection.inferred_fallback",
+            _self_test_detection_inferred_fallback,
+        ),
+    )
+
+    return run_self_test_group(
+        test_cases,
+        module_name=(
+            f"{SELF_TEST_SECTION_12_3_NAME}.detection"
+        ),
+        raise_on_failure=raise_on_failure,
+        metadata={
+            "section": "12.3",
+            "group": "detection",
+        },
+    )
+
+
+def run_hbond_grouping_self_tests(
+    *,
+    raise_on_failure: bool = False,
+) -> SelfTestReport:
+    """
+    Run Section 8 grouping self-tests.
+
+    Parameters
+    ----------
+    raise_on_failure : bool, optional
+        Whether the first failure should be reraised.
+
+    Returns
+    -------
+    SelfTestReport
+        Grouping test report.
+    """
+
+    test_cases = (
+        (
+            "grouping.receptor_side",
+            _self_test_grouping_receptor_side,
+        ),
+        (
+            "grouping.ligand_side",
+            _self_test_grouping_ligand_side,
+        ),
+        (
+            "grouping.donor_side",
+            _self_test_grouping_donor_side,
+        ),
+        (
+            "grouping.acceptor_side",
+            _self_test_grouping_acceptor_side,
+        ),
+        (
+            "grouping.empty",
+            _self_test_grouping_empty,
+        ),
+        (
+            "grouping.preserves_interactions",
+            _self_test_grouping_preserves_interactions,
+        ),
+        (
+            "grouping.result_integration",
+            _self_test_grouping_result_integration,
+        ),
+        (
+            "grouping.analysis_pipeline",
+            _self_test_grouping_analyze_pipeline,
+        ),
+        (
+            "grouping.top_residues",
+            _self_test_grouping_top_residues,
+        ),
+        (
+            "grouping.minimum_count_filter",
+            _self_test_grouping_filter_minimum_count,
+        ),
+        (
+            "grouping.deduplication",
+            _self_test_grouping_deduplicates_bonds,
+        ),
+    )
+
+    return run_self_test_group(
+        test_cases,
+        module_name=(
+            f"{SELF_TEST_SECTION_12_3_NAME}.grouping"
+        ),
+        raise_on_failure=raise_on_failure,
+        metadata={
+            "section": "12.3",
+            "group": "grouping",
+        },
+    )
+
+
+def run_hbond_classification_self_tests(
+    *,
+    raise_on_failure: bool = False,
+) -> SelfTestReport:
+    """
+    Run Section 9 classification self-tests.
+
+    Parameters
+    ----------
+    raise_on_failure : bool, optional
+        Whether the first failure should be reraised.
+
+    Returns
+    -------
+    SelfTestReport
+        Classification test report.
+    """
+
+    test_cases = (
+        (
+            "classification.config.default",
+            _self_test_classification_config_default,
+        ),
+        (
+            "classification.config.validation",
+            _self_test_classification_config_validation,
+        ),
+        (
+            "classification.config.invalid_threshold",
+            _self_test_classification_config_invalid_threshold,
+        ),
+        (
+            "classification.name.validation",
+            _self_test_classification_name_validation,
+        ),
+        (
+            "classification.name.invalid",
+            _self_test_classification_invalid_name,
+        ),
+        (
+            "classification.score.clamp",
+            _self_test_classification_clamp_unit_interval,
+        ),
+        (
+            "classification.score.distance_best",
+            _self_test_classification_distance_score_best,
+        ),
+        (
+            "classification.score.distance_cutoff",
+            _self_test_classification_distance_score_cutoff,
+        ),
+        (
+            "classification.score.donor_angle_best",
+            _self_test_classification_donor_angle_score_best,
+        ),
+        (
+            "classification.score.donor_angle_poor",
+            _self_test_classification_donor_angle_score_poor,
+        ),
+        (
+            "classification.score.inferred_angle_best",
+            _self_test_classification_inferred_angle_score_best,
+        ),
+        (
+            "classification.score.acceptor_angle",
+            _self_test_classification_acceptor_angle_score,
+        ),
+        (
+            "classification.score.complete",
+            _self_test_classification_complete_geometric_score,
+        ),
+        (
+            "classification.score.inferred_penalty",
+            _self_test_classification_inferred_mode_penalty,
+        ),
+        (
+            "classification.threshold.strong",
+            _self_test_classification_threshold_strong,
+        ),
+        (
+            "classification.threshold.rejected",
+            _self_test_classification_threshold_rejected,
+        ),
+        (
+            "classification.score_class.strong",
+            _self_test_classification_score_strong,
+        ),
+        (
+            "classification.score_class.moderate",
+            _self_test_classification_score_moderate,
+        ),
+        (
+            "classification.score_class.weak",
+            _self_test_classification_score_weak,
+        ),
+        (
+            "classification.score_class.rejected",
+            _self_test_classification_score_rejected,
+        ),
+        (
+            "classification.strength.basic",
+            _self_test_strength_dataclass_basic,
+        ),
+        (
+            "classification.strength.component_ranges",
+            _self_test_strength_component_ranges,
+        ),
+        (
+            "classification.strength.valid_classes",
+            _self_test_strength_classifications_valid,
+        ),
+        (
+            "classification.strength.metadata_frozen",
+            _self_test_strength_metadata_frozen,
+        ),
+        (
+            "classification.single",
+            _self_test_classify_single_hydrogen_bond,
+        ),
+        (
+            "classification.collection",
+            _self_test_classify_collection,
+        ),
+        (
+            "classification.filter.class",
+            _self_test_classification_filter_by_class,
+        ),
+        (
+            "classification.filter.strength",
+            _self_test_classification_filter_by_strength,
+        ),
+        (
+            "classification.counts",
+            _self_test_classification_counts,
+        ),
+        (
+            "classification.statistics",
+            _self_test_classification_strength_statistics,
+        ),
+        (
+            "classification.residue_group",
+            _self_test_classification_residue_group,
+        ),
+        (
+            "classification.residue_groups",
+            _self_test_classification_residue_groups,
+        ),
+        (
+            "classification.analysis_result",
+            _self_test_classification_analysis_result,
+        ),
+        (
+            "classification.complete_pipeline",
+            _self_test_classification_complete_pipeline,
+        ),
+        (
+            "classification.excludes_rejected",
+            _self_test_classification_pipeline_excludes_rejected,
+        ),
+    )
+
+    return run_self_test_group(
+        test_cases,
+        module_name=(
+            f"{SELF_TEST_SECTION_12_3_NAME}.classification"
+        ),
+        raise_on_failure=raise_on_failure,
+        metadata={
+            "section": "12.3",
+            "group": "classification",
+        },
+    )
+
+
+def run_section_12_3_self_tests(
+    *,
+    raise_on_failure: bool = False,
+) -> SelfTestReport:
+    """
+    Run all Section 12.3 self-tests.
+
+    Parameters
+    ----------
+    raise_on_failure : bool, optional
+        Whether the first failure should be reraised.
+
+    Returns
+    -------
+    SelfTestReport
+        Combined Section 12.3 report.
+    """
+
+    combined_report = SelfTestReport(
+        module_name=SELF_TEST_SECTION_12_3_NAME,
+        metadata={
+            "section": "12.3",
+            "description": (
+                SELF_TEST_SECTION_12_3_DESCRIPTION
+            ),
+        },
+    )
+
+    geometry_report = run_hbond_geometry_self_tests(
+        raise_on_failure=raise_on_failure,
+    )
+
+    detection_report = (
+        run_hbond_detection_self_tests(
+            raise_on_failure=raise_on_failure,
+        )
+    )
+
+    grouping_report = run_hbond_grouping_self_tests(
+        raise_on_failure=raise_on_failure,
+    )
+
+    classification_report = (
+        run_hbond_classification_self_tests(
+            raise_on_failure=raise_on_failure,
+        )
+    )
+
+    combined_report.extend(
+        geometry_report.results
+    )
+
+    combined_report.extend(
+        detection_report.results
+    )
+
+    combined_report.extend(
+        grouping_report.results
+    )
+
+    combined_report.extend(
+        classification_report.results
+    )
+
+    combined_report.metadata.update(
+        {
+            "geometry_test_count": (
+                geometry_report.total_count
+            ),
+            "detection_test_count": (
+                detection_report.total_count
+            ),
+            "grouping_test_count": (
+                grouping_report.total_count
+            ),
+            "classification_test_count": (
+                classification_report.total_count
+            ),
+        }
+    )
+
+    return combined_report
+
+
+# -----------------------------------------------------------------------------
+# Public interface
+# -----------------------------------------------------------------------------
+
+_SECTION_12_3_PUBLIC_NAMES: Final[
+    Tuple[
+        str,
+        ...,
+    ]
+] = (
+    "SELF_TEST_SECTION_12_3_NAME",
+    "SELF_TEST_SECTION_12_3_DESCRIPTION",
+    "run_hbond_geometry_self_tests",
+    "run_hbond_detection_self_tests",
+    "run_hbond_grouping_self_tests",
+    "run_hbond_classification_self_tests",
+    "run_section_12_3_self_tests",
+)
+
+for public_name in _SECTION_12_3_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(
+            public_name
+        )
+
+
+# =============================================================================
+# End of Section 12.3
+# =============================================================================
+
+
+
+# =============================================================================
+# Section 12.4 — Tests for Sections 10–11
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Section 12.4 constants
+# -----------------------------------------------------------------------------
+
+SELF_TEST_SECTION_12_4_NAME: Final[
+    str
+] = "hbonds.section_12_4"
+
+SELF_TEST_SECTION_12_4_DESCRIPTION: Final[
+    str
+] = (
+        "Hydrogen-bond statistics, serialization, DockModel integration "
+        "and multi-pose analysis"
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 12.4 helper factories
+# -----------------------------------------------------------------------------
+
+def _self_test_make_statistics_bonds(
+) -> Tuple[
+    HydrogenBond,
+    ...,
+]:
+    """
+    Create a heterogeneous hydrogen-bond collection for statistics tests.
+
+    Returns
+    -------
+    tuple of HydrogenBond
+        Artificial interactions with different geometries, modes, directions
+        and classifications.
+    """
+
+    strong_explicit = make_fake_hydrogen_bond(
+        mode=HBOND_MODE_EXPLICIT,
+        direction=HBOND_DIRECTION_LIGAND_DONOR,
+        classification=HBOND_TYPE_STRONG,
+        donor_acceptor_distance=2.60,
+        hydrogen_acceptor_distance=1.60,
+        donor_hydrogen_distance=1.00,
+        dha_angle=180.0,
+        donor_angle=0.0,
+        acceptor_angle=0.0,
+    )
+
+    moderate_explicit = make_fake_hydrogen_bond(
+        mode=HBOND_MODE_EXPLICIT,
+        direction=HBOND_DIRECTION_RECEPTOR_DONOR,
+        classification=HBOND_TYPE_MODERATE,
+        donor_acceptor_distance=3.00,
+        hydrogen_acceptor_distance=2.00,
+        donor_hydrogen_distance=1.00,
+        dha_angle=145.0,
+        donor_angle=10.0,
+        acceptor_angle=15.0,
+    )
+
+    weak_inferred = make_fake_hydrogen_bond(
+        mode=HBOND_MODE_INFERRED,
+        direction=HBOND_DIRECTION_LIGAND_DONOR,
+        classification=HBOND_TYPE_WEAK,
+        donor_acceptor_distance=3.35,
+        hydrogen_acceptor_distance=2.35,
+        donor_hydrogen_distance=1.00,
+        dha_angle=120.0,
+        donor_angle=35.0,
+        acceptor_angle=40.0,
+    )
+
+    rejected_explicit = make_fake_hydrogen_bond(
+        mode=HBOND_MODE_EXPLICIT,
+        direction=HBOND_DIRECTION_RECEPTOR_DONOR,
+        classification=HBOND_TYPE_REJECTED,
+        donor_acceptor_distance=4.50,
+        hydrogen_acceptor_distance=3.50,
+        donor_hydrogen_distance=1.00,
+        dha_angle=70.0,
+        donor_angle=60.0,
+        acceptor_angle=60.0,
+    )
+
+    return (
+        strong_explicit,
+        moderate_explicit,
+        weak_inferred,
+        rejected_explicit,
+    )
+
+
+def _self_test_make_classified_statistics_result(
+    *,
+    include_statistics: bool = True,
+) -> HydrogenBondAnalysisResult:
+    """
+    Create a classified analysis result for Section 12.4 tests.
+
+    Parameters
+    ----------
+    include_statistics : bool, optional
+        Whether statistics should be calculated before returning.
+
+    Returns
+    -------
+    HydrogenBondAnalysisResult
+        Artificial analysis result.
+    """
+
+    hydrogen_bonds = _self_test_make_statistics_bonds()
+
+    residue_groups = group_hydrogen_bonds_by_residue(
+        hydrogen_bonds,
+        side=RESIDUE_GROUP_SIDE_RECEPTOR,
+    )
+
+    statistics: Mapping[
+        str,
+        Any,
+    ]
+
+    if include_statistics:
+        statistics = calculate_hydrogen_bond_statistics(
+            hydrogen_bonds,
+            residue_groups=residue_groups,
+        )
+
+    else:
+        statistics = {}
+
+    return HydrogenBondAnalysisResult(
+        hydrogen_bonds=hydrogen_bonds,
+        residue_hydrogen_bonds=residue_groups,
+        ligand_atoms=tuple(
+            atom
+            for hydrogen_bond in hydrogen_bonds
+            for atom in (
+                (
+                    hydrogen_bond.donor,
+                    hydrogen_bond.hydrogen,
+                )
+                if (
+                    hydrogen_bond.direction
+                    == HBOND_DIRECTION_LIGAND_DONOR
+                )
+                else (
+                    hydrogen_bond.acceptor,
+                    None,
+                )
+            )
+            if atom is not None
+        ),
+        receptor_atoms=tuple(
+            atom
+            for hydrogen_bond in hydrogen_bonds
+            for atom in (
+                (
+                    hydrogen_bond.acceptor,
+                    None,
+                )
+                if (
+                    hydrogen_bond.direction
+                    == HBOND_DIRECTION_LIGAND_DONOR
+                )
+                else (
+                    hydrogen_bond.donor,
+                    hydrogen_bond.hydrogen,
+                )
+            )
+            if atom is not None
+        ),
+        donor_acceptor_cutoff=np.float64(
+            DEFAULT_MAXIMUM_DONOR_ACCEPTOR_DISTANCE
+        ),
+        hydrogen_acceptor_cutoff=np.float64(
+            DEFAULT_MAXIMUM_HYDROGEN_ACCEPTOR_DISTANCE
+        ),
+        minimum_dha_angle=np.float64(
+            DEFAULT_MINIMUM_DHA_ANGLE
+        ),
+        minimum_inferred_angle=np.float64(
+            DEFAULT_MINIMUM_INFERRED_ANGLE
+        ),
+        statistics=statistics,
+        metadata={
+            "self_test": True,
+            "section": "12.4",
+        },
+    )
+
+
+def _self_test_make_multipose_results(
+    *,
+    pose_count: int = 3,
+) -> DockModelHydrogenBondResults:
+    """
+    Create artificial multi-pose results without running molecular detection.
+
+    Parameters
+    ----------
+    pose_count : int, optional
+        Number of successful poses.
+
+    Returns
+    -------
+    DockModelHydrogenBondResults
+        Artificial multi-pose result.
+    """
+
+    normalized_count = _optional_nonnegative_integer(
+        pose_count,
+        name="pose count",
+    )
+
+    if normalized_count is None or normalized_count == 0:
+        raise ValueError(
+            "pose_count must be at least one."
+        )
+
+    results: Dict[
+        str,
+        HydrogenBondAnalysisResult,
+    ] = {}
+
+    pose_order: List[
+        str
+    ] = []
+
+    for pose_index in range(
+        normalized_count
+    ):
+        pose_key = f"pose_{pose_index + 1}"
+
+        bond_count = pose_index + 1
+
+        bonds = tuple(
+            make_fake_hydrogen_bond(
+                classification=(
+                    HBOND_TYPE_STRONG
+                    if bond_index == 0
+                    else HBOND_TYPE_MODERATE
+                ),
+                donor_acceptor_distance=(
+                    np.float64(
+                        2.60
+                        + 0.10
+                        * bond_index
+                    )
+                ),
+                hydrogen_acceptor_distance=(
+                    np.float64(
+                        1.60
+                        + 0.10
+                        * bond_index
+                    )
+                ),
+                dha_angle=np.float64(
+                    180.0
+                    - 5.0
+                    * bond_index
+                ),
+            )
+            for bond_index in range(
+                bond_count
+            )
+        )
+
+        groups = group_hydrogen_bonds_by_residue(
+            bonds,
+            side=RESIDUE_GROUP_SIDE_RECEPTOR,
+        )
+
+        statistics = calculate_hydrogen_bond_statistics(
+            bonds,
+            residue_groups=groups,
+        )
+
+        result = HydrogenBondAnalysisResult(
+            hydrogen_bonds=bonds,
+            residue_hydrogen_bonds=groups,
+            ligand_atoms=(),
+            receptor_atoms=(),
+            donor_acceptor_cutoff=np.float64(
+                DEFAULT_MAXIMUM_DONOR_ACCEPTOR_DISTANCE
+            ),
+            hydrogen_acceptor_cutoff=np.float64(
+                DEFAULT_MAXIMUM_HYDROGEN_ACCEPTOR_DISTANCE
+            ),
+            minimum_dha_angle=np.float64(
+                DEFAULT_MINIMUM_DHA_ANGLE
+            ),
+            minimum_inferred_angle=np.float64(
+                DEFAULT_MINIMUM_INFERRED_ANGLE
+            ),
+            statistics=statistics,
+            metadata={
+                "pose_key": pose_key,
+                "self_test": True,
+            },
+        )
+
+        results[
+            pose_key
+        ] = result
+
+        pose_order.append(
+            pose_key
+        )
+
+    return DockModelHydrogenBondResults(
+        results=results,
+        pose_order=tuple(
+            pose_order
+        ),
+        failed_poses={},
+        metadata={
+            "self_test": True,
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# Numeric summary tests
+# -----------------------------------------------------------------------------
+
+def _self_test_statistics_finite_float_array(
+) -> None:
+    """Test finite numeric-array normalization."""
+
+    values = _finite_float_array(
+        (
+            1.0,
+            np.nan,
+            2.0,
+            np.inf,
+            3.0,
+        )
+    )
+
+    self_test_assert_isinstance(
+        values,
+        np.ndarray,
+    )
+
+    self_test_assert_equal(
+        values.shape,
+        (
+            3,
+        ),
+    )
+
+    self_test_assert_array_equal(
+        values,
+        (
+            1.0,
+            2.0,
+            3.0,
+        ),
+    )
+
+
+def _self_test_statistics_numeric_summary(
+) -> None:
+    """Test numeric summary calculation."""
+
+    summary = summarize_numeric_values(
+        (
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+        ),
+        ddof=0,
+    )
+
+    self_test_assert_mapping_contains(
+        summary,
+        (
+            "count",
+            "minimum",
+            "maximum",
+            "mean",
+            "median",
+            "standard_deviation",
+            "sum",
+        ),
+    )
+
+    self_test_assert_equal(
+        summary[
+            "count"
+        ],
+        4,
+    )
+
+    self_test_assert_almost_equal(
+        summary[
+            "mean"
+        ],
+        2.5,
+    )
+
+    self_test_assert_almost_equal(
+        summary[
+            "median"
+        ],
+        2.5,
+    )
+
+
+def _self_test_statistics_numeric_summary_empty(
+) -> None:
+    """Test empty numeric summary."""
+
+    summary = summarize_numeric_values(
+        ()
+    )
+
+    self_test_assert_equal(
+        summary[
+            "count"
+        ],
+        0,
+    )
+
+    self_test_assert_equal(
+        summary[
+            "minimum"
+        ],
+        None,
+    )
+
+    self_test_assert_equal(
+        summary[
+            "mean"
+        ],
+        None,
+    )
+
+
+def _self_test_statistics_numeric_summary_numpy_types(
+) -> None:
+    """Test NumPy scalar types in numeric summaries."""
+
+    summary = summarize_numeric_values(
+        (
+            1.0,
+            2.0,
+        )
+    )
+
+    self_test_assert_isinstance(
+        summary[
+            "mean"
+        ],
+        np.float64,
+    )
+
+    self_test_assert_isinstance(
+        summary[
+            "minimum"
+        ],
+        np.float64,
+    )
+
+
+def _self_test_statistics_serialize_numeric_summary(
+) -> None:
+    """Test conversion of NumPy numeric summaries to Python scalars."""
+
+    summary = summarize_numeric_values(
+        (
+            1.0,
+            2.0,
+            3.0,
+        )
+    )
+
+    serialized = _serialize_numeric_summary(
+        summary
+    )
+
+    self_test_assert_isinstance(
+        serialized[
+            "mean"
+        ],
+        float,
+    )
+
+    self_test_assert_isinstance(
+        serialized[
+            "count"
+        ],
+        int,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Interaction count tests
+# -----------------------------------------------------------------------------
+
+def _self_test_statistics_mode_counts(
+) -> None:
+    """Test explicit and inferred mode counts."""
+
+    counts = hydrogen_bond_mode_counts(
+        _self_test_make_statistics_bonds()
+    )
+
+    self_test_assert_equal(
+        counts[
+            HBOND_MODE_EXPLICIT
+        ],
+        3,
+    )
+
+    self_test_assert_equal(
+        counts[
+            HBOND_MODE_INFERRED
+        ],
+        1,
+    )
+
+
+def _self_test_statistics_direction_counts(
+) -> None:
+    """Test ligand- and receptor-donor counts."""
+
+    counts = hydrogen_bond_direction_counts(
+        _self_test_make_statistics_bonds()
+    )
+
+    self_test_assert_equal(
+        counts[
+            HBOND_DIRECTION_LIGAND_DONOR
+        ],
+        2,
+    )
+
+    self_test_assert_equal(
+        counts[
+            HBOND_DIRECTION_RECEPTOR_DONOR
+        ],
+        2,
+    )
+
+
+def _self_test_statistics_role_counts(
+) -> None:
+    """Test donor and acceptor atom-role counts."""
+
+    counts = hydrogen_bond_role_counts(
+        _self_test_make_statistics_bonds()
+    )
+
+    self_test_assert_mapping_contains(
+        counts,
+        (
+            HBOND_ROLE_DONOR,
+            HBOND_ROLE_ACCEPTOR,
+        ),
+    )
+
+    self_test_assert_equal(
+        counts[
+            HBOND_ROLE_DONOR
+        ],
+        4,
+    )
+
+    self_test_assert_equal(
+        counts[
+            HBOND_ROLE_ACCEPTOR
+        ],
+        4,
+    )
+
+
+def _self_test_statistics_unique_atoms(
+) -> None:
+    """Test unique donor, acceptor and hydrogen counts."""
+
+    counts = count_unique_hbond_atoms(
+        _self_test_make_statistics_bonds()
+    )
+
+    self_test_assert_mapping_contains(
+        counts,
+        (
+            "unique_donor_count",
+            "unique_acceptor_count",
+            "unique_hydrogen_count",
+        ),
+    )
+
+    self_test_assert_equal(
+        counts[
+            "unique_donor_count"
+        ],
+        4,
+    )
+
+    self_test_assert_equal(
+        counts[
+            "unique_acceptor_count"
+        ],
+        4,
+    )
+
+    self_test_assert_equal(
+        counts[
+            "unique_hydrogen_count"
+        ],
+        3,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Numeric collection tests
+# -----------------------------------------------------------------------------
+
+def _self_test_statistics_collect_distances(
+) -> None:
+    """Test distance collection extraction."""
+
+    distances = collect_hydrogen_bond_distances(
+        _self_test_make_statistics_bonds()
+    )
+
+    self_test_assert_mapping_contains(
+        distances,
+        (
+            "donor_acceptor",
+            "hydrogen_acceptor",
+            "donor_hydrogen",
+        ),
+    )
+
+    self_test_assert_equal(
+        distances[
+            "donor_acceptor"
+        ].shape,
+        (
+            4,
+        ),
+    )
+
+    self_test_assert_equal(
+        distances[
+            "hydrogen_acceptor"
+        ].shape,
+        (
+            3,
+        ),
+    )
+
+
+def _self_test_statistics_collect_angles(
+) -> None:
+    """Test angle collection extraction."""
+
+    angles = collect_hydrogen_bond_angles(
+        _self_test_make_statistics_bonds()
+    )
+
+    self_test_assert_mapping_contains(
+        angles,
+        (
+            "dha",
+            "donor",
+            "acceptor",
+        ),
+    )
+
+    self_test_assert_equal(
+        angles[
+            "dha"
+        ].shape,
+        (
+            3,
+        ),
+    )
+
+
+def _self_test_statistics_collect_strength_scores(
+) -> None:
+    """Test geometric-score collection."""
+
+    scores = collect_hydrogen_bond_strength_scores(
+        _self_test_make_statistics_bonds()
+    )
+
+    self_test_assert_isinstance(
+        scores,
+        np.ndarray,
+    )
+
+    self_test_assert_equal(
+        scores.shape,
+        (
+            4,
+        ),
+    )
+
+    self_test_assert(
+        np.all(
+            scores >= 0.0
+        )
+    )
+
+    self_test_assert(
+        np.all(
+            scores <= 1.0
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# Distribution-statistics tests
+# -----------------------------------------------------------------------------
+
+def _self_test_statistics_distance_statistics(
+) -> None:
+    """Test distance summary statistics."""
+
+    statistics = hydrogen_bond_distance_statistics(
+        _self_test_make_statistics_bonds()
+    )
+
+    self_test_assert_mapping_contains(
+        statistics,
+        (
+            "donor_acceptor",
+            "hydrogen_acceptor",
+            "donor_hydrogen",
+        ),
+    )
+
+    self_test_assert_equal(
+        statistics[
+            "donor_acceptor"
+        ][
+            "count"
+        ],
+        4,
+    )
+
+    self_test_assert_almost_equal(
+        statistics[
+            "donor_acceptor"
+        ][
+            "minimum"
+        ],
+        2.60,
+    )
+
+
+def _self_test_statistics_angle_statistics(
+) -> None:
+    """Test angular summary statistics."""
+
+    statistics = hydrogen_bond_angle_statistics(
+        _self_test_make_statistics_bonds()
+    )
+
+    self_test_assert_equal(
+        statistics[
+            "dha"
+        ][
+            "count"
+        ],
+        3,
+    )
+
+    self_test_assert_almost_equal(
+        statistics[
+            "dha"
+        ][
+            "maximum"
+        ],
+        180.0,
+    )
+
+
+def _self_test_statistics_score_statistics(
+) -> None:
+    """Test geometric-score summary statistics."""
+
+    statistics = hydrogen_bond_score_statistics(
+        _self_test_make_statistics_bonds()
+    )
+
+    self_test_assert_equal(
+        statistics[
+            "count"
+        ],
+        4,
+    )
+
+    self_test_assert_between(
+        statistics[
+            "mean"
+        ],
+        0.0,
+        1.0,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Percentage tests
+# -----------------------------------------------------------------------------
+
+def _self_test_statistics_classification_percentages(
+) -> None:
+    """Test classification percentage calculation."""
+
+    percentages = (
+        hydrogen_bond_classification_percentages(
+            _self_test_make_statistics_bonds()
+        )
+    )
+
+    self_test_assert_almost_equal(
+        sum(
+            percentages.values()
+        ),
+        100.0,
+        tolerance=1.0e-6,
+    )
+
+    self_test_assert_almost_equal(
+        percentages[
+            HBOND_TYPE_STRONG
+        ],
+        25.0,
+    )
+
+
+def _self_test_statistics_mode_percentages(
+) -> None:
+    """Test mode percentages."""
+
+    percentages = hydrogen_bond_mode_percentages(
+        _self_test_make_statistics_bonds()
+    )
+
+    self_test_assert_almost_equal(
+        percentages[
+            HBOND_MODE_EXPLICIT
+        ],
+        75.0,
+    )
+
+    self_test_assert_almost_equal(
+        percentages[
+            HBOND_MODE_INFERRED
+        ],
+        25.0,
+    )
+
+
+def _self_test_statistics_direction_percentages(
+) -> None:
+    """Test direction percentages."""
+
+    percentages = (
+        hydrogen_bond_direction_percentages(
+            _self_test_make_statistics_bonds()
+        )
+    )
+
+    self_test_assert_almost_equal(
+        percentages[
+            HBOND_DIRECTION_LIGAND_DONOR
+        ],
+        50.0,
+    )
+
+    self_test_assert_almost_equal(
+        percentages[
+            HBOND_DIRECTION_RECEPTOR_DONOR
+        ],
+        50.0,
+    )
+
+
+def _self_test_statistics_empty_percentages(
+) -> None:
+    """Test percentages for an empty collection."""
+
+    percentages = hydrogen_bond_mode_percentages(
+        ()
+    )
+
+    self_test_assert(
+        all(
+            percentage == 0.0
+            for percentage
+            in percentages.values()
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# Ranking tests
+# -----------------------------------------------------------------------------
+
+def _self_test_statistics_rank_hydrogen_bonds(
+) -> None:
+    """Test hydrogen-bond ranking by geometric strength."""
+
+    hydrogen_bonds = (
+        _self_test_make_statistics_bonds()
+    )
+
+    ranked = rank_hydrogen_bonds(
+        hydrogen_bonds,
+        strongest_first=True,
+    )
+
+    self_test_assert_equal(
+        len(
+            ranked
+        ),
+        4,
+    )
+
+    scores = tuple(
+        float(
+            get_hydrogen_bond_strength(
+                hydrogen_bond
+            ).score
+        )
+        for hydrogen_bond in ranked
+    )
+
+    self_test_assert_equal(
+        scores,
+        tuple(
+            sorted(
+                scores,
+                reverse=True,
+            )
+        ),
+    )
+
+
+def _self_test_statistics_rank_hydrogen_bonds_weakest_first(
+) -> None:
+    """Test ascending strength ranking."""
+
+    ranked = rank_hydrogen_bonds(
+        _self_test_make_statistics_bonds(),
+        strongest_first=False,
+    )
+
+    scores = tuple(
+        float(
+            get_hydrogen_bond_strength(
+                hydrogen_bond
+            ).score
+        )
+        for hydrogen_bond in ranked
+    )
+
+    self_test_assert_equal(
+        scores,
+        tuple(
+            sorted(
+                scores
+            )
+        ),
+    )
+
+
+def _self_test_statistics_get_top_hydrogen_bonds(
+) -> None:
+    """Test top-interaction selection."""
+
+    top_bonds = get_top_hydrogen_bonds(
+        _self_test_make_statistics_bonds(),
+        limit=2,
+    )
+
+    self_test_assert_equal(
+        len(
+            top_bonds
+        ),
+        2,
+    )
+
+
+def _self_test_statistics_get_top_hydrogen_bonds_zero(
+) -> None:
+    """Test zero top-interaction limit."""
+
+    top_bonds = get_top_hydrogen_bonds(
+        _self_test_make_statistics_bonds(),
+        limit=0,
+    )
+
+    self_test_assert_equal(
+        top_bonds,
+        (),
+    )
+
+
+# -----------------------------------------------------------------------------
+# Interaction serialization tests
+# -----------------------------------------------------------------------------
+
+def _self_test_serialization_format_residue_key(
+) -> None:
+    """Test residue-key formatting."""
+
+    formatted = format_residue_key(
+        (
+            "ASP",
+            101,
+            "A",
+            "",
+        )
+    )
+
+    self_test_assert_isinstance(
+        formatted,
+        str,
+    )
+
+    self_test_assert(
+        "ASP"
+        in formatted
+    )
+
+    self_test_assert(
+        "101"
+        in formatted
+    )
+
+
+def _self_test_serialization_hbond_summary_record(
+) -> None:
+    """Test serialization of one hydrogen bond."""
+
+    hydrogen_bond = (
+        _self_test_make_statistics_bonds()[
+            0
+        ]
+    )
+
+    record = hydrogen_bond_to_summary_record(
+        hydrogen_bond
+    )
+
+    self_test_assert_mapping_contains(
+        record,
+        (
+            "donor",
+            "acceptor",
+            "hydrogen",
+            "mode",
+            "direction",
+            "classification",
+            "donor_acceptor_distance",
+            "geometric_score",
+        ),
+    )
+
+    self_test_assert_equal(
+        record[
+            "classification"
+        ],
+        HBOND_TYPE_STRONG,
+    )
+
+    self_test_assert_isinstance(
+        record[
+            "donor_acceptor_distance"
+        ],
+        float,
+    )
+
+
+def _self_test_serialization_hbond_summary_records(
+) -> None:
+    """Test serialization of multiple hydrogen bonds."""
+
+    records = hydrogen_bonds_to_summary_records(
+        _self_test_make_statistics_bonds()
+    )
+
+    self_test_assert_equal(
+        len(
+            records
+        ),
+        4,
+    )
+
+    self_test_assert(
+        all(
+            isinstance(
+                record,
+                Mapping,
+            )
+            for record in records
+        )
+    )
+
+
+def _self_test_serialization_empty_hbond_records(
+) -> None:
+    """Test serialization of an empty collection."""
+
+    records = hydrogen_bonds_to_summary_records(
+        ()
+    )
+
+    self_test_assert_equal(
+        records,
+        ()
+    )
+
+
+# -----------------------------------------------------------------------------
+# Residue statistics tests
+# -----------------------------------------------------------------------------
+
+def _self_test_statistics_residue_strength_statistics(
+) -> None:
+    """Test strength statistics for one residue group."""
+
+    result = (
+        _self_test_make_classified_statistics_result()
+    )
+
+    group = result.residue_hydrogen_bonds[
+        0
+    ]
+
+    statistics = (
+        residue_hydrogen_bond_strength_statistics(
+            group
+        )
+    )
+
+    self_test_assert_mapping_contains(
+        statistics,
+        (
+            "count",
+            "minimum",
+            "maximum",
+            "mean",
+            "median",
+        ),
+    )
+
+
+def _self_test_statistics_residue_summary(
+) -> None:
+    """Test one residue-group summary."""
+
+    result = (
+        _self_test_make_classified_statistics_result()
+    )
+
+    group = result.residue_hydrogen_bonds[
+        0
+    ]
+
+    summary = residue_hydrogen_bond_summary(
+        group
+    )
+
+    self_test_assert_mapping_contains(
+        summary,
+        (
+            "residue",
+            "residue_key",
+            "hydrogen_bond_count",
+            "classification_counts",
+            "mode_counts",
+            "direction_counts",
+            "strength_statistics",
+        ),
+    )
+
+
+def _self_test_statistics_residue_summaries(
+) -> None:
+    """Test multiple residue-group summaries."""
+
+    result = (
+        _self_test_make_classified_statistics_result()
+    )
+
+    summaries = residue_hydrogen_bond_summaries(
+        result.residue_hydrogen_bonds
+    )
+
+    self_test_assert_equal(
+        len(
+            summaries
+        ),
+        len(
+            result.residue_hydrogen_bonds
+        ),
+    )
+
+
+def _self_test_statistics_residue_global_statistics(
+) -> None:
+    """Test global statistics across residue groups."""
+
+    result = (
+        _self_test_make_classified_statistics_result()
+    )
+
+    statistics = (
+        residue_hydrogen_bond_global_statistics(
+            result.residue_hydrogen_bonds
+        )
+    )
+
+    self_test_assert_mapping_contains(
+        statistics,
+        (
+            "residue_count",
+            "hydrogen_bond_count",
+            "mean_hydrogen_bonds_per_residue",
+            "maximum_hydrogen_bonds_per_residue",
+        ),
+    )
+
+    self_test_assert_equal(
+        statistics[
+            "hydrogen_bond_count"
+        ],
+        len(
+            result.hydrogen_bonds
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# Global statistics tests
+# -----------------------------------------------------------------------------
+
+def _self_test_statistics_calculate_global(
+) -> None:
+    """Test complete hydrogen-bond statistics."""
+
+    result = (
+        _self_test_make_classified_statistics_result(
+            include_statistics=False
+        )
+    )
+
+    statistics = calculate_hydrogen_bond_statistics(
+        result.hydrogen_bonds,
+        residue_groups=(
+            result.residue_hydrogen_bonds
+        ),
+    )
+
+    self_test_assert_mapping_contains(
+        statistics,
+        (
+            "hydrogen_bond_count",
+            "classification_counts",
+            "classification_percentages",
+            "mode_counts",
+            "mode_percentages",
+            "direction_counts",
+            "direction_percentages",
+            "unique_atom_counts",
+            "distance_statistics",
+            "angle_statistics",
+            "strength_statistics",
+            "residue_statistics",
+        ),
+    )
+
+    self_test_assert_equal(
+        statistics[
+            "hydrogen_bond_count"
+        ],
+        4,
+    )
+
+
+def _self_test_statistics_calculate_global_empty(
+) -> None:
+    """Test complete statistics for an empty collection."""
+
+    statistics = calculate_hydrogen_bond_statistics(
+        (),
+        residue_groups=(),
+    )
+
+    self_test_assert_equal(
+        statistics[
+            "hydrogen_bond_count"
+        ],
+        0,
+    )
+
+    self_test_assert_equal(
+        statistics[
+            "residue_statistics"
+        ][
+            "residue_count"
+        ],
+        0,
+    )
+
+
+def _self_test_statistics_serialize_global(
+) -> None:
+    """Test global-statistics serialization."""
+
+    result = (
+        _self_test_make_classified_statistics_result()
+    )
+
+    serialized = (
+        serialize_hydrogen_bond_statistics(
+            result.statistics
+        )
+    )
+
+    self_test_assert_isinstance(
+        serialized,
+        dict,
+    )
+
+    self_test_assert_isinstance(
+        serialized[
+            "hydrogen_bond_count"
+        ],
+        int,
+    )
+
+    self_test_assert_isinstance(
+        serialized[
+            "distance_statistics"
+        ][
+            "donor_acceptor"
+        ][
+            "mean"
+        ],
+        float,
+    )
+
+
+def _self_test_statistics_attach_to_result(
+) -> None:
+    """Test statistics attachment to an analysis result."""
+
+    result = (
+        _self_test_make_classified_statistics_result(
+            include_statistics=False
+        )
+    )
+
+    updated_result = attach_hydrogen_bond_statistics(
+        result
+    )
+
+    self_test_assert_isinstance(
+        updated_result,
+        HydrogenBondAnalysisResult,
+    )
+
+    self_test_assert(
+        bool(
+            updated_result.statistics
+        )
+    )
+
+    self_test_assert_equal(
+        updated_result.hydrogen_bonds,
+        result.hydrogen_bonds,
+    )
+
+
+def _self_test_statistics_calculate_from_result(
+) -> None:
+    """Test statistics calculation directly from an analysis result."""
+
+    result = (
+        _self_test_make_classified_statistics_result(
+            include_statistics=False
+        )
+    )
+
+    statistics = (
+        calculate_analysis_hydrogen_bond_statistics(
+            result
+        )
+    )
+
+    self_test_assert_equal(
+        statistics[
+            "hydrogen_bond_count"
+        ],
+        4,
+    )
+
+
+def _self_test_statistics_complete_pipeline(
+) -> None:
+    """Test detection, grouping, classification and statistics pipeline."""
+
+    system = make_explicit_linear_hbond_system()
+
+    result = (
+        analyze_group_classify_and_summarize_hydrogen_bonds(
+            system[
+                "ligand_atoms"
+            ],
+            system[
+                "receptor_atoms"
+            ],
+            residue_side=(
+                RESIDUE_GROUP_SIDE_RECEPTOR
+            ),
+            mode=HBOND_MODE_EXPLICIT,
+            include_rejected=True,
+        )
+    )
+
+    self_test_assert_isinstance(
+        result,
+        HydrogenBondAnalysisResult,
+    )
+
+    self_test_assert(
+        bool(
+            result.statistics
+        )
+    )
+
+    self_test_assert_equal(
+        result.statistics[
+            "hydrogen_bond_count"
+        ],
+        1,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Text-summary tests
+# -----------------------------------------------------------------------------
+
+def _self_test_serialization_format_summary(
+) -> None:
+    """Test textual summary formatting."""
+
+    result = (
+        _self_test_make_classified_statistics_result()
+    )
+
+    summary = format_hydrogen_bond_summary(
+        result.statistics
+    )
+
+    self_test_assert_isinstance(
+        summary,
+        str,
+    )
+
+    self_test_assert(
+        "hydrogen"
+        in summary.lower()
+    )
+
+
+def _self_test_serialization_summarize_result(
+) -> None:
+    """Test analysis-result textual summary."""
+
+    result = (
+        _self_test_make_classified_statistics_result()
+    )
+
+    summary = (
+        summarize_hydrogen_bond_analysis_result(
+            result
+        )
+    )
+
+    self_test_assert_isinstance(
+        summary,
+        str,
+    )
+
+    self_test_assert(
+        str(
+            len(
+                result.hydrogen_bonds
+            )
+        )
+        in summary
+    )
+
+
+def _self_test_serialization_summary_empty_result(
+) -> None:
+    """Test textual summary for an empty result."""
+
+    result = make_fake_analysis_result(
+        hydrogen_bonds=(),
+        include_residue_groups=False,
+        include_statistics=True,
+    )
+
+    summary = (
+        summarize_hydrogen_bond_analysis_result(
+            result
+        )
+    )
+
+    self_test_assert_isinstance(
+        summary,
+        str,
+    )
+
+    self_test_assert(
+        "0"
+        in summary
+    )
+
+
+# -----------------------------------------------------------------------------
+# DockModel extraction tests
+# -----------------------------------------------------------------------------
+
+def _self_test_dockmodel_get_receptor(
+) -> None:
+    """Test receptor resolution from DockModel."""
+
+    system = make_fake_dockmodel_system()
+
+    receptor = get_dockmodel_receptor(
+        system[
+            "dock_model"
+        ]
+    )
+
+    self_test_assert_is(
+        receptor,
+        system[
+            "receptor"
+        ],
+    )
+
+
+def _self_test_dockmodel_get_receptor_atoms(
+) -> None:
+    """Test receptor atom extraction."""
+
+    system = make_fake_dockmodel_system()
+
+    atoms = get_dockmodel_receptor_atoms(
+        system[
+            "dock_model"
+        ]
+    )
+
+    self_test_assert_equal(
+        len(
+            atoms
+        ),
+        len(
+            system[
+                "receptor"
+            ].atoms
+        ),
+    )
+
+
+def _self_test_dockmodel_get_active_ligand(
+) -> None:
+    """Test active-ligand resolution."""
+
+    system = make_fake_dockmodel_system()
+
+    ligand = get_dockmodel_active_ligand(
+        system[
+            "dock_model"
+        ]
+    )
+
+    self_test_assert_is(
+        ligand,
+        system[
+            "dock_model"
+        ].ligand,
+    )
+
+
+def _self_test_dockmodel_get_active_ligand_atoms(
+) -> None:
+    """Test active-ligand atom extraction."""
+
+    system = make_fake_dockmodel_system()
+
+    atoms = get_dockmodel_active_ligand_atoms(
+        system[
+            "dock_model"
+        ]
+    )
+
+    self_test_assert_equal(
+        len(
+            atoms
+        ),
+        len(
+            system[
+                "dock_model"
+            ].ligand.atoms
+        ),
+    )
+
+
+def _self_test_dockmodel_get_poses_mapping(
+) -> None:
+    """Test pose discovery from a mapping."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=3
+    )
+
+    poses = get_dockmodel_poses(
+        system[
+            "dock_model"
+        ]
+    )
+
+    self_test_assert_equal(
+        len(
+            poses
+        ),
+        3,
+    )
+
+    self_test_assert_equal(
+        tuple(
+            pose_key
+            for pose_key, _
+            in poses
+        ),
+        system[
+            "pose_keys"
+        ],
+    )
+
+
+def _self_test_dockmodel_get_pose_by_key(
+) -> None:
+    """Test pose retrieval by key."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=3
+    )
+
+    pose_key = system[
+        "pose_keys"
+    ][
+        1
+    ]
+
+    resolved_key, pose = get_dockmodel_pose(
+        system[
+            "dock_model"
+        ],
+        pose_key,
+    )
+
+    self_test_assert_equal(
+        resolved_key,
+        pose_key,
+    )
+
+    self_test_assert_is(
+        pose,
+        system[
+            "poses"
+        ][
+            pose_key
+        ],
+    )
+
+
+def _self_test_dockmodel_get_pose_by_zero_based_index(
+) -> None:
+    """Test zero-based pose retrieval."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=3
+    )
+
+    pose_key, pose = get_dockmodel_pose(
+        system[
+            "dock_model"
+        ],
+        0,
+    )
+
+    self_test_assert_equal(
+        pose_key,
+        system[
+            "pose_keys"
+        ][
+            0
+        ],
+    )
+
+    self_test_assert_is(
+        pose,
+        system[
+            "poses"
+        ][
+            pose_key
+        ],
+    )
+
+
+def _self_test_dockmodel_get_pose_atoms(
+) -> None:
+    """Test atom extraction from a selected pose."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=2
+    )
+
+    pose_key, atoms = get_dockmodel_pose_atoms(
+        system[
+            "dock_model"
+        ],
+        system[
+            "pose_keys"
+        ][
+            0
+        ],
+    )
+
+    self_test_assert_equal(
+        pose_key,
+        system[
+            "pose_keys"
+        ][
+            0
+        ],
+    )
+
+    self_test_assert(
+        len(
+            atoms
+        )
+        > 0
+    )
+
+
+def _self_test_dockmodel_missing_receptor(
+) -> None:
+    """Test missing receptor handling."""
+
+    class EmptyDockModel:
+        pass
+
+    with self_test_raises(
+        ValueError
+    ):
+        get_dockmodel_receptor(
+            EmptyDockModel()
+        )
+
+
+def _self_test_dockmodel_missing_poses(
+) -> None:
+    """Test missing pose collection handling."""
+
+    receptor_system = (
+        make_explicit_linear_hbond_system()
+    )
+
+    class ReceptorOnlyDockModel:
+        def __init__(
+            self,
+        ) -> None:
+            self.receptor = receptor_system[
+                "receptor"
+            ]
+
+    with self_test_raises(
+        ValueError
+    ):
+        get_dockmodel_poses(
+            ReceptorOnlyDockModel()
+        )
+
+
+# -----------------------------------------------------------------------------
+# DockModel result-storage tests
+# -----------------------------------------------------------------------------
+
+def _self_test_dockmodel_store_active_result(
+) -> None:
+    """Test storage of the active-pose result."""
+
+    system = make_fake_dockmodel_system()
+
+    result = make_fake_analysis_result(
+        include_statistics=True
+    )
+
+    stored = store_dockmodel_hydrogen_bond_result(
+        system[
+            "dock_model"
+        ],
+        result,
+    )
+
+    self_test_assert(
+        stored
+    )
+
+    self_test_assert_is(
+        system[
+            "dock_model"
+        ].hydrogen_bond_result,
+        result,
+    )
+
+
+def _self_test_dockmodel_retrieve_active_result(
+) -> None:
+    """Test retrieval of the active-pose result."""
+
+    system = make_fake_dockmodel_system()
+
+    result = make_fake_analysis_result(
+        include_statistics=True
+    )
+
+    store_dockmodel_hydrogen_bond_result(
+        system[
+            "dock_model"
+        ],
+        result,
+    )
+
+    retrieved = (
+        get_stored_dockmodel_hydrogen_bond_result(
+            system[
+                "dock_model"
+            ]
+        )
+    )
+
+    self_test_assert_is(
+        retrieved,
+        result,
+    )
+
+
+def _self_test_dockmodel_store_pose_result(
+) -> None:
+    """Test storage of a pose-keyed result."""
+
+    system = make_fake_dockmodel_system()
+
+    result = make_fake_analysis_result(
+        include_statistics=True
+    )
+
+    pose_key = system[
+        "pose_keys"
+    ][
+        0
+    ]
+
+    stored = store_dockmodel_hydrogen_bond_result(
+        system[
+            "dock_model"
+        ],
+        result,
+        pose_key=pose_key,
+    )
+
+    self_test_assert(
+        stored
+    )
+
+    retrieved = (
+        get_stored_dockmodel_hydrogen_bond_result(
+            system[
+                "dock_model"
+            ],
+            pose_key=pose_key,
+        )
+    )
+
+    self_test_assert_is(
+        retrieved,
+        result,
+    )
+
+
+def _self_test_dockmodel_retrieve_missing_result_default(
+) -> None:
+    """Test fallback for an absent stored result."""
+
+    system = make_fake_dockmodel_system()
+
+    fallback = object()
+
+    retrieved = (
+        get_stored_dockmodel_hydrogen_bond_result(
+            system[
+                "dock_model"
+            ],
+            pose_key="missing_pose",
+            default=fallback,
+        )
+    )
+
+    self_test_assert_is(
+        retrieved,
+        fallback,
+    )
+
+
+def _self_test_dockmodel_store_multipose_results(
+) -> None:
+    """Test storage of DockModelHydrogenBondResults."""
+
+    system = make_fake_dockmodel_system()
+
+    results = _self_test_make_multipose_results()
+
+    stored = store_dockmodel_hydrogen_bond_results(
+        system[
+            "dock_model"
+        ],
+        results,
+    )
+
+    self_test_assert(
+        stored
+    )
+
+    self_test_assert_is(
+        system[
+            "dock_model"
+        ].hydrogen_bond_results,
+        results,
+    )
+
+
+# -----------------------------------------------------------------------------
+# DockModel single-pose analysis tests
+# -----------------------------------------------------------------------------
+
+def _self_test_dockmodel_analyze_active_pose(
+) -> None:
+    """Test active-pose analysis through the external function."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=1
+    )
+
+    result = analyze_dockmodel_hydrogen_bonds(
+        system[
+            "dock_model"
+        ],
+        mode=HBOND_MODE_EXPLICIT,
+        include_rejected=True,
+        store_result=True,
+    )
+
+    self_test_assert_isinstance(
+        result,
+        HydrogenBondAnalysisResult,
+    )
+
+    self_test_assert_equal(
+        len(
+            result.hydrogen_bonds
+        ),
+        1,
+    )
+
+    self_test_assert_is(
+        system[
+            "dock_model"
+        ].hydrogen_bond_result,
+        result,
+    )
+
+
+def _self_test_dockmodel_analyze_active_pose_without_storage(
+) -> None:
+    """Test active-pose analysis without storing the result."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=1
+    )
+
+    result = analyze_dockmodel_hydrogen_bonds(
+        system[
+            "dock_model"
+        ],
+        mode=HBOND_MODE_EXPLICIT,
+        include_rejected=True,
+        store_result=False,
+    )
+
+    self_test_assert_isinstance(
+        result,
+        HydrogenBondAnalysisResult,
+    )
+
+    self_test_assert_equal(
+        system[
+            "dock_model"
+        ].hydrogen_bond_result,
+        None,
+    )
+
+
+def _self_test_dockmodel_analyze_selected_pose(
+) -> None:
+    """Test analysis of one selected pose."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=3
+    )
+
+    pose_key = system[
+        "pose_keys"
+    ][
+        1
+    ]
+
+    result = analyze_dockmodel_pose_hydrogen_bonds(
+        system[
+            "dock_model"
+        ],
+        pose_key,
+        mode=HBOND_MODE_EXPLICIT,
+        include_rejected=True,
+        store_result=True,
+    )
+
+    self_test_assert_isinstance(
+        result,
+        HydrogenBondAnalysisResult,
+    )
+
+    self_test_assert_equal(
+        result.metadata[
+            "pose_key"
+        ],
+        pose_key,
+    )
+
+    retrieved = (
+        get_stored_dockmodel_hydrogen_bond_result(
+            system[
+                "dock_model"
+            ],
+            pose_key=pose_key,
+        )
+    )
+
+    self_test_assert_is(
+        retrieved,
+        result,
+    )
+
+
+def _self_test_dockmodel_analysis_statistics_enabled(
+) -> None:
+    """Test statistics generation during DockModel analysis."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=1
+    )
+
+    result = analyze_dockmodel_hydrogen_bonds(
+        system[
+            "dock_model"
+        ],
+        mode=HBOND_MODE_EXPLICIT,
+        calculate_statistics=True,
+    )
+
+    self_test_assert(
+        bool(
+            result.statistics
+        )
+    )
+
+
+def _self_test_dockmodel_analysis_statistics_disabled(
+) -> None:
+    """Test DockModel analysis without statistics."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=1
+    )
+
+    result = analyze_dockmodel_hydrogen_bonds(
+        system[
+            "dock_model"
+        ],
+        mode=HBOND_MODE_EXPLICIT,
+        calculate_statistics=False,
+    )
+
+    self_test_assert_equal(
+        dict(
+            result.statistics
+        ),
+        {}
+    )
+
+
+# -----------------------------------------------------------------------------
+# DockModelHydrogenBondResults dataclass tests
+# -----------------------------------------------------------------------------
+
+def _self_test_multipose_dataclass_basic(
+) -> None:
+    """Test DockModelHydrogenBondResults construction."""
+
+    results = _self_test_make_multipose_results(
+        pose_count=3
+    )
+
+    self_test_assert_isinstance(
+        results,
+        DockModelHydrogenBondResults,
+    )
+
+    self_test_assert_equal(
+        len(
+            results
+        ),
+        3,
+    )
+
+    self_test_assert_equal(
+        results.successful_pose_count,
+        3,
+    )
+
+    self_test_assert_equal(
+        results.failed_pose_count,
+        0,
+    )
+
+
+def _self_test_multipose_dataclass_iteration(
+) -> None:
+    """Test deterministic pose-key iteration."""
+
+    results = _self_test_make_multipose_results(
+        pose_count=3
+    )
+
+    self_test_assert_equal(
+        tuple(
+            results
+        ),
+        results.pose_order,
+    )
+
+
+def _self_test_multipose_dataclass_getitem(
+) -> None:
+    """Test pose-result indexing."""
+
+    results = _self_test_make_multipose_results(
+        pose_count=3
+    )
+
+    pose_key = results.pose_order[
+        1
+    ]
+
+    self_test_assert_is(
+        results[
+            pose_key
+        ],
+        results.results[
+            pose_key
+        ],
+    )
+
+
+def _self_test_multipose_dataclass_get_default(
+) -> None:
+    """Test pose-result fallback retrieval."""
+
+    results = _self_test_make_multipose_results(
+        pose_count=2
+    )
+
+    fallback = object()
+
+    value = results.get(
+        "missing_pose",
+        fallback,
+    )
+
+    self_test_assert_is(
+        value,
+        fallback,
+    )
+
+
+def _self_test_multipose_dataclass_total_count(
+) -> None:
+    """Test summed interaction count across poses."""
+
+    results = _self_test_make_multipose_results(
+        pose_count=3
+    )
+
+    self_test_assert_equal(
+        results.total_hydrogen_bond_count,
+        6,
+    )
+
+
+def _self_test_multipose_dataclass_mean_count(
+) -> None:
+    """Test mean interaction count across poses."""
+
+    results = _self_test_make_multipose_results(
+        pose_count=3
+    )
+
+    self_test_assert_almost_equal(
+        results.mean_hydrogen_bond_count,
+        2.0,
+    )
+
+
+def _self_test_multipose_dataclass_mappings_frozen(
+) -> None:
+    """Test immutability of multi-pose result mappings."""
+
+    results = _self_test_make_multipose_results()
+
+    with self_test_raises(
+        TypeError
+    ):
+        results.results[
+            "new_pose"
+        ] = make_fake_analysis_result()
+
+
+def _self_test_multipose_dataclass_serialization_compact(
+) -> None:
+    """Test compact multi-pose serialization."""
+
+    results = _self_test_make_multipose_results(
+        pose_count=2
+    )
+
+    serialized = results.to_dict(
+        include_full_results=False
+    )
+
+    self_test_assert_mapping_contains(
+        serialized,
+        (
+            "results",
+            "pose_order",
+            "failed_poses",
+            "successful_pose_count",
+            "failed_pose_count",
+            "total_hydrogen_bond_count",
+            "mean_hydrogen_bond_count",
+            "metadata",
+        ),
+    )
+
+    self_test_assert_equal(
+        serialized[
+            "successful_pose_count"
+        ],
+        2,
+    )
+
+
+def _self_test_multipose_dataclass_serialization_full(
+) -> None:
+    """Test full multi-pose serialization."""
+
+    results = _self_test_make_multipose_results(
+        pose_count=2
+    )
+
+    serialized = results.to_dict(
+        include_full_results=True
+    )
+
+    pose_key = results.pose_order[
+        0
+    ]
+
+    self_test_assert_mapping_contains(
+        serialized[
+            "results"
+        ][
+            pose_key
+        ],
+        (
+            "hydrogen_bonds",
+            "residue_hydrogen_bonds",
+            "statistics",
+        ),
+    )
+
+
+def _self_test_multipose_dataclass_failed_poses(
+) -> None:
+    """Test failed-pose metadata."""
+
+    result = make_fake_analysis_result(
+        include_statistics=True
+    )
+
+    results = DockModelHydrogenBondResults(
+        results={
+            "pose_1": result,
+        },
+        pose_order=(
+            "pose_1",
+        ),
+        failed_poses={
+            "pose_2": "ValueError: invalid pose",
+        },
+    )
+
+    self_test_assert_equal(
+        results.successful_pose_count,
+        1,
+    )
+
+    self_test_assert_equal(
+        results.failed_pose_count,
+        1,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Real multi-pose analysis tests
+# -----------------------------------------------------------------------------
+
+def _self_test_multipose_analysis_all_valid(
+) -> None:
+    """Test analysis of all valid poses."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=3
+    )
+
+    results = (
+        analyze_all_dockmodel_pose_hydrogen_bonds(
+            system[
+                "dock_model"
+            ],
+            mode=HBOND_MODE_EXPLICIT,
+            include_rejected=True,
+            store_results=True,
+        )
+    )
+
+    self_test_assert_isinstance(
+        results,
+        DockModelHydrogenBondResults,
+    )
+
+    self_test_assert_equal(
+        results.successful_pose_count,
+        3,
+    )
+
+    self_test_assert_equal(
+        results.failed_pose_count,
+        0,
+    )
+
+    self_test_assert_is(
+        system[
+            "dock_model"
+        ].hydrogen_bond_results,
+        results,
+    )
+
+
+def _self_test_multipose_analysis_subset(
+) -> None:
+    """Test analysis of a selected pose subset."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=4
+    )
+
+    selected_keys = (
+        system[
+            "pose_keys"
+        ][
+            0
+        ],
+        system[
+            "pose_keys"
+        ][
+            2
+        ],
+    )
+
+    results = (
+        analyze_all_dockmodel_pose_hydrogen_bonds(
+            system[
+                "dock_model"
+            ],
+            pose_keys=selected_keys,
+            mode=HBOND_MODE_EXPLICIT,
+            include_rejected=True,
+        )
+    )
+
+    self_test_assert_equal(
+        results.successful_pose_count,
+        2,
+    )
+
+    self_test_assert_equal(
+        results.pose_order,
+        selected_keys,
+    )
+
+
+def _self_test_multipose_analysis_continue_on_error(
+) -> None:
+    """Test continued analysis after an invalid pose."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=2,
+        include_invalid_pose=True,
+    )
+
+    results = (
+        analyze_all_dockmodel_pose_hydrogen_bonds(
+            system[
+                "dock_model"
+            ],
+            mode=HBOND_MODE_EXPLICIT,
+            include_rejected=True,
+            continue_on_error=True,
+        )
+    )
+
+    self_test_assert_equal(
+        results.successful_pose_count,
+        2,
+    )
+
+    self_test_assert_equal(
+        results.failed_pose_count,
+        1,
+    )
+
+    self_test_assert(
+        "invalid_pose"
+        in results.failed_poses
+    )
+
+
+def _self_test_multipose_analysis_stop_on_error(
+) -> None:
+    """Test immediate failure for an invalid pose."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=1,
+        include_invalid_pose=True,
+    )
+
+    with self_test_raises(
+        ValueError
+    ):
+        analyze_all_dockmodel_pose_hydrogen_bonds(
+            system[
+                "dock_model"
+            ],
+            mode=HBOND_MODE_EXPLICIT,
+            continue_on_error=False,
+        )
+
+
+def _self_test_multipose_analysis_metadata(
+) -> None:
+    """Test multi-pose analysis metadata."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=2
+    )
+
+    results = (
+        analyze_all_dockmodel_pose_hydrogen_bonds(
+            system[
+                "dock_model"
+            ],
+            mode=HBOND_MODE_EXPLICIT,
+        )
+    )
+
+    self_test_assert_equal(
+        results.metadata[
+            "requested_pose_count"
+        ],
+        2,
+    )
+
+    self_test_assert_equal(
+        results.metadata[
+            "successful_pose_count"
+        ],
+        2,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Multi-pose ranking and summary tests
+# -----------------------------------------------------------------------------
+
+def _self_test_multipose_ranking_by_count(
+) -> None:
+    """Test pose ranking by interaction count."""
+
+    results = _self_test_make_multipose_results(
+        pose_count=3
+    )
+
+    ranking = rank_dockmodel_poses_by_hydrogen_bonds(
+        results,
+        metric="hydrogen_bond_count",
+    )
+
+    self_test_assert_equal(
+        ranking[
+            0
+        ][
+            0
+        ],
+        "pose_3",
+    )
+
+    self_test_assert_equal(
+        ranking[
+            -1
+        ][
+            0
+        ],
+        "pose_1",
+    )
+
+
+def _self_test_multipose_ranking_by_strong_count(
+) -> None:
+    """Test pose ranking by strong-interaction count."""
+
+    results = _self_test_make_multipose_results(
+        pose_count=3
+    )
+
+    ranking = rank_dockmodel_poses_by_hydrogen_bonds(
+        results,
+        metric="strong_count",
+    )
+
+    self_test_assert_equal(
+        len(
+            ranking
+        ),
+        3,
+    )
+
+
+def _self_test_multipose_ranking_by_mean_strength(
+) -> None:
+    """Test pose ranking by mean geometric strength."""
+
+    results = _self_test_make_multipose_results(
+        pose_count=3
+    )
+
+    ranking = rank_dockmodel_poses_by_hydrogen_bonds(
+        results,
+        metric="mean_strength",
+    )
+
+    self_test_assert_equal(
+        len(
+            ranking
+        ),
+        3,
+    )
+
+
+def _self_test_multipose_ranking_weakest_first(
+) -> None:
+    """Test ascending pose ranking."""
+
+    results = _self_test_make_multipose_results(
+        pose_count=3
+    )
+
+    ranking = rank_dockmodel_poses_by_hydrogen_bonds(
+        results,
+        metric="hydrogen_bond_count",
+        strongest_first=False,
+    )
+
+    self_test_assert_equal(
+        ranking[
+            0
+        ][
+            0
+        ],
+        "pose_1",
+    )
+
+
+def _self_test_multipose_ranking_invalid_metric(
+) -> None:
+    """Test rejection of an invalid pose-ranking metric."""
+
+    with self_test_raises(
+        ValueError
+    ):
+        rank_dockmodel_poses_by_hydrogen_bonds(
+            _self_test_make_multipose_results(),
+            metric="invalid_metric",
+        )
+
+
+def _self_test_multipose_summary_text(
+) -> None:
+    """Test multi-pose textual summary."""
+
+    results = _self_test_make_multipose_results(
+        pose_count=3
+    )
+
+    summary = (
+        summarize_dockmodel_hydrogen_bond_results(
+            results
+        )
+    )
+
+    self_test_assert_isinstance(
+        summary,
+        str,
+    )
+
+    self_test_assert(
+        "3 successful"
+        in summary
+    )
+
+    self_test_assert(
+        "pose_3"
+        in summary
+    )
+
+
+def _self_test_multipose_summary_without_pose_lines(
+) -> None:
+    """Test compact multi-pose textual summary."""
+
+    results = _self_test_make_multipose_results(
+        pose_count=2
+    )
+
+    summary = (
+        summarize_dockmodel_hydrogen_bond_results(
+            results,
+            include_pose_lines=False,
+        )
+    )
+
+    self_test_assert(
+        "pose_1:"
+        not in summary
+    )
+
+    self_test_assert(
+        "2 successful"
+        in summary
+    )
+
+
+def _self_test_multipose_summary_failed_pose(
+) -> None:
+    """Test failed-pose reporting in textual summaries."""
+
+    result = make_fake_analysis_result(
+        include_statistics=True
+    )
+
+    results = DockModelHydrogenBondResults(
+        results={
+            "pose_1": result,
+        },
+        pose_order=(
+            "pose_1",
+        ),
+        failed_poses={
+            "pose_2": "ValueError: invalid pose",
+        },
+    )
+
+    summary = (
+        summarize_dockmodel_hydrogen_bond_results(
+            results
+        )
+    )
+
+    self_test_assert(
+        "pose_2"
+        in summary
+    )
+
+    self_test_assert(
+        "invalid pose"
+        in summary
+    )
+
+
+# -----------------------------------------------------------------------------
+# Dynamic method-attachment tests
+# -----------------------------------------------------------------------------
+
+def _self_test_dockmodel_method_attachment(
+) -> None:
+    """Test dynamic hydrogen-bond method attachment."""
+
+    class LocalDockModel:
+        pass
+
+    attached = attach_hydrogen_bond_methods_to_dockmodel(
+        LocalDockModel,
+        overwrite=False,
+    )
+
+    self_test_assert(
+        "analyze_hydrogen_bonds"
+        in attached
+    )
+
+    self_test_assert(
+        callable(
+            getattr(
+                LocalDockModel,
+                "analyze_hydrogen_bonds",
+                None,
+            )
+        )
+    )
+
+
+def _self_test_dockmodel_method_attachment_status(
+) -> None:
+    """Test method-attachment status detection."""
+
+    class LocalDockModel:
+        pass
+
+    attach_hydrogen_bond_methods_to_dockmodel(
+        LocalDockModel
+    )
+
+    self_test_assert(
+        dockmodel_hydrogen_bond_methods_are_attached(
+            LocalDockModel
+        )
+    )
+
+
+def _self_test_dockmodel_method_attachment_no_overwrite(
+) -> None:
+    """Test preservation of an existing method."""
+
+    sentinel = object()
+
+    class LocalDockModel:
+        analyze_hydrogen_bonds = sentinel
+
+    attached = attach_hydrogen_bond_methods_to_dockmodel(
+        LocalDockModel,
+        overwrite=False,
+    )
+
+    self_test_assert(
+        "analyze_hydrogen_bonds"
+        not in attached
+    )
+
+    self_test_assert_is(
+        LocalDockModel.analyze_hydrogen_bonds,
+        sentinel,
+    )
+
+
+def _self_test_dockmodel_method_attachment_overwrite(
+) -> None:
+    """Test replacement of an existing method."""
+
+    class LocalDockModel:
+        analyze_hydrogen_bonds = object()
+
+    attached = attach_hydrogen_bond_methods_to_dockmodel(
+        LocalDockModel,
+        overwrite=True,
+    )
+
+    self_test_assert(
+        "analyze_hydrogen_bonds"
+        in attached
+    )
+
+    self_test_assert(
+        callable(
+            LocalDockModel.analyze_hydrogen_bonds
+        )
+    )
+
+
+def _self_test_dockmodel_bound_active_analysis(
+) -> None:
+    """Test active-pose analysis through an attached bound method."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=1
+    )
+
+    attach_hydrogen_bond_methods_to_dockmodel(
+        FakeDockModel,
+        overwrite=True,
+    )
+
+    result = (
+        system[
+            "dock_model"
+        ].analyze_hydrogen_bonds(
+            mode=HBOND_MODE_EXPLICIT,
+            include_rejected=True,
+        )
+    )
+
+    self_test_assert_isinstance(
+        result,
+        HydrogenBondAnalysisResult,
+    )
+
+
+def _self_test_dockmodel_bound_pose_analysis(
+) -> None:
+    """Test selected-pose analysis through an attached method."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=2
+    )
+
+    attach_hydrogen_bond_methods_to_dockmodel(
+        FakeDockModel,
+        overwrite=True,
+    )
+
+    pose_key = system[
+        "pose_keys"
+    ][
+        1
+    ]
+
+    result = (
+        system[
+            "dock_model"
+        ].analyze_pose_hydrogen_bonds(
+            pose_key,
+            mode=HBOND_MODE_EXPLICIT,
+            include_rejected=True,
+        )
+    )
+
+    self_test_assert_equal(
+        result.metadata[
+            "pose_key"
+        ],
+        pose_key,
+    )
+
+
+def _self_test_dockmodel_bound_all_pose_analysis(
+) -> None:
+    """Test all-pose analysis through an attached method."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=2
+    )
+
+    attach_hydrogen_bond_methods_to_dockmodel(
+        FakeDockModel,
+        overwrite=True,
+    )
+
+    results = (
+        system[
+            "dock_model"
+        ].analyze_all_pose_hydrogen_bonds(
+            mode=HBOND_MODE_EXPLICIT,
+            include_rejected=True,
+        )
+    )
+
+    self_test_assert_isinstance(
+        results,
+        DockModelHydrogenBondResults,
+    )
+
+    self_test_assert_equal(
+        results.successful_pose_count,
+        2,
+    )
+
+
+def _self_test_dockmodel_bound_get_result(
+) -> None:
+    """Test stored-result retrieval through an attached method."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=1
+    )
+
+    attach_hydrogen_bond_methods_to_dockmodel(
+        FakeDockModel,
+        overwrite=True,
+    )
+
+    result = make_fake_analysis_result(
+        include_statistics=True
+    )
+
+    store_dockmodel_hydrogen_bond_result(
+        system[
+            "dock_model"
+        ],
+        result,
+    )
+
+    retrieved = (
+        system[
+            "dock_model"
+        ].get_hydrogen_bond_result()
+    )
+
+    self_test_assert_is(
+        retrieved,
+        result,
+    )
+
+
+def _self_test_dockmodel_bound_summary_active(
+) -> None:
+    """Test active-result summary through an attached method."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=1
+    )
+
+    attach_hydrogen_bond_methods_to_dockmodel(
+        FakeDockModel,
+        overwrite=True,
+    )
+
+    result = make_fake_analysis_result(
+        include_statistics=True
+    )
+
+    store_dockmodel_hydrogen_bond_result(
+        system[
+            "dock_model"
+        ],
+        result,
+    )
+
+    summary = (
+        system[
+            "dock_model"
+        ].hydrogen_bond_summary()
+    )
+
+    self_test_assert_isinstance(
+        summary,
+        str,
+    )
+
+    self_test_assert(
+        "hydrogen"
+        in summary.lower()
+    )
+
+
+def _self_test_dockmodel_bound_summary_multipose(
+) -> None:
+    """Test multi-pose summary through an attached method."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=2
+    )
+
+    attach_hydrogen_bond_methods_to_dockmodel(
+        FakeDockModel,
+        overwrite=True,
+    )
+
+    results = _self_test_make_multipose_results(
+        pose_count=2
+    )
+
+    store_dockmodel_hydrogen_bond_results(
+        system[
+            "dock_model"
+        ],
+        results,
+    )
+
+    summary = (
+        system[
+            "dock_model"
+        ].hydrogen_bond_summary()
+    )
+
+    self_test_assert(
+        "2 successful"
+        in summary
+    )
+
+
+def _self_test_dockmodel_bound_summary_missing(
+) -> None:
+    """Test missing stored-result summary handling."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=1
+    )
+
+    attach_hydrogen_bond_methods_to_dockmodel(
+        FakeDockModel,
+        overwrite=True,
+    )
+
+    with self_test_raises(
+        ValueError
+    ):
+        system[
+            "dock_model"
+        ].hydrogen_bond_summary()
+
+
+# -----------------------------------------------------------------------------
+# Grouped Section 12.4 runners
+# -----------------------------------------------------------------------------
+
+def run_hbond_statistics_self_tests(
+    *,
+    raise_on_failure: bool = False,
+) -> SelfTestReport:
+    """
+    Run Section 10 statistical self-tests.
+
+    Parameters
+    ----------
+    raise_on_failure : bool, optional
+        Whether the first failure should be reraised.
+
+    Returns
+    -------
+    SelfTestReport
+        Statistics test report.
+    """
+
+    test_cases = (
+        (
+            "statistics.numeric.finite_array",
+            _self_test_statistics_finite_float_array,
+        ),
+        (
+            "statistics.numeric.summary",
+            _self_test_statistics_numeric_summary,
+        ),
+        (
+            "statistics.numeric.summary_empty",
+            _self_test_statistics_numeric_summary_empty,
+        ),
+        (
+            "statistics.numeric.numpy_types",
+            _self_test_statistics_numeric_summary_numpy_types,
+        ),
+        (
+            "statistics.numeric.serialize",
+            _self_test_statistics_serialize_numeric_summary,
+        ),
+        (
+            "statistics.counts.mode",
+            _self_test_statistics_mode_counts,
+        ),
+        (
+            "statistics.counts.direction",
+            _self_test_statistics_direction_counts,
+        ),
+        (
+            "statistics.counts.roles",
+            _self_test_statistics_role_counts,
+        ),
+        (
+            "statistics.counts.unique_atoms",
+            _self_test_statistics_unique_atoms,
+        ),
+        (
+            "statistics.collect.distances",
+            _self_test_statistics_collect_distances,
+        ),
+        (
+            "statistics.collect.angles",
+            _self_test_statistics_collect_angles,
+        ),
+        (
+            "statistics.collect.strength_scores",
+            _self_test_statistics_collect_strength_scores,
+        ),
+        (
+            "statistics.distribution.distances",
+            _self_test_statistics_distance_statistics,
+        ),
+        (
+            "statistics.distribution.angles",
+            _self_test_statistics_angle_statistics,
+        ),
+        (
+            "statistics.distribution.scores",
+            _self_test_statistics_score_statistics,
+        ),
+        (
+            "statistics.percentages.classification",
+            _self_test_statistics_classification_percentages,
+        ),
+        (
+            "statistics.percentages.mode",
+            _self_test_statistics_mode_percentages,
+        ),
+        (
+            "statistics.percentages.direction",
+            _self_test_statistics_direction_percentages,
+        ),
+        (
+            "statistics.percentages.empty",
+            _self_test_statistics_empty_percentages,
+        ),
+        (
+            "statistics.ranking.strongest_first",
+            _self_test_statistics_rank_hydrogen_bonds,
+        ),
+        (
+            "statistics.ranking.weakest_first",
+            _self_test_statistics_rank_hydrogen_bonds_weakest_first,
+        ),
+        (
+            "statistics.ranking.top",
+            _self_test_statistics_get_top_hydrogen_bonds,
+        ),
+        (
+            "statistics.ranking.top_zero",
+            _self_test_statistics_get_top_hydrogen_bonds_zero,
+        ),
+        (
+            "statistics.residue.strength",
+            _self_test_statistics_residue_strength_statistics,
+        ),
+        (
+            "statistics.residue.summary",
+            _self_test_statistics_residue_summary,
+        ),
+        (
+            "statistics.residue.summaries",
+            _self_test_statistics_residue_summaries,
+        ),
+        (
+            "statistics.residue.global",
+            _self_test_statistics_residue_global_statistics,
+        ),
+        (
+            "statistics.global.calculate",
+            _self_test_statistics_calculate_global,
+        ),
+        (
+            "statistics.global.empty",
+            _self_test_statistics_calculate_global_empty,
+        ),
+        (
+            "statistics.global.serialize",
+            _self_test_statistics_serialize_global,
+        ),
+        (
+            "statistics.result.attach",
+            _self_test_statistics_attach_to_result,
+        ),
+        (
+            "statistics.result.calculate",
+            _self_test_statistics_calculate_from_result,
+        ),
+        (
+            "statistics.pipeline.complete",
+            _self_test_statistics_complete_pipeline,
+        ),
+    )
+
+    return run_self_test_group(
+        test_cases,
+        module_name=(
+            f"{SELF_TEST_SECTION_12_4_NAME}.statistics"
+        ),
+        raise_on_failure=raise_on_failure,
+        metadata={
+            "section": "12.4",
+            "group": "statistics",
+        },
+    )
+
+
+def run_hbond_serialization_self_tests(
+    *,
+    raise_on_failure: bool = False,
+) -> SelfTestReport:
+    """
+    Run Section 10 serialization and text-summary self-tests.
+
+    Parameters
+    ----------
+    raise_on_failure : bool, optional
+        Whether the first failure should be reraised.
+
+    Returns
+    -------
+    SelfTestReport
+        Serialization test report.
+    """
+
+    test_cases = (
+        (
+            "serialization.residue_key",
+            _self_test_serialization_format_residue_key,
+        ),
+        (
+            "serialization.hbond_record",
+            _self_test_serialization_hbond_summary_record,
+        ),
+        (
+            "serialization.hbond_records",
+            _self_test_serialization_hbond_summary_records,
+        ),
+        (
+            "serialization.hbond_records_empty",
+            _self_test_serialization_empty_hbond_records,
+        ),
+        (
+            "serialization.text.statistics_summary",
+            _self_test_serialization_format_summary,
+        ),
+        (
+            "serialization.text.result_summary",
+            _self_test_serialization_summarize_result,
+        ),
+        (
+            "serialization.text.empty_result",
+            _self_test_serialization_summary_empty_result,
+        ),
+        (
+            "serialization.multipose.compact",
+            _self_test_multipose_dataclass_serialization_compact,
+        ),
+        (
+            "serialization.multipose.full",
+            _self_test_multipose_dataclass_serialization_full,
+        ),
+    )
+
+    return run_self_test_group(
+        test_cases,
+        module_name=(
+            f"{SELF_TEST_SECTION_12_4_NAME}.serialization"
+        ),
+        raise_on_failure=raise_on_failure,
+        metadata={
+            "section": "12.4",
+            "group": "serialization",
+        },
+    )
+
+
+def run_hbond_dockmodel_integration_self_tests(
+    *,
+    raise_on_failure: bool = False,
+) -> SelfTestReport:
+    """
+    Run Section 11 DockModel integration self-tests.
+
+    Parameters
+    ----------
+    raise_on_failure : bool, optional
+        Whether the first failure should be reraised.
+
+    Returns
+    -------
+    SelfTestReport
+        DockModel integration test report.
+    """
+
+    test_cases = (
+        (
+            "dockmodel.extract.receptor",
+            _self_test_dockmodel_get_receptor,
+        ),
+        (
+            "dockmodel.extract.receptor_atoms",
+            _self_test_dockmodel_get_receptor_atoms,
+        ),
+        (
+            "dockmodel.extract.active_ligand",
+            _self_test_dockmodel_get_active_ligand,
+        ),
+        (
+            "dockmodel.extract.active_ligand_atoms",
+            _self_test_dockmodel_get_active_ligand_atoms,
+        ),
+        (
+            "dockmodel.extract.poses_mapping",
+            _self_test_dockmodel_get_poses_mapping,
+        ),
+        (
+            "dockmodel.extract.pose_by_key",
+            _self_test_dockmodel_get_pose_by_key,
+        ),
+        (
+            "dockmodel.extract.pose_by_index",
+            _self_test_dockmodel_get_pose_by_zero_based_index,
+        ),
+        (
+            "dockmodel.extract.pose_atoms",
+            _self_test_dockmodel_get_pose_atoms,
+        ),
+        (
+            "dockmodel.extract.missing_receptor",
+            _self_test_dockmodel_missing_receptor,
+        ),
+        (
+            "dockmodel.extract.missing_poses",
+            _self_test_dockmodel_missing_poses,
+        ),
+        (
+            "dockmodel.storage.active",
+            _self_test_dockmodel_store_active_result,
+        ),
+        (
+            "dockmodel.storage.retrieve_active",
+            _self_test_dockmodel_retrieve_active_result,
+        ),
+        (
+            "dockmodel.storage.pose",
+            _self_test_dockmodel_store_pose_result,
+        ),
+        (
+            "dockmodel.storage.missing_default",
+            _self_test_dockmodel_retrieve_missing_result_default,
+        ),
+        (
+            "dockmodel.storage.multipose",
+            _self_test_dockmodel_store_multipose_results,
+        ),
+        (
+            "dockmodel.analysis.active",
+            _self_test_dockmodel_analyze_active_pose,
+        ),
+        (
+            "dockmodel.analysis.active_no_storage",
+            _self_test_dockmodel_analyze_active_pose_without_storage,
+        ),
+        (
+            "dockmodel.analysis.selected_pose",
+            _self_test_dockmodel_analyze_selected_pose,
+        ),
+        (
+            "dockmodel.analysis.statistics_enabled",
+            _self_test_dockmodel_analysis_statistics_enabled,
+        ),
+        (
+            "dockmodel.analysis.statistics_disabled",
+            _self_test_dockmodel_analysis_statistics_disabled,
+        ),
+        (
+            "dockmodel.methods.attach",
+            _self_test_dockmodel_method_attachment,
+        ),
+        (
+            "dockmodel.methods.status",
+            _self_test_dockmodel_method_attachment_status,
+        ),
+        (
+            "dockmodel.methods.no_overwrite",
+            _self_test_dockmodel_method_attachment_no_overwrite,
+        ),
+        (
+            "dockmodel.methods.overwrite",
+            _self_test_dockmodel_method_attachment_overwrite,
+        ),
+        (
+            "dockmodel.methods.bound_active",
+            _self_test_dockmodel_bound_active_analysis,
+        ),
+        (
+            "dockmodel.methods.bound_pose",
+            _self_test_dockmodel_bound_pose_analysis,
+        ),
+        (
+            "dockmodel.methods.bound_all",
+            _self_test_dockmodel_bound_all_pose_analysis,
+        ),
+        (
+            "dockmodel.methods.bound_get",
+            _self_test_dockmodel_bound_get_result,
+        ),
+        (
+            "dockmodel.methods.bound_summary_active",
+            _self_test_dockmodel_bound_summary_active,
+        ),
+        (
+            "dockmodel.methods.bound_summary_multipose",
+            _self_test_dockmodel_bound_summary_multipose,
+        ),
+        (
+            "dockmodel.methods.bound_summary_missing",
+            _self_test_dockmodel_bound_summary_missing,
+        ),
+    )
+
+    return run_self_test_group(
+        test_cases,
+        module_name=(
+            f"{SELF_TEST_SECTION_12_4_NAME}.dockmodel"
+        ),
+        raise_on_failure=raise_on_failure,
+        metadata={
+            "section": "12.4",
+            "group": "dockmodel",
+        },
+    )
+
+
+def run_hbond_multipose_self_tests(
+    *,
+    raise_on_failure: bool = False,
+) -> SelfTestReport:
+    """
+    Run Section 11 multi-pose self-tests.
+
+    Parameters
+    ----------
+    raise_on_failure : bool, optional
+        Whether the first failure should be reraised.
+
+    Returns
+    -------
+    SelfTestReport
+        Multi-pose test report.
+    """
+
+    test_cases = (
+        (
+            "multipose.dataclass.basic",
+            _self_test_multipose_dataclass_basic,
+        ),
+        (
+            "multipose.dataclass.iteration",
+            _self_test_multipose_dataclass_iteration,
+        ),
+        (
+            "multipose.dataclass.getitem",
+            _self_test_multipose_dataclass_getitem,
+        ),
+        (
+            "multipose.dataclass.get_default",
+            _self_test_multipose_dataclass_get_default,
+        ),
+        (
+            "multipose.dataclass.total_count",
+            _self_test_multipose_dataclass_total_count,
+        ),
+        (
+            "multipose.dataclass.mean_count",
+            _self_test_multipose_dataclass_mean_count,
+        ),
+        (
+            "multipose.dataclass.frozen_mappings",
+            _self_test_multipose_dataclass_mappings_frozen,
+        ),
+        (
+            "multipose.dataclass.failed_poses",
+            _self_test_multipose_dataclass_failed_poses,
+        ),
+        (
+            "multipose.analysis.all_valid",
+            _self_test_multipose_analysis_all_valid,
+        ),
+        (
+            "multipose.analysis.subset",
+            _self_test_multipose_analysis_subset,
+        ),
+        (
+            "multipose.analysis.continue_on_error",
+            _self_test_multipose_analysis_continue_on_error,
+        ),
+        (
+            "multipose.analysis.stop_on_error",
+            _self_test_multipose_analysis_stop_on_error,
+        ),
+        (
+            "multipose.analysis.metadata",
+            _self_test_multipose_analysis_metadata,
+        ),
+        (
+            "multipose.ranking.count",
+            _self_test_multipose_ranking_by_count,
+        ),
+        (
+            "multipose.ranking.strong_count",
+            _self_test_multipose_ranking_by_strong_count,
+        ),
+        (
+            "multipose.ranking.mean_strength",
+            _self_test_multipose_ranking_by_mean_strength,
+        ),
+        (
+            "multipose.ranking.weakest_first",
+            _self_test_multipose_ranking_weakest_first,
+        ),
+        (
+            "multipose.ranking.invalid_metric",
+            _self_test_multipose_ranking_invalid_metric,
+        ),
+        (
+            "multipose.summary.text",
+            _self_test_multipose_summary_text,
+        ),
+        (
+            "multipose.summary.compact",
+            _self_test_multipose_summary_without_pose_lines,
+        ),
+        (
+            "multipose.summary.failed_pose",
+            _self_test_multipose_summary_failed_pose,
+        ),
+    )
+
+    return run_self_test_group(
+        test_cases,
+        module_name=(
+            f"{SELF_TEST_SECTION_12_4_NAME}.multipose"
+        ),
+        raise_on_failure=raise_on_failure,
+        metadata={
+            "section": "12.4",
+            "group": "multipose",
+        },
+    )
+
+
+def run_section_12_4_self_tests(
+    *,
+    raise_on_failure: bool = False,
+) -> SelfTestReport:
+    """
+    Run all Section 12.4 self-tests.
+
+    Parameters
+    ----------
+    raise_on_failure : bool, optional
+        Whether the first failure should be reraised.
+
+    Returns
+    -------
+    SelfTestReport
+        Combined Section 12.4 report.
+    """
+
+    combined_report = SelfTestReport(
+        module_name=SELF_TEST_SECTION_12_4_NAME,
+        metadata={
+            "section": "12.4",
+            "description": (
+                SELF_TEST_SECTION_12_4_DESCRIPTION
+            ),
+        },
+    )
+
+    statistics_report = (
+        run_hbond_statistics_self_tests(
+            raise_on_failure=raise_on_failure,
+        )
+    )
+
+    serialization_report = (
+        run_hbond_serialization_self_tests(
+            raise_on_failure=raise_on_failure,
+        )
+    )
+
+    dockmodel_report = (
+        run_hbond_dockmodel_integration_self_tests(
+            raise_on_failure=raise_on_failure,
+        )
+    )
+
+    multipose_report = (
+        run_hbond_multipose_self_tests(
+            raise_on_failure=raise_on_failure,
+        )
+    )
+
+    combined_report.extend(
+        statistics_report.results
+    )
+
+    combined_report.extend(
+        serialization_report.results
+    )
+
+    combined_report.extend(
+        dockmodel_report.results
+    )
+
+    combined_report.extend(
+        multipose_report.results
+    )
+
+    combined_report.metadata.update(
+        {
+            "statistics_test_count": (
+                statistics_report.total_count
+            ),
+            "serialization_test_count": (
+                serialization_report.total_count
+            ),
+            "dockmodel_test_count": (
+                dockmodel_report.total_count
+            ),
+            "multipose_test_count": (
+                multipose_report.total_count
+            ),
+        }
+    )
+
+    return combined_report
+
+
+# -----------------------------------------------------------------------------
+# Public interface
+# -----------------------------------------------------------------------------
+
+_SECTION_12_4_PUBLIC_NAMES: Final[
+    Tuple[
+        str,
+        ...,
+    ]
+] = (
+    "SELF_TEST_SECTION_12_4_NAME",
+    "SELF_TEST_SECTION_12_4_DESCRIPTION",
+    "run_hbond_statistics_self_tests",
+    "run_hbond_serialization_self_tests",
+    "run_hbond_dockmodel_integration_self_tests",
+    "run_hbond_multipose_self_tests",
+    "run_section_12_4_self_tests",
+)
+
+for public_name in _SECTION_12_4_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(
+            public_name
+        )
+
+
+# =============================================================================
+# End of Section 12.4
+# =============================================================================
+
+# =============================================================================
+# Section 12.5 — Final self-test runner
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Final runner constants
+# -----------------------------------------------------------------------------
+
+SELF_TEST_SECTION_12_5_NAME: Final[
+    str
+] = "hbonds.self_tests"
+
+SELF_TEST_SECTION_12_5_DESCRIPTION: Final[
+    str
+] = (
+        "Complete self-test runner for the hbonds module"
+    )
+
+SELF_TEST_GROUP_INFRASTRUCTURE: Final[
+    str
+] = "infrastructure"
+
+SELF_TEST_GROUP_DATACLASSES: Final[
+    str
+] = "dataclasses"
+
+SELF_TEST_GROUP_DONORS_ACCEPTORS: Final[
+    str
+] = "donors_acceptors"
+
+SELF_TEST_GROUP_HYDROGENS: Final[
+    str
+] = "hydrogens"
+
+SELF_TEST_GROUP_GEOMETRY: Final[
+    str
+] = "geometry"
+
+SELF_TEST_GROUP_DETECTION: Final[
+    str
+] = "detection"
+
+SELF_TEST_GROUP_GROUPING: Final[
+    str
+] = "grouping"
+
+SELF_TEST_GROUP_CLASSIFICATION: Final[
+    str
+] = "classification"
+
+SELF_TEST_GROUP_STATISTICS: Final[
+    str
+] = "statistics"
+
+SELF_TEST_GROUP_SERIALIZATION: Final[
+    str
+] = "serialization"
+
+SELF_TEST_GROUP_DOCKMODEL: Final[
+    str
+] = "dockmodel"
+
+SELF_TEST_GROUP_MULTIPOSE: Final[
+    str
+] = "multipose"
+
+SELF_TEST_SECTION_12_1: Final[
+    str
+] = "12.1"
+
+SELF_TEST_SECTION_12_2: Final[
+    str
+] = "12.2"
+
+SELF_TEST_SECTION_12_3: Final[
+    str
+] = "12.3"
+
+SELF_TEST_SECTION_12_4: Final[
+    str
+] = "12.4"
+
+SELF_TEST_SECTION_ALL: Final[
+    str
+] = "all"
+
+SELF_TEST_DEFAULT_INCLUDE_PASSED: Final[
+    bool
+] = True
+
+SELF_TEST_DEFAULT_INCLUDE_SKIPPED: Final[
+    bool
+] = True
+
+SELF_TEST_DEFAULT_PRINT_REPORT: Final[
+    bool
+] = True
+
+SELF_TEST_DEFAULT_RAISE_ON_FAILURE: Final[
+    bool
+] = False
+
+SELF_TEST_DEFAULT_STOP_ON_FAILURE: Final[
+    bool
+] = False
+
+SELF_TEST_DEFAULT_VERBOSITY: Final[
+    int
+] = 1
+
+SELF_TEST_EXIT_SUCCESS: Final[
+    int
+] = 0
+
+SELF_TEST_EXIT_FAILURE: Final[
+    int
+] = 1
+
+SELF_TEST_EXIT_INTERNAL_ERROR: Final[
+    int
+] = 2
+
+
+VALID_SELF_TEST_GROUPS: Final[
+    Tuple[
+        str,
+        ...,
+    ]
+] = (
+    SELF_TEST_GROUP_INFRASTRUCTURE,
+    SELF_TEST_GROUP_DATACLASSES,
+    SELF_TEST_GROUP_DONORS_ACCEPTORS,
+    SELF_TEST_GROUP_HYDROGENS,
+    SELF_TEST_GROUP_GEOMETRY,
+    SELF_TEST_GROUP_DETECTION,
+    SELF_TEST_GROUP_GROUPING,
+    SELF_TEST_GROUP_CLASSIFICATION,
+    SELF_TEST_GROUP_STATISTICS,
+    SELF_TEST_GROUP_SERIALIZATION,
+    SELF_TEST_GROUP_DOCKMODEL,
+    SELF_TEST_GROUP_MULTIPOSE,
+)
+
+
+VALID_SELF_TEST_SECTIONS: Final[
+    Tuple[
+        str,
+        ...,
+    ]
+] = (
+    SELF_TEST_SECTION_12_1,
+    SELF_TEST_SECTION_12_2,
+    SELF_TEST_SECTION_12_3,
+    SELF_TEST_SECTION_12_4,
+    SELF_TEST_SECTION_ALL,
+)
+
+
+SELF_TEST_SECTION_GROUPS: Final[
+    Mapping[
+        str,
+        Tuple[
+            str,
+            ...,
+        ],
+    ]
+] = MappingProxyType(
+    {
+        SELF_TEST_SECTION_12_1: (
+            SELF_TEST_GROUP_INFRASTRUCTURE,
+        ),
+        SELF_TEST_SECTION_12_2: (
+            SELF_TEST_GROUP_DATACLASSES,
+            SELF_TEST_GROUP_DONORS_ACCEPTORS,
+            SELF_TEST_GROUP_HYDROGENS,
+        ),
+        SELF_TEST_SECTION_12_3: (
+            SELF_TEST_GROUP_GEOMETRY,
+            SELF_TEST_GROUP_DETECTION,
+            SELF_TEST_GROUP_GROUPING,
+            SELF_TEST_GROUP_CLASSIFICATION,
+        ),
+        SELF_TEST_SECTION_12_4: (
+            SELF_TEST_GROUP_STATISTICS,
+            SELF_TEST_GROUP_SERIALIZATION,
+            SELF_TEST_GROUP_DOCKMODEL,
+            SELF_TEST_GROUP_MULTIPOSE,
+        ),
+        SELF_TEST_SECTION_ALL: (
+            SELF_TEST_GROUP_INFRASTRUCTURE,
+            SELF_TEST_GROUP_DATACLASSES,
+            SELF_TEST_GROUP_DONORS_ACCEPTORS,
+            SELF_TEST_GROUP_HYDROGENS,
+            SELF_TEST_GROUP_GEOMETRY,
+            SELF_TEST_GROUP_DETECTION,
+            SELF_TEST_GROUP_GROUPING,
+            SELF_TEST_GROUP_CLASSIFICATION,
+            SELF_TEST_GROUP_STATISTICS,
+            SELF_TEST_GROUP_SERIALIZATION,
+            SELF_TEST_GROUP_DOCKMODEL,
+            SELF_TEST_GROUP_MULTIPOSE,
+        ),
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# Final-runner exception
+# -----------------------------------------------------------------------------
+
+class HydrogenBondSelfTestError(
+    RuntimeError
+):
+    """
+    Exception raised when one or more hydrogen-bond self-tests fail.
+
+    Parameters
+    ----------
+    report : SelfTestReport
+        Failed self-test report.
+    """
+
+    def __init__(
+        self,
+        report: SelfTestReport,
+    ) -> None:
+        """Initialize the self-test failure exception."""
+
+        if not isinstance(
+            report,
+            SelfTestReport,
+        ):
+            raise TypeError(
+                "report must be a SelfTestReport instance."
+            )
+
+        self.report = report
+
+        super().__init__(
+            (
+                f"{report.failed_count} of "
+                f"{report.total_count} hydrogen-bond "
+                "self-tests failed."
+            )
+        )
+
+
+# -----------------------------------------------------------------------------
+# Runner definitions
+# -----------------------------------------------------------------------------
+
+SelfTestRunner = Callable[
+    ...,
+    SelfTestReport,
+]
+
+
+def _get_self_test_group_runners(
+) -> Mapping[
+    str,
+    SelfTestRunner,
+]:
+    """
+    Return the available self-test group runners.
+
+    Returns
+    -------
+    mapping
+        Mapping from group names to runner functions.
+
+    Notes
+    -----
+    The mapping is created lazily so every runner is resolved only after all
+    Sections 12.1–12.4 have been defined.
+    """
+
+    return MappingProxyType(
+        {
+            SELF_TEST_GROUP_INFRASTRUCTURE: (
+                run_self_test_infrastructure_tests
+            ),
+            SELF_TEST_GROUP_DATACLASSES: (
+                run_hbond_dataclass_self_tests
+            ),
+            SELF_TEST_GROUP_DONORS_ACCEPTORS: (
+                run_hbond_donor_acceptor_self_tests
+            ),
+            SELF_TEST_GROUP_HYDROGENS: (
+                run_hbond_hydrogen_assignment_self_tests
+            ),
+            SELF_TEST_GROUP_GEOMETRY: (
+                run_hbond_geometry_self_tests
+            ),
+            SELF_TEST_GROUP_DETECTION: (
+                run_hbond_detection_self_tests
+            ),
+            SELF_TEST_GROUP_GROUPING: (
+                run_hbond_grouping_self_tests
+            ),
+            SELF_TEST_GROUP_CLASSIFICATION: (
+                run_hbond_classification_self_tests
+            ),
+            SELF_TEST_GROUP_STATISTICS: (
+                run_hbond_statistics_self_tests
+            ),
+            SELF_TEST_GROUP_SERIALIZATION: (
+                run_hbond_serialization_self_tests
+            ),
+            SELF_TEST_GROUP_DOCKMODEL: (
+                run_hbond_dockmodel_integration_self_tests
+            ),
+            SELF_TEST_GROUP_MULTIPOSE: (
+                run_hbond_multipose_self_tests
+            ),
+        }
+    )
+
+
+# -----------------------------------------------------------------------------
+# Selection normalization
+# -----------------------------------------------------------------------------
+
+def validate_self_test_group(
+    group: str,
+) -> str:
+    """
+    Validate and normalize a self-test group name.
+
+    Parameters
+    ----------
+    group : str
+        Group name.
+
+    Returns
+    -------
+    str
+        Normalized group name.
+
+    Raises
+    ------
+    TypeError
+        If `group` is not a string.
+    ValueError
+        If the group is unsupported.
+    """
+
+    if not isinstance(
+        group,
+        str,
+    ):
+        raise TypeError(
+            "Self-test group must be a string."
+        )
+
+    normalized_group = (
+        group.strip().lower().replace(
+            "-",
+            "_",
+        ).replace(
+            " ",
+            "_",
+        )
+    )
+
+    aliases = {
+        "infrastructure_tests": (
+            SELF_TEST_GROUP_INFRASTRUCTURE
+        ),
+        "dataclass": (
+            SELF_TEST_GROUP_DATACLASSES
+        ),
+        "donor_acceptor": (
+            SELF_TEST_GROUP_DONORS_ACCEPTORS
+        ),
+        "donors": (
+            SELF_TEST_GROUP_DONORS_ACCEPTORS
+        ),
+        "acceptors": (
+            SELF_TEST_GROUP_DONORS_ACCEPTORS
+        ),
+        "hydrogen": (
+            SELF_TEST_GROUP_HYDROGENS
+        ),
+        "hydrogen_assignment": (
+            SELF_TEST_GROUP_HYDROGENS
+        ),
+        "hydrogen_assignments": (
+            SELF_TEST_GROUP_HYDROGENS
+        ),
+        "detection_tests": (
+            SELF_TEST_GROUP_DETECTION
+        ),
+        "residue_grouping": (
+            SELF_TEST_GROUP_GROUPING
+        ),
+        "classifications": (
+            SELF_TEST_GROUP_CLASSIFICATION
+        ),
+        "statistic": (
+            SELF_TEST_GROUP_STATISTICS
+        ),
+        "serialize": (
+            SELF_TEST_GROUP_SERIALIZATION
+        ),
+        "dock_model": (
+            SELF_TEST_GROUP_DOCKMODEL
+        ),
+        "multi_pose": (
+            SELF_TEST_GROUP_MULTIPOSE
+        ),
+        "poses": (
+            SELF_TEST_GROUP_MULTIPOSE
+        ),
+    }
+
+    normalized_group = aliases.get(
+        normalized_group,
+        normalized_group,
+    )
+
+    if normalized_group not in VALID_SELF_TEST_GROUPS:
+        valid_values = ", ".join(
+            VALID_SELF_TEST_GROUPS
+        )
+
+        raise ValueError(
+            f"Unsupported self-test group {group!r}. "
+            f"Valid groups are: {valid_values}."
+        )
+
+    return normalized_group
+
+
+def validate_self_test_section(
+    section: str,
+) -> str:
+    """
+    Validate and normalize a self-test section name.
+
+    Parameters
+    ----------
+    section : str
+        Section identifier.
+
+    Returns
+    -------
+    str
+        Normalized section identifier.
+
+    Raises
+    ------
+    TypeError
+        If `section` is not a string.
+    ValueError
+        If the section is unsupported.
+    """
+
+    if not isinstance(
+        section,
+        str,
+    ):
+        raise TypeError(
+            "Self-test section must be a string."
+        )
+
+    normalized_section = (
+        section.strip().lower()
+    )
+
+    aliases = {
+        "1": SELF_TEST_SECTION_12_1,
+        "2": SELF_TEST_SECTION_12_2,
+        "3": SELF_TEST_SECTION_12_3,
+        "4": SELF_TEST_SECTION_12_4,
+        "section_12_1": SELF_TEST_SECTION_12_1,
+        "section_12_2": SELF_TEST_SECTION_12_2,
+        "section_12_3": SELF_TEST_SECTION_12_3,
+        "section_12_4": SELF_TEST_SECTION_12_4,
+        "12_1": SELF_TEST_SECTION_12_1,
+        "12_2": SELF_TEST_SECTION_12_2,
+        "12_3": SELF_TEST_SECTION_12_3,
+        "12_4": SELF_TEST_SECTION_12_4,
+        "*": SELF_TEST_SECTION_ALL,
+        "complete": SELF_TEST_SECTION_ALL,
+        "full": SELF_TEST_SECTION_ALL,
+    }
+
+    normalized_section = aliases.get(
+        normalized_section,
+        normalized_section,
+    )
+
+    if normalized_section not in VALID_SELF_TEST_SECTIONS:
+        valid_values = ", ".join(
+            VALID_SELF_TEST_SECTIONS
+        )
+
+        raise ValueError(
+            f"Unsupported self-test section {section!r}. "
+            f"Valid sections are: {valid_values}."
+        )
+
+    return normalized_section
+
+
+def _normalize_self_test_selection(
+    *,
+    groups: Optional[
+        Iterable[
+            str
+        ]
+    ] = None,
+    sections: Optional[
+        Iterable[
+            str
+        ]
+    ] = None,
+) -> Tuple[
+    str,
+    ...,
+]:
+    """
+    Normalize selected self-test groups and sections.
+
+    Parameters
+    ----------
+    groups : iterable of str or None, optional
+        Explicit group selection.
+    sections : iterable of str or None, optional
+        Section selection.
+
+    Returns
+    -------
+    tuple of str
+        Ordered unique group names.
+
+    Notes
+    -----
+    If neither `groups` nor `sections` is supplied, every group is selected.
+    When both are supplied, their union is used.
+    """
+
+    selected_groups: List[
+        str
+    ] = []
+
+    if sections is not None:
+        if isinstance(
+            sections,
+            str,
+        ):
+            normalized_sections = (
+                validate_self_test_section(
+                    sections
+                ),
+            )
+
+        else:
+            normalized_sections = tuple(
+                validate_self_test_section(
+                    section
+                )
+                for section in sections
+            )
+
+        for section in normalized_sections:
+            for group in SELF_TEST_SECTION_GROUPS[
+                section
+            ]:
+                if group not in selected_groups:
+                    selected_groups.append(
+                        group
+                    )
+
+    if groups is not None:
+        if isinstance(
+            groups,
+            str,
+        ):
+            normalized_groups = (
+                validate_self_test_group(
+                    groups
+                ),
+            )
+
+        else:
+            normalized_groups = tuple(
+                validate_self_test_group(
+                    group
+                )
+                for group in groups
+            )
+
+        for group in normalized_groups:
+            if group not in selected_groups:
+                selected_groups.append(
+                    group
+                )
+
+    if (
+        groups is None
+        and sections is None
+    ):
+        selected_groups.extend(
+            VALID_SELF_TEST_GROUPS
+        )
+
+    return tuple(
+        selected_groups
+    )
+
+
+# -----------------------------------------------------------------------------
+# Report utilities
+# -----------------------------------------------------------------------------
+
+def merge_self_test_reports(
+    reports: Iterable[
+        SelfTestReport
+    ],
+    *,
+    module_name: str = (
+        SELF_TEST_SECTION_12_5_NAME
+    ),
+    metadata: Optional[
+        Mapping[
+            str,
+            Any,
+        ]
+    ] = None,
+) -> SelfTestReport:
+    """
+    Merge multiple self-test reports.
+
+    Parameters
+    ----------
+    reports : iterable of SelfTestReport
+        Reports to merge.
+    module_name : str, optional
+        Name assigned to the merged report.
+    metadata : mapping or None, optional
+        Additional merged-report metadata.
+
+    Returns
+    -------
+    SelfTestReport
+        Combined report.
+    """
+
+    combined_report = SelfTestReport(
+        module_name=module_name,
+        metadata=(
+            {}
+            if metadata is None
+            else dict(
+                metadata
+            )
+        ),
+    )
+
+    group_summaries: Dict[
+        str,
+        Dict[
+            str,
+            Any,
+        ],
+    ] = {}
+
+    for report in reports:
+        if not isinstance(
+            report,
+            SelfTestReport,
+        ):
+            raise TypeError(
+                "Every report must be a "
+                "SelfTestReport instance."
+            )
+
+        combined_report.extend(
+            report.results
+        )
+
+        group_summaries[
+            report.module_name
+        ] = {
+            "total_count": (
+                report.total_count
+            ),
+            "passed_count": (
+                report.passed_count
+            ),
+            "failed_count": (
+                report.failed_count
+            ),
+            "skipped_count": (
+                report.skipped_count
+            ),
+            "duration_seconds": float(
+                report.total_duration_seconds
+            ),
+            "passed": report.passed,
+        }
+
+    combined_report.metadata[
+        "group_summaries"
+    ] = group_summaries
+
+    return combined_report
+
+
+def get_self_test_failure_messages(
+    report: SelfTestReport,
+) -> Tuple[
+    str,
+    ...,
+]:
+    """
+    Return concise failure messages from a self-test report.
+
+    Parameters
+    ----------
+    report : SelfTestReport
+        Self-test report.
+
+    Returns
+    -------
+    tuple of str
+        Formatted failure messages.
+    """
+
+    if not isinstance(
+        report,
+        SelfTestReport,
+    ):
+        raise TypeError(
+            "report must be a SelfTestReport instance."
+        )
+
+    messages: List[
+        str
+    ] = []
+
+    for result in report.failures():
+        message = (
+            f"{result.name}: "
+            f"{result.exception_type or 'Error'}"
+        )
+
+        if result.message:
+            message += f": {result.message}"
+
+        messages.append(
+            message
+        )
+
+    return tuple(
+        messages
+    )
+
+
+def format_self_test_report(
+    report: SelfTestReport,
+    *,
+    include_passed: bool = (
+        SELF_TEST_DEFAULT_INCLUDE_PASSED
+    ),
+    include_skipped: bool = (
+        SELF_TEST_DEFAULT_INCLUDE_SKIPPED
+    ),
+    include_group_summary: bool = True,
+    include_failures: bool = True,
+    verbosity: int = (
+        SELF_TEST_DEFAULT_VERBOSITY
+    ),
+) -> str:
+    """
+    Format a complete hydrogen-bond self-test report.
+
+    Parameters
+    ----------
+    report : SelfTestReport
+        Report to format.
+    include_passed : bool, optional
+        Whether individual passed tests should be shown.
+    include_skipped : bool, optional
+        Whether individual skipped tests should be shown.
+    include_group_summary : bool, optional
+        Whether per-group summaries should be shown.
+    include_failures : bool, optional
+        Whether a dedicated failure section should be shown.
+    verbosity : int, optional
+        Output verbosity:
+
+        - ``0``: global result only;
+        - ``1``: global result and group summaries;
+        - ``2``: all individual test cases.
+
+    Returns
+    -------
+    str
+        Formatted report.
+    """
+
+    if not isinstance(
+        report,
+        SelfTestReport,
+    ):
+        raise TypeError(
+            "report must be a SelfTestReport instance."
+        )
+
+    if isinstance(
+        verbosity,
+        bool,
+    ) or not isinstance(
+        verbosity,
+        (
+            int,
+            np.integer,
+        ),
+    ):
+        raise TypeError(
+            "verbosity must be an integer."
+        )
+
+    normalized_verbosity = int(
+        verbosity
+    )
+
+    if normalized_verbosity < 0:
+        raise ValueError(
+            "verbosity must be nonnegative."
+        )
+
+    status = (
+        "PASSED"
+        if report.passed
+        else "FAILED"
+    )
+
+    separator = "=" * 78
+
+    lines: List[
+        str
+    ] = [
+        separator,
+        "DockAnalyzer hydrogen-bond self-tests",
+        separator,
+        f"Module: {report.module_name}",
+        f"Status: {status}",
+        (
+            f"Tests: {report.total_count} total | "
+            f"{report.passed_count} passed | "
+            f"{report.failed_count} failed | "
+            f"{report.skipped_count} skipped"
+        ),
+        (
+            "Duration: "
+            f"{float(report.total_duration_seconds):.6f} s"
+        ),
+    ]
+
+    selected_groups = report.metadata.get(
+        "selected_groups"
+    )
+
+    if selected_groups:
+        lines.append(
+            (
+                "Groups: "
+                + ", ".join(
+                    str(
+                        group
+                    )
+                    for group
+                    in selected_groups
+                )
+            )
+        )
+
+    if (
+        normalized_verbosity >= 1
+        and include_group_summary
+    ):
+        group_summaries = report.metadata.get(
+            "group_summaries",
+            {},
+        )
+
+        if isinstance(
+            group_summaries,
+            Mapping,
+        ) and group_summaries:
+            lines.extend(
+                (
+                    "",
+                    "Group summary",
+                    "-" * 78,
+                )
+            )
+
+            for (
+                group_name,
+                group_summary,
+            ) in group_summaries.items():
+                if not isinstance(
+                    group_summary,
+                    Mapping,
+                ):
+                    continue
+
+                group_status = (
+                    "PASSED"
+                    if bool(
+                        group_summary.get(
+                            "passed",
+                            False,
+                        )
+                    )
+                    else "FAILED"
+                )
+
+                lines.append(
+                    (
+                        f"[{group_status}] "
+                        f"{group_name}: "
+                        f"{group_summary.get('passed_count', 0)} passed, "
+                        f"{group_summary.get('failed_count', 0)} failed, "
+                        f"{group_summary.get('skipped_count', 0)} skipped "
+                        f"({group_summary.get('total_count', 0)} total; "
+                        f"{float(group_summary.get('duration_seconds', 0.0)):.6f} s)"
+                    )
+                )
+
+    if (
+        include_failures
+        and report.failed_count > 0
+    ):
+        lines.extend(
+            (
+                "",
+                "Failures",
+                "-" * 78,
+            )
+        )
+
+        for failure_message in (
+            get_self_test_failure_messages(
+                report
+            )
+        ):
+            lines.append(
+                f"- {failure_message}"
+            )
+
+    if normalized_verbosity >= 2:
+        lines.extend(
+            (
+                "",
+                "Individual tests",
+                "-" * 78,
+            )
+        )
+
+        for result in report.results:
+            if (
+                result.passed
+                and not include_passed
+            ):
+                continue
+
+            if (
+                result.skipped
+                and not include_skipped
+            ):
+                continue
+
+            result_status = (
+                result.status.upper()
+            )
+
+            line = (
+                f"[{result_status}] "
+                f"{result.name} "
+                f"({float(result.duration_seconds):.6f} s)"
+            )
+
+            if result.message:
+                line += f": {result.message}"
+
+            lines.append(
+                line
+            )
+
+    lines.append(
+        separator
+    )
+
+    return "\n".join(
+        lines
+    )
+
+
+def print_self_test_report(
+    report: SelfTestReport,
+    *,
+    include_passed: bool = (
+        SELF_TEST_DEFAULT_INCLUDE_PASSED
+    ),
+    include_skipped: bool = (
+        SELF_TEST_DEFAULT_INCLUDE_SKIPPED
+    ),
+    include_group_summary: bool = True,
+    include_failures: bool = True,
+    verbosity: int = (
+        SELF_TEST_DEFAULT_VERBOSITY
+    ),
+    file: Any = None,
+) -> None:
+    """
+    Print a formatted hydrogen-bond self-test report.
+
+    Parameters
+    ----------
+    report : SelfTestReport
+        Report to print.
+    include_passed : bool, optional
+        Whether passed test cases should be shown.
+    include_skipped : bool, optional
+        Whether skipped test cases should be shown.
+    include_group_summary : bool, optional
+        Whether group summaries should be shown.
+    include_failures : bool, optional
+        Whether failure details should be shown.
+    verbosity : int, optional
+        Report verbosity.
+    file : file-like or None, optional
+        Output stream. Defaults to standard output.
+    """
+
+    formatted_report = format_self_test_report(
+        report,
+        include_passed=include_passed,
+        include_skipped=include_skipped,
+        include_group_summary=(
+            include_group_summary
+        ),
+        include_failures=include_failures,
+        verbosity=verbosity,
+    )
+
+    print(
+        formatted_report,
+        file=file,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Complete runner
+# -----------------------------------------------------------------------------
+
+def run_self_tests(
+    *,
+    groups: Optional[
+        Iterable[
+            str
+        ]
+    ] = None,
+    sections: Optional[
+        Iterable[
+            str
+        ]
+    ] = None,
+    raise_on_failure: bool = (
+        SELF_TEST_DEFAULT_RAISE_ON_FAILURE
+    ),
+    stop_on_failure: bool = (
+        SELF_TEST_DEFAULT_STOP_ON_FAILURE
+    ),
+    print_report: bool = (
+        SELF_TEST_DEFAULT_PRINT_REPORT
+    ),
+    include_passed: bool = (
+        SELF_TEST_DEFAULT_INCLUDE_PASSED
+    ),
+    include_skipped: bool = (
+        SELF_TEST_DEFAULT_INCLUDE_SKIPPED
+    ),
+    verbosity: int = (
+        SELF_TEST_DEFAULT_VERBOSITY
+    ),
+) -> SelfTestReport:
+    """
+    Run the complete hydrogen-bond module self-test suite.
+
+    Parameters
+    ----------
+    groups : iterable of str or None, optional
+        Explicit self-test groups to run. If omitted together with `sections`,
+        all groups are executed.
+    sections : iterable of str or None, optional
+        Self-test sections to execute. Accepted values are ``"12.1"``,
+        ``"12.2"``, ``"12.3"``, ``"12.4"`` and ``"all"``.
+    raise_on_failure : bool, optional
+        Whether a :class:`HydrogenBondSelfTestError` should be raised after
+        the report is generated when one or more tests fail.
+    stop_on_failure : bool, optional
+        Whether execution should stop at the first failed test. This option
+        is forwarded to each group runner as `raise_on_failure`.
+    print_report : bool, optional
+        Whether the final report should be printed.
+    include_passed : bool, optional
+        Whether individual passed tests should be printed when verbosity is
+        at least 2.
+    include_skipped : bool, optional
+        Whether individual skipped tests should be printed when verbosity is
+        at least 2.
+    verbosity : int, optional
+        Report verbosity:
+
+        - ``0``: overall status only;
+        - ``1``: overall status plus group summaries;
+        - ``2``: full individual test report.
+
+    Returns
+    -------
+    SelfTestReport
+        Complete self-test report.
+
+    Raises
+    ------
+    ValueError
+        If an unsupported group or section is requested.
+    HydrogenBondSelfTestError
+        If tests fail and `raise_on_failure` is true.
+    """
+
+    selected_groups = (
+        _normalize_self_test_selection(
+            groups=groups,
+            sections=sections,
+        )
+    )
+
+    group_runners = (
+        _get_self_test_group_runners()
+    )
+
+    group_reports: List[
+        SelfTestReport
+    ] = []
+
+    suite_start_time = time.perf_counter()
+
+    for group_name in selected_groups:
+        runner = group_runners[
+            group_name
+        ]
+
+        if stop_on_failure:
+            group_report = runner(
+                raise_on_failure=True
+            )
+
+        else:
+            group_report = runner(
+                raise_on_failure=False
+            )
+
+        group_reports.append(
+            group_report
+        )
+
+        if (
+            stop_on_failure
+            and group_report.failed_count > 0
+        ):
+            break
+
+    suite_duration = np.float64(
+        time.perf_counter()
+        - suite_start_time
+    )
+
+    report = merge_self_test_reports(
+        group_reports,
+        module_name=(
+            SELF_TEST_SECTION_12_5_NAME
+        ),
+        metadata={
+            "section": "12.5",
+            "description": (
+                SELF_TEST_SECTION_12_5_DESCRIPTION
+            ),
+            "selected_groups": (
+                selected_groups
+            ),
+            "requested_group_count": (
+                len(
+                    selected_groups
+                )
+            ),
+            "executed_group_count": (
+                len(
+                    group_reports
+                )
+            ),
+            "stop_on_failure": bool(
+                stop_on_failure
+            ),
+            "suite_duration_seconds": float(
+                suite_duration
+            ),
+        },
+    )
+
+    if print_report:
+        print_self_test_report(
+            report,
+            include_passed=include_passed,
+            include_skipped=include_skipped,
+            verbosity=verbosity,
+        )
+
+    if (
+        raise_on_failure
+        and report.failed_count > 0
+    ):
+        raise HydrogenBondSelfTestError(
+            report
+        )
+
+    return report
+
+
+# -----------------------------------------------------------------------------
+# Convenience runners
+# -----------------------------------------------------------------------------
+
+def run_quick_self_tests(
+    *,
+    print_report: bool = True,
+    raise_on_failure: bool = False,
+) -> SelfTestReport:
+    """
+    Run a compact hydrogen-bond smoke-test suite.
+
+    The quick suite includes infrastructure, dataclasses, geometry, detection,
+    statistics and basic DockModel integration.
+
+    Parameters
+    ----------
+    print_report : bool, optional
+        Whether to print the report.
+    raise_on_failure : bool, optional
+        Whether failures should raise an exception.
+
+    Returns
+    -------
+    SelfTestReport
+        Quick-suite report.
+    """
+
+    return run_self_tests(
+        groups=(
+            SELF_TEST_GROUP_INFRASTRUCTURE,
+            SELF_TEST_GROUP_DATACLASSES,
+            SELF_TEST_GROUP_GEOMETRY,
+            SELF_TEST_GROUP_DETECTION,
+            SELF_TEST_GROUP_STATISTICS,
+            SELF_TEST_GROUP_DOCKMODEL,
+        ),
+        raise_on_failure=raise_on_failure,
+        print_report=print_report,
+        verbosity=1,
+    )
+
+
+def run_full_self_tests(
+    *,
+    print_report: bool = True,
+    raise_on_failure: bool = False,
+    verbosity: int = 1,
+) -> SelfTestReport:
+    """
+    Run every hydrogen-bond self-test.
+
+    Parameters
+    ----------
+    print_report : bool, optional
+        Whether to print the report.
+    raise_on_failure : bool, optional
+        Whether failures should raise an exception.
+    verbosity : int, optional
+        Report verbosity.
+
+    Returns
+    -------
+    SelfTestReport
+        Full-suite report.
+    """
+
+    return run_self_tests(
+        sections=(
+            SELF_TEST_SECTION_ALL,
+        ),
+        raise_on_failure=raise_on_failure,
+        print_report=print_report,
+        verbosity=verbosity,
+    )
+
+
+def hydrogen_bond_self_tests_pass(
+    *,
+    groups: Optional[
+        Iterable[
+            str
+        ]
+    ] = None,
+    sections: Optional[
+        Iterable[
+            str
+        ]
+    ] = None,
+) -> bool:
+    """
+    Return whether the selected self-tests pass.
+
+    Parameters
+    ----------
+    groups : iterable of str or None, optional
+        Selected groups.
+    sections : iterable of str or None, optional
+        Selected sections.
+
+    Returns
+    -------
+    bool
+        True if all selected tests pass.
+    """
+
+    report = run_self_tests(
+        groups=groups,
+        sections=sections,
+        raise_on_failure=False,
+        print_report=False,
+    )
+
+    return report.passed
+
+
+# -----------------------------------------------------------------------------
+# Command-line argument helpers
+# -----------------------------------------------------------------------------
+
+def _parse_self_test_cli_arguments(
+    arguments: Sequence[
+        str
+    ],
+) -> Dict[
+    str,
+    Any,
+]:
+    """
+    Parse lightweight self-test command-line arguments.
+
+    Parameters
+    ----------
+    arguments : sequence of str
+        Command-line arguments excluding the executable and script name.
+
+    Returns
+    -------
+    dict
+        Parsed runner arguments.
+
+    Notes
+    -----
+    Supported arguments are:
+
+    ``--quick``
+        Run the quick smoke-test suite.
+
+    ``--section VALUE``
+        Run one section. May be repeated.
+
+    ``--group VALUE``
+        Run one group. May be repeated.
+
+    ``--quiet``
+        Do not print the report.
+
+    ``--verbose``
+        Print individual test cases.
+
+    ``--stop-on-failure``
+        Stop on the first failing test.
+
+    ``--raise-on-failure``
+        Raise :class:`HydrogenBondSelfTestError` after reporting failures.
+    """
+
+    parsed: Dict[
+        str,
+        Any,
+    ] = {
+        "quick": False,
+        "sections": [],
+        "groups": [],
+        "print_report": True,
+        "verbosity": 1,
+        "stop_on_failure": False,
+        "raise_on_failure": False,
+    }
+
+    argument_index = 0
+
+    while argument_index < len(
+        arguments
+    ):
+        argument = str(
+            arguments[
+                argument_index
+            ]
+        ).strip()
+
+        if argument == "--quick":
+            parsed[
+                "quick"
+            ] = True
+
+        elif argument == "--quiet":
+            parsed[
+                "print_report"
+            ] = False
+
+        elif argument in (
+            "--verbose",
+            "-v",
+        ):
+            parsed[
+                "verbosity"
+            ] = 2
+
+        elif argument in (
+            "--summary",
+            "-s",
+        ):
+            parsed[
+                "verbosity"
+            ] = 0
+
+        elif argument == "--stop-on-failure":
+            parsed[
+                "stop_on_failure"
+            ] = True
+
+        elif argument == "--raise-on-failure":
+            parsed[
+                "raise_on_failure"
+            ] = True
+
+        elif argument in (
+            "--section",
+            "--group",
+        ):
+            value_index = (
+                argument_index
+                + 1
+            )
+
+            if value_index >= len(
+                arguments
+            ):
+                raise ValueError(
+                    f"{argument} requires a value."
+                )
+
+            value = str(
+                arguments[
+                    value_index
+                ]
+            ).strip()
+
+            if not value:
+                raise ValueError(
+                    f"{argument} value cannot be empty."
+                )
+
+            if argument == "--section":
+                parsed[
+                    "sections"
+                ].append(
+                    value
+                )
+
+            else:
+                parsed[
+                    "groups"
+                ].append(
+                    value
+                )
+
+            argument_index += 1
+
+        elif argument in (
+            "--help",
+            "-h",
+        ):
+            parsed[
+                "help"
+            ] = True
+
+        else:
+            raise ValueError(
+                f"Unsupported self-test argument "
+                f"{argument!r}."
+            )
+
+        argument_index += 1
+
+    return parsed
+
+
+def format_self_test_cli_help(
+) -> str:
+    """
+    Return command-line help for the self-test runner.
+
+    Returns
+    -------
+    str
+        Help text.
+    """
+
+    return "\n".join(
+        (
+            "DockAnalyzer hbonds.py self-tests",
+            "",
+            "Usage:",
+            "  python hbonds.py [options]",
+            "",
+            "Options:",
+            "  --quick                 Run the quick smoke-test suite.",
+            "  --section VALUE         Run section 12.1, 12.2, 12.3, 12.4 or all.",
+            "  --group VALUE           Run one named self-test group.",
+            "  --summary, -s           Print only the global summary.",
+            "  --verbose, -v           Print every individual test result.",
+            "  --quiet                  Do not print the report.",
+            "  --stop-on-failure        Stop at the first failure.",
+            "  --raise-on-failure       Raise an exception if tests fail.",
+            "  --help, -h               Show this help message.",
+            "",
+            "Available groups:",
+            (
+                "  "
+                + ", ".join(
+                    VALID_SELF_TEST_GROUPS
+                )
+            ),
+        )
+    )
+
+
+def self_test_main(
+    arguments: Optional[
+        Sequence[
+            str
+        ]
+    ] = None,
+) -> int:
+    """
+    Execute the hydrogen-bond self-tests as a command-line program.
+
+    Parameters
+    ----------
+    arguments : sequence of str or None, optional
+        Command-line arguments excluding the executable and script name.
+        When omitted, ``sys.argv[1:]`` is used.
+
+    Returns
+    -------
+    int
+        Process exit code:
+
+        - ``0`` if all selected tests pass;
+        - ``1`` if one or more tests fail;
+        - ``2`` if the runner itself encounters an internal error.
+    """
+
+    import sys
+
+    effective_arguments = (
+        tuple(
+            sys.argv[
+                1:
+            ]
+        )
+        if arguments is None
+        else tuple(
+            arguments
+        )
+    )
+
+    try:
+        parsed_arguments = (
+            _parse_self_test_cli_arguments(
+                effective_arguments
+            )
+        )
+
+        if parsed_arguments.get(
+            "help",
+            False,
+        ):
+            print(
+                format_self_test_cli_help()
+            )
+
+            return SELF_TEST_EXIT_SUCCESS
+
+        if parsed_arguments[
+            "quick"
+        ]:
+            report = run_quick_self_tests(
+                print_report=(
+                    parsed_arguments[
+                        "print_report"
+                    ]
+                ),
+                raise_on_failure=False,
+            )
+
+        else:
+            selected_sections = (
+                tuple(
+                    parsed_arguments[
+                        "sections"
+                    ]
+                )
+                or None
+            )
+
+            selected_groups = (
+                tuple(
+                    parsed_arguments[
+                        "groups"
+                    ]
+                )
+                or None
+            )
+
+            report = run_self_tests(
+                groups=selected_groups,
+                sections=selected_sections,
+                raise_on_failure=False,
+                stop_on_failure=(
+                    parsed_arguments[
+                        "stop_on_failure"
+                    ]
+                ),
+                print_report=(
+                    parsed_arguments[
+                        "print_report"
+                    ]
+                ),
+                verbosity=(
+                    parsed_arguments[
+                        "verbosity"
+                    ]
+                ),
+            )
+
+        if (
+            parsed_arguments[
+                "raise_on_failure"
+            ]
+            and report.failed_count > 0
+        ):
+            raise HydrogenBondSelfTestError(
+                report
+            )
+
+        return (
+            SELF_TEST_EXIT_SUCCESS
+            if report.passed
+            else SELF_TEST_EXIT_FAILURE
+        )
+
+    except HydrogenBondSelfTestError as error:
+        if not parsed_arguments.get(
+            "print_report",
+            True,
+        ):
+            print_self_test_report(
+                error.report,
+                verbosity=1,
+            )
+
+        return SELF_TEST_EXIT_FAILURE
+
+    except Exception as error:
+        print(
+            (
+                "Hydrogen-bond self-test runner error: "
+                f"{type(error).__name__}: {error}"
+            ),
+            file=sys.stderr,
+        )
+
+        return SELF_TEST_EXIT_INTERNAL_ERROR
+
+
+# -----------------------------------------------------------------------------
+# Public interface
+# -----------------------------------------------------------------------------
+
+_SECTION_12_5_PUBLIC_NAMES: Final[
+    Tuple[
+        str,
+        ...,
+    ]
+] = (
+    "SELF_TEST_SECTION_12_5_NAME",
+    "SELF_TEST_SECTION_12_5_DESCRIPTION",
+    "SELF_TEST_GROUP_INFRASTRUCTURE",
+    "SELF_TEST_GROUP_DATACLASSES",
+    "SELF_TEST_GROUP_DONORS_ACCEPTORS",
+    "SELF_TEST_GROUP_HYDROGENS",
+    "SELF_TEST_GROUP_GEOMETRY",
+    "SELF_TEST_GROUP_DETECTION",
+    "SELF_TEST_GROUP_GROUPING",
+    "SELF_TEST_GROUP_CLASSIFICATION",
+    "SELF_TEST_GROUP_STATISTICS",
+    "SELF_TEST_GROUP_SERIALIZATION",
+    "SELF_TEST_GROUP_DOCKMODEL",
+    "SELF_TEST_GROUP_MULTIPOSE",
+    "VALID_SELF_TEST_GROUPS",
+    "VALID_SELF_TEST_SECTIONS",
+    "SELF_TEST_SECTION_GROUPS",
+    "SELF_TEST_EXIT_SUCCESS",
+    "SELF_TEST_EXIT_FAILURE",
+    "SELF_TEST_EXIT_INTERNAL_ERROR",
+    "HydrogenBondSelfTestError",
+    "validate_self_test_group",
+    "validate_self_test_section",
+    "merge_self_test_reports",
+    "get_self_test_failure_messages",
+    "format_self_test_report",
+    "print_self_test_report",
+    "run_self_tests",
+    "run_quick_self_tests",
+    "run_full_self_tests",
+    "hydrogen_bond_self_tests_pass",
+    "format_self_test_cli_help",
+    "self_test_main",
+)
+
+for public_name in _SECTION_12_5_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(
+            public_name
+        )
+
+
+# -----------------------------------------------------------------------------
+# Direct module execution
+# -----------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(
+        self_test_main()
+    )
+
+
+# =============================================================================
+# End of Section 12.5
+# End of hbonds.py
+# =============================================================================
