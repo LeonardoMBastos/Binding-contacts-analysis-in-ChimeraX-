@@ -8684,6 +8684,1178 @@ def filter_salt_bridges_by_distance(
     return filtered_interactions
 
 
+# =============================================================================
+# 10. CLASSIFICATION AND SCORING
+# =============================================================================
+
+
+# =============================================================================
+# 10.1. STRENGTH CLASSIFICATION
+# =============================================================================
+
+
+def classify_salt_bridge_strength(
+    geometry: SaltBridgeGeometry,
+    config: Optional[SaltBridgeConfig] = None,
+) -> str:
+    """
+    Classify salt-bridge strength from its geometric measurements.
+
+    Classification is primarily based on the minimum atom-to-atom distance:
+
+    - strong: distance less than or equal to strong_distance_cutoff;
+    - moderate: distance less than or equal to moderate_distance_cutoff;
+    - weak: distance less than or equal to distance_cutoff;
+    - rejected: geometrically invalid or outside the configured cutoff.
+
+    Parameters
+    ----------
+    geometry
+        Evaluated salt-bridge geometry.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    str
+        Strength classification.
+
+    Raises
+    ------
+    SaltBridgeScoringError
+        If geometry is invalid or cannot be classified in strict mode.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not isinstance(geometry, SaltBridgeGeometry):
+        raise SaltBridgeScoringError(
+            "geometry must be a SaltBridgeGeometry instance."
+        )
+
+    minimum_distance = safe_float(
+        geometry.minimum_atom_distance
+    )
+
+    if minimum_distance is None:
+        raise SaltBridgeScoringError(
+            "Salt-bridge strength cannot be classified without a valid "
+            "minimum atom distance."
+        )
+
+    if not geometry.valid:
+        return STRENGTH_REJECTED
+
+    if minimum_distance <= resolved_config.strong_distance_cutoff:
+        return STRENGTH_STRONG
+
+    if minimum_distance <= resolved_config.moderate_distance_cutoff:
+        return STRENGTH_MODERATE
+
+    if minimum_distance <= resolved_config.distance_cutoff:
+        return STRENGTH_WEAK
+
+    return STRENGTH_REJECTED
+
+
+def classify_interaction_strength(
+    interaction: SaltBridgeInteraction,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    update: bool = True,
+) -> str:
+    """
+    Classify the strength of a salt-bridge interaction.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+    config
+        Salt-bridge configuration.
+    update
+        Whether the interaction object should be updated in place.
+
+    Returns
+    -------
+    str
+        Strength classification.
+    """
+
+    if not isinstance(interaction, SaltBridgeInteraction):
+        raise SaltBridgeScoringError(
+            "interaction must be a SaltBridgeInteraction instance."
+        )
+
+    strength = classify_salt_bridge_strength(
+        interaction.geometry,
+        config,
+    )
+
+    if update:
+        interaction.strength = strength
+        interaction.metadata["classification_pending"] = False
+        interaction.metadata["classification_completed"] = True
+        interaction.metadata["classification_method"] = (
+            "minimum_atom_distance"
+        )
+
+    return strength
+
+
+# =============================================================================
+# 10.2. BASE SCORE CALCULATION
+# =============================================================================
+
+
+def get_strength_base_score(
+    strength: str,
+    config: Optional[SaltBridgeConfig] = None,
+) -> float:
+    """
+    Return the configured base score for a strength classification.
+
+    Parameters
+    ----------
+    strength
+        Strength classification.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    float
+        Base score.
+
+    Raises
+    ------
+    SaltBridgeScoringError
+        If the strength label is unsupported.
+    """
+
+    resolved_config = resolve_config(config)
+
+    normalized_strength = normalize_text(
+        strength,
+        lowercase=True,
+    )
+
+    score_map = {
+        STRENGTH_STRONG: resolved_config.strong_score,
+        STRENGTH_MODERATE: resolved_config.moderate_score,
+        STRENGTH_WEAK: resolved_config.weak_score,
+        STRENGTH_REJECTED: 0.0,
+    }
+
+    if normalized_strength not in score_map:
+        raise SaltBridgeScoringError(
+            f"Unsupported salt-bridge strength: {strength!r}."
+        )
+
+    return float(score_map[normalized_strength])
+
+
+def calculate_distance_quality_factor(
+    geometry: SaltBridgeGeometry,
+    config: Optional[SaltBridgeConfig] = None,
+) -> float:
+    """
+    Calculate a continuous distance-quality factor.
+
+    The factor varies from 0.0 to 1.0. Shorter distances receive larger values,
+    while distances approaching the configured maximum cutoff receive values
+    closer to zero.
+
+    The factor is intended as a secondary refinement and does not replace the
+    categorical strong, moderate, or weak base score.
+
+    Parameters
+    ----------
+    geometry
+        Salt-bridge geometry.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    float
+        Distance-quality factor between 0.0 and 1.0.
+    """
+
+    resolved_config = resolve_config(config)
+
+    minimum_distance = safe_float(
+        geometry.minimum_atom_distance
+    )
+
+    if minimum_distance is None:
+        return 0.0
+
+    lower_bound = resolved_config.minimum_contact_distance
+    upper_bound = resolved_config.distance_cutoff
+
+    if upper_bound <= lower_bound:
+        return 0.0
+
+    if minimum_distance <= lower_bound:
+        return 1.0
+
+    if minimum_distance >= upper_bound:
+        return 0.0
+
+    factor = (
+        upper_bound - minimum_distance
+    ) / (
+        upper_bound - lower_bound
+    )
+
+    return max(0.0, min(1.0, factor))
+
+
+# =============================================================================
+# 10.3. CONTACT-COUNT BONUS
+# =============================================================================
+
+
+def calculate_contact_count_bonus(
+    geometry: SaltBridgeGeometry,
+    config: Optional[SaltBridgeConfig] = None,
+) -> float:
+    """
+    Calculate the score bonus derived from multiple atomic contacts.
+
+    Only contacts beyond the configured minimum contact count contribute to
+    the bonus.
+
+    Parameters
+    ----------
+    geometry
+        Salt-bridge geometry.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    float
+        Contact-count bonus.
+    """
+
+    resolved_config = resolve_config(config)
+
+    contact_count = safe_int(
+        geometry.contact_count,
+        default=0,
+    )
+
+    if contact_count is None:
+        contact_count = 0
+
+    additional_contacts = max(
+        0,
+        contact_count - resolved_config.minimum_contact_count,
+    )
+
+    raw_bonus = (
+        additional_contacts
+        * resolved_config.contact_count_bonus
+    )
+
+    return min(
+        raw_bonus,
+        resolved_config.maximum_contact_bonus,
+    )
+
+
+# =============================================================================
+# 10.4. RECOGNITION-CONFIDENCE FACTOR
+# =============================================================================
+
+
+def calculate_group_confidence_factor(
+    cation: ChargedGroup,
+    anion: ChargedGroup,
+) -> float:
+    """
+    Calculate a joint recognition-confidence factor.
+
+    The geometric mean is used so that one low-confidence group reduces the
+    final factor without allowing the other group to fully compensate for it.
+
+    Parameters
+    ----------
+    cation
+        Positively charged group.
+    anion
+        Negatively charged group.
+
+    Returns
+    -------
+    float
+        Joint confidence factor between 0.0 and 1.0.
+    """
+
+    cation_confidence = safe_float(
+        cation.confidence,
+        default=0.0,
+    )
+
+    anion_confidence = safe_float(
+        anion.confidence,
+        default=0.0,
+    )
+
+    cation_confidence = max(
+        0.0,
+        min(1.0, cation_confidence or 0.0),
+    )
+
+    anion_confidence = max(
+        0.0,
+        min(1.0, anion_confidence or 0.0),
+    )
+
+    return math.sqrt(
+        cation_confidence
+        * anion_confidence
+    )
+
+
+# =============================================================================
+# 10.5. CHARGE-MAGNITUDE FACTOR
+# =============================================================================
+
+
+def calculate_group_charge_magnitude(
+    group: ChargedGroup,
+) -> float:
+    """
+    Return the absolute estimated charge magnitude of a group.
+
+    Parameters
+    ----------
+    group
+        Charged group.
+
+    Returns
+    -------
+    float
+        Absolute estimated charge magnitude.
+    """
+
+    estimated_charge = estimate_group_charge(group)
+
+    if estimated_charge is None:
+        return 1.0
+
+    normalized_charge = safe_float(
+        estimated_charge,
+        default=1.0,
+    )
+
+    if normalized_charge is None:
+        return 1.0
+
+    return abs(normalized_charge)
+
+
+def calculate_charge_factor(
+    cation: ChargedGroup,
+    anion: ChargedGroup,
+) -> float:
+    """
+    Calculate a bounded factor from cation and anion charge magnitudes.
+
+    The geometric mean of both absolute charge magnitudes is calculated and
+    limited to the range 0.5 to 2.0.
+
+    Parameters
+    ----------
+    cation
+        Positively charged group.
+    anion
+        Negatively charged group.
+
+    Returns
+    -------
+    float
+        Charge factor.
+    """
+
+    cation_magnitude = calculate_group_charge_magnitude(
+        cation
+    )
+
+    anion_magnitude = calculate_group_charge_magnitude(
+        anion
+    )
+
+    factor = math.sqrt(
+        cation_magnitude
+        * anion_magnitude
+    )
+
+    return max(
+        0.5,
+        min(2.0, factor),
+    )
+
+
+# =============================================================================
+# 10.6. COMPLETE INTERACTION SCORE
+# =============================================================================
+
+
+def calculate_salt_bridge_score(
+    interaction: SaltBridgeInteraction,
+    config: Optional[SaltBridgeConfig] = None,
+) -> float:
+    """
+    Calculate the complete score of a salt-bridge interaction.
+
+    The default score combines:
+
+    1. strength-dependent base score;
+    2. atomic contact-count bonus;
+    3. optional recognition-confidence weighting;
+    4. optional charge-magnitude weighting.
+
+    Rejected or geometrically invalid interactions receive a score of zero.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    float
+        Final non-negative interaction score.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not isinstance(interaction, SaltBridgeInteraction):
+        raise SaltBridgeScoringError(
+            "interaction must be a SaltBridgeInteraction instance."
+        )
+
+    if not resolved_config.scoring_enabled:
+        return 0.0
+
+    if not interaction.geometry.valid:
+        return 0.0
+
+    strength = classify_salt_bridge_strength(
+        interaction.geometry,
+        resolved_config,
+    )
+
+    if strength == STRENGTH_REJECTED:
+        return 0.0
+
+    base_score = get_strength_base_score(
+        strength,
+        resolved_config,
+    )
+
+    contact_bonus = calculate_contact_count_bonus(
+        interaction.geometry,
+        resolved_config,
+    )
+
+    score = base_score + contact_bonus
+
+    confidence_factor = 1.0
+
+    if resolved_config.confidence_weighting:
+        confidence_factor = calculate_group_confidence_factor(
+            interaction.cation,
+            interaction.anion,
+        )
+
+        score *= confidence_factor
+
+    charge_factor = 1.0
+
+    if resolved_config.charge_weighting:
+        charge_factor = calculate_charge_factor(
+            interaction.cation,
+            interaction.anion,
+        )
+
+        score *= charge_factor
+
+    return max(0.0, float(score))
+
+
+def build_score_breakdown(
+    interaction: SaltBridgeInteraction,
+    config: Optional[SaltBridgeConfig] = None,
+) -> Dict[str, Any]:
+    """
+    Build a detailed score-component dictionary.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Score components and final score.
+    """
+
+    resolved_config = resolve_config(config)
+
+    strength = classify_salt_bridge_strength(
+        interaction.geometry,
+        resolved_config,
+    )
+
+    base_score = get_strength_base_score(
+        strength,
+        resolved_config,
+    )
+
+    contact_bonus = calculate_contact_count_bonus(
+        interaction.geometry,
+        resolved_config,
+    )
+
+    distance_quality_factor = calculate_distance_quality_factor(
+        interaction.geometry,
+        resolved_config,
+    )
+
+    confidence_factor = calculate_group_confidence_factor(
+        interaction.cation,
+        interaction.anion,
+    )
+
+    charge_factor = calculate_charge_factor(
+        interaction.cation,
+        interaction.anion,
+    )
+
+    final_score = calculate_salt_bridge_score(
+        interaction,
+        resolved_config,
+    )
+
+    return {
+        "strength": strength,
+        "base_score": base_score,
+        "contact_bonus": contact_bonus,
+        "distance_quality_factor": distance_quality_factor,
+        "confidence_factor": confidence_factor,
+        "confidence_weighting_enabled": (
+            resolved_config.confidence_weighting
+        ),
+        "charge_factor": charge_factor,
+        "charge_weighting_enabled": (
+            resolved_config.charge_weighting
+        ),
+        "final_score": final_score,
+    }
+
+
+# =============================================================================
+# 10.7. INTERACTION UPDATE
+# =============================================================================
+
+
+def classify_and_score_interaction(
+    interaction: SaltBridgeInteraction,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    update_metadata: bool = True,
+) -> SaltBridgeInteraction:
+    """
+    Classify and score one salt-bridge interaction in place.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+    config
+        Salt-bridge configuration.
+    update_metadata
+        Whether score components should be stored in interaction metadata.
+
+    Returns
+    -------
+    SaltBridgeInteraction
+        Updated interaction.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not isinstance(interaction, SaltBridgeInteraction):
+        raise SaltBridgeScoringError(
+            "interaction must be a SaltBridgeInteraction instance."
+        )
+
+    strength = classify_interaction_strength(
+        interaction,
+        resolved_config,
+        update=True,
+    )
+
+    score = calculate_salt_bridge_score(
+        interaction,
+        resolved_config,
+    )
+
+    interaction.strength = strength
+    interaction.score = score
+
+    interaction.metadata["classification_pending"] = False
+    interaction.metadata["classification_completed"] = True
+    interaction.metadata["scoring_pending"] = False
+    interaction.metadata["scoring_completed"] = True
+
+    if update_metadata:
+        interaction.metadata["score_breakdown"] = (
+            build_score_breakdown(
+                interaction,
+                resolved_config,
+            )
+        )
+
+    return interaction
+
+
+def try_classify_and_score_interaction(
+    interaction: SaltBridgeInteraction,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    warnings: Optional[List[str]] = None,
+    update_metadata: bool = True,
+) -> Optional[SaltBridgeInteraction]:
+    """
+    Classify and score an interaction using configured error handling.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+    config
+        Salt-bridge configuration.
+    warnings
+        Optional warning collector.
+    update_metadata
+        Whether score components should be stored.
+
+    Returns
+    -------
+    Optional[SaltBridgeInteraction]
+        Updated interaction or ``None`` after a permissively handled failure.
+    """
+
+    resolved_config = resolve_config(config)
+
+    try:
+        return classify_and_score_interaction(
+            interaction,
+            resolved_config,
+            update_metadata=update_metadata,
+        )
+
+    except SaltBridgeError as error:
+        handle_error(
+            error,
+            config=resolved_config,
+            warnings=warnings,
+            context=(
+                "Salt-bridge classification and scoring failed for "
+                f"{interaction.interaction_id or 'unknown interaction'}"
+            ),
+        )
+
+        return None
+
+
+# =============================================================================
+# 10.8. BATCH CLASSIFICATION AND SCORING
+# =============================================================================
+
+
+def classify_and_score_interactions(
+    interactions: Iterable[SaltBridgeInteraction],
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    warnings: Optional[List[str]] = None,
+    preserve_failed: bool = False,
+    update_metadata: bool = True,
+) -> List[SaltBridgeInteraction]:
+    """
+    Classify and score multiple salt-bridge interactions.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    config
+        Salt-bridge configuration.
+    warnings
+        Optional warning collector.
+    preserve_failed
+        Whether interactions that fail classification should be retained.
+    update_metadata
+        Whether score components should be stored.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Classified and scored interactions.
+    """
+
+    resolved_config = resolve_config(config)
+    processed_interactions: List[SaltBridgeInteraction] = []
+
+    for interaction in interactions:
+        processed_interaction = (
+            try_classify_and_score_interaction(
+                interaction,
+                resolved_config,
+                warnings=warnings,
+                update_metadata=update_metadata,
+            )
+        )
+
+        if processed_interaction is not None:
+            processed_interactions.append(
+                processed_interaction
+            )
+
+        elif preserve_failed:
+            processed_interactions.append(interaction)
+
+    return processed_interactions
+
+
+def classify_and_score_result(
+    result: SaltBridgeResult,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    in_place: bool = True,
+) -> SaltBridgeResult:
+    """
+    Classify and score all interactions in a SaltBridgeResult.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge detection result.
+    config
+        Salt-bridge configuration.
+    in_place
+        Whether the original result should be modified.
+
+    Returns
+    -------
+    SaltBridgeResult
+        Result containing classified and scored interactions.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not isinstance(result, SaltBridgeResult):
+        raise SaltBridgeScoringError(
+            "result must be a SaltBridgeResult instance."
+        )
+
+    target_result = result
+
+    if not in_place:
+        target_result = SaltBridgeResult(
+            interactions=list(result.interactions),
+            cationic_groups=list(result.cationic_groups),
+            anionic_groups=list(result.anionic_groups),
+            statistics=dict(result.statistics),
+            warnings=list(result.warnings),
+            pose_id=result.pose_id,
+            model_id=result.model_id,
+            metadata=dict(result.metadata),
+        )
+
+    target_result.interactions = classify_and_score_interactions(
+        target_result.interactions,
+        resolved_config,
+        warnings=target_result.warnings,
+        preserve_failed=resolved_config.preserve_invalid_candidates,
+        update_metadata=not resolved_config.compact_results,
+    )
+
+    target_result.metadata["classification_completed"] = True
+    target_result.metadata["scoring_completed"] = True
+    target_result.metadata["classified_interaction_count"] = len(
+        target_result.interactions
+    )
+    target_result.metadata["total_score"] = sum(
+        interaction.score
+        for interaction in target_result.interactions
+    )
+
+    return target_result
+
+
+# =============================================================================
+# 10.9. COMPLETE DETECTION, CLASSIFICATION, AND SCORING
+# =============================================================================
+
+
+def analyze_salt_bridges(
+    source: Any,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    pose_id: Optional[Union[str, int]] = None,
+    model_id: Optional[Union[str, int]] = None,
+    warnings: Optional[List[str]] = None,
+) -> SaltBridgeResult:
+    """
+    Recognize, detect, classify, and score salt bridges in one source.
+
+    This function combines Sections 7 through 10. Deduplication, grouping,
+    statistics, DockModel integration, and serialization remain separate.
+
+    Parameters
+    ----------
+    source
+        Molecular source.
+    config
+        Salt-bridge configuration.
+    pose_id
+        Optional docking-pose identifier.
+    model_id
+        Optional molecular-model identifier.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    SaltBridgeResult
+        Classified and scored salt-bridge result.
+    """
+
+    resolved_config = resolve_config(config)
+
+    result = detect_salt_bridges(
+        source,
+        resolved_config,
+        pose_id=pose_id,
+        model_id=model_id,
+        warnings=warnings,
+    )
+
+    return classify_and_score_result(
+        result,
+        resolved_config,
+        in_place=True,
+    )
+
+
+def analyze_salt_bridges_from_groups(
+    cationic_groups: Iterable[ChargedGroup],
+    anionic_groups: Iterable[ChargedGroup],
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    pose_id: Optional[Union[str, int]] = None,
+    model_id: Optional[Union[str, int]] = None,
+    warnings: Optional[List[str]] = None,
+) -> SaltBridgeResult:
+    """
+    Detect, classify, and score salt bridges from recognized groups.
+
+    Parameters
+    ----------
+    cationic_groups
+        Positively charged groups.
+    anionic_groups
+        Negatively charged groups.
+    config
+        Salt-bridge configuration.
+    pose_id
+        Optional docking-pose identifier.
+    model_id
+        Optional molecular-model identifier.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    SaltBridgeResult
+        Classified and scored result.
+    """
+
+    resolved_config = resolve_config(config)
+
+    cation_list = list(cationic_groups)
+    anion_list = list(anionic_groups)
+
+    interactions = detect_salt_bridges_from_groups(
+        cation_list,
+        anion_list,
+        resolved_config,
+        pose_id=pose_id,
+        model_id=model_id,
+        warnings=warnings,
+    )
+
+    result = SaltBridgeResult(
+        interactions=interactions,
+        cationic_groups=cation_list,
+        anionic_groups=anion_list,
+        statistics={},
+        warnings=list(warnings or []),
+        pose_id=normalize_pose_identifier(pose_id),
+        model_id=normalize_model_identifier(model_id),
+        metadata={
+            "analysis_stage": "central_detection",
+            "input_mode": "recognized_groups",
+            "classification_completed": False,
+            "scoring_completed": False,
+            "deduplication_completed": False,
+            "grouping_completed": False,
+            "statistics_completed": False,
+            "recognized_cation_count": len(cation_list),
+            "recognized_anion_count": len(anion_list),
+            "raw_interaction_count": len(interactions),
+        },
+    )
+
+    return classify_and_score_result(
+        result,
+        resolved_config,
+        in_place=True,
+    )
+
+
+# =============================================================================
+# 10.10. SCORE-BASED FILTERING AND SORTING
+# =============================================================================
+
+
+def filter_salt_bridges_by_strength(
+    interactions: Iterable[SaltBridgeInteraction],
+    strengths: Union[str, Iterable[str]],
+) -> List[SaltBridgeInteraction]:
+    """
+    Filter interactions by strength classification.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    strengths
+        Accepted strength or collection of accepted strengths.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Matching interactions.
+    """
+
+    if isinstance(strengths, str):
+        accepted_strengths = {
+            normalize_text(strengths, lowercase=True)
+        }
+
+    else:
+        accepted_strengths = {
+            normalize_text(strength, lowercase=True)
+            for strength in strengths
+        }
+
+    valid_strengths = {
+        STRENGTH_STRONG,
+        STRENGTH_MODERATE,
+        STRENGTH_WEAK,
+        STRENGTH_REJECTED,
+    }
+
+    unsupported_strengths = (
+        accepted_strengths - valid_strengths
+    )
+
+    if unsupported_strengths:
+        formatted_strengths = ", ".join(
+            sorted(unsupported_strengths)
+        )
+
+        raise SaltBridgeScoringError(
+            f"Unsupported strength classification or classifications: "
+            f"{formatted_strengths}."
+        )
+
+    return [
+        interaction
+        for interaction in interactions
+        if interaction.strength in accepted_strengths
+    ]
+
+
+def filter_salt_bridges_by_score(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    minimum_score: float = 0.0,
+    maximum_score: Optional[float] = None,
+) -> List[SaltBridgeInteraction]:
+    """
+    Filter salt bridges by an inclusive score interval.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    minimum_score
+        Minimum accepted score.
+    maximum_score
+        Optional maximum accepted score.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Matching interactions.
+    """
+
+    normalized_minimum = safe_float(minimum_score)
+
+    if normalized_minimum is None or normalized_minimum < 0.0:
+        raise SaltBridgeScoringError(
+            "minimum_score must be finite and non-negative."
+        )
+
+    normalized_maximum = None
+
+    if maximum_score is not None:
+        normalized_maximum = safe_float(maximum_score)
+
+        if normalized_maximum is None or normalized_maximum < 0.0:
+            raise SaltBridgeScoringError(
+                "maximum_score must be finite and non-negative."
+            )
+
+        if normalized_maximum < normalized_minimum:
+            raise SaltBridgeScoringError(
+                "maximum_score cannot be smaller than minimum_score."
+            )
+
+    filtered_interactions: List[SaltBridgeInteraction] = []
+
+    for interaction in interactions:
+        score = safe_float(
+            interaction.score,
+            default=0.0,
+        )
+
+        if score is None or score < normalized_minimum:
+            continue
+
+        if (
+            normalized_maximum is not None
+            and score > normalized_maximum
+        ):
+            continue
+
+        filtered_interactions.append(interaction)
+
+    return filtered_interactions
+
+
+def sort_salt_bridges_by_score(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    descending: bool = True,
+) -> List[SaltBridgeInteraction]:
+    """
+    Sort salt bridges by score and geometric distance.
+
+    Score is the primary key. Minimum atom distance is used as a secondary key
+    so that shorter interactions are preferred when scores are equal.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    descending
+        Whether higher scores should appear first.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Sorted interactions.
+    """
+
+    interaction_list = list(interactions)
+
+    if descending:
+        return sorted(
+            interaction_list,
+            key=lambda interaction: (
+                -safe_float(
+                    interaction.score,
+                    default=0.0,
+                ),
+                safe_float(
+                    interaction.distance,
+                    default=math.inf,
+                ),
+                interaction.interaction_id or "",
+            ),
+        )
+
+    return sorted(
+        interaction_list,
+        key=lambda interaction: (
+            safe_float(
+                interaction.score,
+                default=0.0,
+            ),
+            safe_float(
+                interaction.distance,
+                default=math.inf,
+            ),
+            interaction.interaction_id or "",
+        ),
+    )
+
+
+def get_best_salt_bridge(
+    interactions: Iterable[SaltBridgeInteraction],
+) -> Optional[SaltBridgeInteraction]:
+    """
+    Return the highest-scoring salt bridge.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+
+    Returns
+    -------
+    Optional[SaltBridgeInteraction]
+        Best interaction or ``None``.
+    """
+
+    sorted_interactions = sort_salt_bridges_by_score(
+        interactions,
+        descending=True,
+    )
+
+    if not sorted_interactions:
+        return None
+
+    return sorted_interactions[0]
+
+
+
+
 
 
 
