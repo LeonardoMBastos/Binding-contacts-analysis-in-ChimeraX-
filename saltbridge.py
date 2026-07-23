@@ -1466,6 +1466,1427 @@ class SaltBridgeConfig:
 DEFAULT_SALT_BRIDGE_CONFIG = SaltBridgeConfig()
 
 
+# =============================================================================
+# 6. GENERAL UTILITIES
+# =============================================================================
+
+
+_MISSING = object()
+
+
+def normalize_text(
+    value: Any,
+    *,
+    default: str = "",
+    uppercase: bool = False,
+    lowercase: bool = False,
+) -> str:
+    """
+    Convert a value to a normalized stripped string.
+
+    Parameters
+    ----------
+    value
+        Value to normalize.
+    default
+        Value returned when the input is ``None`` or produces an empty string.
+    uppercase
+        Whether the result should be converted to uppercase.
+    lowercase
+        Whether the result should be converted to lowercase.
+
+    Returns
+    -------
+    str
+        Normalized string.
+
+    Raises
+    ------
+    ValueError
+        If both uppercase and lowercase conversion are requested.
+    """
+
+    if uppercase and lowercase:
+        raise ValueError(
+            "uppercase and lowercase cannot both be enabled."
+        )
+
+    if value is None:
+        text = str(default)
+    else:
+        text = str(value).strip()
+
+        if not text:
+            text = str(default)
+
+    if uppercase:
+        return text.upper()
+
+    if lowercase:
+        return text.lower()
+
+    return text
+
+
+def safe_float(
+    value: Any,
+    *,
+    default: Optional[float] = None,
+    finite_only: bool = True,
+) -> Optional[float]:
+    """
+    Convert a value to float without propagating ordinary conversion errors.
+
+    Parameters
+    ----------
+    value
+        Value to convert.
+    default
+        Value returned when conversion is not possible.
+    finite_only
+        Whether infinite and NaN values should be rejected.
+
+    Returns
+    -------
+    Optional[float]
+        Converted value or the provided default.
+    """
+
+    if value is None:
+        return default
+
+    try:
+        converted = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+    if finite_only and not math.isfinite(converted):
+        return default
+
+    return converted
+
+
+def safe_int(
+    value: Any,
+    *,
+    default: Optional[int] = None,
+) -> Optional[int]:
+    """
+    Convert a value to int without propagating ordinary conversion errors.
+
+    Parameters
+    ----------
+    value
+        Value to convert.
+    default
+        Value returned when conversion is not possible.
+
+    Returns
+    -------
+    Optional[int]
+        Converted integer or the provided default.
+    """
+
+    if value is None:
+        return default
+
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def safe_getattr(
+    obj: Any,
+    names: Union[str, Sequence[str]],
+    *,
+    default: Any = None,
+    call: bool = False,
+) -> Any:
+    """
+    Return the first accessible attribute from a sequence of candidate names.
+
+    Parameters
+    ----------
+    obj
+        Object from which attributes should be retrieved.
+    names
+        Single attribute name or ordered sequence of candidate names.
+    default
+        Value returned when no candidate attribute can be accessed.
+    call
+        Whether a callable attribute should be invoked without arguments.
+
+    Returns
+    -------
+    Any
+        First successfully retrieved value or the provided default.
+
+    Notes
+    -----
+    Attribute access failures are intentionally ignored because molecular
+    objects from different libraries may expose partially compatible APIs.
+    """
+
+    if obj is None:
+        return default
+
+    if isinstance(names, str):
+        candidate_names = (names,)
+    else:
+        candidate_names = tuple(names)
+
+    for name in candidate_names:
+        try:
+            value = getattr(obj, name)
+        except Exception:
+            continue
+
+        if call and callable(value):
+            try:
+                value = value()
+            except Exception:
+                continue
+
+        if value is not None:
+            return value
+
+    return default
+
+
+def safe_mapping_get(
+    mapping: Any,
+    keys: Union[str, Sequence[str]],
+    *,
+    default: Any = None,
+) -> Any:
+    """
+    Return the first available value from a mapping using candidate keys.
+
+    Parameters
+    ----------
+    mapping
+        Mapping-like object.
+    keys
+        Single key or ordered sequence of candidate keys.
+    default
+        Value returned when no key is available.
+
+    Returns
+    -------
+    Any
+        Retrieved value or the provided default.
+    """
+
+    if mapping is None:
+        return default
+
+    if isinstance(keys, str):
+        candidate_keys = (keys,)
+    else:
+        candidate_keys = tuple(keys)
+
+    for key in candidate_keys:
+        try:
+            if key in mapping:
+                value = mapping[key]
+
+                if value is not None:
+                    return value
+        except Exception:
+            continue
+
+    return default
+
+
+def get_value(
+    obj: Any,
+    names: Union[str, Sequence[str]],
+    *,
+    default: Any = None,
+    call: bool = False,
+) -> Any:
+    """
+    Retrieve a value from either attributes or mapping keys.
+
+    Attribute access is attempted first, followed by mapping lookup.
+
+    Parameters
+    ----------
+    obj
+        Source object or mapping.
+    names
+        Candidate attribute or key names.
+    default
+        Value returned when no candidate is available.
+    call
+        Whether callable attributes should be invoked.
+
+    Returns
+    -------
+    Any
+        Retrieved value or the provided default.
+    """
+
+    value = safe_getattr(
+        obj,
+        names,
+        default=_MISSING,
+        call=call,
+    )
+
+    if value is not _MISSING:
+        return value
+
+    return safe_mapping_get(
+        obj,
+        names,
+        default=default,
+    )
+
+
+def normalize_element(value: Any) -> str:
+    """
+    Normalize an element representation to an uppercase chemical symbol.
+
+    Parameters
+    ----------
+    value
+        Element name, symbol, atomic object, or atomic number.
+
+    Returns
+    -------
+    str
+        Normalized element symbol or an empty string when unavailable.
+    """
+
+    if value is None:
+        return ""
+
+    if isinstance(value, int):
+        atomic_number_map = {
+            1: "H",
+            6: "C",
+            7: "N",
+            8: "O",
+            9: "F",
+            11: "NA",
+            12: "MG",
+            15: "P",
+            16: "S",
+            17: "CL",
+            19: "K",
+            20: "CA",
+            26: "FE",
+            30: "ZN",
+            35: "BR",
+            53: "I",
+        }
+
+        return atomic_number_map.get(value, "")
+
+    nested_name = safe_getattr(
+        value,
+        ("name", "symbol"),
+        default=None,
+    )
+
+    if nested_name is not None and nested_name is not value:
+        value = nested_name
+
+    text = normalize_text(value, uppercase=True)
+
+    if not text:
+        return ""
+
+    if text.isdigit():
+        return normalize_element(int(text))
+
+    aliases = {
+        "HYDROGEN": "H",
+        "CARBON": "C",
+        "NITROGEN": "N",
+        "OXYGEN": "O",
+        "PHOSPHORUS": "P",
+        "SULFUR": "S",
+        "SULPHUR": "S",
+        "FLUORINE": "F",
+        "CHLORINE": "CL",
+        "BROMINE": "BR",
+        "IODINE": "I",
+        "SODIUM": "NA",
+        "POTASSIUM": "K",
+        "CALCIUM": "CA",
+        "MAGNESIUM": "MG",
+        "IRON": "FE",
+        "ZINC": "ZN",
+    }
+
+    if text in aliases:
+        return aliases[text]
+
+    letters = "".join(character for character in text if character.isalpha())
+
+    if not letters:
+        return ""
+
+    if len(letters) == 1:
+        return letters
+
+    return letters[:2]
+
+
+def infer_element_from_atom_name(atom_name: Any) -> str:
+    """
+    Infer an element symbol from a molecular atom name.
+
+    Parameters
+    ----------
+    atom_name
+        Atom name such as ``"NZ"``, ``"OD1"``, or ``"CL1"``.
+
+    Returns
+    -------
+    str
+        Inferred uppercase element symbol.
+
+    Notes
+    -----
+    This function performs only syntactic inference. Chemical validation
+    remains the responsibility of the recognition section.
+    """
+
+    text = normalize_text(atom_name, uppercase=True)
+
+    if not text:
+        return ""
+
+    text = text.lstrip("0123456789")
+
+    if not text:
+        return ""
+
+    two_letter_elements = {
+        "BR",
+        "CA",
+        "CL",
+        "FE",
+        "MG",
+        "NA",
+        "ZN",
+    }
+
+    if len(text) >= 2 and text[:2] in two_letter_elements:
+        return text[:2]
+
+    return text[0]
+
+
+def get_atom_name(atom: AtomLike) -> str:
+    """
+    Return a normalized atom name.
+
+    Parameters
+    ----------
+    atom
+        Molecular atom-like object.
+
+    Returns
+    -------
+    str
+        Atom name with surrounding whitespace removed.
+    """
+
+    value = get_value(
+        atom,
+        ("name", "atom_name", "atomName"),
+        default="",
+    )
+
+    return normalize_text(value)
+
+
+def get_atom_element(atom: AtomLike) -> str:
+    """
+    Return the normalized chemical element of an atom.
+
+    Explicit element information is preferred. When unavailable, the element
+    is inferred from the atom name.
+
+    Parameters
+    ----------
+    atom
+        Molecular atom-like object.
+
+    Returns
+    -------
+    str
+        Uppercase element symbol.
+    """
+
+    value = get_value(
+        atom,
+        (
+            "element",
+            "element_name",
+            "element_symbol",
+            "atomic_number",
+        ),
+        default=None,
+    )
+
+    element = normalize_element(value)
+
+    if element:
+        return element
+
+    return infer_element_from_atom_name(get_atom_name(atom))
+
+
+def get_atom_residue(atom: AtomLike) -> Optional[ResidueLike]:
+    """
+    Return the parent residue of an atom when available.
+
+    Parameters
+    ----------
+    atom
+        Molecular atom-like object.
+
+    Returns
+    -------
+    Optional[ResidueLike]
+        Parent residue reference or ``None``.
+    """
+
+    return get_value(
+        atom,
+        ("residue", "parent_residue", "res"),
+        default=None,
+    )
+
+
+def get_residue_name(residue: Optional[ResidueLike]) -> str:
+    """
+    Return a normalized uppercase residue name.
+
+    Parameters
+    ----------
+    residue
+        Residue-like object.
+
+    Returns
+    -------
+    str
+        Uppercase residue name.
+    """
+
+    value = get_value(
+        residue,
+        ("name", "resname", "residue_name", "type"),
+        default="",
+    )
+
+    return normalize_text(value, uppercase=True)
+
+
+def get_residue_number(
+    residue: Optional[ResidueLike],
+) -> Optional[Union[int, str]]:
+    """
+    Return the residue sequence number or identifier.
+
+    Parameters
+    ----------
+    residue
+        Residue-like object.
+
+    Returns
+    -------
+    Optional[Union[int, str]]
+        Residue number, identifier, or ``None``.
+    """
+
+    value = get_value(
+        residue,
+        (
+            "number",
+            "resid",
+            "residue_number",
+            "sequence_number",
+            "id",
+        ),
+        default=None,
+    )
+
+    if value is None:
+        return None
+
+    integer_value = safe_int(value)
+
+    if integer_value is not None:
+        return integer_value
+
+    normalized_value = normalize_text(value)
+
+    return normalized_value or None
+
+
+def get_chain_id(residue: Optional[ResidueLike]) -> str:
+    """
+    Return the normalized chain identifier associated with a residue.
+
+    Parameters
+    ----------
+    residue
+        Residue-like object.
+
+    Returns
+    -------
+    str
+        Chain identifier or an empty string.
+    """
+
+    chain_value = get_value(
+        residue,
+        (
+            "chain_id",
+            "chain",
+            "chainId",
+        ),
+        default="",
+    )
+
+    if not isinstance(chain_value, str):
+        chain_value = get_value(
+            chain_value,
+            ("chain_id", "id", "name"),
+            default=chain_value,
+        )
+
+    return normalize_text(chain_value)
+
+
+def get_atom_serial(atom: AtomLike) -> Optional[Union[int, str]]:
+    """
+    Return an atom serial number or identifier.
+
+    Parameters
+    ----------
+    atom
+        Molecular atom-like object.
+
+    Returns
+    -------
+    Optional[Union[int, str]]
+        Atom serial, identifier, or ``None``.
+    """
+
+    value = get_value(
+        atom,
+        (
+            "serial_number",
+            "serial",
+            "index",
+            "id",
+            "atom_id",
+        ),
+        default=None,
+    )
+
+    if value is None:
+        return None
+
+    integer_value = safe_int(value)
+
+    if integer_value is not None:
+        return integer_value
+
+    normalized_value = normalize_text(value)
+
+    return normalized_value or None
+
+
+def normalize_coordinate(
+    coordinate: Any,
+    *,
+    strict: bool = False,
+) -> Optional[Coordinate]:
+    """
+    Convert a coordinate-like object into a three-component float tuple.
+
+    Parameters
+    ----------
+    coordinate
+        Coordinate-like object, sequence, array, or object exposing x, y, z.
+    strict
+        Whether invalid coordinates should raise an exception.
+
+    Returns
+    -------
+    Optional[Coordinate]
+        Normalized coordinate or ``None``.
+
+    Raises
+    ------
+    MissingCoordinatesError
+        If strict mode is enabled and the coordinate cannot be normalized.
+    """
+
+    if coordinate is None:
+        if strict:
+            raise MissingCoordinatesError(
+                "Coordinate data are unavailable."
+            )
+
+        return None
+
+    xyz_values: Any = None
+
+    if all(hasattr(coordinate, axis) for axis in ("x", "y", "z")):
+        xyz_values = (
+            safe_getattr(coordinate, "x"),
+            safe_getattr(coordinate, "y"),
+            safe_getattr(coordinate, "z"),
+        )
+    else:
+        try:
+            xyz_values = tuple(coordinate)
+        except (TypeError, ValueError):
+            xyz_values = None
+
+    if xyz_values is None or len(xyz_values) != 3:
+        if strict:
+            raise MissingCoordinatesError(
+                "Coordinates must contain exactly three components."
+            )
+
+        return None
+
+    normalized_values = tuple(
+        safe_float(value)
+        for value in xyz_values
+    )
+
+    if any(value is None for value in normalized_values):
+        if strict:
+            raise MissingCoordinatesError(
+                "Coordinates must contain finite numeric values."
+            )
+
+        return None
+
+    return (
+        float(normalized_values[0]),
+        float(normalized_values[1]),
+        float(normalized_values[2]),
+    )
+
+
+def get_atom_coordinate(
+    atom: AtomLike,
+    *,
+    strict: bool = False,
+) -> Optional[Coordinate]:
+    """
+    Return normalized Cartesian coordinates for an atom.
+
+    Several common molecular APIs are supported, including ``coord``,
+    ``coords``, ``scene_coord``, ``xyz``, and direct x/y/z attributes.
+
+    Parameters
+    ----------
+    atom
+        Molecular atom-like object.
+    strict
+        Whether missing or invalid coordinates should raise an exception.
+
+    Returns
+    -------
+    Optional[Coordinate]
+        Atom coordinate or ``None``.
+    """
+
+    coordinate = get_value(
+        atom,
+        (
+            "scene_coord",
+            "coord",
+            "coords",
+            "coordinate",
+            "coordinates",
+            "xyz",
+        ),
+        default=_MISSING,
+        call=True,
+    )
+
+    if coordinate is _MISSING:
+        if all(
+            get_value(atom, axis, default=_MISSING) is not _MISSING
+            for axis in ("x", "y", "z")
+        ):
+            coordinate = (
+                get_value(atom, "x"),
+                get_value(atom, "y"),
+                get_value(atom, "z"),
+            )
+        else:
+            coordinate = None
+
+    return normalize_coordinate(
+        coordinate,
+        strict=strict,
+    )
+
+
+def coordinate_is_finite(coordinate: Any) -> bool:
+    """
+    Return whether a coordinate can be normalized to finite x, y, z values.
+
+    Parameters
+    ----------
+    coordinate
+        Coordinate-like value.
+
+    Returns
+    -------
+    bool
+        ``True`` when the coordinate is valid.
+    """
+
+    return normalize_coordinate(coordinate) is not None
+
+
+def squared_distance(
+    first: Coordinate,
+    second: Coordinate,
+) -> float:
+    """
+    Return the squared Euclidean distance between two coordinates.
+
+    Parameters
+    ----------
+    first
+        First Cartesian coordinate.
+    second
+        Second Cartesian coordinate.
+
+    Returns
+    -------
+    float
+        Squared distance in square angstroms.
+    """
+
+    first_coordinate = normalize_coordinate(first, strict=True)
+    second_coordinate = normalize_coordinate(second, strict=True)
+
+    return (
+        (first_coordinate[0] - second_coordinate[0]) ** 2
+        + (first_coordinate[1] - second_coordinate[1]) ** 2
+        + (first_coordinate[2] - second_coordinate[2]) ** 2
+    )
+
+
+def distance(
+    first: Coordinate,
+    second: Coordinate,
+) -> float:
+    """
+    Return the Euclidean distance between two Cartesian coordinates.
+
+    Parameters
+    ----------
+    first
+        First coordinate.
+    second
+        Second coordinate.
+
+    Returns
+    -------
+    float
+        Distance in angstroms.
+    """
+
+    return math.sqrt(squared_distance(first, second))
+
+
+def mean_coordinate(
+    coordinates: Iterable[Coordinate],
+    *,
+    strict: bool = True,
+) -> Optional[Coordinate]:
+    """
+    Return the arithmetic mean of valid Cartesian coordinates.
+
+    Parameters
+    ----------
+    coordinates
+        Iterable of coordinate-like values.
+    strict
+        Whether invalid entries or an empty collection should raise an
+        exception.
+
+    Returns
+    -------
+    Optional[Coordinate]
+        Mean coordinate or ``None`` when strict mode is disabled.
+
+    Raises
+    ------
+    DegenerateGeometryError
+        If no valid coordinate is available.
+    MissingCoordinatesError
+        If strict mode is enabled and an invalid coordinate is encountered.
+    """
+
+    count = 0
+    sum_x = 0.0
+    sum_y = 0.0
+    sum_z = 0.0
+
+    for coordinate in coordinates:
+        normalized = normalize_coordinate(
+            coordinate,
+            strict=strict,
+        )
+
+        if normalized is None:
+            continue
+
+        sum_x += normalized[0]
+        sum_y += normalized[1]
+        sum_z += normalized[2]
+        count += 1
+
+    if count == 0:
+        if strict:
+            raise DegenerateGeometryError(
+                "A mean coordinate cannot be calculated without "
+                "valid coordinates."
+            )
+
+        return None
+
+    return (
+        sum_x / count,
+        sum_y / count,
+        sum_z / count,
+    )
+
+
+def iter_atoms(source: Any) -> Iterator[AtomLike]:
+    """
+    Iterate over atoms from a structure, residue, atom collection, or iterable.
+
+    Parameters
+    ----------
+    source
+        Molecular source object.
+
+    Yields
+    ------
+    AtomLike
+        Atom-like objects.
+
+    Notes
+    -----
+    Strings, bytes, and mappings are not treated as atom iterables.
+    """
+
+    if source is None:
+        return
+
+    atom_collection = get_value(
+        source,
+        ("atoms", "atom_list", "all_atoms"),
+        default=_MISSING,
+        call=True,
+    )
+
+    if atom_collection is not _MISSING and atom_collection is not source:
+        try:
+            for atom in atom_collection:
+                if atom is not None:
+                    yield atom
+
+            return
+        except TypeError:
+            pass
+
+    if isinstance(source, Mapping):
+        return
+
+    if isinstance(source, (str, bytes)):
+        return
+
+    try:
+        iterator = iter(source)
+    except TypeError:
+        yield source
+        return
+
+    for atom in iterator:
+        if atom is not None:
+            yield atom
+
+
+def iter_residues(source: Any) -> Iterator[ResidueLike]:
+    """
+    Iterate over residues from a structure, residue collection, or iterable.
+
+    Parameters
+    ----------
+    source
+        Molecular source object.
+
+    Yields
+    ------
+    ResidueLike
+        Residue-like objects.
+    """
+
+    if source is None:
+        return
+
+    residue_collection = get_value(
+        source,
+        ("residues", "residue_list", "all_residues"),
+        default=_MISSING,
+        call=True,
+    )
+
+    if residue_collection is not _MISSING and residue_collection is not source:
+        try:
+            for residue in residue_collection:
+                if residue is not None:
+                    yield residue
+
+            return
+        except TypeError:
+            pass
+
+    if isinstance(source, Mapping):
+        return
+
+    if isinstance(source, (str, bytes)):
+        return
+
+    try:
+        iterator = iter(source)
+    except TypeError:
+        yield source
+        return
+
+    for residue in iterator:
+        if residue is not None:
+            yield residue
+
+
+def atom_identity(atom: AtomLike) -> Tuple[Any, ...]:
+    """
+    Return a hashable identity key for an atom.
+
+    Explicit serial identifiers are preferred. When unavailable, the key uses
+    residue and atom descriptors followed by the Python object identity.
+
+    Parameters
+    ----------
+    atom
+        Molecular atom-like object.
+
+    Returns
+    -------
+    Tuple[Any, ...]
+        Hashable atom identity key.
+    """
+
+    serial = get_atom_serial(atom)
+
+    if serial is not None:
+        return ("serial", serial)
+
+    residue = get_atom_residue(atom)
+
+    return (
+        "atom",
+        get_chain_id(residue),
+        get_residue_number(residue),
+        get_residue_name(residue),
+        get_atom_name(atom),
+        id(atom),
+    )
+
+
+def residue_identity(
+    residue: Optional[ResidueLike],
+) -> Tuple[Any, ...]:
+    """
+    Return a hashable identity key for a residue.
+
+    Parameters
+    ----------
+    residue
+        Residue-like object.
+
+    Returns
+    -------
+    Tuple[Any, ...]
+        Hashable residue identity key.
+    """
+
+    if residue is None:
+        return ("residue", None)
+
+    return (
+        "residue",
+        get_chain_id(residue),
+        get_residue_number(residue),
+        get_residue_name(residue),
+        id(residue),
+    )
+
+
+def charged_atom_identity(
+    charged_atom: ChargedAtom,
+) -> Tuple[Any, ...]:
+    """
+    Return a stable identity key for a ChargedAtom instance.
+
+    Parameters
+    ----------
+    charged_atom
+        Charged atom wrapper.
+
+    Returns
+    -------
+    Tuple[Any, ...]
+        Hashable identity key.
+    """
+
+    return atom_identity(charged_atom.atom)
+
+
+def charged_group_identity(
+    group: ChargedGroup,
+    *,
+    include_polarity: bool = True,
+) -> Tuple[Any, ...]:
+    """
+    Return an order-independent identity key for a charged group.
+
+    Parameters
+    ----------
+    group
+        Charged group.
+    include_polarity
+        Whether group polarity should be included in the key.
+
+    Returns
+    -------
+    Tuple[Any, ...]
+        Hashable charged-group identity key.
+    """
+
+    atom_keys = tuple(
+        sorted(
+            (
+                repr(charged_atom_identity(charged_atom)),
+                charged_atom_identity(charged_atom),
+            )
+            for charged_atom in group.atoms
+        )
+    )
+
+    normalized_atom_keys = tuple(
+        atom_key
+        for _, atom_key in atom_keys
+    )
+
+    if include_polarity:
+        return (
+            group.polarity,
+            group.group_type,
+            normalized_atom_keys,
+        )
+
+    return (
+        group.group_type,
+        normalized_atom_keys,
+    )
+
+
+def make_residue_label(
+    residue: Optional[ResidueLike],
+    *,
+    fallback: str = "unknown_residue",
+) -> str:
+    """
+    Build a compact human-readable residue label.
+
+    Parameters
+    ----------
+    residue
+        Residue-like object.
+    fallback
+        Label returned when residue information is unavailable.
+
+    Returns
+    -------
+    str
+        Residue label such as ``"A:ASP42"``.
+    """
+
+    if residue is None:
+        return fallback
+
+    chain_id = get_chain_id(residue)
+    residue_name = get_residue_name(residue) or "UNK"
+    residue_number = get_residue_number(residue)
+
+    number_text = (
+        str(residue_number)
+        if residue_number is not None
+        else "?"
+    )
+
+    core_label = f"{residue_name}{number_text}"
+
+    if chain_id:
+        return f"{chain_id}:{core_label}"
+
+    return core_label
+
+
+def make_atom_label(
+    atom: AtomLike,
+    *,
+    fallback: str = "unknown_atom",
+) -> str:
+    """
+    Build a compact human-readable atom label.
+
+    Parameters
+    ----------
+    atom
+        Atom-like object.
+    fallback
+        Label returned when atom information is unavailable.
+
+    Returns
+    -------
+    str
+        Atom label such as ``"A:LYS15:NZ"``.
+    """
+
+    if atom is None:
+        return fallback
+
+    atom_name = get_atom_name(atom) or "?"
+    residue_label = make_residue_label(
+        get_atom_residue(atom),
+        fallback="UNK?",
+    )
+
+    return f"{residue_label}:{atom_name}"
+
+
+def make_group_label(
+    group: ChargedGroup,
+    *,
+    include_atoms: bool = False,
+) -> str:
+    """
+    Build a human-readable charged-group label.
+
+    Parameters
+    ----------
+    group
+        Charged group.
+    include_atoms
+        Whether atom names should be appended to the label.
+
+    Returns
+    -------
+    str
+        Compact group label.
+    """
+
+    residue_label = make_residue_label(group.residue)
+    base_label = (
+        f"{residue_label}:{group.group_type}:{group.polarity}"
+    )
+
+    if not include_atoms:
+        return base_label
+
+    atom_names = ",".join(
+        get_atom_name(charged_atom.atom) or "?"
+        for charged_atom in group.atoms
+    )
+
+    return f"{base_label}[{atom_names}]"
+
+
+def resolve_config(
+    config: Optional[SaltBridgeConfig] = None,
+) -> SaltBridgeConfig:
+    """
+    Return a validated configuration instance.
+
+    Parameters
+    ----------
+    config
+        Explicit configuration or ``None``.
+
+    Returns
+    -------
+    SaltBridgeConfig
+        Provided configuration or a fresh copy of the default configuration.
+
+    Raises
+    ------
+    SaltBridgeConfigurationError
+        If the supplied object is not a SaltBridgeConfig instance.
+    """
+
+    if config is None:
+        return DEFAULT_SALT_BRIDGE_CONFIG.copy_with()
+
+    if not isinstance(config, SaltBridgeConfig):
+        raise SaltBridgeConfigurationError(
+            "config must be a SaltBridgeConfig instance or None."
+        )
+
+    return config
+
+
+def handle_error(
+    error: Exception,
+    *,
+    config: Optional[SaltBridgeConfig] = None,
+    warnings: Optional[List[str]] = None,
+    context: Optional[str] = None,
+) -> None:
+    """
+    Apply the configured strict or permissive error-handling strategy.
+
+    Parameters
+    ----------
+    error
+        Exception that occurred.
+    config
+        Salt-bridge configuration.
+    warnings
+        Optional list receiving non-fatal warning messages.
+    context
+        Optional operation description added to the warning.
+
+    Raises
+    ------
+    Exception
+        Re-raises the original exception when strict mode is enabled.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if resolved_config.strict:
+        raise error
+
+    message = str(error).strip() or error.__class__.__name__
+
+    if context:
+        message = f"{context}: {message}"
+
+    if warnings is not None and message not in warnings:
+        warnings.append(message)
+
+
+def unique_preserve_order(
+    values: Iterable[Any],
+    *,
+    key: Optional[Any] = None,
+) -> List[Any]:
+    """
+    Return unique values while preserving their original order.
+
+    Parameters
+    ----------
+    values
+        Input iterable.
+    key
+        Optional callable used to produce hashable identity keys.
+
+    Returns
+    -------
+    List[Any]
+        Ordered list without duplicate entries.
+    """
+
+    result: List[Any] = []
+    seen: Set[Any] = set()
+
+    for value in values:
+        identity = key(value) if key is not None else value
+
+        try:
+            already_seen = identity in seen
+        except TypeError:
+            identity = repr(identity)
+            already_seen = identity in seen
+
+        if already_seen:
+            continue
+
+        seen.add(identity)
+        result.append(value)
+
+    return result
+
+
+def pairwise_candidates(
+    positive_groups: Iterable[ChargedGroup],
+    negative_groups: Iterable[ChargedGroup],
+) -> Iterator[Tuple[ChargedGroup, ChargedGroup]]:
+    """
+    Yield cation-anion candidate pairs without materializing a Cartesian list.
+
+    Parameters
+    ----------
+    positive_groups
+        Iterable containing positively charged groups.
+    negative_groups
+        Iterable containing negatively charged groups.
+
+    Yields
+    ------
+    Tuple[ChargedGroup, ChargedGroup]
+        Ordered cation-anion pair.
+
+    Raises
+    ------
+    InvalidChargedGroupError
+        If a group has an incompatible polarity.
+    """
+
+    negative_group_tuple = tuple(negative_groups)
+
+    for negative_group in negative_group_tuple:
+        if not negative_group.is_negative:
+            raise InvalidChargedGroupError(
+                "All negative-group candidates must have negative polarity."
+            )
+
+    for positive_group in positive_groups:
+        if not positive_group.is_positive:
+            raise InvalidChargedGroupError(
+                "All positive-group candidates must have positive polarity."
+            )
+
+        for negative_group in negative_group_tuple:
+            yield positive_group, negative_group
+
+
+
 
 
 
