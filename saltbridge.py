@@ -15842,6 +15842,3671 @@ def analyze_salt_bridges_with_statistics(
     return result
 
 
+# =============================================================================
+# 14. DOCKMODEL INTEGRATION
+# =============================================================================
+
+
+# =============================================================================
+# 14.1. DOCKMODEL ACCESS UTILITIES
+# =============================================================================
+
+
+def is_dock_model_instance(
+    value: Any,
+) -> bool:
+    """
+    Return whether a value is a DockModel instance when DockModel is available.
+
+    Duck-typed objects are not accepted by this function. Use
+    ``is_dock_model_like`` when compatibility with custom containers is
+    required.
+
+    Parameters
+    ----------
+    value
+        Object to inspect.
+
+    Returns
+    -------
+    bool
+        Whether the object is an instance of DockModel.
+    """
+
+    if DockModel is None:
+        return False
+
+    try:
+        return isinstance(value, DockModel)
+
+    except TypeError:
+        return False
+
+
+def is_dock_model_like(
+    value: Any,
+) -> bool:
+    """
+    Return whether an object can be used by the DockModel integration layer.
+
+    A compatible object must be mutable through attributes or mapping keys and
+    provide, directly or indirectly, a molecular source.
+
+    Parameters
+    ----------
+    value
+        Object to inspect.
+
+    Returns
+    -------
+    bool
+        Whether the object appears compatible.
+    """
+
+    if value is None:
+        return False
+
+    if is_dock_model_instance(value):
+        return True
+
+    if isinstance(value, Mapping):
+        return True
+
+    candidate_attributes = (
+        "structure",
+        "model",
+        "molecule",
+        "pose",
+        "atoms",
+        "residues",
+        "saltbridge",
+    )
+
+    return any(
+        hasattr(value, attribute_name)
+        for attribute_name in candidate_attributes
+    )
+
+
+def get_dock_model_value(
+    dock_model: Any,
+    name: str,
+    default: Any = None,
+) -> Any:
+    """
+    Read a DockModel attribute or mapping value safely.
+
+    Parameters
+    ----------
+    dock_model
+        DockModel-like object.
+    name
+        Attribute or mapping key.
+    default
+        Value returned when the field is unavailable.
+
+    Returns
+    -------
+    Any
+        Retrieved value or default.
+    """
+
+    if dock_model is None:
+        return default
+
+    if isinstance(dock_model, Mapping):
+        return dock_model.get(
+            name,
+            default,
+        )
+
+    try:
+        return getattr(
+            dock_model,
+            name,
+            default,
+        )
+
+    except Exception:
+        return default
+
+
+def set_dock_model_value(
+    dock_model: Any,
+    name: str,
+    value: Any,
+    *,
+    required: bool = True,
+) -> bool:
+    """
+    Set a DockModel attribute or mutable mapping value.
+
+    Parameters
+    ----------
+    dock_model
+        DockModel-like object.
+    name
+        Attribute or mapping key.
+    value
+        Value to assign.
+    required
+        Whether failure should raise an integration error.
+
+    Returns
+    -------
+    bool
+        Whether the value was assigned successfully.
+
+    Raises
+    ------
+    DockModelSaltBridgeError
+        If assignment fails and ``required`` is true.
+    """
+
+    if dock_model is None:
+        if required:
+            raise DockModelSaltBridgeError(
+                "Cannot assign salt-bridge data to a null DockModel."
+            )
+
+        return False
+
+    if isinstance(dock_model, dict):
+        dock_model[name] = value
+        return True
+
+    try:
+        setattr(
+            dock_model,
+            name,
+            value,
+        )
+
+        return True
+
+    except Exception as error:
+        if required:
+            raise DockModelSaltBridgeError(
+                f"Could not assign DockModel field {name!r}."
+            ) from error
+
+        return False
+
+
+def update_dock_model_mapping(
+    dock_model: Any,
+    name: str,
+    values: Mapping[str, Any],
+    *,
+    preserve_existing: bool = True,
+    required: bool = False,
+) -> bool:
+    """
+    Update a mapping-like DockModel field.
+
+    Parameters
+    ----------
+    dock_model
+        DockModel-like object.
+    name
+        Mapping attribute or key.
+    values
+        Values to merge.
+    preserve_existing
+        Whether existing keys should be preserved when conflicts occur.
+    required
+        Whether assignment failure should raise an error.
+
+    Returns
+    -------
+    bool
+        Whether the mapping was updated.
+    """
+
+    existing_value = get_dock_model_value(
+        dock_model,
+        name,
+        None,
+    )
+
+    if isinstance(existing_value, Mapping):
+        updated_mapping = dict(
+            existing_value
+        )
+
+    else:
+        updated_mapping = {}
+
+    if preserve_existing:
+        for key, value in values.items():
+            updated_mapping.setdefault(
+                key,
+                value,
+            )
+
+    else:
+        updated_mapping.update(
+            values
+        )
+
+    return set_dock_model_value(
+        dock_model,
+        name,
+        updated_mapping,
+        required=required,
+    )
+
+
+# =============================================================================
+# 14.2. MOLECULAR SOURCE RESOLUTION
+# =============================================================================
+
+
+DEFAULT_DOCK_MODEL_SOURCE_FIELDS: Tuple[str, ...] = (
+    "structure",
+    "molecular_structure",
+    "chimera_model",
+    "atomic_model",
+    "model",
+    "molecule",
+    "pose",
+    "complex",
+    "receptor_ligand_complex",
+    "atoms",
+    "residues",
+)
+
+
+def resolve_dock_model_source(
+    dock_model: Any,
+    *,
+    source: Any = None,
+    source_fields: Optional[Iterable[str]] = None,
+) -> Any:
+    """
+    Resolve the molecular source associated with a DockModel.
+
+    An explicitly supplied source has priority. Otherwise, common DockModel
+    fields are inspected in sequence.
+
+    Parameters
+    ----------
+    dock_model
+        DockModel-like object.
+    source
+        Optional explicit molecular source.
+    source_fields
+        Optional ordered field names to inspect.
+
+    Returns
+    -------
+    Any
+        Resolved molecular source.
+
+    Raises
+    ------
+    DockModelSaltBridgeError
+        If no molecular source can be resolved.
+    """
+
+    if source is not None:
+        return source
+
+    if dock_model is None:
+        raise DockModelSaltBridgeError(
+            "A DockModel is required to resolve a molecular source."
+        )
+
+    candidate_fields = tuple(
+        source_fields
+        or DEFAULT_DOCK_MODEL_SOURCE_FIELDS
+    )
+
+    for field_name in candidate_fields:
+        candidate_source = get_dock_model_value(
+            dock_model,
+            field_name,
+            None,
+        )
+
+        if candidate_source is not None:
+            return candidate_source
+
+    if (
+        hasattr(dock_model, "atoms")
+        or hasattr(dock_model, "residues")
+    ):
+        return dock_model
+
+    if isinstance(dock_model, Mapping):
+        if (
+            "atoms" in dock_model
+            or "residues" in dock_model
+        ):
+            return dock_model
+
+    raise DockModelSaltBridgeError(
+        "No molecular source could be resolved from the DockModel."
+    )
+
+
+def resolve_dock_model_pose_id(
+    dock_model: Any,
+    *,
+    pose_id: Optional[Union[str, int]] = None,
+) -> Optional[Union[str, int]]:
+    """
+    Resolve a pose identifier from a DockModel.
+
+    Parameters
+    ----------
+    dock_model
+        DockModel-like object.
+    pose_id
+        Optional explicit pose identifier.
+
+    Returns
+    -------
+    Optional[Union[str, int]]
+        Resolved pose identifier.
+    """
+
+    if pose_id is not None:
+        return normalize_pose_identifier(
+            pose_id
+        )
+
+    candidate_fields = (
+        "pose_id",
+        "pose_number",
+        "pose_index",
+        "rank",
+        "mode",
+        "conformation_id",
+    )
+
+    for field_name in candidate_fields:
+        value = get_dock_model_value(
+            dock_model,
+            field_name,
+            None,
+        )
+
+        if value is not None:
+            return normalize_pose_identifier(
+                value
+            )
+
+    return None
+
+
+def resolve_dock_model_model_id(
+    dock_model: Any,
+    *,
+    model_id: Optional[Union[str, int]] = None,
+) -> Optional[Union[str, int]]:
+    """
+    Resolve a model identifier from a DockModel.
+
+    Parameters
+    ----------
+    dock_model
+        DockModel-like object.
+    model_id
+        Optional explicit model identifier.
+
+    Returns
+    -------
+    Optional[Union[str, int]]
+        Resolved model identifier.
+    """
+
+    if model_id is not None:
+        return normalize_model_identifier(
+            model_id
+        )
+
+    candidate_fields = (
+        "model_id",
+        "identifier",
+        "id",
+        "name",
+        "model_name",
+        "title",
+    )
+
+    for field_name in candidate_fields:
+        value = get_dock_model_value(
+            dock_model,
+            field_name,
+            None,
+        )
+
+        if value is not None:
+            return normalize_model_identifier(
+                value
+            )
+
+    return None
+
+
+# =============================================================================
+# 14.3. RESULT ATTACHMENT
+# =============================================================================
+
+
+def merge_salt_bridge_interactions(
+    existing: Iterable[SaltBridgeInteraction],
+    new: Iterable[SaltBridgeInteraction],
+    config: Optional[SaltBridgeConfig] = None,
+) -> List[SaltBridgeInteraction]:
+    """
+    Merge existing and newly detected interactions.
+
+    The combined list is deduplicated while preserving pose and model
+    boundaries.
+
+    Parameters
+    ----------
+    existing
+        Existing interactions.
+    new
+        Newly detected interactions.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Merged and deduplicated interactions.
+    """
+
+    combined_interactions = [
+        interaction
+        for interaction in (
+            list(existing)
+            + list(new)
+        )
+        if isinstance(
+            interaction,
+            SaltBridgeInteraction,
+        )
+    ]
+
+    return deduplicate_salt_bridge_interactions(
+        combined_interactions,
+        config,
+        include_pose=True,
+        include_model=True,
+        merge_metadata=True,
+    )
+
+
+def attach_salt_bridge_results(
+    dock_model: Any,
+    result: SaltBridgeResult,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    attribute_name: str = "saltbridge",
+    preserve_existing: bool = True,
+    attach_result_object: bool = True,
+    attach_statistics: bool = True,
+    attach_summary: bool = True,
+) -> Any:
+    """
+    Attach salt-bridge analysis results to a DockModel.
+
+    The primary ``saltbridge`` field receives a list of
+    ``SaltBridgeInteraction`` objects.
+
+    Parameters
+    ----------
+    dock_model
+        DockModel-like object.
+    result
+        Salt-bridge analysis result.
+    config
+        Salt-bridge configuration.
+    attribute_name
+        DockModel field receiving the interaction list.
+    preserve_existing
+        Whether existing interactions should be merged instead of replaced.
+    attach_result_object
+        Whether the complete SaltBridgeResult should be stored.
+    attach_statistics
+        Whether statistics should be stored separately.
+    attach_summary
+        Whether compact and textual summaries should be stored.
+
+    Returns
+    -------
+    Any
+        Updated DockModel-like object.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not is_dock_model_like(dock_model):
+        raise DockModelSaltBridgeError(
+            "dock_model is not compatible with DockModel integration."
+        )
+
+    if not isinstance(result, SaltBridgeResult):
+        raise DockModelSaltBridgeError(
+            "result must be a SaltBridgeResult instance."
+        )
+
+    existing_interactions = get_dock_model_value(
+        dock_model,
+        attribute_name,
+        [],
+    )
+
+    if not isinstance(
+        existing_interactions,
+        (list, tuple),
+    ):
+        existing_interactions = []
+
+    if preserve_existing:
+        interactions_to_attach = (
+            merge_salt_bridge_interactions(
+                existing_interactions,
+                result.interactions,
+                resolved_config,
+            )
+        )
+
+    else:
+        interactions_to_attach = list(
+            result.interactions
+        )
+
+    set_dock_model_value(
+        dock_model,
+        attribute_name,
+        interactions_to_attach,
+        required=True,
+    )
+
+    if attach_result_object:
+        set_dock_model_value(
+            dock_model,
+            "saltbridge_result",
+            result,
+            required=False,
+        )
+
+    if attach_statistics:
+        set_dock_model_value(
+            dock_model,
+            "saltbridge_statistics",
+            dict(result.statistics),
+            required=False,
+        )
+
+    if attach_summary:
+        compact_summary = (
+            result.metadata.get(
+                "compact_summary"
+            )
+            or build_compact_salt_bridge_summary(
+                result,
+                resolved_config,
+            )
+        )
+
+        text_summary = (
+            result.metadata.get(
+                "text_summary"
+            )
+            or build_salt_bridge_text_summary(
+                result,
+                resolved_config,
+            )
+        )
+
+        set_dock_model_value(
+            dock_model,
+            "saltbridge_summary",
+            compact_summary,
+            required=False,
+        )
+
+        set_dock_model_value(
+            dock_model,
+            "saltbridge_text_summary",
+            text_summary,
+            required=False,
+        )
+
+    set_dock_model_value(
+        dock_model,
+        "saltbridge_analyzed",
+        True,
+        required=False,
+    )
+
+    return dock_model
+
+
+# =============================================================================
+# 14.4. DOCKMODEL STATISTICS UPDATE
+# =============================================================================
+
+
+def build_dock_model_salt_bridge_statistics(
+    result: SaltBridgeResult,
+    config: Optional[SaltBridgeConfig] = None,
+) -> Dict[str, Any]:
+    """
+    Build DockModel-compatible salt-bridge statistics.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Compact DockModel statistics.
+    """
+
+    if not result.statistics:
+        calculate_salt_bridge_result_statistics(
+            result,
+            config,
+            in_place=True,
+        )
+
+    summary = build_compact_salt_bridge_summary(
+        result,
+        config,
+    )
+
+    return {
+        "count": summary[
+            "interaction_count"
+        ],
+        "rejected_count": summary[
+            "rejected_candidate_count"
+        ],
+        "atomic_contact_count": summary[
+            "atomic_contact_count"
+        ],
+        "score": summary[
+            "total_score"
+        ],
+        "mean_score": summary[
+            "mean_score"
+        ],
+        "best_score": summary[
+            "best_score"
+        ],
+        "minimum_distance": summary[
+            "minimum_distance"
+        ],
+        "mean_distance": summary[
+            "mean_distance"
+        ],
+        "maximum_distance": summary[
+            "maximum_distance"
+        ],
+        "strong_count": summary[
+            "strong_count"
+        ],
+        "moderate_count": summary[
+            "moderate_count"
+        ],
+        "weak_count": summary[
+            "weak_count"
+        ],
+        "residue_count": summary[
+            "residue_count"
+        ],
+        "hotspot_count": summary[
+            "hotspot_count"
+        ],
+        "intrachain_count": summary[
+            "intrachain_count"
+        ],
+        "interchain_count": summary[
+            "interchain_count"
+        ],
+    }
+
+
+def update_dock_model_statistics(
+    dock_model: Any,
+    result: SaltBridgeResult,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    statistics_attribute: str = "statistics",
+    preserve_existing: bool = True,
+) -> Any:
+    """
+    Update the general DockModel statistics mapping.
+
+    Salt-bridge statistics are stored under the ``"saltbridge"`` key so
+    unrelated analysis statistics remain intact.
+
+    Parameters
+    ----------
+    dock_model
+        DockModel-like object.
+    result
+        Salt-bridge result.
+    config
+        Salt-bridge configuration.
+    statistics_attribute
+        General statistics mapping field.
+    preserve_existing
+        Whether unrelated existing statistics should be preserved.
+
+    Returns
+    -------
+    Any
+        Updated DockModel-like object.
+    """
+
+    salt_bridge_statistics = (
+        build_dock_model_salt_bridge_statistics(
+            result,
+            config,
+        )
+    )
+
+    existing_statistics = get_dock_model_value(
+        dock_model,
+        statistics_attribute,
+        {},
+    )
+
+    if isinstance(existing_statistics, Mapping):
+        updated_statistics = dict(
+            existing_statistics
+        )
+
+    else:
+        updated_statistics = {}
+
+    if (
+        preserve_existing
+        and "saltbridge" in updated_statistics
+        and isinstance(
+            updated_statistics["saltbridge"],
+            Mapping,
+        )
+    ):
+        merged_salt_bridge_statistics = dict(
+            updated_statistics[
+                "saltbridge"
+            ]
+        )
+
+        merged_salt_bridge_statistics.update(
+            salt_bridge_statistics
+        )
+
+        updated_statistics[
+            "saltbridge"
+        ] = merged_salt_bridge_statistics
+
+    else:
+        updated_statistics[
+            "saltbridge"
+        ] = salt_bridge_statistics
+
+    set_dock_model_value(
+        dock_model,
+        statistics_attribute,
+        updated_statistics,
+        required=False,
+    )
+
+    return dock_model
+
+
+# =============================================================================
+# 14.5. DOCKMODEL SCORE UPDATE
+# =============================================================================
+
+
+def get_result_salt_bridge_score(
+    result: SaltBridgeResult,
+) -> float:
+    """
+    Return the total valid salt-bridge score from a result.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+
+    Returns
+    -------
+    float
+        Total non-negative salt-bridge score.
+    """
+
+    if not isinstance(result, SaltBridgeResult):
+        raise DockModelSaltBridgeError(
+            "result must be a SaltBridgeResult instance."
+        )
+
+    return sum(
+        max(
+            0.0,
+            safe_float(
+                interaction.score,
+                default=0.0,
+            ) or 0.0,
+        )
+        for interaction in result.interactions
+        if interaction.geometry.valid
+    )
+
+
+def update_dock_model_salt_bridge_score(
+    dock_model: Any,
+    result: SaltBridgeResult,
+    *,
+    dedicated_attribute: str = "saltbridge_score",
+    update_total_score: bool = False,
+    total_score_attribute: str = "score",
+    total_score_mode: str = "add",
+) -> Any:
+    """
+    Update DockModel salt-bridge and optional total scores.
+
+    The dedicated salt-bridge score is always stored when possible. Updating
+    the global DockModel score is optional because different docking pipelines
+    may use incompatible score conventions.
+
+    Parameters
+    ----------
+    dock_model
+        DockModel-like object.
+    result
+        Salt-bridge result.
+    dedicated_attribute
+        Attribute receiving the salt-bridge score.
+    update_total_score
+        Whether the general DockModel score should be modified.
+    total_score_attribute
+        General score attribute.
+    total_score_mode
+        General score update mode. Supported values are ``"add"``,
+        ``"replace"``, and ``"subtract"``.
+
+    Returns
+    -------
+    Any
+        Updated DockModel-like object.
+    """
+
+    salt_bridge_score = (
+        get_result_salt_bridge_score(
+            result
+        )
+    )
+
+    set_dock_model_value(
+        dock_model,
+        dedicated_attribute,
+        salt_bridge_score,
+        required=False,
+    )
+
+    if not update_total_score:
+        return dock_model
+
+    normalized_mode = normalize_text(
+        total_score_mode,
+        default="add",
+        lowercase=True,
+    )
+
+    current_total_score = safe_float(
+        get_dock_model_value(
+            dock_model,
+            total_score_attribute,
+            0.0,
+        ),
+        default=0.0,
+    )
+
+    current_total_score = (
+        current_total_score or 0.0
+    )
+
+    if normalized_mode == "add":
+        updated_total_score = (
+            current_total_score
+            + salt_bridge_score
+        )
+
+    elif normalized_mode == "subtract":
+        updated_total_score = (
+            current_total_score
+            - salt_bridge_score
+        )
+
+    elif normalized_mode == "replace":
+        updated_total_score = (
+            salt_bridge_score
+        )
+
+    else:
+        raise DockModelSaltBridgeError(
+            f"Unsupported total score mode: {total_score_mode!r}."
+        )
+
+    set_dock_model_value(
+        dock_model,
+        total_score_attribute,
+        updated_total_score,
+        required=False,
+    )
+
+    return dock_model
+
+
+# =============================================================================
+# 14.6. SINGLE DOCKMODEL ANALYSIS
+# =============================================================================
+
+
+def analyze_dock_model_salt_bridges(
+    dock_model: Any,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    source: Any = None,
+    source_fields: Optional[Iterable[str]] = None,
+    pose_id: Optional[Union[str, int]] = None,
+    model_id: Optional[Union[str, int]] = None,
+    warnings: Optional[List[str]] = None,
+    preserve_existing: bool = True,
+    attach_result_object: bool = True,
+    update_statistics: bool = True,
+    update_score: bool = True,
+    update_total_score: bool = False,
+    total_score_mode: str = "add",
+    store_full_groups: Optional[bool] = None,
+    include_invalid_statistics: bool = False,
+) -> SaltBridgeResult:
+    """
+    Analyze salt bridges for one DockModel and attach the result.
+
+    Parameters
+    ----------
+    dock_model
+        DockModel-like object.
+    config
+        Salt-bridge configuration.
+    source
+        Optional explicit molecular source.
+    source_fields
+        Optional ordered DockModel source fields.
+    pose_id
+        Optional explicit pose identifier.
+    model_id
+        Optional explicit model identifier.
+    warnings
+        Optional warning collector.
+    preserve_existing
+        Whether existing salt-bridge interactions should be preserved.
+    attach_result_object
+        Whether the complete result should be stored.
+    update_statistics
+        Whether DockModel statistics should be updated.
+    update_score
+        Whether the dedicated salt-bridge score should be updated.
+    update_total_score
+        Whether the general DockModel score should be modified.
+    total_score_mode
+        General score update mode.
+    store_full_groups
+        Whether full grouping mappings should be retained.
+    include_invalid_statistics
+        Whether invalid candidates should enter descriptive statistics.
+
+    Returns
+    -------
+    SaltBridgeResult
+        Salt-bridge result attached to the DockModel.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not is_dock_model_like(dock_model):
+        raise DockModelSaltBridgeError(
+            "The supplied object is not DockModel-compatible."
+        )
+
+    resolved_source = resolve_dock_model_source(
+        dock_model,
+        source=source,
+        source_fields=source_fields,
+    )
+
+    resolved_pose_id = (
+        resolve_dock_model_pose_id(
+            dock_model,
+            pose_id=pose_id,
+        )
+    )
+
+    resolved_model_id = (
+        resolve_dock_model_model_id(
+            dock_model,
+            model_id=model_id,
+        )
+    )
+
+    try:
+        result = analyze_salt_bridges_with_statistics(
+            resolved_source,
+            resolved_config,
+            pose_id=resolved_pose_id,
+            model_id=resolved_model_id,
+            warnings=warnings,
+            store_full_groups=store_full_groups,
+            include_invalid_statistics=(
+                include_invalid_statistics
+            ),
+        )
+
+        attach_salt_bridge_results(
+            dock_model,
+            result,
+            resolved_config,
+            preserve_existing=preserve_existing,
+            attach_result_object=(
+                attach_result_object
+            ),
+            attach_statistics=True,
+            attach_summary=True,
+        )
+
+        if update_statistics:
+            update_dock_model_statistics(
+                dock_model,
+                result,
+                resolved_config,
+                preserve_existing=True,
+            )
+
+        if update_score:
+            update_dock_model_salt_bridge_score(
+                dock_model,
+                result,
+                update_total_score=(
+                    update_total_score
+                ),
+                total_score_mode=(
+                    total_score_mode
+                ),
+            )
+
+        return result
+
+    except SaltBridgeError:
+        raise
+
+    except Exception as error:
+        raise DockModelSaltBridgeError(
+            "Unexpected failure during DockModel salt-bridge analysis."
+        ) from error
+
+
+# =============================================================================
+# 14.7. MULTIPLE DOCKMODEL ANALYSIS
+# =============================================================================
+
+
+def analyze_multiple_dock_models_salt_bridges(
+    dock_models: Iterable[Any],
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    preserve_existing: bool = True,
+    attach_result_object: bool = True,
+    update_statistics: bool = True,
+    update_score: bool = True,
+    update_total_score: bool = False,
+    total_score_mode: str = "add",
+    store_full_groups: Optional[bool] = None,
+    include_invalid_statistics: bool = False,
+    continue_on_error: bool = True,
+    warnings: Optional[List[str]] = None,
+) -> List[SaltBridgeResult]:
+    """
+    Analyze salt bridges for multiple DockModel objects.
+
+    Parameters
+    ----------
+    dock_models
+        DockModel-like objects.
+    config
+        Salt-bridge configuration.
+    preserve_existing
+        Whether existing interactions should be preserved.
+    attach_result_object
+        Whether complete results should be attached.
+    update_statistics
+        Whether general DockModel statistics should be updated.
+    update_score
+        Whether dedicated salt-bridge scores should be updated.
+    update_total_score
+        Whether general DockModel scores should be modified.
+    total_score_mode
+        General score update mode.
+    store_full_groups
+        Whether complete grouping mappings should be retained.
+    include_invalid_statistics
+        Whether invalid candidates should enter descriptive statistics.
+    continue_on_error
+        Whether processing should continue after a model-level failure.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    List[SaltBridgeResult]
+        Successfully generated results.
+    """
+
+    resolved_config = resolve_config(config)
+    result_list: List[SaltBridgeResult] = []
+
+    for model_index, dock_model in enumerate(
+        dock_models,
+        start=1,
+    ):
+        try:
+            result = analyze_dock_model_salt_bridges(
+                dock_model,
+                resolved_config,
+                preserve_existing=preserve_existing,
+                attach_result_object=(
+                    attach_result_object
+                ),
+                update_statistics=(
+                    update_statistics
+                ),
+                update_score=update_score,
+                update_total_score=(
+                    update_total_score
+                ),
+                total_score_mode=(
+                    total_score_mode
+                ),
+                store_full_groups=(
+                    store_full_groups
+                ),
+                include_invalid_statistics=(
+                    include_invalid_statistics
+                ),
+                warnings=warnings,
+            )
+
+            result.metadata[
+                "dock_model_batch_index"
+            ] = model_index
+
+            result_list.append(
+                result
+            )
+
+        except SaltBridgeError as error:
+            message = (
+                "DockModel salt-bridge analysis failed "
+                f"for model index {model_index}: {error}"
+            )
+
+            if warnings is not None:
+                warnings.append(
+                    message
+                )
+
+            if not continue_on_error:
+                raise
+
+    return result_list
+
+
+# =============================================================================
+# 14.8. DOCKMODEL RESULT ACCESS
+# =============================================================================
+
+
+def get_dock_model_salt_bridges(
+    dock_model: Any,
+    *,
+    attribute_name: str = "saltbridge",
+    valid_only: bool = False,
+) -> List[SaltBridgeInteraction]:
+    """
+    Return salt-bridge interactions attached to a DockModel.
+
+    Parameters
+    ----------
+    dock_model
+        DockModel-like object.
+    attribute_name
+        Interaction-list attribute.
+    valid_only
+        Whether invalid candidates should be removed.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Attached interactions.
+    """
+
+    attached_value = get_dock_model_value(
+        dock_model,
+        attribute_name,
+        [],
+    )
+
+    if not isinstance(
+        attached_value,
+        (list, tuple),
+    ):
+        return []
+
+    interactions = [
+        interaction
+        for interaction in attached_value
+        if isinstance(
+            interaction,
+            SaltBridgeInteraction,
+        )
+    ]
+
+    if valid_only:
+        interactions = [
+            interaction
+            for interaction in interactions
+            if interaction.geometry.valid
+        ]
+
+    return interactions
+
+
+def get_dock_model_salt_bridge_result(
+    dock_model: Any,
+) -> Optional[SaltBridgeResult]:
+    """
+    Return the complete SaltBridgeResult attached to a DockModel.
+
+    Parameters
+    ----------
+    dock_model
+        DockModel-like object.
+
+    Returns
+    -------
+    Optional[SaltBridgeResult]
+        Attached result or ``None``.
+    """
+
+    result = get_dock_model_value(
+        dock_model,
+        "saltbridge_result",
+        None,
+    )
+
+    if isinstance(
+        result,
+        SaltBridgeResult,
+    ):
+        return result
+
+    return None
+
+
+def clear_dock_model_salt_bridges(
+    dock_model: Any,
+    *,
+    clear_score: bool = True,
+    clear_statistics: bool = True,
+) -> Any:
+    """
+    Remove salt-bridge data from a DockModel.
+
+    Parameters
+    ----------
+    dock_model
+        DockModel-like object.
+    clear_score
+        Whether dedicated salt-bridge score should be reset.
+    clear_statistics
+        Whether dedicated salt-bridge statistics should be cleared.
+
+    Returns
+    -------
+    Any
+        Updated DockModel-like object.
+    """
+
+    set_dock_model_value(
+        dock_model,
+        "saltbridge",
+        [],
+        required=True,
+    )
+
+    set_dock_model_value(
+        dock_model,
+        "saltbridge_result",
+        None,
+        required=False,
+    )
+
+    set_dock_model_value(
+        dock_model,
+        "saltbridge_summary",
+        {},
+        required=False,
+    )
+
+    set_dock_model_value(
+        dock_model,
+        "saltbridge_text_summary",
+        "",
+        required=False,
+    )
+
+    set_dock_model_value(
+        dock_model,
+        "saltbridge_analyzed",
+        False,
+        required=False,
+    )
+
+    if clear_score:
+        set_dock_model_value(
+            dock_model,
+            "saltbridge_score",
+            0.0,
+            required=False,
+        )
+
+    if clear_statistics:
+        set_dock_model_value(
+            dock_model,
+            "saltbridge_statistics",
+            {},
+            required=False,
+        )
+
+        existing_statistics = get_dock_model_value(
+            dock_model,
+            "statistics",
+            None,
+        )
+
+        if isinstance(
+            existing_statistics,
+            Mapping,
+        ):
+            updated_statistics = dict(
+                existing_statistics
+            )
+
+            updated_statistics.pop(
+                "saltbridge",
+                None,
+            )
+
+            set_dock_model_value(
+                dock_model,
+                "statistics",
+                updated_statistics,
+                required=False,
+            )
+
+    return dock_model
+
+
+# =============================================================================
+# 14.9. BATCH SUMMARY
+# =============================================================================
+
+
+def summarize_dock_model_salt_bridge_results(
+    results: Iterable[SaltBridgeResult],
+) -> Dict[str, Any]:
+    """
+    Summarize salt-bridge results from multiple DockModel objects.
+
+    Parameters
+    ----------
+    results
+        DockModel salt-bridge results.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Batch-level summary.
+    """
+
+    result_list = [
+        result
+        for result in results
+        if isinstance(
+            result,
+            SaltBridgeResult,
+        )
+    ]
+
+    interaction_counts = [
+        len(result.valid_interactions)
+        for result in result_list
+    ]
+
+    total_scores = [
+        get_result_salt_bridge_score(
+            result
+        )
+        for result in result_list
+    ]
+
+    minimum_distances: List[float] = []
+
+    for result in result_list:
+        valid_distances = [
+            interaction.distance
+            for interaction in result.valid_interactions
+            if safe_float(
+                interaction.distance
+            ) is not None
+        ]
+
+        if valid_distances:
+            minimum_distances.append(
+                min(valid_distances)
+            )
+
+    best_result = None
+
+    if result_list:
+        best_result = max(
+            result_list,
+            key=lambda result: (
+                get_result_salt_bridge_score(
+                    result
+                ),
+                len(result.valid_interactions),
+                -min(
+                    (
+                        interaction.distance
+                        for interaction
+                        in result.valid_interactions
+                    ),
+                    default=math.inf,
+                ),
+            ),
+        )
+
+    return {
+        "model_count": len(
+            result_list
+        ),
+        "total_interaction_count": sum(
+            interaction_counts
+        ),
+        "total_score": sum(
+            total_scores
+        ),
+        "interactions_per_model": (
+            calculate_numeric_statistics(
+                interaction_counts
+            )
+        ),
+        "scores_per_model": (
+            calculate_numeric_statistics(
+                total_scores
+            )
+        ),
+        "minimum_distances_per_model": (
+            calculate_numeric_statistics(
+                minimum_distances
+            )
+        ),
+        "best_model_id": (
+            best_result.model_id
+            if best_result is not None
+            else None
+        ),
+        "best_pose_id": (
+            best_result.pose_id
+            if best_result is not None
+            else None
+        ),
+        "best_model_score": (
+            get_result_salt_bridge_score(
+                best_result
+            )
+            if best_result is not None
+            else None
+        ),
+    }
+
+
+
+# =============================================================================
+# 15. MULTIPOSE ANALYSIS
+# =============================================================================
+
+
+# =============================================================================
+# 15.1. MULTIPOSE INPUT NORMALIZATION
+# =============================================================================
+
+
+def normalize_pose_collection(
+    poses: Iterable[Any],
+) -> List[Any]:
+    """
+    Normalize a collection of docking poses.
+
+    Parameters
+    ----------
+    poses
+        Pose-like molecular sources or DockModel-like objects.
+
+    Returns
+    -------
+    List[Any]
+        Materialized pose collection.
+
+    Raises
+    ------
+    SaltBridgeDetectionError
+        If the pose collection is invalid or empty.
+    """
+
+    if poses is None:
+        raise SaltBridgeDetectionError(
+            "A pose collection is required."
+        )
+
+    try:
+        pose_list = list(poses)
+
+    except TypeError as error:
+        raise SaltBridgeDetectionError(
+            "poses must be an iterable collection."
+        ) from error
+
+    if not pose_list:
+        raise SaltBridgeDetectionError(
+            "The pose collection cannot be empty."
+        )
+
+    return pose_list
+
+
+def make_multipose_pose_id(
+    pose: Any,
+    pose_index: int,
+    *,
+    explicit_pose_id: Optional[Union[str, int]] = None,
+) -> Union[str, int]:
+    """
+    Resolve a stable pose identifier.
+
+    Parameters
+    ----------
+    pose
+        Pose-like object.
+    pose_index
+        One-based pose position in the input collection.
+    explicit_pose_id
+        Optional explicit pose identifier.
+
+    Returns
+    -------
+    Union[str, int]
+        Resolved pose identifier.
+    """
+
+    if explicit_pose_id is not None:
+        normalized_pose_id = normalize_pose_identifier(
+            explicit_pose_id
+        )
+
+        if normalized_pose_id is not None:
+            return normalized_pose_id
+
+    if is_dock_model_like(pose):
+        resolved_pose_id = resolve_dock_model_pose_id(
+            pose
+        )
+
+        if resolved_pose_id is not None:
+            return resolved_pose_id
+
+    candidate_fields = (
+        "pose_id",
+        "pose_number",
+        "pose_index",
+        "rank",
+        "mode",
+        "state_id",
+        "conformation_id",
+    )
+
+    for field_name in candidate_fields:
+        candidate_value = get_value(
+            pose,
+            field_name,
+            None,
+        )
+
+        if candidate_value is not None:
+            normalized_pose_id = (
+                normalize_pose_identifier(
+                    candidate_value
+                )
+            )
+
+            if normalized_pose_id is not None:
+                return normalized_pose_id
+
+    return pose_index
+
+
+def make_multipose_model_id(
+    pose: Any,
+    pose_index: int,
+    *,
+    explicit_model_id: Optional[Union[str, int]] = None,
+    default_prefix: str = "model",
+) -> Union[str, int]:
+    """
+    Resolve a stable model identifier for one pose.
+
+    Parameters
+    ----------
+    pose
+        Pose-like object.
+    pose_index
+        One-based pose position.
+    explicit_model_id
+        Optional explicit model identifier.
+    default_prefix
+        Prefix used for generated identifiers.
+
+    Returns
+    -------
+    Union[str, int]
+        Resolved model identifier.
+    """
+
+    if explicit_model_id is not None:
+        normalized_model_id = (
+            normalize_model_identifier(
+                explicit_model_id
+            )
+        )
+
+        if normalized_model_id is not None:
+            return normalized_model_id
+
+    if is_dock_model_like(pose):
+        resolved_model_id = resolve_dock_model_model_id(
+            pose
+        )
+
+        if resolved_model_id is not None:
+            return resolved_model_id
+
+    candidate_fields = (
+        "model_id",
+        "identifier",
+        "name",
+        "title",
+    )
+
+    for field_name in candidate_fields:
+        candidate_value = get_value(
+            pose,
+            field_name,
+            None,
+        )
+
+        if candidate_value is not None:
+            normalized_model_id = (
+                normalize_model_identifier(
+                    candidate_value
+                )
+            )
+
+            if normalized_model_id is not None:
+                return normalized_model_id
+
+    return f"{default_prefix}_{pose_index:04d}"
+
+
+def resolve_multipose_source(
+    pose: Any,
+) -> Any:
+    """
+    Resolve the molecular source for one pose.
+
+    DockModel-like objects are resolved through the DockModel integration
+    layer. Other objects are treated directly as molecular sources.
+
+    Parameters
+    ----------
+    pose
+        Pose-like source or DockModel-like object.
+
+    Returns
+    -------
+    Any
+        Molecular source.
+    """
+
+    if is_dock_model_like(pose):
+        try:
+            return resolve_dock_model_source(
+                pose
+            )
+
+        except DockModelSaltBridgeError:
+            pass
+
+    return pose
+
+
+def normalize_pose_id_mapping(
+    pose_count: int,
+    pose_ids: Optional[
+        Union[
+            Sequence[Optional[Union[str, int]]],
+            Mapping[int, Optional[Union[str, int]]],
+        ]
+    ] = None,
+) -> Dict[int, Optional[Union[str, int]]]:
+    """
+    Normalize optional pose identifiers into an index-based mapping.
+
+    Indices are one-based to match user-facing pose numbering.
+
+    Parameters
+    ----------
+    pose_count
+        Number of poses.
+    pose_ids
+        Optional sequence or mapping of pose identifiers.
+
+    Returns
+    -------
+    Dict[int, Optional[Union[str, int]]]
+        One-based pose-index mapping.
+    """
+
+    if pose_ids is None:
+        return {
+            index: None
+            for index in range(
+                1,
+                pose_count + 1,
+            )
+        }
+
+    if isinstance(pose_ids, Mapping):
+        return {
+            index: pose_ids.get(
+                index
+            )
+            for index in range(
+                1,
+                pose_count + 1,
+            )
+        }
+
+    pose_id_list = list(
+        pose_ids
+    )
+
+    if len(pose_id_list) != pose_count:
+        raise SaltBridgeDetectionError(
+            "pose_ids must contain one identifier per pose."
+        )
+
+    return {
+        index: pose_id_list[
+            index - 1
+        ]
+        for index in range(
+            1,
+            pose_count + 1,
+        )
+    }
+
+
+# =============================================================================
+# 15.2. SINGLE-POSE EXECUTION WITHIN MULTIPOSE ANALYSIS
+# =============================================================================
+
+
+def analyze_single_multipose_entry(
+    pose: Any,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    pose_index: int,
+    pose_id: Optional[Union[str, int]] = None,
+    model_id: Optional[Union[str, int]] = None,
+    attach_to_dock_model: bool = True,
+    preserve_existing: bool = False,
+    store_full_groups: Optional[bool] = None,
+    include_invalid_statistics: bool = False,
+    warnings: Optional[List[str]] = None,
+) -> SaltBridgeResult:
+    """
+    Analyze one entry from a multipose collection.
+
+    Parameters
+    ----------
+    pose
+        Pose-like source or DockModel-like object.
+    config
+        Salt-bridge configuration.
+    pose_index
+        One-based pose position.
+    pose_id
+        Optional explicit pose identifier.
+    model_id
+        Optional explicit model identifier.
+    attach_to_dock_model
+        Whether results should be attached when the pose is a DockModel.
+    preserve_existing
+        Whether pre-existing DockModel salt bridges should be preserved.
+    store_full_groups
+        Whether complete grouping mappings should be stored.
+    include_invalid_statistics
+        Whether invalid candidates should enter descriptive statistics.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    SaltBridgeResult
+        Analysis result for one pose.
+    """
+
+    resolved_config = resolve_config(
+        config
+    )
+
+    resolved_pose_id = make_multipose_pose_id(
+        pose,
+        pose_index,
+        explicit_pose_id=pose_id,
+    )
+
+    resolved_model_id = make_multipose_model_id(
+        pose,
+        pose_index,
+        explicit_model_id=model_id,
+    )
+
+    if (
+        attach_to_dock_model
+        and is_dock_model_like(pose)
+    ):
+        result = analyze_dock_model_salt_bridges(
+            pose,
+            resolved_config,
+            pose_id=resolved_pose_id,
+            model_id=resolved_model_id,
+            warnings=warnings,
+            preserve_existing=preserve_existing,
+            attach_result_object=True,
+            update_statistics=True,
+            update_score=True,
+            update_total_score=False,
+            store_full_groups=store_full_groups,
+            include_invalid_statistics=(
+                include_invalid_statistics
+            ),
+        )
+
+    else:
+        molecular_source = resolve_multipose_source(
+            pose
+        )
+
+        result = analyze_salt_bridges_with_statistics(
+            molecular_source,
+            resolved_config,
+            pose_id=resolved_pose_id,
+            model_id=resolved_model_id,
+            warnings=warnings,
+            store_full_groups=store_full_groups,
+            include_invalid_statistics=(
+                include_invalid_statistics
+            ),
+        )
+
+    result.metadata[
+        "multipose_pose_index"
+    ] = pose_index
+
+    result.metadata[
+        "multipose_analysis"
+    ] = True
+
+    return result
+
+
+# =============================================================================
+# 15.3. MULTIPOSE EXECUTION
+# =============================================================================
+
+
+def analyze_multiple_poses_salt_bridges(
+    poses: Iterable[Any],
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    pose_ids: Optional[
+        Union[
+            Sequence[Optional[Union[str, int]]],
+            Mapping[int, Optional[Union[str, int]]],
+        ]
+    ] = None,
+    model_ids: Optional[
+        Union[
+            Sequence[Optional[Union[str, int]]],
+            Mapping[int, Optional[Union[str, int]]],
+        ]
+    ] = None,
+    attach_to_dock_models: bool = True,
+    preserve_existing: bool = False,
+    store_full_groups: Optional[bool] = None,
+    include_invalid_statistics: bool = False,
+    continue_on_error: bool = True,
+    warnings: Optional[List[str]] = None,
+) -> List[SaltBridgeResult]:
+    """
+    Analyze salt bridges across multiple docking poses.
+
+    Each pose is analyzed independently. Interactions are not deduplicated
+    across different poses.
+
+    Parameters
+    ----------
+    poses
+        Pose-like sources or DockModel-like objects.
+    config
+        Salt-bridge configuration.
+    pose_ids
+        Optional pose identifiers.
+    model_ids
+        Optional model identifiers.
+    attach_to_dock_models
+        Whether results should be attached to DockModel-like inputs.
+    preserve_existing
+        Whether existing DockModel interactions should be preserved.
+    store_full_groups
+        Whether complete group mappings should be stored.
+    include_invalid_statistics
+        Whether invalid candidates should enter descriptive statistics.
+    continue_on_error
+        Whether analysis should continue after one pose fails.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    List[SaltBridgeResult]
+        Successfully analyzed pose results.
+    """
+
+    resolved_config = resolve_config(
+        config
+    )
+
+    pose_list = normalize_pose_collection(
+        poses
+    )
+
+    pose_id_mapping = normalize_pose_id_mapping(
+        len(pose_list),
+        pose_ids,
+    )
+
+    model_id_mapping = normalize_pose_id_mapping(
+        len(pose_list),
+        model_ids,
+    )
+
+    result_list: List[
+        SaltBridgeResult
+    ] = []
+
+    for pose_index, pose in enumerate(
+        pose_list,
+        start=1,
+    ):
+        try:
+            result = analyze_single_multipose_entry(
+                pose,
+                resolved_config,
+                pose_index=pose_index,
+                pose_id=pose_id_mapping[
+                    pose_index
+                ],
+                model_id=model_id_mapping[
+                    pose_index
+                ],
+                attach_to_dock_model=(
+                    attach_to_dock_models
+                ),
+                preserve_existing=(
+                    preserve_existing
+                ),
+                store_full_groups=(
+                    store_full_groups
+                ),
+                include_invalid_statistics=(
+                    include_invalid_statistics
+                ),
+                warnings=warnings,
+            )
+
+            result_list.append(
+                result
+            )
+
+        except SaltBridgeError as error:
+            message = (
+                "Salt-bridge analysis failed for "
+                f"pose index {pose_index}: {error}"
+            )
+
+            if warnings is not None:
+                warnings.append(
+                    message
+                )
+
+            if not continue_on_error:
+                raise
+
+        except Exception as error:
+            wrapped_error = SaltBridgeDetectionError(
+                "Unexpected multipose analysis failure "
+                f"at pose index {pose_index}."
+            )
+
+            if warnings is not None:
+                warnings.append(
+                    f"{wrapped_error}: {error}"
+                )
+
+            if not continue_on_error:
+                raise wrapped_error from error
+
+    return result_list
+
+
+# =============================================================================
+# 15.4. MULTIPOSE INTERACTION COLLECTION
+# =============================================================================
+
+
+def collect_multipose_interactions(
+    results: Iterable[SaltBridgeResult],
+    *,
+    valid_only: bool = True,
+) -> List[SaltBridgeInteraction]:
+    """
+    Collect interactions from multiple pose results.
+
+    No cross-pose deduplication is performed.
+
+    Parameters
+    ----------
+    results
+        Pose-level salt-bridge results.
+    valid_only
+        Whether invalid interactions should be excluded.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Combined interaction collection.
+    """
+
+    collected_interactions: List[
+        SaltBridgeInteraction
+    ] = []
+
+    for result in results:
+        if not isinstance(
+            result,
+            SaltBridgeResult,
+        ):
+            raise SaltBridgeDetectionError(
+                "All results must be SaltBridgeResult instances."
+            )
+
+        for interaction in result.interactions:
+            if (
+                valid_only
+                and not interaction.geometry.valid
+            ):
+                continue
+
+            collected_interactions.append(
+                interaction
+            )
+
+    return collected_interactions
+
+
+def group_results_by_pose(
+    results: Iterable[SaltBridgeResult],
+) -> Dict[str, SaltBridgeResult]:
+    """
+    Group pose results by normalized pose identifier.
+
+    Parameters
+    ----------
+    results
+        Pose-level results.
+
+    Returns
+    -------
+    Dict[str, SaltBridgeResult]
+        Pose identifier to result mapping.
+    """
+
+    grouped_results: Dict[
+        str,
+        SaltBridgeResult,
+    ] = {}
+
+    for result in results:
+        if not isinstance(
+            result,
+            SaltBridgeResult,
+        ):
+            raise SaltBridgeDetectionError(
+                "All values must be SaltBridgeResult instances."
+            )
+
+        pose_key = normalize_grouping_identifier(
+            result.pose_id,
+            fallback="unassigned_pose",
+        )
+
+        if pose_key in grouped_results:
+            raise SaltBridgeDetectionError(
+                f"Duplicate pose identifier: {pose_key!r}."
+            )
+
+        grouped_results[
+            pose_key
+        ] = result
+
+    return grouped_results
+
+
+# =============================================================================
+# 15.5. INTERACTION PERSISTENCE
+# =============================================================================
+
+
+def multipose_interaction_persistence_key(
+    interaction: SaltBridgeInteraction,
+    *,
+    mode: str = "residue_pair",
+) -> Hashable:
+    """
+    Build a cross-pose persistence key.
+
+    Pose and model identifiers are intentionally excluded.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+    mode
+        Persistence mode. Supported values are ``"residue_pair"``,
+        ``"group_pair"``, ``"atom_pair"``, and ``"group_type"``.
+
+    Returns
+    -------
+    Hashable
+        Cross-pose persistence key.
+    """
+
+    normalized_mode = normalize_text(
+        mode,
+        default="residue_pair",
+        lowercase=True,
+    )
+
+    if normalized_mode == "residue_pair":
+        return interaction_residue_grouping_key(
+            interaction,
+            directional=True,
+        )
+
+    if normalized_mode == "group_pair":
+        return interaction_group_pair_grouping_key(
+            interaction
+        )
+
+    if normalized_mode == "atom_pair":
+        return interaction_atom_pair_key(
+            interaction,
+            include_pose=False,
+            include_model=False,
+        )
+
+    if normalized_mode == "group_type":
+        return (
+            normalize_grouping_identifier(
+                interaction.cation.group_type,
+                fallback="unknown_cation",
+            ),
+            normalize_grouping_identifier(
+                interaction.anion.group_type,
+                fallback="unknown_anion",
+            ),
+        )
+
+    raise SaltBridgeDetectionError(
+        f"Unsupported persistence mode: {mode!r}."
+    )
+
+
+def calculate_interaction_persistence(
+    results: Iterable[SaltBridgeResult],
+    *,
+    mode: str = "residue_pair",
+    valid_only: bool = True,
+) -> List[Dict[str, Any]]:
+    """
+    Calculate interaction persistence across docking poses.
+
+    Persistence is the percentage of analyzed poses containing at least one
+    interaction matching the selected key.
+
+    Parameters
+    ----------
+    results
+        Pose-level results.
+    mode
+        Persistence grouping mode.
+    valid_only
+        Whether invalid interactions should be ignored.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Persistence records sorted by decreasing pose coverage.
+    """
+
+    result_list = list(
+        results
+    )
+
+    pose_count = len(
+        result_list
+    )
+
+    if pose_count == 0:
+        return []
+
+    persistence_data: Dict[
+        Hashable,
+        Dict[str, Any],
+    ] = {}
+
+    for result in result_list:
+        pose_key = normalize_grouping_identifier(
+            result.pose_id,
+            fallback="unassigned_pose",
+        )
+
+        seen_in_current_pose: Set[
+            Hashable
+        ] = set()
+
+        for interaction in result.interactions:
+            if (
+                valid_only
+                and not interaction.geometry.valid
+            ):
+                continue
+
+            persistence_key = (
+                multipose_interaction_persistence_key(
+                    interaction,
+                    mode=mode,
+                )
+            )
+
+            record = persistence_data.setdefault(
+                persistence_key,
+                {
+                    "persistence_key": persistence_key,
+                    "pose_ids": set(),
+                    "interaction_ids": [],
+                    "interaction_count": 0,
+                    "scores": [],
+                    "distances": [],
+                    "strength_counts": {
+                        STRENGTH_STRONG: 0,
+                        STRENGTH_MODERATE: 0,
+                        STRENGTH_WEAK: 0,
+                        STRENGTH_REJECTED: 0,
+                    },
+                },
+            )
+
+            record[
+                "interaction_count"
+            ] += 1
+
+            record[
+                "interaction_ids"
+            ].append(
+                interaction.interaction_id
+            )
+
+            score = safe_float(
+                interaction.score
+            )
+
+            if score is not None:
+                record[
+                    "scores"
+                ].append(
+                    score
+                )
+
+            interaction_distance = safe_float(
+                interaction.distance
+            )
+
+            if interaction_distance is not None:
+                record[
+                    "distances"
+                ].append(
+                    interaction_distance
+                )
+
+            strength = normalize_text(
+                interaction.strength,
+                default=STRENGTH_REJECTED,
+                lowercase=True,
+            )
+
+            record[
+                "strength_counts"
+            ].setdefault(
+                strength,
+                0,
+            )
+
+            record[
+                "strength_counts"
+            ][
+                strength
+            ] += 1
+
+            if persistence_key not in seen_in_current_pose:
+                record[
+                    "pose_ids"
+                ].add(
+                    pose_key
+                )
+
+                seen_in_current_pose.add(
+                    persistence_key
+                )
+
+    persistence_records: List[
+        Dict[str, Any]
+    ] = []
+
+    for record in persistence_data.values():
+        observed_pose_count = len(
+            record["pose_ids"]
+        )
+
+        score_statistics = (
+            calculate_numeric_statistics(
+                record["scores"]
+            )
+        )
+
+        distance_statistics = (
+            calculate_numeric_statistics(
+                record["distances"]
+            )
+        )
+
+        persistence_records.append(
+            {
+                "persistence_key": (
+                    record[
+                        "persistence_key"
+                    ]
+                ),
+                "pose_count": (
+                    observed_pose_count
+                ),
+                "total_pose_count": (
+                    pose_count
+                ),
+                "persistence_fraction": (
+                    observed_pose_count
+                    / pose_count
+                ),
+                "persistence_percentage": (
+                    calculate_percentage(
+                        observed_pose_count,
+                        pose_count,
+                    )
+                ),
+                "interaction_count": (
+                    record[
+                        "interaction_count"
+                    ]
+                ),
+                "pose_ids": sorted(
+                    record[
+                        "pose_ids"
+                    ]
+                ),
+                "interaction_ids": (
+                    record[
+                        "interaction_ids"
+                    ]
+                ),
+                "score_statistics": (
+                    score_statistics
+                ),
+                "distance_statistics": (
+                    distance_statistics
+                ),
+                "strength_counts": (
+                    record[
+                        "strength_counts"
+                    ]
+                ),
+            }
+        )
+
+    persistence_records.sort(
+        key=lambda record: (
+            -record[
+                "persistence_percentage"
+            ],
+            -(
+                record[
+                    "score_statistics"
+                ].get(
+                    "mean"
+                )
+                or 0.0
+            ),
+            (
+                record[
+                    "distance_statistics"
+                ].get(
+                    "mean"
+                )
+                or math.inf
+            ),
+            repr(
+                record[
+                    "persistence_key"
+                ]
+            ),
+        )
+    )
+
+    for rank, record in enumerate(
+        persistence_records,
+        start=1,
+    ):
+        record["rank"] = rank
+
+    return persistence_records
+
+
+def filter_persistent_interactions(
+    persistence_records: Iterable[
+        Mapping[str, Any]
+    ],
+    *,
+    minimum_percentage: float = 50.0,
+    minimum_pose_count: int = 1,
+) -> List[Dict[str, Any]]:
+    """
+    Filter interaction persistence records.
+
+    Parameters
+    ----------
+    persistence_records
+        Persistence records.
+    minimum_percentage
+        Minimum persistence percentage.
+    minimum_pose_count
+        Minimum number of poses.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Filtered persistence records.
+    """
+
+    normalized_percentage = safe_float(
+        minimum_percentage,
+        default=50.0,
+    )
+
+    normalized_pose_count = safe_int(
+        minimum_pose_count,
+        default=1,
+    )
+
+    if (
+        normalized_percentage is None
+        or normalized_percentage < 0.0
+        or normalized_percentage > 100.0
+    ):
+        raise SaltBridgeDetectionError(
+            "minimum_percentage must be between 0 and 100."
+        )
+
+    if (
+        normalized_pose_count is None
+        or normalized_pose_count < 1
+    ):
+        raise SaltBridgeDetectionError(
+            "minimum_pose_count must be at least one."
+        )
+
+    return [
+        dict(record)
+        for record in persistence_records
+        if (
+            safe_float(
+                record.get(
+                    "persistence_percentage"
+                ),
+                default=0.0,
+            )
+            or 0.0
+        )
+        >= normalized_percentage
+        and (
+            safe_int(
+                record.get(
+                    "pose_count"
+                ),
+                default=0,
+            )
+            or 0
+        )
+        >= normalized_pose_count
+    ]
+
+
+# =============================================================================
+# 15.6. POSE RANKING
+# =============================================================================
+
+
+def calculate_pose_ranking_score(
+    result: SaltBridgeResult,
+    *,
+    score_weight: float = 1.0,
+    interaction_weight: float = 0.25,
+    strong_weight: float = 0.50,
+    moderate_weight: float = 0.20,
+    hotspot_weight: float = 0.10,
+) -> float:
+    """
+    Calculate a salt-bridge-based pose ranking score.
+
+    Parameters
+    ----------
+    result
+        Pose-level salt-bridge result.
+    score_weight
+        Weight for the total salt-bridge score.
+    interaction_weight
+        Weight for valid interaction count.
+    strong_weight
+        Bonus per strong interaction.
+    moderate_weight
+        Bonus per moderate interaction.
+    hotspot_weight
+        Bonus per hotspot.
+
+    Returns
+    -------
+    float
+        Pose ranking score.
+    """
+
+    compact_summary = (
+        result.metadata.get(
+            "compact_summary"
+        )
+        or build_compact_salt_bridge_summary(
+            result
+        )
+    )
+
+    total_score = safe_float(
+        compact_summary.get(
+            "total_score"
+        ),
+        default=0.0,
+    ) or 0.0
+
+    interaction_count = safe_int(
+        compact_summary.get(
+            "interaction_count"
+        ),
+        default=0,
+    ) or 0
+
+    strong_count = safe_int(
+        compact_summary.get(
+            "strong_count"
+        ),
+        default=0,
+    ) or 0
+
+    moderate_count = safe_int(
+        compact_summary.get(
+            "moderate_count"
+        ),
+        default=0,
+    ) or 0
+
+    hotspot_count = safe_int(
+        compact_summary.get(
+            "hotspot_count"
+        ),
+        default=0,
+    ) or 0
+
+    return (
+        total_score * score_weight
+        + interaction_count
+        * interaction_weight
+        + strong_count
+        * strong_weight
+        + moderate_count
+        * moderate_weight
+        + hotspot_count
+        * hotspot_weight
+    )
+
+
+def rank_salt_bridge_poses(
+    results: Iterable[SaltBridgeResult],
+) -> List[Dict[str, Any]]:
+    """
+    Rank poses using salt-bridge quality metrics.
+
+    Parameters
+    ----------
+    results
+        Pose-level results.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Ranked pose records.
+    """
+
+    ranking_records: List[
+        Dict[str, Any]
+    ] = []
+
+    for result in results:
+        if not isinstance(
+            result,
+            SaltBridgeResult,
+        ):
+            raise SaltBridgeDetectionError(
+                "All values must be SaltBridgeResult instances."
+            )
+
+        summary = (
+            result.metadata.get(
+                "compact_summary"
+            )
+            or build_compact_salt_bridge_summary(
+                result
+            )
+        )
+
+        ranking_score = (
+            calculate_pose_ranking_score(
+                result
+            )
+        )
+
+        ranking_records.append(
+            {
+                "pose_id": result.pose_id,
+                "model_id": result.model_id,
+                "ranking_score": (
+                    ranking_score
+                ),
+                "interaction_count": (
+                    summary[
+                        "interaction_count"
+                    ]
+                ),
+                "total_score": (
+                    summary[
+                        "total_score"
+                    ]
+                ),
+                "strong_count": (
+                    summary[
+                        "strong_count"
+                    ]
+                ),
+                "moderate_count": (
+                    summary[
+                        "moderate_count"
+                    ]
+                ),
+                "weak_count": (
+                    summary[
+                        "weak_count"
+                    ]
+                ),
+                "minimum_distance": (
+                    summary[
+                        "minimum_distance"
+                    ]
+                ),
+                "hotspot_count": (
+                    summary[
+                        "hotspot_count"
+                    ]
+                ),
+                "result": result,
+            }
+        )
+
+    ranking_records.sort(
+        key=lambda record: (
+            -record[
+                "ranking_score"
+            ],
+            -record[
+                "total_score"
+            ],
+            -record[
+                "strong_count"
+            ],
+            -record[
+                "interaction_count"
+            ],
+            (
+                record[
+                    "minimum_distance"
+                ]
+                if record[
+                    "minimum_distance"
+                ] is not None
+                else math.inf
+            ),
+            normalize_grouping_identifier(
+                record[
+                    "pose_id"
+                ],
+                fallback="unassigned_pose",
+            ),
+        )
+    )
+
+    for rank, record in enumerate(
+        ranking_records,
+        start=1,
+    ):
+        record["rank"] = rank
+
+    return ranking_records
+
+
+def get_best_salt_bridge_pose(
+    results: Iterable[SaltBridgeResult],
+) -> Optional[SaltBridgeResult]:
+    """
+    Return the highest-ranked pose result.
+
+    Parameters
+    ----------
+    results
+        Pose-level results.
+
+    Returns
+    -------
+    Optional[SaltBridgeResult]
+        Best result or ``None``.
+    """
+
+    ranking = rank_salt_bridge_poses(
+        results
+    )
+
+    if not ranking:
+        return None
+
+    return ranking[0]["result"]
+
+
+# =============================================================================
+# 15.7. MULTIPOSE STATISTICS
+# =============================================================================
+
+
+def calculate_multipose_statistics(
+    results: Iterable[SaltBridgeResult],
+    *,
+    persistence_mode: str = "residue_pair",
+) -> Dict[str, Any]:
+    """
+    Calculate statistics across multiple pose results.
+
+    Parameters
+    ----------
+    results
+        Pose-level salt-bridge results.
+    persistence_mode
+        Interaction persistence mode.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Multipose statistics.
+    """
+
+    result_list = list(
+        results
+    )
+
+    pose_count = len(
+        result_list
+    )
+
+    valid_interaction_counts = [
+        len(
+            result.valid_interactions
+        )
+        for result in result_list
+    ]
+
+    total_scores = [
+        get_result_salt_bridge_score(
+            result
+        )
+        for result in result_list
+    ]
+
+    strong_counts: List[int] = []
+    moderate_counts: List[int] = []
+    weak_counts: List[int] = []
+    hotspot_counts: List[int] = []
+    minimum_distances: List[float] = []
+
+    poses_with_interactions = 0
+
+    for result in result_list:
+        summary = (
+            result.metadata.get(
+                "compact_summary"
+            )
+            or build_compact_salt_bridge_summary(
+                result
+            )
+        )
+
+        interaction_count = safe_int(
+            summary.get(
+                "interaction_count"
+            ),
+            default=0,
+        ) or 0
+
+        if interaction_count > 0:
+            poses_with_interactions += 1
+
+        strong_counts.append(
+            safe_int(
+                summary.get(
+                    "strong_count"
+                ),
+                default=0,
+            )
+            or 0
+        )
+
+        moderate_counts.append(
+            safe_int(
+                summary.get(
+                    "moderate_count"
+                ),
+                default=0,
+            )
+            or 0
+        )
+
+        weak_counts.append(
+            safe_int(
+                summary.get(
+                    "weak_count"
+                ),
+                default=0,
+            )
+            or 0
+        )
+
+        hotspot_counts.append(
+            safe_int(
+                summary.get(
+                    "hotspot_count"
+                ),
+                default=0,
+            )
+            or 0
+        )
+
+        minimum_distance = safe_float(
+            summary.get(
+                "minimum_distance"
+            )
+        )
+
+        if minimum_distance is not None:
+            minimum_distances.append(
+                minimum_distance
+            )
+
+    persistence_records = (
+        calculate_interaction_persistence(
+            result_list,
+            mode=persistence_mode,
+            valid_only=True,
+        )
+    )
+
+    ranking = rank_salt_bridge_poses(
+        result_list
+    )
+
+    best_pose_record = (
+        ranking[0]
+        if ranking
+        else None
+    )
+
+    return {
+        "pose_count": pose_count,
+        "successful_pose_count": pose_count,
+        "poses_with_interactions": (
+            poses_with_interactions
+        ),
+        "poses_without_interactions": (
+            pose_count
+            - poses_with_interactions
+        ),
+        "poses_with_interactions_percentage": (
+            calculate_percentage(
+                poses_with_interactions,
+                pose_count,
+            )
+        ),
+        "total_interaction_count": sum(
+            valid_interaction_counts
+        ),
+        "unique_persistent_interaction_count": (
+            len(persistence_records)
+        ),
+        "total_score": sum(
+            total_scores
+        ),
+        "interactions_per_pose": (
+            calculate_numeric_statistics(
+                valid_interaction_counts
+            )
+        ),
+        "scores_per_pose": (
+            calculate_numeric_statistics(
+                total_scores
+            )
+        ),
+        "strong_interactions_per_pose": (
+            calculate_numeric_statistics(
+                strong_counts
+            )
+        ),
+        "moderate_interactions_per_pose": (
+            calculate_numeric_statistics(
+                moderate_counts
+            )
+        ),
+        "weak_interactions_per_pose": (
+            calculate_numeric_statistics(
+                weak_counts
+            )
+        ),
+        "hotspots_per_pose": (
+            calculate_numeric_statistics(
+                hotspot_counts
+            )
+        ),
+        "minimum_distances_per_pose": (
+            calculate_numeric_statistics(
+                minimum_distances
+            )
+        ),
+        "best_pose_id": (
+            best_pose_record[
+                "pose_id"
+            ]
+            if best_pose_record is not None
+            else None
+        ),
+        "best_model_id": (
+            best_pose_record[
+                "model_id"
+            ]
+            if best_pose_record is not None
+            else None
+        ),
+        "best_pose_ranking_score": (
+            best_pose_record[
+                "ranking_score"
+            ]
+            if best_pose_record is not None
+            else None
+        ),
+        "best_pose_total_score": (
+            best_pose_record[
+                "total_score"
+            ]
+            if best_pose_record is not None
+            else None
+        ),
+        "persistence_mode": (
+            persistence_mode
+        ),
+        "persistence": (
+            persistence_records
+        ),
+        "pose_ranking": ranking,
+    }
+
+
+# =============================================================================
+# 15.8. CONSENSUS INTERACTIONS
+# =============================================================================
+
+
+def identify_consensus_salt_bridges(
+    results: Iterable[SaltBridgeResult],
+    *,
+    minimum_persistence_percentage: float = 50.0,
+    minimum_pose_count: int = 2,
+    mode: str = "residue_pair",
+) -> List[Dict[str, Any]]:
+    """
+    Identify salt bridges conserved across multiple poses.
+
+    Parameters
+    ----------
+    results
+        Pose-level results.
+    minimum_persistence_percentage
+        Minimum pose coverage percentage.
+    minimum_pose_count
+        Minimum number of poses.
+    mode
+        Persistence key mode.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Consensus salt-bridge records.
+    """
+
+    persistence_records = (
+        calculate_interaction_persistence(
+            results,
+            mode=mode,
+            valid_only=True,
+        )
+    )
+
+    consensus_records = (
+        filter_persistent_interactions(
+            persistence_records,
+            minimum_percentage=(
+                minimum_persistence_percentage
+            ),
+            minimum_pose_count=(
+                minimum_pose_count
+            ),
+        )
+    )
+
+    for record in consensus_records:
+        mean_score = (
+            record[
+                "score_statistics"
+            ].get(
+                "mean"
+            )
+            or 0.0
+        )
+
+        persistence_fraction = (
+            record[
+                "persistence_fraction"
+            ]
+        )
+
+        record[
+            "consensus_score"
+        ] = (
+            persistence_fraction
+            * mean_score
+        )
+
+    consensus_records.sort(
+        key=lambda record: (
+            -record[
+                "consensus_score"
+            ],
+            -record[
+                "persistence_percentage"
+            ],
+            -(
+                record[
+                    "score_statistics"
+                ].get(
+                    "mean"
+                )
+                or 0.0
+            ),
+        )
+    )
+
+    for rank, record in enumerate(
+        consensus_records,
+        start=1,
+    ):
+        record[
+            "consensus_rank"
+        ] = rank
+
+    return consensus_records
+
+
+# =============================================================================
+# 15.9. MULTIPOSE SUMMARY
+# =============================================================================
+
+
+def build_multipose_salt_bridge_summary(
+    results: Iterable[SaltBridgeResult],
+    *,
+    persistence_mode: str = "residue_pair",
+    consensus_percentage: float = 50.0,
+    minimum_consensus_poses: int = 2,
+) -> Dict[str, Any]:
+    """
+    Build a compact summary for multipose salt-bridge analysis.
+
+    Parameters
+    ----------
+    results
+        Pose-level results.
+    persistence_mode
+        Persistence grouping mode.
+    consensus_percentage
+        Minimum percentage for consensus interactions.
+    minimum_consensus_poses
+        Minimum pose count for consensus interactions.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Compact multipose summary.
+    """
+
+    result_list = list(
+        results
+    )
+
+    statistics_data = (
+        calculate_multipose_statistics(
+            result_list,
+            persistence_mode=(
+                persistence_mode
+            ),
+        )
+    )
+
+    consensus_interactions = (
+        identify_consensus_salt_bridges(
+            result_list,
+            minimum_persistence_percentage=(
+                consensus_percentage
+            ),
+            minimum_pose_count=(
+                minimum_consensus_poses
+            ),
+            mode=persistence_mode,
+        )
+    )
+
+    top_consensus = (
+        consensus_interactions[0]
+        if consensus_interactions
+        else None
+    )
+
+    return {
+        "pose_count": statistics_data[
+            "pose_count"
+        ],
+        "poses_with_interactions": (
+            statistics_data[
+                "poses_with_interactions"
+            ]
+        ),
+        "poses_without_interactions": (
+            statistics_data[
+                "poses_without_interactions"
+            ]
+        ),
+        "total_interaction_count": (
+            statistics_data[
+                "total_interaction_count"
+            ]
+        ),
+        "total_score": (
+            statistics_data[
+                "total_score"
+            ]
+        ),
+        "mean_interactions_per_pose": (
+            statistics_data[
+                "interactions_per_pose"
+            ].get(
+                "mean"
+            )
+        ),
+        "mean_score_per_pose": (
+            statistics_data[
+                "scores_per_pose"
+            ].get(
+                "mean"
+            )
+        ),
+        "best_pose_id": (
+            statistics_data[
+                "best_pose_id"
+            ]
+        ),
+        "best_model_id": (
+            statistics_data[
+                "best_model_id"
+            ]
+        ),
+        "best_pose_score": (
+            statistics_data[
+                "best_pose_total_score"
+            ]
+        ),
+        "persistent_interaction_count": (
+            statistics_data[
+                "unique_persistent_interaction_count"
+            ]
+        ),
+        "consensus_interaction_count": len(
+            consensus_interactions
+        ),
+        "top_consensus_key": (
+            top_consensus[
+                "persistence_key"
+            ]
+            if top_consensus is not None
+            else None
+        ),
+        "top_consensus_persistence": (
+            top_consensus[
+                "persistence_percentage"
+            ]
+            if top_consensus is not None
+            else None
+        ),
+        "pose_ranking": (
+            statistics_data[
+                "pose_ranking"
+            ]
+        ),
+        "persistence": (
+            statistics_data[
+                "persistence"
+            ]
+        ),
+        "consensus_interactions": (
+            consensus_interactions
+        ),
+    }
+
+
+def build_multipose_text_summary(
+    results: Iterable[SaltBridgeResult],
+) -> str:
+    """
+    Build a human-readable multipose summary.
+
+    Parameters
+    ----------
+    results
+        Pose-level results.
+
+    Returns
+    -------
+    str
+        Concise textual summary.
+    """
+
+    summary = build_multipose_salt_bridge_summary(
+        results
+    )
+
+    pose_count = summary[
+        "pose_count"
+    ]
+
+    if pose_count == 0:
+        return (
+            "No docking poses were analyzed."
+        )
+
+    summary_parts = [
+        (
+            f"{pose_count} pose"
+            f"{'' if pose_count == 1 else 's'} analyzed"
+        ),
+        (
+            f"{summary['poses_with_interactions']} "
+            "with valid salt bridges"
+        ),
+        (
+            f"{summary['total_interaction_count']} "
+            "total valid interactions"
+        ),
+        (
+            f"total score {summary['total_score']:.3f}"
+        ),
+    ]
+
+    if summary[
+        "best_pose_id"
+    ] is not None:
+        summary_parts.append(
+            f"best pose {summary['best_pose_id']}"
+        )
+
+    if summary[
+        "consensus_interaction_count"
+    ] > 0:
+        summary_parts.append(
+            f"{summary['consensus_interaction_count']} "
+            "consensus interactions"
+        )
+
+    return "; ".join(
+        summary_parts
+    ) + "."
+
+
+# =============================================================================
+# 15.10. COMPLETE MULTIPOSE PIPELINE
+# =============================================================================
+
+
+def analyze_salt_bridges_multipose(
+    poses: Iterable[Any],
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    pose_ids: Optional[
+        Union[
+            Sequence[Optional[Union[str, int]]],
+            Mapping[int, Optional[Union[str, int]]],
+        ]
+    ] = None,
+    model_ids: Optional[
+        Union[
+            Sequence[Optional[Union[str, int]]],
+            Mapping[int, Optional[Union[str, int]]],
+        ]
+    ] = None,
+    attach_to_dock_models: bool = True,
+    preserve_existing: bool = False,
+    store_full_groups: Optional[bool] = None,
+    include_invalid_statistics: bool = False,
+    continue_on_error: bool = True,
+    persistence_mode: str = "residue_pair",
+    consensus_percentage: float = 50.0,
+    minimum_consensus_poses: int = 2,
+    warnings: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Execute complete multipose salt-bridge analysis.
+
+    The workflow includes:
+
+    1. pose normalization;
+    2. independent analysis of each pose;
+    3. pose-level statistics;
+    4. interaction persistence analysis;
+    5. consensus interaction identification;
+    6. pose ranking;
+    7. compact and textual multipose summaries.
+
+    Parameters
+    ----------
+    poses
+        Pose-like molecular sources or DockModel-like objects.
+    config
+        Salt-bridge configuration.
+    pose_ids
+        Optional pose identifiers.
+    model_ids
+        Optional model identifiers.
+    attach_to_dock_models
+        Whether results should be attached to DockModel inputs.
+    preserve_existing
+        Whether existing DockModel interactions should be preserved.
+    store_full_groups
+        Whether full group mappings should be retained.
+    include_invalid_statistics
+        Whether rejected candidates should enter descriptive statistics.
+    continue_on_error
+        Whether processing should continue after pose-level failures.
+    persistence_mode
+        Cross-pose persistence mode.
+    consensus_percentage
+        Minimum persistence percentage for consensus interactions.
+    minimum_consensus_poses
+        Minimum number of poses for consensus interactions.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Complete multipose analysis result.
+    """
+
+    warning_list = (
+        warnings
+        if warnings is not None
+        else []
+    )
+
+    pose_list = normalize_pose_collection(
+        poses
+    )
+
+    results = analyze_multiple_poses_salt_bridges(
+        pose_list,
+        config,
+        pose_ids=pose_ids,
+        model_ids=model_ids,
+        attach_to_dock_models=(
+            attach_to_dock_models
+        ),
+        preserve_existing=(
+            preserve_existing
+        ),
+        store_full_groups=(
+            store_full_groups
+        ),
+        include_invalid_statistics=(
+            include_invalid_statistics
+        ),
+        continue_on_error=(
+            continue_on_error
+        ),
+        warnings=warning_list,
+    )
+
+    multipose_statistics = (
+        calculate_multipose_statistics(
+            results,
+            persistence_mode=(
+                persistence_mode
+            ),
+        )
+    )
+
+    consensus_interactions = (
+        identify_consensus_salt_bridges(
+            results,
+            minimum_persistence_percentage=(
+                consensus_percentage
+            ),
+            minimum_pose_count=(
+                minimum_consensus_poses
+            ),
+            mode=persistence_mode,
+        )
+    )
+
+    compact_summary = (
+        build_multipose_salt_bridge_summary(
+            results,
+            persistence_mode=(
+                persistence_mode
+            ),
+            consensus_percentage=(
+                consensus_percentage
+            ),
+            minimum_consensus_poses=(
+                minimum_consensus_poses
+            ),
+        )
+    )
+
+    text_summary = (
+        build_multipose_text_summary(
+            results
+        )
+    )
+
+    return {
+        "results": results,
+        "interactions": (
+            collect_multipose_interactions(
+                results,
+                valid_only=True,
+            )
+        ),
+        "statistics": (
+            multipose_statistics
+        ),
+        "pose_ranking": (
+            multipose_statistics[
+                "pose_ranking"
+            ]
+        ),
+        "persistence": (
+            multipose_statistics[
+                "persistence"
+            ]
+        ),
+        "consensus_interactions": (
+            consensus_interactions
+        ),
+        "compact_summary": (
+            compact_summary
+        ),
+        "text_summary": (
+            text_summary
+        ),
+        "warnings": warning_list,
+        "metadata": {
+            "input_pose_count": len(
+                pose_list
+            ),
+            "successful_pose_count": len(
+                results
+            ),
+            "failed_pose_count": (
+                len(pose_list)
+                - len(results)
+            ),
+            "persistence_mode": (
+                persistence_mode
+            ),
+            "consensus_percentage": (
+                consensus_percentage
+            ),
+            "minimum_consensus_poses": (
+                minimum_consensus_poses
+            ),
+            "multipose_analysis_completed": (
+                True
+            ),
+        },
+    }
+
+
 
 
 
