@@ -55431,4 +55431,1329 @@ def run_pi_recognition_geometry_self_tests(
     )
 
 
+# =============================================================================
+# 18.3. TESTES DE DETECÇÃO
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 18.3.1. Constantes e helpers locais
+# -----------------------------------------------------------------------------
+
+PI_SELF_TEST_SECTION_DETECTION: Final[str] = "18.3"
+
+
+def _pi_test_get_interaction_value(
+    interaction: Any,
+    attribute_names: Sequence[str],
+    default: Any = None,
+) -> Any:
+    """
+    Return the first available interaction attribute.
+
+    The helper supports both dataclass-based interactions and dictionary-like
+    representations, preserving compatibility with alternative constructors.
+    """
+
+    if interaction is None:
+        return default
+
+    if isinstance(interaction, Mapping):
+        for attribute_name in attribute_names:
+            if attribute_name in interaction:
+                return interaction[attribute_name]
+
+    for attribute_name in attribute_names:
+        if hasattr(interaction, attribute_name):
+            return getattr(interaction, attribute_name)
+
+    metadata = getattr(interaction, "metadata", None)
+
+    if isinstance(metadata, Mapping):
+        for attribute_name in attribute_names:
+            if attribute_name in metadata:
+                return metadata[attribute_name]
+
+    return default
+
+
+def _pi_test_get_interaction_geometry(
+    interaction: Any,
+) -> str:
+    """Return the normalized geometric subtype of an interaction."""
+
+    value = _pi_test_get_interaction_value(
+        interaction,
+        (
+            "geometry_class",
+            "geometry_subtype",
+            "subtype",
+            "geometry",
+        ),
+        "",
+    )
+
+    return str(value).strip().lower()
+
+
+def _pi_test_get_interaction_distance(
+    interaction: Any,
+) -> Optional[float]:
+    """Return the principal centroid or center distance."""
+
+    value = _pi_test_get_interaction_value(
+        interaction,
+        (
+            "centroid_distance",
+            "center_distance",
+            "distance",
+        ),
+    )
+
+    if value is None:
+        return None
+
+    return float(value)
+
+
+def _pi_test_get_interaction_offset(
+    interaction: Any,
+) -> Optional[float]:
+    """Return the radial or lateral displacement."""
+
+    value = _pi_test_get_interaction_value(
+        interaction,
+        (
+            "radial_offset",
+            "lateral_offset",
+            "offset",
+        ),
+    )
+
+    if value is None:
+        return None
+
+    return float(value)
+
+
+def _pi_test_get_interaction_angle(
+    interaction: Any,
+) -> Optional[float]:
+    """Return the principal plane-orientation angle."""
+
+    value = _pi_test_get_interaction_value(
+        interaction,
+        (
+            "plane_angle",
+            "normal_angle",
+            "orientation_angle",
+        ),
+    )
+
+    if value is None:
+        return None
+
+    return float(value)
+
+
+def _pi_test_assert_detected_interaction(
+    interaction: Any,
+    *,
+    interaction_type: str,
+    expected_geometry: Optional[str] = None,
+) -> None:
+    """Validate the common properties of a positive detection."""
+
+    assert_pi_is_not_none(
+        interaction,
+        (
+            f"Expected a detected {interaction_type!r} "
+            "interaction."
+        ),
+    )
+
+    assert_pi_interaction_type(
+        interaction,
+        interaction_type,
+    )
+
+    assert_pi_interaction_accepted(interaction)
+
+    if expected_geometry is not None:
+        assert_pi_equal(
+            _pi_test_get_interaction_geometry(
+                interaction
+            ),
+            expected_geometry,
+        )
+
+    confidence = _pi_test_get_interaction_value(
+        interaction,
+        (
+            "geometry_confidence",
+            "confidence",
+        ),
+    )
+
+    if confidence is not None:
+        assert_pi_between(
+            float(confidence),
+            0.0,
+            1.0,
+        )
+
+
+def _pi_test_assert_no_detection(
+    interaction: Any,
+    *,
+    message: str,
+) -> None:
+    """Assert that a detector rejected a candidate pair."""
+
+    assert_pi_is_none(
+        interaction,
+        message,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.3.2. Teste de π–π paralelo
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "deteccao_pi_pi_paralelo",
+    section=PI_SELF_TEST_SECTION_DETECTION,
+    metadata={
+        "category": "pi_pi",
+        "geometry": "parallel",
+        "targets": [
+            "evaluate_pi_pi_ring_pair",
+            "detect_single_pi_pi_interaction",
+            "detect_pi_pi_interactions",
+        ],
+    },
+)
+def test_pi_pi_parallel_detection() -> None:
+    """
+    Detect a parallel-stacking π–π interaction.
+
+    The lateral displacement is deliberately greater than the face-to-face
+    limit, but remains within the canonical parallel-stacking interval.
+    """
+
+    ring_1, ring_2 = create_parallel_pi_ring_pair(
+        separation=3.80,
+        lateral_offset=2.00,
+        rotation_degrees=20.0,
+        first_ring_id="parallel-protein-ring",
+        second_ring_id="parallel-ligand-ring",
+    )
+
+    interaction = detect_single_pi_pi_interaction(
+        ring_1,
+        ring_2,
+    )
+
+    _pi_test_assert_detected_interaction(
+        interaction,
+        interaction_type=PI_PI_INTERACTION_TYPE,
+        expected_geometry=PI_PI_GEOMETRY_PARALLEL,
+    )
+
+    centroid_distance = (
+        _pi_test_get_interaction_distance(
+            interaction
+        )
+    )
+
+    plane_angle = (
+        _pi_test_get_interaction_angle(
+            interaction
+        )
+    )
+
+    lateral_offset = (
+        _pi_test_get_interaction_offset(
+            interaction
+        )
+    )
+
+    assert_pi_is_not_none(centroid_distance)
+    assert_pi_is_not_none(plane_angle)
+    assert_pi_is_not_none(lateral_offset)
+
+    assert_pi_less(
+        centroid_distance,
+        PI_PI_DEFAULT_MAXIMUM_CENTROID_DISTANCE,
+    )
+
+    assert_pi_less_equal(
+        plane_angle,
+        PI_PI_DEFAULT_PARALLEL_ANGLE,
+    )
+
+    assert_pi_between(
+        lateral_offset,
+        PI_PI_DEFAULT_FACE_TO_FACE_OFFSET,
+        PI_PI_DEFAULT_PARALLEL_OFFSET,
+    )
+
+    batch_interactions = detect_pi_pi_interactions(
+        [ring_1],
+        [ring_2],
+        strict=True,
+    )
+
+    assert_pi_length(
+        batch_interactions,
+        1,
+    )
+
+    assert_pi_equal(
+        _pi_test_get_interaction_geometry(
+            batch_interactions[0]
+        ),
+        PI_PI_GEOMETRY_PARALLEL,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.3.3. Teste de π–π deslocado
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "deteccao_pi_pi_deslocado",
+    section=PI_SELF_TEST_SECTION_DETECTION,
+    metadata={
+        "category": "pi_pi",
+        "geometry": "displaced",
+        "targets": [
+            "evaluate_pi_pi_ring_pair",
+            "detect_single_pi_pi_interaction",
+        ],
+    },
+)
+def test_pi_pi_displaced_detection() -> None:
+    """
+    Detect displaced stacking between approximately parallel aromatic planes.
+    """
+
+    ring_1, ring_2 = create_parallel_pi_ring_pair(
+        separation=3.50,
+        lateral_offset=3.00,
+        rotation_degrees=30.0,
+        first_ring_id="displaced-protein-ring",
+        second_ring_id="displaced-ligand-ring",
+    )
+
+    interaction = detect_single_pi_pi_interaction(
+        ring_1,
+        ring_2,
+    )
+
+    _pi_test_assert_detected_interaction(
+        interaction,
+        interaction_type=PI_PI_INTERACTION_TYPE,
+        expected_geometry=PI_PI_GEOMETRY_DISPLACED,
+    )
+
+    lateral_offset = (
+        _pi_test_get_interaction_offset(
+            interaction
+        )
+    )
+
+    plane_angle = (
+        _pi_test_get_interaction_angle(
+            interaction
+        )
+    )
+
+    assert_pi_is_not_none(lateral_offset)
+    assert_pi_is_not_none(plane_angle)
+
+    assert_pi_between(
+        lateral_offset,
+        PI_PI_DEFAULT_PARALLEL_OFFSET,
+        PI_PI_DEFAULT_DISPLACED_OFFSET,
+    )
+
+    assert_pi_less_equal(
+        plane_angle,
+        PI_PI_DEFAULT_PARALLEL_ANGLE,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.3.4. Teste de π–π T-shaped
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "deteccao_pi_pi_t_shaped",
+    section=PI_SELF_TEST_SECTION_DETECTION,
+    metadata={
+        "category": "pi_pi",
+        "geometry": "t_shaped",
+        "targets": [
+            "evaluate_t_shaped_stacking",
+            "evaluate_pi_pi_ring_pair",
+            "detect_single_pi_pi_interaction",
+        ],
+    },
+)
+def test_pi_pi_t_shaped_detection() -> None:
+    """Detect a canonical near-perpendicular T-shaped arrangement."""
+
+    ring_1, ring_2 = create_t_shaped_pi_ring_pair(
+        separation=4.50,
+        lateral_offset=1.80,
+    )
+
+    interaction = detect_single_pi_pi_interaction(
+        ring_1,
+        ring_2,
+    )
+
+    _pi_test_assert_detected_interaction(
+        interaction,
+        interaction_type=PI_PI_INTERACTION_TYPE,
+        expected_geometry=PI_PI_GEOMETRY_T_SHAPED,
+    )
+
+    plane_angle = (
+        _pi_test_get_interaction_angle(
+            interaction
+        )
+    )
+
+    lateral_offset = (
+        _pi_test_get_interaction_offset(
+            interaction
+        )
+    )
+
+    assert_pi_is_not_none(plane_angle)
+    assert_pi_is_not_none(lateral_offset)
+
+    assert_pi_between(
+        plane_angle,
+        PI_PI_DEFAULT_T_SHAPED_MINIMUM_ANGLE,
+        90.0,
+    )
+
+    assert_pi_true(
+        lateral_offset > 0.0,
+        (
+            "A canonical T-shaped fixture must contain "
+            "a nonzero centroid displacement."
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.3.5. Teste de cátion–π
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "deteccao_cation_pi",
+    section=PI_SELF_TEST_SECTION_DETECTION,
+    metadata={
+        "category": "cation_pi",
+        "targets": [
+            "infer_cation_pi_charge",
+            "evaluate_cation_pi_pair",
+            "detect_single_cation_pi_interaction",
+            "detect_cation_pi_interactions",
+        ],
+    },
+)
+def test_cation_pi_detection() -> None:
+    """Detect a positively charged group approaching the aromatic face."""
+
+    ring = create_mock_aromatic_ring(
+        ring_id="cation-pi-ring",
+        center=(0.0, 0.0, 0.0),
+        normal=(0.0, 0.0, 1.0),
+        residue_name="PHE",
+        residue_number=110,
+        chain_id="A",
+        participant_type="protein",
+    )
+
+    cation = create_mock_cation_above_ring(
+        ring,
+        height=3.40,
+        radial_offset=0.60,
+        effective_charge=1.0,
+        group_id="cation-pi-group",
+    )
+
+    interaction = detect_single_cation_pi_interaction(
+        ring,
+        cation,
+    )
+
+    _pi_test_assert_detected_interaction(
+        interaction,
+        interaction_type=CATION_PI_INTERACTION_TYPE,
+        expected_geometry=(
+            CATION_PI_GEOMETRY_FACE_CENTERED
+        ),
+    )
+
+    centroid_distance = (
+        _pi_test_get_interaction_distance(
+            interaction
+        )
+    )
+
+    radial_offset = (
+        _pi_test_get_interaction_offset(
+            interaction
+        )
+    )
+
+    effective_charge = _pi_test_get_interaction_value(
+        interaction,
+        ("effective_charge",),
+    )
+
+    assert_pi_is_not_none(centroid_distance)
+    assert_pi_is_not_none(radial_offset)
+    assert_pi_is_not_none(effective_charge)
+
+    assert_pi_less_equal(
+        centroid_distance,
+        CATION_PI_DEFAULT_MAXIMUM_CENTROID_DISTANCE,
+    )
+
+    assert_pi_less_equal(
+        radial_offset,
+        CATION_PI_DEFAULT_CENTERED_RADIAL_OFFSET,
+    )
+
+    assert_pi_true(
+        float(effective_charge) > 0.0,
+        "The detected cation–π group must be positive.",
+    )
+
+    batch_interactions = detect_cation_pi_interactions(
+        [ring],
+        [cation],
+        strict=True,
+    )
+
+    assert_pi_length(
+        batch_interactions,
+        1,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.3.6. Teste de ânion–π
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "deteccao_anion_pi",
+    section=PI_SELF_TEST_SECTION_DETECTION,
+    metadata={
+        "category": "anion_pi",
+        "targets": [
+            "infer_anion_pi_charge",
+            "evaluate_anion_pi_pair",
+            "detect_single_anion_pi_interaction",
+            "detect_anion_pi_interactions",
+        ],
+    },
+)
+def test_anion_pi_detection() -> None:
+    """Detect a negatively charged group above an aromatic-ring face."""
+
+    ring = create_mock_aromatic_ring(
+        ring_id="anion-pi-ring",
+        center=(0.0, 0.0, 0.0),
+        normal=(0.0, 0.0, 1.0),
+        residue_name="PHE",
+        residue_number=120,
+        chain_id="A",
+        participant_type="protein",
+    )
+
+    anion = create_mock_anion_above_ring(
+        ring,
+        height=3.30,
+        radial_offset=0.50,
+        effective_charge=-1.0,
+        group_id="anion-pi-group",
+    )
+
+    interaction = detect_single_anion_pi_interaction(
+        ring,
+        anion,
+    )
+
+    _pi_test_assert_detected_interaction(
+        interaction,
+        interaction_type=ANION_PI_INTERACTION_TYPE,
+        expected_geometry=(
+            ANION_PI_GEOMETRY_FACE_CENTERED
+        ),
+    )
+
+    centroid_distance = (
+        _pi_test_get_interaction_distance(
+            interaction
+        )
+    )
+
+    radial_offset = (
+        _pi_test_get_interaction_offset(
+            interaction
+        )
+    )
+
+    effective_charge = _pi_test_get_interaction_value(
+        interaction,
+        ("effective_charge",),
+    )
+
+    assert_pi_is_not_none(centroid_distance)
+    assert_pi_is_not_none(radial_offset)
+    assert_pi_is_not_none(effective_charge)
+
+    assert_pi_less_equal(
+        centroid_distance,
+        ANION_PI_DEFAULT_MAXIMUM_CENTROID_DISTANCE,
+    )
+
+    assert_pi_less_equal(
+        radial_offset,
+        ANION_PI_DEFAULT_CENTERED_OFFSET,
+    )
+
+    assert_pi_true(
+        float(effective_charge) < 0.0,
+        "The detected anion–π group must be negative.",
+    )
+
+    batch_interactions = detect_anion_pi_interactions(
+        [ring],
+        [anion],
+        strict=True,
+    )
+
+    assert_pi_length(
+        batch_interactions,
+        1,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.3.7. Teste de amida–π
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "deteccao_amida_pi",
+    section=PI_SELF_TEST_SECTION_DETECTION,
+    metadata={
+        "category": "amide_pi",
+        "targets": [
+            "evaluate_amide_pi_pair",
+            "detect_single_amide_pi_interaction",
+            "detect_amide_pi_interactions",
+        ],
+    },
+)
+def test_amide_pi_detection() -> None:
+    """Detect a planar amide approximately parallel to an aromatic face."""
+
+    ring = create_mock_aromatic_ring(
+        ring_id="amide-pi-ring",
+        center=(0.0, 0.0, 0.0),
+        normal=(0.0, 0.0, 1.0),
+        residue_name="PHE",
+        residue_number=130,
+        chain_id="A",
+        participant_type="protein",
+    )
+
+    amide = create_mock_amide_above_ring(
+        ring,
+        height=3.40,
+        radial_offset=0.60,
+        parallel=True,
+        amide_id="amide-pi-group",
+    )
+
+    interaction = detect_single_amide_pi_interaction(
+        ring,
+        amide,
+    )
+
+    _pi_test_assert_detected_interaction(
+        interaction,
+        interaction_type=AMIDE_PI_INTERACTION_TYPE,
+        expected_geometry=(
+            AMIDE_PI_GEOMETRY_PARALLEL_FACE
+        ),
+    )
+
+    centroid_distance = (
+        _pi_test_get_interaction_distance(
+            interaction
+        )
+    )
+
+    plane_angle = (
+        _pi_test_get_interaction_angle(
+            interaction
+        )
+    )
+
+    radial_offset = (
+        _pi_test_get_interaction_offset(
+            interaction
+        )
+    )
+
+    assert_pi_is_not_none(centroid_distance)
+    assert_pi_is_not_none(plane_angle)
+    assert_pi_is_not_none(radial_offset)
+
+    assert_pi_less_equal(
+        centroid_distance,
+        AMIDE_PI_DEFAULT_MAXIMUM_CENTROID_DISTANCE,
+    )
+
+    assert_pi_less_equal(
+        plane_angle,
+        AMIDE_PI_DEFAULT_FACE_PARALLEL_ANGLE,
+    )
+
+    assert_pi_less_equal(
+        radial_offset,
+        AMIDE_PI_DEFAULT_CENTERED_OFFSET,
+    )
+
+    batch_interactions = detect_amide_pi_interactions(
+        [ring],
+        [amide],
+        strict=True,
+    )
+
+    assert_pi_length(
+        batch_interactions,
+        1,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.3.8. Casos negativos de distância
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "rejeicao_por_distancia",
+    section=PI_SELF_TEST_SECTION_DETECTION,
+    metadata={
+        "category": "negative_cases",
+        "reason": "distance",
+        "targets": [
+            "detect_single_pi_pi_interaction",
+            "detect_single_cation_pi_interaction",
+            "detect_single_anion_pi_interaction",
+            "detect_single_amide_pi_interaction",
+        ],
+    },
+)
+def test_pi_detection_distance_negative_cases() -> None:
+    """Reject candidates whose centers are outside accepted distances."""
+
+    ring = create_mock_aromatic_ring(
+        ring_id="negative-distance-ring",
+        center=(0.0, 0.0, 0.0),
+        normal=(0.0, 0.0, 1.0),
+        residue_name="PHE",
+        residue_number=140,
+        chain_id="A",
+        participant_type="protein",
+    )
+
+    distant_ring = create_mock_aromatic_ring(
+        ring_id="distant-aromatic-ring",
+        center=(0.0, 0.0, 10.0),
+        normal=(0.0, 0.0, 1.0),
+        residue_name="LIG",
+        residue_number=1,
+        chain_id="L",
+        participant_type="ligand",
+    )
+
+    distant_cation = create_mock_cation_above_ring(
+        ring,
+        height=10.0,
+        effective_charge=1.0,
+        group_id="distant-cation",
+    )
+
+    distant_anion = create_mock_anion_above_ring(
+        ring,
+        height=10.0,
+        effective_charge=-1.0,
+        group_id="distant-anion",
+    )
+
+    distant_amide = create_mock_amide_above_ring(
+        ring,
+        height=10.0,
+        parallel=True,
+        amide_id="distant-amide",
+    )
+
+    _pi_test_assert_no_detection(
+        detect_single_pi_pi_interaction(
+            ring,
+            distant_ring,
+        ),
+        message=(
+            "A π–π pair separated by 10 Å "
+            "must not be detected."
+        ),
+    )
+
+    _pi_test_assert_no_detection(
+        detect_single_cation_pi_interaction(
+            ring,
+            distant_cation,
+        ),
+        message=(
+            "A distant cation–π candidate "
+            "must not be detected."
+        ),
+    )
+
+    _pi_test_assert_no_detection(
+        detect_single_anion_pi_interaction(
+            ring,
+            distant_anion,
+        ),
+        message=(
+            "A distant anion–π candidate "
+            "must not be detected."
+        ),
+    )
+
+    _pi_test_assert_no_detection(
+        detect_single_amide_pi_interaction(
+            ring,
+            distant_amide,
+        ),
+        message=(
+            "A distant amide–π candidate "
+            "must not be detected."
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.3.9. Casos negativos de carga
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "rejeicao_por_sinal_de_carga",
+    section=PI_SELF_TEST_SECTION_DETECTION,
+    metadata={
+        "category": "negative_cases",
+        "reason": "charge_sign",
+        "targets": [
+            "infer_cation_pi_charge",
+            "infer_anion_pi_charge",
+            "detect_single_cation_pi_interaction",
+            "detect_single_anion_pi_interaction",
+        ],
+    },
+)
+def test_pi_detection_charge_negative_cases() -> None:
+    """Reject groups with charge signs incompatible with the detector."""
+
+    ring = create_mock_aromatic_ring(
+        ring_id="negative-charge-ring",
+        center=(0.0, 0.0, 0.0),
+        normal=(0.0, 0.0, 1.0),
+        residue_name="PHE",
+        residue_number=150,
+        chain_id="A",
+        participant_type="protein",
+    )
+
+    negative_group_for_cation_detector = (
+        create_mock_charged_group(
+            group_id="wrong-sign-cation",
+            center=(0.0, 0.0, 3.40),
+            effective_charge=-1.0,
+            group_type="anion",
+            atom_count=2,
+        )
+    )
+
+    positive_group_for_anion_detector = (
+        create_mock_charged_group(
+            group_id="wrong-sign-anion",
+            center=(0.0, 0.0, 3.40),
+            effective_charge=1.0,
+            group_type="cation",
+        )
+    )
+
+    _pi_test_assert_no_detection(
+        detect_single_cation_pi_interaction(
+            ring,
+            negative_group_for_cation_detector,
+        ),
+        message=(
+            "A negatively charged group must not "
+            "be accepted as a cation–π interaction."
+        ),
+    )
+
+    _pi_test_assert_no_detection(
+        detect_single_anion_pi_interaction(
+            ring,
+            positive_group_for_anion_detector,
+        ),
+        message=(
+            "A positively charged group must not "
+            "be accepted as an anion–π interaction."
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.3.10. Casos negativos de deslocamento lateral
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "rejeicao_por_deslocamento_lateral",
+    section=PI_SELF_TEST_SECTION_DETECTION,
+    metadata={
+        "category": "negative_cases",
+        "reason": "radial_offset",
+        "targets": [
+            "detect_single_pi_pi_interaction",
+            "detect_single_cation_pi_interaction",
+            "detect_single_anion_pi_interaction",
+            "detect_single_amide_pi_interaction",
+        ],
+    },
+)
+def test_pi_detection_offset_negative_cases() -> None:
+    """Reject candidates located excessively far from the aromatic projection."""
+
+    ring = create_mock_aromatic_ring(
+        ring_id="negative-offset-ring",
+        center=(0.0, 0.0, 0.0),
+        normal=(0.0, 0.0, 1.0),
+        residue_name="PHE",
+        residue_number=160,
+        chain_id="A",
+        participant_type="protein",
+    )
+
+    _, displaced_ring = create_parallel_pi_ring_pair(
+        separation=3.50,
+        lateral_offset=7.00,
+        first_ring_id="unused-reference-ring",
+        second_ring_id="excessively-displaced-ring",
+    )
+
+    displaced_cation = create_mock_cation_above_ring(
+        ring,
+        height=3.40,
+        radial_offset=7.00,
+        effective_charge=1.0,
+        group_id="excessively-displaced-cation",
+    )
+
+    displaced_anion = create_mock_anion_above_ring(
+        ring,
+        height=3.30,
+        radial_offset=7.00,
+        effective_charge=-1.0,
+        group_id="excessively-displaced-anion",
+    )
+
+    displaced_amide = create_mock_amide_above_ring(
+        ring,
+        height=3.40,
+        radial_offset=7.00,
+        parallel=True,
+        amide_id="excessively-displaced-amide",
+    )
+
+    _pi_test_assert_no_detection(
+        detect_single_pi_pi_interaction(
+            ring,
+            displaced_ring,
+        ),
+        message=(
+            "An excessively displaced aromatic pair "
+            "must not be detected."
+        ),
+    )
+
+    _pi_test_assert_no_detection(
+        detect_single_cation_pi_interaction(
+            ring,
+            displaced_cation,
+        ),
+        message=(
+            "An excessively displaced cation "
+            "must not form a cation–π interaction."
+        ),
+    )
+
+    _pi_test_assert_no_detection(
+        detect_single_anion_pi_interaction(
+            ring,
+            displaced_anion,
+        ),
+        message=(
+            "An excessively displaced anion "
+            "must not form an anion–π interaction."
+        ),
+    )
+
+    _pi_test_assert_no_detection(
+        detect_single_amide_pi_interaction(
+            ring,
+            displaced_amide,
+        ),
+        message=(
+            "An excessively displaced amide "
+            "must not form an amide–π interaction."
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.3.11. Avaliações rejeitadas explícitas
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "avaliacoes_rejeitadas_explicitas",
+    section=PI_SELF_TEST_SECTION_DETECTION,
+    metadata={
+        "category": "negative_cases",
+        "reason": "explicit_rejection",
+        "targets": [
+            "detect_single_pi_pi_interaction",
+            "detect_single_cation_pi_interaction",
+            "detect_single_anion_pi_interaction",
+            "detect_single_amide_pi_interaction",
+        ],
+    },
+)
+def test_pi_explicit_rejected_evaluations() -> None:
+    """
+    Confirm that rejected candidates can be inspected when requested.
+
+    The regular detector returns None for rejected pairs. With
+    include_rejected=True, it must return an invalid interaction carrying the
+    rejected geometric classification.
+    """
+
+    ring = create_mock_aromatic_ring(
+        ring_id="explicit-rejection-ring",
+        center=(0.0, 0.0, 0.0),
+        normal=(0.0, 0.0, 1.0),
+        residue_name="PHE",
+        residue_number=170,
+        chain_id="A",
+        participant_type="protein",
+    )
+
+    distant_ring = create_mock_aromatic_ring(
+        ring_id="explicit-rejection-second-ring",
+        center=(0.0, 0.0, 12.0),
+        normal=(0.0, 0.0, 1.0),
+        residue_name="LIG",
+        residue_number=1,
+        chain_id="L",
+        participant_type="ligand",
+    )
+
+    distant_cation = create_mock_cation_above_ring(
+        ring,
+        height=12.0,
+        effective_charge=1.0,
+        group_id="explicit-rejection-cation",
+    )
+
+    distant_anion = create_mock_anion_above_ring(
+        ring,
+        height=12.0,
+        effective_charge=-1.0,
+        group_id="explicit-rejection-anion",
+    )
+
+    distant_amide = create_mock_amide_above_ring(
+        ring,
+        height=12.0,
+        parallel=True,
+        amide_id="explicit-rejection-amide",
+    )
+
+    rejected_pi_pi = detect_single_pi_pi_interaction(
+        ring,
+        distant_ring,
+        include_rejected=True,
+    )
+
+    rejected_cation_pi = (
+        detect_single_cation_pi_interaction(
+            ring,
+            distant_cation,
+            include_rejected=True,
+        )
+    )
+
+    rejected_anion_pi = (
+        detect_single_anion_pi_interaction(
+            ring,
+            distant_anion,
+            include_rejected=True,
+        )
+    )
+
+    rejected_amide_pi = (
+        detect_single_amide_pi_interaction(
+            ring,
+            distant_amide,
+            include_rejected=True,
+        )
+    )
+
+    for rejected_interaction in (
+        rejected_pi_pi,
+        rejected_cation_pi,
+        rejected_anion_pi,
+        rejected_amide_pi,
+    ):
+        assert_pi_is_not_none(
+            rejected_interaction,
+            (
+                "include_rejected=True must return "
+                "the rejected interaction."
+            ),
+        )
+
+        assert_pi_interaction_rejected(
+            rejected_interaction
+        )
+
+    assert_pi_equal(
+        _pi_test_get_interaction_geometry(
+            rejected_pi_pi
+        ),
+        PI_PI_GEOMETRY_REJECTED,
+    )
+
+    assert_pi_equal(
+        _pi_test_get_interaction_geometry(
+            rejected_cation_pi
+        ),
+        CATION_PI_GEOMETRY_REJECTED,
+    )
+
+    assert_pi_equal(
+        _pi_test_get_interaction_geometry(
+            rejected_anion_pi
+        ),
+        ANION_PI_GEOMETRY_REJECTED,
+    )
+
+    assert_pi_equal(
+        _pi_test_get_interaction_geometry(
+            rejected_amide_pi
+        ),
+        AMIDE_PI_GEOMETRY_REJECTED,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.3.12. Teste coletivo de detecção
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "deteccao_coletiva_de_interacoes_pi",
+    section=PI_SELF_TEST_SECTION_DETECTION,
+    metadata={
+        "category": "combined_detection",
+        "targets": [
+            "detect_pi_pi_interactions",
+            "detect_cation_pi_interactions",
+            "detect_anion_pi_interactions",
+            "detect_amide_pi_interactions",
+        ],
+    },
+)
+def test_combined_pi_detection() -> None:
+    """Detect all principal π-interaction categories in one fixture."""
+
+    structure = create_mock_pi_test_structure(
+        pose_id="detection-pose",
+        include_protein_ring=True,
+        include_ligand_ring=True,
+        include_cation=True,
+        include_anion=True,
+        include_amide=True,
+    )
+
+    assert_pi_length(
+        structure.aromatic_systems,
+        2,
+    )
+
+    assert_pi_length(
+        structure.positive_groups,
+        1,
+    )
+
+    assert_pi_length(
+        structure.negative_groups,
+        1,
+    )
+
+    assert_pi_length(
+        structure.amide_groups,
+        1,
+    )
+
+    pi_pi_interactions = detect_pi_pi_interactions(
+        [structure.aromatic_systems[0]],
+        [structure.aromatic_systems[1]],
+        strict=True,
+    )
+
+    cation_pi_interactions = (
+        detect_cation_pi_interactions(
+            [structure.aromatic_systems[0]],
+            structure.positive_groups,
+            strict=True,
+        )
+    )
+
+    anion_pi_interactions = (
+        detect_anion_pi_interactions(
+            [structure.aromatic_systems[0]],
+            structure.negative_groups,
+            strict=True,
+        )
+    )
+
+    amide_pi_interactions = (
+        detect_amide_pi_interactions(
+            [structure.aromatic_systems[0]],
+            structure.amide_groups,
+            strict=True,
+        )
+    )
+
+    assert_pi_length(
+        pi_pi_interactions,
+        1,
+    )
+
+    assert_pi_length(
+        cation_pi_interactions,
+        1,
+    )
+
+    assert_pi_length(
+        anion_pi_interactions,
+        1,
+    )
+
+    assert_pi_length(
+        amide_pi_interactions,
+        1,
+    )
+
+    all_interactions = [
+        *pi_pi_interactions,
+        *cation_pi_interactions,
+        *anion_pi_interactions,
+        *amide_pi_interactions,
+    ]
+
+    detected_types = {
+        str(
+            _pi_test_get_interaction_value(
+                interaction,
+                (
+                    "interaction_type",
+                    "type",
+                ),
+                "",
+            )
+        ).strip().lower()
+        for interaction in all_interactions
+    }
+
+    assert_pi_in(
+        PI_PI_INTERACTION_TYPE,
+        detected_types,
+    )
+
+    assert_pi_in(
+        CATION_PI_INTERACTION_TYPE,
+        detected_types,
+    )
+
+    assert_pi_in(
+        ANION_PI_INTERACTION_TYPE,
+        detected_types,
+    )
+
+    assert_pi_in(
+        AMIDE_PI_INTERACTION_TYPE,
+        detected_types,
+    )
+
+    for interaction in all_interactions:
+        assert_pi_interaction_accepted(interaction)
+
+
+# -----------------------------------------------------------------------------
+# 18.3.13. Executor específico da seção
+# -----------------------------------------------------------------------------
+
+def run_pi_detection_self_tests(
+    *,
+    raise_on_failure: bool = False,
+    capture_output: bool = True,
+) -> PiSelfTestReport:
+    """
+    Execute only the interaction-detection tests from Section 18.3.
+
+    Covered components
+    ------------------
+    - parallel π–π stacking;
+    - displaced π–π stacking;
+    - T-shaped π–π interactions;
+    - cation–π interactions;
+    - anion–π interactions;
+    - amide–π interactions;
+    - negative distance cases;
+    - incorrect charge-sign cases;
+    - excessive lateral-displacement cases;
+    - explicit rejected-interaction inspection;
+    - combined interaction detection.
+    """
+
+    return run_registered_pi_self_tests(
+        section=PI_SELF_TEST_SECTION_DETECTION,
+        raise_on_failure=raise_on_failure,
+        capture_output=capture_output,
+    )
+
+
 
