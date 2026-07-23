@@ -19135,3 +19135,5170 @@ def summarize_amide_groups(
 
 
 _validate_module_constants()
+
+
+
+# =============================================================================
+# 8. DETECÇÃO DE INTERAÇÕES π–π
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 8.1. Constantes
+# -----------------------------------------------------------------------------
+
+PI_PI_INTERACTION_TYPE: Final[str] = "pi-pi"
+
+PI_PI_GEOMETRY_FACE_TO_FACE: Final[str] = "face-to-face"
+PI_PI_GEOMETRY_PARALLEL: Final[str] = "parallel-stacking"
+PI_PI_GEOMETRY_DISPLACED: Final[str] = "displaced-stacking"
+PI_PI_GEOMETRY_EDGE_TO_FACE: Final[str] = "edge-to-face"
+PI_PI_GEOMETRY_T_SHAPED: Final[str] = "t-shaped"
+PI_PI_GEOMETRY_BORDERLINE: Final[str] = "borderline-aromatic-contact"
+PI_PI_GEOMETRY_REJECTED: Final[str] = "rejected"
+
+SUPPORTED_PI_PI_GEOMETRIES: Final[FrozenSet[str]] = frozenset(
+    {
+        PI_PI_GEOMETRY_FACE_TO_FACE,
+        PI_PI_GEOMETRY_PARALLEL,
+        PI_PI_GEOMETRY_DISPLACED,
+        PI_PI_GEOMETRY_EDGE_TO_FACE,
+        PI_PI_GEOMETRY_T_SHAPED,
+        PI_PI_GEOMETRY_BORDERLINE,
+        PI_PI_GEOMETRY_REJECTED,
+    }
+)
+
+PI_PI_FAMILY_PARALLEL: Final[str] = "parallel"
+PI_PI_FAMILY_PERPENDICULAR: Final[str] = "perpendicular"
+PI_PI_FAMILY_BORDERLINE: Final[str] = "borderline"
+PI_PI_FAMILY_REJECTED: Final[str] = "rejected"
+
+PI_PI_DEFAULT_CENTROID_DISTANCE: Final[float] = 4.5
+PI_PI_DEFAULT_MAXIMUM_CENTROID_DISTANCE: Final[float] = 6.5
+
+PI_PI_DEFAULT_ATOMIC_CONTACT_DISTANCE: Final[float] = 4.5
+PI_PI_DEFAULT_MAXIMUM_ATOMIC_DISTANCE: Final[float] = 5.0
+
+PI_PI_DEFAULT_PARALLEL_ANGLE: Final[float] = 30.0
+PI_PI_DEFAULT_FACE_TO_FACE_ANGLE: Final[float] = 15.0
+
+PI_PI_DEFAULT_T_SHAPED_MINIMUM_ANGLE: Final[float] = 60.0
+PI_PI_DEFAULT_T_SHAPED_OPTIMAL_ANGLE: Final[float] = 90.0
+
+PI_PI_DEFAULT_FACE_TO_FACE_OFFSET: Final[float] = 1.5
+PI_PI_DEFAULT_PARALLEL_OFFSET: Final[float] = 2.5
+PI_PI_DEFAULT_DISPLACED_OFFSET: Final[float] = 3.5
+PI_PI_DEFAULT_MAXIMUM_OFFSET: Final[float] = 4.5
+
+PI_PI_DEFAULT_MAXIMUM_PLANARITY_RMSD: Final[float] = 0.20
+PI_PI_DEFAULT_BORDERLINE_PLANARITY_RMSD: Final[float] = 0.35
+
+PI_PI_EPSILON: Final[float] = 1.0e-12
+
+
+# -----------------------------------------------------------------------------
+# 8.2. Exceções
+# -----------------------------------------------------------------------------
+
+class PiPiDetectionError(RuntimeError):
+    """
+    Base exception for π–π interaction detection.
+    """
+
+
+class PiPiGeometryError(PiPiDetectionError):
+    """
+    Raised when ring geometry is missing, malformed or degenerate.
+    """
+
+
+class PiPiValidationError(PiPiDetectionError):
+    """
+    Raised when π–π detection configuration or input is invalid.
+    """
+
+
+# -----------------------------------------------------------------------------
+# 8.3. Configuração específica
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiPiDetectionConfig:
+    """
+    Geometric thresholds used for π–π interaction detection.
+
+    Notes
+    -----
+    Plane angles are normalized to the interval [0, 90] degrees. Therefore,
+    antiparallel ring normals are geometrically equivalent to parallel normals.
+    """
+
+    # Centroid distances
+    optimal_centroid_distance: float = PI_PI_DEFAULT_CENTROID_DISTANCE
+    maximum_centroid_distance: float = PI_PI_DEFAULT_MAXIMUM_CENTROID_DISTANCE
+
+    # Atomic contacts
+    atomic_contact_distance: float = PI_PI_DEFAULT_ATOMIC_CONTACT_DISTANCE
+    maximum_minimum_atomic_distance: float = (
+        PI_PI_DEFAULT_MAXIMUM_ATOMIC_DISTANCE
+    )
+
+    # Parallel geometries
+    face_to_face_maximum_angle: float = PI_PI_DEFAULT_FACE_TO_FACE_ANGLE
+    parallel_maximum_angle: float = PI_PI_DEFAULT_PARALLEL_ANGLE
+
+    face_to_face_maximum_offset: float = PI_PI_DEFAULT_FACE_TO_FACE_OFFSET
+    parallel_maximum_offset: float = PI_PI_DEFAULT_PARALLEL_OFFSET
+    displaced_maximum_offset: float = PI_PI_DEFAULT_DISPLACED_OFFSET
+
+    # Perpendicular geometries
+    t_shaped_minimum_angle: float = PI_PI_DEFAULT_T_SHAPED_MINIMUM_ANGLE
+    t_shaped_optimal_angle: float = PI_PI_DEFAULT_T_SHAPED_OPTIMAL_ANGLE
+
+    edge_to_face_minimum_offset: float = 0.8
+    t_shaped_maximum_offset: float = 2.5
+    edge_to_face_maximum_offset: float = PI_PI_DEFAULT_MAXIMUM_OFFSET
+
+    # Planarity
+    maximum_planarity_rmsd: float = PI_PI_DEFAULT_MAXIMUM_PLANARITY_RMSD
+    borderline_planarity_rmsd: float = (
+        PI_PI_DEFAULT_BORDERLINE_PLANARITY_RMSD
+    )
+
+    # Borderline aromatic contacts
+    allow_borderline_contacts: bool = True
+    borderline_maximum_centroid_distance: float = 7.0
+    borderline_maximum_atomic_distance: float = 5.0
+    borderline_maximum_offset: float = PI_PI_DEFAULT_MAXIMUM_OFFSET
+
+    # Detection behavior
+    require_atomic_contact: bool = True
+    include_atomic_contacts: bool = True
+    include_rejected: bool = False
+    deduplicate_results: bool = True
+
+    minimum_ring_atom_count: int = 5
+    maximum_ring_atom_count: int = 12
+
+    numeric_tolerance: float = 1.0e-8
+
+    def __post_init__(self) -> None:
+        numeric_fields = (
+            "optimal_centroid_distance",
+            "maximum_centroid_distance",
+            "atomic_contact_distance",
+            "maximum_minimum_atomic_distance",
+            "face_to_face_maximum_angle",
+            "parallel_maximum_angle",
+            "face_to_face_maximum_offset",
+            "parallel_maximum_offset",
+            "displaced_maximum_offset",
+            "t_shaped_minimum_angle",
+            "t_shaped_optimal_angle",
+            "edge_to_face_minimum_offset",
+            "t_shaped_maximum_offset",
+            "edge_to_face_maximum_offset",
+            "maximum_planarity_rmsd",
+            "borderline_planarity_rmsd",
+            "borderline_maximum_centroid_distance",
+            "borderline_maximum_atomic_distance",
+            "borderline_maximum_offset",
+            "numeric_tolerance",
+        )
+
+        for field_name in numeric_fields:
+            value = getattr(self, field_name)
+
+            try:
+                normalized_value = float(value)
+
+            except (TypeError, ValueError) as exc:
+                raise PiPiValidationError(
+                    f"{field_name} must be numeric."
+                ) from exc
+
+            if not math.isfinite(normalized_value):
+                raise PiPiValidationError(
+                    f"{field_name} must be finite."
+                )
+
+            if normalized_value < 0.0:
+                raise PiPiValidationError(
+                    f"{field_name} cannot be negative."
+                )
+
+            setattr(
+                self,
+                field_name,
+                normalized_value,
+            )
+
+        if self.optimal_centroid_distance > self.maximum_centroid_distance:
+            raise PiPiValidationError(
+                "optimal_centroid_distance cannot exceed "
+                "maximum_centroid_distance."
+            )
+
+        if self.atomic_contact_distance > self.maximum_minimum_atomic_distance:
+            raise PiPiValidationError(
+                "atomic_contact_distance cannot exceed "
+                "maximum_minimum_atomic_distance."
+            )
+
+        if self.face_to_face_maximum_angle > self.parallel_maximum_angle:
+            raise PiPiValidationError(
+                "face_to_face_maximum_angle cannot exceed "
+                "parallel_maximum_angle."
+            )
+
+        if self.parallel_maximum_angle > 90.0:
+            raise PiPiValidationError(
+                "parallel_maximum_angle cannot exceed 90 degrees."
+            )
+
+        if self.t_shaped_minimum_angle > 90.0:
+            raise PiPiValidationError(
+                "t_shaped_minimum_angle cannot exceed 90 degrees."
+            )
+
+        if self.t_shaped_optimal_angle > 90.0:
+            raise PiPiValidationError(
+                "t_shaped_optimal_angle cannot exceed 90 degrees."
+            )
+
+        if self.face_to_face_maximum_offset > self.parallel_maximum_offset:
+            raise PiPiValidationError(
+                "face_to_face_maximum_offset cannot exceed "
+                "parallel_maximum_offset."
+            )
+
+        if self.parallel_maximum_offset > self.displaced_maximum_offset:
+            raise PiPiValidationError(
+                "parallel_maximum_offset cannot exceed "
+                "displaced_maximum_offset."
+            )
+
+        if self.maximum_planarity_rmsd > self.borderline_planarity_rmsd:
+            raise PiPiValidationError(
+                "maximum_planarity_rmsd cannot exceed "
+                "borderline_planarity_rmsd."
+            )
+
+        if self.minimum_ring_atom_count < 3:
+            raise PiPiValidationError(
+                "minimum_ring_atom_count must be at least 3."
+            )
+
+        if self.maximum_ring_atom_count < self.minimum_ring_atom_count:
+            raise PiPiValidationError(
+                "maximum_ring_atom_count cannot be lower than "
+                "minimum_ring_atom_count."
+            )
+
+
+def create_default_pi_pi_detection_config() -> PiPiDetectionConfig:
+    """
+    Return the canonical π–π detection configuration.
+    """
+
+    return PiPiDetectionConfig()
+
+
+# -----------------------------------------------------------------------------
+# 8.4. Resultado da avaliação geométrica
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiPiGeometryEvaluation:
+    """
+    Complete geometric evaluation of a pair of aromatic systems.
+    """
+
+    geometry: str
+    geometry_family: str
+
+    centroid_distance: float
+    plane_angle: float
+    lateral_offset: float
+    lateral_offset_ring_1: float
+    lateral_offset_ring_2: float
+    minimum_atomic_distance: float
+
+    ring_1_planarity_rmsd: float
+    ring_2_planarity_rmsd: float
+    maximum_planarity_rmsd: float
+
+    centroid_distance_valid: bool
+    atomic_distance_valid: bool
+    angle_valid: bool
+    offset_valid: bool
+    planarity_valid: bool
+
+    accepted: bool
+    borderline: bool = False
+
+    confidence: float = 0.0
+    reasons: Tuple[str, ...] = ()
+    warnings: Tuple[str, ...] = ()
+
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.geometry not in SUPPORTED_PI_PI_GEOMETRIES:
+            raise PiPiValidationError(
+                f"Unsupported π–π geometry: {self.geometry!r}."
+            )
+
+        self.confidence = max(
+            0.0,
+            min(1.0, float(self.confidence)),
+        )
+
+        self.reasons = tuple(
+            str(reason)
+            for reason in self.reasons
+        )
+
+        self.warnings = tuple(
+            str(warning)
+            for warning in self.warnings
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "geometry": self.geometry,
+            "geometry_family": self.geometry_family,
+            "centroid_distance": self.centroid_distance,
+            "plane_angle": self.plane_angle,
+            "lateral_offset": self.lateral_offset,
+            "lateral_offset_ring_1": self.lateral_offset_ring_1,
+            "lateral_offset_ring_2": self.lateral_offset_ring_2,
+            "minimum_atomic_distance": self.minimum_atomic_distance,
+            "ring_1_planarity_rmsd": self.ring_1_planarity_rmsd,
+            "ring_2_planarity_rmsd": self.ring_2_planarity_rmsd,
+            "maximum_planarity_rmsd": self.maximum_planarity_rmsd,
+            "centroid_distance_valid": self.centroid_distance_valid,
+            "atomic_distance_valid": self.atomic_distance_valid,
+            "angle_valid": self.angle_valid,
+            "offset_valid": self.offset_valid,
+            "planarity_valid": self.planarity_valid,
+            "accepted": self.accepted,
+            "borderline": self.borderline,
+            "confidence": self.confidence,
+            "reasons": list(self.reasons),
+            "warnings": list(self.warnings),
+            "metadata": dict(self.metadata),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 8.5. Acesso seguro aos objetos das seções anteriores
+# -----------------------------------------------------------------------------
+
+def _pi_pi_get_first_attribute(
+    object_: Any,
+    names: Sequence[str],
+    default: Any = None,
+) -> Any:
+    """
+    Return the first existing non-None attribute or mapping value.
+    """
+
+    if object_ is None:
+        return default
+
+    for name in names:
+        if isinstance(object_, Mapping):
+            value = object_.get(name, None)
+
+        else:
+            value = getattr(object_, name, None)
+
+        if value is not None:
+            return value
+
+    return default
+
+
+def _pi_pi_as_vector3(
+    value: Any,
+    *,
+    field_name: str,
+) -> Tuple[float, float, float]:
+    """
+    Normalize a coordinate-like value to a finite three-dimensional vector.
+    """
+
+    if value is None:
+        raise PiPiGeometryError(
+            f"Missing {field_name}."
+        )
+
+    try:
+        values = tuple(float(component) for component in value)
+
+    except (TypeError, ValueError) as exc:
+        raise PiPiGeometryError(
+            f"{field_name} must contain three numeric values."
+        ) from exc
+
+    if len(values) != 3:
+        raise PiPiGeometryError(
+            f"{field_name} must contain exactly three values."
+        )
+
+    if not all(math.isfinite(component) for component in values):
+        raise PiPiGeometryError(
+            f"{field_name} must contain only finite values."
+        )
+
+    return values
+
+
+def _pi_pi_get_ring_centroid(
+    ring: Any,
+) -> Tuple[float, float, float]:
+    value = _pi_pi_get_first_attribute(
+        ring,
+        (
+            "centroid",
+            "center",
+            "centre",
+            "geometric_center",
+        ),
+    )
+
+    return _pi_pi_as_vector3(
+        value,
+        field_name="ring centroid",
+    )
+
+
+def _pi_pi_get_ring_normal(
+    ring: Any,
+) -> Tuple[float, float, float]:
+    value = _pi_pi_get_first_attribute(
+        ring,
+        (
+            "normal",
+            "plane_normal",
+            "normal_vector",
+            "unit_normal",
+        ),
+    )
+
+    normal = _pi_pi_as_vector3(
+        value,
+        field_name="ring normal",
+    )
+
+    return _pi_pi_normalize_vector(
+        normal
+    )
+
+
+def _pi_pi_get_ring_planarity(
+    ring: Any,
+) -> float:
+    value = _pi_pi_get_first_attribute(
+        ring,
+        (
+            "planarity_rmsd",
+            "plane_rmsd",
+            "rmsd_to_plane",
+            "planarity",
+        ),
+        0.0,
+    )
+
+    try:
+        normalized_value = float(value)
+
+    except (TypeError, ValueError) as exc:
+        raise PiPiGeometryError(
+            "Ring planarity RMSD must be numeric."
+        ) from exc
+
+    if not math.isfinite(normalized_value):
+        raise PiPiGeometryError(
+            "Ring planarity RMSD must be finite."
+        )
+
+    return max(0.0, normalized_value)
+
+
+def _pi_pi_get_ring_atoms(
+    ring: Any,
+) -> Tuple[Any, ...]:
+    atoms = _pi_pi_get_first_attribute(
+        ring,
+        (
+            "atoms",
+            "atom_references",
+            "ring_atoms",
+        ),
+        (),
+    )
+
+    try:
+        return tuple(atoms)
+
+    except TypeError as exc:
+        raise PiPiGeometryError(
+            "Ring atoms must be iterable."
+        ) from exc
+
+
+def _pi_pi_get_atom_coordinates(
+    atom: Any,
+) -> Tuple[float, float, float]:
+    value = _pi_pi_get_first_attribute(
+        atom,
+        (
+            "coordinates",
+            "coordinate",
+            "coords",
+            "position",
+        ),
+    )
+
+    if value is None:
+        x = _pi_pi_get_first_attribute(atom, ("x",))
+        y = _pi_pi_get_first_attribute(atom, ("y",))
+        z = _pi_pi_get_first_attribute(atom, ("z",))
+
+        if x is not None and y is not None and z is not None:
+            value = (x, y, z)
+
+    return _pi_pi_as_vector3(
+        value,
+        field_name="atom coordinates",
+    )
+
+
+def _pi_pi_get_ring_id(
+    ring: Any,
+    fallback: str,
+) -> str:
+    value = _pi_pi_get_first_attribute(
+        ring,
+        (
+            "ring_id",
+            "system_id",
+            "aromatic_system_id",
+            "id",
+            "identifier",
+        ),
+        fallback,
+    )
+
+    return str(value)
+
+
+def _pi_pi_get_ring_participant_type(
+    ring: Any,
+    fallback: Optional[str] = None,
+) -> Optional[str]:
+    value = _pi_pi_get_first_attribute(
+        ring,
+        (
+            "participant_type",
+            "source_type",
+            "molecule_type",
+            "role",
+        ),
+        fallback,
+    )
+
+    return None if value is None else str(value)
+
+
+def _pi_pi_get_ring_residue_id(
+    ring: Any,
+) -> Optional[str]:
+    residue_id = _pi_pi_get_first_attribute(
+        ring,
+        (
+            "residue_id",
+            "residue_key",
+        ),
+    )
+
+    if residue_id is not None:
+        return str(residue_id)
+
+    chain_id = _pi_pi_get_first_attribute(
+        ring,
+        ("chain_id", "chain"),
+        "",
+    )
+
+    residue_name = _pi_pi_get_first_attribute(
+        ring,
+        ("residue_name", "resname"),
+        "",
+    )
+
+    residue_number = _pi_pi_get_first_attribute(
+        ring,
+        (
+            "residue_number",
+            "residue_index",
+            "resid",
+        ),
+        "",
+    )
+
+    if not any(
+        value not in (None, "")
+        for value in (
+            chain_id,
+            residue_name,
+            residue_number,
+        )
+    ):
+        return None
+
+    return (
+        f"{chain_id}:"
+        f"{residue_name}:"
+        f"{residue_number}"
+    )
+
+
+# -----------------------------------------------------------------------------
+# 8.6. Operações vetoriais
+# -----------------------------------------------------------------------------
+
+def _pi_pi_vector_subtract(
+    vector_1: Sequence[float],
+    vector_2: Sequence[float],
+) -> Tuple[float, float, float]:
+    return (
+        float(vector_1[0]) - float(vector_2[0]),
+        float(vector_1[1]) - float(vector_2[1]),
+        float(vector_1[2]) - float(vector_2[2]),
+    )
+
+
+def _pi_pi_dot(
+    vector_1: Sequence[float],
+    vector_2: Sequence[float],
+) -> float:
+    return (
+        float(vector_1[0]) * float(vector_2[0])
+        + float(vector_1[1]) * float(vector_2[1])
+        + float(vector_1[2]) * float(vector_2[2])
+    )
+
+
+def _pi_pi_norm(
+    vector: Sequence[float],
+) -> float:
+    return math.sqrt(
+        _pi_pi_dot(vector, vector)
+    )
+
+
+def _pi_pi_normalize_vector(
+    vector: Sequence[float],
+) -> Tuple[float, float, float]:
+    magnitude = _pi_pi_norm(vector)
+
+    if magnitude <= PI_PI_EPSILON:
+        raise PiPiGeometryError(
+            "Cannot normalize a zero-length vector."
+        )
+
+    return (
+        float(vector[0]) / magnitude,
+        float(vector[1]) / magnitude,
+        float(vector[2]) / magnitude,
+    )
+
+
+def _pi_pi_distance(
+    point_1: Sequence[float],
+    point_2: Sequence[float],
+) -> float:
+    return _pi_pi_norm(
+        _pi_pi_vector_subtract(
+            point_1,
+            point_2,
+        )
+    )
+
+
+def _pi_pi_project_onto_plane(
+    vector: Sequence[float],
+    normal: Sequence[float],
+) -> Tuple[float, float, float]:
+    """
+    Project a vector onto a plane defined by a unit normal.
+    """
+
+    normalized_normal = _pi_pi_normalize_vector(
+        normal
+    )
+
+    parallel_component = _pi_pi_dot(
+        vector,
+        normalized_normal,
+    )
+
+    return (
+        float(vector[0])
+        - parallel_component * normalized_normal[0],
+        float(vector[1])
+        - parallel_component * normalized_normal[1],
+        float(vector[2])
+        - parallel_component * normalized_normal[2],
+    )
+
+
+def _pi_pi_plane_angle(
+    normal_1: Sequence[float],
+    normal_2: Sequence[float],
+) -> float:
+    """
+    Calculate the acute angle between two planes in degrees.
+
+    Ring normals pointing in opposite directions still represent parallel
+    planes, so the absolute dot product is used.
+    """
+
+    unit_1 = _pi_pi_normalize_vector(
+        normal_1
+    )
+
+    unit_2 = _pi_pi_normalize_vector(
+        normal_2
+    )
+
+    cosine = abs(
+        _pi_pi_dot(
+            unit_1,
+            unit_2,
+        )
+    )
+
+    cosine = max(
+        -1.0,
+        min(1.0, cosine),
+    )
+
+    return math.degrees(
+        math.acos(cosine)
+    )
+
+
+def _pi_pi_lateral_offsets(
+    centroid_1: Sequence[float],
+    centroid_2: Sequence[float],
+    normal_1: Sequence[float],
+    normal_2: Sequence[float],
+) -> Tuple[float, float, float]:
+    """
+    Calculate centroid displacement projected onto each ring plane.
+
+    Returns
+    -------
+    tuple
+        offset_ring_1, offset_ring_2, symmetric_offset.
+
+    The symmetric offset is the arithmetic mean of both projections. This
+    avoids assigning a privileged orientation to either aromatic system.
+    """
+
+    centroid_vector = _pi_pi_vector_subtract(
+        centroid_2,
+        centroid_1,
+    )
+
+    offset_ring_1 = _pi_pi_norm(
+        _pi_pi_project_onto_plane(
+            centroid_vector,
+            normal_1,
+        )
+    )
+
+    reverse_vector = (
+        -centroid_vector[0],
+        -centroid_vector[1],
+        -centroid_vector[2],
+    )
+
+    offset_ring_2 = _pi_pi_norm(
+        _pi_pi_project_onto_plane(
+            reverse_vector,
+            normal_2,
+        )
+    )
+
+    symmetric_offset = (
+        offset_ring_1 + offset_ring_2
+    ) / 2.0
+
+    return (
+        offset_ring_1,
+        offset_ring_2,
+        symmetric_offset,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 8.7. Distâncias atômicas e contatos
+# -----------------------------------------------------------------------------
+
+def calculate_pi_pi_minimum_atomic_distance(
+    ring_1: Any,
+    ring_2: Any,
+) -> float:
+    """
+    Calculate the minimum interatomic distance between two aromatic systems.
+    """
+
+    atoms_1 = _pi_pi_get_ring_atoms(ring_1)
+    atoms_2 = _pi_pi_get_ring_atoms(ring_2)
+
+    if not atoms_1 or not atoms_2:
+        raise PiPiGeometryError(
+            "Both aromatic systems must contain atoms."
+        )
+
+    minimum_distance = math.inf
+
+    for atom_1 in atoms_1:
+        coordinates_1 = _pi_pi_get_atom_coordinates(
+            atom_1
+        )
+
+        for atom_2 in atoms_2:
+            coordinates_2 = _pi_pi_get_atom_coordinates(
+                atom_2
+            )
+
+            distance = _pi_pi_distance(
+                coordinates_1,
+                coordinates_2,
+            )
+
+            if distance < minimum_distance:
+                minimum_distance = distance
+
+    if not math.isfinite(minimum_distance):
+        raise PiPiGeometryError(
+            "Could not calculate minimum atomic distance."
+        )
+
+    return minimum_distance
+
+
+def _pi_pi_construct_atomic_contact(
+    atom_1: Any,
+    atom_2: Any,
+    distance: float,
+    *,
+    contact_index: int,
+    ring_1_id: str,
+    ring_2_id: str,
+) -> Any:
+    """
+    Construct a PiAtomicContact while tolerating minor dataclass variations.
+    """
+
+    contact_id = (
+        f"pi-pi-contact:"
+        f"{ring_1_id}:"
+        f"{ring_2_id}:"
+        f"{contact_index}"
+    )
+
+    candidate_values: Dict[str, Any] = {
+        "contact_id": contact_id,
+        "id": contact_id,
+        "interaction_type": PI_PI_INTERACTION_TYPE,
+        "atom_1": atom_1,
+        "atom_2": atom_2,
+        "distance": float(distance),
+        "valid": True,
+        "metadata": {
+            "ring_1_id": ring_1_id,
+            "ring_2_id": ring_2_id,
+        },
+    }
+
+    if is_dataclass(PiAtomicContact):
+        supported_fields = {
+            field_definition.name
+            for field_definition in fields(PiAtomicContact)
+        }
+
+        candidate_values = {
+            key: value
+            for key, value in candidate_values.items()
+            if key in supported_fields
+        }
+
+    return PiAtomicContact(
+        **candidate_values
+    )
+
+
+def find_pi_pi_atomic_contacts(
+    ring_1: Any,
+    ring_2: Any,
+    *,
+    maximum_distance: float = PI_PI_DEFAULT_ATOMIC_CONTACT_DISTANCE,
+) -> Tuple[Any, ...]:
+    """
+    Return all atom pairs separated by at most `maximum_distance`.
+    """
+
+    maximum_distance = float(maximum_distance)
+
+    if maximum_distance <= 0.0:
+        raise PiPiValidationError(
+            "maximum_distance must be greater than zero."
+        )
+
+    atoms_1 = _pi_pi_get_ring_atoms(ring_1)
+    atoms_2 = _pi_pi_get_ring_atoms(ring_2)
+
+    ring_1_id = _pi_pi_get_ring_id(
+        ring_1,
+        "ring_1",
+    )
+
+    ring_2_id = _pi_pi_get_ring_id(
+        ring_2,
+        "ring_2",
+    )
+
+    contacts: List[Any] = []
+
+    for atom_1 in atoms_1:
+        coordinates_1 = _pi_pi_get_atom_coordinates(
+            atom_1
+        )
+
+        for atom_2 in atoms_2:
+            coordinates_2 = _pi_pi_get_atom_coordinates(
+                atom_2
+            )
+
+            distance = _pi_pi_distance(
+                coordinates_1,
+                coordinates_2,
+            )
+
+            if distance <= maximum_distance:
+                contacts.append(
+                    _pi_pi_construct_atomic_contact(
+                        atom_1,
+                        atom_2,
+                        distance,
+                        contact_index=len(contacts) + 1,
+                        ring_1_id=ring_1_id,
+                        ring_2_id=ring_2_id,
+                    )
+                )
+
+    contacts.sort(
+        key=lambda contact: float(
+            _pi_pi_get_first_attribute(
+                contact,
+                ("distance",),
+                math.inf,
+            )
+        )
+    )
+
+    return tuple(contacts)
+
+
+# -----------------------------------------------------------------------------
+# 8.8. Qualidade geométrica
+# -----------------------------------------------------------------------------
+
+def _pi_pi_inverse_linear_quality(
+    value: float,
+    *,
+    optimal: float,
+    maximum: float,
+) -> float:
+    if value <= optimal:
+        return 1.0
+
+    if value >= maximum:
+        return 0.0
+
+    denominator = maximum - optimal
+
+    if denominator <= PI_PI_EPSILON:
+        return 0.0
+
+    return 1.0 - (
+        (value - optimal)
+        / denominator
+    )
+
+
+def _pi_pi_angle_quality(
+    angle: float,
+    *,
+    target: float,
+    maximum_deviation: float,
+) -> float:
+    deviation = abs(
+        float(angle) - float(target)
+    )
+
+    if deviation >= maximum_deviation:
+        return 0.0
+
+    return 1.0 - (
+        deviation / maximum_deviation
+    )
+
+
+def calculate_pi_pi_geometry_confidence(
+    *,
+    geometry: str,
+    centroid_distance: float,
+    plane_angle: float,
+    lateral_offset: float,
+    minimum_atomic_distance: float,
+    maximum_planarity_rmsd: float,
+    config: PiPiDetectionConfig,
+) -> float:
+    """
+    Calculate a normalized geometric confidence score.
+
+    This value represents geometric confidence only. It is not the final
+    interaction score from Section 11.
+    """
+
+    distance_quality = _pi_pi_inverse_linear_quality(
+        centroid_distance,
+        optimal=config.optimal_centroid_distance,
+        maximum=config.borderline_maximum_centroid_distance,
+    )
+
+    atomic_quality = _pi_pi_inverse_linear_quality(
+        minimum_atomic_distance,
+        optimal=config.atomic_contact_distance,
+        maximum=config.borderline_maximum_atomic_distance,
+    )
+
+    planarity_quality = _pi_pi_inverse_linear_quality(
+        maximum_planarity_rmsd,
+        optimal=0.0,
+        maximum=config.borderline_planarity_rmsd,
+    )
+
+    if geometry in {
+        PI_PI_GEOMETRY_FACE_TO_FACE,
+        PI_PI_GEOMETRY_PARALLEL,
+        PI_PI_GEOMETRY_DISPLACED,
+    }:
+        angle_quality = _pi_pi_angle_quality(
+            plane_angle,
+            target=0.0,
+            maximum_deviation=max(
+                config.parallel_maximum_angle,
+                PI_PI_EPSILON,
+            ),
+        )
+
+        offset_quality = _pi_pi_inverse_linear_quality(
+            lateral_offset,
+            optimal=config.face_to_face_maximum_offset,
+            maximum=config.borderline_maximum_offset,
+        )
+
+    elif geometry in {
+        PI_PI_GEOMETRY_T_SHAPED,
+        PI_PI_GEOMETRY_EDGE_TO_FACE,
+    }:
+        angle_quality = _pi_pi_angle_quality(
+            plane_angle,
+            target=config.t_shaped_optimal_angle,
+            maximum_deviation=max(
+                90.0 - config.t_shaped_minimum_angle,
+                PI_PI_EPSILON,
+            ),
+        )
+
+        if lateral_offset < config.edge_to_face_minimum_offset:
+            offset_quality = (
+                lateral_offset
+                / max(
+                    config.edge_to_face_minimum_offset,
+                    PI_PI_EPSILON,
+                )
+            )
+
+        else:
+            offset_quality = _pi_pi_inverse_linear_quality(
+                lateral_offset,
+                optimal=config.t_shaped_maximum_offset,
+                maximum=config.edge_to_face_maximum_offset,
+            )
+
+    else:
+        angle_quality = 0.25
+        offset_quality = _pi_pi_inverse_linear_quality(
+            lateral_offset,
+            optimal=config.displaced_maximum_offset,
+            maximum=config.borderline_maximum_offset,
+        )
+
+    weighted_sum = (
+        0.25 * distance_quality
+        + 0.20 * atomic_quality
+        + 0.20 * angle_quality
+        + 0.20 * offset_quality
+        + 0.15 * planarity_quality
+    )
+
+    return max(
+        0.0,
+        min(1.0, weighted_sum),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 8.9. Avaliação de empilhamento paralelo
+# -----------------------------------------------------------------------------
+
+def evaluate_parallel_stacking(
+    *,
+    centroid_distance: float,
+    plane_angle: float,
+    lateral_offset: float,
+    minimum_atomic_distance: float,
+    maximum_planarity_rmsd: float,
+    config: Optional[PiPiDetectionConfig] = None,
+) -> PiPiGeometryEvaluation:
+    """
+    Evaluate face-to-face, parallel and displaced π-stacking geometries.
+
+    Classification order
+    --------------------
+    1. face-to-face;
+    2. parallel stacking;
+    3. displaced stacking;
+    4. borderline aromatic contact;
+    5. rejected.
+    """
+
+    if config is None:
+        config = create_default_pi_pi_detection_config()
+
+    centroid_valid = (
+        centroid_distance
+        <= config.maximum_centroid_distance
+    )
+
+    atomic_valid = (
+        minimum_atomic_distance
+        <= config.maximum_minimum_atomic_distance
+    )
+
+    angle_valid = (
+        plane_angle
+        <= config.parallel_maximum_angle
+    )
+
+    planarity_valid = (
+        maximum_planarity_rmsd
+        <= config.maximum_planarity_rmsd
+    )
+
+    reasons: List[str] = []
+    warnings: List[str] = []
+
+    geometry = PI_PI_GEOMETRY_REJECTED
+    family = PI_PI_FAMILY_REJECTED
+
+    accepted = False
+    borderline = False
+    offset_valid = False
+
+    base_requirements = (
+        centroid_valid
+        and angle_valid
+        and planarity_valid
+        and (
+            atomic_valid
+            or not config.require_atomic_contact
+        )
+    )
+
+    if (
+        base_requirements
+        and plane_angle
+        <= config.face_to_face_maximum_angle
+        and lateral_offset
+        <= config.face_to_face_maximum_offset
+    ):
+        geometry = PI_PI_GEOMETRY_FACE_TO_FACE
+        family = PI_PI_FAMILY_PARALLEL
+        accepted = True
+        offset_valid = True
+
+        reasons.append(
+            "Low interplanar angle and small lateral displacement."
+        )
+
+    elif (
+        base_requirements
+        and lateral_offset
+        <= config.parallel_maximum_offset
+    ):
+        geometry = PI_PI_GEOMETRY_PARALLEL
+        family = PI_PI_FAMILY_PARALLEL
+        accepted = True
+        offset_valid = True
+
+        reasons.append(
+            "Parallel aromatic planes with moderate centroid displacement."
+        )
+
+    elif (
+        base_requirements
+        and lateral_offset
+        <= config.displaced_maximum_offset
+    ):
+        geometry = PI_PI_GEOMETRY_DISPLACED
+        family = PI_PI_FAMILY_PARALLEL
+        accepted = True
+        offset_valid = True
+
+        reasons.append(
+            "Parallel aromatic planes with pronounced lateral displacement."
+        )
+
+    else:
+        borderline_requirements = (
+            config.allow_borderline_contacts
+            and centroid_distance
+            <= config.borderline_maximum_centroid_distance
+            and minimum_atomic_distance
+            <= config.borderline_maximum_atomic_distance
+            and lateral_offset
+            <= config.borderline_maximum_offset
+            and maximum_planarity_rmsd
+            <= config.borderline_planarity_rmsd
+        )
+
+        if borderline_requirements:
+            geometry = PI_PI_GEOMETRY_BORDERLINE
+            family = PI_PI_FAMILY_BORDERLINE
+            accepted = True
+            borderline = True
+            offset_valid = True
+
+            reasons.append(
+                "Aromatic systems form a limiting contact outside the "
+                "canonical parallel-stacking geometry."
+            )
+
+        else:
+            if not centroid_valid:
+                warnings.append(
+                    "Centroid distance exceeds the canonical π–π limit."
+                )
+
+            if not atomic_valid:
+                warnings.append(
+                    "Minimum atomic distance exceeds the contact limit."
+                )
+
+            if not angle_valid:
+                warnings.append(
+                    "Plane angle is incompatible with parallel stacking."
+                )
+
+            if not planarity_valid:
+                warnings.append(
+                    "At least one aromatic system has insufficient planarity."
+                )
+
+            if lateral_offset > config.displaced_maximum_offset:
+                warnings.append(
+                    "Lateral displacement exceeds the displaced-stacking "
+                    "limit."
+                )
+
+    confidence = calculate_pi_pi_geometry_confidence(
+        geometry=geometry,
+        centroid_distance=centroid_distance,
+        plane_angle=plane_angle,
+        lateral_offset=lateral_offset,
+        minimum_atomic_distance=minimum_atomic_distance,
+        maximum_planarity_rmsd=maximum_planarity_rmsd,
+        config=config,
+    )
+
+    return PiPiGeometryEvaluation(
+        geometry=geometry,
+        geometry_family=family,
+        centroid_distance=centroid_distance,
+        plane_angle=plane_angle,
+        lateral_offset=lateral_offset,
+        lateral_offset_ring_1=lateral_offset,
+        lateral_offset_ring_2=lateral_offset,
+        minimum_atomic_distance=minimum_atomic_distance,
+        ring_1_planarity_rmsd=maximum_planarity_rmsd,
+        ring_2_planarity_rmsd=maximum_planarity_rmsd,
+        maximum_planarity_rmsd=maximum_planarity_rmsd,
+        centroid_distance_valid=centroid_valid,
+        atomic_distance_valid=atomic_valid,
+        angle_valid=angle_valid,
+        offset_valid=offset_valid,
+        planarity_valid=planarity_valid,
+        accepted=accepted,
+        borderline=borderline,
+        confidence=confidence,
+        reasons=tuple(reasons),
+        warnings=tuple(warnings),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 8.10. Avaliação T-shaped e edge-to-face
+# -----------------------------------------------------------------------------
+
+def evaluate_t_shaped_stacking(
+    *,
+    centroid_distance: float,
+    plane_angle: float,
+    lateral_offset: float,
+    minimum_atomic_distance: float,
+    maximum_planarity_rmsd: float,
+    config: Optional[PiPiDetectionConfig] = None,
+) -> PiPiGeometryEvaluation:
+    """
+    Evaluate T-shaped and edge-to-face aromatic geometries.
+
+    T-shaped interactions require a near-perpendicular orientation and a
+    centroid projection compatible with one aromatic edge approaching the
+    face of the second aromatic system.
+    """
+
+    if config is None:
+        config = create_default_pi_pi_detection_config()
+
+    centroid_valid = (
+        centroid_distance
+        <= config.maximum_centroid_distance
+    )
+
+    atomic_valid = (
+        minimum_atomic_distance
+        <= config.maximum_minimum_atomic_distance
+    )
+
+    angle_valid = (
+        plane_angle
+        >= config.t_shaped_minimum_angle
+    )
+
+    planarity_valid = (
+        maximum_planarity_rmsd
+        <= config.maximum_planarity_rmsd
+    )
+
+    base_requirements = (
+        centroid_valid
+        and angle_valid
+        and planarity_valid
+        and (
+            atomic_valid
+            or not config.require_atomic_contact
+        )
+    )
+
+    geometry = PI_PI_GEOMETRY_REJECTED
+    family = PI_PI_FAMILY_REJECTED
+
+    accepted = False
+    borderline = False
+    offset_valid = False
+
+    reasons: List[str] = []
+    warnings: List[str] = []
+
+    if (
+        base_requirements
+        and config.edge_to_face_minimum_offset
+        <= lateral_offset
+        <= config.t_shaped_maximum_offset
+    ):
+        geometry = PI_PI_GEOMETRY_T_SHAPED
+        family = PI_PI_FAMILY_PERPENDICULAR
+        accepted = True
+        offset_valid = True
+
+        reasons.append(
+            "Near-perpendicular aromatic planes with a canonical "
+            "T-shaped centroid displacement."
+        )
+
+    elif (
+        base_requirements
+        and lateral_offset
+        <= config.edge_to_face_maximum_offset
+    ):
+        geometry = PI_PI_GEOMETRY_EDGE_TO_FACE
+        family = PI_PI_FAMILY_PERPENDICULAR
+        accepted = True
+        offset_valid = True
+
+        reasons.append(
+            "An aromatic edge approaches the face of the second system."
+        )
+
+    else:
+        borderline_requirements = (
+            config.allow_borderline_contacts
+            and centroid_distance
+            <= config.borderline_maximum_centroid_distance
+            and minimum_atomic_distance
+            <= config.borderline_maximum_atomic_distance
+            and maximum_planarity_rmsd
+            <= config.borderline_planarity_rmsd
+            and lateral_offset
+            <= config.borderline_maximum_offset
+        )
+
+        if borderline_requirements:
+            geometry = PI_PI_GEOMETRY_BORDERLINE
+            family = PI_PI_FAMILY_BORDERLINE
+            accepted = True
+            borderline = True
+            offset_valid = True
+
+            reasons.append(
+                "Near-perpendicular aromatic contact outside the canonical "
+                "T-shaped or edge-to-face region."
+            )
+
+        else:
+            if not centroid_valid:
+                warnings.append(
+                    "Centroid distance exceeds the canonical π–π limit."
+                )
+
+            if not atomic_valid:
+                warnings.append(
+                    "Minimum atomic distance exceeds the contact limit."
+                )
+
+            if not angle_valid:
+                warnings.append(
+                    "Plane angle is incompatible with perpendicular stacking."
+                )
+
+            if not planarity_valid:
+                warnings.append(
+                    "At least one aromatic system has insufficient planarity."
+                )
+
+            if lateral_offset > config.edge_to_face_maximum_offset:
+                warnings.append(
+                    "Lateral displacement exceeds the edge-to-face limit."
+                )
+
+    confidence = calculate_pi_pi_geometry_confidence(
+        geometry=geometry,
+        centroid_distance=centroid_distance,
+        plane_angle=plane_angle,
+        lateral_offset=lateral_offset,
+        minimum_atomic_distance=minimum_atomic_distance,
+        maximum_planarity_rmsd=maximum_planarity_rmsd,
+        config=config,
+    )
+
+    return PiPiGeometryEvaluation(
+        geometry=geometry,
+        geometry_family=family,
+        centroid_distance=centroid_distance,
+        plane_angle=plane_angle,
+        lateral_offset=lateral_offset,
+        lateral_offset_ring_1=lateral_offset,
+        lateral_offset_ring_2=lateral_offset,
+        minimum_atomic_distance=minimum_atomic_distance,
+        ring_1_planarity_rmsd=maximum_planarity_rmsd,
+        ring_2_planarity_rmsd=maximum_planarity_rmsd,
+        maximum_planarity_rmsd=maximum_planarity_rmsd,
+        centroid_distance_valid=centroid_valid,
+        atomic_distance_valid=atomic_valid,
+        angle_valid=angle_valid,
+        offset_valid=offset_valid,
+        planarity_valid=planarity_valid,
+        accepted=accepted,
+        borderline=borderline,
+        confidence=confidence,
+        reasons=tuple(reasons),
+        warnings=tuple(warnings),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 8.11. Classificação conjunta da geometria
+# -----------------------------------------------------------------------------
+
+def classify_pi_pi_geometry(
+    *,
+    centroid_distance: float,
+    plane_angle: float,
+    lateral_offset: float,
+    minimum_atomic_distance: float,
+    ring_1_planarity_rmsd: float,
+    ring_2_planarity_rmsd: float,
+    lateral_offset_ring_1: Optional[float] = None,
+    lateral_offset_ring_2: Optional[float] = None,
+    config: Optional[PiPiDetectionConfig] = None,
+) -> PiPiGeometryEvaluation:
+    """
+    Classify one aromatic-system pair using all relevant geometric variables.
+
+    The function independently evaluates the parallel and perpendicular
+    hypotheses and retains the accepted geometry with the highest geometric
+    confidence.
+    """
+
+    if config is None:
+        config = create_default_pi_pi_detection_config()
+
+    numeric_values = {
+        "centroid_distance": centroid_distance,
+        "plane_angle": plane_angle,
+        "lateral_offset": lateral_offset,
+        "minimum_atomic_distance": minimum_atomic_distance,
+        "ring_1_planarity_rmsd": ring_1_planarity_rmsd,
+        "ring_2_planarity_rmsd": ring_2_planarity_rmsd,
+    }
+
+    normalized_values: Dict[str, float] = {}
+
+    for field_name, value in numeric_values.items():
+        try:
+            normalized_value = float(value)
+
+        except (TypeError, ValueError) as exc:
+            raise PiPiValidationError(
+                f"{field_name} must be numeric."
+            ) from exc
+
+        if not math.isfinite(normalized_value):
+            raise PiPiValidationError(
+                f"{field_name} must be finite."
+            )
+
+        if normalized_value < 0.0:
+            raise PiPiValidationError(
+                f"{field_name} cannot be negative."
+            )
+
+        normalized_values[field_name] = normalized_value
+
+    plane_angle = min(
+        90.0,
+        normalized_values["plane_angle"],
+    )
+
+    maximum_planarity = max(
+        normalized_values["ring_1_planarity_rmsd"],
+        normalized_values["ring_2_planarity_rmsd"],
+    )
+
+    parallel_evaluation = evaluate_parallel_stacking(
+        centroid_distance=normalized_values["centroid_distance"],
+        plane_angle=plane_angle,
+        lateral_offset=normalized_values["lateral_offset"],
+        minimum_atomic_distance=normalized_values[
+            "minimum_atomic_distance"
+        ],
+        maximum_planarity_rmsd=maximum_planarity,
+        config=config,
+    )
+
+    perpendicular_evaluation = evaluate_t_shaped_stacking(
+        centroid_distance=normalized_values["centroid_distance"],
+        plane_angle=plane_angle,
+        lateral_offset=normalized_values["lateral_offset"],
+        minimum_atomic_distance=normalized_values[
+            "minimum_atomic_distance"
+        ],
+        maximum_planarity_rmsd=maximum_planarity,
+        config=config,
+    )
+
+    candidates = (
+        parallel_evaluation,
+        perpendicular_evaluation,
+    )
+
+    accepted_candidates = [
+        evaluation
+        for evaluation in candidates
+        if evaluation.accepted
+        and not evaluation.borderline
+    ]
+
+    if accepted_candidates:
+        selected = max(
+            accepted_candidates,
+            key=lambda evaluation: (
+                evaluation.confidence,
+                evaluation.geometry
+                == PI_PI_GEOMETRY_FACE_TO_FACE,
+                evaluation.geometry
+                == PI_PI_GEOMETRY_T_SHAPED,
+            ),
+        )
+
+    else:
+        borderline_candidates = [
+            evaluation
+            for evaluation in candidates
+            if evaluation.accepted
+            and evaluation.borderline
+        ]
+
+        if borderline_candidates:
+            selected = max(
+                borderline_candidates,
+                key=lambda evaluation: evaluation.confidence,
+            )
+
+        else:
+            selected = max(
+                candidates,
+                key=lambda evaluation: evaluation.confidence,
+            )
+
+    selected.ring_1_planarity_rmsd = normalized_values[
+        "ring_1_planarity_rmsd"
+    ]
+
+    selected.ring_2_planarity_rmsd = normalized_values[
+        "ring_2_planarity_rmsd"
+    ]
+
+    selected.maximum_planarity_rmsd = maximum_planarity
+
+    selected.lateral_offset_ring_1 = (
+        normalized_values["lateral_offset"]
+        if lateral_offset_ring_1 is None
+        else float(lateral_offset_ring_1)
+    )
+
+    selected.lateral_offset_ring_2 = (
+        normalized_values["lateral_offset"]
+        if lateral_offset_ring_2 is None
+        else float(lateral_offset_ring_2)
+    )
+
+    selected.metadata.update(
+        {
+            "parallel_evaluation": parallel_evaluation.to_dict(),
+            "perpendicular_evaluation": perpendicular_evaluation.to_dict(),
+            "selection_rule": "highest_accepted_geometric_confidence",
+        }
+    )
+
+    return selected
+
+
+# -----------------------------------------------------------------------------
+# 8.12. Avaliação completa de dois sistemas aromáticos
+# -----------------------------------------------------------------------------
+
+def evaluate_pi_pi_ring_pair(
+    ring_1: Any,
+    ring_2: Any,
+    *,
+    config: Optional[PiPiDetectionConfig] = None,
+) -> PiPiGeometryEvaluation:
+    """
+    Calculate and classify the complete geometry of two aromatic systems.
+    """
+
+    if config is None:
+        config = create_default_pi_pi_detection_config()
+
+    atoms_1 = _pi_pi_get_ring_atoms(ring_1)
+    atoms_2 = _pi_pi_get_ring_atoms(ring_2)
+
+    if not (
+        config.minimum_ring_atom_count
+        <= len(atoms_1)
+        <= config.maximum_ring_atom_count
+    ):
+        raise PiPiGeometryError(
+            "The first aromatic system has an unsupported atom count: "
+            f"{len(atoms_1)}."
+        )
+
+    if not (
+        config.minimum_ring_atom_count
+        <= len(atoms_2)
+        <= config.maximum_ring_atom_count
+    ):
+        raise PiPiGeometryError(
+            "The second aromatic system has an unsupported atom count: "
+            f"{len(atoms_2)}."
+        )
+
+    centroid_1 = _pi_pi_get_ring_centroid(
+        ring_1
+    )
+
+    centroid_2 = _pi_pi_get_ring_centroid(
+        ring_2
+    )
+
+    normal_1 = _pi_pi_get_ring_normal(
+        ring_1
+    )
+
+    normal_2 = _pi_pi_get_ring_normal(
+        ring_2
+    )
+
+    centroid_distance = _pi_pi_distance(
+        centroid_1,
+        centroid_2,
+    )
+
+    plane_angle = _pi_pi_plane_angle(
+        normal_1,
+        normal_2,
+    )
+
+    (
+        offset_ring_1,
+        offset_ring_2,
+        symmetric_offset,
+    ) = _pi_pi_lateral_offsets(
+        centroid_1,
+        centroid_2,
+        normal_1,
+        normal_2,
+    )
+
+    minimum_atomic_distance = (
+        calculate_pi_pi_minimum_atomic_distance(
+            ring_1,
+            ring_2,
+        )
+    )
+
+    planarity_1 = _pi_pi_get_ring_planarity(
+        ring_1
+    )
+
+    planarity_2 = _pi_pi_get_ring_planarity(
+        ring_2
+    )
+
+    evaluation = classify_pi_pi_geometry(
+        centroid_distance=centroid_distance,
+        plane_angle=plane_angle,
+        lateral_offset=symmetric_offset,
+        lateral_offset_ring_1=offset_ring_1,
+        lateral_offset_ring_2=offset_ring_2,
+        minimum_atomic_distance=minimum_atomic_distance,
+        ring_1_planarity_rmsd=planarity_1,
+        ring_2_planarity_rmsd=planarity_2,
+        config=config,
+    )
+
+    evaluation.metadata.update(
+        {
+            "ring_1_id": _pi_pi_get_ring_id(
+                ring_1,
+                "ring_1",
+            ),
+            "ring_2_id": _pi_pi_get_ring_id(
+                ring_2,
+                "ring_2",
+            ),
+            "ring_1_centroid": centroid_1,
+            "ring_2_centroid": centroid_2,
+            "ring_1_normal": normal_1,
+            "ring_2_normal": normal_2,
+        }
+    )
+
+    return evaluation
+
+
+# -----------------------------------------------------------------------------
+# 8.13. Construção da interação
+# -----------------------------------------------------------------------------
+
+def _pi_pi_construct_interaction(
+    ring_1: Any,
+    ring_2: Any,
+    evaluation: PiPiGeometryEvaluation,
+    *,
+    interaction_index: int,
+    config: PiPiDetectionConfig,
+) -> Any:
+    """
+    Construct a canonical PiInteraction from a geometric evaluation.
+    """
+
+    ring_1_id = _pi_pi_get_ring_id(
+        ring_1,
+        f"ring_1_{interaction_index}",
+    )
+
+    ring_2_id = _pi_pi_get_ring_id(
+        ring_2,
+        f"ring_2_{interaction_index}",
+    )
+
+    interaction_id = (
+        f"pi-pi:"
+        f"{ring_1_id}:"
+        f"{ring_2_id}"
+    )
+
+    atomic_contacts: Tuple[Any, ...] = ()
+
+    if config.include_atomic_contacts:
+        atomic_contacts = find_pi_pi_atomic_contacts(
+            ring_1,
+            ring_2,
+            maximum_distance=config.atomic_contact_distance,
+        )
+
+    residue_1_id = _pi_pi_get_ring_residue_id(
+        ring_1
+    )
+
+    residue_2_id = _pi_pi_get_ring_residue_id(
+        ring_2
+    )
+
+    candidate_values: Dict[str, Any] = {
+        "interaction_id": interaction_id,
+        "id": interaction_id,
+        "interaction_type": PI_PI_INTERACTION_TYPE,
+        "subtype": evaluation.geometry,
+        "geometry_class": evaluation.geometry,
+        "geometry_family": evaluation.geometry_family,
+        "ring_1": ring_1,
+        "ring_2": ring_2,
+        "aromatic_system_1": ring_1,
+        "aromatic_system_2": ring_2,
+        "participant_1_type": _pi_pi_get_ring_participant_type(
+            ring_1
+        ),
+        "participant_2_type": _pi_pi_get_ring_participant_type(
+            ring_2
+        ),
+        "centroid_distance": evaluation.centroid_distance,
+        "plane_angle": evaluation.plane_angle,
+        "normal_angle": evaluation.plane_angle,
+        "lateral_offset": evaluation.lateral_offset,
+        "lateral_offset_ring_1": evaluation.lateral_offset_ring_1,
+        "lateral_offset_ring_2": evaluation.lateral_offset_ring_2,
+        "minimum_atomic_distance": evaluation.minimum_atomic_distance,
+        "ring_1_planarity": evaluation.ring_1_planarity_rmsd,
+        "ring_2_planarity": evaluation.ring_2_planarity_rmsd,
+        "planarity_quality": (
+            1.0
+            - min(
+                1.0,
+                evaluation.maximum_planarity_rmsd
+                / max(
+                    config.borderline_planarity_rmsd,
+                    PI_PI_EPSILON,
+                ),
+            )
+        ),
+        "geometry_confidence": evaluation.confidence,
+        "atomic_contacts": atomic_contacts,
+        "valid": evaluation.accepted,
+        "borderline": evaluation.borderline,
+        "warnings": list(evaluation.warnings),
+        "metadata": {
+            "schema": "pi-pi-interaction",
+            "geometry_reasons": list(evaluation.reasons),
+            "geometry_evaluation": evaluation.to_dict(),
+            "ring_1_id": ring_1_id,
+            "ring_2_id": ring_2_id,
+            "residue_1_id": residue_1_id,
+            "residue_2_id": residue_2_id,
+            "atomic_contact_count": len(atomic_contacts),
+        },
+    }
+
+    if is_dataclass(PiInteraction):
+        supported_fields = {
+            field_definition.name
+            for field_definition in fields(PiInteraction)
+        }
+
+        candidate_values = {
+            key: value
+            for key, value in candidate_values.items()
+            if key in supported_fields
+        }
+
+    try:
+        return PiInteraction(
+            **candidate_values
+        )
+
+    except TypeError as exc:
+        raise PiPiDetectionError(
+            "Could not construct PiInteraction. Ensure that the dataclass "
+            "defined in Section 2 contains the fields required by the "
+            "π-interaction architecture."
+        ) from exc
+
+
+# -----------------------------------------------------------------------------
+# 8.14. Validação de pares
+# -----------------------------------------------------------------------------
+
+def _pi_pi_same_aromatic_system(
+    ring_1: Any,
+    ring_2: Any,
+) -> bool:
+    if ring_1 is ring_2:
+        return True
+
+    ring_1_id = _pi_pi_get_ring_id(
+        ring_1,
+        "",
+    )
+
+    ring_2_id = _pi_pi_get_ring_id(
+        ring_2,
+        "",
+    )
+
+    return bool(
+        ring_1_id
+        and ring_2_id
+        and ring_1_id == ring_2_id
+    )
+
+
+def _pi_pi_same_residue(
+    ring_1: Any,
+    ring_2: Any,
+) -> bool:
+    residue_1 = _pi_pi_get_ring_residue_id(
+        ring_1
+    )
+
+    residue_2 = _pi_pi_get_ring_residue_id(
+        ring_2
+    )
+
+    return bool(
+        residue_1
+        and residue_2
+        and residue_1 == residue_2
+    )
+
+
+def _pi_pi_pair_key(
+    ring_1: Any,
+    ring_2: Any,
+) -> Tuple[str, str]:
+    identifier_1 = _pi_pi_get_ring_id(
+        ring_1,
+        str(id(ring_1)),
+    )
+
+    identifier_2 = _pi_pi_get_ring_id(
+        ring_2,
+        str(id(ring_2)),
+    )
+
+    return tuple(
+        sorted(
+            (
+                identifier_1,
+                identifier_2,
+            )
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 8.15. Detecção principal
+# -----------------------------------------------------------------------------
+
+def detect_pi_pi_interactions(
+    aromatic_systems_1: Iterable[Any],
+    aromatic_systems_2: Optional[Iterable[Any]] = None,
+    *,
+    config: Optional[PiPiDetectionConfig] = None,
+    exclude_same_system: bool = True,
+    exclude_same_residue: bool = True,
+    cross_collection_only: bool = True,
+    strict: bool = False,
+) -> List[Any]:
+    """
+    Detect π–π interactions between aromatic systems.
+
+    Parameters
+    ----------
+    aromatic_systems_1:
+        First collection of aromatic systems, usually receptor rings.
+    aromatic_systems_2:
+        Second collection, usually ligand rings. When omitted, all unique
+        combinations from `aromatic_systems_1` are evaluated.
+    config:
+        π–π detection thresholds.
+    exclude_same_system:
+        Ignore comparisons of a system with itself.
+    exclude_same_residue:
+        Ignore interactions between aromatic systems assigned to the same
+        residue. This is useful for fused systems represented by multiple
+        component rings.
+    cross_collection_only:
+        When two collections are supplied, only intercollection pairs are
+        generated.
+    strict:
+        Raise geometry errors immediately. When False, malformed pairs are
+        skipped.
+    """
+
+    if config is None:
+        config = create_default_pi_pi_detection_config()
+
+    systems_1 = tuple(aromatic_systems_1)
+
+    if aromatic_systems_2 is None:
+        systems_2 = systems_1
+        same_collection = True
+
+    else:
+        systems_2 = tuple(aromatic_systems_2)
+        same_collection = False
+
+    interactions: List[Any] = []
+    evaluated_pairs: Set[Tuple[str, str]] = set()
+
+    if same_collection:
+        pair_iterator = (
+            (systems_1[index_1], systems_1[index_2])
+            for index_1 in range(len(systems_1))
+            for index_2 in range(index_1 + 1, len(systems_1))
+        )
+
+    else:
+        pair_iterator = (
+            (ring_1, ring_2)
+            for ring_1 in systems_1
+            for ring_2 in systems_2
+        )
+
+    for ring_1, ring_2 in pair_iterator:
+        if exclude_same_system and _pi_pi_same_aromatic_system(
+            ring_1,
+            ring_2,
+        ):
+            continue
+
+        if exclude_same_residue and _pi_pi_same_residue(
+            ring_1,
+            ring_2,
+        ):
+            continue
+
+        pair_key = _pi_pi_pair_key(
+            ring_1,
+            ring_2,
+        )
+
+        if (
+            config.deduplicate_results
+            and pair_key in evaluated_pairs
+        ):
+            continue
+
+        evaluated_pairs.add(
+            pair_key
+        )
+
+        try:
+            evaluation = evaluate_pi_pi_ring_pair(
+                ring_1,
+                ring_2,
+                config=config,
+            )
+
+        except (
+            PiPiGeometryError,
+            PiPiValidationError,
+            TypeError,
+            ValueError,
+        ):
+            if strict:
+                raise
+
+            continue
+
+        if (
+            not evaluation.accepted
+            and not config.include_rejected
+        ):
+            continue
+
+        interaction = _pi_pi_construct_interaction(
+            ring_1,
+            ring_2,
+            evaluation,
+            interaction_index=len(interactions) + 1,
+            config=config,
+        )
+
+        interactions.append(
+            interaction
+        )
+
+    interactions.sort(
+        key=lambda interaction: (
+            not bool(
+                _pi_pi_get_first_attribute(
+                    interaction,
+                    ("valid",),
+                    False,
+                )
+            ),
+            -float(
+                _pi_pi_get_first_attribute(
+                    interaction,
+                    (
+                        "geometry_confidence",
+                        "confidence",
+                    ),
+                    0.0,
+                )
+            ),
+            float(
+                _pi_pi_get_first_attribute(
+                    interaction,
+                    ("centroid_distance",),
+                    math.inf,
+                )
+            ),
+            str(
+                _pi_pi_get_first_attribute(
+                    interaction,
+                    (
+                        "interaction_id",
+                        "id",
+                    ),
+                    "",
+                )
+            ),
+        )
+    )
+
+    return interactions
+
+
+# -----------------------------------------------------------------------------
+# 8.16. API auxiliar para uma única dupla
+# -----------------------------------------------------------------------------
+
+def detect_single_pi_pi_interaction(
+    ring_1: Any,
+    ring_2: Any,
+    *,
+    config: Optional[PiPiDetectionConfig] = None,
+    include_rejected: bool = False,
+) -> Optional[Any]:
+    """
+    Detect one π–π interaction between two aromatic systems.
+    """
+
+    if config is None:
+        config = create_default_pi_pi_detection_config()
+
+    evaluation = evaluate_pi_pi_ring_pair(
+        ring_1,
+        ring_2,
+        config=config,
+    )
+
+    if (
+        not evaluation.accepted
+        and not include_rejected
+    ):
+        return None
+
+    return _pi_pi_construct_interaction(
+        ring_1,
+        ring_2,
+        evaluation,
+        interaction_index=1,
+        config=config,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 8.17. Filtros e resumos locais
+# -----------------------------------------------------------------------------
+
+def filter_pi_pi_interactions_by_geometry(
+    interactions: Iterable[Any],
+    geometries: Collection[str],
+) -> List[Any]:
+    """
+    Select π–π interactions matching one or more geometric subtypes.
+    """
+
+    normalized_geometries = {
+        str(geometry).strip().lower()
+        for geometry in geometries
+    }
+
+    unsupported = (
+        normalized_geometries
+        - SUPPORTED_PI_PI_GEOMETRIES
+    )
+
+    if unsupported:
+        raise PiPiValidationError(
+            "Unsupported π–π geometries: "
+            f"{sorted(unsupported)!r}."
+        )
+
+    return [
+        interaction
+        for interaction in interactions
+        if str(
+            _pi_pi_get_first_attribute(
+                interaction,
+                (
+                    "geometry_class",
+                    "subtype",
+                ),
+                "",
+            )
+        ).strip().lower()
+        in normalized_geometries
+    ]
+
+
+def summarize_pi_pi_detection(
+    interactions: Iterable[Any],
+) -> Dict[str, Any]:
+    """
+    Produce a lightweight summary specific to Section 8.
+
+    Full statistics are generated later in Section 13.
+    """
+
+    interaction_list = list(
+        interactions
+    )
+
+    geometry_distribution: Dict[str, int] = defaultdict(int)
+
+    centroid_distances: List[float] = []
+    atomic_distances: List[float] = []
+    plane_angles: List[float] = []
+    lateral_offsets: List[float] = []
+
+    borderline_count = 0
+
+    for interaction in interaction_list:
+        geometry = str(
+            _pi_pi_get_first_attribute(
+                interaction,
+                (
+                    "geometry_class",
+                    "subtype",
+                ),
+                PI_PI_GEOMETRY_REJECTED,
+            )
+        )
+
+        geometry_distribution[
+            geometry
+        ] += 1
+
+        if bool(
+            _pi_pi_get_first_attribute(
+                interaction,
+                ("borderline",),
+                False,
+            )
+        ):
+            borderline_count += 1
+
+        for collection, attribute_names in (
+            (
+                centroid_distances,
+                ("centroid_distance",),
+            ),
+            (
+                atomic_distances,
+                ("minimum_atomic_distance",),
+            ),
+            (
+                plane_angles,
+                ("plane_angle", "normal_angle"),
+            ),
+            (
+                lateral_offsets,
+                ("lateral_offset",),
+            ),
+        ):
+            value = _pi_pi_get_first_attribute(
+                interaction,
+                attribute_names,
+            )
+
+            if value is None:
+                continue
+
+            try:
+                normalized_value = float(value)
+
+            except (TypeError, ValueError):
+                continue
+
+            if math.isfinite(normalized_value):
+                collection.append(
+                    normalized_value
+                )
+
+    def numeric_summary(
+        values: Sequence[float],
+    ) -> Dict[str, Optional[float]]:
+        if not values:
+            return {
+                "mean": None,
+                "minimum": None,
+                "maximum": None,
+            }
+
+        return {
+            "mean": sum(values) / len(values),
+            "minimum": min(values),
+            "maximum": max(values),
+        }
+
+    return {
+        "total_interactions": len(interaction_list),
+        "geometry_distribution": dict(
+            sorted(
+                geometry_distribution.items()
+            )
+        ),
+        "borderline_interactions": borderline_count,
+        "centroid_distance": numeric_summary(
+            centroid_distances
+        ),
+        "minimum_atomic_distance": numeric_summary(
+            atomic_distances
+        ),
+        "plane_angle": numeric_summary(
+            plane_angles
+        ),
+        "lateral_offset": numeric_summary(
+            lateral_offsets
+        ),
+    }
+
+
+# =============================================================================
+# 9. DETECÇÃO DE INTERAÇÕES CÁTION–π
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 9.1. Constantes
+# -----------------------------------------------------------------------------
+
+CATION_PI_INTERACTION_TYPE: Final[str] = "cation-pi"
+
+CATION_PI_GEOMETRY_FACE_CENTERED: Final[str] = "face-centered"
+CATION_PI_GEOMETRY_FACE_OFFSET: Final[str] = "face-offset"
+CATION_PI_GEOMETRY_EDGE_ASSOCIATED: Final[str] = "edge-associated"
+CATION_PI_GEOMETRY_BORDERLINE: Final[str] = "borderline-cation-pi"
+CATION_PI_GEOMETRY_REJECTED: Final[str] = "rejected"
+
+SUPPORTED_CATION_PI_GEOMETRIES: Final[FrozenSet[str]] = frozenset(
+    {
+        CATION_PI_GEOMETRY_FACE_CENTERED,
+        CATION_PI_GEOMETRY_FACE_OFFSET,
+        CATION_PI_GEOMETRY_EDGE_ASSOCIATED,
+        CATION_PI_GEOMETRY_BORDERLINE,
+        CATION_PI_GEOMETRY_REJECTED,
+    }
+)
+
+CATION_PI_FACE_POSITIVE: Final[str] = "positive-normal-face"
+CATION_PI_FACE_NEGATIVE: Final[str] = "negative-normal-face"
+CATION_PI_FACE_IN_PLANE: Final[str] = "approximately-in-plane"
+
+SUPPORTED_CATION_PI_FACES: Final[FrozenSet[str]] = frozenset(
+    {
+        CATION_PI_FACE_POSITIVE,
+        CATION_PI_FACE_NEGATIVE,
+        CATION_PI_FACE_IN_PLANE,
+    }
+)
+
+CATION_PI_CHARGE_SOURCE_FORMAL: Final[str] = "formal"
+CATION_PI_CHARGE_SOURCE_PARTIAL: Final[str] = "partial"
+CATION_PI_CHARGE_SOURCE_INFERRED: Final[str] = "inferred"
+CATION_PI_CHARGE_SOURCE_GROUP: Final[str] = "group"
+CATION_PI_CHARGE_SOURCE_UNKNOWN: Final[str] = "unknown"
+
+SUPPORTED_CATION_PI_CHARGE_SOURCES: Final[FrozenSet[str]] = frozenset(
+    {
+        CATION_PI_CHARGE_SOURCE_FORMAL,
+        CATION_PI_CHARGE_SOURCE_PARTIAL,
+        CATION_PI_CHARGE_SOURCE_INFERRED,
+        CATION_PI_CHARGE_SOURCE_GROUP,
+        CATION_PI_CHARGE_SOURCE_UNKNOWN,
+    }
+)
+
+CATION_PI_DEFAULT_OPTIMAL_CENTROID_DISTANCE: Final[float] = 4.5
+CATION_PI_DEFAULT_MAXIMUM_CENTROID_DISTANCE: Final[float] = 6.0
+CATION_PI_DEFAULT_BORDERLINE_CENTROID_DISTANCE: Final[float] = 7.0
+
+CATION_PI_DEFAULT_MINIMUM_HEIGHT: Final[float] = 1.5
+CATION_PI_DEFAULT_OPTIMAL_HEIGHT: Final[float] = 3.5
+CATION_PI_DEFAULT_MAXIMUM_HEIGHT: Final[float] = 5.5
+CATION_PI_DEFAULT_BORDERLINE_HEIGHT: Final[float] = 6.5
+
+CATION_PI_DEFAULT_CENTERED_RADIAL_OFFSET: Final[float] = 1.5
+CATION_PI_DEFAULT_OFFSET_RADIAL_LIMIT: Final[float] = 2.8
+CATION_PI_DEFAULT_EDGE_RADIAL_LIMIT: Final[float] = 4.0
+CATION_PI_DEFAULT_BORDERLINE_RADIAL_LIMIT: Final[float] = 4.8
+
+CATION_PI_DEFAULT_ATOMIC_CONTACT_DISTANCE: Final[float] = 4.5
+CATION_PI_DEFAULT_MAXIMUM_ATOMIC_DISTANCE: Final[float] = 5.0
+
+CATION_PI_DEFAULT_MINIMUM_POSITIVE_CHARGE: Final[float] = 0.25
+CATION_PI_DEFAULT_STRONG_POSITIVE_CHARGE: Final[float] = 0.75
+
+CATION_PI_DEFAULT_MAXIMUM_PLANARITY_RMSD: Final[float] = 0.20
+CATION_PI_DEFAULT_BORDERLINE_PLANARITY_RMSD: Final[float] = 0.35
+
+CATION_PI_EPSILON: Final[float] = 1.0e-12
+
+
+# -----------------------------------------------------------------------------
+# 9.2. Exceções
+# -----------------------------------------------------------------------------
+
+class CationPiDetectionError(RuntimeError):
+    """
+    Base exception for cation–π interaction detection.
+    """
+
+
+class CationPiGeometryError(CationPiDetectionError):
+    """
+    Raised when geometric data are absent or invalid.
+    """
+
+
+class CationPiValidationError(CationPiDetectionError):
+    """
+    Raised when cation–π input or configuration is invalid.
+    """
+
+
+# -----------------------------------------------------------------------------
+# 9.3. Configuração
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class CationPiDetectionConfig:
+    """
+    Geometric and chemical thresholds for cation–π detection.
+    """
+
+    # Charge–centroid distance
+    optimal_centroid_distance: float = (
+        CATION_PI_DEFAULT_OPTIMAL_CENTROID_DISTANCE
+    )
+
+    maximum_centroid_distance: float = (
+        CATION_PI_DEFAULT_MAXIMUM_CENTROID_DISTANCE
+    )
+
+    borderline_maximum_centroid_distance: float = (
+        CATION_PI_DEFAULT_BORDERLINE_CENTROID_DISTANCE
+    )
+
+    # Perpendicular height above the aromatic plane
+    minimum_height: float = CATION_PI_DEFAULT_MINIMUM_HEIGHT
+    optimal_height: float = CATION_PI_DEFAULT_OPTIMAL_HEIGHT
+    maximum_height: float = CATION_PI_DEFAULT_MAXIMUM_HEIGHT
+
+    borderline_maximum_height: float = (
+        CATION_PI_DEFAULT_BORDERLINE_HEIGHT
+    )
+
+    # Radial displacement from the ring center
+    centered_maximum_radial_offset: float = (
+        CATION_PI_DEFAULT_CENTERED_RADIAL_OFFSET
+    )
+
+    offset_maximum_radial_offset: float = (
+        CATION_PI_DEFAULT_OFFSET_RADIAL_LIMIT
+    )
+
+    edge_maximum_radial_offset: float = (
+        CATION_PI_DEFAULT_EDGE_RADIAL_LIMIT
+    )
+
+    borderline_maximum_radial_offset: float = (
+        CATION_PI_DEFAULT_BORDERLINE_RADIAL_LIMIT
+    )
+
+    # Atomic distances
+    atomic_contact_distance: float = (
+        CATION_PI_DEFAULT_ATOMIC_CONTACT_DISTANCE
+    )
+
+    maximum_minimum_atomic_distance: float = (
+        CATION_PI_DEFAULT_MAXIMUM_ATOMIC_DISTANCE
+    )
+
+    # Charge
+    minimum_positive_charge: float = (
+        CATION_PI_DEFAULT_MINIMUM_POSITIVE_CHARGE
+    )
+
+    strong_positive_charge: float = (
+        CATION_PI_DEFAULT_STRONG_POSITIVE_CHARGE
+    )
+
+    allow_inferred_charge: bool = True
+    allow_partial_charge: bool = True
+    require_positive_charge: bool = True
+
+    # Planarity
+    maximum_planarity_rmsd: float = (
+        CATION_PI_DEFAULT_MAXIMUM_PLANARITY_RMSD
+    )
+
+    borderline_planarity_rmsd: float = (
+        CATION_PI_DEFAULT_BORDERLINE_PLANARITY_RMSD
+    )
+
+    # Orientation
+    use_group_orientation: bool = True
+    favorable_orientation_maximum_angle: float = 45.0
+    acceptable_orientation_maximum_angle: float = 75.0
+    orientation_weight: float = 0.10
+
+    # Detection behavior
+    require_atomic_contact: bool = False
+    include_atomic_contacts: bool = True
+    include_borderline: bool = True
+    include_rejected: bool = False
+    deduplicate_results: bool = True
+
+    exclude_intramolecular_same_residue: bool = True
+
+    numeric_tolerance: float = 1.0e-8
+
+    def __post_init__(self) -> None:
+        numeric_fields = (
+            "optimal_centroid_distance",
+            "maximum_centroid_distance",
+            "borderline_maximum_centroid_distance",
+            "minimum_height",
+            "optimal_height",
+            "maximum_height",
+            "borderline_maximum_height",
+            "centered_maximum_radial_offset",
+            "offset_maximum_radial_offset",
+            "edge_maximum_radial_offset",
+            "borderline_maximum_radial_offset",
+            "atomic_contact_distance",
+            "maximum_minimum_atomic_distance",
+            "minimum_positive_charge",
+            "strong_positive_charge",
+            "maximum_planarity_rmsd",
+            "borderline_planarity_rmsd",
+            "favorable_orientation_maximum_angle",
+            "acceptable_orientation_maximum_angle",
+            "orientation_weight",
+            "numeric_tolerance",
+        )
+
+        for field_name in numeric_fields:
+            value = getattr(self, field_name)
+
+            try:
+                normalized_value = float(value)
+
+            except (TypeError, ValueError) as exc:
+                raise CationPiValidationError(
+                    f"{field_name} must be numeric."
+                ) from exc
+
+            if not math.isfinite(normalized_value):
+                raise CationPiValidationError(
+                    f"{field_name} must be finite."
+                )
+
+            if normalized_value < 0.0:
+                raise CationPiValidationError(
+                    f"{field_name} cannot be negative."
+                )
+
+            setattr(
+                self,
+                field_name,
+                normalized_value,
+            )
+
+        if (
+            self.optimal_centroid_distance
+            > self.maximum_centroid_distance
+        ):
+            raise CationPiValidationError(
+                "optimal_centroid_distance cannot exceed "
+                "maximum_centroid_distance."
+            )
+
+        if (
+            self.maximum_centroid_distance
+            > self.borderline_maximum_centroid_distance
+        ):
+            raise CationPiValidationError(
+                "maximum_centroid_distance cannot exceed "
+                "borderline_maximum_centroid_distance."
+            )
+
+        if self.minimum_height > self.optimal_height:
+            raise CationPiValidationError(
+                "minimum_height cannot exceed optimal_height."
+            )
+
+        if self.optimal_height > self.maximum_height:
+            raise CationPiValidationError(
+                "optimal_height cannot exceed maximum_height."
+            )
+
+        if self.maximum_height > self.borderline_maximum_height:
+            raise CationPiValidationError(
+                "maximum_height cannot exceed "
+                "borderline_maximum_height."
+            )
+
+        radial_limits = (
+            self.centered_maximum_radial_offset,
+            self.offset_maximum_radial_offset,
+            self.edge_maximum_radial_offset,
+            self.borderline_maximum_radial_offset,
+        )
+
+        if tuple(sorted(radial_limits)) != radial_limits:
+            raise CationPiValidationError(
+                "Radial-offset limits must be monotonically increasing."
+            )
+
+        if (
+            self.atomic_contact_distance
+            > self.maximum_minimum_atomic_distance
+        ):
+            raise CationPiValidationError(
+                "atomic_contact_distance cannot exceed "
+                "maximum_minimum_atomic_distance."
+            )
+
+        if (
+            self.minimum_positive_charge
+            > self.strong_positive_charge
+        ):
+            raise CationPiValidationError(
+                "minimum_positive_charge cannot exceed "
+                "strong_positive_charge."
+            )
+
+        if (
+            self.maximum_planarity_rmsd
+            > self.borderline_planarity_rmsd
+        ):
+            raise CationPiValidationError(
+                "maximum_planarity_rmsd cannot exceed "
+                "borderline_planarity_rmsd."
+            )
+
+        if (
+            self.favorable_orientation_maximum_angle
+            > self.acceptable_orientation_maximum_angle
+        ):
+            raise CationPiValidationError(
+                "favorable_orientation_maximum_angle cannot exceed "
+                "acceptable_orientation_maximum_angle."
+            )
+
+        if self.acceptable_orientation_maximum_angle > 90.0:
+            raise CationPiValidationError(
+                "acceptable_orientation_maximum_angle cannot exceed "
+                "90 degrees."
+            )
+
+        if self.orientation_weight > 1.0:
+            raise CationPiValidationError(
+                "orientation_weight cannot exceed 1.0."
+            )
+
+
+def create_default_cation_pi_detection_config() -> CationPiDetectionConfig:
+    """
+    Return the canonical cation–π detection configuration.
+    """
+
+    return CationPiDetectionConfig()
+
+
+# -----------------------------------------------------------------------------
+# 9.4. Resultado da avaliação
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class CationPiGeometryEvaluation:
+    """
+    Complete geometric and chemical evaluation of one cation–ring pair.
+    """
+
+    geometry: str
+
+    centroid_distance: float
+    signed_height: float
+    absolute_height: float
+    radial_offset: float
+    minimum_atomic_distance: float
+
+    face: str
+
+    effective_charge: float
+    charge_source: str
+    charge_valid: bool
+    strongly_charged: bool
+
+    orientation_angle: Optional[float]
+    orientation_valid: Optional[bool]
+    orientation_available: bool
+
+    ring_planarity_rmsd: float
+
+    centroid_distance_valid: bool
+    height_valid: bool
+    radial_offset_valid: bool
+    atomic_distance_valid: bool
+    planarity_valid: bool
+
+    accepted: bool
+    borderline: bool = False
+
+    confidence: float = 0.0
+
+    reasons: Tuple[str, ...] = ()
+    warnings: Tuple[str, ...] = ()
+
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.geometry not in SUPPORTED_CATION_PI_GEOMETRIES:
+            raise CationPiValidationError(
+                f"Unsupported cation–π geometry: {self.geometry!r}."
+            )
+
+        if self.face not in SUPPORTED_CATION_PI_FACES:
+            raise CationPiValidationError(
+                f"Unsupported aromatic face: {self.face!r}."
+            )
+
+        if self.charge_source not in SUPPORTED_CATION_PI_CHARGE_SOURCES:
+            raise CationPiValidationError(
+                f"Unsupported charge source: {self.charge_source!r}."
+            )
+
+        self.confidence = max(
+            0.0,
+            min(1.0, float(self.confidence)),
+        )
+
+        self.reasons = tuple(
+            str(reason)
+            for reason in self.reasons
+        )
+
+        self.warnings = tuple(
+            str(warning)
+            for warning in self.warnings
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "geometry": self.geometry,
+            "centroid_distance": self.centroid_distance,
+            "signed_height": self.signed_height,
+            "absolute_height": self.absolute_height,
+            "radial_offset": self.radial_offset,
+            "minimum_atomic_distance": self.minimum_atomic_distance,
+            "face": self.face,
+            "effective_charge": self.effective_charge,
+            "charge_source": self.charge_source,
+            "charge_valid": self.charge_valid,
+            "strongly_charged": self.strongly_charged,
+            "orientation_angle": self.orientation_angle,
+            "orientation_valid": self.orientation_valid,
+            "orientation_available": self.orientation_available,
+            "ring_planarity_rmsd": self.ring_planarity_rmsd,
+            "centroid_distance_valid": self.centroid_distance_valid,
+            "height_valid": self.height_valid,
+            "radial_offset_valid": self.radial_offset_valid,
+            "atomic_distance_valid": self.atomic_distance_valid,
+            "planarity_valid": self.planarity_valid,
+            "accepted": self.accepted,
+            "borderline": self.borderline,
+            "confidence": self.confidence,
+            "reasons": list(self.reasons),
+            "warnings": list(self.warnings),
+            "metadata": dict(self.metadata),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 9.5. Acesso seguro
+# -----------------------------------------------------------------------------
+
+def _cation_pi_get_first_attribute(
+    object_: Any,
+    names: Sequence[str],
+    default: Any = None,
+) -> Any:
+    """
+    Return the first existing non-None attribute or mapping value.
+    """
+
+    if object_ is None:
+        return default
+
+    for name in names:
+        if isinstance(object_, Mapping):
+            value = object_.get(name)
+
+        else:
+            value = getattr(object_, name, None)
+
+        if value is not None:
+            return value
+
+    return default
+
+
+def _cation_pi_as_vector3(
+    value: Any,
+    *,
+    field_name: str,
+) -> Tuple[float, float, float]:
+    """
+    Normalize a coordinate-like value.
+    """
+
+    if value is None:
+        raise CationPiGeometryError(
+            f"Missing {field_name}."
+        )
+
+    try:
+        vector = tuple(
+            float(component)
+            for component in value
+        )
+
+    except (TypeError, ValueError) as exc:
+        raise CationPiGeometryError(
+            f"{field_name} must contain numeric values."
+        ) from exc
+
+    if len(vector) != 3:
+        raise CationPiGeometryError(
+            f"{field_name} must contain exactly three values."
+        )
+
+    if not all(math.isfinite(component) for component in vector):
+        raise CationPiGeometryError(
+            f"{field_name} must contain finite values."
+        )
+
+    return vector
+
+
+def _cation_pi_vector_subtract(
+    vector_1: Sequence[float],
+    vector_2: Sequence[float],
+) -> Tuple[float, float, float]:
+    return (
+        float(vector_1[0]) - float(vector_2[0]),
+        float(vector_1[1]) - float(vector_2[1]),
+        float(vector_1[2]) - float(vector_2[2]),
+    )
+
+
+def _cation_pi_dot(
+    vector_1: Sequence[float],
+    vector_2: Sequence[float],
+) -> float:
+    return (
+        float(vector_1[0]) * float(vector_2[0])
+        + float(vector_1[1]) * float(vector_2[1])
+        + float(vector_1[2]) * float(vector_2[2])
+    )
+
+
+def _cation_pi_norm(
+    vector: Sequence[float],
+) -> float:
+    return math.sqrt(
+        _cation_pi_dot(
+            vector,
+            vector,
+        )
+    )
+
+
+def _cation_pi_normalize_vector(
+    vector: Sequence[float],
+) -> Tuple[float, float, float]:
+    magnitude = _cation_pi_norm(vector)
+
+    if magnitude <= CATION_PI_EPSILON:
+        raise CationPiGeometryError(
+            "Cannot normalize a zero-length vector."
+        )
+
+    return (
+        float(vector[0]) / magnitude,
+        float(vector[1]) / magnitude,
+        float(vector[2]) / magnitude,
+    )
+
+
+def _cation_pi_distance(
+    point_1: Sequence[float],
+    point_2: Sequence[float],
+) -> float:
+    return _cation_pi_norm(
+        _cation_pi_vector_subtract(
+            point_1,
+            point_2,
+        )
+    )
+
+
+def _cation_pi_get_ring_centroid(
+    ring: Any,
+) -> Tuple[float, float, float]:
+    value = _cation_pi_get_first_attribute(
+        ring,
+        (
+            "centroid",
+            "center",
+            "centre",
+            "geometric_center",
+        ),
+    )
+
+    return _cation_pi_as_vector3(
+        value,
+        field_name="aromatic-system centroid",
+    )
+
+
+def _cation_pi_get_ring_normal(
+    ring: Any,
+) -> Tuple[float, float, float]:
+    value = _cation_pi_get_first_attribute(
+        ring,
+        (
+            "normal",
+            "plane_normal",
+            "normal_vector",
+            "unit_normal",
+        ),
+    )
+
+    return _cation_pi_normalize_vector(
+        _cation_pi_as_vector3(
+            value,
+            field_name="aromatic-system normal",
+        )
+    )
+
+
+def _cation_pi_get_ring_planarity(
+    ring: Any,
+) -> float:
+    value = _cation_pi_get_first_attribute(
+        ring,
+        (
+            "planarity_rmsd",
+            "plane_rmsd",
+            "rmsd_to_plane",
+            "planarity",
+        ),
+        0.0,
+    )
+
+    try:
+        planarity = float(value)
+
+    except (TypeError, ValueError) as exc:
+        raise CationPiGeometryError(
+            "Aromatic-system planarity must be numeric."
+        ) from exc
+
+    if not math.isfinite(planarity):
+        raise CationPiGeometryError(
+            "Aromatic-system planarity must be finite."
+        )
+
+    return max(0.0, planarity)
+
+
+def _cation_pi_get_ring_atoms(
+    ring: Any,
+) -> Tuple[Any, ...]:
+    atoms = _cation_pi_get_first_attribute(
+        ring,
+        (
+            "atoms",
+            "atom_references",
+            "ring_atoms",
+        ),
+        (),
+    )
+
+    try:
+        return tuple(atoms)
+
+    except TypeError as exc:
+        raise CationPiGeometryError(
+            "Aromatic-system atoms must be iterable."
+        ) from exc
+
+
+def _cation_pi_get_atom_coordinates(
+    atom: Any,
+) -> Tuple[float, float, float]:
+    coordinates = _cation_pi_get_first_attribute(
+        atom,
+        (
+            "coordinates",
+            "coordinate",
+            "coords",
+            "position",
+        ),
+    )
+
+    if coordinates is None:
+        x = _cation_pi_get_first_attribute(atom, ("x",))
+        y = _cation_pi_get_first_attribute(atom, ("y",))
+        z = _cation_pi_get_first_attribute(atom, ("z",))
+
+        if x is not None and y is not None and z is not None:
+            coordinates = (x, y, z)
+
+    return _cation_pi_as_vector3(
+        coordinates,
+        field_name="atom coordinates",
+    )
+
+
+def _cation_pi_get_group_atoms(
+    charged_group: Any,
+) -> Tuple[Any, ...]:
+    atoms = _cation_pi_get_first_attribute(
+        charged_group,
+        (
+            "atoms",
+            "atom_references",
+            "group_atoms",
+            "charged_atoms",
+        ),
+        (),
+    )
+
+    try:
+        return tuple(atoms)
+
+    except TypeError as exc:
+        raise CationPiGeometryError(
+            "Charged-group atoms must be iterable."
+        ) from exc
+
+
+def _cation_pi_get_group_center(
+    charged_group: Any,
+) -> Tuple[float, float, float]:
+    """
+    Return the charge center or geometric group center.
+
+    Preference order:
+    1. explicit charge center;
+    2. explicit centroid;
+    3. weighted/representative atom position;
+    4. average of group atoms.
+    """
+
+    explicit_center = _cation_pi_get_first_attribute(
+        charged_group,
+        (
+            "charge_center",
+            "center_of_charge",
+            "centroid",
+            "center",
+            "centre",
+            "coordinates",
+            "coordinate",
+            "position",
+        ),
+    )
+
+    if explicit_center is not None:
+        return _cation_pi_as_vector3(
+            explicit_center,
+            field_name="cation center",
+        )
+
+    representative_atom = _cation_pi_get_first_attribute(
+        charged_group,
+        (
+            "central_atom",
+            "representative_atom",
+            "charged_atom",
+        ),
+    )
+
+    if representative_atom is not None:
+        return _cation_pi_get_atom_coordinates(
+            representative_atom
+        )
+
+    atoms = _cation_pi_get_group_atoms(
+        charged_group
+    )
+
+    if not atoms:
+        raise CationPiGeometryError(
+            "Charged group has no defined center or atoms."
+        )
+
+    coordinates = [
+        _cation_pi_get_atom_coordinates(atom)
+        for atom in atoms
+    ]
+
+    atom_count = float(len(coordinates))
+
+    return (
+        sum(coordinate[0] for coordinate in coordinates) / atom_count,
+        sum(coordinate[1] for coordinate in coordinates) / atom_count,
+        sum(coordinate[2] for coordinate in coordinates) / atom_count,
+    )
+
+
+def _cation_pi_get_group_orientation(
+    charged_group: Any,
+) -> Optional[Tuple[float, float, float]]:
+    """
+    Return a normalized orientation vector when available.
+
+    The vector may describe the principal axis, charge direction, molecular
+    axis or direction from a neighboring atom toward the charged center.
+    """
+
+    orientation = _cation_pi_get_first_attribute(
+        charged_group,
+        (
+            "orientation_vector",
+            "direction_vector",
+            "axis_vector",
+            "principal_axis",
+            "normal",
+            "charge_direction",
+        ),
+    )
+
+    if orientation is None:
+        return None
+
+    try:
+        return _cation_pi_normalize_vector(
+            _cation_pi_as_vector3(
+                orientation,
+                field_name="charged-group orientation",
+            )
+        )
+
+    except CationPiGeometryError:
+        return None
+
+
+def _cation_pi_get_identifier(
+    object_: Any,
+    fallback: str,
+) -> str:
+    value = _cation_pi_get_first_attribute(
+        object_,
+        (
+            "group_id",
+            "ring_id",
+            "system_id",
+            "aromatic_system_id",
+            "id",
+            "identifier",
+        ),
+        fallback,
+    )
+
+    return str(value)
+
+
+def _cation_pi_get_participant_type(
+    object_: Any,
+) -> Optional[str]:
+    value = _cation_pi_get_first_attribute(
+        object_,
+        (
+            "participant_type",
+            "source_type",
+            "molecule_type",
+            "role",
+        ),
+    )
+
+    return None if value is None else str(value)
+
+
+def _cation_pi_get_residue_id(
+    object_: Any,
+) -> Optional[str]:
+    residue_id = _cation_pi_get_first_attribute(
+        object_,
+        (
+            "residue_id",
+            "residue_key",
+        ),
+    )
+
+    if residue_id is not None:
+        return str(residue_id)
+
+    chain_id = _cation_pi_get_first_attribute(
+        object_,
+        ("chain_id", "chain"),
+        "",
+    )
+
+    residue_name = _cation_pi_get_first_attribute(
+        object_,
+        ("residue_name", "resname"),
+        "",
+    )
+
+    residue_number = _cation_pi_get_first_attribute(
+        object_,
+        (
+            "residue_number",
+            "residue_index",
+            "resid",
+        ),
+        "",
+    )
+
+    if not any(
+        value not in ("", None)
+        for value in (
+            chain_id,
+            residue_name,
+            residue_number,
+        )
+    ):
+        return None
+
+    return (
+        f"{chain_id}:"
+        f"{residue_name}:"
+        f"{residue_number}"
+    )
+
+
+# -----------------------------------------------------------------------------
+# 9.6. Determinação da carga positiva
+# -----------------------------------------------------------------------------
+
+def _cation_pi_numeric_charge(
+    value: Any,
+) -> Optional[float]:
+    if value is None:
+        return None
+
+    try:
+        charge = float(value)
+
+    except (TypeError, ValueError):
+        return None
+
+    if not math.isfinite(charge):
+        return None
+
+    return charge
+
+
+def infer_cation_pi_charge(
+    charged_group: Any,
+    *,
+    config: Optional[CationPiDetectionConfig] = None,
+) -> Tuple[float, str]:
+    """
+    Determine the effective positive charge of a group.
+
+    Priority
+    --------
+    1. explicit group charge;
+    2. formal charge;
+    3. sum of atomic formal charges;
+    4. partial charge;
+    5. sum of atomic partial charges;
+    6. positively charged/cationic annotation;
+    7. inferred charge from a known charged-group classification.
+    """
+
+    if config is None:
+        config = create_default_cation_pi_detection_config()
+
+    explicit_group_charge = _cation_pi_numeric_charge(
+        _cation_pi_get_first_attribute(
+            charged_group,
+            (
+                "effective_charge",
+                "group_charge",
+                "net_charge",
+                "charge",
+            ),
+        )
+    )
+
+    if explicit_group_charge is not None:
+        return (
+            explicit_group_charge,
+            CATION_PI_CHARGE_SOURCE_GROUP,
+        )
+
+    formal_charge = _cation_pi_numeric_charge(
+        _cation_pi_get_first_attribute(
+            charged_group,
+            (
+                "formal_charge",
+                "formal_net_charge",
+            ),
+        )
+    )
+
+    if formal_charge is not None:
+        return (
+            formal_charge,
+            CATION_PI_CHARGE_SOURCE_FORMAL,
+        )
+
+    atoms = _cation_pi_get_group_atoms(
+        charged_group
+    )
+
+    atomic_formal_charges = [
+        charge
+        for atom in atoms
+        if (
+            charge := _cation_pi_numeric_charge(
+                _cation_pi_get_first_attribute(
+                    atom,
+                    ("formal_charge",),
+                )
+            )
+        )
+        is not None
+    ]
+
+    if atomic_formal_charges:
+        formal_sum = sum(
+            atomic_formal_charges
+        )
+
+        if abs(formal_sum) > CATION_PI_EPSILON:
+            return (
+                formal_sum,
+                CATION_PI_CHARGE_SOURCE_FORMAL,
+            )
+
+    if config.allow_partial_charge:
+        partial_charge = _cation_pi_numeric_charge(
+            _cation_pi_get_first_attribute(
+                charged_group,
+                (
+                    "partial_charge",
+                    "partial_net_charge",
+                ),
+            )
+        )
+
+        if partial_charge is not None:
+            return (
+                partial_charge,
+                CATION_PI_CHARGE_SOURCE_PARTIAL,
+            )
+
+        atomic_partial_charges = [
+            charge
+            for atom in atoms
+            if (
+                charge := _cation_pi_numeric_charge(
+                    _cation_pi_get_first_attribute(
+                        atom,
+                        (
+                            "partial_charge",
+                            "charge",
+                        ),
+                    )
+                )
+            )
+            is not None
+        ]
+
+        if atomic_partial_charges:
+            partial_sum = sum(
+                atomic_partial_charges
+            )
+
+            if abs(partial_sum) > CATION_PI_EPSILON:
+                return (
+                    partial_sum,
+                    CATION_PI_CHARGE_SOURCE_PARTIAL,
+                )
+
+    positive_annotation = _cation_pi_get_first_attribute(
+        charged_group,
+        (
+            "is_positive",
+            "positively_charged",
+            "is_cation",
+            "cationic",
+        ),
+    )
+
+    if positive_annotation is True and config.allow_inferred_charge:
+        return (
+            1.0,
+            CATION_PI_CHARGE_SOURCE_INFERRED,
+        )
+
+    group_type = str(
+        _cation_pi_get_first_attribute(
+            charged_group,
+            (
+                "group_type",
+                "charge_type",
+                "chemical_type",
+                "classification",
+            ),
+            "",
+        )
+    ).strip().lower()
+
+    known_positive_groups = {
+        "cation",
+        "cationic",
+        "positive",
+        "positively-charged",
+        "protonated-amine",
+        "protonated_amine",
+        "ammonium",
+        "guanidinium",
+        "imidazolium",
+        "pyridinium",
+        "quaternary-ammonium",
+        "quaternary_ammonium",
+        "metal-cation",
+        "metal_cation",
+    }
+
+    if (
+        config.allow_inferred_charge
+        and group_type in known_positive_groups
+    ):
+        return (
+            1.0,
+            CATION_PI_CHARGE_SOURCE_INFERRED,
+        )
+
+    return (
+        0.0,
+        CATION_PI_CHARGE_SOURCE_UNKNOWN,
+    )
+
+
+def is_positive_cation_pi_group(
+    charged_group: Any,
+    *,
+    config: Optional[CationPiDetectionConfig] = None,
+) -> bool:
+    """
+    Return whether a charged group satisfies the positive-charge threshold.
+    """
+
+    if config is None:
+        config = create_default_cation_pi_detection_config()
+
+    charge, _ = infer_cation_pi_charge(
+        charged_group,
+        config=config,
+    )
+
+    return charge >= config.minimum_positive_charge
+
+
+# -----------------------------------------------------------------------------
+# 9.7. Geometria carga–anel
+# -----------------------------------------------------------------------------
+
+def calculate_cation_pi_position(
+    ring: Any,
+    charged_group: Any,
+) -> Dict[str, Any]:
+    """
+    Calculate the cation position relative to the aromatic plane.
+
+    The cation-to-centroid vector is decomposed into:
+
+    - a perpendicular component: signed height;
+    - a component parallel to the plane: radial offset.
+    """
+
+    centroid = _cation_pi_get_ring_centroid(
+        ring
+    )
+
+    normal = _cation_pi_get_ring_normal(
+        ring
+    )
+
+    charge_center = _cation_pi_get_group_center(
+        charged_group
+    )
+
+    centroid_to_charge = _cation_pi_vector_subtract(
+        charge_center,
+        centroid,
+    )
+
+    signed_height = _cation_pi_dot(
+        centroid_to_charge,
+        normal,
+    )
+
+    absolute_height = abs(
+        signed_height
+    )
+
+    centroid_distance = _cation_pi_norm(
+        centroid_to_charge
+    )
+
+    radial_squared = max(
+        0.0,
+        centroid_distance ** 2
+        - absolute_height ** 2,
+    )
+
+    radial_offset = math.sqrt(
+        radial_squared
+    )
+
+    if signed_height > CATION_PI_EPSILON:
+        face = CATION_PI_FACE_POSITIVE
+
+    elif signed_height < -CATION_PI_EPSILON:
+        face = CATION_PI_FACE_NEGATIVE
+
+    else:
+        face = CATION_PI_FACE_IN_PLANE
+
+    return {
+        "ring_centroid": centroid,
+        "ring_normal": normal,
+        "charge_center": charge_center,
+        "centroid_to_charge_vector": centroid_to_charge,
+        "centroid_distance": centroid_distance,
+        "signed_height": signed_height,
+        "absolute_height": absolute_height,
+        "radial_offset": radial_offset,
+        "face": face,
+    }
+
+
+def calculate_cation_pi_orientation_angle(
+    ring: Any,
+    charged_group: Any,
+) -> Optional[float]:
+    """
+    Calculate the acute angle between group orientation and ring normal.
+
+    An orientation vector is optional. Its absence does not invalidate the
+    interaction because many monatomic or approximately spherical cations do
+    not have a meaningful orientation.
+    """
+
+    orientation = _cation_pi_get_group_orientation(
+        charged_group
+    )
+
+    if orientation is None:
+        return None
+
+    ring_normal = _cation_pi_get_ring_normal(
+        ring
+    )
+
+    cosine = abs(
+        _cation_pi_dot(
+            orientation,
+            ring_normal,
+        )
+    )
+
+    cosine = max(
+        -1.0,
+        min(1.0, cosine),
+    )
+
+    return math.degrees(
+        math.acos(cosine)
+    )
+
+
+def calculate_cation_pi_minimum_atomic_distance(
+    ring: Any,
+    charged_group: Any,
+) -> float:
+    """
+    Calculate the minimum distance between ring and charged-group atoms.
+
+    This distance supplements the centroid/plane analysis and does not replace
+    it.
+    """
+
+    ring_atoms = _cation_pi_get_ring_atoms(
+        ring
+    )
+
+    group_atoms = _cation_pi_get_group_atoms(
+        charged_group
+    )
+
+    if not ring_atoms:
+        raise CationPiGeometryError(
+            "The aromatic system contains no atoms."
+        )
+
+    if not group_atoms:
+        charge_center = _cation_pi_get_group_center(
+            charged_group
+        )
+
+        return min(
+            _cation_pi_distance(
+                _cation_pi_get_atom_coordinates(atom),
+                charge_center,
+            )
+            for atom in ring_atoms
+        )
+
+    minimum_distance = math.inf
+
+    for ring_atom in ring_atoms:
+        ring_coordinates = _cation_pi_get_atom_coordinates(
+            ring_atom
+        )
+
+        for group_atom in group_atoms:
+            group_coordinates = _cation_pi_get_atom_coordinates(
+                group_atom
+            )
+
+            distance = _cation_pi_distance(
+                ring_coordinates,
+                group_coordinates,
+            )
+
+            if distance < minimum_distance:
+                minimum_distance = distance
+
+    if not math.isfinite(minimum_distance):
+        raise CationPiGeometryError(
+            "Could not calculate the minimum atomic distance."
+        )
+
+    return minimum_distance
+
+
+# -----------------------------------------------------------------------------
+# 9.8. Contatos atômicos auxiliares
+# -----------------------------------------------------------------------------
+
+def _cation_pi_construct_atomic_contact(
+    ring_atom: Any,
+    group_atom: Any,
+    distance: float,
+    *,
+    contact_index: int,
+    ring_id: str,
+    group_id: str,
+) -> Any:
+    contact_id = (
+        f"cation-pi-contact:"
+        f"{ring_id}:"
+        f"{group_id}:"
+        f"{contact_index}"
+    )
+
+    candidate_values: Dict[str, Any] = {
+        "contact_id": contact_id,
+        "id": contact_id,
+        "interaction_type": CATION_PI_INTERACTION_TYPE,
+        "atom_1": ring_atom,
+        "atom_2": group_atom,
+        "distance": float(distance),
+        "valid": True,
+        "metadata": {
+            "ring_id": ring_id,
+            "charged_group_id": group_id,
+            "auxiliary_contact": True,
+        },
+    }
+
+    if is_dataclass(PiAtomicContact):
+        supported_fields = {
+            field_definition.name
+            for field_definition in fields(PiAtomicContact)
+        }
+
+        candidate_values = {
+            key: value
+            for key, value in candidate_values.items()
+            if key in supported_fields
+        }
+
+    return PiAtomicContact(
+        **candidate_values
+    )
+
+
+def find_cation_pi_atomic_contacts(
+    ring: Any,
+    charged_group: Any,
+    *,
+    maximum_distance: float = CATION_PI_DEFAULT_ATOMIC_CONTACT_DISTANCE,
+) -> Tuple[Any, ...]:
+    """
+    Return auxiliary atom–atom contacts for a cation–π interaction.
+    """
+
+    maximum_distance = float(
+        maximum_distance
+    )
+
+    if maximum_distance <= 0.0:
+        raise CationPiValidationError(
+            "maximum_distance must be greater than zero."
+        )
+
+    ring_atoms = _cation_pi_get_ring_atoms(
+        ring
+    )
+
+    group_atoms = _cation_pi_get_group_atoms(
+        charged_group
+    )
+
+    if not group_atoms:
+        return ()
+
+    ring_id = _cation_pi_get_identifier(
+        ring,
+        "ring",
+    )
+
+    group_id = _cation_pi_get_identifier(
+        charged_group,
+        "cation",
+    )
+
+    contacts: List[Any] = []
+
+    for ring_atom in ring_atoms:
+        ring_coordinates = _cation_pi_get_atom_coordinates(
+            ring_atom
+        )
+
+        for group_atom in group_atoms:
+            group_coordinates = _cation_pi_get_atom_coordinates(
+                group_atom
+            )
+
+            distance = _cation_pi_distance(
+                ring_coordinates,
+                group_coordinates,
+            )
+
+            if distance <= maximum_distance:
+                contacts.append(
+                    _cation_pi_construct_atomic_contact(
+                        ring_atom,
+                        group_atom,
+                        distance,
+                        contact_index=len(contacts) + 1,
+                        ring_id=ring_id,
+                        group_id=group_id,
+                    )
+                )
+
+    contacts.sort(
+        key=lambda contact: float(
+            _cation_pi_get_first_attribute(
+                contact,
+                ("distance",),
+                math.inf,
+            )
+        )
+    )
+
+    return tuple(
+        contacts
+    )
+
+
+# -----------------------------------------------------------------------------
+# 9.9. Funções de qualidade geométrica
+# -----------------------------------------------------------------------------
+
+def _cation_pi_clamp(
+    value: float,
+    minimum: float = 0.0,
+    maximum: float = 1.0,
+) -> float:
+    return max(
+        minimum,
+        min(maximum, float(value)),
+    )
+
+
+def _cation_pi_inverse_linear_quality(
+    value: float,
+    *,
+    optimal: float,
+    maximum: float,
+) -> float:
+    if value <= optimal:
+        return 1.0
+
+    if value >= maximum:
+        return 0.0
+
+    denominator = maximum - optimal
+
+    if denominator <= CATION_PI_EPSILON:
+        return 0.0
+
+    return _cation_pi_clamp(
+        1.0
+        - (
+            (value - optimal)
+            / denominator
+        )
+    )
+
+
+def _cation_pi_window_quality(
+    value: float,
+    *,
+    minimum: float,
+    optimal: float,
+    maximum: float,
+) -> float:
+    """
+    Score a value whose optimum lies between two limiting values.
+    """
+
+    value = float(value)
+
+    if value < minimum or value > maximum:
+        return 0.0
+
+    if value == optimal:
+        return 1.0
+
+    if value < optimal:
+        denominator = optimal - minimum
+
+        if denominator <= CATION_PI_EPSILON:
+            return 1.0
+
+        return _cation_pi_clamp(
+            (value - minimum)
+            / denominator
+        )
+
+    denominator = maximum - optimal
+
+    if denominator <= CATION_PI_EPSILON:
+        return 1.0
+
+    return _cation_pi_clamp(
+        1.0
+        - (
+            (value - optimal)
+            / denominator
+        )
+    )
+
+
+def calculate_cation_pi_geometry_confidence(
+    *,
+    geometry: str,
+    centroid_distance: float,
+    absolute_height: float,
+    radial_offset: float,
+    minimum_atomic_distance: float,
+    ring_planarity_rmsd: float,
+    effective_charge: float,
+    orientation_angle: Optional[float],
+    config: CationPiDetectionConfig,
+) -> float:
+    """
+    Calculate geometric confidence for a cation–π candidate.
+
+    This is not the final Section 11 interaction score.
+    """
+
+    distance_quality = _cation_pi_inverse_linear_quality(
+        centroid_distance,
+        optimal=config.optimal_centroid_distance,
+        maximum=config.borderline_maximum_centroid_distance,
+    )
+
+    height_quality = _cation_pi_window_quality(
+        absolute_height,
+        minimum=config.minimum_height,
+        optimal=config.optimal_height,
+        maximum=config.borderline_maximum_height,
+    )
+
+    radial_quality = _cation_pi_inverse_linear_quality(
+        radial_offset,
+        optimal=config.centered_maximum_radial_offset,
+        maximum=config.borderline_maximum_radial_offset,
+    )
+
+    atomic_quality = _cation_pi_inverse_linear_quality(
+        minimum_atomic_distance,
+        optimal=config.atomic_contact_distance,
+        maximum=max(
+            config.maximum_minimum_atomic_distance,
+            config.atomic_contact_distance
+            + CATION_PI_EPSILON,
+        ),
+    )
+
+    planarity_quality = _cation_pi_inverse_linear_quality(
+        ring_planarity_rmsd,
+        optimal=0.0,
+        maximum=config.borderline_planarity_rmsd,
+    )
+
+    if effective_charge <= 0.0:
+        charge_quality = 0.0
+
+    elif effective_charge >= config.strong_positive_charge:
+        charge_quality = 1.0
+
+    else:
+        charge_quality = _cation_pi_clamp(
+            effective_charge
+            / max(
+                config.strong_positive_charge,
+                CATION_PI_EPSILON,
+            )
+        )
+
+    if orientation_angle is None:
+        orientation_quality = 0.5
+
+    else:
+        orientation_quality = _cation_pi_inverse_linear_quality(
+            orientation_angle,
+            optimal=config.favorable_orientation_maximum_angle,
+            maximum=config.acceptable_orientation_maximum_angle,
+        )
+
+    orientation_weight = (
+        config.orientation_weight
+        if config.use_group_orientation
+        else 0.0
+    )
+
+    remaining_weight = 1.0 - orientation_weight
+
+    base_quality = (
+        0.24 * distance_quality
+        + 0.22 * height_quality
+        + 0.20 * radial_quality
+        + 0.10 * atomic_quality
+        + 0.10 * planarity_quality
+        + 0.14 * charge_quality
+    )
+
+    confidence = (
+        remaining_weight * base_quality
+        + orientation_weight * orientation_quality
+    )
+
+    if geometry == CATION_PI_GEOMETRY_BORDERLINE:
+        confidence *= 0.75
+
+    elif geometry == CATION_PI_GEOMETRY_EDGE_ASSOCIATED:
+        confidence *= 0.90
+
+    elif geometry == CATION_PI_GEOMETRY_REJECTED:
+        confidence *= 0.25
+
+    return _cation_pi_clamp(
+        confidence
+    )
+
+
+# -----------------------------------------------------------------------------
+# 9.10. Avaliação da geometria cátion–π
+# -----------------------------------------------------------------------------
+
+def evaluate_cation_pi_geometry(
+    *,
+    centroid_distance: float,
+    signed_height: float,
+    radial_offset: float,
+    minimum_atomic_distance: float,
+    ring_planarity_rmsd: float,
+    effective_charge: float,
+    charge_source: str = CATION_PI_CHARGE_SOURCE_UNKNOWN,
+    orientation_angle: Optional[float] = None,
+    config: Optional[CationPiDetectionConfig] = None,
+) -> CationPiGeometryEvaluation:
+    """
+    Evaluate one cation relative to an aromatic system.
+
+    The classification depends primarily on the decomposition of the
+    charge–centroid vector into perpendicular height and radial displacement.
+    Atom–atom contacts are supplementary and are not sufficient by themselves.
+    """
+
+    if config is None:
+        config = create_default_cation_pi_detection_config()
+
+    numeric_values = {
+        "centroid_distance": centroid_distance,
+        "signed_height": signed_height,
+        "radial_offset": radial_offset,
+        "minimum_atomic_distance": minimum_atomic_distance,
+        "ring_planarity_rmsd": ring_planarity_rmsd,
+        "effective_charge": effective_charge,
+    }
+
+    normalized: Dict[str, float] = {}
+
+    for field_name, value in numeric_values.items():
+        try:
+            normalized_value = float(value)
+
+        except (TypeError, ValueError) as exc:
+            raise CationPiValidationError(
+                f"{field_name} must be numeric."
+            ) from exc
+
+        if not math.isfinite(normalized_value):
+            raise CationPiValidationError(
+                f"{field_name} must be finite."
+            )
+
+        normalized[field_name] = normalized_value
+
+    for nonnegative_field in (
+        "centroid_distance",
+        "radial_offset",
+        "minimum_atomic_distance",
+        "ring_planarity_rmsd",
+    ):
+        if normalized[nonnegative_field] < 0.0:
+            raise CationPiValidationError(
+                f"{nonnegative_field} cannot be negative."
+            )
+
+    if charge_source not in SUPPORTED_CATION_PI_CHARGE_SOURCES:
+        charge_source = CATION_PI_CHARGE_SOURCE_UNKNOWN
+
+    if orientation_angle is not None:
+        try:
+            orientation_angle = float(
+                orientation_angle
+            )
+
+        except (TypeError, ValueError) as exc:
+            raise CationPiValidationError(
+                "orientation_angle must be numeric or None."
+            ) from exc
+
+        if not math.isfinite(orientation_angle):
+            raise CationPiValidationError(
+                "orientation_angle must be finite."
+            )
+
+        orientation_angle = min(
+            90.0,
+            abs(orientation_angle),
+        )
+
+    signed_height = normalized[
+        "signed_height"
+    ]
+
+    absolute_height = abs(
+        signed_height
+    )
+
+    if signed_height > CATION_PI_EPSILON:
+        face = CATION_PI_FACE_POSITIVE
+
+    elif signed_height < -CATION_PI_EPSILON:
+        face = CATION_PI_FACE_NEGATIVE
+
+    else:
+        face = CATION_PI_FACE_IN_PLANE
+
+    centroid_distance_valid = (
+        normalized["centroid_distance"]
+        <= config.maximum_centroid_distance
+    )
+
+    height_valid = (
+        config.minimum_height
+        <= absolute_height
+        <= config.maximum_height
+    )
+
+    atomic_distance_valid = (
+        normalized["minimum_atomic_distance"]
+        <= config.maximum_minimum_atomic_distance
+    )
+
+    planarity_valid = (
+        normalized["ring_planarity_rmsd"]
+        <= config.maximum_planarity_rmsd
+    )
+
+    charge_valid = (
+        normalized["effective_charge"]
+        >= config.minimum_positive_charge
+    )
+
+    strongly_charged = (
+        normalized["effective_charge"]
+        >= config.strong_positive_charge
+    )
+
+    orientation_available = (
+        orientation_angle is not None
+    )
+
+    if orientation_angle is None:
+        orientation_valid: Optional[bool] = None
+
+    else:
+        orientation_valid = (
+            orientation_angle
+            <= config.acceptable_orientation_maximum_angle
+        )
+
+    geometry = CATION_PI_GEOMETRY_REJECTED
+    accepted = False
+    borderline = False
+    radial_offset_valid = False
+
+    reasons: List[str] = []
+    warnings: List[str] = []
+
+    core_requirements = (
+        centroid_distance_valid
+        and height_valid
+        and planarity_valid
+        and (
+            charge_valid
+            or not config.require_positive_charge
+        )
+        and (
+            atomic_distance_valid
+            or not config.require_atomic_contact
+        )
+    )
+
+    if (
+        core_requirements
+        and normalized["radial_offset"]
+        <= config.centered_maximum_radial_offset
+    ):
+        geometry = CATION_PI_GEOMETRY_FACE_CENTERED
+        accepted = True
+        radial_offset_valid = True
+
+        reasons.append(
+            "The positive charge lies above an aromatic face near the "
+            "ring center."
+        )
+
+    elif (
+        core_requirements
+        and normalized["radial_offset"]
+        <= config.offset_maximum_radial_offset
+    ):
+        geometry = CATION_PI_GEOMETRY_FACE_OFFSET
+        accepted = True
+        radial_offset_valid = True
+
+        reasons.append(
+            "The positive charge lies above the aromatic face with a "
+            "moderate radial displacement."
+        )
+
+    elif (
+        core_requirements
+        and normalized["radial_offset"]
+        <= config.edge_maximum_radial_offset
+    ):
+        geometry = CATION_PI_GEOMETRY_EDGE_ASSOCIATED
+        accepted = True
+        radial_offset_valid = True
+
+        reasons.append(
+            "The positive charge is associated with the peripheral region "
+            "of the aromatic face."
+        )
+
+    else:
+        borderline_requirements = (
+            config.include_borderline
+            and normalized["centroid_distance"]
+            <= config.borderline_maximum_centroid_distance
+            and absolute_height
+            <= config.borderline_maximum_height
+            and normalized["radial_offset"]
+            <= config.borderline_maximum_radial_offset
+            and normalized["ring_planarity_rmsd"]
+            <= config.borderline_planarity_rmsd
+            and (
+                normalized["effective_charge"]
+                >= config.minimum_positive_charge
+                or not config.require_positive_charge
+            )
+        )
+
+        if borderline_requirements:
+            geometry = CATION_PI_GEOMETRY_BORDERLINE
+            accepted = True
+            borderline = True
+            radial_offset_valid = True
+
+            reasons.append(
+                "The cation and aromatic system form a limiting geometry "
+                "outside the canonical face-centered region."
+            )
+
+        else:
+            if not centroid_distance_valid:
+                warnings.append(
+                    "Charge–centroid distance exceeds the canonical limit."
+                )
+
+            if not height_valid:
+                if absolute_height < config.minimum_height:
+                    warnings.append(
+                        "The charge is too close to the aromatic plane or "
+                        "approximately coplanar with the ring."
+                    )
+
+                else:
+                    warnings.append(
+                        "The charge lies too far above the aromatic plane."
+                    )
+
+            if (
+                normalized["radial_offset"]
+                > config.edge_maximum_radial_offset
+            ):
+                warnings.append(
+                    "Radial displacement exceeds the aromatic-face limit."
+                )
+
+            if not atomic_distance_valid:
+                warnings.append(
+                    "Minimum atom–atom distance exceeds the auxiliary "
+                    "contact limit."
+                )
+
+            if not planarity_valid:
+                warnings.append(
+                    "The aromatic system has insufficient planar quality."
+                )
+
+            if not charge_valid:
+                warnings.append(
+                    "The group does not satisfy the minimum positive-charge "
+                    "criterion."
+                )
+
+    if (
+        config.use_group_orientation
+        and orientation_available
+        and orientation_valid is False
+    ):
+        warnings.append(
+            "The charged-group orientation is geometrically unfavorable."
+        )
+
+    confidence = calculate_cation_pi_geometry_confidence(
+        geometry=geometry,
+        centroid_distance=normalized["centroid_distance"],
+        absolute_height=absolute_height,
+        radial_offset=normalized["radial_offset"],
+        minimum_atomic_distance=normalized[
+            "minimum_atomic_distance"
+        ],
+        ring_planarity_rmsd=normalized[
+            "ring_planarity_rmsd"
+        ],
+        effective_charge=normalized[
+            "effective_charge"
+        ],
+        orientation_angle=orientation_angle,
+        config=config,
+    )
+
+    return CationPiGeometryEvaluation(
+        geometry=geometry,
+        centroid_distance=normalized["centroid_distance"],
+        signed_height=signed_height,
+        absolute_height=absolute_height,
+        radial_offset=normalized["radial_offset"],
+        minimum_atomic_distance=normalized[
+            "minimum_atomic_distance"
+        ],
+        face=face,
+        effective_charge=normalized[
+            "effective_charge"
+        ],
+        charge_source=charge_source,
+        charge_valid=charge_valid,
+        strongly_charged=strongly_charged,
+        orientation_angle=orientation_angle,
+        orientation_valid=orientation_valid,
+        orientation_available=orientation_available,
+        ring_planarity_rmsd=normalized[
+            "ring_planarity_rmsd"
+        ],
+        centroid_distance_valid=centroid_distance_valid,
+        height_valid=height_valid,
+        radial_offset_valid=radial_offset_valid,
+        atomic_distance_valid=atomic_distance_valid,
+        planarity_valid=planarity_valid,
+        accepted=accepted,
+        borderline=borderline,
+        confidence=confidence,
+        reasons=tuple(reasons),
+        warnings=tuple(warnings),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 9.11. Avaliação completa de um par
+# -----------------------------------------------------------------------------
+
+def evaluate_cation_pi_pair(
+    ring: Any,
+    charged_group: Any,
+    *,
+    config: Optional[CationPiDetectionConfig] = None,
+) -> CationPiGeometryEvaluation:
+    """
+    Calculate and classify one aromatic-system/cation pair.
+    """
+
+    if config is None:
+        config = create_default_cation_pi_detection_config()
+
+    position = calculate_cation_pi_position(
+        ring,
+        charged_group,
+    )
+
+    minimum_atomic_distance = (
+        calculate_cation_pi_minimum_atomic_distance(
+            ring,
+            charged_group,
+        )
+    )
+
+    planarity = _cation_pi_get_ring_planarity(
+        ring
+    )
+
+    effective_charge, charge_source = infer_cation_pi_charge(
+        charged_group,
+        config=config,
+    )
+
+    orientation_angle = calculate_cation_pi_orientation_angle(
+        ring,
+        charged_group,
+    )
+
+    evaluation = evaluate_cation_pi_geometry(
+        centroid_distance=position[
+            "centroid_distance"
+        ],
+        signed_height=position[
+            "signed_height"
+        ],
+        radial_offset=position[
+            "radial_offset"
+        ],
+        minimum_atomic_distance=minimum_atomic_distance,
+        ring_planarity_rmsd=planarity,
+        effective_charge=effective_charge,
+        charge_source=charge_source,
+        orientation_angle=orientation_angle,
+        config=config,
+    )
+
+    evaluation.metadata.update(
+        {
+            "ring_id": _cation_pi_get_identifier(
+                ring,
+                "ring",
+            ),
+            "charged_group_id": _cation_pi_get_identifier(
+                charged_group,
+                "cation",
+            ),
+            "ring_centroid": position[
+                "ring_centroid"
+            ],
+            "ring_normal": position[
+                "ring_normal"
+            ],
+            "charge_center": position[
+                "charge_center"
+            ],
+            "centroid_to_charge_vector": position[
+                "centroid_to_charge_vector"
+            ],
+            "geometry_model": (
+                "charge-center relative to aromatic centroid and plane"
+            ),
+        }
+    )
+
+    return evaluation
+
+
+# -----------------------------------------------------------------------------
+# 9.12. Construção de PiInteraction
+# -----------------------------------------------------------------------------
+
+def _cation_pi_construct_interaction(
+    ring: Any,
+    charged_group: Any,
+    evaluation: CationPiGeometryEvaluation,
+    *,
+    interaction_index: int,
+    config: CationPiDetectionConfig,
+) -> Any:
+    ring_id = _cation_pi_get_identifier(
+        ring,
+        f"ring_{interaction_index}",
+    )
+
+    charged_group_id = _cation_pi_get_identifier(
+        charged_group,
+        f"cation_{interaction_index}",
+    )
+
+    interaction_id = (
+        f"cation-pi:"
+        f"{charged_group_id}:"
+        f"{ring_id}"
+    )
+
+    atomic_contacts: Tuple[Any, ...] = ()
+
+    if config.include_atomic_contacts:
+        atomic_contacts = find_cation_pi_atomic_contacts(
+            ring,
+            charged_group,
+            maximum_distance=config.atomic_contact_distance,
+        )
+
+    ring_residue_id = _cation_pi_get_residue_id(
+        ring
+    )
+
+    group_residue_id = _cation_pi_get_residue_id(
+        charged_group
+    )
+
+    candidate_values: Dict[str, Any] = {
+        "interaction_id": interaction_id,
+        "id": interaction_id,
+        "interaction_type": CATION_PI_INTERACTION_TYPE,
+        "subtype": evaluation.geometry,
+        "geometry_class": evaluation.geometry,
+        "aromatic_system": ring,
+        "ring": ring,
+        "ring_1": ring,
+        "charged_group": charged_group,
+        "cation_group": charged_group,
+        "participant_1_type": _cation_pi_get_participant_type(
+            ring
+        ),
+        "participant_2_type": _cation_pi_get_participant_type(
+            charged_group
+        ),
+        "centroid_distance": evaluation.centroid_distance,
+        "signed_height": evaluation.signed_height,
+        "height": evaluation.absolute_height,
+        "absolute_height": evaluation.absolute_height,
+        "radial_offset": evaluation.radial_offset,
+        "lateral_offset": evaluation.radial_offset,
+        "minimum_atomic_distance": evaluation.minimum_atomic_distance,
+        "face": evaluation.face,
+        "effective_charge": evaluation.effective_charge,
+        "charge_source": evaluation.charge_source,
+        "orientation_angle": evaluation.orientation_angle,
+        "ring_planarity": evaluation.ring_planarity_rmsd,
+        "geometry_confidence": evaluation.confidence,
+        "atomic_contacts": atomic_contacts,
+        "valid": evaluation.accepted,
+        "borderline": evaluation.borderline,
+        "warnings": list(evaluation.warnings),
+        "metadata": {
+            "schema": "cation-pi-interaction",
+            "geometry_reasons": list(evaluation.reasons),
+            "geometry_evaluation": evaluation.to_dict(),
+            "ring_id": ring_id,
+            "charged_group_id": charged_group_id,
+            "ring_residue_id": ring_residue_id,
+            "charged_group_residue_id": group_residue_id,
+            "atomic_contact_count": len(atomic_contacts),
+            "center_plane_based_detection": True,
+        },
+    }
+
+    if is_dataclass(PiInteraction):
+        supported_fields = {
+            field_definition.name
+            for field_definition in fields(PiInteraction)
+        }
+
+        candidate_values = {
+            key: value
+            for key, value in candidate_values.items()
+            if key in supported_fields
+        }
+
+    try:
+        return PiInteraction(
+            **candidate_values
+        )
+
+    except TypeError as exc:
+        raise CationPiDetectionError(
+            "Could not construct PiInteraction for the cation–π pair. "
+            "Verify the PiInteraction dataclass defined in Section 2."
+        ) from exc
+
+
+# -----------------------------------------------------------------------------
+# 9.13. Validação e deduplicação
+# -----------------------------------------------------------------------------
+
+def _cation_pi_same_residue(
+    ring: Any,
+    charged_group: Any,
+) -> bool:
+    ring_residue = _cation_pi_get_residue_id(
+        ring
+    )
+
+    group_residue = _cation_pi_get_residue_id(
+        charged_group
+    )
+
+    return bool(
+        ring_residue
+        and group_residue
+        and ring_residue == group_residue
+    )
+
+
+def _cation_pi_pair_key(
+    ring: Any,
+    charged_group: Any,
+) -> Tuple[str, str]:
+    return (
+        _cation_pi_get_identifier(
+            ring,
+            str(id(ring)),
+        ),
+        _cation_pi_get_identifier(
+            charged_group,
+            str(id(charged_group)),
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 9.14. Detecção principal
+# -----------------------------------------------------------------------------
+
+def detect_cation_pi_interactions(
+    aromatic_systems: Iterable[Any],
+    positive_groups: Iterable[Any],
+    *,
+    config: Optional[CationPiDetectionConfig] = None,
+    exclude_same_residue: Optional[bool] = None,
+    strict: bool = False,
+) -> List[Any]:
+    """
+    Detect cation–π interactions between aromatic systems and positive groups.
+
+    Detection is based on the position of the charge center relative to the
+    aromatic centroid and plane. Direct nitrogen–carbon contacts are neither
+    necessary nor sufficient by themselves.
+
+    Parameters
+    ----------
+    aromatic_systems:
+        Aromatic systems identified in Section 4.
+    positive_groups:
+        Charged groups identified in Section 6.
+    config:
+        Cation–π geometric and chemical thresholds.
+    exclude_same_residue:
+        Prevent interactions between a ring and a charged group belonging to
+        the same residue. When None, the configuration value is used.
+    strict:
+        Raise errors for malformed pairs instead of skipping them.
+    """
+
+    if config is None:
+        config = create_default_cation_pi_detection_config()
+
+    if exclude_same_residue is None:
+        exclude_same_residue = (
+            config.exclude_intramolecular_same_residue
+        )
+
+    rings = tuple(
+        aromatic_systems
+    )
+
+    groups = tuple(
+        positive_groups
+    )
+
+    interactions: List[Any] = []
+    evaluated_pairs: Set[
+        Tuple[str, str]
+    ] = set()
+
+    for ring in rings:
+        for charged_group in groups:
+            if (
+                exclude_same_residue
+                and _cation_pi_same_residue(
+                    ring,
+                    charged_group,
+                )
+            ):
+                continue
+
+            pair_key = _cation_pi_pair_key(
+                ring,
+                charged_group,
+            )
+
+            if (
+                config.deduplicate_results
+                and pair_key in evaluated_pairs
+            ):
+                continue
+
+            evaluated_pairs.add(
+                pair_key
+            )
+
+            try:
+                effective_charge, _ = infer_cation_pi_charge(
+                    charged_group,
+                    config=config,
+                )
+
+                if (
+                    config.require_positive_charge
+                    and effective_charge
+                    < config.minimum_positive_charge
+                ):
+                    continue
+
+                evaluation = evaluate_cation_pi_pair(
+                    ring,
+                    charged_group,
+                    config=config,
+                )
+
+            except (
+                CationPiGeometryError,
+                CationPiValidationError,
+                TypeError,
+                ValueError,
+            ):
+                if strict:
+                    raise
+
+                continue
+
+            if (
+                not evaluation.accepted
+                and not config.include_rejected
+            ):
+                continue
+
+            interaction = _cation_pi_construct_interaction(
+                ring,
+                charged_group,
+                evaluation,
+                interaction_index=len(interactions) + 1,
+                config=config,
+            )
+
+            interactions.append(
+                interaction
+            )
+
+    interactions.sort(
+        key=lambda interaction: (
+            not bool(
+                _cation_pi_get_first_attribute(
+                    interaction,
+                    ("valid",),
+                    False,
+                )
+            ),
+            -float(
+                _cation_pi_get_first_attribute(
+                    interaction,
+                    (
+                        "geometry_confidence",
+                        "confidence",
+                    ),
+                    0.0,
+                )
+            ),
+            float(
+                _cation_pi_get_first_attribute(
+                    interaction,
+                    ("centroid_distance",),
+                    math.inf,
+                )
+            ),
+            float(
+                _cation_pi_get_first_attribute(
+                    interaction,
+                    (
+                        "radial_offset",
+                        "lateral_offset",
+                    ),
+                    math.inf,
+                )
+            ),
+            str(
+                _cation_pi_get_first_attribute(
+                    interaction,
+                    (
+                        "interaction_id",
+                        "id",
+                    ),
+                    "",
+                )
+            ),
+        )
+    )
+
+    return interactions
+
+
+# -----------------------------------------------------------------------------
+# 9.15. Detecção de uma única interação
+# -----------------------------------------------------------------------------
+
+def detect_single_cation_pi_interaction(
+    ring: Any,
+    charged_group: Any,
+    *,
+    config: Optional[CationPiDetectionConfig] = None,
+    include_rejected: bool = False,
+) -> Optional[Any]:
+    """
+    Detect one cation–π interaction.
+    """
+
+    if config is None:
+        config = create_default_cation_pi_detection_config()
+
+    effective_charge, _ = infer_cation_pi_charge(
+        charged_group,
+        config=config,
+    )
+
+    if (
+        config.require_positive_charge
+        and effective_charge
+        < config.minimum_positive_charge
+        and not include_rejected
+    ):
+        return None
+
+    evaluation = evaluate_cation_pi_pair(
+        ring,
+        charged_group,
+        config=config,
+    )
+
+    if (
+        not evaluation.accepted
+        and not include_rejected
+    ):
+        return None
+
+    return _cation_pi_construct_interaction(
+        ring,
+        charged_group,
+        evaluation,
+        interaction_index=1,
+        config=config,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 9.16. Filtros
+# -----------------------------------------------------------------------------
+
+def filter_cation_pi_interactions_by_geometry(
+    interactions: Iterable[Any],
+    geometries: Collection[str],
+) -> List[Any]:
+    """
+    Select cation–π interactions by geometric subtype.
+    """
+
+    normalized_geometries = {
+        str(geometry).strip().lower()
+        for geometry in geometries
+    }
+
+    unsupported = (
+        normalized_geometries
+        - SUPPORTED_CATION_PI_GEOMETRIES
+    )
+
+    if unsupported:
+        raise CationPiValidationError(
+            "Unsupported cation–π geometries: "
+            f"{sorted(unsupported)!r}."
+        )
+
+    return [
+        interaction
+        for interaction in interactions
+        if str(
+            _cation_pi_get_first_attribute(
+                interaction,
+                (
+                    "geometry_class",
+                    "subtype",
+                ),
+                "",
+            )
+        ).strip().lower()
+        in normalized_geometries
+    ]
+
+
+def filter_cation_pi_interactions_by_face(
+    interactions: Iterable[Any],
+    faces: Collection[str],
+) -> List[Any]:
+    """
+    Select interactions according to the approached aromatic face.
+    """
+
+    normalized_faces = {
+        str(face).strip().lower()
+        for face in faces
+    }
+
+    unsupported = (
+        normalized_faces
+        - SUPPORTED_CATION_PI_FACES
+    )
+
+    if unsupported:
+        raise CationPiValidationError(
+            "Unsupported aromatic faces: "
+            f"{sorted(unsupported)!r}."
+        )
+
+    return [
+        interaction
+        for interaction in interactions
+        if str(
+            _cation_pi_get_first_attribute(
+                interaction,
+                ("face",),
+                "",
+            )
+        ).strip().lower()
+        in normalized_faces
+    ]
+
+
+# -----------------------------------------------------------------------------
+# 9.17. Resumo local
+# -----------------------------------------------------------------------------
+
+def summarize_cation_pi_detection(
+    interactions: Iterable[Any],
+) -> Dict[str, Any]:
+    """
+    Produce a lightweight cation–π summary.
+
+    Full module statistics are produced in Section 13.
+    """
+
+    interaction_list = list(
+        interactions
+    )
+
+    geometry_distribution: Dict[str, int] = defaultdict(int)
+    face_distribution: Dict[str, int] = defaultdict(int)
+    charge_source_distribution: Dict[str, int] = defaultdict(int)
+
+    centroid_distances: List[float] = []
+    heights: List[float] = []
+    radial_offsets: List[float] = []
+    atomic_distances: List[float] = []
+    effective_charges: List[float] = []
+    orientation_angles: List[float] = []
+
+    borderline_count = 0
+
+    for interaction in interaction_list:
+        geometry = str(
+            _cation_pi_get_first_attribute(
+                interaction,
+                (
+                    "geometry_class",
+                    "subtype",
+                ),
+                CATION_PI_GEOMETRY_REJECTED,
+            )
+        )
+
+        face = str(
+            _cation_pi_get_first_attribute(
+                interaction,
+                ("face",),
+                CATION_PI_FACE_IN_PLANE,
+            )
+        )
+
+        charge_source = str(
+            _cation_pi_get_first_attribute(
+                interaction,
+                ("charge_source",),
+                CATION_PI_CHARGE_SOURCE_UNKNOWN,
+            )
+        )
+
+        geometry_distribution[
+            geometry
+        ] += 1
+
+        face_distribution[
+            face
+        ] += 1
+
+        charge_source_distribution[
+            charge_source
+        ] += 1
+
+        if bool(
+            _cation_pi_get_first_attribute(
+                interaction,
+                ("borderline",),
+                False,
+            )
+        ):
+            borderline_count += 1
+
+        value_mappings = (
+            (
+                centroid_distances,
+                ("centroid_distance",),
+            ),
+            (
+                heights,
+                (
+                    "absolute_height",
+                    "height",
+                ),
+            ),
+            (
+                radial_offsets,
+                (
+                    "radial_offset",
+                    "lateral_offset",
+                ),
+            ),
+            (
+                atomic_distances,
+                ("minimum_atomic_distance",),
+            ),
+            (
+                effective_charges,
+                ("effective_charge",),
+            ),
+            (
+                orientation_angles,
+                ("orientation_angle",),
+            ),
+        )
+
+        for collection, attribute_names in value_mappings:
+            value = _cation_pi_get_first_attribute(
+                interaction,
+                attribute_names,
+            )
+
+            if value is None:
+                continue
+
+            try:
+                numeric_value = float(value)
+
+            except (TypeError, ValueError):
+                continue
+
+            if math.isfinite(numeric_value):
+                collection.append(
+                    numeric_value
+                )
+
+    def numeric_summary(
+        values: Sequence[float],
+    ) -> Dict[str, Optional[float]]:
+        if not values:
+            return {
+                "mean": None,
+                "minimum": None,
+                "maximum": None,
+            }
+
+        return {
+            "mean": sum(values) / len(values),
+            "minimum": min(values),
+            "maximum": max(values),
+        }
+
+    return {
+        "total_interactions": len(
+            interaction_list
+        ),
+        "geometry_distribution": dict(
+            sorted(
+                geometry_distribution.items()
+            )
+        ),
+        "face_distribution": dict(
+            sorted(
+                face_distribution.items()
+            )
+        ),
+        "charge_source_distribution": dict(
+            sorted(
+                charge_source_distribution.items()
+            )
+        ),
+        "borderline_interactions": borderline_count,
+        "centroid_distance": numeric_summary(
+            centroid_distances
+        ),
+        "height": numeric_summary(
+            heights
+        ),
+        "radial_offset": numeric_summary(
+            radial_offsets
+        ),
+        "minimum_atomic_distance": numeric_summary(
+            atomic_distances
+        ),
+        "effective_charge": numeric_summary(
+            effective_charges
+        ),
+        "orientation_angle": numeric_summary(
+            orientation_angles
+        ),
+    }
+
+
