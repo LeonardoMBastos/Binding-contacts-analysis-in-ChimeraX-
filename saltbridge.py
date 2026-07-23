@@ -27249,6 +27249,2569 @@ def run_salt_bridge_test_infrastructure_smoke_test(
 
 
 
+# =============================================================================
+# 18.2. RECOGNITION AND GEOMETRY TESTS
+# =============================================================================
+
+
+# =============================================================================
+# 18.2.1. TEST FUNCTION RESOLUTION
+# =============================================================================
+
+
+def _resolve_self_test_callable(
+    *function_names: str,
+) -> Callable[..., Any]:
+    """
+    Resolve a module-level callable by one of several possible names.
+
+    This helper allows the self-tests to tolerate minor naming differences
+    between DockAnalyzer module versions.
+
+    Parameters
+    ----------
+    *function_names
+        Candidate function names.
+
+    Returns
+    -------
+    Callable[..., Any]
+        Resolved callable.
+
+    Raises
+    ------
+    SaltBridgeSelfTestError
+        If none of the candidate functions exists.
+    """
+
+    module_globals = globals()
+
+    for function_name in function_names:
+        candidate = module_globals.get(
+            function_name
+        )
+
+        if callable(
+            candidate
+        ):
+            return candidate
+
+    raise SaltBridgeSelfTestError(
+        "Could not resolve any expected function: "
+        + ", ".join(
+            function_names
+        )
+    )
+
+
+def _call_recognize_cationic_groups(
+    source: Any,
+    config: Optional[
+        SaltBridgeConfig
+    ] = None,
+) -> List[ChargedGroup]:
+    """
+    Call the available cationic-group recognition function.
+    """
+
+    recognition_function = (
+        _resolve_self_test_callable(
+            "recognize_cationic_groups",
+            "find_cationic_groups",
+            "identify_cationic_groups",
+            "detect_cationic_groups",
+        )
+    )
+
+    try:
+        result = recognition_function(
+            source,
+            config=config,
+        )
+
+    except TypeError:
+        try:
+            result = recognition_function(
+                source,
+                config,
+            )
+
+        except TypeError:
+            result = recognition_function(
+                source
+            )
+
+    return list(
+        result
+        or []
+    )
+
+
+def _call_recognize_anionic_groups(
+    source: Any,
+    config: Optional[
+        SaltBridgeConfig
+    ] = None,
+) -> List[ChargedGroup]:
+    """
+    Call the available anionic-group recognition function.
+    """
+
+    recognition_function = (
+        _resolve_self_test_callable(
+            "recognize_anionic_groups",
+            "find_anionic_groups",
+            "identify_anionic_groups",
+            "detect_anionic_groups",
+        )
+    )
+
+    try:
+        result = recognition_function(
+            source,
+            config=config,
+        )
+
+    except TypeError:
+        try:
+            result = recognition_function(
+                source,
+                config,
+            )
+
+        except TypeError:
+            result = recognition_function(
+                source
+            )
+
+    return list(
+        result
+        or []
+    )
+
+
+def _call_recognize_charged_groups(
+    source: Any,
+    config: Optional[
+        SaltBridgeConfig
+    ] = None,
+) -> Tuple[
+    List[ChargedGroup],
+    List[ChargedGroup],
+]:
+    """
+    Recognize positive and negative charged groups.
+
+    The combined recognition function is preferred when available.
+    Otherwise, positive and negative recognizers are called separately.
+    """
+
+    combined_function_names = (
+        "recognize_charged_groups",
+        "find_charged_groups",
+        "identify_charged_groups",
+    )
+
+    combined_function = None
+
+    for function_name in (
+        combined_function_names
+    ):
+        candidate = globals().get(
+            function_name
+        )
+
+        if callable(
+            candidate
+        ):
+            combined_function = candidate
+            break
+
+    if combined_function is not None:
+        try:
+            result = combined_function(
+                source,
+                config=config,
+            )
+
+        except TypeError:
+            try:
+                result = combined_function(
+                    source,
+                    config,
+                )
+
+            except TypeError:
+                result = combined_function(
+                    source
+                )
+
+        if isinstance(
+            result,
+            Mapping,
+        ):
+            cationic_groups = (
+                result.get(
+                    "cationic_groups"
+                )
+                or result.get(
+                    "positive"
+                )
+                or result.get(
+                    "cations"
+                )
+                or []
+            )
+
+            anionic_groups = (
+                result.get(
+                    "anionic_groups"
+                )
+                or result.get(
+                    "negative"
+                )
+                or result.get(
+                    "anions"
+                )
+                or []
+            )
+
+            return (
+                list(
+                    cationic_groups
+                ),
+                list(
+                    anionic_groups
+                ),
+            )
+
+        if (
+            isinstance(
+                result,
+                tuple,
+            )
+            and len(result) == 2
+        ):
+            return (
+                list(
+                    result[0]
+                    or []
+                ),
+                list(
+                    result[1]
+                    or []
+                ),
+            )
+
+        if isinstance(
+            result,
+            Iterable,
+        ):
+            all_groups = list(
+                result
+            )
+
+            return (
+                [
+                    group
+                    for group in all_groups
+                    if group.polarity
+                    == "positive"
+                ],
+                [
+                    group
+                    for group in all_groups
+                    if group.polarity
+                    == "negative"
+                ],
+            )
+
+    return (
+        _call_recognize_cationic_groups(
+            source,
+            config,
+        ),
+        _call_recognize_anionic_groups(
+            source,
+            config,
+        ),
+    )
+
+
+def _call_calculate_group_center(
+    group_or_atoms: Any,
+) -> Tuple[float, float, float]:
+    """
+    Call the available charged-group center function.
+    """
+
+    center_function = (
+        _resolve_self_test_callable(
+            "calculate_charged_group_center",
+            "calculate_group_center",
+            "calculate_charge_center",
+            "charged_group_center",
+        )
+    )
+
+    center = center_function(
+        group_or_atoms
+    )
+
+    return _test_coordinate_tuple(
+        center
+    )
+
+
+def _call_calculate_salt_bridge_geometry(
+    cation: ChargedGroup,
+    anion: ChargedGroup,
+    config: Optional[
+        SaltBridgeConfig
+    ] = None,
+) -> SaltBridgeGeometry:
+    """
+    Call the available salt-bridge geometry function.
+    """
+
+    geometry_function = (
+        _resolve_self_test_callable(
+            "calculate_salt_bridge_geometry",
+            "compute_salt_bridge_geometry",
+            "evaluate_salt_bridge_geometry",
+            "measure_salt_bridge_geometry",
+        )
+    )
+
+    try:
+        geometry = geometry_function(
+            cation,
+            anion,
+            config=config,
+        )
+
+    except TypeError:
+        try:
+            geometry = geometry_function(
+                cation,
+                anion,
+                config,
+            )
+
+        except TypeError:
+            geometry = geometry_function(
+                cation,
+                anion,
+            )
+
+    _assert_is_instance(
+        geometry,
+        SaltBridgeGeometry,
+    )
+
+    return geometry
+
+
+def _call_calculate_group_distance(
+    cation: ChargedGroup,
+    anion: ChargedGroup,
+) -> float:
+    """
+    Calculate or resolve the center-to-center group distance.
+    """
+
+    candidate_names = (
+        "calculate_charged_group_distance",
+        "calculate_group_distance",
+        "charged_group_distance",
+        "calculate_center_distance",
+    )
+
+    for function_name in candidate_names:
+        candidate = globals().get(
+            function_name
+        )
+
+        if callable(
+            candidate
+        ):
+            distance = candidate(
+                cation,
+                anion,
+            )
+
+            normalized_distance = (
+                safe_float(
+                    distance
+                )
+            )
+
+            if normalized_distance is None:
+                raise SaltBridgeSelfTestError(
+                    "Group-distance function returned "
+                    "a non-numeric value."
+                )
+
+            return normalized_distance
+
+    cation_center = (
+        _test_coordinate_tuple(
+            cation.center
+        )
+    )
+
+    anion_center = (
+        _test_coordinate_tuple(
+            anion.center
+        )
+    )
+
+    return math.dist(
+        cation_center,
+        anion_center,
+    )
+
+
+# =============================================================================
+# 18.2.2. RECOGNITION TEST UTILITIES
+# =============================================================================
+
+
+def _find_group_by_residue_name(
+    groups: Iterable[ChargedGroup],
+    residue_name: str,
+) -> Optional[ChargedGroup]:
+    """
+    Return the first group matching a residue name.
+    """
+
+    normalized_residue_name = str(
+        residue_name
+    ).strip().upper()
+
+    for group in groups:
+        residue = group.residue
+
+        if residue is None:
+            continue
+
+        if (
+            get_residue_name(
+                residue
+            )
+            == normalized_residue_name
+        ):
+            return group
+
+    return None
+
+
+def _find_group_by_type_fragment(
+    groups: Iterable[ChargedGroup],
+    fragment: str,
+) -> Optional[ChargedGroup]:
+    """
+    Return the first group whose type contains a text fragment.
+    """
+
+    normalized_fragment = (
+        normalize_text(
+            fragment,
+            default="",
+            lowercase=True,
+        )
+    )
+
+    for group in groups:
+        group_type = normalize_text(
+            group.group_type,
+            default="",
+            lowercase=True,
+        )
+
+        if (
+            normalized_fragment
+            in group_type
+        ):
+            return group
+
+    return None
+
+
+def _assert_unique_group_ids(
+    groups: Iterable[ChargedGroup],
+) -> None:
+    """
+    Assert that recognized groups have unique identifiers.
+    """
+
+    group_list = list(
+        groups
+    )
+
+    group_ids = [
+        group.group_id
+        for group in group_list
+    ]
+
+    _assert_equal(
+        len(group_ids),
+        len(
+            set(
+                group_ids
+            )
+        ),
+        "Recognized charged-group identifiers must be unique.",
+    )
+
+
+def _assert_group_contains_atom_names(
+    group: ChargedGroup,
+    expected_atom_names: Iterable[str],
+) -> None:
+    """
+    Assert that a charged group contains expected atom names.
+    """
+
+    observed_names = {
+        normalize_text(
+            charged_atom.name,
+            default="",
+            lowercase=False,
+        ).upper()
+        for charged_atom in group.atoms
+    }
+
+    for expected_name in (
+        expected_atom_names
+    ):
+        _assert_contains(
+            observed_names,
+            str(
+                expected_name
+            ).upper(),
+            (
+                f"Expected atom {expected_name!r} "
+                f"in group {group.group_id!r}."
+            ),
+        )
+
+
+# =============================================================================
+# 18.2.3. PROTEIN CATION RECOGNITION TESTS
+# =============================================================================
+
+
+def _test_recognize_lysine_cation() -> None:
+    """
+    Test recognition of the lysine terminal ammonium group.
+    """
+
+    lysine = _make_mock_lysine(
+        number=10,
+        chain_id="A",
+        nz_coordinate=(
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    groups = (
+        _call_recognize_cationic_groups(
+            _make_test_source(
+                [
+                    lysine
+                ]
+            )
+        )
+    )
+
+    _assert_not_empty(
+        groups,
+        "Lysine should produce a cationic group.",
+    )
+
+    lysine_group = (
+        _find_group_by_residue_name(
+            groups,
+            "LYS",
+        )
+    )
+
+    _assert_is_not_none(
+        lysine_group,
+        "No lysine cationic group was recognized.",
+    )
+
+    _assert_valid_charged_group(
+        lysine_group,
+        expected_polarity=(
+            "positive"
+        ),
+    )
+
+    _assert_group_contains_atom_names(
+        lysine_group,
+        [
+            "NZ"
+        ],
+    )
+
+    _assert_true(
+        lysine_group.net_charge > 0.0
+    )
+
+
+def _test_recognize_arginine_cation() -> None:
+    """
+    Test recognition of an arginine guanidinium group.
+    """
+
+    arginine = _make_mock_arginine(
+        number=20,
+        chain_id="A",
+        center=(
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    groups = (
+        _call_recognize_cationic_groups(
+            [
+                arginine
+            ]
+        )
+    )
+
+    arginine_group = (
+        _find_group_by_residue_name(
+            groups,
+            "ARG",
+        )
+    )
+
+    _assert_is_not_none(
+        arginine_group,
+        "No arginine cationic group was recognized.",
+    )
+
+    _assert_valid_charged_group(
+        arginine_group,
+        expected_polarity=(
+            "positive"
+        ),
+    )
+
+    _assert_group_contains_atom_names(
+        arginine_group,
+        [
+            "NE",
+            "NH1",
+            "NH2",
+        ],
+    )
+
+    normalized_type = normalize_text(
+        arginine_group.group_type,
+        default="",
+        lowercase=True,
+    )
+
+    _assert_true(
+        (
+            "guanid"
+            in normalized_type
+            or "argin"
+            in normalized_type
+        ),
+        "Arginine group should be classified as guanidinium-like.",
+    )
+
+
+def _test_recognize_protonated_histidine_cation() -> None:
+    """
+    Test recognition of protonated histidine.
+    """
+
+    histidine = _make_mock_hip(
+        number=30,
+        chain_id="A",
+    )
+
+    groups = (
+        _call_recognize_cationic_groups(
+            [
+                histidine
+            ]
+        )
+    )
+
+    histidine_group = (
+        _find_group_by_residue_name(
+            groups,
+            "HIP",
+        )
+    )
+
+    _assert_is_not_none(
+        histidine_group,
+        "Protonated histidine should be recognized as cationic.",
+    )
+
+    _assert_valid_charged_group(
+        histidine_group,
+        expected_polarity=(
+            "positive"
+        ),
+    )
+
+    _assert_group_contains_atom_names(
+        histidine_group,
+        [
+            "ND1",
+            "NE2",
+        ],
+    )
+
+
+def _test_recognize_multiple_protein_cations() -> None:
+    """
+    Test simultaneous recognition of multiple protein cations.
+    """
+
+    residues = [
+        _make_mock_lysine(
+            number=10
+        ),
+        _make_mock_arginine(
+            number=20
+        ),
+        _make_mock_hip(
+            number=30
+        ),
+    ]
+
+    groups = (
+        _call_recognize_cationic_groups(
+            residues
+        )
+    )
+
+    recognized_residue_names = {
+        get_residue_name(
+            group.residue
+        )
+        for group in groups
+        if group.residue is not None
+    }
+
+    _assert_contains(
+        recognized_residue_names,
+        "LYS",
+    )
+
+    _assert_contains(
+        recognized_residue_names,
+        "ARG",
+    )
+
+    _assert_contains(
+        recognized_residue_names,
+        "HIP",
+    )
+
+    _assert_unique_group_ids(
+        groups
+    )
+
+
+# =============================================================================
+# 18.2.4. PROTEIN ANION RECOGNITION TESTS
+# =============================================================================
+
+
+def _test_recognize_aspartate_anion() -> None:
+    """
+    Test recognition of an aspartate carboxylate.
+    """
+
+    aspartate = _make_mock_aspartate(
+        number=40,
+        chain_id="B",
+    )
+
+    groups = (
+        _call_recognize_anionic_groups(
+            [
+                aspartate
+            ]
+        )
+    )
+
+    aspartate_group = (
+        _find_group_by_residue_name(
+            groups,
+            "ASP",
+        )
+    )
+
+    _assert_is_not_none(
+        aspartate_group,
+        "No aspartate anionic group was recognized.",
+    )
+
+    _assert_valid_charged_group(
+        aspartate_group,
+        expected_polarity=(
+            "negative"
+        ),
+    )
+
+    _assert_group_contains_atom_names(
+        aspartate_group,
+        [
+            "OD1",
+            "OD2",
+        ],
+    )
+
+    normalized_type = normalize_text(
+        aspartate_group.group_type,
+        default="",
+        lowercase=True,
+    )
+
+    _assert_true(
+        (
+            "carbox"
+            in normalized_type
+            or "aspart"
+            in normalized_type
+        ),
+        "Aspartate should be classified as carboxylate-like.",
+    )
+
+
+def _test_recognize_glutamate_anion() -> None:
+    """
+    Test recognition of a glutamate carboxylate.
+    """
+
+    glutamate = _make_mock_glutamate(
+        number=50,
+        chain_id="B",
+    )
+
+    groups = (
+        _call_recognize_anionic_groups(
+            [
+                glutamate
+            ]
+        )
+    )
+
+    glutamate_group = (
+        _find_group_by_residue_name(
+            groups,
+            "GLU",
+        )
+    )
+
+    _assert_is_not_none(
+        glutamate_group,
+        "No glutamate anionic group was recognized.",
+    )
+
+    _assert_valid_charged_group(
+        glutamate_group,
+        expected_polarity=(
+            "negative"
+        ),
+    )
+
+    _assert_group_contains_atom_names(
+        glutamate_group,
+        [
+            "OE1",
+            "OE2",
+        ],
+    )
+
+
+def _test_recognize_multiple_protein_anions() -> None:
+    """
+    Test simultaneous recognition of aspartate and glutamate.
+    """
+
+    residues = [
+        _make_mock_aspartate(
+            number=40
+        ),
+        _make_mock_glutamate(
+            number=50
+        ),
+    ]
+
+    groups = (
+        _call_recognize_anionic_groups(
+            residues
+        )
+    )
+
+    recognized_residue_names = {
+        get_residue_name(
+            group.residue
+        )
+        for group in groups
+        if group.residue is not None
+    }
+
+    _assert_contains(
+        recognized_residue_names,
+        "ASP",
+    )
+
+    _assert_contains(
+        recognized_residue_names,
+        "GLU",
+    )
+
+    _assert_unique_group_ids(
+        groups
+    )
+
+
+# =============================================================================
+# 18.2.5. LIGAND CHARGED-GROUP RECOGNITION TESTS
+# =============================================================================
+
+
+def _test_recognize_ligand_cation() -> None:
+    """
+    Test recognition of a formally charged ligand nitrogen.
+    """
+
+    ligand = (
+        _make_mock_cationic_ligand(
+            center=(
+                0.0,
+                0.0,
+                0.0,
+            )
+        )
+    )
+
+    groups = (
+        _call_recognize_cationic_groups(
+            [
+                ligand
+            ]
+        )
+    )
+
+    _assert_not_empty(
+        groups,
+        "A formally charged ligand nitrogen should be recognized.",
+    )
+
+    ligand_groups = [
+        group
+        for group in groups
+        if group.residue is ligand
+    ]
+
+    _assert_not_empty(
+        ligand_groups,
+        "No cationic group was associated with the ligand.",
+    )
+
+    cationic_group = (
+        ligand_groups[0]
+    )
+
+    _assert_valid_charged_group(
+        cationic_group,
+        expected_polarity=(
+            "positive"
+        ),
+    )
+
+    _assert_group_contains_atom_names(
+        cationic_group,
+        [
+            "N1"
+        ],
+    )
+
+
+def _test_recognize_ligand_carboxylate() -> None:
+    """
+    Test recognition of a ligand carboxylate.
+    """
+
+    ligand = (
+        _make_mock_carboxylate_ligand()
+    )
+
+    groups = (
+        _call_recognize_anionic_groups(
+            [
+                ligand
+            ]
+        )
+    )
+
+    _assert_not_empty(
+        groups,
+        "Ligand carboxylate should be recognized.",
+    )
+
+    carboxylate_group = (
+        _find_group_by_type_fragment(
+            groups,
+            "carbox",
+        )
+    )
+
+    if carboxylate_group is None:
+        carboxylate_group = (
+            groups[0]
+        )
+
+    _assert_valid_charged_group(
+        carboxylate_group,
+        expected_polarity=(
+            "negative"
+        ),
+    )
+
+    _assert_group_contains_atom_names(
+        carboxylate_group,
+        [
+            "O1",
+            "O2",
+        ],
+    )
+
+
+def _test_recognize_ligand_phosphate() -> None:
+    """
+    Test recognition of a ligand phosphate group.
+    """
+
+    ligand = (
+        _make_mock_phosphate_ligand()
+    )
+
+    groups = (
+        _call_recognize_anionic_groups(
+            [
+                ligand
+            ]
+        )
+    )
+
+    _assert_not_empty(
+        groups,
+        "Ligand phosphate should be recognized.",
+    )
+
+    phosphate_group = (
+        _find_group_by_type_fragment(
+            groups,
+            "phosph",
+        )
+    )
+
+    if phosphate_group is None:
+        phosphate_group = (
+            groups[0]
+        )
+
+    _assert_valid_charged_group(
+        phosphate_group,
+        expected_polarity=(
+            "negative"
+        ),
+    )
+
+    oxygen_count = sum(
+        1
+        for charged_atom
+        in phosphate_group.atoms
+        if charged_atom.element.upper()
+        == "O"
+    )
+
+    _assert_true(
+        oxygen_count >= 2,
+        "A phosphate group should contain multiple oxygen atoms.",
+    )
+
+
+def _test_recognize_ligand_sulfonate() -> None:
+    """
+    Test recognition of a ligand sulfonate group.
+    """
+
+    ligand = (
+        _make_mock_sulfonate_ligand()
+    )
+
+    groups = (
+        _call_recognize_anionic_groups(
+            [
+                ligand
+            ]
+        )
+    )
+
+    _assert_not_empty(
+        groups,
+        "Ligand sulfonate should be recognized.",
+    )
+
+    sulfonate_group = (
+        _find_group_by_type_fragment(
+            groups,
+            "sulfon",
+        )
+    )
+
+    if sulfonate_group is None:
+        sulfonate_group = (
+            groups[0]
+        )
+
+    _assert_valid_charged_group(
+        sulfonate_group,
+        expected_polarity=(
+            "negative"
+        ),
+    )
+
+
+def _test_neutral_ligand_is_not_charged() -> None:
+    """
+    Test rejection of a neutral ligand.
+    """
+
+    neutral_ligand = (
+        _make_mock_neutral_ligand()
+    )
+
+    cationic_groups, anionic_groups = (
+        _call_recognize_charged_groups(
+            [
+                neutral_ligand
+            ]
+        )
+    )
+
+    ligand_cations = [
+        group
+        for group in cationic_groups
+        if group.residue
+        is neutral_ligand
+    ]
+
+    ligand_anions = [
+        group
+        for group in anionic_groups
+        if group.residue
+        is neutral_ligand
+    ]
+
+    _assert_empty(
+        ligand_cations,
+        "Neutral ligand should not generate cationic groups.",
+    )
+
+    _assert_empty(
+        ligand_anions,
+        "Neutral ligand should not generate anionic groups.",
+    )
+
+
+# =============================================================================
+# 18.2.6. RECOGNITION CONSISTENCY TESTS
+# =============================================================================
+
+
+def _test_recognition_polarity_separation() -> None:
+    """
+    Test correct separation between cationic and anionic groups.
+    """
+
+    residues = [
+        _make_mock_lysine(
+            number=10
+        ),
+        _make_mock_arginine(
+            number=20
+        ),
+        _make_mock_aspartate(
+            number=40
+        ),
+        _make_mock_glutamate(
+            number=50
+        ),
+    ]
+
+    cationic_groups, anionic_groups = (
+        _call_recognize_charged_groups(
+            residues
+        )
+    )
+
+    _assert_not_empty(
+        cationic_groups
+    )
+
+    _assert_not_empty(
+        anionic_groups
+    )
+
+    for group in cationic_groups:
+        _assert_equal(
+            group.polarity,
+            "positive",
+        )
+
+        _assert_true(
+            group.net_charge > 0.0
+        )
+
+    for group in anionic_groups:
+        _assert_equal(
+            group.polarity,
+            "negative",
+        )
+
+        _assert_true(
+            group.net_charge < 0.0
+        )
+
+
+def _test_recognition_does_not_duplicate_groups() -> None:
+    """
+    Test prevention of duplicate charged groups.
+    """
+
+    lysine = _make_mock_lysine(
+        number=10
+    )
+
+    aspartate = (
+        _make_mock_aspartate(
+            number=40
+        )
+    )
+
+    cationic_groups, anionic_groups = (
+        _call_recognize_charged_groups(
+            [
+                lysine,
+                aspartate,
+            ]
+        )
+    )
+
+    _assert_unique_group_ids(
+        cationic_groups
+    )
+
+    _assert_unique_group_ids(
+        anionic_groups
+    )
+
+    cation_identities = [
+        make_json_safe(
+            charged_group_identity(
+                group
+            )
+        )
+        for group in cationic_groups
+    ]
+
+    anion_identities = [
+        make_json_safe(
+            charged_group_identity(
+                group
+            )
+        )
+        for group in anionic_groups
+    ]
+
+    _assert_equal(
+        len(
+            cation_identities
+        ),
+        len(
+            {
+                repr(identity)
+                for identity
+                in cation_identities
+            }
+        ),
+        "Duplicate cationic-group identities were recognized.",
+    )
+
+    _assert_equal(
+        len(
+            anion_identities
+        ),
+        len(
+            {
+                repr(identity)
+                for identity
+                in anion_identities
+            }
+        ),
+        "Duplicate anionic-group identities were recognized.",
+    )
+
+
+def _test_recognition_empty_source() -> None:
+    """
+    Test charged-group recognition with an empty source.
+    """
+
+    cationic_groups, anionic_groups = (
+        _call_recognize_charged_groups(
+            []
+        )
+    )
+
+    _assert_empty(
+        cationic_groups
+    )
+
+    _assert_empty(
+        anionic_groups
+    )
+
+
+# =============================================================================
+# 18.2.7. GROUP-CENTER GEOMETRY TESTS
+# =============================================================================
+
+
+def _test_single_atom_group_center() -> None:
+    """
+    Test the center of a one-atom charged group.
+    """
+
+    group = _make_test_cation_group(
+        center=(
+            1.0,
+            2.0,
+            3.0,
+        )
+    )
+
+    calculated_center = (
+        _call_calculate_group_center(
+            group
+        )
+    )
+
+    expected_center = (
+        group.atoms[0].coordinate
+    )
+
+    _assert_sequence_almost_equal(
+        calculated_center,
+        expected_center,
+    )
+
+
+def _test_two_atom_group_center() -> None:
+    """
+    Test the arithmetic center of a two-atom group.
+    """
+
+    group = _make_test_anion_group(
+        center=(
+            3.0,
+            2.0,
+            1.0,
+        )
+    )
+
+    atom_coordinates = [
+        charged_atom.coordinate
+        for charged_atom in group.atoms
+    ]
+
+    expected_center = (
+        sum(
+            coordinate[0]
+            for coordinate
+            in atom_coordinates
+        )
+        / len(
+            atom_coordinates
+        ),
+        sum(
+            coordinate[1]
+            for coordinate
+            in atom_coordinates
+        )
+        / len(
+            atom_coordinates
+        ),
+        sum(
+            coordinate[2]
+            for coordinate
+            in atom_coordinates
+        )
+        / len(
+            atom_coordinates
+        ),
+    )
+
+    calculated_center = (
+        _call_calculate_group_center(
+            group
+        )
+    )
+
+    _assert_sequence_almost_equal(
+        calculated_center,
+        expected_center,
+    )
+
+
+def _test_group_center_translation() -> None:
+    """
+    Test that group centers follow rigid translations.
+    """
+
+    group = _make_test_anion_group(
+        center=(
+            3.0,
+            0.0,
+            0.0,
+        )
+    )
+
+    original_center = (
+        _call_calculate_group_center(
+            group
+        )
+    )
+
+    translation = (
+        4.0,
+        -2.0,
+        1.5,
+    )
+
+    for charged_atom in group.atoms:
+        charged_atom.coordinate = (
+            _translate_coordinate(
+                charged_atom.coordinate,
+                translation,
+            )
+        )
+
+        if charged_atom.atom is not None:
+            charged_atom.atom.coord = (
+                charged_atom.coordinate
+            )
+
+    translated_center = (
+        _call_calculate_group_center(
+            group
+        )
+    )
+
+    expected_center = (
+        _translate_coordinate(
+            original_center,
+            translation,
+        )
+    )
+
+    _assert_sequence_almost_equal(
+        translated_center,
+        expected_center,
+    )
+
+
+# =============================================================================
+# 18.2.8. DISTANCE GEOMETRY TESTS
+# =============================================================================
+
+
+def _test_group_center_distance() -> None:
+    """
+    Test center-to-center charged-group distance.
+    """
+
+    cation = _make_test_cation_group(
+        center=(
+            0.0,
+            0.0,
+            0.0,
+        )
+    )
+
+    anion = _make_test_anion_group(
+        center=(
+            3.0,
+            4.0,
+            0.0,
+        )
+    )
+
+    distance = (
+        _call_calculate_group_distance(
+            cation,
+            anion,
+        )
+    )
+
+    _assert_almost_equal(
+        distance,
+        5.0,
+        tolerance=1e-6,
+    )
+
+
+def _test_geometry_center_distance() -> None:
+    """
+    Test center distance reported by SaltBridgeGeometry.
+    """
+
+    cation = _make_test_cation_group(
+        center=(
+            0.0,
+            0.0,
+            0.0,
+        )
+    )
+
+    anion = _make_test_anion_group(
+        center=(
+            3.0,
+            0.0,
+            0.0,
+        )
+    )
+
+    geometry = (
+        _call_calculate_salt_bridge_geometry(
+            cation,
+            anion,
+        )
+    )
+
+    _assert_valid_geometry(
+        geometry
+    )
+
+    expected_distance = math.dist(
+        cation.center,
+        anion.center,
+    )
+
+    _assert_almost_equal(
+        geometry.center_distance,
+        expected_distance,
+        tolerance=1e-6,
+    )
+
+
+def _test_geometry_atomic_distance_ordering() -> None:
+    """
+    Test ordering of minimum, mean, and maximum atom distances.
+    """
+
+    cation = _make_test_charged_group(
+        group_id="cation_distance_order",
+        group_type="guanidinium",
+        polarity="positive",
+        center=(
+            0.0,
+            0.0,
+            0.0,
+        ),
+        net_charge=1.0,
+        atom_names=(
+            "N1",
+            "N2",
+            "N3",
+        ),
+    )
+
+    anion = _make_test_anion_group(
+        group_id="anion_distance_order",
+        center=(
+            3.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    geometry = (
+        _call_calculate_salt_bridge_geometry(
+            cation,
+            anion,
+        )
+    )
+
+    _assert_true(
+        geometry.minimum_atom_distance
+        <= geometry.mean_atom_distance
+        <= geometry.maximum_atom_distance,
+        (
+            "Atomic distances must satisfy "
+            "minimum <= mean <= maximum."
+        ),
+    )
+
+
+def _test_geometry_closest_atom_pair() -> None:
+    """
+    Test resolution of the closest positive-negative atom pair.
+    """
+
+    cation = _make_test_cation_group(
+        center=(
+            0.0,
+            0.0,
+            0.0,
+        )
+    )
+
+    anion = _make_test_anion_group(
+        center=(
+            3.0,
+            0.0,
+            0.0,
+        )
+    )
+
+    geometry = (
+        _call_calculate_salt_bridge_geometry(
+            cation,
+            anion,
+        )
+    )
+
+    _assert_is_not_none(
+        geometry.closest_positive_atom,
+        "Closest positive atom should be resolved.",
+    )
+
+    _assert_is_not_none(
+        geometry.closest_negative_atom,
+        "Closest negative atom should be resolved.",
+    )
+
+    closest_distance = math.dist(
+        get_atom_coordinate(
+            geometry.closest_positive_atom
+        ),
+        get_atom_coordinate(
+            geometry.closest_negative_atom
+        ),
+    )
+
+    _assert_almost_equal(
+        geometry.minimum_atom_distance,
+        closest_distance,
+        tolerance=1e-6,
+    )
+
+
+def _test_geometry_contact_count_nonnegative() -> None:
+    """
+    Test that atomic contact counts cannot be negative.
+    """
+
+    geometry = (
+        _call_calculate_salt_bridge_geometry(
+            _make_test_cation_group(),
+            _make_test_anion_group(),
+        )
+    )
+
+    _assert_true(
+        geometry.contact_count >= 0
+    )
+
+
+# =============================================================================
+# 18.2.9. VALID AND INVALID GEOMETRY TESTS
+# =============================================================================
+
+
+def _test_valid_short_range_geometry() -> None:
+    """
+    Test a geometrically valid short-range salt bridge.
+    """
+
+    cation = _make_test_cation_group(
+        center=(
+            0.0,
+            0.0,
+            0.0,
+        )
+    )
+
+    anion = _make_test_anion_group(
+        center=(
+            3.0,
+            0.0,
+            0.0,
+        )
+    )
+
+    geometry = (
+        _call_calculate_salt_bridge_geometry(
+            cation,
+            anion,
+        )
+    )
+
+    _assert_true(
+        geometry.valid,
+        (
+            "A cation-anion pair separated by approximately "
+            "3 Å should be geometrically valid."
+        ),
+    )
+
+    _assert_is_none(
+        geometry.rejection_reason,
+        (
+            "Valid geometry should not contain "
+            "a rejection reason."
+        ),
+    )
+
+
+def _test_invalid_long_range_geometry() -> None:
+    """
+    Test rejection of a distant charged-group pair.
+    """
+
+    cation = _make_test_cation_group(
+        center=(
+            0.0,
+            0.0,
+            0.0,
+        )
+    )
+
+    anion = _make_test_anion_group(
+        center=(
+            20.0,
+            0.0,
+            0.0,
+        )
+    )
+
+    geometry = (
+        _call_calculate_salt_bridge_geometry(
+            cation,
+            anion,
+        )
+    )
+
+    _assert_false(
+        geometry.valid,
+        "A 20 Å group separation must be rejected.",
+    )
+
+    _assert_is_not_none(
+        geometry.rejection_reason,
+        (
+            "Rejected geometry should include "
+            "a rejection reason."
+        ),
+    )
+
+
+def _test_geometry_at_cutoff_boundary() -> None:
+    """
+    Test geometry near the configured distance cutoff.
+    """
+
+    config = resolve_config(
+        None
+    )
+
+    cutoff_candidates = (
+        "maximum_center_distance",
+        "max_center_distance",
+        "distance_cutoff",
+        "maximum_distance",
+        "max_distance",
+    )
+
+    cutoff = None
+
+    for attribute_name in (
+        cutoff_candidates
+    ):
+        candidate = get_value(
+            config,
+            attribute_name,
+            None,
+        )
+
+        normalized_candidate = (
+            safe_float(
+                candidate
+            )
+        )
+
+        if normalized_candidate is not None:
+            cutoff = normalized_candidate
+            break
+
+    if cutoff is None:
+        cutoff = 4.0
+
+    cation = _make_test_cation_group(
+        center=(
+            0.0,
+            0.0,
+            0.0,
+        )
+    )
+
+    anion = _make_test_anion_group(
+        center=(
+            cutoff,
+            0.0,
+            0.0,
+        )
+    )
+
+    geometry = (
+        _call_calculate_salt_bridge_geometry(
+            cation,
+            anion,
+            config,
+        )
+    )
+
+    _assert_almost_equal(
+        geometry.center_distance,
+        cutoff,
+        tolerance=1e-6,
+    )
+
+    _assert_is_instance(
+        geometry.valid,
+        bool,
+    )
+
+
+# =============================================================================
+# 18.2.10. RIGID-TRANSFORMATION TESTS
+# =============================================================================
+
+
+def _translated_charged_group(
+    group: ChargedGroup,
+    translation: Sequence[float],
+    *,
+    group_id_suffix: str = "translated",
+) -> ChargedGroup:
+    """
+    Create a translated copy of a charged group.
+    """
+
+    translated_atoms: List[
+        ChargedAtom
+    ] = []
+
+    for atom_index, charged_atom in enumerate(
+        group.atoms,
+        start=1,
+    ):
+        translated_coordinate = (
+            _translate_coordinate(
+                charged_atom.coordinate,
+                translation,
+            )
+        )
+
+        translated_atoms.append(
+            _make_test_charged_atom(
+                name=charged_atom.name,
+                element=(
+                    charged_atom.element
+                ),
+                coordinate=(
+                    translated_coordinate
+                ),
+                polarity=(
+                    charged_atom.polarity
+                ),
+                effective_charge=(
+                    charged_atom
+                    .effective_charge
+                ),
+                source="self_test_translation",
+                residue=group.residue,
+                serial_number=(
+                    atom_index
+                ),
+            )
+        )
+
+    translated_center = (
+        _translate_coordinate(
+            group.center,
+            translation,
+        )
+    )
+
+    return ChargedGroup(
+        group_id=(
+            f"{group.group_id}_"
+            f"{group_id_suffix}"
+        ),
+        group_type=group.group_type,
+        polarity=group.polarity,
+        atoms=translated_atoms,
+        residue=group.residue,
+        center=translated_center,
+        net_charge=group.net_charge,
+        representative_atom=(
+            translated_atoms[0].atom
+            if translated_atoms
+            else None
+        ),
+        source="self_test_translation",
+        confidence=group.confidence,
+        metadata={
+            "self_test": True,
+            "transformed": True,
+        },
+    )
+
+
+def _rotated_charged_group_z(
+    group: ChargedGroup,
+    angle_degrees: float,
+    *,
+    origin: Sequence[float] = (
+        0.0,
+        0.0,
+        0.0,
+    ),
+    group_id_suffix: str = "rotated",
+) -> ChargedGroup:
+    """
+    Create a z-axis-rotated copy of a charged group.
+    """
+
+    rotated_atoms: List[
+        ChargedAtom
+    ] = []
+
+    for atom_index, charged_atom in enumerate(
+        group.atoms,
+        start=1,
+    ):
+        rotated_coordinate = (
+            _rotate_coordinate_z(
+                charged_atom.coordinate,
+                angle_degrees,
+                origin=origin,
+            )
+        )
+
+        rotated_atoms.append(
+            _make_test_charged_atom(
+                name=charged_atom.name,
+                element=(
+                    charged_atom.element
+                ),
+                coordinate=(
+                    rotated_coordinate
+                ),
+                polarity=(
+                    charged_atom.polarity
+                ),
+                effective_charge=(
+                    charged_atom
+                    .effective_charge
+                ),
+                source="self_test_rotation",
+                residue=group.residue,
+                serial_number=(
+                    atom_index
+                ),
+            )
+        )
+
+    rotated_center = (
+        _rotate_coordinate_z(
+            group.center,
+            angle_degrees,
+            origin=origin,
+        )
+    )
+
+    return ChargedGroup(
+        group_id=(
+            f"{group.group_id}_"
+            f"{group_id_suffix}"
+        ),
+        group_type=group.group_type,
+        polarity=group.polarity,
+        atoms=rotated_atoms,
+        residue=group.residue,
+        center=rotated_center,
+        net_charge=group.net_charge,
+        representative_atom=(
+            rotated_atoms[0].atom
+            if rotated_atoms
+            else None
+        ),
+        source="self_test_rotation",
+        confidence=group.confidence,
+        metadata={
+            "self_test": True,
+            "transformed": True,
+        },
+    )
+
+
+def _test_geometry_translation_invariance() -> None:
+    """
+    Test preservation of geometry under a common translation.
+    """
+
+    cation = _make_test_charged_group(
+        group_id="translation_cation",
+        group_type="guanidinium",
+        polarity="positive",
+        center=(
+            0.0,
+            0.0,
+            0.0,
+        ),
+        net_charge=1.0,
+        atom_names=(
+            "N1",
+            "N2",
+            "N3",
+        ),
+    )
+
+    anion = _make_test_anion_group(
+        group_id="translation_anion",
+        center=(
+            3.2,
+            0.4,
+            0.0,
+        ),
+    )
+
+    original_geometry = (
+        _call_calculate_salt_bridge_geometry(
+            cation,
+            anion,
+        )
+    )
+
+    translation = (
+        10.0,
+        -7.5,
+        3.25,
+    )
+
+    translated_cation = (
+        _translated_charged_group(
+            cation,
+            translation,
+        )
+    )
+
+    translated_anion = (
+        _translated_charged_group(
+            anion,
+            translation,
+        )
+    )
+
+    translated_geometry = (
+        _call_calculate_salt_bridge_geometry(
+            translated_cation,
+            translated_anion,
+        )
+    )
+
+    _assert_almost_equal(
+        translated_geometry.center_distance,
+        original_geometry.center_distance,
+    )
+
+    _assert_almost_equal(
+        translated_geometry.minimum_atom_distance,
+        original_geometry.minimum_atom_distance,
+    )
+
+    _assert_almost_equal(
+        translated_geometry.maximum_atom_distance,
+        original_geometry.maximum_atom_distance,
+    )
+
+    _assert_almost_equal(
+        translated_geometry.mean_atom_distance,
+        original_geometry.mean_atom_distance,
+    )
+
+    _assert_equal(
+        translated_geometry.valid,
+        original_geometry.valid,
+    )
+
+
+def _test_geometry_rotation_invariance() -> None:
+    """
+    Test preservation of geometry under a common rigid rotation.
+    """
+
+    cation = _make_test_charged_group(
+        group_id="rotation_cation",
+        group_type="guanidinium",
+        polarity="positive",
+        center=(
+            0.5,
+            0.5,
+            0.0,
+        ),
+        net_charge=1.0,
+        atom_names=(
+            "N1",
+            "N2",
+            "N3",
+        ),
+    )
+
+    anion = _make_test_anion_group(
+        group_id="rotation_anion",
+        center=(
+            3.3,
+            1.1,
+            0.0,
+        ),
+    )
+
+    original_geometry = (
+        _call_calculate_salt_bridge_geometry(
+            cation,
+            anion,
+        )
+    )
+
+    rotated_cation = (
+        _rotated_charged_group_z(
+            cation,
+            73.0,
+        )
+    )
+
+    rotated_anion = (
+        _rotated_charged_group_z(
+            anion,
+            73.0,
+        )
+    )
+
+    rotated_geometry = (
+        _call_calculate_salt_bridge_geometry(
+            rotated_cation,
+            rotated_anion,
+        )
+    )
+
+    _assert_almost_equal(
+        rotated_geometry.center_distance,
+        original_geometry.center_distance,
+        tolerance=1e-6,
+    )
+
+    _assert_almost_equal(
+        rotated_geometry.minimum_atom_distance,
+        original_geometry.minimum_atom_distance,
+        tolerance=1e-6,
+    )
+
+    _assert_almost_equal(
+        rotated_geometry.maximum_atom_distance,
+        original_geometry.maximum_atom_distance,
+        tolerance=1e-6,
+    )
+
+    _assert_almost_equal(
+        rotated_geometry.mean_atom_distance,
+        original_geometry.mean_atom_distance,
+        tolerance=1e-6,
+    )
+
+    _assert_equal(
+        rotated_geometry.valid,
+        original_geometry.valid,
+    )
+
+
+# =============================================================================
+# 18.2.11. RECOGNITION AND GEOMETRY COMBINED TESTS
+# =============================================================================
+
+
+def _test_recognized_groups_support_geometry() -> None:
+    """
+    Test geometry calculation using groups produced by recognition.
+    """
+
+    lysine = _make_mock_lysine(
+        number=10,
+        chain_id="A",
+        nz_coordinate=(
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    aspartate = (
+        _make_mock_aspartate(
+            number=40,
+            chain_id="B",
+            center=(
+                3.0,
+                0.0,
+                0.0,
+            ),
+        )
+    )
+
+    cationic_groups, anionic_groups = (
+        _call_recognize_charged_groups(
+            [
+                lysine,
+                aspartate,
+            ]
+        )
+    )
+
+    lysine_group = (
+        _find_group_by_residue_name(
+            cationic_groups,
+            "LYS",
+        )
+    )
+
+    aspartate_group = (
+        _find_group_by_residue_name(
+            anionic_groups,
+            "ASP",
+        )
+    )
+
+    _assert_is_not_none(
+        lysine_group
+    )
+
+    _assert_is_not_none(
+        aspartate_group
+    )
+
+    geometry = (
+        _call_calculate_salt_bridge_geometry(
+            lysine_group,
+            aspartate_group,
+        )
+    )
+
+    _assert_valid_geometry(
+        geometry
+    )
+
+    _assert_true(
+        geometry.center_distance > 0.0
+    )
+
+
+def _test_recognition_geometry_far_negative_case() -> None:
+    """
+    Test a recognized charged pair that is geometrically too distant.
+    """
+
+    lysine = _make_mock_lysine(
+        number=10,
+        nz_coordinate=(
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    glutamate = _make_mock_glutamate(
+        number=50,
+        center=(
+            25.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    cationic_groups, anionic_groups = (
+        _call_recognize_charged_groups(
+            [
+                lysine,
+                glutamate,
+            ]
+        )
+    )
+
+    lysine_group = (
+        _find_group_by_residue_name(
+            cationic_groups,
+            "LYS",
+        )
+    )
+
+    glutamate_group = (
+        _find_group_by_residue_name(
+            anionic_groups,
+            "GLU",
+        )
+    )
+
+    _assert_is_not_none(
+        lysine_group
+    )
+
+    _assert_is_not_none(
+        glutamate_group
+    )
+
+    geometry = (
+        _call_calculate_salt_bridge_geometry(
+            lysine_group,
+            glutamate_group,
+        )
+    )
+
+    _assert_false(
+        geometry.valid
+    )
+
+
+# =============================================================================
+# 18.2.12. SECTION TEST REGISTRY
+# =============================================================================
+
+
+def get_salt_bridge_recognition_geometry_tests(
+) -> List[
+    Tuple[
+        str,
+        Callable[
+            [],
+            Any,
+        ],
+    ]
+]:
+    """
+    Return all Section 18.2 self-tests.
+
+    Returns
+    -------
+    List[Tuple[str, Callable[[], Any]]]
+        Named recognition and geometry tests.
+    """
+
+    return [
+        (
+            "18.2.recognition.lysine_cation",
+            _test_recognize_lysine_cation,
+        ),
+        (
+            "18.2.recognition.arginine_cation",
+            _test_recognize_arginine_cation,
+        ),
+        (
+            "18.2.recognition.protonated_histidine",
+            _test_recognize_protonated_histidine_cation,
+        ),
+        (
+            "18.2.recognition.multiple_protein_cations",
+            _test_recognize_multiple_protein_cations,
+        ),
+        (
+            "18.2.recognition.aspartate_anion",
+            _test_recognize_aspartate_anion,
+        ),
+        (
+            "18.2.recognition.glutamate_anion",
+            _test_recognize_glutamate_anion,
+        ),
+        (
+            "18.2.recognition.multiple_protein_anions",
+            _test_recognize_multiple_protein_anions,
+        ),
+        (
+            "18.2.recognition.ligand_cation",
+            _test_recognize_ligand_cation,
+        ),
+        (
+            "18.2.recognition.ligand_carboxylate",
+            _test_recognize_ligand_carboxylate,
+        ),
+        (
+            "18.2.recognition.ligand_phosphate",
+            _test_recognize_ligand_phosphate,
+        ),
+        (
+            "18.2.recognition.ligand_sulfonate",
+            _test_recognize_ligand_sulfonate,
+        ),
+        (
+            "18.2.recognition.neutral_ligand_negative",
+            _test_neutral_ligand_is_not_charged,
+        ),
+        (
+            "18.2.recognition.polarity_separation",
+            _test_recognition_polarity_separation,
+        ),
+        (
+            "18.2.recognition.no_duplicate_groups",
+            _test_recognition_does_not_duplicate_groups,
+        ),
+        (
+            "18.2.recognition.empty_source",
+            _test_recognition_empty_source,
+        ),
+        (
+            "18.2.geometry.single_atom_center",
+            _test_single_atom_group_center,
+        ),
+        (
+            "18.2.geometry.two_atom_center",
+            _test_two_atom_group_center,
+        ),
+        (
+            "18.2.geometry.center_translation",
+            _test_group_center_translation,
+        ),
+        (
+            "18.2.geometry.group_center_distance",
+            _test_group_center_distance,
+        ),
+        (
+            "18.2.geometry.reported_center_distance",
+            _test_geometry_center_distance,
+        ),
+        (
+            "18.2.geometry.atomic_distance_ordering",
+            _test_geometry_atomic_distance_ordering,
+        ),
+        (
+            "18.2.geometry.closest_atom_pair",
+            _test_geometry_closest_atom_pair,
+        ),
+        (
+            "18.2.geometry.contact_count",
+            _test_geometry_contact_count_nonnegative,
+        ),
+        (
+            "18.2.geometry.valid_short_range",
+            _test_valid_short_range_geometry,
+        ),
+        (
+            "18.2.geometry.invalid_long_range",
+            _test_invalid_long_range_geometry,
+        ),
+        (
+            "18.2.geometry.cutoff_boundary",
+            _test_geometry_at_cutoff_boundary,
+        ),
+        (
+            "18.2.geometry.translation_invariance",
+            _test_geometry_translation_invariance,
+        ),
+        (
+            "18.2.geometry.rotation_invariance",
+            _test_geometry_rotation_invariance,
+        ),
+        (
+            "18.2.integration.recognized_groups_geometry",
+            _test_recognized_groups_support_geometry,
+        ),
+        (
+            "18.2.integration.far_pair_negative",
+            _test_recognition_geometry_far_negative_case,
+        ),
+    ]
+
+
+# =============================================================================
+# 18.2.13. SECTION RUNNER
+# =============================================================================
+
+
+def run_salt_bridge_recognition_geometry_tests(
+    *,
+    report: Optional[
+        _SelfTestReport
+    ] = None,
+    raise_on_failure: bool = False,
+    print_report: bool = False,
+) -> _SelfTestReport:
+    """
+    Run all Section 18.2 recognition and geometry self-tests.
+
+    Parameters
+    ----------
+    report
+        Optional existing self-test report.
+    raise_on_failure
+        Whether the first failure should raise an exception.
+    print_report
+        Whether the resulting report should be printed.
+
+    Returns
+    -------
+    _SelfTestReport
+        Updated self-test report.
+    """
+
+    resolved_report = (
+        _run_self_test_group(
+            get_salt_bridge_recognition_geometry_tests(),
+            report=report,
+            raise_on_failure=(
+                raise_on_failure
+            ),
+        )
+    )
+
+    if print_report:
+        _print_self_test_report(
+            resolved_report
+        )
+
+    return resolved_report
+
+
 
 
 
