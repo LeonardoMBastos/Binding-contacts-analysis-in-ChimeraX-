@@ -56756,4 +56756,2363 @@ def run_pi_detection_self_tests(
     )
 
 
+# =============================================================================
+# 18.4. TESTES DE CLASSIFICAÇÃO E INTEGRAÇÃO
+# =============================================================================
 
+# -----------------------------------------------------------------------------
+# 18.4.1. Constantes e objetos auxiliares
+# -----------------------------------------------------------------------------
+
+PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION: Final[str] = "18.4"
+
+PI_SELF_TEST_SCORE_MINIMUM: Final[float] = 0.0
+PI_SELF_TEST_SCORE_MAXIMUM: Final[float] = 100.0
+
+PI_SELF_TEST_POSE_1: Final[str] = "pose-1"
+PI_SELF_TEST_POSE_2: Final[str] = "pose-2"
+PI_SELF_TEST_POSE_3: Final[str] = "pose-3"
+
+
+@dataclass
+class MockPiDockModel:
+    """
+    Minimal DockModel-compatible object used by the π integration tests.
+
+    The class intentionally exposes only attributes required by Section 15.
+    It does not implement or modify any docking algorithm.
+    """
+
+    pose_id: str
+    structure: Any
+    pi: List[Any] = field(default_factory=list)
+    statistics: Dict[str, Any] = field(default_factory=dict)
+    score: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def model_id(self) -> str:
+        """Return a stable model identifier."""
+
+        return self.pose_id
+
+
+def _pi_test_clone_interaction(
+    interaction: Any,
+    *,
+    interaction_id: Optional[str] = None,
+    pose_id: Optional[str] = None,
+) -> Any:
+    """
+    Produce a shallow independent copy of a test interaction.
+
+    Dataclass-based interactions are copied through ``replace``. Other mutable
+    interaction objects are copied through ``copy.copy``.
+    """
+
+    try:
+        cloned = replace(interaction)
+    except (TypeError, ValueError):
+        from copy import copy
+
+        cloned = copy(interaction)
+
+    updates: Dict[str, Any] = {}
+
+    if interaction_id is not None:
+        updates["interaction_id"] = interaction_id
+
+    if pose_id is not None:
+        updates["pose_id"] = pose_id
+
+    for attribute_name, value in updates.items():
+        if hasattr(cloned, attribute_name):
+            try:
+                setattr(cloned, attribute_name, value)
+            except (AttributeError, TypeError):
+                pass
+
+    metadata = dict(
+        getattr(cloned, "metadata", {}) or {}
+    )
+
+    if interaction_id is not None:
+        metadata["self_test_interaction_id"] = (
+            interaction_id
+        )
+
+    if pose_id is not None:
+        metadata["pose_id"] = pose_id
+
+    if hasattr(cloned, "metadata"):
+        try:
+            cloned.metadata = metadata
+        except (AttributeError, TypeError):
+            pass
+
+    return cloned
+
+
+def _pi_test_set_interaction_pose(
+    interaction: Any,
+    pose_id: str,
+) -> Any:
+    """Assign a pose identifier to an interaction fixture."""
+
+    return _pi_test_clone_interaction(
+        interaction,
+        pose_id=pose_id,
+    )
+
+
+def _pi_test_interaction_score(
+    interaction: Any,
+) -> float:
+    """Return the normalized score of a classified interaction."""
+
+    value = _pi_test_get_interaction_value(
+        interaction,
+        (
+            "normalized_score",
+            "score",
+        ),
+        0.0,
+    )
+
+    return float(value or 0.0)
+
+
+def _pi_test_interaction_strength(
+    interaction: Any,
+) -> str:
+    """Return the normalized strength label."""
+
+    value = _pi_test_get_interaction_value(
+        interaction,
+        (
+            "strength_class",
+            "strength",
+        ),
+        STRENGTH_UNCLASSIFIED,
+    )
+
+    return str(value).strip().lower()
+
+
+def _pi_test_interaction_geometry_class(
+    interaction: Any,
+) -> str:
+    """Return the global geometry-quality classification."""
+
+    value = _pi_test_get_interaction_value(
+        interaction,
+        (
+            "global_geometry_class",
+            "geometry_quality",
+            "geometry_class",
+        ),
+        GEOMETRY_REJECTED,
+    )
+
+    return str(value).strip().lower()
+
+
+def _pi_test_interaction_identifier(
+    interaction: Any,
+) -> str:
+    """Return a stable interaction identifier."""
+
+    value = _pi_test_get_interaction_value(
+        interaction,
+        (
+            "interaction_id",
+            "id",
+        ),
+        "",
+    )
+
+    if value not in (None, ""):
+        return str(value)
+
+    metadata = getattr(interaction, "metadata", {})
+
+    if isinstance(metadata, Mapping):
+        value = metadata.get(
+            "self_test_interaction_id",
+            "",
+        )
+
+    return str(value or "")
+
+
+def _pi_test_interaction_pose_id(
+    interaction: Any,
+) -> Optional[str]:
+    """Return the pose identifier stored by the interaction."""
+
+    value = _pi_test_get_interaction_value(
+        interaction,
+        (
+            "pose_id",
+            "model_id",
+        ),
+    )
+
+    if value is not None:
+        return str(value)
+
+    metadata = getattr(interaction, "metadata", {})
+
+    if isinstance(metadata, Mapping):
+        value = metadata.get("pose_id")
+
+    return None if value is None else str(value)
+
+
+def _pi_test_create_detected_interaction_set(
+    *,
+    pose_id: str = PI_SELF_TEST_POSE_1,
+) -> List[Any]:
+    """
+    Construct one accepted interaction of each principal π category.
+
+    The interactions are generated through the actual geometric detectors,
+    rather than being instantiated as already-classified records.
+    """
+
+    protein_ring = create_mock_aromatic_ring(
+        ring_id=f"{pose_id}:protein-ring",
+        center=(0.0, 0.0, 0.0),
+        normal=(0.0, 0.0, 1.0),
+        residue_name="PHE",
+        residue_number=200,
+        chain_id="A",
+        participant_type="protein",
+    )
+
+    ligand_ring = create_mock_aromatic_ring(
+        ring_id=f"{pose_id}:ligand-ring",
+        center=(1.75, 0.0, 3.70),
+        normal=(0.0, 0.0, 1.0),
+        residue_name="LIG",
+        residue_number=1,
+        chain_id="L",
+        participant_type="ligand",
+    )
+
+    cation = create_mock_cation_above_ring(
+        protein_ring,
+        height=3.40,
+        radial_offset=0.50,
+        effective_charge=1.0,
+        group_id=f"{pose_id}:cation",
+    )
+
+    anion = create_mock_anion_above_ring(
+        protein_ring,
+        height=3.30,
+        radial_offset=0.45,
+        effective_charge=-1.0,
+        group_id=f"{pose_id}:anion",
+    )
+
+    amide = create_mock_amide_above_ring(
+        protein_ring,
+        height=3.40,
+        radial_offset=0.55,
+        parallel=True,
+        amide_id=f"{pose_id}:amide",
+    )
+
+    interactions = [
+        detect_single_pi_pi_interaction(
+            protein_ring,
+            ligand_ring,
+        ),
+        detect_single_cation_pi_interaction(
+            protein_ring,
+            cation,
+        ),
+        detect_single_anion_pi_interaction(
+            protein_ring,
+            anion,
+        ),
+        detect_single_amide_pi_interaction(
+            protein_ring,
+            amide,
+        ),
+    ]
+
+    for index, interaction in enumerate(
+        interactions,
+        start=1,
+    ):
+        assert_pi_is_not_none(
+            interaction,
+            (
+                "Could not construct interaction fixture "
+                f"{index} for pose {pose_id!r}."
+            ),
+        )
+
+    return [
+        _pi_test_clone_interaction(
+            interaction,
+            interaction_id=(
+                f"{pose_id}:interaction:{index}"
+            ),
+            pose_id=pose_id,
+        )
+        for index, interaction in enumerate(
+            interactions,
+            start=1,
+        )
+    ]
+
+
+def _pi_test_create_dock_model_features(
+    *,
+    pose_id: str,
+    ligand_ring_height: float = 3.70,
+) -> Tuple[
+    MockPiDockModel,
+    List[Any],
+    List[Any],
+    List[Any],
+    List[Any],
+]:
+    """
+    Construct one mock DockModel and externally supplied recognized features.
+    """
+
+    structure = create_mock_pi_test_structure(
+        pose_id=pose_id,
+        include_protein_ring=False,
+        include_ligand_ring=False,
+        include_cation=False,
+        include_anion=False,
+        include_amide=False,
+    )
+
+    protein_ring = create_mock_aromatic_ring(
+        ring_id=f"{pose_id}:dock-protein-ring",
+        center=(0.0, 0.0, 0.0),
+        normal=(0.0, 0.0, 1.0),
+        residue_name="PHE",
+        residue_number=250,
+        chain_id="A",
+        participant_type="protein",
+    )
+
+    ligand_ring = create_mock_aromatic_ring(
+        ring_id=f"{pose_id}:dock-ligand-ring",
+        center=(1.50, 0.0, ligand_ring_height),
+        normal=(0.0, 0.0, 1.0),
+        residue_name="LIG",
+        residue_number=1,
+        chain_id="L",
+        participant_type="ligand",
+    )
+
+    cation = create_mock_cation_above_ring(
+        protein_ring,
+        height=3.35,
+        radial_offset=0.40,
+        effective_charge=1.0,
+        group_id=f"{pose_id}:dock-cation",
+    )
+
+    anion = create_mock_anion_above_ring(
+        protein_ring,
+        height=3.25,
+        radial_offset=0.40,
+        effective_charge=-1.0,
+        group_id=f"{pose_id}:dock-anion",
+    )
+
+    amide = create_mock_amide_above_ring(
+        protein_ring,
+        height=3.30,
+        radial_offset=0.45,
+        parallel=True,
+        amide_id=f"{pose_id}:dock-amide",
+    )
+
+    dock_model = MockPiDockModel(
+        pose_id=pose_id,
+        structure=structure,
+    )
+
+    return (
+        dock_model,
+        [protein_ring, ligand_ring],
+        [cation],
+        [anion],
+        [amide],
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.4.2. Testes de scoring e classificação
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "classificacao_e_scoring",
+    section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
+    metadata={
+        "category": "scoring",
+        "targets": [
+            "score_pi_interaction",
+            "classify_and_score_pi_interactions",
+            "rank_pi_interactions",
+            "summarize_pi_scoring",
+        ],
+    },
+)
+def test_pi_scoring_and_classification() -> None:
+    """Validate scoring, strength assignment and interaction ranking."""
+
+    raw_interactions = (
+        _pi_test_create_detected_interaction_set()
+    )
+
+    scored_interactions = (
+        classify_and_score_pi_interactions(
+            raw_interactions,
+            strict=True,
+        )
+    )
+
+    assert_pi_length(
+        scored_interactions,
+        4,
+    )
+
+    for interaction in scored_interactions:
+        score = _pi_test_interaction_score(
+            interaction
+        )
+
+        assert_pi_between(
+            score,
+            PI_SELF_TEST_SCORE_MINIMUM,
+            PI_SELF_TEST_SCORE_MAXIMUM,
+        )
+
+        assert_pi_in(
+            _pi_test_interaction_strength(
+                interaction
+            ),
+            {
+                STRENGTH_STRONG,
+                STRENGTH_MODERATE,
+                STRENGTH_WEAK,
+                STRENGTH_UNCLASSIFIED,
+            },
+        )
+
+        assert_pi_in(
+            _pi_test_interaction_geometry_class(
+                interaction
+            ),
+            {
+                GEOMETRY_OPTIMAL,
+                GEOMETRY_FAVORABLE,
+                GEOMETRY_WEAK,
+                GEOMETRY_BORDERLINE,
+                GEOMETRY_REJECTED,
+            },
+        )
+
+        metadata = getattr(
+            interaction,
+            "metadata",
+            {},
+        )
+
+        _pi_test_require(
+            isinstance(metadata, Mapping),
+            "Scored interaction metadata must be a mapping.",
+        )
+
+        assert_pi_in(
+            "score_components",
+            metadata,
+        )
+
+        assert_pi_in(
+            "canonical_interaction_type",
+            metadata,
+        )
+
+        assert_pi_in(
+            "global_geometry_class",
+            metadata,
+        )
+
+        assert_pi_in(
+            "strength_class",
+            metadata,
+        )
+
+    ranked = rank_pi_interactions(
+        scored_interactions
+    )
+
+    assert_pi_length(
+        ranked,
+        4,
+    )
+
+    ranked_scores = [
+        _pi_test_interaction_score(
+            interaction
+        )
+        for interaction in ranked
+    ]
+
+    assert_pi_equal(
+        ranked_scores,
+        sorted(
+            ranked_scores,
+            reverse=True,
+        ),
+    )
+
+    for expected_rank, interaction in enumerate(
+        ranked,
+        start=1,
+    ):
+        rank = _pi_test_get_interaction_value(
+            interaction,
+            ("rank",),
+        )
+
+        if rank is None:
+            metadata = getattr(
+                interaction,
+                "metadata",
+                {},
+            )
+            rank = metadata.get("rank")
+
+        assert_pi_equal(
+            int(rank),
+            expected_rank,
+        )
+
+    summary = summarize_pi_scoring(ranked)
+
+    assert_pi_equal(
+        summary["total_interactions"],
+        4,
+    )
+
+    assert_pi_equal(
+        sum(
+            summary[
+                "type_distribution"
+            ].values()
+        ),
+        4,
+    )
+
+    assert_pi_json_serializable(summary)
+
+
+# -----------------------------------------------------------------------------
+# 18.4.3. Testes de deduplicação
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "deduplicacao_de_interacoes",
+    section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
+    metadata={
+        "category": "deduplication",
+        "targets": [
+            "deduplicate_pi_interactions",
+            "merge_equivalent_pi_interactions",
+            "classify_and_score_pi_interactions",
+        ],
+    },
+)
+def test_pi_interaction_deduplication() -> None:
+    """Validate scoring-level and grouping-level duplicate consolidation."""
+
+    original = (
+        _pi_test_create_detected_interaction_set()
+    )[0]
+
+    duplicate = _pi_test_clone_interaction(
+        original,
+        interaction_id=(
+            "duplicate-pi-pi-interaction"
+        ),
+    )
+
+    scoring_config = (
+        create_default_pi_scoring_config()
+    )
+
+    deduplicated, duplicate_count = (
+        deduplicate_pi_interactions(
+            [original, duplicate],
+            config=scoring_config,
+        )
+    )
+
+    assert_pi_length(
+        deduplicated,
+        1,
+    )
+
+    assert_pi_equal(
+        duplicate_count,
+        1,
+    )
+
+    retained_metadata = getattr(
+        deduplicated[0],
+        "metadata",
+        {},
+    )
+
+    _pi_test_require(
+        isinstance(retained_metadata, Mapping),
+        "Deduplicated metadata must be a mapping.",
+    )
+
+    _pi_test_require(
+        int(
+            retained_metadata.get(
+                "duplicate_count",
+                0,
+            )
+        ) >= 1,
+        (
+            "Scoring deduplication did not record "
+            "the duplicate source."
+        ),
+    )
+
+    grouping_config = (
+        create_default_pi_grouping_config()
+    )
+
+    merged, removed_count = (
+        merge_equivalent_pi_interactions(
+            [original, duplicate],
+            config=grouping_config,
+        )
+    )
+
+    assert_pi_length(
+        merged,
+        1,
+    )
+
+    assert_pi_equal(
+        removed_count,
+        1,
+    )
+
+    merged_metadata = getattr(
+        merged[0],
+        "metadata",
+        {},
+    )
+
+    assert_pi_true(
+        bool(
+            merged_metadata.get(
+                "merged_equivalent_interactions",
+                False,
+            )
+        ),
+        (
+            "Grouping-level consolidation did not "
+            "mark the representative as merged."
+        ),
+    )
+
+    assert_pi_equal(
+        merged_metadata.get(
+            "equivalent_record_count"
+        ),
+        2,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.4.4. Testes de agrupamento
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "agrupamento_de_interacoes",
+    section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
+    metadata={
+        "category": "grouping",
+        "targets": [
+            "group_pi_interactions_by_residue",
+            "group_pi_interactions_by_chain",
+            "group_pi_interactions_by_pose",
+            "group_pi_interactions_by_ring",
+            "group_pi_interactions_by_type",
+            "organize_pi_interactions",
+            "summarize_pi_grouping",
+        ],
+    },
+)
+def test_pi_interaction_grouping() -> None:
+    """Validate grouping by residue, chain, pose, ring and type."""
+
+    pose_1_interactions = (
+        classify_and_score_pi_interactions(
+            _pi_test_create_detected_interaction_set(
+                pose_id=PI_SELF_TEST_POSE_1,
+            ),
+            strict=True,
+        )
+    )
+
+    pose_2_interactions = (
+        classify_and_score_pi_interactions(
+            _pi_test_create_detected_interaction_set(
+                pose_id=PI_SELF_TEST_POSE_2,
+            ),
+            strict=True,
+        )
+    )
+
+    interactions = [
+        *pose_1_interactions,
+        *pose_2_interactions,
+    ]
+
+    grouping_result = organize_pi_interactions(
+        interactions
+    )
+
+    assert_pi_equal(
+        grouping_result.input_count,
+        8,
+    )
+
+    assert_pi_equal(
+        grouping_result.retained_count,
+        8,
+    )
+
+    assert_pi_equal(
+        grouping_result.merged_count,
+        0,
+    )
+
+    assert_pi_equal(
+        len(
+            grouping_result.groups_by_pose
+        ),
+        2,
+    )
+
+    assert_pi_in(
+        PI_SELF_TEST_POSE_1,
+        grouping_result.groups_by_pose,
+    )
+
+    assert_pi_in(
+        PI_SELF_TEST_POSE_2,
+        grouping_result.groups_by_pose,
+    )
+
+    assert_pi_equal(
+        grouping_result.groups_by_pose[
+            PI_SELF_TEST_POSE_1
+        ].interaction_count,
+        4,
+    )
+
+    assert_pi_equal(
+        grouping_result.groups_by_pose[
+            PI_SELF_TEST_POSE_2
+        ].interaction_count,
+        4,
+    )
+
+    expected_types = {
+        PI_PI,
+        CATION_PI,
+        ANION_PI,
+        AMIDE_PI,
+    }
+
+    assert_pi_equal(
+        set(
+            grouping_result.groups_by_type
+        ),
+        expected_types,
+    )
+
+    _pi_test_require(
+        len(
+            grouping_result.groups_by_residue
+        ) >= 1,
+        "No residue groups were created.",
+    )
+
+    _pi_test_require(
+        len(
+            grouping_result.groups_by_chain
+        ) >= 1,
+        "No chain groups were created.",
+    )
+
+    _pi_test_require(
+        len(
+            grouping_result.groups_by_ring
+        ) >= 1,
+        "No aromatic-ring groups were created.",
+    )
+
+    for interaction in (
+        grouping_result.interactions
+    ):
+        metadata = getattr(
+            interaction,
+            "metadata",
+            {},
+        )
+
+        assert_pi_in(
+            "grouping",
+            metadata,
+        )
+
+        grouping_metadata = metadata[
+            "grouping"
+        ]
+
+        assert_pi_in(
+            "residue_groups",
+            grouping_metadata,
+        )
+
+        assert_pi_in(
+            "ring_groups",
+            grouping_metadata,
+        )
+
+        assert_pi_in(
+            "hotspots",
+            grouping_metadata,
+        )
+
+    grouping_summary = summarize_pi_grouping(
+        grouping_result
+    )
+
+    assert_pi_equal(
+        grouping_summary[
+            "input_interactions"
+        ],
+        8,
+    )
+
+    assert_pi_equal(
+        grouping_summary[
+            "retained_interactions"
+        ],
+        8,
+    )
+
+    assert_pi_equal(
+        grouping_summary[
+            "pose_group_count"
+        ],
+        2,
+    )
+
+    assert_pi_equal(
+        grouping_summary[
+            "type_group_count"
+        ],
+        4,
+    )
+
+    assert_pi_json_serializable(
+        grouping_summary
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.4.5. Testes de estatísticas
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "estatisticas_de_interacoes",
+    section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
+    metadata={
+        "category": "statistics",
+        "targets": [
+            "calculate_pi_statistics",
+            "summarize_pi_interactions",
+            "create_compact_pi_summary",
+            "calculate_pi_multipose_frequency",
+        ],
+    },
+)
+def test_pi_interaction_statistics() -> None:
+    """Validate aggregate, per-type, per-pose and score statistics."""
+
+    interactions: List[Any] = []
+
+    for pose_id in (
+        PI_SELF_TEST_POSE_1,
+        PI_SELF_TEST_POSE_2,
+        PI_SELF_TEST_POSE_3,
+    ):
+        pose_interactions = (
+            classify_and_score_pi_interactions(
+                _pi_test_create_detected_interaction_set(
+                    pose_id=pose_id,
+                ),
+                strict=True,
+            )
+        )
+
+        interactions.extend(pose_interactions)
+
+    grouping_result = organize_pi_interactions(
+        interactions
+    )
+
+    statistics_config = (
+        create_default_pi_statistics_config()
+    )
+
+    if hasattr(
+        statistics_config,
+        "total_pose_count",
+    ):
+        statistics_config.total_pose_count = 3
+
+    report = calculate_pi_statistics(
+        grouping_result.interactions,
+        grouping_result=grouping_result,
+        config=statistics_config,
+    )
+
+    assert_pi_equal(
+        report.total_interactions,
+        12,
+    )
+
+    assert_pi_equal(
+        report.pose_count,
+        3,
+    )
+
+    assert_pi_equal(
+        set(report.pose_ids),
+        {
+            PI_SELF_TEST_POSE_1,
+            PI_SELF_TEST_POSE_2,
+            PI_SELF_TEST_POSE_3,
+        },
+    )
+
+    assert_pi_equal(
+        report.total_by_type.get(
+            PI_PI,
+            0,
+        ),
+        3,
+    )
+
+    assert_pi_equal(
+        report.total_by_type.get(
+            CATION_PI,
+            0,
+        ),
+        3,
+    )
+
+    assert_pi_equal(
+        report.total_by_type.get(
+            ANION_PI,
+            0,
+        ),
+        3,
+    )
+
+    assert_pi_equal(
+        report.total_by_type.get(
+            AMIDE_PI,
+            0,
+        ),
+        3,
+    )
+
+    assert_pi_close(
+        report.total_score,
+        sum(
+            _pi_test_interaction_score(
+                interaction
+            )
+            for interaction in (
+                grouping_result.interactions
+            )
+        ),
+        absolute_tolerance=1.0e-4,
+    )
+
+    assert_pi_close(
+        report.mean_score,
+        (
+            report.total_score
+            / report.total_interactions
+        ),
+        absolute_tolerance=1.0e-4,
+    )
+
+    assert_pi_is_not_none(
+        report.best_interaction
+    )
+
+    assert_pi_is_not_none(
+        report.predominant_interaction
+    )
+
+    assert_pi_equal(
+        report.score_statistics.count,
+        12,
+    )
+
+    assert_pi_equal(
+        report.centroid_distance_statistics.count,
+        12,
+    )
+
+    assert_pi_equal(
+        set(
+            report.statistics_by_pose
+        ),
+        {
+            PI_SELF_TEST_POSE_1,
+            PI_SELF_TEST_POSE_2,
+            PI_SELF_TEST_POSE_3,
+        },
+    )
+
+    summary = summarize_pi_interactions(
+        grouping_result.interactions,
+        grouping_result=grouping_result,
+        config=statistics_config,
+    )
+
+    compact_summary = (
+        create_compact_pi_summary(report)
+    )
+
+    assert_pi_equal(
+        summary["total_interactions"],
+        12,
+    )
+
+    assert_pi_equal(
+        compact_summary[
+            "total_interactions"
+        ],
+        12,
+    )
+
+    assert_pi_equal(
+        compact_summary["pose_count"],
+        3,
+    )
+
+    assert_pi_json_serializable(summary)
+    assert_pi_json_serializable(
+        compact_summary
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.4.6. Testes de integração com DockModel
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "integracao_com_dock_model",
+    section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
+    metadata={
+        "category": "dock_model",
+        "targets": [
+            "analyze_dock_model_pi",
+            "attach_pi_results",
+            "update_dock_model_pi_statistics",
+            "update_dock_model_pi_score",
+        ],
+    },
+)
+def test_pi_dock_model_integration() -> None:
+    """Validate analysis and attachment without altering DockModel algorithms."""
+
+    (
+        dock_model,
+        aromatic_systems,
+        positive_groups,
+        negative_groups,
+        amide_groups,
+    ) = _pi_test_create_dock_model_features(
+        pose_id=PI_SELF_TEST_POSE_1,
+    )
+
+    previous_pi_object = dock_model.pi
+    previous_score = dock_model.score
+
+    integration_result = analyze_dock_model_pi(
+        dock_model,
+        aromatic_systems=aromatic_systems,
+        positive_groups=positive_groups,
+        negative_groups=negative_groups,
+        amide_groups=amide_groups,
+        pose_id=PI_SELF_TEST_POSE_1,
+        analysis_id=(
+            "self-test-dock-model-analysis"
+        ),
+    )
+
+    assert_pi_true(
+        integration_result.success,
+        (
+            "DockModel integration did not "
+            "complete successfully."
+        ),
+    )
+
+    assert_pi_equal(
+        integration_result.dock_model,
+        dock_model,
+    )
+
+    assert_pi_equal(
+        integration_result.pi_attribute,
+        DOCK_MODEL_PI_ATTRIBUTE,
+    )
+
+    assert_pi_equal(
+        integration_result.previous_interaction_count,
+        0,
+    )
+
+    _pi_test_require(
+        integration_result.new_interaction_count
+        >= 4,
+        (
+            "DockModel integration detected fewer "
+            "interactions than expected."
+        ),
+    )
+
+    assert_pi_equal(
+        len(dock_model.pi),
+        integration_result.attached_interaction_count,
+    )
+
+    assert_pi_true(
+        dock_model.pi is not previous_pi_object,
+        (
+            "The active π attribute should contain "
+            "the newly attached result collection."
+        ),
+    )
+
+    assert_pi_true(
+        dock_model.score >= previous_score,
+        (
+            "DockModel score was not updated "
+            "after π integration."
+        ),
+    )
+
+    _pi_test_require(
+        isinstance(
+            dock_model.statistics,
+            Mapping,
+        ),
+        (
+            "DockModel statistics must remain "
+            "mapping-compatible."
+        ),
+    )
+
+    assert_pi_true(
+        integration_result.analysis_result.success,
+        "Attached PiAnalysisResult is unsuccessful.",
+    )
+
+    assert_pi_equal(
+        integration_result.analysis_result.pose_id,
+        PI_SELF_TEST_POSE_1,
+    )
+
+    assert_pi_equal(
+        integration_result.analysis_result.total_interactions,
+        len(dock_model.pi),
+    )
+
+    assert_pi_in(
+        "schema",
+        integration_result.metadata,
+    )
+
+    assert_pi_in(
+        "new_interaction_count",
+        integration_result.metadata,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.4.7. Testes multipose
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "analise_multipose",
+    section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
+    metadata={
+        "category": "multipose",
+        "targets": [
+            "analyze_multiple_poses_pi",
+            "calculate_pi_interaction_pose_frequency",
+            "calculate_pi_multipose_frequency",
+        ],
+    },
+)
+def test_pi_multipose_analysis() -> None:
+    """Validate independent pose analysis and global aggregation."""
+
+    pose_inputs: Dict[str, Any] = {}
+    aromatic_system_map: Dict[
+        str,
+        List[Any],
+    ] = {}
+    positive_group_map: Dict[
+        str,
+        List[Any],
+    ] = {}
+    negative_group_map: Dict[
+        str,
+        List[Any],
+    ] = {}
+    amide_group_map: Dict[
+        str,
+        List[Any],
+    ] = {}
+
+    for pose_id, ring_height in (
+        (PI_SELF_TEST_POSE_1, 3.60),
+        (PI_SELF_TEST_POSE_2, 3.80),
+        (PI_SELF_TEST_POSE_3, 4.10),
+    ):
+        (
+            dock_model,
+            aromatic_systems,
+            positive_groups,
+            negative_groups,
+            amide_groups,
+        ) = _pi_test_create_dock_model_features(
+            pose_id=pose_id,
+            ligand_ring_height=ring_height,
+        )
+
+        pose_inputs[pose_id] = (
+            dock_model.structure
+        )
+
+        aromatic_system_map[pose_id] = (
+            aromatic_systems
+        )
+
+        positive_group_map[pose_id] = (
+            positive_groups
+        )
+
+        negative_group_map[pose_id] = (
+            negative_groups
+        )
+
+        amide_group_map[pose_id] = (
+            amide_groups
+        )
+
+    multipose_result = (
+        analyze_multiple_poses_pi(
+            pose_inputs,
+            aromatic_systems=(
+                aromatic_system_map
+            ),
+            positive_groups=(
+                positive_group_map
+            ),
+            negative_groups=(
+                negative_group_map
+            ),
+            amide_groups=amide_group_map,
+            analysis_id=(
+                "self-test-multipose-analysis"
+            ),
+            continue_on_error=False,
+        )
+    )
+
+    assert_pi_true(
+        multipose_result.success,
+        (
+            "Multipose analysis did not "
+            "complete successfully."
+        ),
+    )
+
+    assert_pi_false(
+        multipose_result.partial_success,
+        (
+            "A complete multipose fixture was "
+            "incorrectly marked as partial."
+        ),
+    )
+
+    assert_pi_equal(
+        multipose_result.pose_count,
+        3,
+    )
+
+    assert_pi_equal(
+        multipose_result.successful_pose_count,
+        3,
+    )
+
+    assert_pi_equal(
+        multipose_result.failed_pose_count,
+        0,
+    )
+
+    assert_pi_length(
+        multipose_result.pose_results,
+        3,
+    )
+
+    assert_pi_is_not_none(
+        multipose_result.best_pose_id
+    )
+
+    assert_pi_in(
+        multipose_result.best_pose_id,
+        pose_inputs,
+    )
+
+    assert_pi_is_not_none(
+        multipose_result.best_pose_result
+    )
+
+    assert_pi_is_not_none(
+        multipose_result.grouping_result
+    )
+
+    assert_pi_is_not_none(
+        multipose_result.statistics_report
+    )
+
+    _pi_test_require(
+        multipose_result.total_interactions
+        >= 12,
+        (
+            "Global multipose result contains fewer "
+            "interactions than expected."
+        ),
+    )
+
+    observed_pose_ids = {
+        pose_id
+        for interaction in (
+            multipose_result.interactions
+        )
+        if (
+            pose_id
+            := _pi_test_interaction_pose_id(
+                interaction
+            )
+        )
+        is not None
+    }
+
+    assert_pi_equal(
+        observed_pose_ids,
+        set(pose_inputs),
+    )
+
+    frequency = (
+        calculate_pi_interaction_pose_frequency(
+            multipose_result.interactions,
+            total_pose_count=3,
+        )
+    )
+
+    _pi_test_require(
+        len(frequency) >= 4,
+        (
+            "Multipose frequency analysis returned "
+            "fewer interaction signatures than expected."
+        ),
+    )
+
+    for frequency_record in (
+        frequency.values()
+    ):
+        assert_pi_between(
+            float(
+                frequency_record["frequency"]
+            ),
+            0.0,
+            1.0,
+        )
+
+        assert_pi_equal(
+            frequency_record[
+                "total_pose_count"
+            ],
+            3,
+        )
+
+    assert_pi_equal(
+        multipose_result.statistics_report.pose_count,
+        3,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.4.8. Testes multipose com múltiplos DockModels
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "integracao_de_multiplos_dock_models",
+    section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
+    metadata={
+        "category": "dock_model_multipose",
+        "targets": [
+            "analyze_multiple_dock_models_pi",
+            "analyze_dock_model_pi",
+        ],
+    },
+)
+def test_multiple_dock_model_pi_integration() -> None:
+    """Validate independent DockModel updates and the global pose report."""
+
+    dock_models: List[MockPiDockModel] = []
+    aromatic_system_map: Dict[
+        str,
+        List[Any],
+    ] = {}
+    positive_group_map: Dict[
+        str,
+        List[Any],
+    ] = {}
+    negative_group_map: Dict[
+        str,
+        List[Any],
+    ] = {}
+    amide_group_map: Dict[
+        str,
+        List[Any],
+    ] = {}
+
+    for pose_id, ring_height in (
+        (PI_SELF_TEST_POSE_1, 3.55),
+        (PI_SELF_TEST_POSE_2, 3.90),
+    ):
+        (
+            dock_model,
+            aromatic_systems,
+            positive_groups,
+            negative_groups,
+            amide_groups,
+        ) = _pi_test_create_dock_model_features(
+            pose_id=pose_id,
+            ligand_ring_height=ring_height,
+        )
+
+        dock_models.append(dock_model)
+
+        aromatic_system_map[pose_id] = (
+            aromatic_systems
+        )
+
+        positive_group_map[pose_id] = (
+            positive_groups
+        )
+
+        negative_group_map[pose_id] = (
+            negative_groups
+        )
+
+        amide_group_map[pose_id] = (
+            amide_groups
+        )
+
+    result = analyze_multiple_dock_models_pi(
+        dock_models,
+        aromatic_systems=aromatic_system_map,
+        positive_groups=positive_group_map,
+        negative_groups=negative_group_map,
+        amide_groups=amide_group_map,
+        continue_on_error=False,
+        run_global_multipose_analysis=True,
+    )
+
+    assert_pi_true(
+        result.success,
+        (
+            "Multiple DockModel integration did "
+            "not complete successfully."
+        ),
+    )
+
+    assert_pi_equal(
+        result.model_count,
+        2,
+    )
+
+    assert_pi_equal(
+        result.successful_model_count,
+        2,
+    )
+
+    assert_pi_equal(
+        result.failed_model_count,
+        0,
+    )
+
+    assert_pi_length(
+        result.model_results,
+        2,
+    )
+
+    assert_pi_is_not_none(
+        result.best_model
+    )
+
+    assert_pi_is_not_none(
+        result.best_model_index
+    )
+
+    assert_pi_in(
+        result.best_model_index,
+        {0, 1},
+    )
+
+    assert_pi_in(
+        result.best_pose_id,
+        {
+            PI_SELF_TEST_POSE_1,
+            PI_SELF_TEST_POSE_2,
+        },
+    )
+
+    assert_pi_is_not_none(
+        result.multipose_result
+    )
+
+    assert_pi_equal(
+        result.multipose_result.pose_count,
+        2,
+    )
+
+    for dock_model in dock_models:
+        _pi_test_require(
+            len(dock_model.pi) >= 4,
+            (
+                f"DockModel {dock_model.pose_id!r} "
+                "did not receive its π interactions."
+            ),
+        )
+
+        assert_pi_true(
+            dock_model.score >= 0.0,
+            (
+                f"DockModel {dock_model.pose_id!r} "
+                "contains an invalid score."
+            ),
+        )
+
+
+# -----------------------------------------------------------------------------
+# 18.4.9. Testes de serialização
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "serializacao_de_resultados",
+    section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
+    metadata={
+        "category": "serialization",
+        "targets": [
+            "pi_interaction_to_dict",
+            "pi_result_to_dict",
+            "serialize_pi_results",
+            "extract_pi_interactions",
+        ],
+    },
+)
+def test_pi_result_serialization() -> None:
+    """Validate dictionaries, JSON and supported integrated result schemas."""
+
+    (
+        dock_model,
+        aromatic_systems,
+        positive_groups,
+        negative_groups,
+        amide_groups,
+    ) = _pi_test_create_dock_model_features(
+        pose_id=PI_SELF_TEST_POSE_1,
+    )
+
+    integration_result = analyze_dock_model_pi(
+        dock_model,
+        aromatic_systems=aromatic_systems,
+        positive_groups=positive_groups,
+        negative_groups=negative_groups,
+        amide_groups=amide_groups,
+        pose_id=PI_SELF_TEST_POSE_1,
+        analysis_id=(
+            "self-test-serialization-analysis"
+        ),
+    )
+
+    analysis_result = (
+        integration_result.analysis_result
+    )
+
+    assert_pi_true(
+        analysis_result.success,
+        (
+            "Serialization fixture analysis "
+            "was unsuccessful."
+        ),
+    )
+
+    _pi_test_require(
+        len(analysis_result.interactions) > 0,
+        (
+            "Serialization fixture contains "
+            "no interactions."
+        ),
+    )
+
+    first_interaction = (
+        analysis_result.interactions[0]
+    )
+
+    interaction_dict = (
+        pi_interaction_to_dict(
+            first_interaction
+        )
+    )
+
+    assert_pi_is_instance(
+        interaction_dict,
+        dict,
+    )
+
+    assert_pi_in(
+        "interaction_type",
+        interaction_dict,
+    )
+
+    assert_pi_in(
+        "score",
+        interaction_dict,
+    )
+
+    result_dict = pi_result_to_dict(
+        analysis_result
+    )
+
+    assert_pi_is_instance(
+        result_dict,
+        dict,
+    )
+
+    assert_pi_equal(
+        result_dict["schema"],
+        "pi-analysis-result",
+    )
+
+    assert_pi_equal(
+        result_dict["pose_id"],
+        PI_SELF_TEST_POSE_1,
+    )
+
+    assert_pi_equal(
+        result_dict[
+            "total_interactions"
+        ],
+        analysis_result.total_interactions,
+    )
+
+    serialized_json = serialize_pi_results(
+        analysis_result
+    )
+
+    assert_pi_is_instance(
+        serialized_json,
+        str,
+    )
+
+    decoded = json.loads(
+        serialized_json
+    )
+
+    assert_pi_equal(
+        decoded["schema"],
+        "pi-analysis-result",
+    )
+
+    assert_pi_equal(
+        decoded[
+            "total_interactions"
+        ],
+        analysis_result.total_interactions,
+    )
+
+    assert_pi_equal(
+        len(decoded["interactions"]),
+        analysis_result.total_interactions,
+    )
+
+    integration_dict = pi_result_to_dict(
+        integration_result
+    )
+
+    assert_pi_equal(
+        integration_dict["schema"],
+        (
+            "dock-model-pi-"
+            "integration-result"
+        ),
+    )
+
+    integration_json = (
+        serialize_pi_results(
+            integration_result
+        )
+    )
+
+    decoded_integration = json.loads(
+        integration_json
+    )
+
+    assert_pi_equal(
+        decoded_integration["schema"],
+        (
+            "dock-model-pi-"
+            "integration-result"
+        ),
+    )
+
+    extracted_interactions = (
+        extract_pi_interactions(
+            integration_result
+        )
+    )
+
+    assert_pi_length(
+        extracted_interactions,
+        analysis_result.total_interactions,
+    )
+
+    assert_pi_json_serializable(
+        interaction_dict
+    )
+
+    assert_pi_json_serializable(
+        result_dict
+    )
+
+    assert_pi_json_serializable(
+        integration_dict
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.4.10. Testes de serialização multipose
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "serializacao_multipose",
+    section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
+    metadata={
+        "category": "multipose_serialization",
+        "targets": [
+            "analyze_multiple_poses_pi",
+            "pi_result_to_dict",
+            "serialize_pi_results",
+        ],
+    },
+)
+def test_pi_multipose_serialization() -> None:
+    """Validate the complete multipose serialization schema."""
+
+    pose_inputs: Dict[str, Any] = {}
+    aromatic_system_map: Dict[
+        str,
+        List[Any],
+    ] = {}
+    positive_group_map: Dict[
+        str,
+        List[Any],
+    ] = {}
+    negative_group_map: Dict[
+        str,
+        List[Any],
+    ] = {}
+    amide_group_map: Dict[
+        str,
+        List[Any],
+    ] = {}
+
+    for pose_id in (
+        PI_SELF_TEST_POSE_1,
+        PI_SELF_TEST_POSE_2,
+    ):
+        (
+            dock_model,
+            aromatic_systems,
+            positive_groups,
+            negative_groups,
+            amide_groups,
+        ) = _pi_test_create_dock_model_features(
+            pose_id=pose_id,
+        )
+
+        pose_inputs[pose_id] = (
+            dock_model.structure
+        )
+
+        aromatic_system_map[pose_id] = (
+            aromatic_systems
+        )
+
+        positive_group_map[pose_id] = (
+            positive_groups
+        )
+
+        negative_group_map[pose_id] = (
+            negative_groups
+        )
+
+        amide_group_map[pose_id] = (
+            amide_groups
+        )
+
+    multipose_result = (
+        analyze_multiple_poses_pi(
+            pose_inputs,
+            aromatic_systems=(
+                aromatic_system_map
+            ),
+            positive_groups=(
+                positive_group_map
+            ),
+            negative_groups=(
+                negative_group_map
+            ),
+            amide_groups=amide_group_map,
+            analysis_id=(
+                "self-test-multipose-serialization"
+            ),
+            continue_on_error=False,
+        )
+    )
+
+    multipose_dict = pi_result_to_dict(
+        multipose_result
+    )
+
+    assert_pi_equal(
+        multipose_dict["schema"],
+        "pi-multipose-analysis-result",
+    )
+
+    assert_pi_equal(
+        multipose_dict["pose_count"],
+        2,
+    )
+
+    assert_pi_equal(
+        multipose_dict[
+            "successful_pose_count"
+        ],
+        2,
+    )
+
+    assert_pi_equal(
+        len(
+            multipose_dict[
+                "pose_results"
+            ]
+        ),
+        2,
+    )
+
+    multipose_json = serialize_pi_results(
+        multipose_result
+    )
+
+    decoded = json.loads(
+        multipose_json
+    )
+
+    assert_pi_equal(
+        decoded["schema"],
+        "pi-multipose-analysis-result",
+    )
+
+    assert_pi_equal(
+        decoded["pose_count"],
+        2,
+    )
+
+    assert_pi_equal(
+        decoded[
+            "total_interactions"
+        ],
+        multipose_result.total_interactions,
+    )
+
+    assert_pi_json_serializable(
+        multipose_dict
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.4.11. Executor específico da seção
+# -----------------------------------------------------------------------------
+
+def run_pi_classification_integration_self_tests(
+    *,
+    raise_on_failure: bool = False,
+    capture_output: bool = True,
+) -> PiSelfTestReport:
+    """
+    Execute only the classification and integration tests from Section 18.4.
+
+    Covered components
+    ------------------
+    - interaction scoring;
+    - geometry and strength classification;
+    - ranking;
+    - scoring-level deduplication;
+    - grouping-level equivalent-record merging;
+    - grouping by residue, chain, pose, ring and interaction type;
+    - aggregate and per-pose statistics;
+    - DockModel integration;
+    - multiple DockModel integration;
+    - global multipose analysis;
+    - interaction, analysis and multipose serialization.
+    """
+
+    return run_registered_pi_self_tests(
+        section=(
+            PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION
+        ),
+        raise_on_failure=raise_on_failure,
+        capture_output=capture_output,
+    )
+
+
+
+# =============================================================================
+# 18.5. RUNNER FINAL
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 18.5.1. Constantes do runner
+# -----------------------------------------------------------------------------
+
+PI_SELF_TEST_ROOT_SECTION: Final[str] = "18"
+
+PI_SELF_TEST_EXPECTED_SECTIONS: Final[Tuple[str, ...]] = (
+    "18.2",
+    "18.3",
+    "18.4",
+)
+
+
+# -----------------------------------------------------------------------------
+# 18.5.2. Validação do registro final
+# -----------------------------------------------------------------------------
+
+def validate_pi_self_test_registry(
+    *,
+    require_all_sections: bool = True,
+) -> Dict[str, int]:
+    """
+    Validate the final π self-test registry.
+
+    Parameters
+    ----------
+    require_all_sections
+        Whether every expected self-test subsection must contain at least one
+        registered test.
+
+    Returns
+    -------
+    dict
+        Number of registered tests in each subsection.
+
+    Raises
+    ------
+    PiSelfTestFixtureError
+        If the registry is empty, contains duplicate names within the same
+        section, or lacks an expected subsection.
+    """
+
+    registered_cases = get_registered_pi_self_tests(
+        section=PI_SELF_TEST_ROOT_SECTION,
+        enabled_only=False,
+    )
+
+    if not registered_cases:
+        raise PiSelfTestFixtureError(
+            "No π self-tests are registered."
+        )
+
+    section_counts: Dict[str, int] = {
+        section: 0
+        for section in PI_SELF_TEST_EXPECTED_SECTIONS
+    }
+
+    observed_identifiers: Set[
+        Tuple[str, str]
+    ] = set()
+
+    for case in registered_cases:
+        identifier = (
+            str(case.section),
+            str(case.name),
+        )
+
+        if identifier in observed_identifiers:
+            raise PiSelfTestFixtureError(
+                "Duplicate π self-test registration: "
+                f"section={case.section!r}, "
+                f"name={case.name!r}."
+            )
+
+        observed_identifiers.add(identifier)
+
+        for expected_section in (
+            PI_SELF_TEST_EXPECTED_SECTIONS
+        ):
+            if (
+                case.section == expected_section
+                or case.section.startswith(
+                    f"{expected_section}."
+                )
+            ):
+                section_counts[
+                    expected_section
+                ] += 1
+                break
+
+    if require_all_sections:
+        missing_sections = [
+            section
+            for section, count
+            in section_counts.items()
+            if count == 0
+        ]
+
+        if missing_sections:
+            raise PiSelfTestFixtureError(
+                "No registered tests were found for "
+                "the following required sections: "
+                + ", ".join(missing_sections)
+                + "."
+            )
+
+    return section_counts
+
+
+# -----------------------------------------------------------------------------
+# 18.5.3. Enriquecimento do relatório
+# -----------------------------------------------------------------------------
+
+def finalize_pi_self_test_report(
+    report: PiSelfTestReport,
+    *,
+    section_counts: Optional[
+        Mapping[str, int]
+    ] = None,
+) -> PiSelfTestReport:
+    """
+    Add final execution metadata to a π self-test report.
+
+    The operation modifies only the report metadata and does not alter
+    individual test results.
+    """
+
+    if section_counts is None:
+        section_counts = {
+            section: len(
+                get_registered_pi_self_tests(
+                    section=section,
+                    enabled_only=False,
+                )
+            )
+            for section
+            in PI_SELF_TEST_EXPECTED_SECTIONS
+        }
+
+    failed_sections = sorted(
+        {
+            result.section
+            for result in report.results
+            if result.failed
+        }
+    )
+
+    skipped_sections = sorted(
+        {
+            result.section
+            for result in report.results
+            if result.skipped
+        }
+    )
+
+    report.metadata.update(
+        {
+            "schema": "pi-self-test-report",
+            "schema_version": (
+                PI_SELF_TEST_SCHEMA_VERSION
+            ),
+            "module_name": MODULE_NAME,
+            "module_version": MODULE_VERSION,
+            "root_section": (
+                PI_SELF_TEST_ROOT_SECTION
+            ),
+            "expected_sections": list(
+                PI_SELF_TEST_EXPECTED_SECTIONS
+            ),
+            "registered_by_section": dict(
+                section_counts
+            ),
+            "registered_test_count": sum(
+                section_counts.values()
+            ),
+            "executed_test_count": report.total,
+            "passed_test_count": report.passed,
+            "failed_test_count": report.failed,
+            "skipped_test_count": report.skipped,
+            "failed_sections": failed_sections,
+            "skipped_sections": skipped_sections,
+            "numpy_available": NUMPY_AVAILABLE,
+            "chimerax_available": (
+                CHIMERAX_AVAILABLE
+            ),
+            "success": report.success,
+        }
+    )
+
+    return report
+
+
+# -----------------------------------------------------------------------------
+# 18.5.4. Impressão do relatório
+# -----------------------------------------------------------------------------
+
+def print_pi_self_test_report(
+    report: PiSelfTestReport,
+    *,
+    include_passed: bool = True,
+    include_tracebacks: bool = False,
+) -> None:
+    """
+    Print a formatted π self-test report.
+
+    Parameters
+    ----------
+    report
+        Aggregated self-test report.
+    include_passed
+        Whether successful test cases should be displayed.
+    include_tracebacks
+        Whether failure tracebacks should be displayed.
+    """
+
+    formatted_report = format_pi_self_test_report(
+        report,
+        include_passed=include_passed,
+        include_tracebacks=include_tracebacks,
+    )
+
+    print(formatted_report)
+
+
+# -----------------------------------------------------------------------------
+# 18.5.5. Runner público
+# -----------------------------------------------------------------------------
+
+def run_self_tests(
+    *,
+    section: Optional[str] = None,
+    raise_on_failure: bool = False,
+    capture_output: bool = True,
+    print_report: bool = True,
+    include_passed: bool = True,
+    include_tracebacks: Optional[bool] = None,
+    validate_registry: bool = True,
+) -> PiSelfTestReport:
+    """
+    Execute the complete self-test suite of the ``pi`` module.
+
+    By default, all tests registered in Sections 18.2–18.4 are executed.
+    A specific subsection can be selected through ``section``.
+
+    Parameters
+    ----------
+    section
+        Optional subsection filter, such as ``"18.2"``, ``"18.3"`` or
+        ``"18.4"``. If omitted, all Section 18 tests are executed.
+    raise_on_failure
+        Whether the original exception should be raised immediately after a
+        test failure. When false, failures are recorded and execution
+        continues.
+    capture_output
+        Whether stdout and stderr generated by individual tests should be
+        captured in their result metadata.
+    print_report
+        Whether the consolidated report should be printed.
+    include_passed
+        Whether passed test cases should appear in the printed report.
+    include_tracebacks
+        Whether failure tracebacks should appear in the printed report. If
+        omitted, tracebacks are shown automatically when failures occur.
+    validate_registry
+        Whether the test registry should be checked before execution.
+
+    Returns
+    -------
+    PiSelfTestReport
+        Complete structured report containing all executed test cases.
+    """
+
+    section_filter = (
+        PI_SELF_TEST_ROOT_SECTION
+        if section is None
+        else str(section).strip()
+    )
+
+    if not section_filter:
+        raise PiSelfTestFixtureError(
+            "The self-test section filter cannot "
+            "be empty."
+        )
+
+    valid_section_filters = {
+        PI_SELF_TEST_ROOT_SECTION,
+        *PI_SELF_TEST_EXPECTED_SECTIONS,
+    }
+
+    if section_filter not in valid_section_filters:
+        raise PiSelfTestFixtureError(
+            "Unsupported π self-test section: "
+            f"{section_filter!r}. Expected one of "
+            f"{sorted(valid_section_filters)!r}."
+        )
+
+    section_counts: Dict[str, int]
+
+    if validate_registry:
+        section_counts = (
+            validate_pi_self_test_registry(
+                require_all_sections=(
+                    section_filter
+                    == PI_SELF_TEST_ROOT_SECTION
+                ),
+            )
+        )
+    else:
+        section_counts = {
+            expected_section: len(
+                get_registered_pi_self_tests(
+                    section=expected_section,
+                    enabled_only=False,
+                )
+            )
+            for expected_section
+            in PI_SELF_TEST_EXPECTED_SECTIONS
+        }
+
+    selected_cases = (
+        get_registered_pi_self_tests(
+            section=section_filter,
+            enabled_only=False,
+        )
+    )
+
+    if not selected_cases:
+        raise PiSelfTestFixtureError(
+            "No π self-tests were registered for "
+            f"section {section_filter!r}."
+        )
+
+    report = run_registered_pi_self_tests(
+        section=section_filter,
+        raise_on_failure=raise_on_failure,
+        capture_output=capture_output,
+    )
+
+    finalize_pi_self_test_report(
+        report,
+        section_counts=section_counts,
+    )
+
+    report.metadata.update(
+        {
+            "requested_section": (
+                section_filter
+            ),
+            "selected_test_count": len(
+                selected_cases
+            ),
+            "raise_on_failure": bool(
+                raise_on_failure
+            ),
+            "capture_output": bool(
+                capture_output
+            ),
+        }
+    )
+
+    if include_tracebacks is None:
+        include_tracebacks = (
+            report.failed > 0
+        )
+
+    if print_report:
+        print_pi_self_test_report(
+            report,
+            include_passed=include_passed,
+            include_tracebacks=(
+                include_tracebacks
+            ),
+        )
+
+    return report
+
+
+# -----------------------------------------------------------------------------
+# 18.5.6. Execução direta
+# -----------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    run_self_tests()
