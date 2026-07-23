@@ -54208,3 +54208,1227 @@ def validate_pi_self_test_infrastructure() -> None:
 validate_pi_self_test_infrastructure()
 
 
+# =============================================================================
+# 18.2. TESTES DE RECONHECIMENTO E GEOMETRIA
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 18.2.1. Constantes e helpers locais
+# -----------------------------------------------------------------------------
+
+PI_SELF_TEST_SECTION_RECOGNITION_GEOMETRY: Final[str] = "18.2"
+
+PI_SELF_TEST_PHE_RING_NAMES: Final[Tuple[str, ...]] = (
+    "CG",
+    "CD1",
+    "CE1",
+    "CZ",
+    "CE2",
+    "CD2",
+)
+
+PI_SELF_TEST_ASP_GROUP_NAMES: Final[Tuple[str, ...]] = (
+    "CG",
+    "OD1",
+    "OD2",
+)
+
+PI_SELF_TEST_LYS_GROUP_NAMES: Final[Tuple[str, ...]] = (
+    "NZ",
+)
+
+PI_SELF_TEST_ASN_AMIDE_NAMES: Final[Tuple[str, ...]] = (
+    "CG",
+    "OD1",
+    "ND2",
+)
+
+
+def _pi_test_require(
+    condition: bool,
+    message: str,
+) -> None:
+    """Raise a self-test assertion error when a condition is false."""
+
+    if not condition:
+        raise PiSelfTestAssertionError(message)
+
+
+def _pi_test_connect_atoms(
+    atom_1: MockPiAtom,
+    atom_2: MockPiAtom,
+) -> None:
+    """Create a bidirectional mock bond without duplicating neighbors."""
+
+    if atom_2 not in atom_1.bonds:
+        atom_1.bonds.append(atom_2)
+
+    if atom_1 not in atom_2.bonds:
+        atom_2.bonds.append(atom_1)
+
+
+def _pi_test_create_regular_ring_residue(
+    *,
+    residue_name: str = "PHE",
+    residue_number: int = 10,
+    chain_id: str = "A",
+    center: Sequence[float] = (0.0, 0.0, 0.0),
+    normal: Sequence[float] = (0.0, 0.0, 1.0),
+    radius: float = PI_SELF_TEST_BENZENE_RADIUS,
+    atom_names: Sequence[str] = PI_SELF_TEST_PHE_RING_NAMES,
+    aromatic: bool = True,
+    atom_type: Optional[str] = "C.ar",
+    participant_type: str = "protein",
+) -> MockPiResidue:
+    """
+    Construct a regular planar aromatic residue.
+
+    The generated atoms are connected in a closed cycle, allowing both known
+    residue recognition and connectivity-based ring detection to be tested.
+    """
+
+    center_vector = _pi_test_vector3(center)
+    axis_1, axis_2, normal_vector = (
+        create_pi_test_orthonormal_basis(normal)
+    )
+
+    residue = MockPiResidue(
+        residue_name=str(residue_name).upper(),
+        residue_number=int(residue_number),
+        chain_id=str(chain_id),
+        molecule_type=str(participant_type),
+    )
+
+    atom_count = len(atom_names)
+
+    if atom_count < 3:
+        raise PiSelfTestFixtureError(
+            "A ring fixture requires at least three atom names."
+        )
+
+    for index, atom_name in enumerate(atom_names):
+        angle = 2.0 * pi * index / atom_count
+
+        radial_vector = _pi_test_vector_add(
+            _pi_test_vector_scale(
+                axis_1,
+                radius * cos(angle),
+            ),
+            _pi_test_vector_scale(
+                axis_2,
+                radius * sin(angle),
+            ),
+        )
+
+        coordinate = _pi_test_vector_add(
+            center_vector,
+            radial_vector,
+        )
+
+        residue.add_atom(
+            create_mock_pi_atom(
+                index + 1,
+                str(atom_name),
+                "C",
+                coordinate,
+                residue_name=residue.residue_name,
+                residue_number=residue.residue_number,
+                chain_id=residue.chain_id,
+                aromatic=aromatic,
+                atom_type=atom_type,
+            )
+        )
+
+    for index, atom in enumerate(residue.atoms):
+        next_atom = residue.atoms[
+            (index + 1) % len(residue.atoms)
+        ]
+        _pi_test_connect_atoms(atom, next_atom)
+
+    residue.metadata.update(
+        {
+            "expected_centroid": center_vector,
+            "expected_normal": normal_vector,
+            "expected_radius": float(radius),
+        }
+    )
+
+    return residue
+
+
+def _pi_test_create_lysine_residue(
+    *,
+    residue_number: int = 20,
+    chain_id: str = "A",
+) -> MockPiResidue:
+    """Construct a minimal lysine side chain with a terminal cationic NZ."""
+
+    residue = MockPiResidue(
+        residue_name="LYS",
+        residue_number=residue_number,
+        chain_id=chain_id,
+        molecule_type="protein",
+    )
+
+    ce = residue.add_atom(
+        create_mock_pi_atom(
+            1,
+            "CE",
+            "C",
+            (0.0, 0.0, 0.0),
+            residue_name="LYS",
+            residue_number=residue_number,
+            chain_id=chain_id,
+        )
+    )
+
+    nz = residue.add_atom(
+        create_mock_pi_atom(
+            2,
+            "NZ",
+            "N",
+            (1.45, 0.0, 0.0),
+            residue_name="LYS",
+            residue_number=residue_number,
+            chain_id=chain_id,
+            formal_charge=1.0,
+            partial_charge=1.0,
+            atom_type="N.4",
+        )
+    )
+
+    _pi_test_connect_atoms(ce, nz)
+
+    return residue
+
+
+def _pi_test_create_aspartate_residue(
+    *,
+    residue_number: int = 21,
+    chain_id: str = "A",
+) -> MockPiResidue:
+    """Construct a minimal aspartate carboxylate group."""
+
+    residue = MockPiResidue(
+        residue_name="ASP",
+        residue_number=residue_number,
+        chain_id=chain_id,
+        molecule_type="protein",
+    )
+
+    cb = residue.add_atom(
+        create_mock_pi_atom(
+            1,
+            "CB",
+            "C",
+            (-1.50, 0.0, 0.0),
+            residue_name="ASP",
+            residue_number=residue_number,
+            chain_id=chain_id,
+        )
+    )
+
+    cg = residue.add_atom(
+        create_mock_pi_atom(
+            2,
+            "CG",
+            "C",
+            (0.0, 0.0, 0.0),
+            residue_name="ASP",
+            residue_number=residue_number,
+            chain_id=chain_id,
+            partial_charge=0.70,
+        )
+    )
+
+    od1 = residue.add_atom(
+        create_mock_pi_atom(
+            3,
+            "OD1",
+            "O",
+            (1.25, 0.75, 0.0),
+            residue_name="ASP",
+            residue_number=residue_number,
+            chain_id=chain_id,
+            formal_charge=-0.5,
+            partial_charge=-0.85,
+            atom_type="O.co2",
+        )
+    )
+
+    od2 = residue.add_atom(
+        create_mock_pi_atom(
+            4,
+            "OD2",
+            "O",
+            (1.25, -0.75, 0.0),
+            residue_name="ASP",
+            residue_number=residue_number,
+            chain_id=chain_id,
+            formal_charge=-0.5,
+            partial_charge=-0.85,
+            atom_type="O.co2",
+        )
+    )
+
+    _pi_test_connect_atoms(cb, cg)
+    _pi_test_connect_atoms(cg, od1)
+    _pi_test_connect_atoms(cg, od2)
+
+    return residue
+
+
+def _pi_test_create_asparagine_residue(
+    *,
+    residue_number: int = 30,
+    chain_id: str = "A",
+    out_of_plane_displacement: float = 0.0,
+) -> MockPiResidue:
+    """Construct an ASN side-chain amide with controlled planarity."""
+
+    residue = MockPiResidue(
+        residue_name="ASN",
+        residue_number=residue_number,
+        chain_id=chain_id,
+        molecule_type="protein",
+    )
+
+    cb = residue.add_atom(
+        create_mock_pi_atom(
+            1,
+            "CB",
+            "C",
+            (-1.45, 0.0, 0.0),
+            residue_name="ASN",
+            residue_number=residue_number,
+            chain_id=chain_id,
+        )
+    )
+
+    cg = residue.add_atom(
+        create_mock_pi_atom(
+            2,
+            "CG",
+            "C",
+            (0.0, 0.0, 0.0),
+            residue_name="ASN",
+            residue_number=residue_number,
+            chain_id=chain_id,
+            partial_charge=0.55,
+        )
+    )
+
+    od1 = residue.add_atom(
+        create_mock_pi_atom(
+            3,
+            "OD1",
+            "O",
+            (1.23, 0.0, 0.0),
+            residue_name="ASN",
+            residue_number=residue_number,
+            chain_id=chain_id,
+            partial_charge=-0.55,
+            atom_type="O.2",
+        )
+    )
+
+    nd2 = residue.add_atom(
+        create_mock_pi_atom(
+            4,
+            "ND2",
+            "N",
+            (-0.15, 1.34, float(out_of_plane_displacement)),
+            residue_name="ASN",
+            residue_number=residue_number,
+            chain_id=chain_id,
+            partial_charge=-0.05,
+            atom_type="N.am",
+        )
+    )
+
+    _pi_test_connect_atoms(cb, cg)
+    _pi_test_connect_atoms(cg, od1)
+    _pi_test_connect_atoms(cg, nd2)
+
+    return residue
+
+
+# -----------------------------------------------------------------------------
+# 18.2.2. Testes de centroides
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "centroides_de_coordenadas",
+    section=PI_SELF_TEST_SECTION_RECOGNITION_GEOMETRY,
+    metadata={
+        "category": "centroid",
+        "targets": [
+            "calculate_centroid",
+            "calculate_atom_centroid",
+        ],
+    },
+)
+def test_pi_centroids() -> None:
+    """Validate coordinate and atom centroid calculations."""
+
+    coordinates = (
+        (1.0, 2.0, 3.0),
+        (3.0, 4.0, 5.0),
+        (5.0, 6.0, 7.0),
+        (7.0, 8.0, 9.0),
+    )
+
+    expected_centroid = (4.0, 5.0, 6.0)
+
+    coordinate_centroid = calculate_centroid(coordinates)
+
+    assert_pi_vector_close(
+        coordinate_centroid,
+        expected_centroid,
+    )
+
+    atoms = [
+        create_mock_pi_atom(
+            index,
+            f"C{index}",
+            "C",
+            coordinate,
+        )
+        for index, coordinate in enumerate(
+            coordinates,
+            start=1,
+        )
+    ]
+
+    atom_centroid = calculate_atom_centroid(atoms)
+
+    assert_pi_vector_close(
+        atom_centroid,
+        expected_centroid,
+    )
+
+    translated_coordinates = tuple(
+        _pi_test_vector_add(
+            coordinate,
+            (10.0, -5.0, 2.5),
+        )
+        for coordinate in coordinates
+    )
+
+    translated_centroid = calculate_centroid(
+        translated_coordinates
+    )
+
+    assert_pi_vector_close(
+        translated_centroid,
+        (14.0, 0.0, 8.5),
+    )
+
+    assert_pi_raises(
+        PiGeometryError,
+        calculate_centroid,
+        (),
+        message_contains="At least one coordinate",
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.2.3. Testes de vetores normais
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "vetores_normais_de_planos",
+    section=PI_SELF_TEST_SECTION_RECOGNITION_GEOMETRY,
+    metadata={
+        "category": "normal_vector",
+        "targets": [
+            "fit_plane_to_coordinates",
+            "orient_normal_deterministically",
+            "angle_between_planes",
+        ],
+    },
+)
+def test_pi_plane_normal_vectors() -> None:
+    """Validate fitted normals and orientation-independent plane angles."""
+
+    coordinates_xy = (
+        (-1.0, -1.0, 0.0),
+        (1.0, -1.0, 0.0),
+        (1.0, 1.0, 0.0),
+        (-1.0, 1.0, 0.0),
+    )
+
+    geometry_xy = fit_plane_to_coordinates(
+        coordinates_xy,
+        prefer_numpy=NUMPY_AVAILABLE,
+        strict=True,
+    )
+
+    _pi_test_require(
+        geometry_xy is not None,
+        "Plane fitting unexpectedly returned None.",
+    )
+
+    assert_pi_unit_vector(geometry_xy.normal)
+
+    oriented_normal = orient_normal_deterministically(
+        geometry_xy.normal
+    )
+
+    assert_pi_parallel(
+        oriented_normal,
+        (0.0, 0.0, 1.0),
+    )
+
+    coordinates_yz = (
+        (0.0, -1.0, -1.0),
+        (0.0, 1.0, -1.0),
+        (0.0, 1.0, 1.0),
+        (0.0, -1.0, 1.0),
+    )
+
+    geometry_yz = fit_plane_to_coordinates(
+        coordinates_yz,
+        prefer_numpy=NUMPY_AVAILABLE,
+        strict=True,
+    )
+
+    _pi_test_require(
+        geometry_yz is not None,
+        "Second plane fitting unexpectedly returned None.",
+    )
+
+    assert_pi_unit_vector(geometry_yz.normal)
+
+    plane_angle = angle_between_planes(
+        geometry_xy.normal,
+        geometry_yz.normal,
+        strict=True,
+    )
+
+    assert_pi_close(
+        plane_angle,
+        90.0,
+        absolute_tolerance=PI_SELF_TEST_DEFAULT_ANGLE_TOLERANCE,
+    )
+
+    opposite_orientation = align_normal_to_reference(
+        _pi_test_vector_scale(
+            geometry_xy.normal,
+            -1.0,
+        ),
+        geometry_xy.normal,
+    )
+
+    assert_pi_parallel(
+        opposite_orientation,
+        geometry_xy.normal,
+    )
+
+    assert_pi_raises(
+        PiGeometryError,
+        fit_plane_to_coordinates,
+        (
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+        ),
+        strict=True,
+        message_contains="At least three coordinates",
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.2.4. Testes de planaridade
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "planaridade_de_aneis",
+    section=PI_SELF_TEST_SECTION_RECOGNITION_GEOMETRY,
+    metadata={
+        "category": "planarity",
+        "targets": [
+            "fit_plane_to_coordinates",
+            "calculate_pi_ring_geometry",
+            "classify_ring_planarity",
+            "calculate_ring_planarity_score",
+        ],
+    },
+)
+def test_pi_ring_planarity() -> None:
+    """Validate planar and deliberately distorted aromatic systems."""
+
+    planar_residue = _pi_test_create_regular_ring_residue()
+
+    planar_ring = create_preliminary_pi_ring(
+        planar_residue.atoms,
+        participant_type=PARTICIPANT_RECEPTOR,
+        aromaticity_source="self_test",
+    )
+
+    planar_geometry = calculate_pi_ring_geometry(
+        planar_ring,
+        prefer_numpy=NUMPY_AVAILABLE,
+        strict=True,
+        update_ring=True,
+    )
+
+    _pi_test_require(
+        planar_geometry is not None,
+        "Planar ring geometry was not calculated.",
+    )
+
+    assert_pi_close(
+        planar_ring.planarity_rmsd,
+        0.0,
+        absolute_tolerance=PI_SELF_TEST_DEFAULT_ABSOLUTE_TOLERANCE,
+    )
+
+    assert_pi_close(
+        planar_ring.maximum_plane_deviation,
+        0.0,
+        absolute_tolerance=PI_SELF_TEST_DEFAULT_ABSOLUTE_TOLERANCE,
+    )
+
+    assert_pi_close(
+        planar_ring.radius,
+        PI_SELF_TEST_BENZENE_RADIUS,
+        absolute_tolerance=PI_SELF_TEST_DEFAULT_ABSOLUTE_TOLERANCE,
+    )
+
+    assert_pi_equal(
+        classify_ring_planarity(planar_ring),
+        GEOMETRY_OPTIMAL,
+    )
+
+    assert_pi_close(
+        calculate_ring_planarity_score(planar_ring),
+        1.0,
+    )
+
+    distorted_residue = _pi_test_create_regular_ring_residue(
+        residue_number=11,
+    )
+
+    distorted_residue.atoms[0].coordinate = (
+        distorted_residue.atoms[0].coordinate[0],
+        distorted_residue.atoms[0].coordinate[1],
+        0.60,
+    )
+
+    distorted_ring = create_preliminary_pi_ring(
+        distorted_residue.atoms,
+        participant_type=PARTICIPANT_RECEPTOR,
+        aromaticity_source="self_test_distorted",
+    )
+
+    distorted_geometry = calculate_pi_ring_geometry(
+        distorted_ring,
+        prefer_numpy=NUMPY_AVAILABLE,
+        strict=True,
+        update_ring=True,
+    )
+
+    _pi_test_require(
+        distorted_geometry is not None,
+        "Distorted ring geometry was not calculated.",
+    )
+
+    _pi_test_require(
+        distorted_ring.planarity_rmsd is not None,
+        "Distorted ring has no planarity RMSD.",
+    )
+
+    _pi_test_require(
+        distorted_ring.maximum_plane_deviation is not None,
+        "Distorted ring has no maximum plane deviation.",
+    )
+
+    assert_pi_less(
+        planar_ring.planarity_rmsd,
+        distorted_ring.planarity_rmsd,
+    )
+
+    assert_pi_less(
+        calculate_ring_planarity_score(distorted_ring),
+        calculate_ring_planarity_score(planar_ring),
+    )
+
+    _pi_test_require(
+        distorted_ring.maximum_plane_deviation > 0.0,
+        "Out-of-plane displacement was not detected.",
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.2.5. Testes de reconhecimento de grupos carregados
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "reconhecimento_de_grupos_carregados",
+    section=PI_SELF_TEST_SECTION_RECOGNITION_GEOMETRY,
+    metadata={
+        "category": "charged_groups",
+        "targets": [
+            "detect_charged_groups",
+            "detect_cationic_groups",
+            "detect_anionic_groups",
+            "split_charged_groups_by_sign",
+        ],
+    },
+)
+def test_pi_charged_group_recognition() -> None:
+    """Validate recognition of standard protein cationic and anionic groups."""
+
+    lysine = _pi_test_create_lysine_residue()
+    aspartate = _pi_test_create_aspartate_residue()
+
+    cationic_groups = detect_cationic_groups(
+        lysine,
+        participant_type=PARTICIPANT_RECEPTOR,
+    )
+
+    anionic_groups = detect_anionic_groups(
+        aspartate,
+        participant_type=PARTICIPANT_RECEPTOR,
+    )
+
+    _pi_test_require(
+        len(cationic_groups) >= 1,
+        "No cationic group was detected in the LYS fixture.",
+    )
+
+    _pi_test_require(
+        len(anionic_groups) >= 1,
+        "No anionic group was detected in the ASP fixture.",
+    )
+
+    lysine_group = next(
+        (
+            group
+            for group in cationic_groups
+            if group.residue_name == "LYS"
+        ),
+        None,
+    )
+
+    aspartate_group = next(
+        (
+            group
+            for group in anionic_groups
+            if group.residue_name == "ASP"
+        ),
+        None,
+    )
+
+    _pi_test_require(
+        lysine_group is not None,
+        "The detected cationic groups do not contain LYS.",
+    )
+
+    _pi_test_require(
+        aspartate_group is not None,
+        "The detected anionic groups do not contain ASP.",
+    )
+
+    assert_pi_equal(
+        lysine_group.charge_sign,
+        CHARGE_POSITIVE,
+    )
+
+    assert_pi_equal(
+        aspartate_group.charge_sign,
+        CHARGE_NEGATIVE,
+    )
+
+    _pi_test_require(
+        lysine_group.center is not None,
+        "The LYS cationic center was not calculated.",
+    )
+
+    _pi_test_require(
+        aspartate_group.center is not None,
+        "The ASP anionic center was not calculated.",
+    )
+
+    _pi_test_require(
+        lysine_group.effective_charge is not None,
+        "The LYS effective charge is unavailable.",
+    )
+
+    _pi_test_require(
+        aspartate_group.effective_charge is not None,
+        "The ASP effective charge is unavailable.",
+    )
+
+    assert_pi_less(
+        0.0,
+        lysine_group.effective_charge,
+    )
+
+    assert_pi_less(
+        aspartate_group.effective_charge,
+        0.0,
+    )
+
+    all_groups = [
+        *cationic_groups,
+        *anionic_groups,
+    ]
+
+    positive_groups, negative_groups = (
+        split_charged_groups_by_sign(all_groups)
+    )
+
+    assert_pi_length(
+        positive_groups,
+        len(cationic_groups),
+    )
+
+    assert_pi_length(
+        negative_groups,
+        len(anionic_groups),
+    )
+
+    charged_summary = summarize_charged_groups(
+        all_groups
+    )
+
+    assert_pi_equal(
+        charged_summary["positive_groups"],
+        len(positive_groups),
+    )
+
+    assert_pi_equal(
+        charged_summary["negative_groups"],
+        len(negative_groups),
+    )
+
+    assert_pi_json_serializable(charged_summary)
+
+
+# -----------------------------------------------------------------------------
+# 18.2.6. Testes de reconhecimento de grupos amida
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "reconhecimento_de_grupos_amida",
+    section=PI_SELF_TEST_SECTION_RECOGNITION_GEOMETRY,
+    metadata={
+        "category": "amide_groups",
+        "targets": [
+            "detect_amide_groups",
+            "detect_sidechain_amide_groups",
+            "validate_amide_group",
+        ],
+    },
+)
+def test_pi_amide_group_recognition() -> None:
+    """Validate recognition and geometry of a standard ASN side-chain amide."""
+
+    asparagine = _pi_test_create_asparagine_residue()
+
+    amide_groups = detect_amide_groups(
+        asparagine,
+        participant_type=PARTICIPANT_RECEPTOR,
+        include_peptide_amides=False,
+        include_sidechain_amides=True,
+        include_generic_amides=True,
+        prefer_numpy=NUMPY_AVAILABLE,
+    )
+
+    _pi_test_require(
+        len(amide_groups) >= 1,
+        "No amide group was detected in the ASN fixture.",
+    )
+
+    asparagine_group = next(
+        (
+            group
+            for group in amide_groups
+            if group.residue_name == "ASN"
+        ),
+        None,
+    )
+
+    _pi_test_require(
+        asparagine_group is not None,
+        "The detected amide groups do not contain ASN.",
+    )
+
+    assert_pi_equal(
+        get_atom_name(
+            asparagine_group.carbonyl_carbon
+        ),
+        "CG",
+    )
+
+    assert_pi_equal(
+        get_atom_name(
+            asparagine_group.carbonyl_oxygen
+        ),
+        "OD1",
+    )
+
+    assert_pi_equal(
+        get_atom_name(
+            asparagine_group.amide_nitrogen
+        ),
+        "ND2",
+    )
+
+    _pi_test_require(
+        asparagine_group.center is not None,
+        "The ASN amide center was not calculated.",
+    )
+
+    _pi_test_require(
+        asparagine_group.normal is not None,
+        "The ASN amide normal was not calculated.",
+    )
+
+    _pi_test_require(
+        asparagine_group.planarity_rmsd is not None,
+        "The ASN amide planarity was not calculated.",
+    )
+
+    assert_pi_unit_vector(
+        asparagine_group.normal
+    )
+
+    assert_pi_close(
+        asparagine_group.planarity_rmsd,
+        0.0,
+        absolute_tolerance=PI_SELF_TEST_DEFAULT_ABSOLUTE_TOLERANCE,
+    )
+
+    valid, validation_messages = validate_amide_group(
+        asparagine_group
+    )
+
+    _pi_test_require(
+        valid,
+        (
+            "The valid ASN amide fixture was rejected: "
+            f"{validation_messages!r}."
+        ),
+    )
+
+    assert_pi_equal(
+        classify_amide_planarity(
+            asparagine_group.planarity_rmsd
+        ),
+        GEOMETRY_OPTIMAL,
+    )
+
+    assert_pi_close(
+        calculate_amide_planarity_score(
+            asparagine_group.planarity_rmsd
+        ),
+        1.0,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.2.7. Testes de reconhecimento de anéis aromáticos
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "reconhecimento_de_aneis_aromaticos",
+    section=PI_SELF_TEST_SECTION_RECOGNITION_GEOMETRY,
+    metadata={
+        "category": "aromatic_rings",
+        "targets": [
+            "find_standard_residue_aromatic_rings",
+            "find_simple_cycles",
+            "detect_residue_aromatic_rings",
+            "detect_aromatic_rings",
+        ],
+    },
+)
+def test_pi_aromatic_ring_recognition() -> None:
+    """Validate known-residue and connectivity-based aromatic-ring detection."""
+
+    phenylalanine = _pi_test_create_regular_ring_residue(
+        residue_name="PHE",
+        residue_number=40,
+        atom_names=PI_SELF_TEST_PHE_RING_NAMES,
+    )
+
+    known_rings = find_standard_residue_aromatic_rings(
+        phenylalanine,
+        require_complete=True,
+        include_fused_trp_system=False,
+    )
+
+    assert_pi_length(
+        known_rings,
+        1,
+    )
+
+    assert_pi_length(
+        known_rings[0],
+        6,
+    )
+
+    detected_cycles = find_simple_cycles(
+        phenylalanine.atoms,
+        minimum_size=5,
+        maximum_size=7,
+        heavy_atoms_only=True,
+    )
+
+    assert_pi_length(
+        detected_cycles,
+        1,
+    )
+
+    residue_rings = detect_residue_aromatic_rings(
+        phenylalanine,
+        participant_type=PARTICIPANT_RECEPTOR,
+        use_known_definitions=True,
+        use_connectivity_detection=True,
+        include_fused_systems=False,
+    )
+
+    assert_pi_length(
+        residue_rings,
+        1,
+    )
+
+    ring = residue_rings[0]
+
+    assert_pi_equal(
+        ring.residue_name,
+        "PHE",
+    )
+
+    assert_pi_equal(
+        ring.atom_count,
+        6,
+    )
+
+    assert_pi_equal(
+        ring.participant_type,
+        PARTICIPANT_RECEPTOR,
+    )
+
+    _pi_test_require(
+        ring.aromaticity_source in {
+            "known_protein_residue",
+            "aromatic_atoms",
+            "aromatic_bonds",
+            "atom_types",
+            "mixed_aromatic_evidence",
+        },
+        (
+            "Unexpected aromaticity source: "
+            f"{ring.aromaticity_source!r}."
+        ),
+    )
+
+    complete_rings = detect_aromatic_rings(
+        phenylalanine,
+        participant_type=PARTICIPANT_RECEPTOR,
+        use_known_definitions=True,
+        use_connectivity_detection=True,
+    )
+
+    assert_pi_length(
+        complete_rings,
+        1,
+    )
+
+    geometry = calculate_pi_ring_geometry(
+        complete_rings[0],
+        prefer_numpy=NUMPY_AVAILABLE,
+        strict=True,
+        update_ring=True,
+    )
+
+    _pi_test_require(
+        geometry is not None,
+        "Geometry was not calculated for the detected PHE ring.",
+    )
+
+    assert_pi_vector_close(
+        complete_rings[0].centroid,
+        (0.0, 0.0, 0.0),
+    )
+
+    assert_pi_unit_vector(
+        complete_rings[0].normal
+    )
+
+    assert_pi_close(
+        complete_rings[0].planarity_rmsd,
+        0.0,
+        absolute_tolerance=PI_SELF_TEST_DEFAULT_ABSOLUTE_TOLERANCE,
+    )
+
+    ring_summary = summarize_detected_rings(
+        complete_rings
+    )
+
+    assert_pi_equal(
+        ring_summary["total_rings"],
+        1,
+    )
+
+    assert_pi_equal(
+        ring_summary["protein_rings"],
+        1,
+    )
+
+    assert_pi_equal(
+        ring_summary["ring_size_distribution"][6],
+        1,
+    )
+
+    assert_pi_json_serializable(ring_summary)
+
+
+# -----------------------------------------------------------------------------
+# 18.2.8. Teste de invariância sob transformação rígida
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "invariancia_geometrica_por_transformacao_rigida",
+    section=PI_SELF_TEST_SECTION_RECOGNITION_GEOMETRY,
+    metadata={
+        "category": "geometry_invariance",
+        "targets": [
+            "calculate_centroid",
+            "fit_plane_to_coordinates",
+            "calculate_pi_ring_geometry",
+        ],
+    },
+)
+def test_pi_geometry_rigid_transform_invariance() -> None:
+    """
+    Confirm that rigid rotation and translation preserve radius and planarity.
+
+    The centroid and normal must follow the applied transformation, while
+    internal geometric measurements remain unchanged.
+    """
+
+    residue = _pi_test_create_regular_ring_residue(
+        residue_number=50,
+    )
+
+    original_ring = create_preliminary_pi_ring(
+        residue.atoms,
+        participant_type=PARTICIPANT_RECEPTOR,
+        aromaticity_source="self_test",
+    )
+
+    calculate_pi_ring_geometry(
+        original_ring,
+        prefer_numpy=NUMPY_AVAILABLE,
+        strict=True,
+        update_ring=True,
+    )
+
+    transform = create_pi_test_rigid_transform(
+        axis=(1.0, 1.0, 0.5),
+        angle_degrees=63.0,
+        translation=(7.5, -3.0, 2.25),
+        origin=(0.0, 0.0, 0.0),
+    )
+
+    transformed_atoms = [
+        transform_mock_pi_atom(
+            atom,
+            transform,
+            in_place=False,
+        )
+        for atom in residue.atoms
+    ]
+
+    for index, atom in enumerate(transformed_atoms):
+        atom.bonds = [
+            transformed_atoms[
+                (index - 1) % len(transformed_atoms)
+            ],
+            transformed_atoms[
+                (index + 1) % len(transformed_atoms)
+            ],
+        ]
+
+    transformed_ring = create_preliminary_pi_ring(
+        transformed_atoms,
+        participant_type=PARTICIPANT_RECEPTOR,
+        aromaticity_source="self_test_transformed",
+    )
+
+    calculate_pi_ring_geometry(
+        transformed_ring,
+        prefer_numpy=NUMPY_AVAILABLE,
+        strict=True,
+        update_ring=True,
+    )
+
+    expected_centroid = transform.apply_coordinate(
+        original_ring.centroid
+    )
+
+    expected_normal = transform.apply_vector(
+        original_ring.normal
+    )
+
+    assert_pi_vector_close(
+        transformed_ring.centroid,
+        expected_centroid,
+    )
+
+    assert_pi_parallel(
+        transformed_ring.normal,
+        expected_normal,
+    )
+
+    assert_pi_close(
+        transformed_ring.radius,
+        original_ring.radius,
+    )
+
+    assert_pi_close(
+        transformed_ring.planarity_rmsd,
+        original_ring.planarity_rmsd,
+    )
+
+    assert_pi_close(
+        transformed_ring.maximum_plane_deviation,
+        original_ring.maximum_plane_deviation,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.2.9. Executor específico da seção
+# -----------------------------------------------------------------------------
+
+def run_pi_recognition_geometry_self_tests(
+    *,
+    raise_on_failure: bool = False,
+    capture_output: bool = True,
+) -> PiSelfTestReport:
+    """
+    Execute only the recognition and geometry tests from Section 18.2.
+
+    Covered components
+    ------------------
+    - centroids;
+    - plane-normal vectors;
+    - ring planarity;
+    - charged groups;
+    - amide groups;
+    - aromatic rings;
+    - rigid-transformation invariance.
+    """
+
+    return run_registered_pi_self_tests(
+        section=PI_SELF_TEST_SECTION_RECOGNITION_GEOMETRY,
+        raise_on_failure=raise_on_failure,
+        capture_output=capture_output,
+    )
+
+
+
