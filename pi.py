@@ -24301,4 +24301,14499 @@ def summarize_cation_pi_detection(
         ),
     }
 
+# =============================================================================
+# 10. DETECÇÃO DE INTERAÇÕES ÂNION–π E AMIDA–π
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 10.1. Constantes gerais
+# -----------------------------------------------------------------------------
+
+ANION_PI_INTERACTION_TYPE: Final[str] = "anion-pi"
+AMIDE_PI_INTERACTION_TYPE: Final[str] = "amide-pi"
+
+PI_FACE_POSITIVE: Final[str] = "positive-normal-face"
+PI_FACE_NEGATIVE: Final[str] = "negative-normal-face"
+PI_FACE_IN_PLANE: Final[str] = "approximately-in-plane"
+
+SUPPORTED_PI_APPROACH_FACES: Final[FrozenSet[str]] = frozenset(
+    {
+        PI_FACE_POSITIVE,
+        PI_FACE_NEGATIVE,
+        PI_FACE_IN_PLANE,
+    }
+)
+
+PI_NONCOVALENT_EPSILON: Final[float] = 1.0e-12
+
+
+# -----------------------------------------------------------------------------
+# 10.2. Constantes ânion–π
+# -----------------------------------------------------------------------------
+
+ANION_PI_GEOMETRY_FACE_CENTERED: Final[str] = "face-centered"
+ANION_PI_GEOMETRY_FACE_OFFSET: Final[str] = "face-offset"
+ANION_PI_GEOMETRY_EDGE_ASSOCIATED: Final[str] = "edge-associated"
+ANION_PI_GEOMETRY_BORDERLINE: Final[str] = "borderline-anion-pi"
+ANION_PI_GEOMETRY_REJECTED: Final[str] = "rejected"
+
+SUPPORTED_ANION_PI_GEOMETRIES: Final[FrozenSet[str]] = frozenset(
+    {
+        ANION_PI_GEOMETRY_FACE_CENTERED,
+        ANION_PI_GEOMETRY_FACE_OFFSET,
+        ANION_PI_GEOMETRY_EDGE_ASSOCIATED,
+        ANION_PI_GEOMETRY_BORDERLINE,
+        ANION_PI_GEOMETRY_REJECTED,
+    }
+)
+
+ANION_PI_CHARGE_SOURCE_GROUP: Final[str] = "group"
+ANION_PI_CHARGE_SOURCE_FORMAL: Final[str] = "formal"
+ANION_PI_CHARGE_SOURCE_PARTIAL: Final[str] = "partial"
+ANION_PI_CHARGE_SOURCE_INFERRED: Final[str] = "inferred"
+ANION_PI_CHARGE_SOURCE_UNKNOWN: Final[str] = "unknown"
+
+SUPPORTED_ANION_PI_CHARGE_SOURCES: Final[FrozenSet[str]] = frozenset(
+    {
+        ANION_PI_CHARGE_SOURCE_GROUP,
+        ANION_PI_CHARGE_SOURCE_FORMAL,
+        ANION_PI_CHARGE_SOURCE_PARTIAL,
+        ANION_PI_CHARGE_SOURCE_INFERRED,
+        ANION_PI_CHARGE_SOURCE_UNKNOWN,
+    }
+)
+
+ANION_PI_DEFAULT_OPTIMAL_CENTROID_DISTANCE: Final[float] = 4.2
+ANION_PI_DEFAULT_MAXIMUM_CENTROID_DISTANCE: Final[float] = 5.8
+ANION_PI_DEFAULT_BORDERLINE_CENTROID_DISTANCE: Final[float] = 6.8
+
+ANION_PI_DEFAULT_MINIMUM_HEIGHT: Final[float] = 1.5
+ANION_PI_DEFAULT_OPTIMAL_HEIGHT: Final[float] = 3.3
+ANION_PI_DEFAULT_MAXIMUM_HEIGHT: Final[float] = 5.2
+ANION_PI_DEFAULT_BORDERLINE_HEIGHT: Final[float] = 6.2
+
+ANION_PI_DEFAULT_CENTERED_OFFSET: Final[float] = 1.3
+ANION_PI_DEFAULT_FACE_OFFSET: Final[float] = 2.5
+ANION_PI_DEFAULT_EDGE_OFFSET: Final[float] = 3.8
+ANION_PI_DEFAULT_BORDERLINE_OFFSET: Final[float] = 4.6
+
+ANION_PI_DEFAULT_ATOMIC_CONTACT_DISTANCE: Final[float] = 4.2
+ANION_PI_DEFAULT_MAXIMUM_ATOMIC_DISTANCE: Final[float] = 5.0
+
+ANION_PI_DEFAULT_MINIMUM_NEGATIVE_CHARGE: Final[float] = -0.25
+ANION_PI_DEFAULT_STRONG_NEGATIVE_CHARGE: Final[float] = -0.75
+
+ANION_PI_DEFAULT_MAXIMUM_PLANARITY_RMSD: Final[float] = 0.20
+ANION_PI_DEFAULT_BORDERLINE_PLANARITY_RMSD: Final[float] = 0.35
+
+
+# -----------------------------------------------------------------------------
+# 10.3. Constantes amida–π
+# -----------------------------------------------------------------------------
+
+AMIDE_PI_GEOMETRY_PARALLEL_FACE: Final[str] = "parallel-face"
+AMIDE_PI_GEOMETRY_PARALLEL_OFFSET: Final[str] = "parallel-offset"
+AMIDE_PI_GEOMETRY_CARBONYL_DIRECTED: Final[str] = "carbonyl-directed"
+AMIDE_PI_GEOMETRY_EDGE_TO_FACE: Final[str] = "edge-to-face"
+AMIDE_PI_GEOMETRY_BORDERLINE: Final[str] = "borderline-amide-pi"
+AMIDE_PI_GEOMETRY_REJECTED: Final[str] = "rejected"
+
+SUPPORTED_AMIDE_PI_GEOMETRIES: Final[FrozenSet[str]] = frozenset(
+    {
+        AMIDE_PI_GEOMETRY_PARALLEL_FACE,
+        AMIDE_PI_GEOMETRY_PARALLEL_OFFSET,
+        AMIDE_PI_GEOMETRY_CARBONYL_DIRECTED,
+        AMIDE_PI_GEOMETRY_EDGE_TO_FACE,
+        AMIDE_PI_GEOMETRY_BORDERLINE,
+        AMIDE_PI_GEOMETRY_REJECTED,
+    }
+)
+
+AMIDE_PI_DEFAULT_OPTIMAL_CENTROID_DISTANCE: Final[float] = 4.2
+AMIDE_PI_DEFAULT_MAXIMUM_CENTROID_DISTANCE: Final[float] = 6.0
+AMIDE_PI_DEFAULT_BORDERLINE_CENTROID_DISTANCE: Final[float] = 7.0
+
+AMIDE_PI_DEFAULT_MINIMUM_HEIGHT: Final[float] = 1.3
+AMIDE_PI_DEFAULT_OPTIMAL_HEIGHT: Final[float] = 3.4
+AMIDE_PI_DEFAULT_MAXIMUM_HEIGHT: Final[float] = 5.5
+AMIDE_PI_DEFAULT_BORDERLINE_HEIGHT: Final[float] = 6.5
+
+AMIDE_PI_DEFAULT_CENTERED_OFFSET: Final[float] = 1.5
+AMIDE_PI_DEFAULT_FACE_OFFSET: Final[float] = 2.8
+AMIDE_PI_DEFAULT_EDGE_OFFSET: Final[float] = 4.0
+AMIDE_PI_DEFAULT_BORDERLINE_OFFSET: Final[float] = 4.8
+
+AMIDE_PI_DEFAULT_PARALLEL_ANGLE: Final[float] = 30.0
+AMIDE_PI_DEFAULT_FACE_PARALLEL_ANGLE: Final[float] = 15.0
+AMIDE_PI_DEFAULT_PERPENDICULAR_MINIMUM_ANGLE: Final[float] = 60.0
+
+AMIDE_PI_DEFAULT_CARBONYL_ALIGNMENT_ANGLE: Final[float] = 45.0
+AMIDE_PI_DEFAULT_ATOMIC_CONTACT_DISTANCE: Final[float] = 4.2
+AMIDE_PI_DEFAULT_MAXIMUM_ATOMIC_DISTANCE: Final[float] = 5.0
+
+AMIDE_PI_DEFAULT_MAXIMUM_RING_PLANARITY_RMSD: Final[float] = 0.20
+AMIDE_PI_DEFAULT_MAXIMUM_AMIDE_PLANARITY_RMSD: Final[float] = 0.15
+AMIDE_PI_DEFAULT_BORDERLINE_PLANARITY_RMSD: Final[float] = 0.35
+
+
+# -----------------------------------------------------------------------------
+# 10.4. Exceções
+# -----------------------------------------------------------------------------
+
+class NoncovalentPiDetectionError(RuntimeError):
+    """
+    Base exception for Section 10 π-interaction detection.
+    """
+
+
+class AnionPiDetectionError(NoncovalentPiDetectionError):
+    """
+    Base exception for anion–π detection.
+    """
+
+
+class AnionPiGeometryError(AnionPiDetectionError):
+    """
+    Raised when anion–π geometric data are unavailable or invalid.
+    """
+
+
+class AnionPiValidationError(AnionPiDetectionError):
+    """
+    Raised when anion–π input or configuration is invalid.
+    """
+
+
+class AmidePiDetectionError(NoncovalentPiDetectionError):
+    """
+    Base exception for amide–π detection.
+    """
+
+
+class AmidePiGeometryError(AmidePiDetectionError):
+    """
+    Raised when amide–π geometric data are unavailable or invalid.
+    """
+
+
+class AmidePiValidationError(AmidePiDetectionError):
+    """
+    Raised when amide–π input or configuration is invalid.
+    """
+
+
+# -----------------------------------------------------------------------------
+# 10.5. Configuração ânion–π
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class AnionPiDetectionConfig:
+    """
+    Geometric and chemical thresholds for anion–π detection.
+    """
+
+    enabled: bool = True
+
+    optimal_centroid_distance: float = (
+        ANION_PI_DEFAULT_OPTIMAL_CENTROID_DISTANCE
+    )
+    maximum_centroid_distance: float = (
+        ANION_PI_DEFAULT_MAXIMUM_CENTROID_DISTANCE
+    )
+    borderline_maximum_centroid_distance: float = (
+        ANION_PI_DEFAULT_BORDERLINE_CENTROID_DISTANCE
+    )
+
+    minimum_height: float = ANION_PI_DEFAULT_MINIMUM_HEIGHT
+    optimal_height: float = ANION_PI_DEFAULT_OPTIMAL_HEIGHT
+    maximum_height: float = ANION_PI_DEFAULT_MAXIMUM_HEIGHT
+    borderline_maximum_height: float = (
+        ANION_PI_DEFAULT_BORDERLINE_HEIGHT
+    )
+
+    centered_maximum_radial_offset: float = (
+        ANION_PI_DEFAULT_CENTERED_OFFSET
+    )
+    face_maximum_radial_offset: float = (
+        ANION_PI_DEFAULT_FACE_OFFSET
+    )
+    edge_maximum_radial_offset: float = (
+        ANION_PI_DEFAULT_EDGE_OFFSET
+    )
+    borderline_maximum_radial_offset: float = (
+        ANION_PI_DEFAULT_BORDERLINE_OFFSET
+    )
+
+    atomic_contact_distance: float = (
+        ANION_PI_DEFAULT_ATOMIC_CONTACT_DISTANCE
+    )
+    maximum_minimum_atomic_distance: float = (
+        ANION_PI_DEFAULT_MAXIMUM_ATOMIC_DISTANCE
+    )
+
+    minimum_negative_charge: float = (
+        ANION_PI_DEFAULT_MINIMUM_NEGATIVE_CHARGE
+    )
+    strong_negative_charge: float = (
+        ANION_PI_DEFAULT_STRONG_NEGATIVE_CHARGE
+    )
+
+    maximum_planarity_rmsd: float = (
+        ANION_PI_DEFAULT_MAXIMUM_PLANARITY_RMSD
+    )
+    borderline_planarity_rmsd: float = (
+        ANION_PI_DEFAULT_BORDERLINE_PLANARITY_RMSD
+    )
+
+    require_negative_charge: bool = True
+    allow_partial_charge: bool = True
+    allow_inferred_charge: bool = True
+
+    require_electron_deficient_ring: bool = False
+    minimum_ring_electrophilicity: float = 0.0
+
+    require_atomic_contact: bool = False
+    include_atomic_contacts: bool = True
+    include_borderline: bool = True
+    include_rejected: bool = False
+    deduplicate_results: bool = True
+
+    exclude_intramolecular_same_residue: bool = True
+
+    def __post_init__(self) -> None:
+        nonnegative_fields = (
+            "optimal_centroid_distance",
+            "maximum_centroid_distance",
+            "borderline_maximum_centroid_distance",
+            "minimum_height",
+            "optimal_height",
+            "maximum_height",
+            "borderline_maximum_height",
+            "centered_maximum_radial_offset",
+            "face_maximum_radial_offset",
+            "edge_maximum_radial_offset",
+            "borderline_maximum_radial_offset",
+            "atomic_contact_distance",
+            "maximum_minimum_atomic_distance",
+            "maximum_planarity_rmsd",
+            "borderline_planarity_rmsd",
+            "minimum_ring_electrophilicity",
+        )
+
+        for field_name in nonnegative_fields:
+            value = getattr(self, field_name)
+
+            try:
+                value = float(value)
+
+            except (TypeError, ValueError) as exc:
+                raise AnionPiValidationError(
+                    f"{field_name} must be numeric."
+                ) from exc
+
+            if not math.isfinite(value) or value < 0.0:
+                raise AnionPiValidationError(
+                    f"{field_name} must be finite and nonnegative."
+                )
+
+            setattr(self, field_name, value)
+
+        for field_name in (
+            "minimum_negative_charge",
+            "strong_negative_charge",
+        ):
+            value = getattr(self, field_name)
+
+            try:
+                value = float(value)
+
+            except (TypeError, ValueError) as exc:
+                raise AnionPiValidationError(
+                    f"{field_name} must be numeric."
+                ) from exc
+
+            if not math.isfinite(value):
+                raise AnionPiValidationError(
+                    f"{field_name} must be finite."
+                )
+
+            setattr(self, field_name, value)
+
+        if self.minimum_negative_charge >= 0.0:
+            raise AnionPiValidationError(
+                "minimum_negative_charge must be negative."
+            )
+
+        if self.strong_negative_charge > self.minimum_negative_charge:
+            raise AnionPiValidationError(
+                "strong_negative_charge must be equal to or more negative "
+                "than minimum_negative_charge."
+            )
+
+        if (
+            self.optimal_centroid_distance
+            > self.maximum_centroid_distance
+        ):
+            raise AnionPiValidationError(
+                "optimal_centroid_distance cannot exceed "
+                "maximum_centroid_distance."
+            )
+
+        if (
+            self.maximum_centroid_distance
+            > self.borderline_maximum_centroid_distance
+        ):
+            raise AnionPiValidationError(
+                "maximum_centroid_distance cannot exceed "
+                "borderline_maximum_centroid_distance."
+            )
+
+        if not (
+            self.minimum_height
+            <= self.optimal_height
+            <= self.maximum_height
+            <= self.borderline_maximum_height
+        ):
+            raise AnionPiValidationError(
+                "Height thresholds must be monotonically increasing."
+            )
+
+        radial_limits = (
+            self.centered_maximum_radial_offset,
+            self.face_maximum_radial_offset,
+            self.edge_maximum_radial_offset,
+            self.borderline_maximum_radial_offset,
+        )
+
+        if tuple(sorted(radial_limits)) != radial_limits:
+            raise AnionPiValidationError(
+                "Radial-offset thresholds must be monotonically increasing."
+            )
+
+        if (
+            self.atomic_contact_distance
+            > self.maximum_minimum_atomic_distance
+        ):
+            raise AnionPiValidationError(
+                "atomic_contact_distance cannot exceed "
+                "maximum_minimum_atomic_distance."
+            )
+
+        if (
+            self.maximum_planarity_rmsd
+            > self.borderline_planarity_rmsd
+        ):
+            raise AnionPiValidationError(
+                "maximum_planarity_rmsd cannot exceed "
+                "borderline_planarity_rmsd."
+            )
+
+
+# -----------------------------------------------------------------------------
+# 10.6. Configuração amida–π
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class AmidePiDetectionConfig:
+    """
+    Geometric thresholds for amide–π interaction detection.
+    """
+
+    enabled: bool = True
+
+    optimal_centroid_distance: float = (
+        AMIDE_PI_DEFAULT_OPTIMAL_CENTROID_DISTANCE
+    )
+    maximum_centroid_distance: float = (
+        AMIDE_PI_DEFAULT_MAXIMUM_CENTROID_DISTANCE
+    )
+    borderline_maximum_centroid_distance: float = (
+        AMIDE_PI_DEFAULT_BORDERLINE_CENTROID_DISTANCE
+    )
+
+    minimum_height: float = AMIDE_PI_DEFAULT_MINIMUM_HEIGHT
+    optimal_height: float = AMIDE_PI_DEFAULT_OPTIMAL_HEIGHT
+    maximum_height: float = AMIDE_PI_DEFAULT_MAXIMUM_HEIGHT
+    borderline_maximum_height: float = (
+        AMIDE_PI_DEFAULT_BORDERLINE_HEIGHT
+    )
+
+    centered_maximum_radial_offset: float = (
+        AMIDE_PI_DEFAULT_CENTERED_OFFSET
+    )
+    face_maximum_radial_offset: float = (
+        AMIDE_PI_DEFAULT_FACE_OFFSET
+    )
+    edge_maximum_radial_offset: float = (
+        AMIDE_PI_DEFAULT_EDGE_OFFSET
+    )
+    borderline_maximum_radial_offset: float = (
+        AMIDE_PI_DEFAULT_BORDERLINE_OFFSET
+    )
+
+    face_parallel_maximum_angle: float = (
+        AMIDE_PI_DEFAULT_FACE_PARALLEL_ANGLE
+    )
+    parallel_maximum_angle: float = (
+        AMIDE_PI_DEFAULT_PARALLEL_ANGLE
+    )
+    perpendicular_minimum_angle: float = (
+        AMIDE_PI_DEFAULT_PERPENDICULAR_MINIMUM_ANGLE
+    )
+
+    carbonyl_alignment_maximum_angle: float = (
+        AMIDE_PI_DEFAULT_CARBONYL_ALIGNMENT_ANGLE
+    )
+
+    atomic_contact_distance: float = (
+        AMIDE_PI_DEFAULT_ATOMIC_CONTACT_DISTANCE
+    )
+    maximum_minimum_atomic_distance: float = (
+        AMIDE_PI_DEFAULT_MAXIMUM_ATOMIC_DISTANCE
+    )
+
+    maximum_ring_planarity_rmsd: float = (
+        AMIDE_PI_DEFAULT_MAXIMUM_RING_PLANARITY_RMSD
+    )
+    maximum_amide_planarity_rmsd: float = (
+        AMIDE_PI_DEFAULT_MAXIMUM_AMIDE_PLANARITY_RMSD
+    )
+    borderline_planarity_rmsd: float = (
+        AMIDE_PI_DEFAULT_BORDERLINE_PLANARITY_RMSD
+    )
+
+    require_amide_plane: bool = True
+    use_carbonyl_orientation: bool = True
+    require_atomic_contact: bool = False
+
+    include_atomic_contacts: bool = True
+    include_borderline: bool = True
+    include_rejected: bool = False
+    deduplicate_results: bool = True
+
+    exclude_intramolecular_same_residue: bool = True
+
+    def __post_init__(self) -> None:
+        numeric_fields = (
+            "optimal_centroid_distance",
+            "maximum_centroid_distance",
+            "borderline_maximum_centroid_distance",
+            "minimum_height",
+            "optimal_height",
+            "maximum_height",
+            "borderline_maximum_height",
+            "centered_maximum_radial_offset",
+            "face_maximum_radial_offset",
+            "edge_maximum_radial_offset",
+            "borderline_maximum_radial_offset",
+            "face_parallel_maximum_angle",
+            "parallel_maximum_angle",
+            "perpendicular_minimum_angle",
+            "carbonyl_alignment_maximum_angle",
+            "atomic_contact_distance",
+            "maximum_minimum_atomic_distance",
+            "maximum_ring_planarity_rmsd",
+            "maximum_amide_planarity_rmsd",
+            "borderline_planarity_rmsd",
+        )
+
+        for field_name in numeric_fields:
+            value = getattr(self, field_name)
+
+            try:
+                value = float(value)
+
+            except (TypeError, ValueError) as exc:
+                raise AmidePiValidationError(
+                    f"{field_name} must be numeric."
+                ) from exc
+
+            if not math.isfinite(value) or value < 0.0:
+                raise AmidePiValidationError(
+                    f"{field_name} must be finite and nonnegative."
+                )
+
+            setattr(self, field_name, value)
+
+        if not (
+            self.optimal_centroid_distance
+            <= self.maximum_centroid_distance
+            <= self.borderline_maximum_centroid_distance
+        ):
+            raise AmidePiValidationError(
+                "Centroid-distance thresholds must be monotonically "
+                "increasing."
+            )
+
+        if not (
+            self.minimum_height
+            <= self.optimal_height
+            <= self.maximum_height
+            <= self.borderline_maximum_height
+        ):
+            raise AmidePiValidationError(
+                "Height thresholds must be monotonically increasing."
+            )
+
+        radial_limits = (
+            self.centered_maximum_radial_offset,
+            self.face_maximum_radial_offset,
+            self.edge_maximum_radial_offset,
+            self.borderline_maximum_radial_offset,
+        )
+
+        if tuple(sorted(radial_limits)) != radial_limits:
+            raise AmidePiValidationError(
+                "Radial-offset thresholds must be monotonically increasing."
+            )
+
+        if (
+            self.face_parallel_maximum_angle
+            > self.parallel_maximum_angle
+        ):
+            raise AmidePiValidationError(
+                "face_parallel_maximum_angle cannot exceed "
+                "parallel_maximum_angle."
+            )
+
+        if self.parallel_maximum_angle > 90.0:
+            raise AmidePiValidationError(
+                "parallel_maximum_angle cannot exceed 90 degrees."
+            )
+
+        if self.perpendicular_minimum_angle > 90.0:
+            raise AmidePiValidationError(
+                "perpendicular_minimum_angle cannot exceed 90 degrees."
+            )
+
+        if self.carbonyl_alignment_maximum_angle > 90.0:
+            raise AmidePiValidationError(
+                "carbonyl_alignment_maximum_angle cannot exceed 90 degrees."
+            )
+
+        if (
+            self.atomic_contact_distance
+            > self.maximum_minimum_atomic_distance
+        ):
+            raise AmidePiValidationError(
+                "atomic_contact_distance cannot exceed "
+                "maximum_minimum_atomic_distance."
+            )
+
+        if (
+            self.maximum_ring_planarity_rmsd
+            > self.borderline_planarity_rmsd
+        ):
+            raise AmidePiValidationError(
+                "maximum_ring_planarity_rmsd cannot exceed "
+                "borderline_planarity_rmsd."
+            )
+
+        if (
+            self.maximum_amide_planarity_rmsd
+            > self.borderline_planarity_rmsd
+        ):
+            raise AmidePiValidationError(
+                "maximum_amide_planarity_rmsd cannot exceed "
+                "borderline_planarity_rmsd."
+            )
+
+
+# -----------------------------------------------------------------------------
+# 10.7. Configuração combinada
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class AnionAmidePiDetectionConfig:
+    """
+    Combined switchboard for Section 10.
+    """
+
+    enable_anion_pi: bool = True
+    enable_amide_pi: bool = True
+
+    anion_pi: AnionPiDetectionConfig = field(
+        default_factory=AnionPiDetectionConfig
+    )
+
+    amide_pi: AmidePiDetectionConfig = field(
+        default_factory=AmidePiDetectionConfig
+    )
+
+    def __post_init__(self) -> None:
+        self.anion_pi.enabled = bool(
+            self.enable_anion_pi
+            and self.anion_pi.enabled
+        )
+
+        self.amide_pi.enabled = bool(
+            self.enable_amide_pi
+            and self.amide_pi.enabled
+        )
+
+
+def create_default_anion_amide_pi_config(
+) -> AnionAmidePiDetectionConfig:
+    """
+    Return the canonical Section 10 configuration.
+    """
+
+    return AnionAmidePiDetectionConfig()
+
+
+# -----------------------------------------------------------------------------
+# 10.8. Resultados geométricos
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class AnionPiGeometryEvaluation:
+    """
+    Complete evaluation of one anion–aromatic-system pair.
+    """
+
+    geometry: str
+
+    centroid_distance: float
+    signed_height: float
+    absolute_height: float
+    radial_offset: float
+    minimum_atomic_distance: float
+
+    face: str
+
+    effective_charge: float
+    charge_source: str
+    charge_valid: bool
+    strongly_negative: bool
+
+    ring_planarity_rmsd: float
+    ring_electrophilicity: Optional[float]
+    ring_electrophilicity_valid: Optional[bool]
+
+    centroid_distance_valid: bool
+    height_valid: bool
+    radial_offset_valid: bool
+    atomic_distance_valid: bool
+    planarity_valid: bool
+
+    accepted: bool
+    borderline: bool = False
+    confidence: float = 0.0
+
+    reasons: Tuple[str, ...] = ()
+    warnings: Tuple[str, ...] = ()
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.geometry not in SUPPORTED_ANION_PI_GEOMETRIES:
+            raise AnionPiValidationError(
+                f"Unsupported anion–π geometry: {self.geometry!r}."
+            )
+
+        if self.face not in SUPPORTED_PI_APPROACH_FACES:
+            raise AnionPiValidationError(
+                f"Unsupported aromatic face: {self.face!r}."
+            )
+
+        if self.charge_source not in SUPPORTED_ANION_PI_CHARGE_SOURCES:
+            raise AnionPiValidationError(
+                f"Unsupported charge source: {self.charge_source!r}."
+            )
+
+        self.confidence = max(
+            0.0,
+            min(1.0, float(self.confidence)),
+        )
+
+        self.reasons = tuple(
+            str(reason)
+            for reason in self.reasons
+        )
+
+        self.warnings = tuple(
+            str(warning)
+            for warning in self.warnings
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "geometry": self.geometry,
+            "centroid_distance": self.centroid_distance,
+            "signed_height": self.signed_height,
+            "absolute_height": self.absolute_height,
+            "radial_offset": self.radial_offset,
+            "minimum_atomic_distance": self.minimum_atomic_distance,
+            "face": self.face,
+            "effective_charge": self.effective_charge,
+            "charge_source": self.charge_source,
+            "charge_valid": self.charge_valid,
+            "strongly_negative": self.strongly_negative,
+            "ring_planarity_rmsd": self.ring_planarity_rmsd,
+            "ring_electrophilicity": self.ring_electrophilicity,
+            "ring_electrophilicity_valid": (
+                self.ring_electrophilicity_valid
+            ),
+            "centroid_distance_valid": self.centroid_distance_valid,
+            "height_valid": self.height_valid,
+            "radial_offset_valid": self.radial_offset_valid,
+            "atomic_distance_valid": self.atomic_distance_valid,
+            "planarity_valid": self.planarity_valid,
+            "accepted": self.accepted,
+            "borderline": self.borderline,
+            "confidence": self.confidence,
+            "reasons": list(self.reasons),
+            "warnings": list(self.warnings),
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(slots=True)
+class AmidePiGeometryEvaluation:
+    """
+    Complete evaluation of one amide–aromatic-system pair.
+    """
+
+    geometry: str
+
+    centroid_distance: float
+    signed_height: float
+    absolute_height: float
+    radial_offset: float
+    minimum_atomic_distance: float
+
+    face: str
+
+    plane_angle: Optional[float]
+    carbonyl_normal_angle: Optional[float]
+    carbonyl_centroid_angle: Optional[float]
+
+    ring_planarity_rmsd: float
+    amide_planarity_rmsd: float
+
+    centroid_distance_valid: bool
+    height_valid: bool
+    radial_offset_valid: bool
+    atomic_distance_valid: bool
+    ring_planarity_valid: bool
+    amide_planarity_valid: bool
+    orientation_valid: bool
+
+    accepted: bool
+    borderline: bool = False
+    confidence: float = 0.0
+
+    reasons: Tuple[str, ...] = ()
+    warnings: Tuple[str, ...] = ()
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.geometry not in SUPPORTED_AMIDE_PI_GEOMETRIES:
+            raise AmidePiValidationError(
+                f"Unsupported amide–π geometry: {self.geometry!r}."
+            )
+
+        if self.face not in SUPPORTED_PI_APPROACH_FACES:
+            raise AmidePiValidationError(
+                f"Unsupported aromatic face: {self.face!r}."
+            )
+
+        self.confidence = max(
+            0.0,
+            min(1.0, float(self.confidence)),
+        )
+
+        self.reasons = tuple(
+            str(reason)
+            for reason in self.reasons
+        )
+
+        self.warnings = tuple(
+            str(warning)
+            for warning in self.warnings
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "geometry": self.geometry,
+            "centroid_distance": self.centroid_distance,
+            "signed_height": self.signed_height,
+            "absolute_height": self.absolute_height,
+            "radial_offset": self.radial_offset,
+            "minimum_atomic_distance": self.minimum_atomic_distance,
+            "face": self.face,
+            "plane_angle": self.plane_angle,
+            "carbonyl_normal_angle": self.carbonyl_normal_angle,
+            "carbonyl_centroid_angle": self.carbonyl_centroid_angle,
+            "ring_planarity_rmsd": self.ring_planarity_rmsd,
+            "amide_planarity_rmsd": self.amide_planarity_rmsd,
+            "centroid_distance_valid": self.centroid_distance_valid,
+            "height_valid": self.height_valid,
+            "radial_offset_valid": self.radial_offset_valid,
+            "atomic_distance_valid": self.atomic_distance_valid,
+            "ring_planarity_valid": self.ring_planarity_valid,
+            "amide_planarity_valid": self.amide_planarity_valid,
+            "orientation_valid": self.orientation_valid,
+            "accepted": self.accepted,
+            "borderline": self.borderline,
+            "confidence": self.confidence,
+            "reasons": list(self.reasons),
+            "warnings": list(self.warnings),
+            "metadata": dict(self.metadata),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 10.9. Acesso seguro
+# -----------------------------------------------------------------------------
+
+def _section10_get_first_attribute(
+    object_: Any,
+    names: Sequence[str],
+    default: Any = None,
+) -> Any:
+    """
+    Return the first available non-None value.
+    """
+
+    if object_ is None:
+        return default
+
+    for name in names:
+        if isinstance(object_, Mapping):
+            value = object_.get(name)
+
+        else:
+            value = getattr(object_, name, None)
+
+        if value is not None:
+            return value
+
+    return default
+
+
+def _section10_as_vector3(
+    value: Any,
+    *,
+    field_name: str,
+) -> Tuple[float, float, float]:
+    if value is None:
+        raise NoncovalentPiDetectionError(
+            f"Missing {field_name}."
+        )
+
+    try:
+        vector = tuple(
+            float(component)
+            for component in value
+        )
+
+    except (TypeError, ValueError) as exc:
+        raise NoncovalentPiDetectionError(
+            f"{field_name} must contain numeric values."
+        ) from exc
+
+    if len(vector) != 3:
+        raise NoncovalentPiDetectionError(
+            f"{field_name} must contain exactly three values."
+        )
+
+    if not all(math.isfinite(component) for component in vector):
+        raise NoncovalentPiDetectionError(
+            f"{field_name} must contain finite values."
+        )
+
+    return vector
+
+
+def _section10_vector_subtract(
+    vector_1: Sequence[float],
+    vector_2: Sequence[float],
+) -> Tuple[float, float, float]:
+    return (
+        float(vector_1[0]) - float(vector_2[0]),
+        float(vector_1[1]) - float(vector_2[1]),
+        float(vector_1[2]) - float(vector_2[2]),
+    )
+
+
+def _section10_dot(
+    vector_1: Sequence[float],
+    vector_2: Sequence[float],
+) -> float:
+    return (
+        float(vector_1[0]) * float(vector_2[0])
+        + float(vector_1[1]) * float(vector_2[1])
+        + float(vector_1[2]) * float(vector_2[2])
+    )
+
+
+def _section10_norm(
+    vector: Sequence[float],
+) -> float:
+    return math.sqrt(
+        _section10_dot(vector, vector)
+    )
+
+
+def _section10_normalize_vector(
+    vector: Sequence[float],
+) -> Tuple[float, float, float]:
+    magnitude = _section10_norm(vector)
+
+    if magnitude <= PI_NONCOVALENT_EPSILON:
+        raise NoncovalentPiDetectionError(
+            "Cannot normalize a zero-length vector."
+        )
+
+    return (
+        float(vector[0]) / magnitude,
+        float(vector[1]) / magnitude,
+        float(vector[2]) / magnitude,
+    )
+
+
+def _section10_distance(
+    point_1: Sequence[float],
+    point_2: Sequence[float],
+) -> float:
+    return _section10_norm(
+        _section10_vector_subtract(
+            point_1,
+            point_2,
+        )
+    )
+
+
+def _section10_acute_angle(
+    vector_1: Sequence[float],
+    vector_2: Sequence[float],
+) -> float:
+    unit_1 = _section10_normalize_vector(
+        vector_1
+    )
+
+    unit_2 = _section10_normalize_vector(
+        vector_2
+    )
+
+    cosine = abs(
+        _section10_dot(
+            unit_1,
+            unit_2,
+        )
+    )
+
+    cosine = max(
+        -1.0,
+        min(1.0, cosine),
+    )
+
+    return math.degrees(
+        math.acos(cosine)
+    )
+
+
+def _section10_directional_angle(
+    vector_1: Sequence[float],
+    vector_2: Sequence[float],
+) -> float:
+    unit_1 = _section10_normalize_vector(
+        vector_1
+    )
+
+    unit_2 = _section10_normalize_vector(
+        vector_2
+    )
+
+    cosine = _section10_dot(
+        unit_1,
+        unit_2,
+    )
+
+    cosine = max(
+        -1.0,
+        min(1.0, cosine),
+    )
+
+    return math.degrees(
+        math.acos(cosine)
+    )
+
+
+def _section10_get_atom_coordinates(
+    atom: Any,
+) -> Tuple[float, float, float]:
+    coordinates = _section10_get_first_attribute(
+        atom,
+        (
+            "coordinates",
+            "coordinate",
+            "coords",
+            "position",
+        ),
+    )
+
+    if coordinates is None:
+        x = _section10_get_first_attribute(atom, ("x",))
+        y = _section10_get_first_attribute(atom, ("y",))
+        z = _section10_get_first_attribute(atom, ("z",))
+
+        if x is not None and y is not None and z is not None:
+            coordinates = (x, y, z)
+
+    return _section10_as_vector3(
+        coordinates,
+        field_name="atom coordinates",
+    )
+
+
+def _section10_get_atoms(
+    object_: Any,
+) -> Tuple[Any, ...]:
+    atoms = _section10_get_first_attribute(
+        object_,
+        (
+            "atoms",
+            "atom_references",
+            "group_atoms",
+            "ring_atoms",
+            "amide_atoms",
+            "charged_atoms",
+        ),
+        (),
+    )
+
+    try:
+        return tuple(atoms)
+
+    except TypeError as exc:
+        raise NoncovalentPiDetectionError(
+            "Object atoms must be iterable."
+        ) from exc
+
+
+def _section10_get_ring_centroid(
+    ring: Any,
+) -> Tuple[float, float, float]:
+    value = _section10_get_first_attribute(
+        ring,
+        (
+            "centroid",
+            "center",
+            "centre",
+            "geometric_center",
+        ),
+    )
+
+    return _section10_as_vector3(
+        value,
+        field_name="aromatic-system centroid",
+    )
+
+
+def _section10_get_ring_normal(
+    ring: Any,
+) -> Tuple[float, float, float]:
+    value = _section10_get_first_attribute(
+        ring,
+        (
+            "normal",
+            "plane_normal",
+            "normal_vector",
+            "unit_normal",
+        ),
+    )
+
+    return _section10_normalize_vector(
+        _section10_as_vector3(
+            value,
+            field_name="aromatic-system normal",
+        )
+    )
+
+
+def _section10_get_ring_planarity(
+    ring: Any,
+) -> float:
+    value = _section10_get_first_attribute(
+        ring,
+        (
+            "planarity_rmsd",
+            "plane_rmsd",
+            "rmsd_to_plane",
+            "planarity",
+        ),
+        0.0,
+    )
+
+    try:
+        value = float(value)
+
+    except (TypeError, ValueError) as exc:
+        raise NoncovalentPiDetectionError(
+            "Ring planarity must be numeric."
+        ) from exc
+
+    if not math.isfinite(value):
+        raise NoncovalentPiDetectionError(
+            "Ring planarity must be finite."
+        )
+
+    return max(0.0, value)
+
+
+def _section10_get_object_center(
+    object_: Any,
+    *,
+    field_name: str,
+) -> Tuple[float, float, float]:
+    explicit_center = _section10_get_first_attribute(
+        object_,
+        (
+            "charge_center",
+            "center_of_charge",
+            "centroid",
+            "center",
+            "centre",
+            "geometric_center",
+            "position",
+            "coordinates",
+        ),
+    )
+
+    if explicit_center is not None:
+        return _section10_as_vector3(
+            explicit_center,
+            field_name=field_name,
+        )
+
+    representative_atom = _section10_get_first_attribute(
+        object_,
+        (
+            "central_atom",
+            "representative_atom",
+            "charged_atom",
+            "carbonyl_carbon",
+        ),
+    )
+
+    if representative_atom is not None:
+        return _section10_get_atom_coordinates(
+            representative_atom
+        )
+
+    atoms = _section10_get_atoms(
+        object_
+    )
+
+    if not atoms:
+        raise NoncovalentPiDetectionError(
+            f"{field_name} cannot be determined."
+        )
+
+    coordinates = [
+        _section10_get_atom_coordinates(atom)
+        for atom in atoms
+    ]
+
+    count = float(
+        len(coordinates)
+    )
+
+    return (
+        sum(value[0] for value in coordinates) / count,
+        sum(value[1] for value in coordinates) / count,
+        sum(value[2] for value in coordinates) / count,
+    )
+
+
+def _section10_get_identifier(
+    object_: Any,
+    fallback: str,
+) -> str:
+    value = _section10_get_first_attribute(
+        object_,
+        (
+            "group_id",
+            "amide_id",
+            "ring_id",
+            "system_id",
+            "aromatic_system_id",
+            "id",
+            "identifier",
+        ),
+        fallback,
+    )
+
+    return str(value)
+
+
+def _section10_get_residue_id(
+    object_: Any,
+) -> Optional[str]:
+    value = _section10_get_first_attribute(
+        object_,
+        (
+            "residue_id",
+            "residue_key",
+        ),
+    )
+
+    if value is not None:
+        return str(value)
+
+    chain_id = _section10_get_first_attribute(
+        object_,
+        ("chain_id", "chain"),
+        "",
+    )
+
+    residue_name = _section10_get_first_attribute(
+        object_,
+        ("residue_name", "resname"),
+        "",
+    )
+
+    residue_number = _section10_get_first_attribute(
+        object_,
+        (
+            "residue_number",
+            "residue_index",
+            "resid",
+        ),
+        "",
+    )
+
+    if not any(
+        value not in ("", None)
+        for value in (
+            chain_id,
+            residue_name,
+            residue_number,
+        )
+    ):
+        return None
+
+    return (
+        f"{chain_id}:"
+        f"{residue_name}:"
+        f"{residue_number}"
+    )
+
+
+def _section10_get_participant_type(
+    object_: Any,
+) -> Optional[str]:
+    value = _section10_get_first_attribute(
+        object_,
+        (
+            "participant_type",
+            "source_type",
+            "molecule_type",
+            "role",
+        ),
+    )
+
+    return None if value is None else str(value)
+
+
+# -----------------------------------------------------------------------------
+# 10.10. Geometria ponto–plano
+# -----------------------------------------------------------------------------
+
+def _section10_calculate_point_ring_position(
+    ring: Any,
+    point: Sequence[float],
+) -> Dict[str, Any]:
+    centroid = _section10_get_ring_centroid(
+        ring
+    )
+
+    normal = _section10_get_ring_normal(
+        ring
+    )
+
+    point = _section10_as_vector3(
+        point,
+        field_name="interaction center",
+    )
+
+    centroid_vector = _section10_vector_subtract(
+        point,
+        centroid,
+    )
+
+    centroid_distance = _section10_norm(
+        centroid_vector
+    )
+
+    signed_height = _section10_dot(
+        centroid_vector,
+        normal,
+    )
+
+    absolute_height = abs(
+        signed_height
+    )
+
+    radial_squared = max(
+        0.0,
+        centroid_distance ** 2
+        - absolute_height ** 2,
+    )
+
+    radial_offset = math.sqrt(
+        radial_squared
+    )
+
+    if signed_height > PI_NONCOVALENT_EPSILON:
+        face = PI_FACE_POSITIVE
+
+    elif signed_height < -PI_NONCOVALENT_EPSILON:
+        face = PI_FACE_NEGATIVE
+
+    else:
+        face = PI_FACE_IN_PLANE
+
+    return {
+        "ring_centroid": centroid,
+        "ring_normal": normal,
+        "interaction_center": point,
+        "centroid_vector": centroid_vector,
+        "centroid_distance": centroid_distance,
+        "signed_height": signed_height,
+        "absolute_height": absolute_height,
+        "radial_offset": radial_offset,
+        "face": face,
+    }
+
+
+def _section10_minimum_atomic_distance(
+    object_1: Any,
+    object_2: Any,
+) -> float:
+    atoms_1 = _section10_get_atoms(
+        object_1
+    )
+
+    atoms_2 = _section10_get_atoms(
+        object_2
+    )
+
+    if not atoms_1 or not atoms_2:
+        center_1 = _section10_get_object_center(
+            object_1,
+            field_name="first object center",
+        )
+
+        center_2 = _section10_get_object_center(
+            object_2,
+            field_name="second object center",
+        )
+
+        if atoms_1:
+            return min(
+                _section10_distance(
+                    _section10_get_atom_coordinates(atom),
+                    center_2,
+                )
+                for atom in atoms_1
+            )
+
+        if atoms_2:
+            return min(
+                _section10_distance(
+                    center_1,
+                    _section10_get_atom_coordinates(atom),
+                )
+                for atom in atoms_2
+            )
+
+        return _section10_distance(
+            center_1,
+            center_2,
+        )
+
+    minimum_distance = math.inf
+
+    for atom_1 in atoms_1:
+        coordinates_1 = _section10_get_atom_coordinates(
+            atom_1
+        )
+
+        for atom_2 in atoms_2:
+            coordinates_2 = _section10_get_atom_coordinates(
+                atom_2
+            )
+
+            distance = _section10_distance(
+                coordinates_1,
+                coordinates_2,
+            )
+
+            if distance < minimum_distance:
+                minimum_distance = distance
+
+    return minimum_distance
+
+
+# -----------------------------------------------------------------------------
+# 10.11. Carga negativa
+# -----------------------------------------------------------------------------
+
+def _section10_numeric_charge(
+    value: Any,
+) -> Optional[float]:
+    if value is None:
+        return None
+
+    try:
+        charge = float(value)
+
+    except (TypeError, ValueError):
+        return None
+
+    if not math.isfinite(charge):
+        return None
+
+    return charge
+
+
+def infer_anion_pi_charge(
+    negative_group: Any,
+    *,
+    config: Optional[AnionPiDetectionConfig] = None,
+) -> Tuple[float, str]:
+    """
+    Determine the effective negative charge of a candidate group.
+    """
+
+    if config is None:
+        config = AnionPiDetectionConfig()
+
+    group_charge = _section10_numeric_charge(
+        _section10_get_first_attribute(
+            negative_group,
+            (
+                "effective_charge",
+                "group_charge",
+                "net_charge",
+                "charge",
+            ),
+        )
+    )
+
+    if group_charge is not None:
+        return (
+            group_charge,
+            ANION_PI_CHARGE_SOURCE_GROUP,
+        )
+
+    formal_charge = _section10_numeric_charge(
+        _section10_get_first_attribute(
+            negative_group,
+            (
+                "formal_charge",
+                "formal_net_charge",
+            ),
+        )
+    )
+
+    if formal_charge is not None:
+        return (
+            formal_charge,
+            ANION_PI_CHARGE_SOURCE_FORMAL,
+        )
+
+    atoms = _section10_get_atoms(
+        negative_group
+    )
+
+    atomic_formal_charges = [
+        charge
+        for atom in atoms
+        if (
+            charge := _section10_numeric_charge(
+                _section10_get_first_attribute(
+                    atom,
+                    ("formal_charge",),
+                )
+            )
+        )
+        is not None
+    ]
+
+    if atomic_formal_charges:
+        formal_sum = sum(
+            atomic_formal_charges
+        )
+
+        if abs(formal_sum) > PI_NONCOVALENT_EPSILON:
+            return (
+                formal_sum,
+                ANION_PI_CHARGE_SOURCE_FORMAL,
+            )
+
+    if config.allow_partial_charge:
+        group_partial_charge = _section10_numeric_charge(
+            _section10_get_first_attribute(
+                negative_group,
+                (
+                    "partial_charge",
+                    "partial_net_charge",
+                ),
+            )
+        )
+
+        if group_partial_charge is not None:
+            return (
+                group_partial_charge,
+                ANION_PI_CHARGE_SOURCE_PARTIAL,
+            )
+
+        atomic_partial_charges = [
+            charge
+            for atom in atoms
+            if (
+                charge := _section10_numeric_charge(
+                    _section10_get_first_attribute(
+                        atom,
+                        (
+                            "partial_charge",
+                            "charge",
+                        ),
+                    )
+                )
+            )
+            is not None
+        ]
+
+        if atomic_partial_charges:
+            partial_sum = sum(
+                atomic_partial_charges
+            )
+
+            if abs(partial_sum) > PI_NONCOVALENT_EPSILON:
+                return (
+                    partial_sum,
+                    ANION_PI_CHARGE_SOURCE_PARTIAL,
+                )
+
+    negative_annotation = _section10_get_first_attribute(
+        negative_group,
+        (
+            "is_negative",
+            "negatively_charged",
+            "is_anion",
+            "anionic",
+        ),
+    )
+
+    if negative_annotation is True and config.allow_inferred_charge:
+        return (
+            -1.0,
+            ANION_PI_CHARGE_SOURCE_INFERRED,
+        )
+
+    group_type = str(
+        _section10_get_first_attribute(
+            negative_group,
+            (
+                "group_type",
+                "charge_type",
+                "chemical_type",
+                "classification",
+            ),
+            "",
+        )
+    ).strip().lower()
+
+    known_negative_groups = {
+        "anion",
+        "anionic",
+        "negative",
+        "negatively-charged",
+        "carboxylate",
+        "phosphate",
+        "phosphonate",
+        "sulfate",
+        "sulfonate",
+        "thiolate",
+        "phenolate",
+        "deprotonated-acid",
+        "deprotonated_acid",
+    }
+
+    if (
+        config.allow_inferred_charge
+        and group_type in known_negative_groups
+    ):
+        return (
+            -1.0,
+            ANION_PI_CHARGE_SOURCE_INFERRED,
+        )
+
+    return (
+        0.0,
+        ANION_PI_CHARGE_SOURCE_UNKNOWN,
+    )
+
+
+def _section10_get_ring_electrophilicity(
+    ring: Any,
+) -> Optional[float]:
+    value = _section10_get_first_attribute(
+        ring,
+        (
+            "electrophilicity",
+            "electron_deficiency",
+            "pi_electrophilicity",
+            "positive_pi_character",
+        ),
+    )
+
+    if value is None:
+        annotation = _section10_get_first_attribute(
+            ring,
+            (
+                "electron_deficient",
+                "is_electron_deficient",
+                "anion_pi_favorable",
+            ),
+        )
+
+        if annotation is True:
+            return 1.0
+
+        if annotation is False:
+            return 0.0
+
+        return None
+
+    try:
+        value = float(value)
+
+    except (TypeError, ValueError):
+        return None
+
+    if not math.isfinite(value):
+        return None
+
+    return max(
+        0.0,
+        min(1.0, value),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 10.12. Qualidade geométrica
+# -----------------------------------------------------------------------------
+
+def _section10_clamp(
+    value: float,
+    minimum: float = 0.0,
+    maximum: float = 1.0,
+) -> float:
+    return max(
+        minimum,
+        min(maximum, float(value)),
+    )
+
+
+def _section10_inverse_linear_quality(
+    value: float,
+    *,
+    optimal: float,
+    maximum: float,
+) -> float:
+    if value <= optimal:
+        return 1.0
+
+    if value >= maximum:
+        return 0.0
+
+    denominator = maximum - optimal
+
+    if denominator <= PI_NONCOVALENT_EPSILON:
+        return 0.0
+
+    return _section10_clamp(
+        1.0
+        - (
+            (value - optimal)
+            / denominator
+        )
+    )
+
+
+def _section10_window_quality(
+    value: float,
+    *,
+    minimum: float,
+    optimal: float,
+    maximum: float,
+) -> float:
+    if value < minimum or value > maximum:
+        return 0.0
+
+    if value <= optimal:
+        denominator = optimal - minimum
+
+        if denominator <= PI_NONCOVALENT_EPSILON:
+            return 1.0
+
+        return _section10_clamp(
+            (value - minimum)
+            / denominator
+        )
+
+    denominator = maximum - optimal
+
+    if denominator <= PI_NONCOVALENT_EPSILON:
+        return 1.0
+
+    return _section10_clamp(
+        1.0
+        - (
+            (value - optimal)
+            / denominator
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 10.13. Avaliação ânion–π
+# -----------------------------------------------------------------------------
+
+def evaluate_anion_pi_geometry(
+    *,
+    centroid_distance: float,
+    signed_height: float,
+    radial_offset: float,
+    minimum_atomic_distance: float,
+    ring_planarity_rmsd: float,
+    effective_charge: float,
+    charge_source: str = ANION_PI_CHARGE_SOURCE_UNKNOWN,
+    ring_electrophilicity: Optional[float] = None,
+    config: Optional[AnionPiDetectionConfig] = None,
+) -> AnionPiGeometryEvaluation:
+    """
+    Evaluate an anion relative to an aromatic centroid and plane.
+    """
+
+    if config is None:
+        config = AnionPiDetectionConfig()
+
+    centroid_distance = float(
+        centroid_distance
+    )
+    signed_height = float(
+        signed_height
+    )
+    radial_offset = float(
+        radial_offset
+    )
+    minimum_atomic_distance = float(
+        minimum_atomic_distance
+    )
+    ring_planarity_rmsd = float(
+        ring_planarity_rmsd
+    )
+    effective_charge = float(
+        effective_charge
+    )
+
+    for field_name, value in (
+        ("centroid_distance", centroid_distance),
+        ("signed_height", signed_height),
+        ("radial_offset", radial_offset),
+        ("minimum_atomic_distance", minimum_atomic_distance),
+        ("ring_planarity_rmsd", ring_planarity_rmsd),
+        ("effective_charge", effective_charge),
+    ):
+        if not math.isfinite(value):
+            raise AnionPiValidationError(
+                f"{field_name} must be finite."
+            )
+
+    if min(
+        centroid_distance,
+        radial_offset,
+        minimum_atomic_distance,
+        ring_planarity_rmsd,
+    ) < 0.0:
+        raise AnionPiValidationError(
+            "Distances, offsets and planarity cannot be negative."
+        )
+
+    if charge_source not in SUPPORTED_ANION_PI_CHARGE_SOURCES:
+        charge_source = ANION_PI_CHARGE_SOURCE_UNKNOWN
+
+    absolute_height = abs(
+        signed_height
+    )
+
+    if signed_height > PI_NONCOVALENT_EPSILON:
+        face = PI_FACE_POSITIVE
+
+    elif signed_height < -PI_NONCOVALENT_EPSILON:
+        face = PI_FACE_NEGATIVE
+
+    else:
+        face = PI_FACE_IN_PLANE
+
+    charge_valid = (
+        effective_charge
+        <= config.minimum_negative_charge
+    )
+
+    strongly_negative = (
+        effective_charge
+        <= config.strong_negative_charge
+    )
+
+    centroid_distance_valid = (
+        centroid_distance
+        <= config.maximum_centroid_distance
+    )
+
+    height_valid = (
+        config.minimum_height
+        <= absolute_height
+        <= config.maximum_height
+    )
+
+    atomic_distance_valid = (
+        minimum_atomic_distance
+        <= config.maximum_minimum_atomic_distance
+    )
+
+    planarity_valid = (
+        ring_planarity_rmsd
+        <= config.maximum_planarity_rmsd
+    )
+
+    if ring_electrophilicity is None:
+        electrophilicity_valid: Optional[bool] = None
+
+    else:
+        ring_electrophilicity = _section10_clamp(
+            float(ring_electrophilicity)
+        )
+
+        electrophilicity_valid = (
+            ring_electrophilicity
+            >= config.minimum_ring_electrophilicity
+        )
+
+    chemical_requirement = (
+        charge_valid
+        or not config.require_negative_charge
+    )
+
+    electrophilicity_requirement = (
+        not config.require_electron_deficient_ring
+        or electrophilicity_valid is True
+    )
+
+    core_requirements = (
+        centroid_distance_valid
+        and height_valid
+        and planarity_valid
+        and chemical_requirement
+        and electrophilicity_requirement
+        and (
+            atomic_distance_valid
+            or not config.require_atomic_contact
+        )
+    )
+
+    geometry = ANION_PI_GEOMETRY_REJECTED
+    accepted = False
+    borderline = False
+    radial_offset_valid = False
+
+    reasons: List[str] = []
+    warnings: List[str] = []
+
+    if (
+        core_requirements
+        and radial_offset
+        <= config.centered_maximum_radial_offset
+    ):
+        geometry = ANION_PI_GEOMETRY_FACE_CENTERED
+        accepted = True
+        radial_offset_valid = True
+
+        reasons.append(
+            "The negative charge is positioned above the central region "
+            "of the aromatic face."
+        )
+
+    elif (
+        core_requirements
+        and radial_offset
+        <= config.face_maximum_radial_offset
+    ):
+        geometry = ANION_PI_GEOMETRY_FACE_OFFSET
+        accepted = True
+        radial_offset_valid = True
+
+        reasons.append(
+            "The negative charge approaches the aromatic face with a "
+            "moderate radial displacement."
+        )
+
+    elif (
+        core_requirements
+        and radial_offset
+        <= config.edge_maximum_radial_offset
+    ):
+        geometry = ANION_PI_GEOMETRY_EDGE_ASSOCIATED
+        accepted = True
+        radial_offset_valid = True
+
+        reasons.append(
+            "The negative group is associated with the peripheral region "
+            "of the aromatic system."
+        )
+
+    else:
+        borderline_requirements = (
+            config.include_borderline
+            and centroid_distance
+            <= config.borderline_maximum_centroid_distance
+            and absolute_height
+            <= config.borderline_maximum_height
+            and radial_offset
+            <= config.borderline_maximum_radial_offset
+            and ring_planarity_rmsd
+            <= config.borderline_planarity_rmsd
+            and chemical_requirement
+            and electrophilicity_requirement
+        )
+
+        if borderline_requirements:
+            geometry = ANION_PI_GEOMETRY_BORDERLINE
+            accepted = True
+            borderline = True
+            radial_offset_valid = True
+
+            reasons.append(
+                "The anion forms a limiting contact with the aromatic "
+                "system outside the canonical face geometry."
+            )
+
+        else:
+            if not charge_valid:
+                warnings.append(
+                    "The group does not satisfy the negative-charge "
+                    "criterion."
+                )
+
+            if not centroid_distance_valid:
+                warnings.append(
+                    "Anion–centroid distance exceeds the canonical limit."
+                )
+
+            if not height_valid:
+                warnings.append(
+                    "The anion height relative to the aromatic plane is "
+                    "outside the accepted interval."
+                )
+
+            if radial_offset > config.edge_maximum_radial_offset:
+                warnings.append(
+                    "The radial displacement exceeds the aromatic-face "
+                    "limit."
+                )
+
+            if not atomic_distance_valid:
+                warnings.append(
+                    "The minimum atom–atom distance exceeds the auxiliary "
+                    "contact limit."
+                )
+
+            if not planarity_valid:
+                warnings.append(
+                    "The aromatic system has insufficient planar quality."
+                )
+
+            if (
+                config.require_electron_deficient_ring
+                and electrophilicity_valid is not True
+            ):
+                warnings.append(
+                    "The aromatic system does not satisfy the required "
+                    "electron-deficiency criterion."
+                )
+
+    distance_quality = _section10_inverse_linear_quality(
+        centroid_distance,
+        optimal=config.optimal_centroid_distance,
+        maximum=config.borderline_maximum_centroid_distance,
+    )
+
+    height_quality = _section10_window_quality(
+        absolute_height,
+        minimum=config.minimum_height,
+        optimal=config.optimal_height,
+        maximum=config.borderline_maximum_height,
+    )
+
+    radial_quality = _section10_inverse_linear_quality(
+        radial_offset,
+        optimal=config.centered_maximum_radial_offset,
+        maximum=config.borderline_maximum_radial_offset,
+    )
+
+    planarity_quality = _section10_inverse_linear_quality(
+        ring_planarity_rmsd,
+        optimal=0.0,
+        maximum=config.borderline_planarity_rmsd,
+    )
+
+    if effective_charge >= 0.0:
+        charge_quality = 0.0
+
+    elif effective_charge <= config.strong_negative_charge:
+        charge_quality = 1.0
+
+    else:
+        charge_quality = _section10_clamp(
+            abs(effective_charge)
+            / max(
+                abs(config.strong_negative_charge),
+                PI_NONCOVALENT_EPSILON,
+            )
+        )
+
+    electrophilicity_quality = (
+        0.5
+        if ring_electrophilicity is None
+        else ring_electrophilicity
+    )
+
+    confidence = (
+        0.25 * distance_quality
+        + 0.23 * height_quality
+        + 0.20 * radial_quality
+        + 0.12 * planarity_quality
+        + 0.15 * charge_quality
+        + 0.05 * electrophilicity_quality
+    )
+
+    if geometry == ANION_PI_GEOMETRY_BORDERLINE:
+        confidence *= 0.75
+
+    elif geometry == ANION_PI_GEOMETRY_EDGE_ASSOCIATED:
+        confidence *= 0.90
+
+    elif geometry == ANION_PI_GEOMETRY_REJECTED:
+        confidence *= 0.25
+
+    return AnionPiGeometryEvaluation(
+        geometry=geometry,
+        centroid_distance=centroid_distance,
+        signed_height=signed_height,
+        absolute_height=absolute_height,
+        radial_offset=radial_offset,
+        minimum_atomic_distance=minimum_atomic_distance,
+        face=face,
+        effective_charge=effective_charge,
+        charge_source=charge_source,
+        charge_valid=charge_valid,
+        strongly_negative=strongly_negative,
+        ring_planarity_rmsd=ring_planarity_rmsd,
+        ring_electrophilicity=ring_electrophilicity,
+        ring_electrophilicity_valid=electrophilicity_valid,
+        centroid_distance_valid=centroid_distance_valid,
+        height_valid=height_valid,
+        radial_offset_valid=radial_offset_valid,
+        atomic_distance_valid=atomic_distance_valid,
+        planarity_valid=planarity_valid,
+        accepted=accepted,
+        borderline=borderline,
+        confidence=_section10_clamp(confidence),
+        reasons=tuple(reasons),
+        warnings=tuple(warnings),
+    )
+
+
+def evaluate_anion_pi_pair(
+    ring: Any,
+    negative_group: Any,
+    *,
+    config: Optional[AnionPiDetectionConfig] = None,
+) -> AnionPiGeometryEvaluation:
+    """
+    Calculate and classify one anion–aromatic-system pair.
+    """
+
+    if config is None:
+        config = AnionPiDetectionConfig()
+
+    charge_center = _section10_get_object_center(
+        negative_group,
+        field_name="anion charge center",
+    )
+
+    position = _section10_calculate_point_ring_position(
+        ring,
+        charge_center,
+    )
+
+    minimum_atomic_distance = _section10_minimum_atomic_distance(
+        ring,
+        negative_group,
+    )
+
+    effective_charge, charge_source = infer_anion_pi_charge(
+        negative_group,
+        config=config,
+    )
+
+    evaluation = evaluate_anion_pi_geometry(
+        centroid_distance=position["centroid_distance"],
+        signed_height=position["signed_height"],
+        radial_offset=position["radial_offset"],
+        minimum_atomic_distance=minimum_atomic_distance,
+        ring_planarity_rmsd=_section10_get_ring_planarity(ring),
+        effective_charge=effective_charge,
+        charge_source=charge_source,
+        ring_electrophilicity=_section10_get_ring_electrophilicity(
+            ring
+        ),
+        config=config,
+    )
+
+    evaluation.metadata.update(
+        {
+            "ring_id": _section10_get_identifier(
+                ring,
+                "ring",
+            ),
+            "negative_group_id": _section10_get_identifier(
+                negative_group,
+                "anion",
+            ),
+            "ring_centroid": position["ring_centroid"],
+            "ring_normal": position["ring_normal"],
+            "charge_center": charge_center,
+            "centroid_vector": position["centroid_vector"],
+            "center_plane_based_detection": True,
+        }
+    )
+
+    return evaluation
+
+
+# -----------------------------------------------------------------------------
+# 10.14. Geometria da amida
+# -----------------------------------------------------------------------------
+
+def _section10_get_amide_plane_normal(
+    amide_group: Any,
+) -> Optional[Tuple[float, float, float]]:
+    value = _section10_get_first_attribute(
+        amide_group,
+        (
+            "plane_normal",
+            "normal",
+            "normal_vector",
+            "amide_normal",
+        ),
+    )
+
+    if value is None:
+        return None
+
+    try:
+        return _section10_normalize_vector(
+            _section10_as_vector3(
+                value,
+                field_name="amide-plane normal",
+            )
+        )
+
+    except NoncovalentPiDetectionError:
+        return None
+
+
+def _section10_get_amide_planarity(
+    amide_group: Any,
+) -> float:
+    value = _section10_get_first_attribute(
+        amide_group,
+        (
+            "planarity_rmsd",
+            "plane_rmsd",
+            "rmsd_to_plane",
+            "planarity",
+        ),
+        0.0,
+    )
+
+    try:
+        value = float(value)
+
+    except (TypeError, ValueError) as exc:
+        raise AmidePiGeometryError(
+            "Amide planarity must be numeric."
+        ) from exc
+
+    if not math.isfinite(value):
+        raise AmidePiGeometryError(
+            "Amide planarity must be finite."
+        )
+
+    return max(0.0, value)
+
+
+def _section10_get_carbonyl_vector(
+    amide_group: Any,
+) -> Optional[Tuple[float, float, float]]:
+    explicit_vector = _section10_get_first_attribute(
+        amide_group,
+        (
+            "carbonyl_vector",
+            "co_vector",
+            "c_o_vector",
+            "carbonyl_direction",
+        ),
+    )
+
+    if explicit_vector is not None:
+        try:
+            return _section10_normalize_vector(
+                _section10_as_vector3(
+                    explicit_vector,
+                    field_name="carbonyl vector",
+                )
+            )
+
+        except NoncovalentPiDetectionError:
+            return None
+
+    carbon_atom = _section10_get_first_attribute(
+        amide_group,
+        (
+            "carbonyl_carbon",
+            "carbon_atom",
+            "c_atom",
+        ),
+    )
+
+    oxygen_atom = _section10_get_first_attribute(
+        amide_group,
+        (
+            "carbonyl_oxygen",
+            "oxygen_atom",
+            "o_atom",
+        ),
+    )
+
+    if carbon_atom is None or oxygen_atom is None:
+        return None
+
+    carbon_coordinates = _section10_get_atom_coordinates(
+        carbon_atom
+    )
+
+    oxygen_coordinates = _section10_get_atom_coordinates(
+        oxygen_atom
+    )
+
+    return _section10_normalize_vector(
+        _section10_vector_subtract(
+            oxygen_coordinates,
+            carbon_coordinates,
+        )
+    )
+
+
+def evaluate_amide_pi_geometry(
+    *,
+    centroid_distance: float,
+    signed_height: float,
+    radial_offset: float,
+    minimum_atomic_distance: float,
+    ring_planarity_rmsd: float,
+    amide_planarity_rmsd: float,
+    plane_angle: Optional[float],
+    carbonyl_normal_angle: Optional[float],
+    carbonyl_centroid_angle: Optional[float],
+    config: Optional[AmidePiDetectionConfig] = None,
+) -> AmidePiGeometryEvaluation:
+    """
+    Evaluate the position and orientation of an amide relative to an aromatic
+    system.
+    """
+
+    if config is None:
+        config = AmidePiDetectionConfig()
+
+    centroid_distance = float(
+        centroid_distance
+    )
+    signed_height = float(
+        signed_height
+    )
+    radial_offset = float(
+        radial_offset
+    )
+    minimum_atomic_distance = float(
+        minimum_atomic_distance
+    )
+    ring_planarity_rmsd = float(
+        ring_planarity_rmsd
+    )
+    amide_planarity_rmsd = float(
+        amide_planarity_rmsd
+    )
+
+    absolute_height = abs(
+        signed_height
+    )
+
+    if signed_height > PI_NONCOVALENT_EPSILON:
+        face = PI_FACE_POSITIVE
+
+    elif signed_height < -PI_NONCOVALENT_EPSILON:
+        face = PI_FACE_NEGATIVE
+
+    else:
+        face = PI_FACE_IN_PLANE
+
+    if plane_angle is not None:
+        plane_angle = min(
+            90.0,
+            abs(float(plane_angle)),
+        )
+
+    if carbonyl_normal_angle is not None:
+        carbonyl_normal_angle = min(
+            90.0,
+            abs(float(carbonyl_normal_angle)),
+        )
+
+    if carbonyl_centroid_angle is not None:
+        carbonyl_centroid_angle = min(
+            180.0,
+            abs(float(carbonyl_centroid_angle)),
+        )
+
+    centroid_distance_valid = (
+        centroid_distance
+        <= config.maximum_centroid_distance
+    )
+
+    height_valid = (
+        config.minimum_height
+        <= absolute_height
+        <= config.maximum_height
+    )
+
+    atomic_distance_valid = (
+        minimum_atomic_distance
+        <= config.maximum_minimum_atomic_distance
+    )
+
+    ring_planarity_valid = (
+        ring_planarity_rmsd
+        <= config.maximum_ring_planarity_rmsd
+    )
+
+    amide_planarity_valid = (
+        amide_planarity_rmsd
+        <= config.maximum_amide_planarity_rmsd
+    )
+
+    if config.require_amide_plane:
+        orientation_available = (
+            plane_angle is not None
+        )
+
+    else:
+        orientation_available = True
+
+    parallel_orientation = (
+        plane_angle is not None
+        and plane_angle
+        <= config.parallel_maximum_angle
+    )
+
+    face_parallel_orientation = (
+        plane_angle is not None
+        and plane_angle
+        <= config.face_parallel_maximum_angle
+    )
+
+    perpendicular_orientation = (
+        plane_angle is not None
+        and plane_angle
+        >= config.perpendicular_minimum_angle
+    )
+
+    carbonyl_directed = (
+        carbonyl_centroid_angle is not None
+        and (
+            carbonyl_centroid_angle
+            <= config.carbonyl_alignment_maximum_angle
+            or carbonyl_centroid_angle
+            >= (
+                180.0
+                - config.carbonyl_alignment_maximum_angle
+            )
+        )
+    )
+
+    orientation_valid = bool(
+        parallel_orientation
+        or perpendicular_orientation
+        or carbonyl_directed
+        or not config.require_amide_plane
+    )
+
+    core_requirements = (
+        centroid_distance_valid
+        and height_valid
+        and ring_planarity_valid
+        and amide_planarity_valid
+        and orientation_available
+        and (
+            atomic_distance_valid
+            or not config.require_atomic_contact
+        )
+    )
+
+    geometry = AMIDE_PI_GEOMETRY_REJECTED
+    accepted = False
+    borderline = False
+    radial_offset_valid = False
+
+    reasons: List[str] = []
+    warnings: List[str] = []
+
+    if (
+        core_requirements
+        and face_parallel_orientation
+        and radial_offset
+        <= config.centered_maximum_radial_offset
+    ):
+        geometry = AMIDE_PI_GEOMETRY_PARALLEL_FACE
+        accepted = True
+        radial_offset_valid = True
+
+        reasons.append(
+            "The amide plane is approximately parallel to the aromatic "
+            "plane and positioned over the central face."
+        )
+
+    elif (
+        core_requirements
+        and parallel_orientation
+        and radial_offset
+        <= config.face_maximum_radial_offset
+    ):
+        geometry = AMIDE_PI_GEOMETRY_PARALLEL_OFFSET
+        accepted = True
+        radial_offset_valid = True
+
+        reasons.append(
+            "The amide plane is approximately parallel to the aromatic "
+            "system with a lateral displacement."
+        )
+
+    elif (
+        core_requirements
+        and config.use_carbonyl_orientation
+        and carbonyl_directed
+        and radial_offset
+        <= config.face_maximum_radial_offset
+    ):
+        geometry = AMIDE_PI_GEOMETRY_CARBONYL_DIRECTED
+        accepted = True
+        radial_offset_valid = True
+
+        reasons.append(
+            "The carbonyl axis is directed toward or away from the "
+            "aromatic centroid in a compatible amide–π arrangement."
+        )
+
+    elif (
+        core_requirements
+        and perpendicular_orientation
+        and radial_offset
+        <= config.edge_maximum_radial_offset
+    ):
+        geometry = AMIDE_PI_GEOMETRY_EDGE_TO_FACE
+        accepted = True
+        radial_offset_valid = True
+
+        reasons.append(
+            "The amide plane approaches the aromatic system in an "
+            "edge-to-face orientation."
+        )
+
+    else:
+        borderline_requirements = (
+            config.include_borderline
+            and centroid_distance
+            <= config.borderline_maximum_centroid_distance
+            and absolute_height
+            <= config.borderline_maximum_height
+            and radial_offset
+            <= config.borderline_maximum_radial_offset
+            and ring_planarity_rmsd
+            <= config.borderline_planarity_rmsd
+            and amide_planarity_rmsd
+            <= config.borderline_planarity_rmsd
+        )
+
+        if borderline_requirements:
+            geometry = AMIDE_PI_GEOMETRY_BORDERLINE
+            accepted = True
+            borderline = True
+            radial_offset_valid = True
+
+            reasons.append(
+                "The amide forms a limiting aromatic contact outside the "
+                "canonical parallel or carbonyl-directed regions."
+            )
+
+        else:
+            if not centroid_distance_valid:
+                warnings.append(
+                    "Amide–centroid distance exceeds the canonical limit."
+                )
+
+            if not height_valid:
+                warnings.append(
+                    "The amide height relative to the aromatic plane is "
+                    "outside the accepted interval."
+                )
+
+            if radial_offset > config.edge_maximum_radial_offset:
+                warnings.append(
+                    "The radial displacement exceeds the aromatic-face "
+                    "limit."
+                )
+
+            if not atomic_distance_valid:
+                warnings.append(
+                    "Minimum atom–atom distance exceeds the auxiliary "
+                    "contact limit."
+                )
+
+            if not ring_planarity_valid:
+                warnings.append(
+                    "The aromatic system has insufficient planar quality."
+                )
+
+            if not amide_planarity_valid:
+                warnings.append(
+                    "The amide group has insufficient planar quality."
+                )
+
+            if config.require_amide_plane and plane_angle is None:
+                warnings.append(
+                    "The amide-plane orientation is unavailable."
+                )
+
+            elif not orientation_valid:
+                warnings.append(
+                    "The amide orientation is incompatible with the "
+                    "accepted amide–π geometries."
+                )
+
+    distance_quality = _section10_inverse_linear_quality(
+        centroid_distance,
+        optimal=config.optimal_centroid_distance,
+        maximum=config.borderline_maximum_centroid_distance,
+    )
+
+    height_quality = _section10_window_quality(
+        absolute_height,
+        minimum=config.minimum_height,
+        optimal=config.optimal_height,
+        maximum=config.borderline_maximum_height,
+    )
+
+    radial_quality = _section10_inverse_linear_quality(
+        radial_offset,
+        optimal=config.centered_maximum_radial_offset,
+        maximum=config.borderline_maximum_radial_offset,
+    )
+
+    ring_planarity_quality = _section10_inverse_linear_quality(
+        ring_planarity_rmsd,
+        optimal=0.0,
+        maximum=config.borderline_planarity_rmsd,
+    )
+
+    amide_planarity_quality = _section10_inverse_linear_quality(
+        amide_planarity_rmsd,
+        optimal=0.0,
+        maximum=config.borderline_planarity_rmsd,
+    )
+
+    if plane_angle is None:
+        plane_orientation_quality = 0.5
+
+    elif parallel_orientation:
+        plane_orientation_quality = _section10_inverse_linear_quality(
+            plane_angle,
+            optimal=config.face_parallel_maximum_angle,
+            maximum=config.parallel_maximum_angle,
+        )
+
+    elif perpendicular_orientation:
+        plane_orientation_quality = _section10_inverse_linear_quality(
+            abs(90.0 - plane_angle),
+            optimal=0.0,
+            maximum=(
+                90.0
+                - config.perpendicular_minimum_angle
+            ),
+        )
+
+    else:
+        plane_orientation_quality = 0.0
+
+    if carbonyl_centroid_angle is None:
+        carbonyl_quality = 0.5
+
+    else:
+        directional_deviation = min(
+            carbonyl_centroid_angle,
+            abs(180.0 - carbonyl_centroid_angle),
+        )
+
+        carbonyl_quality = _section10_inverse_linear_quality(
+            directional_deviation,
+            optimal=0.0,
+            maximum=config.carbonyl_alignment_maximum_angle,
+        )
+
+    confidence = (
+        0.22 * distance_quality
+        + 0.20 * height_quality
+        + 0.17 * radial_quality
+        + 0.11 * ring_planarity_quality
+        + 0.10 * amide_planarity_quality
+        + 0.13 * plane_orientation_quality
+        + 0.07 * carbonyl_quality
+    )
+
+    if geometry == AMIDE_PI_GEOMETRY_BORDERLINE:
+        confidence *= 0.75
+
+    elif geometry == AMIDE_PI_GEOMETRY_EDGE_TO_FACE:
+        confidence *= 0.90
+
+    elif geometry == AMIDE_PI_GEOMETRY_REJECTED:
+        confidence *= 0.25
+
+    return AmidePiGeometryEvaluation(
+        geometry=geometry,
+        centroid_distance=centroid_distance,
+        signed_height=signed_height,
+        absolute_height=absolute_height,
+        radial_offset=radial_offset,
+        minimum_atomic_distance=minimum_atomic_distance,
+        face=face,
+        plane_angle=plane_angle,
+        carbonyl_normal_angle=carbonyl_normal_angle,
+        carbonyl_centroid_angle=carbonyl_centroid_angle,
+        ring_planarity_rmsd=ring_planarity_rmsd,
+        amide_planarity_rmsd=amide_planarity_rmsd,
+        centroid_distance_valid=centroid_distance_valid,
+        height_valid=height_valid,
+        radial_offset_valid=radial_offset_valid,
+        atomic_distance_valid=atomic_distance_valid,
+        ring_planarity_valid=ring_planarity_valid,
+        amide_planarity_valid=amide_planarity_valid,
+        orientation_valid=orientation_valid,
+        accepted=accepted,
+        borderline=borderline,
+        confidence=_section10_clamp(confidence),
+        reasons=tuple(reasons),
+        warnings=tuple(warnings),
+    )
+
+
+def evaluate_amide_pi_pair(
+    ring: Any,
+    amide_group: Any,
+    *,
+    config: Optional[AmidePiDetectionConfig] = None,
+) -> AmidePiGeometryEvaluation:
+    """
+    Calculate and classify one amide–aromatic-system pair.
+    """
+
+    if config is None:
+        config = AmidePiDetectionConfig()
+
+    amide_center = _section10_get_object_center(
+        amide_group,
+        field_name="amide center",
+    )
+
+    position = _section10_calculate_point_ring_position(
+        ring,
+        amide_center,
+    )
+
+    ring_normal = position[
+        "ring_normal"
+    ]
+
+    amide_normal = _section10_get_amide_plane_normal(
+        amide_group
+    )
+
+    carbonyl_vector = _section10_get_carbonyl_vector(
+        amide_group
+    )
+
+    plane_angle = (
+        None
+        if amide_normal is None
+        else _section10_acute_angle(
+            ring_normal,
+            amide_normal,
+        )
+    )
+
+    carbonyl_normal_angle = (
+        None
+        if carbonyl_vector is None
+        else _section10_acute_angle(
+            carbonyl_vector,
+            ring_normal,
+        )
+    )
+
+    carbonyl_centroid_angle = (
+        None
+        if carbonyl_vector is None
+        else _section10_directional_angle(
+            carbonyl_vector,
+            _section10_vector_subtract(
+                position["ring_centroid"],
+                amide_center,
+            ),
+        )
+    )
+
+    evaluation = evaluate_amide_pi_geometry(
+        centroid_distance=position["centroid_distance"],
+        signed_height=position["signed_height"],
+        radial_offset=position["radial_offset"],
+        minimum_atomic_distance=_section10_minimum_atomic_distance(
+            ring,
+            amide_group,
+        ),
+        ring_planarity_rmsd=_section10_get_ring_planarity(
+            ring
+        ),
+        amide_planarity_rmsd=_section10_get_amide_planarity(
+            amide_group
+        ),
+        plane_angle=plane_angle,
+        carbonyl_normal_angle=carbonyl_normal_angle,
+        carbonyl_centroid_angle=carbonyl_centroid_angle,
+        config=config,
+    )
+
+    evaluation.metadata.update(
+        {
+            "ring_id": _section10_get_identifier(
+                ring,
+                "ring",
+            ),
+            "amide_group_id": _section10_get_identifier(
+                amide_group,
+                "amide",
+            ),
+            "ring_centroid": position["ring_centroid"],
+            "ring_normal": ring_normal,
+            "amide_center": amide_center,
+            "amide_normal": amide_normal,
+            "carbonyl_vector": carbonyl_vector,
+            "centroid_vector": position["centroid_vector"],
+        }
+    )
+
+    return evaluation
+
+
+# -----------------------------------------------------------------------------
+# 10.15. Contatos atômicos auxiliares
+# -----------------------------------------------------------------------------
+
+def _section10_construct_atomic_contact(
+    atom_1: Any,
+    atom_2: Any,
+    distance: float,
+    *,
+    interaction_type: str,
+    contact_index: int,
+    participant_1_id: str,
+    participant_2_id: str,
+) -> Any:
+    contact_id = (
+        f"{interaction_type}-contact:"
+        f"{participant_1_id}:"
+        f"{participant_2_id}:"
+        f"{contact_index}"
+    )
+
+    candidate_values: Dict[str, Any] = {
+        "contact_id": contact_id,
+        "id": contact_id,
+        "interaction_type": interaction_type,
+        "atom_1": atom_1,
+        "atom_2": atom_2,
+        "distance": float(distance),
+        "valid": True,
+        "metadata": {
+            "participant_1_id": participant_1_id,
+            "participant_2_id": participant_2_id,
+            "auxiliary_contact": True,
+        },
+    }
+
+    if is_dataclass(PiAtomicContact):
+        supported_fields = {
+            field_definition.name
+            for field_definition in fields(PiAtomicContact)
+        }
+
+        candidate_values = {
+            key: value
+            for key, value in candidate_values.items()
+            if key in supported_fields
+        }
+
+    return PiAtomicContact(
+        **candidate_values
+    )
+
+
+def _section10_find_atomic_contacts(
+    object_1: Any,
+    object_2: Any,
+    *,
+    interaction_type: str,
+    maximum_distance: float,
+) -> Tuple[Any, ...]:
+    atoms_1 = _section10_get_atoms(
+        object_1
+    )
+
+    atoms_2 = _section10_get_atoms(
+        object_2
+    )
+
+    if not atoms_1 or not atoms_2:
+        return ()
+
+    participant_1_id = _section10_get_identifier(
+        object_1,
+        "participant_1",
+    )
+
+    participant_2_id = _section10_get_identifier(
+        object_2,
+        "participant_2",
+    )
+
+    contacts: List[Any] = []
+
+    for atom_1 in atoms_1:
+        coordinates_1 = _section10_get_atom_coordinates(
+            atom_1
+        )
+
+        for atom_2 in atoms_2:
+            coordinates_2 = _section10_get_atom_coordinates(
+                atom_2
+            )
+
+            distance = _section10_distance(
+                coordinates_1,
+                coordinates_2,
+            )
+
+            if distance <= maximum_distance:
+                contacts.append(
+                    _section10_construct_atomic_contact(
+                        atom_1,
+                        atom_2,
+                        distance,
+                        interaction_type=interaction_type,
+                        contact_index=len(contacts) + 1,
+                        participant_1_id=participant_1_id,
+                        participant_2_id=participant_2_id,
+                    )
+                )
+
+    contacts.sort(
+        key=lambda contact: float(
+            _section10_get_first_attribute(
+                contact,
+                ("distance",),
+                math.inf,
+            )
+        )
+    )
+
+    return tuple(contacts)
+
+
+# -----------------------------------------------------------------------------
+# 10.16. Construção das interações
+# -----------------------------------------------------------------------------
+
+def _section10_construct_anion_pi_interaction(
+    ring: Any,
+    negative_group: Any,
+    evaluation: AnionPiGeometryEvaluation,
+    *,
+    index: int,
+    config: AnionPiDetectionConfig,
+) -> Any:
+    ring_id = _section10_get_identifier(
+        ring,
+        f"ring_{index}",
+    )
+
+    group_id = _section10_get_identifier(
+        negative_group,
+        f"anion_{index}",
+    )
+
+    interaction_id = (
+        f"anion-pi:"
+        f"{group_id}:"
+        f"{ring_id}"
+    )
+
+    contacts = (
+        _section10_find_atomic_contacts(
+            ring,
+            negative_group,
+            interaction_type=ANION_PI_INTERACTION_TYPE,
+            maximum_distance=config.atomic_contact_distance,
+        )
+        if config.include_atomic_contacts
+        else ()
+    )
+
+    candidate_values: Dict[str, Any] = {
+        "interaction_id": interaction_id,
+        "id": interaction_id,
+        "interaction_type": ANION_PI_INTERACTION_TYPE,
+        "subtype": evaluation.geometry,
+        "geometry_class": evaluation.geometry,
+        "aromatic_system": ring,
+        "ring": ring,
+        "ring_1": ring,
+        "charged_group": negative_group,
+        "anion_group": negative_group,
+        "participant_1_type": _section10_get_participant_type(
+            ring
+        ),
+        "participant_2_type": _section10_get_participant_type(
+            negative_group
+        ),
+        "centroid_distance": evaluation.centroid_distance,
+        "signed_height": evaluation.signed_height,
+        "height": evaluation.absolute_height,
+        "absolute_height": evaluation.absolute_height,
+        "radial_offset": evaluation.radial_offset,
+        "lateral_offset": evaluation.radial_offset,
+        "minimum_atomic_distance": evaluation.minimum_atomic_distance,
+        "face": evaluation.face,
+        "effective_charge": evaluation.effective_charge,
+        "charge_source": evaluation.charge_source,
+        "ring_planarity": evaluation.ring_planarity_rmsd,
+        "geometry_confidence": evaluation.confidence,
+        "atomic_contacts": contacts,
+        "valid": evaluation.accepted,
+        "borderline": evaluation.borderline,
+        "warnings": list(evaluation.warnings),
+        "metadata": {
+            "schema": "anion-pi-interaction",
+            "geometry_reasons": list(evaluation.reasons),
+            "geometry_evaluation": evaluation.to_dict(),
+            "ring_id": ring_id,
+            "negative_group_id": group_id,
+            "ring_residue_id": _section10_get_residue_id(ring),
+            "negative_group_residue_id": _section10_get_residue_id(
+                negative_group
+            ),
+            "atomic_contact_count": len(contacts),
+            "center_plane_based_detection": True,
+        },
+    }
+
+    if is_dataclass(PiInteraction):
+        supported_fields = {
+            field_definition.name
+            for field_definition in fields(PiInteraction)
+        }
+
+        candidate_values = {
+            key: value
+            for key, value in candidate_values.items()
+            if key in supported_fields
+        }
+
+    return PiInteraction(
+        **candidate_values
+    )
+
+
+def _section10_construct_amide_pi_interaction(
+    ring: Any,
+    amide_group: Any,
+    evaluation: AmidePiGeometryEvaluation,
+    *,
+    index: int,
+    config: AmidePiDetectionConfig,
+) -> Any:
+    ring_id = _section10_get_identifier(
+        ring,
+        f"ring_{index}",
+    )
+
+    amide_id = _section10_get_identifier(
+        amide_group,
+        f"amide_{index}",
+    )
+
+    interaction_id = (
+        f"amide-pi:"
+        f"{amide_id}:"
+        f"{ring_id}"
+    )
+
+    contacts = (
+        _section10_find_atomic_contacts(
+            ring,
+            amide_group,
+            interaction_type=AMIDE_PI_INTERACTION_TYPE,
+            maximum_distance=config.atomic_contact_distance,
+        )
+        if config.include_atomic_contacts
+        else ()
+    )
+
+    candidate_values: Dict[str, Any] = {
+        "interaction_id": interaction_id,
+        "id": interaction_id,
+        "interaction_type": AMIDE_PI_INTERACTION_TYPE,
+        "subtype": evaluation.geometry,
+        "geometry_class": evaluation.geometry,
+        "aromatic_system": ring,
+        "ring": ring,
+        "ring_1": ring,
+        "amide_group": amide_group,
+        "participant_1_type": _section10_get_participant_type(
+            ring
+        ),
+        "participant_2_type": _section10_get_participant_type(
+            amide_group
+        ),
+        "centroid_distance": evaluation.centroid_distance,
+        "signed_height": evaluation.signed_height,
+        "height": evaluation.absolute_height,
+        "absolute_height": evaluation.absolute_height,
+        "radial_offset": evaluation.radial_offset,
+        "lateral_offset": evaluation.radial_offset,
+        "minimum_atomic_distance": evaluation.minimum_atomic_distance,
+        "face": evaluation.face,
+        "plane_angle": evaluation.plane_angle,
+        "orientation_angle": evaluation.plane_angle,
+        "carbonyl_normal_angle": evaluation.carbonyl_normal_angle,
+        "carbonyl_centroid_angle": evaluation.carbonyl_centroid_angle,
+        "ring_planarity": evaluation.ring_planarity_rmsd,
+        "amide_planarity": evaluation.amide_planarity_rmsd,
+        "geometry_confidence": evaluation.confidence,
+        "atomic_contacts": contacts,
+        "valid": evaluation.accepted,
+        "borderline": evaluation.borderline,
+        "warnings": list(evaluation.warnings),
+        "metadata": {
+            "schema": "amide-pi-interaction",
+            "geometry_reasons": list(evaluation.reasons),
+            "geometry_evaluation": evaluation.to_dict(),
+            "ring_id": ring_id,
+            "amide_group_id": amide_id,
+            "ring_residue_id": _section10_get_residue_id(ring),
+            "amide_residue_id": _section10_get_residue_id(
+                amide_group
+            ),
+            "atomic_contact_count": len(contacts),
+            "plane_orientation_based_detection": True,
+        },
+    }
+
+    if is_dataclass(PiInteraction):
+        supported_fields = {
+            field_definition.name
+            for field_definition in fields(PiInteraction)
+        }
+
+        candidate_values = {
+            key: value
+            for key, value in candidate_values.items()
+            if key in supported_fields
+        }
+
+    return PiInteraction(
+        **candidate_values
+    )
+
+
+# -----------------------------------------------------------------------------
+# 10.17. Detecção ânion–π
+# -----------------------------------------------------------------------------
+
+def detect_anion_pi_interactions(
+    aromatic_systems: Iterable[Any],
+    negative_groups: Iterable[Any],
+    *,
+    config: Optional[AnionPiDetectionConfig] = None,
+    exclude_same_residue: Optional[bool] = None,
+    strict: bool = False,
+) -> List[Any]:
+    """
+    Detect anion–π interactions.
+
+    The function returns an empty list when the category is disabled.
+    """
+
+    if config is None:
+        config = AnionPiDetectionConfig()
+
+    if not config.enabled:
+        return []
+
+    if exclude_same_residue is None:
+        exclude_same_residue = (
+            config.exclude_intramolecular_same_residue
+        )
+
+    interactions: List[Any] = []
+    evaluated_pairs: Set[Tuple[str, str]] = set()
+
+    rings = tuple(
+        aromatic_systems
+    )
+
+    groups = tuple(
+        negative_groups
+    )
+
+    for ring in rings:
+        for negative_group in groups:
+            if (
+                exclude_same_residue
+                and _section10_get_residue_id(ring)
+                and _section10_get_residue_id(ring)
+                == _section10_get_residue_id(negative_group)
+            ):
+                continue
+
+            pair_key = (
+                _section10_get_identifier(
+                    ring,
+                    str(id(ring)),
+                ),
+                _section10_get_identifier(
+                    negative_group,
+                    str(id(negative_group)),
+                ),
+            )
+
+            if (
+                config.deduplicate_results
+                and pair_key in evaluated_pairs
+            ):
+                continue
+
+            evaluated_pairs.add(
+                pair_key
+            )
+
+            try:
+                effective_charge, _ = infer_anion_pi_charge(
+                    negative_group,
+                    config=config,
+                )
+
+                if (
+                    config.require_negative_charge
+                    and effective_charge
+                    > config.minimum_negative_charge
+                ):
+                    continue
+
+                evaluation = evaluate_anion_pi_pair(
+                    ring,
+                    negative_group,
+                    config=config,
+                )
+
+            except (
+                NoncovalentPiDetectionError,
+                TypeError,
+                ValueError,
+            ):
+                if strict:
+                    raise
+
+                continue
+
+            if (
+                not evaluation.accepted
+                and not config.include_rejected
+            ):
+                continue
+
+            interactions.append(
+                _section10_construct_anion_pi_interaction(
+                    ring,
+                    negative_group,
+                    evaluation,
+                    index=len(interactions) + 1,
+                    config=config,
+                )
+            )
+
+    interactions.sort(
+        key=lambda interaction: (
+            not bool(
+                _section10_get_first_attribute(
+                    interaction,
+                    ("valid",),
+                    False,
+                )
+            ),
+            -float(
+                _section10_get_first_attribute(
+                    interaction,
+                    (
+                        "geometry_confidence",
+                        "confidence",
+                    ),
+                    0.0,
+                )
+            ),
+            float(
+                _section10_get_first_attribute(
+                    interaction,
+                    ("centroid_distance",),
+                    math.inf,
+                )
+            ),
+        )
+    )
+
+    return interactions
+
+
+# -----------------------------------------------------------------------------
+# 10.18. Detecção amida–π
+# -----------------------------------------------------------------------------
+
+def detect_amide_pi_interactions(
+    aromatic_systems: Iterable[Any],
+    amide_groups: Iterable[Any],
+    *,
+    config: Optional[AmidePiDetectionConfig] = None,
+    exclude_same_residue: Optional[bool] = None,
+    strict: bool = False,
+) -> List[Any]:
+    """
+    Detect amide–π interactions.
+
+    The function returns an empty list when the category is disabled.
+    """
+
+    if config is None:
+        config = AmidePiDetectionConfig()
+
+    if not config.enabled:
+        return []
+
+    if exclude_same_residue is None:
+        exclude_same_residue = (
+            config.exclude_intramolecular_same_residue
+        )
+
+    interactions: List[Any] = []
+    evaluated_pairs: Set[Tuple[str, str]] = set()
+
+    rings = tuple(
+        aromatic_systems
+    )
+
+    groups = tuple(
+        amide_groups
+    )
+
+    for ring in rings:
+        for amide_group in groups:
+            if (
+                exclude_same_residue
+                and _section10_get_residue_id(ring)
+                and _section10_get_residue_id(ring)
+                == _section10_get_residue_id(amide_group)
+            ):
+                continue
+
+            pair_key = (
+                _section10_get_identifier(
+                    ring,
+                    str(id(ring)),
+                ),
+                _section10_get_identifier(
+                    amide_group,
+                    str(id(amide_group)),
+                ),
+            )
+
+            if (
+                config.deduplicate_results
+                and pair_key in evaluated_pairs
+            ):
+                continue
+
+            evaluated_pairs.add(
+                pair_key
+            )
+
+            try:
+                evaluation = evaluate_amide_pi_pair(
+                    ring,
+                    amide_group,
+                    config=config,
+                )
+
+            except (
+                NoncovalentPiDetectionError,
+                TypeError,
+                ValueError,
+            ):
+                if strict:
+                    raise
+
+                continue
+
+            if (
+                not evaluation.accepted
+                and not config.include_rejected
+            ):
+                continue
+
+            interactions.append(
+                _section10_construct_amide_pi_interaction(
+                    ring,
+                    amide_group,
+                    evaluation,
+                    index=len(interactions) + 1,
+                    config=config,
+                )
+            )
+
+    interactions.sort(
+        key=lambda interaction: (
+            not bool(
+                _section10_get_first_attribute(
+                    interaction,
+                    ("valid",),
+                    False,
+                )
+            ),
+            -float(
+                _section10_get_first_attribute(
+                    interaction,
+                    (
+                        "geometry_confidence",
+                        "confidence",
+                    ),
+                    0.0,
+                )
+            ),
+            float(
+                _section10_get_first_attribute(
+                    interaction,
+                    ("centroid_distance",),
+                    math.inf,
+                )
+            ),
+        )
+    )
+
+    return interactions
+
+
+# -----------------------------------------------------------------------------
+# 10.19. API combinada da seção
+# -----------------------------------------------------------------------------
+
+def detect_anion_and_amide_pi_interactions(
+    aromatic_systems: Iterable[Any],
+    *,
+    negative_groups: Iterable[Any] = (),
+    amide_groups: Iterable[Any] = (),
+    config: Optional[AnionAmidePiDetectionConfig] = None,
+    strict: bool = False,
+) -> Dict[str, List[Any]]:
+    """
+    Run the enabled Section 10 detectors.
+    """
+
+    if config is None:
+        config = create_default_anion_amide_pi_config()
+
+    rings = tuple(
+        aromatic_systems
+    )
+
+    anion_interactions = (
+        detect_anion_pi_interactions(
+            rings,
+            negative_groups,
+            config=config.anion_pi,
+            strict=strict,
+        )
+        if config.enable_anion_pi
+        and config.anion_pi.enabled
+        else []
+    )
+
+    amide_interactions = (
+        detect_amide_pi_interactions(
+            rings,
+            amide_groups,
+            config=config.amide_pi,
+            strict=strict,
+        )
+        if config.enable_amide_pi
+        and config.amide_pi.enabled
+        else []
+    )
+
+    return {
+        "anion_pi": anion_interactions,
+        "amide_pi": amide_interactions,
+        "all": [
+            *anion_interactions,
+            *amide_interactions,
+        ],
+    }
+
+
+# -----------------------------------------------------------------------------
+# 10.20. Detecção de pares individuais
+# -----------------------------------------------------------------------------
+
+def detect_single_anion_pi_interaction(
+    ring: Any,
+    negative_group: Any,
+    *,
+    config: Optional[AnionPiDetectionConfig] = None,
+    include_rejected: bool = False,
+) -> Optional[Any]:
+    if config is None:
+        config = AnionPiDetectionConfig()
+
+    if not config.enabled:
+        return None
+
+    evaluation = evaluate_anion_pi_pair(
+        ring,
+        negative_group,
+        config=config,
+    )
+
+    if (
+        not evaluation.accepted
+        and not include_rejected
+    ):
+        return None
+
+    return _section10_construct_anion_pi_interaction(
+        ring,
+        negative_group,
+        evaluation,
+        index=1,
+        config=config,
+    )
+
+
+def detect_single_amide_pi_interaction(
+    ring: Any,
+    amide_group: Any,
+    *,
+    config: Optional[AmidePiDetectionConfig] = None,
+    include_rejected: bool = False,
+) -> Optional[Any]:
+    if config is None:
+        config = AmidePiDetectionConfig()
+
+    if not config.enabled:
+        return None
+
+    evaluation = evaluate_amide_pi_pair(
+        ring,
+        amide_group,
+        config=config,
+    )
+
+    if (
+        not evaluation.accepted
+        and not include_rejected
+    ):
+        return None
+
+    return _section10_construct_amide_pi_interaction(
+        ring,
+        amide_group,
+        evaluation,
+        index=1,
+        config=config,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 10.21. Filtros
+# -----------------------------------------------------------------------------
+
+def filter_anion_pi_interactions_by_geometry(
+    interactions: Iterable[Any],
+    geometries: Collection[str],
+) -> List[Any]:
+    normalized = {
+        str(geometry).strip().lower()
+        for geometry in geometries
+    }
+
+    unsupported = (
+        normalized
+        - SUPPORTED_ANION_PI_GEOMETRIES
+    )
+
+    if unsupported:
+        raise AnionPiValidationError(
+            "Unsupported anion–π geometries: "
+            f"{sorted(unsupported)!r}."
+        )
+
+    return [
+        interaction
+        for interaction in interactions
+        if str(
+            _section10_get_first_attribute(
+                interaction,
+                (
+                    "geometry_class",
+                    "subtype",
+                ),
+                "",
+            )
+        ).strip().lower()
+        in normalized
+    ]
+
+
+def filter_amide_pi_interactions_by_geometry(
+    interactions: Iterable[Any],
+    geometries: Collection[str],
+) -> List[Any]:
+    normalized = {
+        str(geometry).strip().lower()
+        for geometry in geometries
+    }
+
+    unsupported = (
+        normalized
+        - SUPPORTED_AMIDE_PI_GEOMETRIES
+    )
+
+    if unsupported:
+        raise AmidePiValidationError(
+            "Unsupported amide–π geometries: "
+            f"{sorted(unsupported)!r}."
+        )
+
+    return [
+        interaction
+        for interaction in interactions
+        if str(
+            _section10_get_first_attribute(
+                interaction,
+                (
+                    "geometry_class",
+                    "subtype",
+                ),
+                "",
+            )
+        ).strip().lower()
+        in normalized
+    ]
+
+
+# -----------------------------------------------------------------------------
+# 10.22. Resumo local
+# -----------------------------------------------------------------------------
+
+def summarize_anion_amide_pi_detection(
+    *,
+    anion_interactions: Iterable[Any] = (),
+    amide_interactions: Iterable[Any] = (),
+) -> Dict[str, Any]:
+    """
+    Produce a lightweight Section 10 summary.
+
+    Full statistics are generated in Section 13.
+    """
+
+    anion_list = list(
+        anion_interactions
+    )
+
+    amide_list = list(
+        amide_interactions
+    )
+
+    def summarize_collection(
+        interactions: Sequence[Any],
+    ) -> Dict[str, Any]:
+        geometry_distribution: Dict[str, int] = defaultdict(int)
+        face_distribution: Dict[str, int] = defaultdict(int)
+
+        centroid_distances: List[float] = []
+        heights: List[float] = []
+        offsets: List[float] = []
+        confidences: List[float] = []
+
+        borderline_count = 0
+
+        for interaction in interactions:
+            geometry = str(
+                _section10_get_first_attribute(
+                    interaction,
+                    (
+                        "geometry_class",
+                        "subtype",
+                    ),
+                    "unknown",
+                )
+            )
+
+            face = str(
+                _section10_get_first_attribute(
+                    interaction,
+                    ("face",),
+                    PI_FACE_IN_PLANE,
+                )
+            )
+
+            geometry_distribution[geometry] += 1
+            face_distribution[face] += 1
+
+            if bool(
+                _section10_get_first_attribute(
+                    interaction,
+                    ("borderline",),
+                    False,
+                )
+            ):
+                borderline_count += 1
+
+            for collection, names in (
+                (
+                    centroid_distances,
+                    ("centroid_distance",),
+                ),
+                (
+                    heights,
+                    (
+                        "absolute_height",
+                        "height",
+                    ),
+                ),
+                (
+                    offsets,
+                    (
+                        "radial_offset",
+                        "lateral_offset",
+                    ),
+                ),
+                (
+                    confidences,
+                    (
+                        "geometry_confidence",
+                        "confidence",
+                    ),
+                ),
+            ):
+                value = _section10_get_first_attribute(
+                    interaction,
+                    names,
+                )
+
+                if value is None:
+                    continue
+
+                try:
+                    value = float(value)
+
+                except (TypeError, ValueError):
+                    continue
+
+                if math.isfinite(value):
+                    collection.append(
+                        value
+                    )
+
+        def numeric_summary(
+            values: Sequence[float],
+        ) -> Dict[str, Optional[float]]:
+            if not values:
+                return {
+                    "mean": None,
+                    "minimum": None,
+                    "maximum": None,
+                }
+
+            return {
+                "mean": sum(values) / len(values),
+                "minimum": min(values),
+                "maximum": max(values),
+            }
+
+        return {
+            "total": len(interactions),
+            "geometry_distribution": dict(
+                sorted(
+                    geometry_distribution.items()
+                )
+            ),
+            "face_distribution": dict(
+                sorted(
+                    face_distribution.items()
+                )
+            ),
+            "borderline": borderline_count,
+            "centroid_distance": numeric_summary(
+                centroid_distances
+            ),
+            "height": numeric_summary(
+                heights
+            ),
+            "radial_offset": numeric_summary(
+                offsets
+            ),
+            "geometry_confidence": numeric_summary(
+                confidences
+            ),
+        }
+
+    return {
+        "total_interactions": (
+            len(anion_list)
+            + len(amide_list)
+        ),
+        "anion_pi": summarize_collection(
+            anion_list
+        ),
+        "amide_pi": summarize_collection(
+            amide_list
+        ),
+    }
+
+# =============================================================================
+# 11. CONSOLIDAÇÃO, CLASSIFICAÇÃO E SCORING
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 11.1. Constantes
+# -----------------------------------------------------------------------------
+
+PI_GEOMETRY_CLASS_OPTIMAL: Final[str] = "optimal"
+PI_GEOMETRY_CLASS_FAVORABLE: Final[str] = "favorable"
+PI_GEOMETRY_CLASS_WEAK: Final[str] = "weak"
+PI_GEOMETRY_CLASS_BORDERLINE: Final[str] = "borderline"
+PI_GEOMETRY_CLASS_REJECTED: Final[str] = "rejected"
+
+SUPPORTED_PI_GLOBAL_GEOMETRY_CLASSES: Final[FrozenSet[str]] = frozenset(
+    {
+        PI_GEOMETRY_CLASS_OPTIMAL,
+        PI_GEOMETRY_CLASS_FAVORABLE,
+        PI_GEOMETRY_CLASS_WEAK,
+        PI_GEOMETRY_CLASS_BORDERLINE,
+        PI_GEOMETRY_CLASS_REJECTED,
+    }
+)
+
+PI_STRENGTH_STRONG: Final[str] = "strong"
+PI_STRENGTH_MODERATE: Final[str] = "moderate"
+PI_STRENGTH_WEAK: Final[str] = "weak"
+
+SUPPORTED_PI_STRENGTH_CLASSES: Final[FrozenSet[str]] = frozenset(
+    {
+        PI_STRENGTH_STRONG,
+        PI_STRENGTH_MODERATE,
+        PI_STRENGTH_WEAK,
+    }
+)
+
+PI_TYPE_PI_PI: Final[str] = "pi-pi"
+PI_TYPE_CATION_PI: Final[str] = "cation-pi"
+PI_TYPE_ANION_PI: Final[str] = "anion-pi"
+PI_TYPE_AMIDE_PI: Final[str] = "amide-pi"
+
+SUPPORTED_CONSOLIDATED_PI_TYPES: Final[FrozenSet[str]] = frozenset(
+    {
+        PI_TYPE_PI_PI,
+        PI_TYPE_CATION_PI,
+        PI_TYPE_ANION_PI,
+        PI_TYPE_AMIDE_PI,
+    }
+)
+
+PI_SCORE_MINIMUM: Final[float] = 0.0
+PI_SCORE_MAXIMUM: Final[float] = 100.0
+
+PI_SCORE_EPSILON: Final[float] = 1.0e-12
+
+PI_SCORE_SCHEMA_VERSION: Final[str] = "1.0"
+
+
+# -----------------------------------------------------------------------------
+# 11.2. Exceções
+# -----------------------------------------------------------------------------
+
+class PiConsolidationError(RuntimeError):
+    """
+    Base exception for consolidation, classification and scoring.
+    """
+
+
+class PiInteractionValidationError(PiConsolidationError):
+    """
+    Raised when an interaction cannot be validated.
+    """
+
+
+class PiInteractionScoringError(PiConsolidationError):
+    """
+    Raised when an interaction cannot be scored.
+    """
+
+
+class PiInteractionDeduplicationError(PiConsolidationError):
+    """
+    Raised when an interaction cannot be deduplicated safely.
+    """
+
+
+# -----------------------------------------------------------------------------
+# 11.3. Configuração de pesos
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiScoreWeights:
+    """
+    Relative weights used to combine score components.
+
+    The weights are normalized internally, so they do not need to sum to 1.
+    """
+
+    distance: float = 1.0
+    angle: float = 1.0
+    offset: float = 1.0
+    planarity: float = 0.7
+    centrality: float = 0.8
+    chemical_identity: float = 0.8
+    charge: float = 0.8
+    atomic_contact: float = 0.4
+    detector_confidence: float = 0.5
+
+    def __post_init__(self) -> None:
+        for field_definition in fields(self):
+            field_name = field_definition.name
+            value = getattr(self, field_name)
+
+            try:
+                value = float(value)
+
+            except (TypeError, ValueError) as exc:
+                raise PiInteractionScoringError(
+                    f"{field_name} weight must be numeric."
+                ) from exc
+
+            if not math.isfinite(value) or value < 0.0:
+                raise PiInteractionScoringError(
+                    f"{field_name} weight must be finite and nonnegative."
+                )
+
+            setattr(self, field_name, value)
+
+        if self.total <= PI_SCORE_EPSILON:
+            raise PiInteractionScoringError(
+                "At least one scoring weight must be greater than zero."
+            )
+
+    @property
+    def total(self) -> float:
+        return sum(
+            float(getattr(self, field_definition.name))
+            for field_definition in fields(self)
+        )
+
+    def normalized(self) -> Dict[str, float]:
+        total = self.total
+
+        return {
+            field_definition.name: (
+                float(getattr(self, field_definition.name))
+                / total
+            )
+            for field_definition in fields(self)
+        }
+
+
+def create_pi_pi_score_weights() -> PiScoreWeights:
+    """
+    Weights for π–π interactions.
+    """
+
+    return PiScoreWeights(
+        distance=1.20,
+        angle=1.20,
+        offset=1.10,
+        planarity=0.80,
+        centrality=0.70,
+        chemical_identity=0.20,
+        charge=0.00,
+        atomic_contact=0.40,
+        detector_confidence=0.50,
+    )
+
+
+def create_cation_pi_score_weights() -> PiScoreWeights:
+    """
+    Weights for cation–π interactions.
+    """
+
+    return PiScoreWeights(
+        distance=1.10,
+        angle=0.50,
+        offset=1.10,
+        planarity=0.60,
+        centrality=1.20,
+        chemical_identity=0.80,
+        charge=1.20,
+        atomic_contact=0.30,
+        detector_confidence=0.50,
+    )
+
+
+def create_anion_pi_score_weights() -> PiScoreWeights:
+    """
+    Weights for anion–π interactions.
+    """
+
+    return PiScoreWeights(
+        distance=1.10,
+        angle=0.30,
+        offset=1.10,
+        planarity=0.70,
+        centrality=1.10,
+        chemical_identity=1.20,
+        charge=1.10,
+        atomic_contact=0.30,
+        detector_confidence=0.50,
+    )
+
+
+def create_amide_pi_score_weights() -> PiScoreWeights:
+    """
+    Weights for amide–π interactions.
+    """
+
+    return PiScoreWeights(
+        distance=1.00,
+        angle=1.30,
+        offset=0.90,
+        planarity=1.00,
+        centrality=0.80,
+        chemical_identity=0.60,
+        charge=0.00,
+        atomic_contact=0.40,
+        detector_confidence=0.50,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 11.4. Configuração principal
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiScoringConfig:
+    """
+    Configuration for interaction consolidation and scoring.
+    """
+
+    enabled: bool = True
+
+    validate_interactions: bool = True
+    remove_invalid_interactions: bool = True
+    include_rejected_interactions: bool = False
+
+    deduplicate_interactions: bool = True
+    merge_duplicate_metadata: bool = True
+    keep_highest_scoring_duplicate: bool = True
+
+    normalize_scores: bool = True
+    normalize_relative_to_best: bool = False
+
+    minimum_detector_confidence: float = 0.0
+    minimum_accepted_score: float = 15.0
+
+    optimal_score_threshold: float = 80.0
+    favorable_score_threshold: float = 60.0
+    weak_score_threshold: float = 35.0
+    borderline_score_threshold: float = 15.0
+
+    strong_strength_threshold: float = 75.0
+    moderate_strength_threshold: float = 45.0
+
+    maximum_borderline_score: float = 55.0
+    maximum_rejected_score: float = 20.0
+
+    borderline_penalty: float = 15.0
+    rejected_penalty: float = 45.0
+    missing_geometry_penalty: float = 12.0
+    poor_planarity_penalty: float = 10.0
+    unfavorable_orientation_penalty: float = 10.0
+    insufficient_charge_penalty: float = 20.0
+    excessive_offset_penalty: float = 12.0
+    excessive_distance_penalty: float = 15.0
+    missing_atomic_contact_penalty: float = 3.0
+
+    pi_pi_weights: PiScoreWeights = field(
+        default_factory=create_pi_pi_score_weights
+    )
+
+    cation_pi_weights: PiScoreWeights = field(
+        default_factory=create_cation_pi_score_weights
+    )
+
+    anion_pi_weights: PiScoreWeights = field(
+        default_factory=create_anion_pi_score_weights
+    )
+
+    amide_pi_weights: PiScoreWeights = field(
+        default_factory=create_amide_pi_score_weights
+    )
+
+    allowed_interaction_types: FrozenSet[str] = field(
+        default_factory=lambda: SUPPORTED_CONSOLIDATED_PI_TYPES
+    )
+
+    numeric_tolerance: float = 1.0e-8
+
+    def __post_init__(self) -> None:
+        numeric_fields = (
+            "minimum_detector_confidence",
+            "minimum_accepted_score",
+            "optimal_score_threshold",
+            "favorable_score_threshold",
+            "weak_score_threshold",
+            "borderline_score_threshold",
+            "strong_strength_threshold",
+            "moderate_strength_threshold",
+            "maximum_borderline_score",
+            "maximum_rejected_score",
+            "borderline_penalty",
+            "rejected_penalty",
+            "missing_geometry_penalty",
+            "poor_planarity_penalty",
+            "unfavorable_orientation_penalty",
+            "insufficient_charge_penalty",
+            "excessive_offset_penalty",
+            "excessive_distance_penalty",
+            "missing_atomic_contact_penalty",
+            "numeric_tolerance",
+        )
+
+        for field_name in numeric_fields:
+            value = getattr(self, field_name)
+
+            try:
+                value = float(value)
+
+            except (TypeError, ValueError) as exc:
+                raise PiInteractionScoringError(
+                    f"{field_name} must be numeric."
+                ) from exc
+
+            if not math.isfinite(value) or value < 0.0:
+                raise PiInteractionScoringError(
+                    f"{field_name} must be finite and nonnegative."
+                )
+
+            setattr(self, field_name, value)
+
+        score_thresholds = (
+            self.optimal_score_threshold,
+            self.favorable_score_threshold,
+            self.weak_score_threshold,
+            self.borderline_score_threshold,
+        )
+
+        if tuple(sorted(score_thresholds, reverse=True)) != score_thresholds:
+            raise PiInteractionScoringError(
+                "Geometry-class score thresholds must decrease from "
+                "optimal to borderline."
+            )
+
+        if (
+            self.strong_strength_threshold
+            < self.moderate_strength_threshold
+        ):
+            raise PiInteractionScoringError(
+                "strong_strength_threshold cannot be lower than "
+                "moderate_strength_threshold."
+            )
+
+        if self.maximum_borderline_score > PI_SCORE_MAXIMUM:
+            raise PiInteractionScoringError(
+                "maximum_borderline_score cannot exceed 100."
+            )
+
+        if self.maximum_rejected_score > self.maximum_borderline_score:
+            raise PiInteractionScoringError(
+                "maximum_rejected_score cannot exceed "
+                "maximum_borderline_score."
+            )
+
+        normalized_types = frozenset(
+            str(interaction_type).strip().lower()
+            for interaction_type in self.allowed_interaction_types
+        )
+
+        unsupported = (
+            normalized_types
+            - SUPPORTED_CONSOLIDATED_PI_TYPES
+        )
+
+        if unsupported:
+            raise PiInteractionScoringError(
+                "Unsupported interaction types in allowed_interaction_types: "
+                f"{sorted(unsupported)!r}."
+            )
+
+        self.allowed_interaction_types = normalized_types
+
+
+def create_default_pi_scoring_config() -> PiScoringConfig:
+    """
+    Return the canonical Section 11 configuration.
+    """
+
+    return PiScoringConfig()
+
+
+# -----------------------------------------------------------------------------
+# 11.5. Componentes do score
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiScoreComponents:
+    """
+    Normalized scoring components.
+
+    Every component is represented in the interval [0, 1].
+    """
+
+    distance: float = 0.0
+    angle: float = 0.0
+    offset: float = 0.0
+    planarity: float = 0.0
+    centrality: float = 0.0
+    chemical_identity: float = 0.0
+    charge: float = 0.0
+    atomic_contact: float = 0.0
+    detector_confidence: float = 0.0
+
+    weighted_score: float = 0.0
+    penalty_score: float = 0.0
+    raw_score: float = 0.0
+    normalized_score: float = 0.0
+
+    penalties: Dict[str, float] = field(default_factory=dict)
+    unavailable_components: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        component_names = (
+            "distance",
+            "angle",
+            "offset",
+            "planarity",
+            "centrality",
+            "chemical_identity",
+            "charge",
+            "atomic_contact",
+            "detector_confidence",
+        )
+
+        for component_name in component_names:
+            value = getattr(self, component_name)
+
+            try:
+                value = float(value)
+
+            except (TypeError, ValueError) as exc:
+                raise PiInteractionScoringError(
+                    f"{component_name} score must be numeric."
+                ) from exc
+
+            setattr(
+                self,
+                component_name,
+                _pi_score_clamp(value),
+            )
+
+        self.weighted_score = _pi_score_clamp(
+            self.weighted_score,
+            0.0,
+            100.0,
+        )
+
+        self.penalty_score = max(
+            0.0,
+            float(self.penalty_score),
+        )
+
+        self.raw_score = _pi_score_clamp(
+            self.raw_score,
+            0.0,
+            100.0,
+        )
+
+        self.normalized_score = _pi_score_clamp(
+            self.normalized_score,
+            0.0,
+            100.0,
+        )
+
+        self.penalties = {
+            str(name): max(0.0, float(value))
+            for name, value in self.penalties.items()
+        }
+
+        self.unavailable_components = tuple(
+            str(component)
+            for component in self.unavailable_components
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "distance": self.distance,
+            "angle": self.angle,
+            "offset": self.offset,
+            "planarity": self.planarity,
+            "centrality": self.centrality,
+            "chemical_identity": self.chemical_identity,
+            "charge": self.charge,
+            "atomic_contact": self.atomic_contact,
+            "detector_confidence": self.detector_confidence,
+            "weighted_score": self.weighted_score,
+            "penalty_score": self.penalty_score,
+            "raw_score": self.raw_score,
+            "normalized_score": self.normalized_score,
+            "penalties": dict(self.penalties),
+            "unavailable_components": list(
+                self.unavailable_components
+            ),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 11.6. Resultado da validação
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiInteractionValidationResult:
+    """
+    Validation result for one interaction.
+    """
+
+    valid: bool
+    interaction_type: Optional[str]
+    geometry_subtype: Optional[str]
+
+    errors: Tuple[str, ...] = ()
+    warnings: Tuple[str, ...] = ()
+
+    missing_fields: Tuple[str, ...] = ()
+    repaired_fields: Tuple[str, ...] = ()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "valid": self.valid,
+            "interaction_type": self.interaction_type,
+            "geometry_subtype": self.geometry_subtype,
+            "errors": list(self.errors),
+            "warnings": list(self.warnings),
+            "missing_fields": list(self.missing_fields),
+            "repaired_fields": list(self.repaired_fields),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 11.7. Resultado consolidado
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiConsolidationResult:
+    """
+    Complete output from Section 11.
+    """
+
+    interactions: List[Any]
+
+    input_count: int
+    validated_count: int
+    invalid_count: int
+    duplicate_count: int
+    rejected_count: int
+    retained_count: int
+
+    type_distribution: Dict[str, int]
+    subtype_distribution: Dict[str, int]
+    geometry_class_distribution: Dict[str, int]
+    strength_distribution: Dict[str, int]
+
+    total_score: float
+    mean_score: float
+    maximum_score: float
+    minimum_score: float
+
+    warnings: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "input_count": self.input_count,
+            "validated_count": self.validated_count,
+            "invalid_count": self.invalid_count,
+            "duplicate_count": self.duplicate_count,
+            "rejected_count": self.rejected_count,
+            "retained_count": self.retained_count,
+            "type_distribution": dict(self.type_distribution),
+            "subtype_distribution": dict(self.subtype_distribution),
+            "geometry_class_distribution": dict(
+                self.geometry_class_distribution
+            ),
+            "strength_distribution": dict(
+                self.strength_distribution
+            ),
+            "total_score": self.total_score,
+            "mean_score": self.mean_score,
+            "maximum_score": self.maximum_score,
+            "minimum_score": self.minimum_score,
+            "warnings": list(self.warnings),
+            "metadata": dict(self.metadata),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 11.8. Helpers genéricos
+# -----------------------------------------------------------------------------
+
+def _pi_score_get(
+    object_: Any,
+    names: Sequence[str],
+    default: Any = None,
+) -> Any:
+    """
+    Return the first existing non-None attribute or mapping value.
+    """
+
+    if object_ is None:
+        return default
+
+    for name in names:
+        if isinstance(object_, Mapping):
+            value = object_.get(name)
+
+        else:
+            value = getattr(object_, name, None)
+
+        if value is not None:
+            return value
+
+    return default
+
+
+def _pi_score_clamp(
+    value: float,
+    minimum: float = 0.0,
+    maximum: float = 1.0,
+) -> float:
+    return max(
+        minimum,
+        min(maximum, float(value)),
+    )
+
+
+def _pi_score_float(
+    value: Any,
+    default: Optional[float] = None,
+) -> Optional[float]:
+    if value is None:
+        return default
+
+    try:
+        value = float(value)
+
+    except (TypeError, ValueError):
+        return default
+
+    if not math.isfinite(value):
+        return default
+
+    return value
+
+
+def _pi_score_identifier(
+    object_: Any,
+    fallback: str,
+) -> str:
+    value = _pi_score_get(
+        object_,
+        (
+            "interaction_id",
+            "group_id",
+            "ring_id",
+            "system_id",
+            "aromatic_system_id",
+            "amide_id",
+            "id",
+            "identifier",
+        ),
+        fallback,
+    )
+
+    return str(value)
+
+
+def _pi_score_residue_id(
+    object_: Any,
+) -> Optional[str]:
+    if object_ is None:
+        return None
+
+    residue_id = _pi_score_get(
+        object_,
+        (
+            "residue_id",
+            "residue_key",
+        ),
+    )
+
+    if residue_id is not None:
+        return str(residue_id)
+
+    chain = _pi_score_get(
+        object_,
+        ("chain_id", "chain"),
+        "",
+    )
+
+    residue_name = _pi_score_get(
+        object_,
+        ("residue_name", "resname"),
+        "",
+    )
+
+    residue_number = _pi_score_get(
+        object_,
+        (
+            "residue_number",
+            "residue_index",
+            "resid",
+        ),
+        "",
+    )
+
+    if not any(
+        value not in (None, "")
+        for value in (
+            chain,
+            residue_name,
+            residue_number,
+        )
+    ):
+        return None
+
+    return (
+        f"{chain}:"
+        f"{residue_name}:"
+        f"{residue_number}"
+    )
+
+
+def _pi_score_interaction_type(
+    interaction: Any,
+) -> Optional[str]:
+    value = _pi_score_get(
+        interaction,
+        (
+            "interaction_type",
+            "type",
+            "category",
+        ),
+    )
+
+    if value is None:
+        return None
+
+    normalized = str(value).strip().lower()
+
+    aliases = {
+        "pi_pi": PI_TYPE_PI_PI,
+        "pi–pi": PI_TYPE_PI_PI,
+        "π-pi": PI_TYPE_PI_PI,
+        "π–π": PI_TYPE_PI_PI,
+        "cation_pi": PI_TYPE_CATION_PI,
+        "cation–pi": PI_TYPE_CATION_PI,
+        "cation–π": PI_TYPE_CATION_PI,
+        "anion_pi": PI_TYPE_ANION_PI,
+        "anion–pi": PI_TYPE_ANION_PI,
+        "anion–π": PI_TYPE_ANION_PI,
+        "amide_pi": PI_TYPE_AMIDE_PI,
+        "amide–pi": PI_TYPE_AMIDE_PI,
+        "amide–π": PI_TYPE_AMIDE_PI,
+    }
+
+    return aliases.get(
+        normalized,
+        normalized,
+    )
+
+
+def _pi_score_geometry_subtype(
+    interaction: Any,
+) -> Optional[str]:
+    value = _pi_score_get(
+        interaction,
+        (
+            "geometry_subtype",
+            "geometry_class",
+            "subtype",
+            "geometry",
+        ),
+    )
+
+    return (
+        None
+        if value is None
+        else str(value).strip().lower()
+    )
+
+
+def _pi_score_metadata(
+    interaction: Any,
+) -> Dict[str, Any]:
+    metadata = _pi_score_get(
+        interaction,
+        ("metadata",),
+        {},
+    )
+
+    if isinstance(metadata, Mapping):
+        return dict(metadata)
+
+    return {}
+
+
+def _pi_score_atomic_contacts(
+    interaction: Any,
+) -> Tuple[Any, ...]:
+    contacts = _pi_score_get(
+        interaction,
+        (
+            "atomic_contacts",
+            "contacts",
+        ),
+        (),
+    )
+
+    try:
+        return tuple(contacts)
+
+    except TypeError:
+        return ()
+
+
+def _pi_score_update_interaction(
+    interaction: Any,
+    updates: Mapping[str, Any],
+) -> Any:
+    """
+    Update an interaction without assuming a specific PiInteraction layout.
+
+    Mutable dataclasses and regular objects are updated in place. Frozen
+    dataclasses are recreated with dataclasses.replace().
+    """
+
+    if isinstance(interaction, MutableMapping):
+        interaction.update(updates)
+        return interaction
+
+    dataclass_fields: Optional[Set[str]] = None
+
+    if is_dataclass(interaction):
+        dataclass_fields = {
+            field_definition.name
+            for field_definition in fields(interaction)
+        }
+
+    supported_updates = {
+        key: value
+        for key, value in updates.items()
+        if (
+            dataclass_fields is None
+            or key in dataclass_fields
+        )
+    }
+
+    if is_dataclass(interaction):
+        dataclass_parameters = getattr(
+            interaction,
+            "__dataclass_params__",
+            None,
+        )
+
+        frozen = bool(
+            dataclass_parameters
+            and dataclass_parameters.frozen
+        )
+
+        if frozen:
+            return replace(
+                interaction,
+                **supported_updates,
+            )
+
+    for key, value in supported_updates.items():
+        try:
+            setattr(
+                interaction,
+                key,
+                value,
+            )
+
+        except (
+            AttributeError,
+            TypeError,
+        ):
+            continue
+
+    return interaction
+
+
+# -----------------------------------------------------------------------------
+# 11.9. Validação
+# -----------------------------------------------------------------------------
+
+def validate_pi_interaction(
+    interaction: Any,
+    *,
+    config: Optional[PiScoringConfig] = None,
+) -> PiInteractionValidationResult:
+    """
+    Validate one detected π interaction.
+    """
+
+    if config is None:
+        config = create_default_pi_scoring_config()
+
+    errors: List[str] = []
+    warnings: List[str] = []
+    missing_fields: List[str] = []
+    repaired_fields: List[str] = []
+
+    interaction_type = _pi_score_interaction_type(
+        interaction
+    )
+
+    geometry_subtype = _pi_score_geometry_subtype(
+        interaction
+    )
+
+    if interaction_type is None:
+        errors.append(
+            "Interaction type is missing."
+        )
+        missing_fields.append(
+            "interaction_type"
+        )
+
+    elif interaction_type not in config.allowed_interaction_types:
+        errors.append(
+            f"Unsupported interaction type: {interaction_type!r}."
+        )
+
+    if geometry_subtype is None:
+        warnings.append(
+            "Geometric subtype is missing."
+        )
+        missing_fields.append(
+            "geometry_subtype"
+        )
+
+    detector_valid = _pi_score_get(
+        interaction,
+        ("valid",),
+        True,
+    )
+
+    if detector_valid is False:
+        warnings.append(
+            "The originating detector marked the interaction as invalid."
+        )
+
+    detector_confidence = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            (
+                "geometry_confidence",
+                "confidence",
+            ),
+        ),
+        0.0,
+    )
+
+    if (
+        detector_confidence is not None
+        and detector_confidence
+        < config.minimum_detector_confidence
+    ):
+        errors.append(
+            "Detector confidence is lower than the configured minimum."
+        )
+
+    centroid_distance = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            ("centroid_distance",),
+        )
+    )
+
+    minimum_atomic_distance = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            ("minimum_atomic_distance",),
+        )
+    )
+
+    if centroid_distance is None:
+        errors.append(
+            "Centroid distance is missing or invalid."
+        )
+        missing_fields.append(
+            "centroid_distance"
+        )
+
+    elif centroid_distance < 0.0:
+        errors.append(
+            "Centroid distance cannot be negative."
+        )
+
+    if (
+        minimum_atomic_distance is not None
+        and minimum_atomic_distance < 0.0
+    ):
+        errors.append(
+            "Minimum atomic distance cannot be negative."
+        )
+
+    if interaction_type == PI_TYPE_PI_PI:
+        ring_1 = _pi_score_get(
+            interaction,
+            (
+                "ring_1",
+                "aromatic_system_1",
+            ),
+        )
+
+        ring_2 = _pi_score_get(
+            interaction,
+            (
+                "ring_2",
+                "aromatic_system_2",
+            ),
+        )
+
+        if ring_1 is None:
+            missing_fields.append(
+                "ring_1"
+            )
+            errors.append(
+                "First aromatic system is missing."
+            )
+
+        if ring_2 is None:
+            missing_fields.append(
+                "ring_2"
+            )
+            errors.append(
+                "Second aromatic system is missing."
+            )
+
+        plane_angle = _pi_score_float(
+            _pi_score_get(
+                interaction,
+                (
+                    "plane_angle",
+                    "normal_angle",
+                ),
+            )
+        )
+
+        if plane_angle is None:
+            warnings.append(
+                "Plane angle is unavailable for a π–π interaction."
+            )
+
+    elif interaction_type in {
+        PI_TYPE_CATION_PI,
+        PI_TYPE_ANION_PI,
+        PI_TYPE_AMIDE_PI,
+    }:
+        ring = _pi_score_get(
+            interaction,
+            (
+                "aromatic_system",
+                "ring",
+                "ring_1",
+            ),
+        )
+
+        if ring is None:
+            missing_fields.append(
+                "aromatic_system"
+            )
+            errors.append(
+                "Aromatic system is missing."
+            )
+
+        radial_offset = _pi_score_float(
+            _pi_score_get(
+                interaction,
+                (
+                    "radial_offset",
+                    "lateral_offset",
+                ),
+            )
+        )
+
+        if radial_offset is None:
+            warnings.append(
+                "Radial offset is unavailable."
+            )
+
+    if interaction_type == PI_TYPE_CATION_PI:
+        charge = _pi_score_float(
+            _pi_score_get(
+                interaction,
+                ("effective_charge",),
+            )
+        )
+
+        if charge is None:
+            warnings.append(
+                "Effective positive charge is unavailable."
+            )
+
+        elif charge <= 0.0:
+            errors.append(
+                "Cation–π interaction has a nonpositive effective charge."
+            )
+
+    elif interaction_type == PI_TYPE_ANION_PI:
+        charge = _pi_score_float(
+            _pi_score_get(
+                interaction,
+                ("effective_charge",),
+            )
+        )
+
+        if charge is None:
+            warnings.append(
+                "Effective negative charge is unavailable."
+            )
+
+        elif charge >= 0.0:
+            errors.append(
+                "Anion–π interaction has a nonnegative effective charge."
+            )
+
+    elif interaction_type == PI_TYPE_AMIDE_PI:
+        amide_group = _pi_score_get(
+            interaction,
+            ("amide_group",),
+        )
+
+        if amide_group is None:
+            missing_fields.append(
+                "amide_group"
+            )
+            errors.append(
+                "Amide group is missing."
+            )
+
+    valid = not errors
+
+    return PiInteractionValidationResult(
+        valid=valid,
+        interaction_type=interaction_type,
+        geometry_subtype=geometry_subtype,
+        errors=tuple(errors),
+        warnings=tuple(warnings),
+        missing_fields=tuple(
+            sorted(set(missing_fields))
+        ),
+        repaired_fields=tuple(
+            sorted(set(repaired_fields))
+        ),
+    )
+
+
+def validate_pi_interactions(
+    interactions: Iterable[Any],
+    *,
+    config: Optional[PiScoringConfig] = None,
+) -> Tuple[List[Any], List[Tuple[Any, PiInteractionValidationResult]]]:
+    """
+    Validate a collection of interactions.
+
+    Returns
+    -------
+    tuple
+        Valid interactions and invalid interaction/result pairs.
+    """
+
+    if config is None:
+        config = create_default_pi_scoring_config()
+
+    valid_interactions: List[Any] = []
+    invalid_interactions: List[
+        Tuple[Any, PiInteractionValidationResult]
+    ] = []
+
+    for interaction in interactions:
+        result = validate_pi_interaction(
+            interaction,
+            config=config,
+        )
+
+        metadata = _pi_score_metadata(
+            interaction
+        )
+
+        metadata["validation"] = result.to_dict()
+
+        interaction = _pi_score_update_interaction(
+            interaction,
+            {
+                "metadata": metadata,
+            },
+        )
+
+        if result.valid:
+            valid_interactions.append(
+                interaction
+            )
+
+        else:
+            invalid_interactions.append(
+                (
+                    interaction,
+                    result,
+                )
+            )
+
+            if not config.remove_invalid_interactions:
+                valid_interactions.append(
+                    interaction
+                )
+
+    return (
+        valid_interactions,
+        invalid_interactions,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 11.10. Identificação dos participantes
+# -----------------------------------------------------------------------------
+
+def _pi_score_participant_objects(
+    interaction: Any,
+) -> Tuple[Any, Any]:
+    interaction_type = _pi_score_interaction_type(
+        interaction
+    )
+
+    if interaction_type == PI_TYPE_PI_PI:
+        return (
+            _pi_score_get(
+                interaction,
+                (
+                    "ring_1",
+                    "aromatic_system_1",
+                ),
+            ),
+            _pi_score_get(
+                interaction,
+                (
+                    "ring_2",
+                    "aromatic_system_2",
+                ),
+            ),
+        )
+
+    ring = _pi_score_get(
+        interaction,
+        (
+            "aromatic_system",
+            "ring",
+            "ring_1",
+        ),
+    )
+
+    if interaction_type == PI_TYPE_CATION_PI:
+        second_participant = _pi_score_get(
+            interaction,
+            (
+                "cation_group",
+                "charged_group",
+            ),
+        )
+
+    elif interaction_type == PI_TYPE_ANION_PI:
+        second_participant = _pi_score_get(
+            interaction,
+            (
+                "anion_group",
+                "charged_group",
+            ),
+        )
+
+    elif interaction_type == PI_TYPE_AMIDE_PI:
+        second_participant = _pi_score_get(
+            interaction,
+            ("amide_group",),
+        )
+
+    else:
+        second_participant = None
+
+    return (
+        ring,
+        second_participant,
+    )
+
+
+def generate_pi_interaction_signature(
+    interaction: Any,
+) -> Tuple[str, str, str]:
+    """
+    Generate a stable deduplication signature.
+
+    π–π participant ordering is canonicalized because the interaction is
+    symmetric. Other interaction types preserve aromatic-system/group roles.
+    """
+
+    interaction_type = _pi_score_interaction_type(
+        interaction
+    )
+
+    participant_1, participant_2 = _pi_score_participant_objects(
+        interaction
+    )
+
+    participant_1_id = _pi_score_identifier(
+        participant_1,
+        "unknown_participant_1",
+    )
+
+    participant_2_id = _pi_score_identifier(
+        participant_2,
+        "unknown_participant_2",
+    )
+
+    if interaction_type == PI_TYPE_PI_PI:
+        participant_1_id, participant_2_id = sorted(
+            (
+                participant_1_id,
+                participant_2_id,
+            )
+        )
+
+    return (
+        interaction_type or "unknown",
+        participant_1_id,
+        participant_2_id,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 11.11. Deduplicação
+# -----------------------------------------------------------------------------
+
+def _pi_score_duplicate_priority(
+    interaction: Any,
+) -> Tuple[float, float, float, int]:
+    detector_confidence = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            (
+                "geometry_confidence",
+                "confidence",
+            ),
+        ),
+        0.0,
+    ) or 0.0
+
+    score = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            (
+                "score",
+                "normalized_score",
+                "raw_score",
+            ),
+        ),
+        0.0,
+    ) or 0.0
+
+    centroid_distance = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            ("centroid_distance",),
+        ),
+        math.inf,
+    )
+
+    contact_count = len(
+        _pi_score_atomic_contacts(
+            interaction
+        )
+    )
+
+    return (
+        score,
+        detector_confidence,
+        -float(centroid_distance),
+        contact_count,
+    )
+
+
+def merge_duplicate_pi_interactions(
+    preferred: Any,
+    duplicate: Any,
+    *,
+    config: Optional[PiScoringConfig] = None,
+) -> Any:
+    """
+    Merge metadata, warnings and atomic contacts from duplicate interactions.
+    """
+
+    if config is None:
+        config = create_default_pi_scoring_config()
+
+    if not config.merge_duplicate_metadata:
+        return preferred
+
+    preferred_metadata = _pi_score_metadata(
+        preferred
+    )
+
+    duplicate_metadata = _pi_score_metadata(
+        duplicate
+    )
+
+    duplicate_sources = list(
+        preferred_metadata.get(
+            "duplicate_sources",
+            [],
+        )
+    )
+
+    duplicate_sources.append(
+        {
+            "interaction_id": _pi_score_identifier(
+                duplicate,
+                "unknown",
+            ),
+            "geometry_subtype": _pi_score_geometry_subtype(
+                duplicate
+            ),
+            "detector_confidence": _pi_score_float(
+                _pi_score_get(
+                    duplicate,
+                    (
+                        "geometry_confidence",
+                        "confidence",
+                    ),
+                ),
+                0.0,
+            ),
+        }
+    )
+
+    preferred_metadata["duplicate_sources"] = duplicate_sources
+    preferred_metadata["duplicate_count"] = len(
+        duplicate_sources
+    )
+
+    preferred_warnings = list(
+        _pi_score_get(
+            preferred,
+            ("warnings",),
+            [],
+        )
+        or []
+    )
+
+    duplicate_warnings = list(
+        _pi_score_get(
+            duplicate,
+            ("warnings",),
+            [],
+        )
+        or []
+    )
+
+    combined_warnings = list(
+        dict.fromkeys(
+            [
+                *preferred_warnings,
+                *duplicate_warnings,
+            ]
+        )
+    )
+
+    preferred_contacts = list(
+        _pi_score_atomic_contacts(
+            preferred
+        )
+    )
+
+    duplicate_contacts = list(
+        _pi_score_atomic_contacts(
+            duplicate
+        )
+    )
+
+    contact_map: Dict[Tuple[str, str, float], Any] = {}
+
+    for contact in [
+        *preferred_contacts,
+        *duplicate_contacts,
+    ]:
+        atom_1 = _pi_score_get(
+            contact,
+            ("atom_1",),
+        )
+
+        atom_2 = _pi_score_get(
+            contact,
+            ("atom_2",),
+        )
+
+        distance = _pi_score_float(
+            _pi_score_get(
+                contact,
+                ("distance",),
+            ),
+            math.inf,
+        )
+
+        contact_key = (
+            _pi_score_identifier(
+                atom_1,
+                str(id(atom_1)),
+            ),
+            _pi_score_identifier(
+                atom_2,
+                str(id(atom_2)),
+            ),
+            round(
+                float(distance),
+                4,
+            ),
+        )
+
+        contact_map[contact_key] = contact
+
+    merged_contacts = tuple(
+        sorted(
+            contact_map.values(),
+            key=lambda contact: (
+                _pi_score_float(
+                    _pi_score_get(
+                        contact,
+                        ("distance",),
+                    ),
+                    math.inf,
+                )
+            ),
+        )
+    )
+
+    return _pi_score_update_interaction(
+        preferred,
+        {
+            "metadata": preferred_metadata,
+            "warnings": combined_warnings,
+            "atomic_contacts": merged_contacts,
+        },
+    )
+
+
+def deduplicate_pi_interactions(
+    interactions: Iterable[Any],
+    *,
+    config: Optional[PiScoringConfig] = None,
+) -> Tuple[List[Any], int]:
+    """
+    Remove duplicated interactions using canonical participant signatures.
+    """
+
+    if config is None:
+        config = create_default_pi_scoring_config()
+
+    if not config.deduplicate_interactions:
+        interaction_list = list(
+            interactions
+        )
+
+        return (
+            interaction_list,
+            0,
+        )
+
+    retained: Dict[
+        Tuple[str, str, str],
+        Any,
+    ] = {}
+
+    duplicate_count = 0
+
+    for interaction in interactions:
+        signature = generate_pi_interaction_signature(
+            interaction
+        )
+
+        if signature not in retained:
+            retained[signature] = interaction
+            continue
+
+        duplicate_count += 1
+
+        current = retained[
+            signature
+        ]
+
+        if config.keep_highest_scoring_duplicate:
+            if (
+                _pi_score_duplicate_priority(interaction)
+                > _pi_score_duplicate_priority(current)
+            ):
+                preferred = interaction
+                duplicate = current
+
+            else:
+                preferred = current
+                duplicate = interaction
+
+        else:
+            preferred = current
+            duplicate = interaction
+
+        retained[signature] = merge_duplicate_pi_interactions(
+            preferred,
+            duplicate,
+            config=config,
+        )
+
+    return (
+        list(retained.values()),
+        duplicate_count,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 11.12. Funções matemáticas de scoring
+# -----------------------------------------------------------------------------
+
+def _pi_score_inverse_linear(
+    value: Optional[float],
+    *,
+    optimal: float,
+    maximum: float,
+    unavailable: float = 0.5,
+) -> float:
+    if value is None:
+        return _pi_score_clamp(
+            unavailable
+        )
+
+    if value <= optimal:
+        return 1.0
+
+    if value >= maximum:
+        return 0.0
+
+    denominator = maximum - optimal
+
+    if denominator <= PI_SCORE_EPSILON:
+        return 0.0
+
+    return _pi_score_clamp(
+        1.0
+        - (
+            (value - optimal)
+            / denominator
+        )
+    )
+
+
+def _pi_score_target(
+    value: Optional[float],
+    *,
+    target: float,
+    maximum_deviation: float,
+    unavailable: float = 0.5,
+) -> float:
+    if value is None:
+        return _pi_score_clamp(
+            unavailable
+        )
+
+    deviation = abs(
+        value - target
+    )
+
+    if deviation >= maximum_deviation:
+        return 0.0
+
+    return _pi_score_clamp(
+        1.0
+        - deviation
+        / max(
+            maximum_deviation,
+            PI_SCORE_EPSILON,
+        )
+    )
+
+
+def _pi_score_window(
+    value: Optional[float],
+    *,
+    minimum: float,
+    optimal: float,
+    maximum: float,
+    unavailable: float = 0.5,
+) -> float:
+    if value is None:
+        return _pi_score_clamp(
+            unavailable
+        )
+
+    if value < minimum or value > maximum:
+        return 0.0
+
+    if value <= optimal:
+        denominator = optimal - minimum
+
+        if denominator <= PI_SCORE_EPSILON:
+            return 1.0
+
+        return _pi_score_clamp(
+            (value - minimum)
+            / denominator
+        )
+
+    denominator = maximum - optimal
+
+    if denominator <= PI_SCORE_EPSILON:
+        return 1.0
+
+    return _pi_score_clamp(
+        1.0
+        - (
+            (value - optimal)
+            / denominator
+        )
+    )
+
+
+def _pi_score_boolean(
+    value: Optional[bool],
+    *,
+    unavailable: float = 0.5,
+) -> float:
+    if value is None:
+        return _pi_score_clamp(
+            unavailable
+        )
+
+    return 1.0 if value else 0.0
+
+
+# -----------------------------------------------------------------------------
+# 11.13. Qualidade da identidade química
+# -----------------------------------------------------------------------------
+
+def evaluate_pi_chemical_identity(
+    interaction: Any,
+) -> float:
+    """
+    Evaluate whether the chemical participants support the interaction type.
+
+    This function does not replace geometric evaluation. It assigns a
+    normalized chemical-consistency factor.
+    """
+
+    interaction_type = _pi_score_interaction_type(
+        interaction
+    )
+
+    if interaction_type == PI_TYPE_PI_PI:
+        participant_1, participant_2 = _pi_score_participant_objects(
+            interaction
+        )
+
+        aromatic_1 = _pi_score_get(
+            participant_1,
+            (
+                "is_aromatic",
+                "aromatic",
+            ),
+            True,
+        )
+
+        aromatic_2 = _pi_score_get(
+            participant_2,
+            (
+                "is_aromatic",
+                "aromatic",
+            ),
+            True,
+        )
+
+        if aromatic_1 is False or aromatic_2 is False:
+            return 0.0
+
+        return 1.0
+
+    if interaction_type == PI_TYPE_CATION_PI:
+        effective_charge = _pi_score_float(
+            _pi_score_get(
+                interaction,
+                ("effective_charge",),
+            )
+        )
+
+        charge_source = str(
+            _pi_score_get(
+                interaction,
+                ("charge_source",),
+                "unknown",
+            )
+        ).lower()
+
+        if effective_charge is None:
+            return 0.5
+
+        if effective_charge <= 0.0:
+            return 0.0
+
+        source_factors = {
+            "formal": 1.0,
+            "group": 1.0,
+            "partial": 0.85,
+            "inferred": 0.75,
+            "unknown": 0.50,
+        }
+
+        return source_factors.get(
+            charge_source,
+            0.65,
+        )
+
+    if interaction_type == PI_TYPE_ANION_PI:
+        effective_charge = _pi_score_float(
+            _pi_score_get(
+                interaction,
+                ("effective_charge",),
+            )
+        )
+
+        electrophilicity = _pi_score_float(
+            _pi_score_get(
+                interaction,
+                (
+                    "ring_electrophilicity",
+                    "electron_deficiency",
+                ),
+            )
+        )
+
+        metadata = _pi_score_metadata(
+            interaction
+        )
+
+        geometry_evaluation = metadata.get(
+            "geometry_evaluation",
+            {},
+        )
+
+        if electrophilicity is None and isinstance(
+            geometry_evaluation,
+            Mapping,
+        ):
+            electrophilicity = _pi_score_float(
+                geometry_evaluation.get(
+                    "ring_electrophilicity"
+                )
+            )
+
+        if effective_charge is None:
+            charge_factor = 0.5
+
+        elif effective_charge >= 0.0:
+            charge_factor = 0.0
+
+        else:
+            charge_factor = _pi_score_clamp(
+                abs(effective_charge)
+            )
+
+        electrophilicity_factor = (
+            0.5
+            if electrophilicity is None
+            else _pi_score_clamp(
+                electrophilicity
+            )
+        )
+
+        return (
+            0.65 * charge_factor
+            + 0.35 * electrophilicity_factor
+        )
+
+    if interaction_type == PI_TYPE_AMIDE_PI:
+        amide_group = _pi_score_get(
+            interaction,
+            ("amide_group",),
+        )
+
+        if amide_group is None:
+            return 0.0
+
+        group_type = str(
+            _pi_score_get(
+                amide_group,
+                (
+                    "group_type",
+                    "chemical_type",
+                    "classification",
+                ),
+                "amide",
+            )
+        ).lower()
+
+        if "amide" in group_type:
+            return 1.0
+
+        carbonyl_vector = _pi_score_get(
+            amide_group,
+            (
+                "carbonyl_vector",
+                "co_vector",
+            ),
+        )
+
+        return (
+            0.8
+            if carbonyl_vector is not None
+            else 0.6
+        )
+
+    return 0.0
+
+
+# -----------------------------------------------------------------------------
+# 11.14. Componente de carga
+# -----------------------------------------------------------------------------
+
+def evaluate_pi_charge_component(
+    interaction: Any,
+) -> float:
+    """
+    Evaluate the charge contribution for charged π interactions.
+    """
+
+    interaction_type = _pi_score_interaction_type(
+        interaction
+    )
+
+    effective_charge = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            ("effective_charge",),
+        )
+    )
+
+    if interaction_type == PI_TYPE_CATION_PI:
+        if effective_charge is None:
+            return 0.5
+
+        if effective_charge <= 0.0:
+            return 0.0
+
+        return _pi_score_clamp(
+            effective_charge
+        )
+
+    if interaction_type == PI_TYPE_ANION_PI:
+        if effective_charge is None:
+            return 0.5
+
+        if effective_charge >= 0.0:
+            return 0.0
+
+        return _pi_score_clamp(
+            abs(effective_charge)
+        )
+
+    return 1.0
+
+
+# -----------------------------------------------------------------------------
+# 11.15. Componente de contato atômico
+# -----------------------------------------------------------------------------
+
+def evaluate_pi_atomic_contact_component(
+    interaction: Any,
+) -> float:
+    """
+    Evaluate the supplementary atom-contact component.
+    """
+
+    contacts = _pi_score_atomic_contacts(
+        interaction
+    )
+
+    minimum_atomic_distance = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            ("minimum_atomic_distance",),
+        )
+    )
+
+    if contacts:
+        contact_distances = [
+            distance
+            for contact in contacts
+            if (
+                distance := _pi_score_float(
+                    _pi_score_get(
+                        contact,
+                        ("distance",),
+                    )
+                )
+            )
+            is not None
+        ]
+
+        if contact_distances:
+            minimum_atomic_distance = min(
+                contact_distances
+            )
+
+    if minimum_atomic_distance is None:
+        return 0.5
+
+    return _pi_score_inverse_linear(
+        minimum_atomic_distance,
+        optimal=3.5,
+        maximum=5.2,
+        unavailable=0.5,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 11.16. Componentes específicos de π–π
+# -----------------------------------------------------------------------------
+
+def _score_pi_pi_components(
+    interaction: Any,
+) -> Dict[str, float]:
+    subtype = _pi_score_geometry_subtype(
+        interaction
+    ) or ""
+
+    centroid_distance = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            ("centroid_distance",),
+        )
+    )
+
+    plane_angle = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            (
+                "plane_angle",
+                "normal_angle",
+            ),
+        )
+    )
+
+    lateral_offset = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            ("lateral_offset",),
+        )
+    )
+
+    ring_1_planarity = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            (
+                "ring_1_planarity",
+                "ring_1_planarity_rmsd",
+            ),
+        )
+    )
+
+    ring_2_planarity = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            (
+                "ring_2_planarity",
+                "ring_2_planarity_rmsd",
+            ),
+        )
+    )
+
+    planarity_values = [
+        value
+        for value in (
+            ring_1_planarity,
+            ring_2_planarity,
+        )
+        if value is not None
+    ]
+
+    maximum_planarity = (
+        max(planarity_values)
+        if planarity_values
+        else None
+    )
+
+    if subtype in {
+        "face-to-face",
+        "parallel-stacking",
+        "displaced-stacking",
+    }:
+        angle_score = _pi_score_target(
+            plane_angle,
+            target=0.0,
+            maximum_deviation=35.0,
+        )
+
+    elif subtype in {
+        "t-shaped",
+        "edge-to-face",
+    }:
+        angle_score = _pi_score_target(
+            plane_angle,
+            target=90.0,
+            maximum_deviation=35.0,
+        )
+
+    else:
+        parallel_score = _pi_score_target(
+            plane_angle,
+            target=0.0,
+            maximum_deviation=40.0,
+        )
+
+        perpendicular_score = _pi_score_target(
+            plane_angle,
+            target=90.0,
+            maximum_deviation=40.0,
+        )
+
+        angle_score = max(
+            parallel_score,
+            perpendicular_score,
+        )
+
+    if subtype == "face-to-face":
+        offset_optimal = 1.0
+
+    elif subtype in {
+        "parallel-stacking",
+        "t-shaped",
+    }:
+        offset_optimal = 2.0
+
+    elif subtype in {
+        "displaced-stacking",
+        "edge-to-face",
+    }:
+        offset_optimal = 3.0
+
+    else:
+        offset_optimal = 2.0
+
+    offset_score = _pi_score_inverse_linear(
+        lateral_offset,
+        optimal=offset_optimal,
+        maximum=4.8,
+    )
+
+    centrality_score = _pi_score_inverse_linear(
+        lateral_offset,
+        optimal=1.2,
+        maximum=4.8,
+    )
+
+    return {
+        "distance": _pi_score_inverse_linear(
+            centroid_distance,
+            optimal=4.5,
+            maximum=7.0,
+        ),
+        "angle": angle_score,
+        "offset": offset_score,
+        "planarity": _pi_score_inverse_linear(
+            maximum_planarity,
+            optimal=0.05,
+            maximum=0.35,
+        ),
+        "centrality": centrality_score,
+    }
+
+
+# -----------------------------------------------------------------------------
+# 11.17. Componentes cátion–π e ânion–π
+# -----------------------------------------------------------------------------
+
+def _score_charged_pi_components(
+    interaction: Any,
+) -> Dict[str, float]:
+    centroid_distance = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            ("centroid_distance",),
+        )
+    )
+
+    height = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            (
+                "absolute_height",
+                "height",
+            ),
+        )
+    )
+
+    radial_offset = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            (
+                "radial_offset",
+                "lateral_offset",
+            ),
+        )
+    )
+
+    ring_planarity = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            (
+                "ring_planarity",
+                "ring_planarity_rmsd",
+            ),
+        )
+    )
+
+    orientation_angle = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            ("orientation_angle",),
+        )
+    )
+
+    return {
+        "distance": _pi_score_inverse_linear(
+            centroid_distance,
+            optimal=4.3,
+            maximum=7.0,
+        ),
+        "angle": _pi_score_inverse_linear(
+            orientation_angle,
+            optimal=35.0,
+            maximum=90.0,
+            unavailable=0.6,
+        ),
+        "offset": _pi_score_inverse_linear(
+            radial_offset,
+            optimal=1.3,
+            maximum=4.8,
+        ),
+        "planarity": _pi_score_inverse_linear(
+            ring_planarity,
+            optimal=0.05,
+            maximum=0.35,
+        ),
+        "centrality": (
+            0.55
+            * _pi_score_inverse_linear(
+                radial_offset,
+                optimal=1.0,
+                maximum=4.8,
+            )
+            + 0.45
+            * _pi_score_window(
+                height,
+                minimum=1.2,
+                optimal=3.4,
+                maximum=6.5,
+            )
+        ),
+    }
+
+
+# -----------------------------------------------------------------------------
+# 11.18. Componentes amida–π
+# -----------------------------------------------------------------------------
+
+def _score_amide_pi_components(
+    interaction: Any,
+) -> Dict[str, float]:
+    subtype = _pi_score_geometry_subtype(
+        interaction
+    ) or ""
+
+    centroid_distance = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            ("centroid_distance",),
+        )
+    )
+
+    plane_angle = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            (
+                "plane_angle",
+                "orientation_angle",
+            ),
+        )
+    )
+
+    carbonyl_centroid_angle = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            ("carbonyl_centroid_angle",),
+        )
+    )
+
+    radial_offset = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            (
+                "radial_offset",
+                "lateral_offset",
+            ),
+        )
+    )
+
+    ring_planarity = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            (
+                "ring_planarity",
+                "ring_planarity_rmsd",
+            ),
+        )
+    )
+
+    amide_planarity = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            (
+                "amide_planarity",
+                "amide_planarity_rmsd",
+            ),
+        )
+    )
+
+    if subtype in {
+        "parallel-face",
+        "parallel-offset",
+    }:
+        plane_score = _pi_score_target(
+            plane_angle,
+            target=0.0,
+            maximum_deviation=35.0,
+        )
+
+    elif subtype == "edge-to-face":
+        plane_score = _pi_score_target(
+            plane_angle,
+            target=90.0,
+            maximum_deviation=35.0,
+        )
+
+    elif subtype == "carbonyl-directed":
+        if carbonyl_centroid_angle is None:
+            plane_score = 0.5
+
+        else:
+            directional_deviation = min(
+                carbonyl_centroid_angle,
+                abs(
+                    180.0
+                    - carbonyl_centroid_angle
+                ),
+            )
+
+            plane_score = _pi_score_inverse_linear(
+                directional_deviation,
+                optimal=15.0,
+                maximum=60.0,
+            )
+
+    else:
+        plane_score = max(
+            _pi_score_target(
+                plane_angle,
+                target=0.0,
+                maximum_deviation=40.0,
+            ),
+            _pi_score_target(
+                plane_angle,
+                target=90.0,
+                maximum_deviation=40.0,
+            ),
+        )
+
+    planarity_values = [
+        value
+        for value in (
+            ring_planarity,
+            amide_planarity,
+        )
+        if value is not None
+    ]
+
+    maximum_planarity = (
+        max(planarity_values)
+        if planarity_values
+        else None
+    )
+
+    return {
+        "distance": _pi_score_inverse_linear(
+            centroid_distance,
+            optimal=4.2,
+            maximum=7.0,
+        ),
+        "angle": plane_score,
+        "offset": _pi_score_inverse_linear(
+            radial_offset,
+            optimal=1.5,
+            maximum=4.8,
+        ),
+        "planarity": _pi_score_inverse_linear(
+            maximum_planarity,
+            optimal=0.05,
+            maximum=0.35,
+        ),
+        "centrality": _pi_score_inverse_linear(
+            radial_offset,
+            optimal=1.2,
+            maximum=4.8,
+        ),
+    }
+
+
+# -----------------------------------------------------------------------------
+# 11.19. Penalizações
+# -----------------------------------------------------------------------------
+
+def calculate_pi_geometric_penalties(
+    interaction: Any,
+    *,
+    config: Optional[PiScoringConfig] = None,
+) -> Dict[str, float]:
+    """
+    Calculate geometric and chemical penalties.
+    """
+
+    if config is None:
+        config = create_default_pi_scoring_config()
+
+    penalties: Dict[str, float] = {}
+
+    subtype = _pi_score_geometry_subtype(
+        interaction
+    ) or ""
+
+    detector_valid = bool(
+        _pi_score_get(
+            interaction,
+            ("valid",),
+            True,
+        )
+    )
+
+    borderline = bool(
+        _pi_score_get(
+            interaction,
+            ("borderline",),
+            False,
+        )
+    )
+
+    if borderline or "borderline" in subtype:
+        penalties["borderline_geometry"] = (
+            config.borderline_penalty
+        )
+
+    if (
+        not detector_valid
+        or subtype == "rejected"
+    ):
+        penalties["rejected_geometry"] = (
+            config.rejected_penalty
+        )
+
+    centroid_distance = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            ("centroid_distance",),
+        )
+    )
+
+    if centroid_distance is None:
+        penalties["missing_centroid_distance"] = (
+            config.missing_geometry_penalty
+        )
+
+    elif centroid_distance > 7.0:
+        penalties["excessive_centroid_distance"] = (
+            config.excessive_distance_penalty
+        )
+
+    offset = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            (
+                "radial_offset",
+                "lateral_offset",
+            ),
+        )
+    )
+
+    if offset is not None and offset > 4.8:
+        penalties["excessive_offset"] = (
+            config.excessive_offset_penalty
+        )
+
+    orientation_valid = _pi_score_get(
+        interaction,
+        ("orientation_valid",),
+    )
+
+    metadata = _pi_score_metadata(
+        interaction
+    )
+
+    geometry_evaluation = metadata.get(
+        "geometry_evaluation",
+        {},
+    )
+
+    if (
+        orientation_valid is None
+        and isinstance(
+            geometry_evaluation,
+            Mapping,
+        )
+    ):
+        orientation_valid = geometry_evaluation.get(
+            "orientation_valid"
+        )
+
+    if orientation_valid is False:
+        penalties["unfavorable_orientation"] = (
+            config.unfavorable_orientation_penalty
+        )
+
+    interaction_type = _pi_score_interaction_type(
+        interaction
+    )
+
+    effective_charge = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            ("effective_charge",),
+        )
+    )
+
+    if (
+        interaction_type == PI_TYPE_CATION_PI
+        and effective_charge is not None
+        and effective_charge <= 0.0
+    ):
+        penalties["insufficient_positive_charge"] = (
+            config.insufficient_charge_penalty
+        )
+
+    if (
+        interaction_type == PI_TYPE_ANION_PI
+        and effective_charge is not None
+        and effective_charge >= 0.0
+    ):
+        penalties["insufficient_negative_charge"] = (
+            config.insufficient_charge_penalty
+        )
+
+    planarity_values = [
+        _pi_score_float(
+            _pi_score_get(
+                interaction,
+                names,
+            )
+        )
+        for names in (
+            (
+                "ring_planarity",
+                "ring_planarity_rmsd",
+            ),
+            (
+                "ring_1_planarity",
+                "ring_1_planarity_rmsd",
+            ),
+            (
+                "ring_2_planarity",
+                "ring_2_planarity_rmsd",
+            ),
+            (
+                "amide_planarity",
+                "amide_planarity_rmsd",
+            ),
+        )
+    ]
+
+    valid_planarity_values = [
+        value
+        for value in planarity_values
+        if value is not None
+    ]
+
+    if (
+        valid_planarity_values
+        and max(valid_planarity_values) > 0.35
+    ):
+        penalties["poor_planarity"] = (
+            config.poor_planarity_penalty
+        )
+
+    if not _pi_score_atomic_contacts(interaction):
+        penalties["missing_atomic_contact"] = (
+            config.missing_atomic_contact_penalty
+        )
+
+    return penalties
+
+
+# -----------------------------------------------------------------------------
+# 11.20. Seleção de pesos
+# -----------------------------------------------------------------------------
+
+def get_pi_score_weights(
+    interaction_type: str,
+    *,
+    config: Optional[PiScoringConfig] = None,
+) -> PiScoreWeights:
+    """
+    Return the scoring weights associated with an interaction type.
+    """
+
+    if config is None:
+        config = create_default_pi_scoring_config()
+
+    interaction_type = str(
+        interaction_type
+    ).strip().lower()
+
+    if interaction_type == PI_TYPE_PI_PI:
+        return config.pi_pi_weights
+
+    if interaction_type == PI_TYPE_CATION_PI:
+        return config.cation_pi_weights
+
+    if interaction_type == PI_TYPE_ANION_PI:
+        return config.anion_pi_weights
+
+    if interaction_type == PI_TYPE_AMIDE_PI:
+        return config.amide_pi_weights
+
+    raise PiInteractionScoringError(
+        f"Unsupported interaction type: {interaction_type!r}."
+    )
+
+
+# -----------------------------------------------------------------------------
+# 11.21. Score de uma interação
+# -----------------------------------------------------------------------------
+
+def calculate_pi_interaction_score(
+    interaction: Any,
+    *,
+    config: Optional[PiScoringConfig] = None,
+) -> PiScoreComponents:
+    """
+    Calculate the comparable score of one π interaction.
+    """
+
+    if config is None:
+        config = create_default_pi_scoring_config()
+
+    interaction_type = _pi_score_interaction_type(
+        interaction
+    )
+
+    if interaction_type not in config.allowed_interaction_types:
+        raise PiInteractionScoringError(
+            f"Unsupported interaction type: {interaction_type!r}."
+        )
+
+    if interaction_type == PI_TYPE_PI_PI:
+        geometric_components = _score_pi_pi_components(
+            interaction
+        )
+
+    elif interaction_type in {
+        PI_TYPE_CATION_PI,
+        PI_TYPE_ANION_PI,
+    }:
+        geometric_components = _score_charged_pi_components(
+            interaction
+        )
+
+    elif interaction_type == PI_TYPE_AMIDE_PI:
+        geometric_components = _score_amide_pi_components(
+            interaction
+        )
+
+    else:
+        raise PiInteractionScoringError(
+            f"No scoring model for interaction type {interaction_type!r}."
+        )
+
+    detector_confidence = _pi_score_float(
+        _pi_score_get(
+            interaction,
+            (
+                "geometry_confidence",
+                "confidence",
+            ),
+        ),
+        0.5,
+    )
+
+    chemical_identity = evaluate_pi_chemical_identity(
+        interaction
+    )
+
+    charge_component = evaluate_pi_charge_component(
+        interaction
+    )
+
+    atomic_contact_component = (
+        evaluate_pi_atomic_contact_component(
+            interaction
+        )
+    )
+
+    component_values = {
+        **geometric_components,
+        "chemical_identity": chemical_identity,
+        "charge": charge_component,
+        "atomic_contact": atomic_contact_component,
+        "detector_confidence": _pi_score_clamp(
+            detector_confidence or 0.0
+        ),
+    }
+
+    weights = get_pi_score_weights(
+        interaction_type,
+        config=config,
+    ).normalized()
+
+    weighted_fraction = sum(
+        component_values[component_name]
+        * weights[component_name]
+        for component_name in weights
+    )
+
+    weighted_score = (
+        weighted_fraction
+        * PI_SCORE_MAXIMUM
+    )
+
+    penalties = calculate_pi_geometric_penalties(
+        interaction,
+        config=config,
+    )
+
+    penalty_score = sum(
+        penalties.values()
+    )
+
+    raw_score = _pi_score_clamp(
+        weighted_score - penalty_score,
+        PI_SCORE_MINIMUM,
+        PI_SCORE_MAXIMUM,
+    )
+
+    subtype = _pi_score_geometry_subtype(
+        interaction
+    ) or ""
+
+    borderline = bool(
+        _pi_score_get(
+            interaction,
+            ("borderline",),
+            False,
+        )
+    )
+
+    detector_valid = bool(
+        _pi_score_get(
+            interaction,
+            ("valid",),
+            True,
+        )
+    )
+
+    if borderline or "borderline" in subtype:
+        raw_score = min(
+            raw_score,
+            config.maximum_borderline_score,
+        )
+
+    if not detector_valid or subtype == "rejected":
+        raw_score = min(
+            raw_score,
+            config.maximum_rejected_score,
+        )
+
+    normalized_score = raw_score
+
+    return PiScoreComponents(
+        distance=component_values["distance"],
+        angle=component_values["angle"],
+        offset=component_values["offset"],
+        planarity=component_values["planarity"],
+        centrality=component_values["centrality"],
+        chemical_identity=component_values[
+            "chemical_identity"
+        ],
+        charge=component_values["charge"],
+        atomic_contact=component_values[
+            "atomic_contact"
+        ],
+        detector_confidence=component_values[
+            "detector_confidence"
+        ],
+        weighted_score=weighted_score,
+        penalty_score=penalty_score,
+        raw_score=raw_score,
+        normalized_score=normalized_score,
+        penalties=penalties,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 11.22. Classificação geométrica global
+# -----------------------------------------------------------------------------
+
+def classify_pi_geometry_quality(
+    score: float,
+    *,
+    interaction: Optional[Any] = None,
+    config: Optional[PiScoringConfig] = None,
+) -> str:
+    """
+    Convert a numeric score into the global geometry-quality class.
+    """
+
+    if config is None:
+        config = create_default_pi_scoring_config()
+
+    score = _pi_score_clamp(
+        score,
+        0.0,
+        100.0,
+    )
+
+    if interaction is not None:
+        subtype = _pi_score_geometry_subtype(
+            interaction
+        ) or ""
+
+        detector_valid = bool(
+            _pi_score_get(
+                interaction,
+                ("valid",),
+                True,
+            )
+        )
+
+        if (
+            subtype == "rejected"
+            or not detector_valid
+        ):
+            return PI_GEOMETRY_CLASS_REJECTED
+
+        if (
+            "borderline" in subtype
+            or bool(
+                _pi_score_get(
+                    interaction,
+                    ("borderline",),
+                    False,
+                )
+            )
+        ):
+            return PI_GEOMETRY_CLASS_BORDERLINE
+
+    if score >= config.optimal_score_threshold:
+        return PI_GEOMETRY_CLASS_OPTIMAL
+
+    if score >= config.favorable_score_threshold:
+        return PI_GEOMETRY_CLASS_FAVORABLE
+
+    if score >= config.weak_score_threshold:
+        return PI_GEOMETRY_CLASS_WEAK
+
+    if score >= config.borderline_score_threshold:
+        return PI_GEOMETRY_CLASS_BORDERLINE
+
+    return PI_GEOMETRY_CLASS_REJECTED
+
+
+# -----------------------------------------------------------------------------
+# 11.23. Classificação por força
+# -----------------------------------------------------------------------------
+
+def classify_pi_interaction_strength(
+    score: float,
+    *,
+    geometry_quality: Optional[str] = None,
+    config: Optional[PiScoringConfig] = None,
+) -> str:
+    """
+    Classify interaction strength as strong, moderate or weak.
+    """
+
+    if config is None:
+        config = create_default_pi_scoring_config()
+
+    score = _pi_score_clamp(
+        score,
+        0.0,
+        100.0,
+    )
+
+    if geometry_quality in {
+        PI_GEOMETRY_CLASS_REJECTED,
+        PI_GEOMETRY_CLASS_BORDERLINE,
+    }:
+        return PI_STRENGTH_WEAK
+
+    if score >= config.strong_strength_threshold:
+        return PI_STRENGTH_STRONG
+
+    if score >= config.moderate_strength_threshold:
+        return PI_STRENGTH_MODERATE
+
+    return PI_STRENGTH_WEAK
+
+
+# -----------------------------------------------------------------------------
+# 11.24. Classificação por tipo e subtipo
+# -----------------------------------------------------------------------------
+
+def classify_pi_interaction_type(
+    interaction: Any,
+) -> str:
+    """
+    Return the canonical interaction type.
+    """
+
+    interaction_type = _pi_score_interaction_type(
+        interaction
+    )
+
+    if interaction_type not in SUPPORTED_CONSOLIDATED_PI_TYPES:
+        raise PiInteractionValidationError(
+            f"Unsupported π interaction type: {interaction_type!r}."
+        )
+
+    return interaction_type
+
+
+def classify_pi_interaction_subtype(
+    interaction: Any,
+) -> str:
+    """
+    Return the detector-defined geometric subtype.
+    """
+
+    subtype = _pi_score_geometry_subtype(
+        interaction
+    )
+
+    return (
+        subtype
+        if subtype is not None
+        else "unclassified"
+    )
+
+
+# -----------------------------------------------------------------------------
+# 11.25. Atualização de uma interação
+# -----------------------------------------------------------------------------
+
+def score_pi_interaction(
+    interaction: Any,
+    *,
+    config: Optional[PiScoringConfig] = None,
+) -> Any:
+    """
+    Validate, score and classify one interaction.
+    """
+
+    if config is None:
+        config = create_default_pi_scoring_config()
+
+    validation = validate_pi_interaction(
+        interaction,
+        config=config,
+    )
+
+    if (
+        not validation.valid
+        and config.remove_invalid_interactions
+    ):
+        raise PiInteractionValidationError(
+            "Interaction validation failed: "
+            + "; ".join(validation.errors)
+        )
+
+    score_components = calculate_pi_interaction_score(
+        interaction,
+        config=config,
+    )
+
+    geometry_quality = classify_pi_geometry_quality(
+        score_components.normalized_score,
+        interaction=interaction,
+        config=config,
+    )
+
+    strength = classify_pi_interaction_strength(
+        score_components.normalized_score,
+        geometry_quality=geometry_quality,
+        config=config,
+    )
+
+    interaction_type = classify_pi_interaction_type(
+        interaction
+    )
+
+    geometry_subtype = classify_pi_interaction_subtype(
+        interaction
+    )
+
+    metadata = _pi_score_metadata(
+        interaction
+    )
+
+    metadata.update(
+        {
+            "scoring_schema": (
+                f"pi-scoring-{PI_SCORE_SCHEMA_VERSION}"
+            ),
+            "validation": validation.to_dict(),
+            "score_components": score_components.to_dict(),
+            "canonical_interaction_type": interaction_type,
+            "canonical_geometry_subtype": geometry_subtype,
+            "global_geometry_class": geometry_quality,
+            "strength_class": strength,
+        }
+    )
+
+    updates = {
+        "interaction_type": interaction_type,
+        "geometry_subtype": geometry_subtype,
+        "global_geometry_class": geometry_quality,
+        "geometry_quality": geometry_quality,
+        "strength": strength,
+        "strength_class": strength,
+        "score": score_components.normalized_score,
+        "raw_score": score_components.raw_score,
+        "normalized_score": score_components.normalized_score,
+        "score_components": score_components,
+        "penalties": dict(score_components.penalties),
+        "metadata": metadata,
+    }
+
+    return _pi_score_update_interaction(
+        interaction,
+        updates,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 11.26. Normalização coletiva
+# -----------------------------------------------------------------------------
+
+def normalize_pi_interaction_scores(
+    interactions: Iterable[Any],
+    *,
+    relative_to_best: bool = False,
+) -> List[Any]:
+    """
+    Normalize interaction scores to the interval [0, 100].
+
+    By default, already bounded raw scores are preserved. When
+    `relative_to_best=True`, the best interaction receives 100 and the
+    remaining interactions are scaled proportionally.
+    """
+
+    interaction_list = list(
+        interactions
+    )
+
+    if not interaction_list:
+        return []
+
+    raw_scores = [
+        _pi_score_float(
+            _pi_score_get(
+                interaction,
+                (
+                    "raw_score",
+                    "score",
+                ),
+            ),
+            0.0,
+        )
+        or 0.0
+        for interaction in interaction_list
+    ]
+
+    if relative_to_best:
+        maximum_score = max(
+            raw_scores
+        )
+
+        if maximum_score <= PI_SCORE_EPSILON:
+            normalized_scores = [
+                0.0
+                for _ in raw_scores
+            ]
+
+        else:
+            normalized_scores = [
+                _pi_score_clamp(
+                    raw_score
+                    / maximum_score
+                    * 100.0,
+                    0.0,
+                    100.0,
+                )
+                for raw_score in raw_scores
+            ]
+
+    else:
+        normalized_scores = [
+            _pi_score_clamp(
+                raw_score,
+                0.0,
+                100.0,
+            )
+            for raw_score in raw_scores
+        ]
+
+    normalized_interactions: List[Any] = []
+
+    for interaction, normalized_score in zip(
+        interaction_list,
+        normalized_scores,
+    ):
+        metadata = _pi_score_metadata(
+            interaction
+        )
+
+        score_components_value = metadata.get(
+            "score_components"
+        )
+
+        if isinstance(
+            score_components_value,
+            MutableMapping,
+        ):
+            score_components_value[
+                "normalized_score"
+            ] = normalized_score
+
+        metadata["score_normalization"] = {
+            "relative_to_best": relative_to_best,
+            "normalized_score": normalized_score,
+        }
+
+        normalized_interactions.append(
+            _pi_score_update_interaction(
+                interaction,
+                {
+                    "score": normalized_score,
+                    "normalized_score": normalized_score,
+                    "metadata": metadata,
+                },
+            )
+        )
+
+    return normalized_interactions
+
+
+# -----------------------------------------------------------------------------
+# 11.27. Scoring em lote
+# -----------------------------------------------------------------------------
+
+def score_pi_interactions(
+    interactions: Iterable[Any],
+    *,
+    config: Optional[PiScoringConfig] = None,
+    strict: bool = False,
+) -> List[Any]:
+    """
+    Score and classify a collection of interactions.
+    """
+
+    if config is None:
+        config = create_default_pi_scoring_config()
+
+    scored_interactions: List[Any] = []
+
+    for interaction in interactions:
+        try:
+            scored_interaction = score_pi_interaction(
+                interaction,
+                config=config,
+            )
+
+        except (
+            PiInteractionValidationError,
+            PiInteractionScoringError,
+            TypeError,
+            ValueError,
+        ):
+            if strict:
+                raise
+
+            continue
+
+        geometry_quality = _pi_score_get(
+            scored_interaction,
+            (
+                "global_geometry_class",
+                "geometry_quality",
+            ),
+        )
+
+        if (
+            geometry_quality == PI_GEOMETRY_CLASS_REJECTED
+            and not config.include_rejected_interactions
+        ):
+            continue
+
+        score = _pi_score_float(
+            _pi_score_get(
+                scored_interaction,
+                (
+                    "score",
+                    "normalized_score",
+                ),
+            ),
+            0.0,
+        ) or 0.0
+
+        if (
+            score < config.minimum_accepted_score
+            and not config.include_rejected_interactions
+        ):
+            continue
+
+        scored_interactions.append(
+            scored_interaction
+        )
+
+    if config.normalize_scores:
+        scored_interactions = normalize_pi_interaction_scores(
+            scored_interactions,
+            relative_to_best=(
+                config.normalize_relative_to_best
+            ),
+        )
+
+    for interaction in scored_interactions:
+        normalized_score = _pi_score_float(
+            _pi_score_get(
+                interaction,
+                (
+                    "normalized_score",
+                    "score",
+                ),
+            ),
+            0.0,
+        ) or 0.0
+
+        geometry_quality = classify_pi_geometry_quality(
+            normalized_score,
+            interaction=interaction,
+            config=config,
+        )
+
+        strength = classify_pi_interaction_strength(
+            normalized_score,
+            geometry_quality=geometry_quality,
+            config=config,
+        )
+
+        metadata = _pi_score_metadata(
+            interaction
+        )
+
+        metadata["global_geometry_class"] = (
+            geometry_quality
+        )
+
+        metadata["strength_class"] = strength
+
+        _pi_score_update_interaction(
+            interaction,
+            {
+                "global_geometry_class": geometry_quality,
+                "geometry_quality": geometry_quality,
+                "strength": strength,
+                "strength_class": strength,
+                "metadata": metadata,
+            },
+        )
+
+    scored_interactions.sort(
+        key=lambda interaction: (
+            -(
+                _pi_score_float(
+                    _pi_score_get(
+                        interaction,
+                        (
+                            "normalized_score",
+                            "score",
+                        ),
+                    ),
+                    0.0,
+                )
+                or 0.0
+            ),
+            str(
+                _pi_score_get(
+                    interaction,
+                    ("strength_class", "strength"),
+                    "",
+                )
+            ),
+            _pi_score_identifier(
+                interaction,
+                "",
+            ),
+        )
+    )
+
+    for rank, interaction in enumerate(
+        scored_interactions,
+        start=1,
+    ):
+        metadata = _pi_score_metadata(
+            interaction
+        )
+
+        metadata["rank"] = rank
+
+        _pi_score_update_interaction(
+            interaction,
+            {
+                "rank": rank,
+                "metadata": metadata,
+            },
+        )
+
+    return scored_interactions
+
+
+# -----------------------------------------------------------------------------
+# 11.28. Consolidação de coleções
+# -----------------------------------------------------------------------------
+
+def consolidate_pi_interaction_collections(
+    *,
+    pi_pi_interactions: Iterable[Any] = (),
+    cation_pi_interactions: Iterable[Any] = (),
+    anion_pi_interactions: Iterable[Any] = (),
+    amide_pi_interactions: Iterable[Any] = (),
+    additional_interactions: Iterable[Any] = (),
+) -> List[Any]:
+    """
+    Merge detector outputs into a single interaction list.
+    """
+
+    consolidated: List[Any] = []
+
+    for expected_type, collection in (
+        (
+            PI_TYPE_PI_PI,
+            pi_pi_interactions,
+        ),
+        (
+            PI_TYPE_CATION_PI,
+            cation_pi_interactions,
+        ),
+        (
+            PI_TYPE_ANION_PI,
+            anion_pi_interactions,
+        ),
+        (
+            PI_TYPE_AMIDE_PI,
+            amide_pi_interactions,
+        ),
+    ):
+        for interaction in collection:
+            detected_type = _pi_score_interaction_type(
+                interaction
+            )
+
+            if detected_type is None:
+                interaction = _pi_score_update_interaction(
+                    interaction,
+                    {
+                        "interaction_type": expected_type,
+                    },
+                )
+
+            consolidated.append(
+                interaction
+            )
+
+    consolidated.extend(
+        additional_interactions
+    )
+
+    return consolidated
+
+
+# -----------------------------------------------------------------------------
+# 11.29. Pipeline completo
+# -----------------------------------------------------------------------------
+
+def consolidate_classify_and_score_pi_interactions(
+    *,
+    pi_pi_interactions: Iterable[Any] = (),
+    cation_pi_interactions: Iterable[Any] = (),
+    anion_pi_interactions: Iterable[Any] = (),
+    amide_pi_interactions: Iterable[Any] = (),
+    additional_interactions: Iterable[Any] = (),
+    config: Optional[PiScoringConfig] = None,
+    strict: bool = False,
+) -> PiConsolidationResult:
+    """
+    Run the complete Section 11 pipeline.
+
+    Processing order
+    ----------------
+    1. consolidate detector outputs;
+    2. validate;
+    3. deduplicate;
+    4. score;
+    5. classify;
+    6. normalize;
+    7. rank;
+    8. summarize.
+    """
+
+    if config is None:
+        config = create_default_pi_scoring_config()
+
+    consolidated = consolidate_pi_interaction_collections(
+        pi_pi_interactions=pi_pi_interactions,
+        cation_pi_interactions=cation_pi_interactions,
+        anion_pi_interactions=anion_pi_interactions,
+        amide_pi_interactions=amide_pi_interactions,
+        additional_interactions=additional_interactions,
+    )
+
+    input_count = len(
+        consolidated
+    )
+
+    if config.validate_interactions:
+        validated, invalid = validate_pi_interactions(
+            consolidated,
+            config=config,
+        )
+
+    else:
+        validated = consolidated
+        invalid = []
+
+    validated_count = len(
+        validated
+    )
+
+    invalid_count = len(
+        invalid
+    )
+
+    deduplicated, duplicate_count = deduplicate_pi_interactions(
+        validated,
+        config=config,
+    )
+
+    scored = score_pi_interactions(
+        deduplicated,
+        config=config,
+        strict=strict,
+    )
+
+    type_distribution: Dict[str, int] = defaultdict(int)
+    subtype_distribution: Dict[str, int] = defaultdict(int)
+    geometry_class_distribution: Dict[str, int] = defaultdict(int)
+    strength_distribution: Dict[str, int] = defaultdict(int)
+
+    scores: List[float] = []
+    rejected_count = 0
+
+    for interaction in scored:
+        interaction_type = _pi_score_interaction_type(
+            interaction
+        ) or "unknown"
+
+        subtype = _pi_score_geometry_subtype(
+            interaction
+        ) or "unclassified"
+
+        geometry_quality = str(
+            _pi_score_get(
+                interaction,
+                (
+                    "global_geometry_class",
+                    "geometry_quality",
+                ),
+                PI_GEOMETRY_CLASS_REJECTED,
+            )
+        )
+
+        strength = str(
+            _pi_score_get(
+                interaction,
+                (
+                    "strength_class",
+                    "strength",
+                ),
+                PI_STRENGTH_WEAK,
+            )
+        )
+
+        score = _pi_score_float(
+            _pi_score_get(
+                interaction,
+                (
+                    "normalized_score",
+                    "score",
+                ),
+            ),
+            0.0,
+        ) or 0.0
+
+        type_distribution[
+            interaction_type
+        ] += 1
+
+        subtype_distribution[
+            f"{interaction_type}:{subtype}"
+        ] += 1
+
+        geometry_class_distribution[
+            geometry_quality
+        ] += 1
+
+        strength_distribution[
+            strength
+        ] += 1
+
+        scores.append(
+            score
+        )
+
+        if geometry_quality == PI_GEOMETRY_CLASS_REJECTED:
+            rejected_count += 1
+
+    total_score = sum(
+        scores
+    )
+
+    mean_score = (
+        total_score / len(scores)
+        if scores
+        else 0.0
+    )
+
+    maximum_score = (
+        max(scores)
+        if scores
+        else 0.0
+    )
+
+    minimum_score = (
+        min(scores)
+        if scores
+        else 0.0
+    )
+
+    warnings: List[str] = []
+
+    if invalid_count:
+        warnings.append(
+            f"{invalid_count} interaction(s) failed validation."
+        )
+
+    if duplicate_count:
+        warnings.append(
+            f"{duplicate_count} duplicate interaction(s) were merged."
+        )
+
+    return PiConsolidationResult(
+        interactions=scored,
+        input_count=input_count,
+        validated_count=validated_count,
+        invalid_count=invalid_count,
+        duplicate_count=duplicate_count,
+        rejected_count=rejected_count,
+        retained_count=len(scored),
+        type_distribution=dict(
+            sorted(
+                type_distribution.items()
+            )
+        ),
+        subtype_distribution=dict(
+            sorted(
+                subtype_distribution.items()
+            )
+        ),
+        geometry_class_distribution=dict(
+            sorted(
+                geometry_class_distribution.items()
+            )
+        ),
+        strength_distribution=dict(
+            sorted(
+                strength_distribution.items()
+            )
+        ),
+        total_score=total_score,
+        mean_score=mean_score,
+        maximum_score=maximum_score,
+        minimum_score=minimum_score,
+        warnings=warnings,
+        metadata={
+            "schema": "pi-consolidation",
+            "schema_version": PI_SCORE_SCHEMA_VERSION,
+            "normalization_enabled": config.normalize_scores,
+            "relative_normalization": (
+                config.normalize_relative_to_best
+            ),
+            "invalid_interactions": [
+                {
+                    "interaction_id": _pi_score_identifier(
+                        interaction,
+                        "unknown",
+                    ),
+                    "validation": result.to_dict(),
+                }
+                for interaction, result in invalid
+            ],
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 11.30. API para uma coleção já consolidada
+# -----------------------------------------------------------------------------
+
+def classify_and_score_pi_interactions(
+    interactions: Iterable[Any],
+    *,
+    config: Optional[PiScoringConfig] = None,
+    strict: bool = False,
+) -> List[Any]:
+    """
+    Validate, deduplicate, score and classify a precombined interaction list.
+    """
+
+    if config is None:
+        config = create_default_pi_scoring_config()
+
+    interaction_list = list(
+        interactions
+    )
+
+    if config.validate_interactions:
+        interaction_list, invalid = validate_pi_interactions(
+            interaction_list,
+            config=config,
+        )
+
+        if strict and invalid:
+            first_result = invalid[0][1]
+
+            raise PiInteractionValidationError(
+                "; ".join(first_result.errors)
+            )
+
+    interaction_list, _ = deduplicate_pi_interactions(
+        interaction_list,
+        config=config,
+    )
+
+    return score_pi_interactions(
+        interaction_list,
+        config=config,
+        strict=strict,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 11.31. Ranking
+# -----------------------------------------------------------------------------
+
+def rank_pi_interactions(
+    interactions: Iterable[Any],
+    *,
+    descending: bool = True,
+) -> List[Any]:
+    """
+    Rank interactions by normalized score.
+    """
+
+    ranked = sorted(
+        interactions,
+        key=lambda interaction: (
+            _pi_score_float(
+                _pi_score_get(
+                    interaction,
+                    (
+                        "normalized_score",
+                        "score",
+                    ),
+                ),
+                0.0,
+            )
+            or 0.0
+        ),
+        reverse=descending,
+    )
+
+    for rank, interaction in enumerate(
+        ranked,
+        start=1,
+    ):
+        metadata = _pi_score_metadata(
+            interaction
+        )
+
+        metadata["rank"] = rank
+
+        _pi_score_update_interaction(
+            interaction,
+            {
+                "rank": rank,
+                "metadata": metadata,
+            },
+        )
+
+    return ranked
+
+
+# -----------------------------------------------------------------------------
+# 11.32. Filtros
+# -----------------------------------------------------------------------------
+
+def filter_pi_interactions_by_type(
+    interactions: Iterable[Any],
+    interaction_types: Collection[str],
+) -> List[Any]:
+    """
+    Select interactions by canonical type.
+    """
+
+    normalized_types = {
+        str(interaction_type).strip().lower()
+        for interaction_type in interaction_types
+    }
+
+    unsupported = (
+        normalized_types
+        - SUPPORTED_CONSOLIDATED_PI_TYPES
+    )
+
+    if unsupported:
+        raise PiInteractionValidationError(
+            "Unsupported interaction types: "
+            f"{sorted(unsupported)!r}."
+        )
+
+    return [
+        interaction
+        for interaction in interactions
+        if _pi_score_interaction_type(
+            interaction
+        )
+        in normalized_types
+    ]
+
+
+def filter_pi_interactions_by_geometry_quality(
+    interactions: Iterable[Any],
+    geometry_classes: Collection[str],
+) -> List[Any]:
+    """
+    Select interactions by global geometric class.
+    """
+
+    normalized_classes = {
+        str(geometry_class).strip().lower()
+        for geometry_class in geometry_classes
+    }
+
+    unsupported = (
+        normalized_classes
+        - SUPPORTED_PI_GLOBAL_GEOMETRY_CLASSES
+    )
+
+    if unsupported:
+        raise PiInteractionValidationError(
+            "Unsupported geometry classes: "
+            f"{sorted(unsupported)!r}."
+        )
+
+    return [
+        interaction
+        for interaction in interactions
+        if str(
+            _pi_score_get(
+                interaction,
+                (
+                    "global_geometry_class",
+                    "geometry_quality",
+                ),
+                "",
+            )
+        ).strip().lower()
+        in normalized_classes
+    ]
+
+
+def filter_pi_interactions_by_strength(
+    interactions: Iterable[Any],
+    strengths: Collection[str],
+) -> List[Any]:
+    """
+    Select interactions by strength class.
+    """
+
+    normalized_strengths = {
+        str(strength).strip().lower()
+        for strength in strengths
+    }
+
+    unsupported = (
+        normalized_strengths
+        - SUPPORTED_PI_STRENGTH_CLASSES
+    )
+
+    if unsupported:
+        raise PiInteractionValidationError(
+            "Unsupported strength classes: "
+            f"{sorted(unsupported)!r}."
+        )
+
+    return [
+        interaction
+        for interaction in interactions
+        if str(
+            _pi_score_get(
+                interaction,
+                (
+                    "strength_class",
+                    "strength",
+                ),
+                "",
+            )
+        ).strip().lower()
+        in normalized_strengths
+    ]
+
+
+def filter_pi_interactions_by_minimum_score(
+    interactions: Iterable[Any],
+    minimum_score: float,
+) -> List[Any]:
+    """
+    Select interactions with score equal to or higher than a threshold.
+    """
+
+    minimum_score = _pi_score_clamp(
+        minimum_score,
+        0.0,
+        100.0,
+    )
+
+    return [
+        interaction
+        for interaction in interactions
+        if (
+            _pi_score_float(
+                _pi_score_get(
+                    interaction,
+                    (
+                        "normalized_score",
+                        "score",
+                    ),
+                ),
+                0.0,
+            )
+            or 0.0
+        )
+        >= minimum_score
+    ]
+
+
+# -----------------------------------------------------------------------------
+# 11.33. Resumo local
+# -----------------------------------------------------------------------------
+
+def summarize_pi_scoring(
+    interactions: Iterable[Any],
+) -> Dict[str, Any]:
+    """
+    Produce a lightweight scoring summary.
+
+    The complete statistical analysis is implemented in Section 13.
+    """
+
+    interaction_list = list(
+        interactions
+    )
+
+    type_distribution: Dict[str, int] = defaultdict(int)
+    subtype_distribution: Dict[str, int] = defaultdict(int)
+    geometry_distribution: Dict[str, int] = defaultdict(int)
+    strength_distribution: Dict[str, int] = defaultdict(int)
+
+    scores: List[float] = []
+    penalties: List[float] = []
+
+    for interaction in interaction_list:
+        interaction_type = _pi_score_interaction_type(
+            interaction
+        ) or "unknown"
+
+        subtype = _pi_score_geometry_subtype(
+            interaction
+        ) or "unclassified"
+
+        geometry_quality = str(
+            _pi_score_get(
+                interaction,
+                (
+                    "global_geometry_class",
+                    "geometry_quality",
+                ),
+                "unclassified",
+            )
+        )
+
+        strength = str(
+            _pi_score_get(
+                interaction,
+                (
+                    "strength_class",
+                    "strength",
+                ),
+                "unclassified",
+            )
+        )
+
+        type_distribution[
+            interaction_type
+        ] += 1
+
+        subtype_distribution[
+            f"{interaction_type}:{subtype}"
+        ] += 1
+
+        geometry_distribution[
+            geometry_quality
+        ] += 1
+
+        strength_distribution[
+            strength
+        ] += 1
+
+        score = _pi_score_float(
+            _pi_score_get(
+                interaction,
+                (
+                    "normalized_score",
+                    "score",
+                ),
+            )
+        )
+
+        if score is not None:
+            scores.append(
+                score
+            )
+
+        penalty = _pi_score_float(
+            _pi_score_get(
+                interaction,
+                ("penalty_score",),
+            )
+        )
+
+        if penalty is None:
+            metadata = _pi_score_metadata(
+                interaction
+            )
+
+            score_components = metadata.get(
+                "score_components",
+                {},
+            )
+
+            if isinstance(
+                score_components,
+                Mapping,
+            ):
+                penalty = _pi_score_float(
+                    score_components.get(
+                        "penalty_score"
+                    )
+                )
+
+        if penalty is not None:
+            penalties.append(
+                penalty
+            )
+
+    def numeric_summary(
+        values: Sequence[float],
+    ) -> Dict[str, Optional[float]]:
+        if not values:
+            return {
+                "total": 0.0,
+                "mean": None,
+                "minimum": None,
+                "maximum": None,
+            }
+
+        return {
+            "total": sum(values),
+            "mean": sum(values) / len(values),
+            "minimum": min(values),
+            "maximum": max(values),
+        }
+
+    return {
+        "total_interactions": len(
+            interaction_list
+        ),
+        "type_distribution": dict(
+            sorted(
+                type_distribution.items()
+            )
+        ),
+        "subtype_distribution": dict(
+            sorted(
+                subtype_distribution.items()
+            )
+        ),
+        "geometry_class_distribution": dict(
+            sorted(
+                geometry_distribution.items()
+            )
+        ),
+        "strength_distribution": dict(
+            sorted(
+                strength_distribution.items()
+            )
+        ),
+        "scores": numeric_summary(
+            scores
+        ),
+        "penalties": numeric_summary(
+            penalties
+        ),
+    }
+
+
+# =============================================================================
+# 12. AGRUPAMENTO POR RESÍDUO E SISTEMA AROMÁTICO
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 12.1. Constantes
+# -----------------------------------------------------------------------------
+
+PI_GROUP_LEVEL_RESIDUE: Final[str] = "residue"
+PI_GROUP_LEVEL_CHAIN: Final[str] = "chain"
+PI_GROUP_LEVEL_POSE: Final[str] = "pose"
+PI_GROUP_LEVEL_RING: Final[str] = "ring"
+PI_GROUP_LEVEL_INTERACTION_TYPE: Final[str] = "interaction-type"
+PI_GROUP_LEVEL_HOTSPOT: Final[str] = "hotspot"
+
+SUPPORTED_PI_GROUP_LEVELS: Final[FrozenSet[str]] = frozenset(
+    {
+        PI_GROUP_LEVEL_RESIDUE,
+        PI_GROUP_LEVEL_CHAIN,
+        PI_GROUP_LEVEL_POSE,
+        PI_GROUP_LEVEL_RING,
+        PI_GROUP_LEVEL_INTERACTION_TYPE,
+        PI_GROUP_LEVEL_HOTSPOT,
+    }
+)
+
+PI_PARTICIPANT_ROLE_PROTEIN: Final[str] = "protein"
+PI_PARTICIPANT_ROLE_LIGAND: Final[str] = "ligand"
+PI_PARTICIPANT_ROLE_OTHER: Final[str] = "other"
+PI_PARTICIPANT_ROLE_UNKNOWN: Final[str] = "unknown"
+
+SUPPORTED_PI_PARTICIPANT_ROLES: Final[FrozenSet[str]] = frozenset(
+    {
+        PI_PARTICIPANT_ROLE_PROTEIN,
+        PI_PARTICIPANT_ROLE_LIGAND,
+        PI_PARTICIPANT_ROLE_OTHER,
+        PI_PARTICIPANT_ROLE_UNKNOWN,
+    }
+)
+
+PI_HOTSPOT_LEVEL_LOW: Final[str] = "low"
+PI_HOTSPOT_LEVEL_MODERATE: Final[str] = "moderate"
+PI_HOTSPOT_LEVEL_HIGH: Final[str] = "high"
+PI_HOTSPOT_LEVEL_CRITICAL: Final[str] = "critical"
+
+SUPPORTED_PI_HOTSPOT_LEVELS: Final[FrozenSet[str]] = frozenset(
+    {
+        PI_HOTSPOT_LEVEL_LOW,
+        PI_HOTSPOT_LEVEL_MODERATE,
+        PI_HOTSPOT_LEVEL_HIGH,
+        PI_HOTSPOT_LEVEL_CRITICAL,
+    }
+)
+
+PI_GROUPING_SCHEMA_VERSION: Final[str] = "1.0"
+PI_GROUPING_EPSILON: Final[float] = 1.0e-12
+
+
+# -----------------------------------------------------------------------------
+# 12.2. Exceções
+# -----------------------------------------------------------------------------
+
+class PiGroupingError(RuntimeError):
+    """
+    Base exception for π-interaction grouping.
+    """
+
+
+class PiGroupingValidationError(PiGroupingError):
+    """
+    Raised when grouping configuration or input is invalid.
+    """
+
+
+class PiInteractionMergeError(PiGroupingError):
+    """
+    Raised when equivalent interactions cannot be merged.
+    """
+
+
+# -----------------------------------------------------------------------------
+# 12.3. Configuração
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiGroupingConfig:
+    """
+    Configuration for grouping and hotspot identification.
+    """
+
+    enabled: bool = True
+
+    merge_equivalent_interactions: bool = True
+    merge_across_geometric_subtypes: bool = False
+    merge_across_poses: bool = False
+    merge_across_chains: bool = False
+
+    preserve_best_interaction: bool = True
+    preserve_atomic_contacts: bool = True
+    preserve_duplicate_metadata: bool = True
+
+    include_unknown_residues: bool = True
+    include_unknown_rings: bool = True
+    include_unknown_pose: bool = True
+
+    require_same_interaction_type: bool = True
+    require_same_participants: bool = True
+
+    centroid_distance_tolerance: float = 0.35
+    minimum_atomic_distance_tolerance: float = 0.35
+    angle_tolerance: float = 10.0
+    offset_tolerance: float = 0.50
+
+    hotspot_minimum_interactions: int = 2
+    hotspot_minimum_total_score: float = 80.0
+    hotspot_minimum_mean_score: float = 40.0
+
+    hotspot_high_interactions: int = 4
+    hotspot_high_total_score: float = 180.0
+
+    hotspot_critical_interactions: int = 6
+    hotspot_critical_total_score: float = 300.0
+
+    hotspot_include_weak: bool = True
+    hotspot_include_borderline: bool = False
+    hotspot_include_rejected: bool = False
+
+    protein_role_aliases: FrozenSet[str] = field(
+        default_factory=lambda: frozenset(
+            {
+                "protein",
+                "receptor",
+                "target",
+                "macromolecule",
+                "protein-ring",
+                "protein_ring",
+            }
+        )
+    )
+
+    ligand_role_aliases: FrozenSet[str] = field(
+        default_factory=lambda: frozenset(
+            {
+                "ligand",
+                "compound",
+                "small-molecule",
+                "small_molecule",
+                "drug",
+                "pose",
+                "ligand-ring",
+                "ligand_ring",
+            }
+        )
+    )
+
+    def __post_init__(self) -> None:
+        numeric_fields = (
+            "centroid_distance_tolerance",
+            "minimum_atomic_distance_tolerance",
+            "angle_tolerance",
+            "offset_tolerance",
+            "hotspot_minimum_total_score",
+            "hotspot_minimum_mean_score",
+            "hotspot_high_total_score",
+            "hotspot_critical_total_score",
+        )
+
+        for field_name in numeric_fields:
+            value = getattr(self, field_name)
+
+            try:
+                normalized_value = float(value)
+
+            except (TypeError, ValueError) as exc:
+                raise PiGroupingValidationError(
+                    f"{field_name} must be numeric."
+                ) from exc
+
+            if not math.isfinite(normalized_value):
+                raise PiGroupingValidationError(
+                    f"{field_name} must be finite."
+                )
+
+            if normalized_value < 0.0:
+                raise PiGroupingValidationError(
+                    f"{field_name} cannot be negative."
+                )
+
+            setattr(
+                self,
+                field_name,
+                normalized_value,
+            )
+
+        integer_fields = (
+            "hotspot_minimum_interactions",
+            "hotspot_high_interactions",
+            "hotspot_critical_interactions",
+        )
+
+        for field_name in integer_fields:
+            value = getattr(self, field_name)
+
+            try:
+                normalized_value = int(value)
+
+            except (TypeError, ValueError) as exc:
+                raise PiGroupingValidationError(
+                    f"{field_name} must be an integer."
+                ) from exc
+
+            if normalized_value < 1:
+                raise PiGroupingValidationError(
+                    f"{field_name} must be at least 1."
+                )
+
+            setattr(
+                self,
+                field_name,
+                normalized_value,
+            )
+
+        if (
+            self.hotspot_high_interactions
+            < self.hotspot_minimum_interactions
+        ):
+            raise PiGroupingValidationError(
+                "hotspot_high_interactions cannot be lower than "
+                "hotspot_minimum_interactions."
+            )
+
+        if (
+            self.hotspot_critical_interactions
+            < self.hotspot_high_interactions
+        ):
+            raise PiGroupingValidationError(
+                "hotspot_critical_interactions cannot be lower than "
+                "hotspot_high_interactions."
+            )
+
+        if (
+            self.hotspot_high_total_score
+            < self.hotspot_minimum_total_score
+        ):
+            raise PiGroupingValidationError(
+                "hotspot_high_total_score cannot be lower than "
+                "hotspot_minimum_total_score."
+            )
+
+        if (
+            self.hotspot_critical_total_score
+            < self.hotspot_high_total_score
+        ):
+            raise PiGroupingValidationError(
+                "hotspot_critical_total_score cannot be lower than "
+                "hotspot_high_total_score."
+            )
+
+        self.protein_role_aliases = frozenset(
+            str(value).strip().lower()
+            for value in self.protein_role_aliases
+        )
+
+        self.ligand_role_aliases = frozenset(
+            str(value).strip().lower()
+            for value in self.ligand_role_aliases
+        )
+
+
+def create_default_pi_grouping_config() -> PiGroupingConfig:
+    """
+    Return the canonical grouping configuration.
+    """
+
+    return PiGroupingConfig()
+
+
+# -----------------------------------------------------------------------------
+# 12.4. Modelos de agrupamento
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiInteractionGroup:
+    """
+    Aggregated collection of related π interactions.
+    """
+
+    group_id: str
+    group_level: str
+    group_key: str
+
+    interactions: List[Any] = field(default_factory=list)
+
+    interaction_count: int = 0
+    atomic_contact_count: int = 0
+
+    interaction_types: Tuple[str, ...] = ()
+    geometric_subtypes: Tuple[str, ...] = ()
+    geometry_classes: Tuple[str, ...] = ()
+    strength_classes: Tuple[str, ...] = ()
+
+    residue_ids: Tuple[str, ...] = ()
+    chain_ids: Tuple[str, ...] = ()
+    pose_ids: Tuple[str, ...] = ()
+    ring_ids: Tuple[str, ...] = ()
+
+    total_score: float = 0.0
+    mean_score: float = 0.0
+    maximum_score: float = 0.0
+    minimum_score: float = 0.0
+
+    strongest_interaction: Optional[Any] = None
+    representative_interaction: Optional[Any] = None
+
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.group_level not in SUPPORTED_PI_GROUP_LEVELS:
+            raise PiGroupingValidationError(
+                f"Unsupported grouping level: {self.group_level!r}."
+            )
+
+        self.interaction_count = len(
+            self.interactions
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "group_id": self.group_id,
+            "group_level": self.group_level,
+            "group_key": self.group_key,
+            "interaction_count": self.interaction_count,
+            "atomic_contact_count": self.atomic_contact_count,
+            "interaction_types": list(self.interaction_types),
+            "geometric_subtypes": list(self.geometric_subtypes),
+            "geometry_classes": list(self.geometry_classes),
+            "strength_classes": list(self.strength_classes),
+            "residue_ids": list(self.residue_ids),
+            "chain_ids": list(self.chain_ids),
+            "pose_ids": list(self.pose_ids),
+            "ring_ids": list(self.ring_ids),
+            "total_score": self.total_score,
+            "mean_score": self.mean_score,
+            "maximum_score": self.maximum_score,
+            "minimum_score": self.minimum_score,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(slots=True)
+class PiHotspot:
+    """
+    Residue- or ring-centered π-interaction hotspot.
+    """
+
+    hotspot_id: str
+    hotspot_key: str
+    hotspot_level: str
+
+    residue_id: Optional[str]
+    chain_id: Optional[str]
+    pose_ids: Tuple[str, ...]
+    ring_ids: Tuple[str, ...]
+
+    interaction_count: int
+    interaction_types: Tuple[str, ...]
+    geometric_subtypes: Tuple[str, ...]
+
+    total_score: float
+    mean_score: float
+    maximum_score: float
+
+    strong_count: int
+    moderate_count: int
+    weak_count: int
+
+    representative_interaction: Optional[Any] = None
+    interactions: List[Any] = field(default_factory=list)
+
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.hotspot_level not in SUPPORTED_PI_HOTSPOT_LEVELS:
+            raise PiGroupingValidationError(
+                f"Unsupported hotspot level: {self.hotspot_level!r}."
+            )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "hotspot_id": self.hotspot_id,
+            "hotspot_key": self.hotspot_key,
+            "hotspot_level": self.hotspot_level,
+            "residue_id": self.residue_id,
+            "chain_id": self.chain_id,
+            "pose_ids": list(self.pose_ids),
+            "ring_ids": list(self.ring_ids),
+            "interaction_count": self.interaction_count,
+            "interaction_types": list(self.interaction_types),
+            "geometric_subtypes": list(self.geometric_subtypes),
+            "total_score": self.total_score,
+            "mean_score": self.mean_score,
+            "maximum_score": self.maximum_score,
+            "strong_count": self.strong_count,
+            "moderate_count": self.moderate_count,
+            "weak_count": self.weak_count,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(slots=True)
+class PiGroupingResult:
+    """
+    Complete result from Section 12.
+    """
+
+    interactions: List[Any]
+
+    groups_by_residue: Dict[str, PiInteractionGroup]
+    groups_by_chain: Dict[str, PiInteractionGroup]
+    groups_by_pose: Dict[str, PiInteractionGroup]
+    groups_by_ring: Dict[str, PiInteractionGroup]
+    groups_by_type: Dict[str, PiInteractionGroup]
+
+    hotspots: List[PiHotspot]
+
+    input_count: int
+    merged_count: int
+    retained_count: int
+
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "input_count": self.input_count,
+            "merged_count": self.merged_count,
+            "retained_count": self.retained_count,
+            "groups_by_residue": {
+                key: value.to_dict()
+                for key, value in self.groups_by_residue.items()
+            },
+            "groups_by_chain": {
+                key: value.to_dict()
+                for key, value in self.groups_by_chain.items()
+            },
+            "groups_by_pose": {
+                key: value.to_dict()
+                for key, value in self.groups_by_pose.items()
+            },
+            "groups_by_ring": {
+                key: value.to_dict()
+                for key, value in self.groups_by_ring.items()
+            },
+            "groups_by_type": {
+                key: value.to_dict()
+                for key, value in self.groups_by_type.items()
+            },
+            "hotspots": [
+                hotspot.to_dict()
+                for hotspot in self.hotspots
+            ],
+            "metadata": dict(self.metadata),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 12.5. Acesso seguro
+# -----------------------------------------------------------------------------
+
+def _pi_group_get(
+    object_: Any,
+    names: Sequence[str],
+    default: Any = None,
+) -> Any:
+    """
+    Return the first available non-None value.
+    """
+
+    if object_ is None:
+        return default
+
+    for name in names:
+        if isinstance(object_, Mapping):
+            value = object_.get(name)
+
+        else:
+            value = getattr(object_, name, None)
+
+        if value is not None:
+            return value
+
+    return default
+
+
+def _pi_group_float(
+    value: Any,
+    default: Optional[float] = None,
+) -> Optional[float]:
+    if value is None:
+        return default
+
+    try:
+        normalized_value = float(value)
+
+    except (TypeError, ValueError):
+        return default
+
+    if not math.isfinite(normalized_value):
+        return default
+
+    return normalized_value
+
+
+def _pi_group_identifier(
+    object_: Any,
+    fallback: str,
+) -> str:
+    value = _pi_group_get(
+        object_,
+        (
+            "interaction_id",
+            "group_id",
+            "ring_id",
+            "system_id",
+            "aromatic_system_id",
+            "amide_id",
+            "id",
+            "identifier",
+        ),
+        fallback,
+    )
+
+    return str(value)
+
+
+def _pi_group_metadata(
+    object_: Any,
+) -> Dict[str, Any]:
+    metadata = _pi_group_get(
+        object_,
+        ("metadata",),
+        {},
+    )
+
+    if isinstance(metadata, Mapping):
+        return dict(metadata)
+
+    return {}
+
+
+def _pi_group_update_object(
+    object_: Any,
+    updates: Mapping[str, Any],
+) -> Any:
+    """
+    Update mappings, mutable dataclasses and regular objects safely.
+    """
+
+    if isinstance(object_, MutableMapping):
+        object_.update(
+            updates
+        )
+        return object_
+
+    supported_updates = dict(
+        updates
+    )
+
+    if is_dataclass(object_):
+        field_names = {
+            field_definition.name
+            for field_definition in fields(object_)
+        }
+
+        supported_updates = {
+            key: value
+            for key, value in supported_updates.items()
+            if key in field_names
+        }
+
+        dataclass_parameters = getattr(
+            object_,
+            "__dataclass_params__",
+            None,
+        )
+
+        if (
+            dataclass_parameters is not None
+            and dataclass_parameters.frozen
+        ):
+            return replace(
+                object_,
+                **supported_updates,
+            )
+
+    for key, value in supported_updates.items():
+        try:
+            setattr(
+                object_,
+                key,
+                value,
+            )
+
+        except (
+            AttributeError,
+            TypeError,
+        ):
+            continue
+
+    return object_
+
+
+# -----------------------------------------------------------------------------
+# 12.6. Identificação química e estrutural
+# -----------------------------------------------------------------------------
+
+def _pi_group_interaction_type(
+    interaction: Any,
+) -> str:
+    value = _pi_group_get(
+        interaction,
+        (
+            "interaction_type",
+            "type",
+            "category",
+        ),
+        "unknown",
+    )
+
+    normalized = str(value).strip().lower()
+
+    aliases = {
+        "pi_pi": "pi-pi",
+        "pi–pi": "pi-pi",
+        "π–π": "pi-pi",
+        "cation_pi": "cation-pi",
+        "cation–π": "cation-pi",
+        "anion_pi": "anion-pi",
+        "anion–π": "anion-pi",
+        "amide_pi": "amide-pi",
+        "amide–π": "amide-pi",
+    }
+
+    return aliases.get(
+        normalized,
+        normalized,
+    )
+
+
+def _pi_group_geometric_subtype(
+    interaction: Any,
+) -> str:
+    value = _pi_group_get(
+        interaction,
+        (
+            "geometry_subtype",
+            "geometry_class",
+            "subtype",
+            "geometry",
+        ),
+        "unclassified",
+    )
+
+    return str(value).strip().lower()
+
+
+def _pi_group_global_geometry_class(
+    interaction: Any,
+) -> str:
+    value = _pi_group_get(
+        interaction,
+        (
+            "global_geometry_class",
+            "geometry_quality",
+        ),
+        "unclassified",
+    )
+
+    return str(value).strip().lower()
+
+
+def _pi_group_strength(
+    interaction: Any,
+) -> str:
+    value = _pi_group_get(
+        interaction,
+        (
+            "strength_class",
+            "strength",
+        ),
+        "weak",
+    )
+
+    return str(value).strip().lower()
+
+
+def _pi_group_score(
+    interaction: Any,
+) -> float:
+    value = _pi_group_float(
+        _pi_group_get(
+            interaction,
+            (
+                "normalized_score",
+                "score",
+                "raw_score",
+                "geometry_confidence",
+            ),
+        ),
+        0.0,
+    )
+
+    return max(
+        0.0,
+        float(value or 0.0),
+    )
+
+
+def _pi_group_atomic_contacts(
+    interaction: Any,
+) -> Tuple[Any, ...]:
+    contacts = _pi_group_get(
+        interaction,
+        (
+            "atomic_contacts",
+            "contacts",
+        ),
+        (),
+    )
+
+    try:
+        return tuple(
+            contacts
+        )
+
+    except TypeError:
+        return ()
+
+
+def _pi_group_participants(
+    interaction: Any,
+) -> Tuple[Any, Any]:
+    interaction_type = _pi_group_interaction_type(
+        interaction
+    )
+
+    if interaction_type == "pi-pi":
+        return (
+            _pi_group_get(
+                interaction,
+                (
+                    "ring_1",
+                    "aromatic_system_1",
+                ),
+            ),
+            _pi_group_get(
+                interaction,
+                (
+                    "ring_2",
+                    "aromatic_system_2",
+                ),
+            ),
+        )
+
+    ring = _pi_group_get(
+        interaction,
+        (
+            "aromatic_system",
+            "ring",
+            "ring_1",
+        ),
+    )
+
+    if interaction_type == "cation-pi":
+        second_participant = _pi_group_get(
+            interaction,
+            (
+                "cation_group",
+                "charged_group",
+            ),
+        )
+
+    elif interaction_type == "anion-pi":
+        second_participant = _pi_group_get(
+            interaction,
+            (
+                "anion_group",
+                "charged_group",
+            ),
+        )
+
+    elif interaction_type == "amide-pi":
+        second_participant = _pi_group_get(
+            interaction,
+            ("amide_group",),
+        )
+
+    else:
+        second_participant = _pi_group_get(
+            interaction,
+            (
+                "participant_2",
+                "group",
+            ),
+        )
+
+    return (
+        ring,
+        second_participant,
+    )
+
+
+def _pi_group_residue_id(
+    object_: Any,
+) -> Optional[str]:
+    if object_ is None:
+        return None
+
+    explicit_residue_id = _pi_group_get(
+        object_,
+        (
+            "residue_id",
+            "residue_key",
+        ),
+    )
+
+    if explicit_residue_id is not None:
+        return str(
+            explicit_residue_id
+        )
+
+    chain_id = _pi_group_get(
+        object_,
+        (
+            "chain_id",
+            "chain",
+        ),
+        "",
+    )
+
+    residue_name = _pi_group_get(
+        object_,
+        (
+            "residue_name",
+            "resname",
+        ),
+        "",
+    )
+
+    residue_number = _pi_group_get(
+        object_,
+        (
+            "residue_number",
+            "residue_index",
+            "resid",
+        ),
+        "",
+    )
+
+    insertion_code = _pi_group_get(
+        object_,
+        (
+            "insertion_code",
+            "icode",
+        ),
+        "",
+    )
+
+    if not any(
+        value not in (
+            None,
+            "",
+        )
+        for value in (
+            chain_id,
+            residue_name,
+            residue_number,
+            insertion_code,
+        )
+    ):
+        return None
+
+    residue_number_text = str(
+        residue_number
+    )
+
+    if insertion_code not in (
+        None,
+        "",
+    ):
+        residue_number_text += str(
+            insertion_code
+        )
+
+    return (
+        f"{chain_id}:"
+        f"{residue_name}:"
+        f"{residue_number_text}"
+    )
+
+
+def _pi_group_chain_id(
+    object_: Any,
+) -> Optional[str]:
+    if object_ is None:
+        return None
+
+    value = _pi_group_get(
+        object_,
+        (
+            "chain_id",
+            "chain",
+        ),
+    )
+
+    if value is not None:
+        return str(
+            value
+        )
+
+    residue_id = _pi_group_residue_id(
+        object_
+    )
+
+    if residue_id and ":" in residue_id:
+        return residue_id.split(
+            ":",
+            1,
+        )[0]
+
+    return None
+
+
+def _pi_group_pose_id(
+    interaction: Any,
+) -> Optional[str]:
+    direct_value = _pi_group_get(
+        interaction,
+        (
+            "pose_id",
+            "pose",
+            "pose_index",
+            "model_id",
+            "model_index",
+            "state_id",
+            "state_index",
+        ),
+    )
+
+    if direct_value is not None:
+        return str(
+            direct_value
+        )
+
+    metadata = _pi_group_metadata(
+        interaction
+    )
+
+    for key in (
+        "pose_id",
+        "pose",
+        "pose_index",
+        "model_id",
+        "model_index",
+        "state_id",
+        "state_index",
+    ):
+        if metadata.get(key) is not None:
+            return str(
+                metadata[key]
+            )
+
+    participant_1, participant_2 = _pi_group_participants(
+        interaction
+    )
+
+    for participant in (
+        participant_1,
+        participant_2,
+    ):
+        value = _pi_group_get(
+            participant,
+            (
+                "pose_id",
+                "pose",
+                "pose_index",
+                "model_id",
+                "state_id",
+            ),
+        )
+
+        if value is not None:
+            return str(
+                value
+            )
+
+    return None
+
+
+def _pi_group_participant_role(
+    object_: Any,
+    *,
+    config: PiGroupingConfig,
+) -> str:
+    if object_ is None:
+        return PI_PARTICIPANT_ROLE_UNKNOWN
+
+    value = _pi_group_get(
+        object_,
+        (
+            "participant_type",
+            "source_type",
+            "molecule_type",
+            "role",
+            "source",
+        ),
+    )
+
+    if value is not None:
+        normalized = str(
+            value
+        ).strip().lower()
+
+        if normalized in config.protein_role_aliases:
+            return PI_PARTICIPANT_ROLE_PROTEIN
+
+        if normalized in config.ligand_role_aliases:
+            return PI_PARTICIPANT_ROLE_LIGAND
+
+    residue_name = str(
+        _pi_group_get(
+            object_,
+            (
+                "residue_name",
+                "resname",
+            ),
+            "",
+        )
+    ).strip().upper()
+
+    standard_amino_acids = {
+        "ALA", "ARG", "ASN", "ASP", "CYS",
+        "GLN", "GLU", "GLY", "HIS", "ILE",
+        "LEU", "LYS", "MET", "PHE", "PRO",
+        "SER", "THR", "TRP", "TYR", "VAL",
+        "HID", "HIE", "HIP", "CYX", "CYM",
+        "ASH", "GLH", "LYN",
+    }
+
+    if residue_name in standard_amino_acids:
+        return PI_PARTICIPANT_ROLE_PROTEIN
+
+    if _pi_group_pose_id_from_object(object_) is not None:
+        return PI_PARTICIPANT_ROLE_LIGAND
+
+    if residue_name:
+        return PI_PARTICIPANT_ROLE_OTHER
+
+    return PI_PARTICIPANT_ROLE_UNKNOWN
+
+
+def _pi_group_pose_id_from_object(
+    object_: Any,
+) -> Optional[str]:
+    value = _pi_group_get(
+        object_,
+        (
+            "pose_id",
+            "pose",
+            "pose_index",
+            "model_id",
+            "state_id",
+        ),
+    )
+
+    return (
+        None
+        if value is None
+        else str(value)
+    )
+
+
+def _pi_group_ring_ids(
+    interaction: Any,
+) -> Tuple[str, ...]:
+    participant_1, participant_2 = _pi_group_participants(
+        interaction
+    )
+
+    ring_ids: List[str] = []
+
+    interaction_type = _pi_group_interaction_type(
+        interaction
+    )
+
+    if participant_1 is not None:
+        ring_ids.append(
+            _pi_group_identifier(
+                participant_1,
+                "unknown-ring-1",
+            )
+        )
+
+    if (
+        interaction_type == "pi-pi"
+        and participant_2 is not None
+    ):
+        ring_ids.append(
+            _pi_group_identifier(
+                participant_2,
+                "unknown-ring-2",
+            )
+        )
+
+    return tuple(
+        ring_ids
+    )
+
+
+def _pi_group_protein_ring_ids(
+    interaction: Any,
+    *,
+    config: PiGroupingConfig,
+) -> Tuple[str, ...]:
+    participant_1, participant_2 = _pi_group_participants(
+        interaction
+    )
+
+    ring_ids: List[str] = []
+
+    for participant in (
+        participant_1,
+        participant_2,
+    ):
+        if (
+            participant is not None
+            and _pi_group_participant_role(
+                participant,
+                config=config,
+            )
+            == PI_PARTICIPANT_ROLE_PROTEIN
+        ):
+            ring_ids.append(
+                _pi_group_identifier(
+                    participant,
+                    "unknown-protein-ring",
+                )
+            )
+
+    return tuple(
+        sorted(
+            set(ring_ids)
+        )
+    )
+
+
+def _pi_group_ligand_ring_ids(
+    interaction: Any,
+    *,
+    config: PiGroupingConfig,
+) -> Tuple[str, ...]:
+    participant_1, participant_2 = _pi_group_participants(
+        interaction
+    )
+
+    ring_ids: List[str] = []
+
+    for participant in (
+        participant_1,
+        participant_2,
+    ):
+        if (
+            participant is not None
+            and _pi_group_participant_role(
+                participant,
+                config=config,
+            )
+            == PI_PARTICIPANT_ROLE_LIGAND
+        ):
+            ring_ids.append(
+                _pi_group_identifier(
+                    participant,
+                    "unknown-ligand-ring",
+                )
+            )
+
+    return tuple(
+        sorted(
+            set(ring_ids)
+        )
+    )
+
+
+def _pi_group_residue_ids(
+    interaction: Any,
+) -> Tuple[str, ...]:
+    participant_1, participant_2 = _pi_group_participants(
+        interaction
+    )
+
+    residue_ids = {
+        residue_id
+        for participant in (
+            participant_1,
+            participant_2,
+        )
+        if (
+            residue_id := _pi_group_residue_id(
+                participant
+            )
+        )
+        is not None
+    }
+
+    return tuple(
+        sorted(
+            residue_ids
+        )
+    )
+
+
+def _pi_group_chain_ids(
+    interaction: Any,
+) -> Tuple[str, ...]:
+    participant_1, participant_2 = _pi_group_participants(
+        interaction
+    )
+
+    chain_ids = {
+        chain_id
+        for participant in (
+            participant_1,
+            participant_2,
+        )
+        if (
+            chain_id := _pi_group_chain_id(
+                participant
+            )
+        )
+        is not None
+    }
+
+    return tuple(
+        sorted(
+            chain_ids
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.7. Assinaturas de equivalência
+# -----------------------------------------------------------------------------
+
+def generate_equivalent_pi_interaction_signature(
+    interaction: Any,
+    *,
+    config: Optional[PiGroupingConfig] = None,
+) -> Tuple[str, ...]:
+    """
+    Generate a signature representing one physical π-interaction phenomenon.
+
+    Atomic contacts are deliberately excluded from the signature.
+    """
+
+    if config is None:
+        config = create_default_pi_grouping_config()
+
+    interaction_type = _pi_group_interaction_type(
+        interaction
+    )
+
+    geometric_subtype = _pi_group_geometric_subtype(
+        interaction
+    )
+
+    participant_1, participant_2 = _pi_group_participants(
+        interaction
+    )
+
+    participant_1_id = _pi_group_identifier(
+        participant_1,
+        "unknown-participant-1",
+    )
+
+    participant_2_id = _pi_group_identifier(
+        participant_2,
+        "unknown-participant-2",
+    )
+
+    if interaction_type == "pi-pi":
+        participant_1_id, participant_2_id = sorted(
+            (
+                participant_1_id,
+                participant_2_id,
+            )
+        )
+
+    signature: List[str] = []
+
+    if config.require_same_interaction_type:
+        signature.append(
+            interaction_type
+        )
+
+    if config.require_same_participants:
+        signature.extend(
+            (
+                participant_1_id,
+                participant_2_id,
+            )
+        )
+
+    if not config.merge_across_geometric_subtypes:
+        signature.append(
+            geometric_subtype
+        )
+
+    if not config.merge_across_poses:
+        signature.append(
+            _pi_group_pose_id(
+                interaction
+            )
+            or "unknown-pose"
+        )
+
+    if not config.merge_across_chains:
+        signature.append(
+            ",".join(
+                _pi_group_chain_ids(
+                    interaction
+                )
+            )
+            or "unknown-chain"
+        )
+
+    return tuple(
+        signature
+    )
+
+
+def _pi_group_geometrically_equivalent(
+    interaction_1: Any,
+    interaction_2: Any,
+    *,
+    config: PiGroupingConfig,
+) -> bool:
+    """
+    Compare geometric descriptors within configured tolerances.
+    """
+
+    descriptor_specs = (
+        (
+            ("centroid_distance",),
+            config.centroid_distance_tolerance,
+        ),
+        (
+            ("minimum_atomic_distance",),
+            config.minimum_atomic_distance_tolerance,
+        ),
+        (
+            (
+                "plane_angle",
+                "normal_angle",
+                "orientation_angle",
+            ),
+            config.angle_tolerance,
+        ),
+        (
+            (
+                "radial_offset",
+                "lateral_offset",
+            ),
+            config.offset_tolerance,
+        ),
+    )
+
+    comparable_count = 0
+
+    for attribute_names, tolerance in descriptor_specs:
+        value_1 = _pi_group_float(
+            _pi_group_get(
+                interaction_1,
+                attribute_names,
+            )
+        )
+
+        value_2 = _pi_group_float(
+            _pi_group_get(
+                interaction_2,
+                attribute_names,
+            )
+        )
+
+        if value_1 is None or value_2 is None:
+            continue
+
+        comparable_count += 1
+
+        if abs(
+            value_1 - value_2
+        ) > tolerance:
+            return False
+
+    return comparable_count > 0
+
+
+def are_equivalent_pi_interactions(
+    interaction_1: Any,
+    interaction_2: Any,
+    *,
+    config: Optional[PiGroupingConfig] = None,
+) -> bool:
+    """
+    Return whether two records describe the same physical interaction.
+    """
+
+    if config is None:
+        config = create_default_pi_grouping_config()
+
+    signature_1 = generate_equivalent_pi_interaction_signature(
+        interaction_1,
+        config=config,
+    )
+
+    signature_2 = generate_equivalent_pi_interaction_signature(
+        interaction_2,
+        config=config,
+    )
+
+    if signature_1 != signature_2:
+        return False
+
+    return _pi_group_geometrically_equivalent(
+        interaction_1,
+        interaction_2,
+        config=config,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.8. Seleção do representante
+# -----------------------------------------------------------------------------
+
+def _pi_group_interaction_priority(
+    interaction: Any,
+) -> Tuple[float, int, float, float]:
+    """
+    Return a sortable priority for representative selection.
+    """
+
+    score = _pi_group_score(
+        interaction
+    )
+
+    strength_order = {
+        "strong": 3,
+        "moderate": 2,
+        "weak": 1,
+    }
+
+    strength = strength_order.get(
+        _pi_group_strength(
+            interaction
+        ),
+        0,
+    )
+
+    confidence = _pi_group_float(
+        _pi_group_get(
+            interaction,
+            (
+                "geometry_confidence",
+                "confidence",
+            ),
+        ),
+        0.0,
+    ) or 0.0
+
+    centroid_distance = _pi_group_float(
+        _pi_group_get(
+            interaction,
+            ("centroid_distance",),
+        ),
+        math.inf,
+    )
+
+    return (
+        score,
+        strength,
+        confidence,
+        -float(centroid_distance),
+    )
+
+
+def _pi_group_select_representative(
+    interactions: Sequence[Any],
+) -> Optional[Any]:
+    if not interactions:
+        return None
+
+    return max(
+        interactions,
+        key=_pi_group_interaction_priority,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.9. Mesclagem de contatos atômicos
+# -----------------------------------------------------------------------------
+
+def _pi_group_contact_signature(
+    contact: Any,
+) -> Tuple[str, str, float]:
+    atom_1 = _pi_group_get(
+        contact,
+        ("atom_1",),
+    )
+
+    atom_2 = _pi_group_get(
+        contact,
+        ("atom_2",),
+    )
+
+    distance = _pi_group_float(
+        _pi_group_get(
+            contact,
+            ("distance",),
+        ),
+        math.inf,
+    )
+
+    atom_1_id = _pi_group_identifier(
+        atom_1,
+        str(id(atom_1)),
+    )
+
+    atom_2_id = _pi_group_identifier(
+        atom_2,
+        str(id(atom_2)),
+    )
+
+    atom_1_id, atom_2_id = sorted(
+        (
+            atom_1_id,
+            atom_2_id,
+        )
+    )
+
+    return (
+        atom_1_id,
+        atom_2_id,
+        round(
+            float(distance),
+            4,
+        ),
+    )
+
+
+def _pi_group_merge_atomic_contacts(
+    interactions: Iterable[Any],
+) -> Tuple[Any, ...]:
+    contact_map: Dict[
+        Tuple[str, str, float],
+        Any,
+    ] = {}
+
+    for interaction in interactions:
+        for contact in _pi_group_atomic_contacts(
+            interaction
+        ):
+            signature = _pi_group_contact_signature(
+                contact
+            )
+
+            existing = contact_map.get(
+                signature
+            )
+
+            if existing is None:
+                contact_map[signature] = contact
+                continue
+
+            existing_distance = _pi_group_float(
+                _pi_group_get(
+                    existing,
+                    ("distance",),
+                ),
+                math.inf,
+            )
+
+            current_distance = _pi_group_float(
+                _pi_group_get(
+                    contact,
+                    ("distance",),
+                ),
+                math.inf,
+            )
+
+            if current_distance < existing_distance:
+                contact_map[signature] = contact
+
+    return tuple(
+        sorted(
+            contact_map.values(),
+            key=lambda contact: (
+                _pi_group_float(
+                    _pi_group_get(
+                        contact,
+                        ("distance",),
+                    ),
+                    math.inf,
+                )
+            ),
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.10. Mesclagem de interações equivalentes
+# -----------------------------------------------------------------------------
+
+def _merge_pi_interaction_cluster(
+    interactions: Sequence[Any],
+    *,
+    config: PiGroupingConfig,
+) -> Any:
+    """
+    Merge one cluster of equivalent interaction records.
+    """
+
+    if not interactions:
+        raise PiInteractionMergeError(
+            "Cannot merge an empty interaction cluster."
+        )
+
+    if len(interactions) == 1:
+        interaction = interactions[0]
+
+        metadata = _pi_group_metadata(
+            interaction
+        )
+
+        metadata.setdefault(
+            "equivalent_record_count",
+            1,
+        )
+
+        return _pi_group_update_object(
+            interaction,
+            {
+                "metadata": metadata,
+            },
+        )
+
+    representative = _pi_group_select_representative(
+        interactions
+    )
+
+    if representative is None:
+        raise PiInteractionMergeError(
+            "Could not select a representative interaction."
+        )
+
+    merged_contacts = (
+        _pi_group_merge_atomic_contacts(
+            interactions
+        )
+        if config.preserve_atomic_contacts
+        else _pi_group_atomic_contacts(
+            representative
+        )
+    )
+
+    source_records: List[Dict[str, Any]] = []
+
+    all_warnings: List[str] = []
+
+    all_scores: List[float] = []
+
+    for interaction in interactions:
+        all_scores.append(
+            _pi_group_score(
+                interaction
+            )
+        )
+
+        all_warnings.extend(
+            str(warning)
+            for warning in (
+                _pi_group_get(
+                    interaction,
+                    ("warnings",),
+                    (),
+                )
+                or ()
+            )
+        )
+
+        source_records.append(
+            {
+                "interaction_id": _pi_group_identifier(
+                    interaction,
+                    "unknown-interaction",
+                ),
+                "interaction_type": _pi_group_interaction_type(
+                    interaction
+                ),
+                "geometric_subtype": _pi_group_geometric_subtype(
+                    interaction
+                ),
+                "pose_id": _pi_group_pose_id(
+                    interaction
+                ),
+                "score": _pi_group_score(
+                    interaction
+                ),
+                "geometry_confidence": _pi_group_float(
+                    _pi_group_get(
+                        interaction,
+                        (
+                            "geometry_confidence",
+                            "confidence",
+                        ),
+                    ),
+                    0.0,
+                ),
+                "atomic_contact_count": len(
+                    _pi_group_atomic_contacts(
+                        interaction
+                    )
+                ),
+            }
+        )
+
+    metadata = _pi_group_metadata(
+        representative
+    )
+
+    metadata.update(
+        {
+            "grouping_schema": (
+                f"pi-grouping-{PI_GROUPING_SCHEMA_VERSION}"
+            ),
+            "merged_equivalent_interactions": True,
+            "equivalent_record_count": len(interactions),
+            "equivalent_source_records": source_records,
+            "merged_atomic_contact_count": len(
+                merged_contacts
+            ),
+            "equivalent_score_mean": (
+                sum(all_scores)
+                / len(all_scores)
+            ),
+            "equivalent_score_minimum": min(
+                all_scores
+            ),
+            "equivalent_score_maximum": max(
+                all_scores
+            ),
+        }
+    )
+
+    updates = {
+        "atomic_contacts": merged_contacts,
+        "warnings": list(
+            dict.fromkeys(
+                all_warnings
+            )
+        ),
+        "metadata": metadata,
+    }
+
+    return _pi_group_update_object(
+        representative,
+        updates,
+    )
+
+
+def merge_equivalent_pi_interactions(
+    interactions: Iterable[Any],
+    *,
+    config: Optional[PiGroupingConfig] = None,
+) -> Tuple[List[Any], int]:
+    """
+    Merge records that describe the same physical π interaction.
+
+    Returns
+    -------
+    tuple
+        Merged interactions and number of removed equivalent records.
+    """
+
+    if config is None:
+        config = create_default_pi_grouping_config()
+
+    interaction_list = list(
+        interactions
+    )
+
+    if (
+        not config.enabled
+        or not config.merge_equivalent_interactions
+    ):
+        return (
+            interaction_list,
+            0,
+        )
+
+    signature_buckets: Dict[
+        Tuple[str, ...],
+        List[List[Any]],
+    ] = defaultdict(list)
+
+    for interaction in interaction_list:
+        signature = generate_equivalent_pi_interaction_signature(
+            interaction,
+            config=config,
+        )
+
+        placed = False
+
+        for cluster in signature_buckets[
+            signature
+        ]:
+            if are_equivalent_pi_interactions(
+                interaction,
+                cluster[0],
+                config=config,
+            ):
+                cluster.append(
+                    interaction
+                )
+
+                placed = True
+                break
+
+        if not placed:
+            signature_buckets[
+                signature
+            ].append(
+                [interaction]
+            )
+
+    merged_interactions: List[Any] = []
+
+    removed_count = 0
+
+    for clusters in signature_buckets.values():
+        for cluster in clusters:
+            merged_interactions.append(
+                _merge_pi_interaction_cluster(
+                    cluster,
+                    config=config,
+                )
+            )
+
+            removed_count += (
+                len(cluster) - 1
+            )
+
+    merged_interactions.sort(
+        key=lambda interaction: (
+            -_pi_group_score(
+                interaction
+            ),
+            _pi_group_interaction_type(
+                interaction
+            ),
+            _pi_group_identifier(
+                interaction,
+                "",
+            ),
+        )
+    )
+
+    return (
+        merged_interactions,
+        removed_count,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.11. Construção de grupos
+# -----------------------------------------------------------------------------
+
+def _build_pi_interaction_group(
+    group_key: str,
+    interactions: Sequence[Any],
+    *,
+    group_level: str,
+) -> PiInteractionGroup:
+    interaction_list = list(
+        interactions
+    )
+
+    scores = [
+        _pi_group_score(
+            interaction
+        )
+        for interaction in interaction_list
+    ]
+
+    interaction_types = tuple(
+        sorted(
+            {
+                _pi_group_interaction_type(
+                    interaction
+                )
+                for interaction in interaction_list
+            }
+        )
+    )
+
+    geometric_subtypes = tuple(
+        sorted(
+            {
+                _pi_group_geometric_subtype(
+                    interaction
+                )
+                for interaction in interaction_list
+            }
+        )
+    )
+
+    geometry_classes = tuple(
+        sorted(
+            {
+                _pi_group_global_geometry_class(
+                    interaction
+                )
+                for interaction in interaction_list
+            }
+        )
+    )
+
+    strength_classes = tuple(
+        sorted(
+            {
+                _pi_group_strength(
+                    interaction
+                )
+                for interaction in interaction_list
+            }
+        )
+    )
+
+    residue_ids = tuple(
+        sorted(
+            {
+                residue_id
+                for interaction in interaction_list
+                for residue_id in _pi_group_residue_ids(
+                    interaction
+                )
+            }
+        )
+    )
+
+    chain_ids = tuple(
+        sorted(
+            {
+                chain_id
+                for interaction in interaction_list
+                for chain_id in _pi_group_chain_ids(
+                    interaction
+                )
+            }
+        )
+    )
+
+    pose_ids = tuple(
+        sorted(
+            {
+                pose_id
+                for interaction in interaction_list
+                if (
+                    pose_id := _pi_group_pose_id(
+                        interaction
+                    )
+                )
+                is not None
+            }
+        )
+    )
+
+    ring_ids = tuple(
+        sorted(
+            {
+                ring_id
+                for interaction in interaction_list
+                for ring_id in _pi_group_ring_ids(
+                    interaction
+                )
+            }
+        )
+    )
+
+    representative = _pi_group_select_representative(
+        interaction_list
+    )
+
+    total_score = sum(
+        scores
+    )
+
+    return PiInteractionGroup(
+        group_id=(
+            f"pi-group:"
+            f"{group_level}:"
+            f"{group_key}"
+        ),
+        group_level=group_level,
+        group_key=group_key,
+        interactions=interaction_list,
+        interaction_count=len(
+            interaction_list
+        ),
+        atomic_contact_count=sum(
+            len(
+                _pi_group_atomic_contacts(
+                    interaction
+                )
+            )
+            for interaction in interaction_list
+        ),
+        interaction_types=interaction_types,
+        geometric_subtypes=geometric_subtypes,
+        geometry_classes=geometry_classes,
+        strength_classes=strength_classes,
+        residue_ids=residue_ids,
+        chain_ids=chain_ids,
+        pose_ids=pose_ids,
+        ring_ids=ring_ids,
+        total_score=total_score,
+        mean_score=(
+            total_score
+            / len(scores)
+            if scores
+            else 0.0
+        ),
+        maximum_score=(
+            max(scores)
+            if scores
+            else 0.0
+        ),
+        minimum_score=(
+            min(scores)
+            if scores
+            else 0.0
+        ),
+        strongest_interaction=representative,
+        representative_interaction=representative,
+        metadata={
+            "schema": "pi-interaction-group",
+            "schema_version": PI_GROUPING_SCHEMA_VERSION,
+        },
+    )
+
+
+def _group_pi_interactions(
+    interactions: Iterable[Any],
+    *,
+    group_level: str,
+    key_extractor: Callable[[Any], Iterable[str]],
+    include_unknown: bool,
+    unknown_key: str,
+) -> Dict[str, PiInteractionGroup]:
+    if group_level not in SUPPORTED_PI_GROUP_LEVELS:
+        raise PiGroupingValidationError(
+            f"Unsupported grouping level: {group_level!r}."
+        )
+
+    buckets: Dict[
+        str,
+        List[Any],
+    ] = defaultdict(list)
+
+    for interaction in interactions:
+        keys = tuple(
+            str(key)
+            for key in key_extractor(
+                interaction
+            )
+            if key not in (
+                None,
+                "",
+            )
+        )
+
+        if not keys:
+            if not include_unknown:
+                continue
+
+            keys = (
+                unknown_key,
+            )
+
+        for key in keys:
+            buckets[key].append(
+                interaction
+            )
+
+    groups = {
+        key: _build_pi_interaction_group(
+            key,
+            group_interactions,
+            group_level=group_level,
+        )
+        for key, group_interactions in buckets.items()
+    }
+
+    return dict(
+        sorted(
+            groups.items(),
+            key=lambda item: (
+                -item[1].total_score,
+                -item[1].interaction_count,
+                item[0],
+            ),
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.12. Agrupamento por resíduo
+# -----------------------------------------------------------------------------
+
+def group_pi_interactions_by_residue(
+    interactions: Iterable[Any],
+    *,
+    config: Optional[PiGroupingConfig] = None,
+    protein_only: bool = True,
+) -> Dict[str, PiInteractionGroup]:
+    """
+    Group interactions by residue.
+
+    By default, only residues assigned to protein participants are used.
+    """
+
+    if config is None:
+        config = create_default_pi_grouping_config()
+
+    def extract_residue_keys(
+        interaction: Any,
+    ) -> Iterable[str]:
+        participant_1, participant_2 = _pi_group_participants(
+            interaction
+        )
+
+        residue_ids: List[str] = []
+
+        for participant in (
+            participant_1,
+            participant_2,
+        ):
+            if participant is None:
+                continue
+
+            if (
+                protein_only
+                and _pi_group_participant_role(
+                    participant,
+                    config=config,
+                )
+                != PI_PARTICIPANT_ROLE_PROTEIN
+            ):
+                continue
+
+            residue_id = _pi_group_residue_id(
+                participant
+            )
+
+            if residue_id is not None:
+                residue_ids.append(
+                    residue_id
+                )
+
+        return tuple(
+            sorted(
+                set(residue_ids)
+            )
+        )
+
+    return _group_pi_interactions(
+        interactions,
+        group_level=PI_GROUP_LEVEL_RESIDUE,
+        key_extractor=extract_residue_keys,
+        include_unknown=config.include_unknown_residues,
+        unknown_key="unknown-residue",
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.13. Agrupamento por cadeia
+# -----------------------------------------------------------------------------
+
+def group_pi_interactions_by_chain(
+    interactions: Iterable[Any],
+    *,
+    config: Optional[PiGroupingConfig] = None,
+    protein_only: bool = True,
+) -> Dict[str, PiInteractionGroup]:
+    """
+    Group interactions by chain.
+    """
+
+    if config is None:
+        config = create_default_pi_grouping_config()
+
+    def extract_chain_keys(
+        interaction: Any,
+    ) -> Iterable[str]:
+        participant_1, participant_2 = _pi_group_participants(
+            interaction
+        )
+
+        chain_ids: List[str] = []
+
+        for participant in (
+            participant_1,
+            participant_2,
+        ):
+            if participant is None:
+                continue
+
+            if (
+                protein_only
+                and _pi_group_participant_role(
+                    participant,
+                    config=config,
+                )
+                != PI_PARTICIPANT_ROLE_PROTEIN
+            ):
+                continue
+
+            chain_id = _pi_group_chain_id(
+                participant
+            )
+
+            if chain_id is not None:
+                chain_ids.append(
+                    chain_id
+                )
+
+        return tuple(
+            sorted(
+                set(chain_ids)
+            )
+        )
+
+    return _group_pi_interactions(
+        interactions,
+        group_level=PI_GROUP_LEVEL_CHAIN,
+        key_extractor=extract_chain_keys,
+        include_unknown=True,
+        unknown_key="unknown-chain",
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.14. Agrupamento por pose
+# -----------------------------------------------------------------------------
+
+def group_pi_interactions_by_pose(
+    interactions: Iterable[Any],
+    *,
+    config: Optional[PiGroupingConfig] = None,
+) -> Dict[str, PiInteractionGroup]:
+    """
+    Group interactions by docking pose, model or structural state.
+    """
+
+    if config is None:
+        config = create_default_pi_grouping_config()
+
+    return _group_pi_interactions(
+        interactions,
+        group_level=PI_GROUP_LEVEL_POSE,
+        key_extractor=lambda interaction: (
+            (
+                _pi_group_pose_id(
+                    interaction
+                ),
+            )
+            if _pi_group_pose_id(
+                interaction
+            )
+            is not None
+            else ()
+        ),
+        include_unknown=config.include_unknown_pose,
+        unknown_key="unknown-pose",
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.15. Agrupamento por anel
+# -----------------------------------------------------------------------------
+
+def group_pi_interactions_by_ring(
+    interactions: Iterable[Any],
+    *,
+    config: Optional[PiGroupingConfig] = None,
+    ring_role: Optional[str] = None,
+) -> Dict[str, PiInteractionGroup]:
+    """
+    Group interactions by aromatic system.
+
+    Parameters
+    ----------
+    ring_role:
+        None for all rings, "protein" for protein rings or "ligand" for
+        ligand rings.
+    """
+
+    if config is None:
+        config = create_default_pi_grouping_config()
+
+    if ring_role is not None:
+        ring_role = str(
+            ring_role
+        ).strip().lower()
+
+        if ring_role not in {
+            PI_PARTICIPANT_ROLE_PROTEIN,
+            PI_PARTICIPANT_ROLE_LIGAND,
+        }:
+            raise PiGroupingValidationError(
+                "ring_role must be None, 'protein' or 'ligand'."
+            )
+
+    def extract_ring_keys(
+        interaction: Any,
+    ) -> Iterable[str]:
+        if ring_role == PI_PARTICIPANT_ROLE_PROTEIN:
+            return _pi_group_protein_ring_ids(
+                interaction,
+                config=config,
+            )
+
+        if ring_role == PI_PARTICIPANT_ROLE_LIGAND:
+            return _pi_group_ligand_ring_ids(
+                interaction,
+                config=config,
+            )
+
+        return _pi_group_ring_ids(
+            interaction
+        )
+
+    return _group_pi_interactions(
+        interactions,
+        group_level=PI_GROUP_LEVEL_RING,
+        key_extractor=extract_ring_keys,
+        include_unknown=config.include_unknown_rings,
+        unknown_key=(
+            f"unknown-{ring_role}-ring"
+            if ring_role
+            else "unknown-ring"
+        ),
+    )
+
+
+def group_pi_interactions_by_protein_ring(
+    interactions: Iterable[Any],
+    *,
+    config: Optional[PiGroupingConfig] = None,
+) -> Dict[str, PiInteractionGroup]:
+    """
+    Group interactions by protein aromatic ring.
+    """
+
+    return group_pi_interactions_by_ring(
+        interactions,
+        config=config,
+        ring_role=PI_PARTICIPANT_ROLE_PROTEIN,
+    )
+
+
+def group_pi_interactions_by_ligand_ring(
+    interactions: Iterable[Any],
+    *,
+    config: Optional[PiGroupingConfig] = None,
+) -> Dict[str, PiInteractionGroup]:
+    """
+    Group interactions by ligand aromatic ring.
+    """
+
+    return group_pi_interactions_by_ring(
+        interactions,
+        config=config,
+        ring_role=PI_PARTICIPANT_ROLE_LIGAND,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.16. Agrupamento por tipo
+# -----------------------------------------------------------------------------
+
+def group_pi_interactions_by_type(
+    interactions: Iterable[Any],
+) -> Dict[str, PiInteractionGroup]:
+    """
+    Group interactions by canonical interaction type.
+    """
+
+    return _group_pi_interactions(
+        interactions,
+        group_level=PI_GROUP_LEVEL_INTERACTION_TYPE,
+        key_extractor=lambda interaction: (
+            _pi_group_interaction_type(
+                interaction
+            ),
+        ),
+        include_unknown=True,
+        unknown_key="unknown-interaction-type",
+    )
+
+
+def group_pi_interactions_by_subtype(
+    interactions: Iterable[Any],
+) -> Dict[str, PiInteractionGroup]:
+    """
+    Group interactions by interaction type and geometric subtype.
+    """
+
+    return _group_pi_interactions(
+        interactions,
+        group_level=PI_GROUP_LEVEL_INTERACTION_TYPE,
+        key_extractor=lambda interaction: (
+            (
+                f"{_pi_group_interaction_type(interaction)}:"
+                f"{_pi_group_geometric_subtype(interaction)}"
+            ),
+        ),
+        include_unknown=True,
+        unknown_key="unknown-interaction-subtype",
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.17. Critérios de hotspot
+# -----------------------------------------------------------------------------
+
+def _pi_group_interaction_is_hotspot_eligible(
+    interaction: Any,
+    *,
+    config: PiGroupingConfig,
+) -> bool:
+    geometry_class = _pi_group_global_geometry_class(
+        interaction
+    )
+
+    strength = _pi_group_strength(
+        interaction
+    )
+
+    if geometry_class == "rejected":
+        return config.hotspot_include_rejected
+
+    if geometry_class == "borderline":
+        return config.hotspot_include_borderline
+
+    if strength == "weak":
+        return config.hotspot_include_weak
+
+    return True
+
+
+def _classify_pi_hotspot_level(
+    *,
+    interaction_count: int,
+    total_score: float,
+    config: PiGroupingConfig,
+) -> str:
+    if (
+        interaction_count
+        >= config.hotspot_critical_interactions
+        or total_score
+        >= config.hotspot_critical_total_score
+    ):
+        return PI_HOTSPOT_LEVEL_CRITICAL
+
+    if (
+        interaction_count
+        >= config.hotspot_high_interactions
+        or total_score
+        >= config.hotspot_high_total_score
+    ):
+        return PI_HOTSPOT_LEVEL_HIGH
+
+    if (
+        interaction_count
+        >= config.hotspot_minimum_interactions
+        or total_score
+        >= config.hotspot_minimum_total_score
+    ):
+        return PI_HOTSPOT_LEVEL_MODERATE
+
+    return PI_HOTSPOT_LEVEL_LOW
+
+
+# -----------------------------------------------------------------------------
+# 12.18. Identificação de hotspots
+# -----------------------------------------------------------------------------
+
+def identify_pi_hotspots(
+    interactions: Iterable[Any],
+    *,
+    config: Optional[PiGroupingConfig] = None,
+    protein_only: bool = True,
+) -> List[PiHotspot]:
+    """
+    Identify residues with recurrent or high-scoring π interactions.
+    """
+
+    if config is None:
+        config = create_default_pi_grouping_config()
+
+    eligible_interactions = [
+        interaction
+        for interaction in interactions
+        if _pi_group_interaction_is_hotspot_eligible(
+            interaction,
+            config=config,
+        )
+    ]
+
+    groups = group_pi_interactions_by_residue(
+        eligible_interactions,
+        config=config,
+        protein_only=protein_only,
+    )
+
+    hotspots: List[PiHotspot] = []
+
+    for residue_id, group in groups.items():
+        if residue_id == "unknown-residue":
+            continue
+
+        interaction_count = group.interaction_count
+        total_score = group.total_score
+        mean_score = group.mean_score
+
+        qualifies = (
+            interaction_count
+            >= config.hotspot_minimum_interactions
+            or total_score
+            >= config.hotspot_minimum_total_score
+            or (
+                interaction_count > 0
+                and mean_score
+                >= config.hotspot_minimum_mean_score
+            )
+        )
+
+        if not qualifies:
+            continue
+
+        strong_count = sum(
+            1
+            for interaction in group.interactions
+            if _pi_group_strength(
+                interaction
+            )
+            == "strong"
+        )
+
+        moderate_count = sum(
+            1
+            for interaction in group.interactions
+            if _pi_group_strength(
+                interaction
+            )
+            == "moderate"
+        )
+
+        weak_count = sum(
+            1
+            for interaction in group.interactions
+            if _pi_group_strength(
+                interaction
+            )
+            == "weak"
+        )
+
+        hotspot_level = _classify_pi_hotspot_level(
+            interaction_count=interaction_count,
+            total_score=total_score,
+            config=config,
+        )
+
+        chain_id = (
+            group.chain_ids[0]
+            if len(group.chain_ids) == 1
+            else None
+        )
+
+        representative = _pi_group_select_representative(
+            group.interactions
+        )
+
+        hotspot = PiHotspot(
+            hotspot_id=(
+                f"pi-hotspot:"
+                f"{residue_id}"
+            ),
+            hotspot_key=residue_id,
+            hotspot_level=hotspot_level,
+            residue_id=residue_id,
+            chain_id=chain_id,
+            pose_ids=group.pose_ids,
+            ring_ids=group.ring_ids,
+            interaction_count=interaction_count,
+            interaction_types=group.interaction_types,
+            geometric_subtypes=group.geometric_subtypes,
+            total_score=total_score,
+            mean_score=mean_score,
+            maximum_score=group.maximum_score,
+            strong_count=strong_count,
+            moderate_count=moderate_count,
+            weak_count=weak_count,
+            representative_interaction=representative,
+            interactions=list(
+                group.interactions
+            ),
+            metadata={
+                "schema": "pi-hotspot",
+                "schema_version": PI_GROUPING_SCHEMA_VERSION,
+                "atomic_contact_count": group.atomic_contact_count,
+                "geometry_classes": list(
+                    group.geometry_classes
+                ),
+                "strength_classes": list(
+                    group.strength_classes
+                ),
+            },
+        )
+
+        hotspots.append(
+            hotspot
+        )
+
+    level_priority = {
+        PI_HOTSPOT_LEVEL_CRITICAL: 4,
+        PI_HOTSPOT_LEVEL_HIGH: 3,
+        PI_HOTSPOT_LEVEL_MODERATE: 2,
+        PI_HOTSPOT_LEVEL_LOW: 1,
+    }
+
+    hotspots.sort(
+        key=lambda hotspot: (
+            -level_priority[
+                hotspot.hotspot_level
+            ],
+            -hotspot.total_score,
+            -hotspot.interaction_count,
+            hotspot.hotspot_key,
+        )
+    )
+
+    return hotspots
+
+
+# -----------------------------------------------------------------------------
+# 12.19. Anotação das interações com grupos e hotspots
+# -----------------------------------------------------------------------------
+
+def annotate_pi_interaction_groups(
+    interactions: Iterable[Any],
+    *,
+    groups_by_residue: Mapping[str, PiInteractionGroup],
+    groups_by_ring: Mapping[str, PiInteractionGroup],
+    hotspots: Sequence[PiHotspot],
+) -> List[Any]:
+    """
+    Add grouping references to interaction metadata.
+    """
+
+    interaction_list = list(
+        interactions
+    )
+
+    hotspot_by_interaction_id: Dict[
+        str,
+        List[str],
+    ] = defaultdict(list)
+
+    residue_groups_by_interaction_id: Dict[
+        str,
+        List[str],
+    ] = defaultdict(list)
+
+    ring_groups_by_interaction_id: Dict[
+        str,
+        List[str],
+    ] = defaultdict(list)
+
+    for residue_id, group in groups_by_residue.items():
+        for interaction in group.interactions:
+            interaction_id = _pi_group_identifier(
+                interaction,
+                str(id(interaction)),
+            )
+
+            residue_groups_by_interaction_id[
+                interaction_id
+            ].append(
+                residue_id
+            )
+
+    for ring_id, group in groups_by_ring.items():
+        for interaction in group.interactions:
+            interaction_id = _pi_group_identifier(
+                interaction,
+                str(id(interaction)),
+            )
+
+            ring_groups_by_interaction_id[
+                interaction_id
+            ].append(
+                ring_id
+            )
+
+    for hotspot in hotspots:
+        for interaction in hotspot.interactions:
+            interaction_id = _pi_group_identifier(
+                interaction,
+                str(id(interaction)),
+            )
+
+            hotspot_by_interaction_id[
+                interaction_id
+            ].append(
+                hotspot.hotspot_id
+            )
+
+    annotated: List[Any] = []
+
+    for interaction in interaction_list:
+        interaction_id = _pi_group_identifier(
+            interaction,
+            str(id(interaction)),
+        )
+
+        metadata = _pi_group_metadata(
+            interaction
+        )
+
+        metadata["grouping"] = {
+            "residue_groups": sorted(
+                set(
+                    residue_groups_by_interaction_id.get(
+                        interaction_id,
+                        [],
+                    )
+                )
+            ),
+            "ring_groups": sorted(
+                set(
+                    ring_groups_by_interaction_id.get(
+                        interaction_id,
+                        [],
+                    )
+                )
+            ),
+            "hotspots": sorted(
+                set(
+                    hotspot_by_interaction_id.get(
+                        interaction_id,
+                        [],
+                    )
+                )
+            ),
+        }
+
+        annotated.append(
+            _pi_group_update_object(
+                interaction,
+                {
+                    "metadata": metadata,
+                },
+            )
+        )
+
+    return annotated
+
+
+# -----------------------------------------------------------------------------
+# 12.20. Pipeline completo
+# -----------------------------------------------------------------------------
+
+def organize_pi_interactions(
+    interactions: Iterable[Any],
+    *,
+    config: Optional[PiGroupingConfig] = None,
+) -> PiGroupingResult:
+    """
+    Run the complete Section 12 grouping pipeline.
+
+    Processing order
+    ----------------
+    1. merge equivalent interaction records;
+    2. group by residue;
+    3. group by chain;
+    4. group by pose;
+    5. group by aromatic ring;
+    6. group by interaction type;
+    7. identify hotspots;
+    8. annotate interactions with group references.
+    """
+
+    if config is None:
+        config = create_default_pi_grouping_config()
+
+    input_interactions = list(
+        interactions
+    )
+
+    input_count = len(
+        input_interactions
+    )
+
+    merged_interactions, merged_count = (
+        merge_equivalent_pi_interactions(
+            input_interactions,
+            config=config,
+        )
+    )
+
+    groups_by_residue = group_pi_interactions_by_residue(
+        merged_interactions,
+        config=config,
+    )
+
+    groups_by_chain = group_pi_interactions_by_chain(
+        merged_interactions,
+        config=config,
+    )
+
+    groups_by_pose = group_pi_interactions_by_pose(
+        merged_interactions,
+        config=config,
+    )
+
+    groups_by_ring = group_pi_interactions_by_ring(
+        merged_interactions,
+        config=config,
+    )
+
+    groups_by_type = group_pi_interactions_by_type(
+        merged_interactions
+    )
+
+    hotspots = identify_pi_hotspots(
+        merged_interactions,
+        config=config,
+    )
+
+    annotated_interactions = annotate_pi_interaction_groups(
+        merged_interactions,
+        groups_by_residue=groups_by_residue,
+        groups_by_ring=groups_by_ring,
+        hotspots=hotspots,
+    )
+
+    return PiGroupingResult(
+        interactions=annotated_interactions,
+        groups_by_residue=groups_by_residue,
+        groups_by_chain=groups_by_chain,
+        groups_by_pose=groups_by_pose,
+        groups_by_ring=groups_by_ring,
+        groups_by_type=groups_by_type,
+        hotspots=hotspots,
+        input_count=input_count,
+        merged_count=merged_count,
+        retained_count=len(
+            annotated_interactions
+        ),
+        metadata={
+            "schema": "pi-grouping-result",
+            "schema_version": PI_GROUPING_SCHEMA_VERSION,
+            "residue_group_count": len(
+                groups_by_residue
+            ),
+            "chain_group_count": len(
+                groups_by_chain
+            ),
+            "pose_group_count": len(
+                groups_by_pose
+            ),
+            "ring_group_count": len(
+                groups_by_ring
+            ),
+            "interaction_type_group_count": len(
+                groups_by_type
+            ),
+            "hotspot_count": len(
+                hotspots
+            ),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.21. Frequência por pose
+# -----------------------------------------------------------------------------
+
+def calculate_pi_interaction_pose_frequency(
+    interactions: Iterable[Any],
+    *,
+    total_pose_count: Optional[int] = None,
+    config: Optional[PiGroupingConfig] = None,
+) -> Dict[Tuple[str, ...], Dict[str, Any]]:
+    """
+    Calculate how frequently equivalent interactions occur across poses.
+
+    Equivalent interactions are grouped while ignoring pose identity.
+    """
+
+    if config is None:
+        config = create_default_pi_grouping_config()
+
+    frequency_config = replace(
+        config,
+        merge_across_poses=True,
+    )
+
+    buckets: Dict[
+        Tuple[str, ...],
+        List[Any],
+    ] = defaultdict(list)
+
+    observed_pose_ids: Set[str] = set()
+
+    for interaction in interactions:
+        pose_id = _pi_group_pose_id(
+            interaction
+        )
+
+        if pose_id is not None:
+            observed_pose_ids.add(
+                pose_id
+            )
+
+        signature = generate_equivalent_pi_interaction_signature(
+            interaction,
+            config=frequency_config,
+        )
+
+        buckets[
+            signature
+        ].append(
+            interaction
+        )
+
+    denominator = (
+        int(total_pose_count)
+        if total_pose_count is not None
+        else len(observed_pose_ids)
+    )
+
+    if denominator < 0:
+        raise PiGroupingValidationError(
+            "total_pose_count cannot be negative."
+        )
+
+    results: Dict[
+        Tuple[str, ...],
+        Dict[str, Any],
+    ] = {}
+
+    for signature, group_interactions in buckets.items():
+        pose_ids = {
+            pose_id
+            for interaction in group_interactions
+            if (
+                pose_id := _pi_group_pose_id(
+                    interaction
+                )
+            )
+            is not None
+        }
+
+        occurrence_count = len(
+            pose_ids
+        )
+
+        frequency = (
+            occurrence_count / denominator
+            if denominator > 0
+            else 0.0
+        )
+
+        representative = _pi_group_select_representative(
+            group_interactions
+        )
+
+        results[signature] = {
+            "signature": signature,
+            "pose_ids": tuple(
+                sorted(
+                    pose_ids
+                )
+            ),
+            "pose_count": occurrence_count,
+            "total_pose_count": denominator,
+            "frequency": frequency,
+            "frequency_percent": (
+                frequency * 100.0
+            ),
+            "interaction_count": len(
+                group_interactions
+            ),
+            "representative_interaction": representative,
+            "mean_score": (
+                sum(
+                    _pi_group_score(
+                        interaction
+                    )
+                    for interaction in group_interactions
+                )
+                / len(group_interactions)
+            ),
+            "maximum_score": max(
+                _pi_group_score(
+                    interaction
+                )
+                for interaction in group_interactions
+            ),
+        }
+
+    return dict(
+        sorted(
+            results.items(),
+            key=lambda item: (
+                -item[1]["frequency"],
+                -item[1]["maximum_score"],
+                item[0],
+            ),
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.22. Resumos locais
+# -----------------------------------------------------------------------------
+
+def summarize_pi_grouping(
+    result: PiGroupingResult,
+) -> Dict[str, Any]:
+    """
+    Produce a lightweight summary of the grouping result.
+
+    Full statistics are generated in Section 13.
+    """
+
+    hotspot_level_distribution: Dict[str, int] = defaultdict(int)
+
+    for hotspot in result.hotspots:
+        hotspot_level_distribution[
+            hotspot.hotspot_level
+        ] += 1
+
+    strongest_residue = (
+        next(
+            iter(
+                result.groups_by_residue.values()
+            )
+        )
+        if result.groups_by_residue
+        else None
+    )
+
+    strongest_ring = (
+        next(
+            iter(
+                result.groups_by_ring.values()
+            )
+        )
+        if result.groups_by_ring
+        else None
+    )
+
+    return {
+        "input_interactions": result.input_count,
+        "merged_equivalent_records": result.merged_count,
+        "retained_interactions": result.retained_count,
+        "residue_group_count": len(
+            result.groups_by_residue
+        ),
+        "chain_group_count": len(
+            result.groups_by_chain
+        ),
+        "pose_group_count": len(
+            result.groups_by_pose
+        ),
+        "ring_group_count": len(
+            result.groups_by_ring
+        ),
+        "type_group_count": len(
+            result.groups_by_type
+        ),
+        "hotspot_count": len(
+            result.hotspots
+        ),
+        "hotspot_level_distribution": dict(
+            sorted(
+                hotspot_level_distribution.items()
+            )
+        ),
+        "strongest_residue": (
+            None
+            if strongest_residue is None
+            else {
+                "residue_id": strongest_residue.group_key,
+                "interaction_count": (
+                    strongest_residue.interaction_count
+                ),
+                "total_score": strongest_residue.total_score,
+            }
+        ),
+        "strongest_ring": (
+            None
+            if strongest_ring is None
+            else {
+                "ring_id": strongest_ring.group_key,
+                "interaction_count": (
+                    strongest_ring.interaction_count
+                ),
+                "total_score": strongest_ring.total_score,
+            }
+        ),
+    }
+
+# =============================================================================
+# 13. ESTATÍSTICAS E RESUMOS
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 13.1. Constantes
+# -----------------------------------------------------------------------------
+
+PI_STATISTICS_SCHEMA_VERSION: Final[str] = "1.0"
+
+PI_PREDOMINANCE_BY_COUNT: Final[str] = "count"
+PI_PREDOMINANCE_BY_TOTAL_SCORE: Final[str] = "total-score"
+PI_PREDOMINANCE_BY_MEAN_SCORE: Final[str] = "mean-score"
+
+SUPPORTED_PI_PREDOMINANCE_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        PI_PREDOMINANCE_BY_COUNT,
+        PI_PREDOMINANCE_BY_TOTAL_SCORE,
+        PI_PREDOMINANCE_BY_MEAN_SCORE,
+    }
+)
+
+PI_STATISTICS_EPSILON: Final[float] = 1.0e-12
+
+
+# -----------------------------------------------------------------------------
+# 13.2. Exceções
+# -----------------------------------------------------------------------------
+
+class PiStatisticsError(RuntimeError):
+    """
+    Base exception for π-interaction statistics.
+    """
+
+
+class PiStatisticsValidationError(PiStatisticsError):
+    """
+    Raised when statistical input or configuration is invalid.
+    """
+
+
+# -----------------------------------------------------------------------------
+# 13.3. Configuração
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiStatisticsConfig:
+    """
+    Configuration for π-interaction statistics and summaries.
+    """
+
+    enabled: bool = True
+
+    include_rejected: bool = False
+    include_borderline: bool = True
+
+    calculate_multipose_frequency: bool = True
+    total_pose_count: Optional[int] = None
+
+    predominant_interaction_mode: str = (
+        PI_PREDOMINANCE_BY_COUNT
+    )
+
+    normalize_total_score: bool = True
+    normalized_score_scale: float = 100.0
+
+    include_atomic_contact_statistics: bool = True
+    include_component_statistics: bool = True
+    include_per_pose_statistics: bool = True
+    include_per_residue_statistics: bool = True
+    include_per_ring_statistics: bool = True
+    include_per_chain_statistics: bool = True
+    include_per_type_statistics: bool = True
+
+    top_interaction_limit: int = 10
+    top_hotspot_limit: int = 10
+    top_residue_limit: int = 20
+    top_ring_limit: int = 20
+
+    numeric_precision: int = 4
+
+    def __post_init__(self) -> None:
+        self.predominant_interaction_mode = str(
+            self.predominant_interaction_mode
+        ).strip().lower()
+
+        if (
+            self.predominant_interaction_mode
+            not in SUPPORTED_PI_PREDOMINANCE_MODES
+        ):
+            raise PiStatisticsValidationError(
+                "Unsupported predominant_interaction_mode: "
+                f"{self.predominant_interaction_mode!r}."
+            )
+
+        if self.total_pose_count is not None:
+            try:
+                self.total_pose_count = int(
+                    self.total_pose_count
+                )
+
+            except (TypeError, ValueError) as exc:
+                raise PiStatisticsValidationError(
+                    "total_pose_count must be an integer or None."
+                ) from exc
+
+            if self.total_pose_count < 0:
+                raise PiStatisticsValidationError(
+                    "total_pose_count cannot be negative."
+                )
+
+        try:
+            self.normalized_score_scale = float(
+                self.normalized_score_scale
+            )
+
+        except (TypeError, ValueError) as exc:
+            raise PiStatisticsValidationError(
+                "normalized_score_scale must be numeric."
+            ) from exc
+
+        if (
+            not math.isfinite(self.normalized_score_scale)
+            or self.normalized_score_scale <= 0.0
+        ):
+            raise PiStatisticsValidationError(
+                "normalized_score_scale must be finite and positive."
+            )
+
+        integer_fields = (
+            "top_interaction_limit",
+            "top_hotspot_limit",
+            "top_residue_limit",
+            "top_ring_limit",
+            "numeric_precision",
+        )
+
+        for field_name in integer_fields:
+            try:
+                normalized_value = int(
+                    getattr(self, field_name)
+                )
+
+            except (TypeError, ValueError) as exc:
+                raise PiStatisticsValidationError(
+                    f"{field_name} must be an integer."
+                ) from exc
+
+            if normalized_value < 0:
+                raise PiStatisticsValidationError(
+                    f"{field_name} cannot be negative."
+                )
+
+            setattr(
+                self,
+                field_name,
+                normalized_value,
+            )
+
+
+def create_default_pi_statistics_config() -> PiStatisticsConfig:
+    """
+    Return the canonical Section 13 configuration.
+    """
+
+    return PiStatisticsConfig()
+
+
+# -----------------------------------------------------------------------------
+# 13.4. Modelos estatísticos
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiNumericStatistics:
+    """
+    Descriptive statistics for one numeric variable.
+    """
+
+    count: int = 0
+    total: float = 0.0
+
+    mean: Optional[float] = None
+    median: Optional[float] = None
+
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
+
+    standard_deviation: Optional[float] = None
+
+    first_quartile: Optional[float] = None
+    third_quartile: Optional[float] = None
+    interquartile_range: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "count": self.count,
+            "total": self.total,
+            "mean": self.mean,
+            "median": self.median,
+            "minimum": self.minimum,
+            "maximum": self.maximum,
+            "standard_deviation": self.standard_deviation,
+            "first_quartile": self.first_quartile,
+            "third_quartile": self.third_quartile,
+            "interquartile_range": self.interquartile_range,
+        }
+
+
+@dataclass(slots=True)
+class PiInteractionDescriptor:
+    """
+    Lightweight serializable description of one interaction.
+    """
+
+    interaction_id: str
+    interaction_type: str
+    geometric_subtype: str
+
+    geometry_class: str
+    strength_class: str
+
+    score: float
+    rank: Optional[int]
+
+    centroid_distance: Optional[float]
+    minimum_atomic_distance: Optional[float]
+
+    residue_ids: Tuple[str, ...]
+    chain_ids: Tuple[str, ...]
+    ring_ids: Tuple[str, ...]
+    pose_id: Optional[str]
+
+    interaction: Optional[Any] = None
+
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(
+        self,
+        *,
+        include_interaction: bool = False,
+    ) -> Dict[str, Any]:
+        result = {
+            "interaction_id": self.interaction_id,
+            "interaction_type": self.interaction_type,
+            "geometric_subtype": self.geometric_subtype,
+            "geometry_class": self.geometry_class,
+            "strength_class": self.strength_class,
+            "score": self.score,
+            "rank": self.rank,
+            "centroid_distance": self.centroid_distance,
+            "minimum_atomic_distance": self.minimum_atomic_distance,
+            "residue_ids": list(self.residue_ids),
+            "chain_ids": list(self.chain_ids),
+            "ring_ids": list(self.ring_ids),
+            "pose_id": self.pose_id,
+            "metadata": dict(self.metadata),
+        }
+
+        if include_interaction:
+            result["interaction"] = self.interaction
+
+        return result
+
+
+@dataclass(slots=True)
+class PiPredominantInteraction:
+    """
+    Description of the predominant interaction category.
+    """
+
+    interaction_type: str
+    geometric_subtype: Optional[str]
+
+    interaction_count: int
+
+    total_score: float
+    mean_score: float
+    maximum_score: float
+
+    proportion: float
+    selection_mode: str
+
+    representative_interaction: Optional[
+        PiInteractionDescriptor
+    ] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "interaction_type": self.interaction_type,
+            "geometric_subtype": self.geometric_subtype,
+            "interaction_count": self.interaction_count,
+            "total_score": self.total_score,
+            "mean_score": self.mean_score,
+            "maximum_score": self.maximum_score,
+            "proportion": self.proportion,
+            "selection_mode": self.selection_mode,
+            "representative_interaction": (
+                None
+                if self.representative_interaction is None
+                else self.representative_interaction.to_dict()
+            ),
+        }
+
+
+@dataclass(slots=True)
+class PiMultiposeFrequency:
+    """
+    Frequency of one equivalent interaction across multiple poses.
+    """
+
+    signature: Tuple[str, ...]
+    interaction_type: str
+
+    participant_ids: Tuple[str, ...]
+
+    pose_ids: Tuple[str, ...]
+    pose_count: int
+    total_pose_count: int
+
+    frequency: float
+    frequency_percent: float
+
+    interaction_count: int
+
+    total_score: float
+    mean_score: float
+    maximum_score: float
+
+    representative_interaction: Optional[
+        PiInteractionDescriptor
+    ] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "signature": list(self.signature),
+            "interaction_type": self.interaction_type,
+            "participant_ids": list(self.participant_ids),
+            "pose_ids": list(self.pose_ids),
+            "pose_count": self.pose_count,
+            "total_pose_count": self.total_pose_count,
+            "frequency": self.frequency,
+            "frequency_percent": self.frequency_percent,
+            "interaction_count": self.interaction_count,
+            "total_score": self.total_score,
+            "mean_score": self.mean_score,
+            "maximum_score": self.maximum_score,
+            "representative_interaction": (
+                None
+                if self.representative_interaction is None
+                else self.representative_interaction.to_dict()
+            ),
+        }
+
+
+@dataclass(slots=True)
+class PiStatisticsReport:
+    """
+    Complete statistical report for π interactions.
+    """
+
+    total_interactions: int
+    total_atomic_contacts: int
+
+    total_by_type: Dict[str, int]
+    total_by_geometric_subtype: Dict[str, int]
+
+    geometry_class_distribution: Dict[str, int]
+    strength_distribution: Dict[str, int]
+    chain_distribution: Dict[str, int]
+    pose_distribution: Dict[str, int]
+
+    residue_ids: Tuple[str, ...]
+    chain_ids: Tuple[str, ...]
+    pose_ids: Tuple[str, ...]
+    aromatic_system_ids: Tuple[str, ...]
+    protein_ring_ids: Tuple[str, ...]
+    ligand_ring_ids: Tuple[str, ...]
+
+    residue_count: int
+    chain_count: int
+    pose_count: int
+    aromatic_system_count: int
+    protein_ring_count: int
+    ligand_ring_count: int
+
+    centroid_distance_statistics: PiNumericStatistics
+    minimum_atomic_distance_statistics: PiNumericStatistics
+    angle_statistics: PiNumericStatistics
+    offset_statistics: PiNumericStatistics
+    score_statistics: PiNumericStatistics
+
+    atomic_contact_distance_statistics: Optional[
+        PiNumericStatistics
+    ]
+
+    total_score: float
+    mean_score: float
+    normalized_total_score: float
+
+    best_interaction: Optional[
+        PiInteractionDescriptor
+    ]
+
+    predominant_interaction: Optional[
+        PiPredominantInteraction
+    ]
+
+    hotspots: List[Any]
+    multipose_frequency: List[PiMultiposeFrequency]
+
+    statistics_by_type: Dict[str, Dict[str, Any]]
+    statistics_by_residue: Dict[str, Dict[str, Any]]
+    statistics_by_ring: Dict[str, Dict[str, Any]]
+    statistics_by_chain: Dict[str, Dict[str, Any]]
+    statistics_by_pose: Dict[str, Dict[str, Any]]
+
+    top_interactions: List[
+        PiInteractionDescriptor
+    ]
+
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(
+        self,
+        *,
+        include_interactions: bool = False,
+    ) -> Dict[str, Any]:
+        return {
+            "total_interactions": self.total_interactions,
+            "total_atomic_contacts": self.total_atomic_contacts,
+            "total_by_type": dict(self.total_by_type),
+            "total_by_geometric_subtype": dict(
+                self.total_by_geometric_subtype
+            ),
+            "geometry_class_distribution": dict(
+                self.geometry_class_distribution
+            ),
+            "strength_distribution": dict(
+                self.strength_distribution
+            ),
+            "chain_distribution": dict(
+                self.chain_distribution
+            ),
+            "pose_distribution": dict(
+                self.pose_distribution
+            ),
+            "residue_ids": list(self.residue_ids),
+            "chain_ids": list(self.chain_ids),
+            "pose_ids": list(self.pose_ids),
+            "aromatic_system_ids": list(
+                self.aromatic_system_ids
+            ),
+            "protein_ring_ids": list(
+                self.protein_ring_ids
+            ),
+            "ligand_ring_ids": list(
+                self.ligand_ring_ids
+            ),
+            "residue_count": self.residue_count,
+            "chain_count": self.chain_count,
+            "pose_count": self.pose_count,
+            "aromatic_system_count": (
+                self.aromatic_system_count
+            ),
+            "protein_ring_count": self.protein_ring_count,
+            "ligand_ring_count": self.ligand_ring_count,
+            "centroid_distance_statistics": (
+                self.centroid_distance_statistics.to_dict()
+            ),
+            "minimum_atomic_distance_statistics": (
+                self.minimum_atomic_distance_statistics.to_dict()
+            ),
+            "angle_statistics": (
+                self.angle_statistics.to_dict()
+            ),
+            "offset_statistics": (
+                self.offset_statistics.to_dict()
+            ),
+            "score_statistics": (
+                self.score_statistics.to_dict()
+            ),
+            "atomic_contact_distance_statistics": (
+                None
+                if self.atomic_contact_distance_statistics is None
+                else (
+                    self.atomic_contact_distance_statistics.to_dict()
+                )
+            ),
+            "total_score": self.total_score,
+            "mean_score": self.mean_score,
+            "normalized_total_score": (
+                self.normalized_total_score
+            ),
+            "best_interaction": (
+                None
+                if self.best_interaction is None
+                else self.best_interaction.to_dict(
+                    include_interaction=include_interactions
+                )
+            ),
+            "predominant_interaction": (
+                None
+                if self.predominant_interaction is None
+                else self.predominant_interaction.to_dict()
+            ),
+            "hotspots": [
+                (
+                    hotspot.to_dict()
+                    if hasattr(hotspot, "to_dict")
+                    else hotspot
+                )
+                for hotspot in self.hotspots
+            ],
+            "multipose_frequency": [
+                result.to_dict()
+                for result in self.multipose_frequency
+            ],
+            "statistics_by_type": dict(
+                self.statistics_by_type
+            ),
+            "statistics_by_residue": dict(
+                self.statistics_by_residue
+            ),
+            "statistics_by_ring": dict(
+                self.statistics_by_ring
+            ),
+            "statistics_by_chain": dict(
+                self.statistics_by_chain
+            ),
+            "statistics_by_pose": dict(
+                self.statistics_by_pose
+            ),
+            "top_interactions": [
+                descriptor.to_dict(
+                    include_interaction=include_interactions
+                )
+                for descriptor in self.top_interactions
+            ],
+            "metadata": dict(self.metadata),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 13.5. Acesso seguro
+# -----------------------------------------------------------------------------
+
+def _pi_statistics_get(
+    object_: Any,
+    names: Sequence[str],
+    default: Any = None,
+) -> Any:
+    """
+    Return the first existing non-None attribute or mapping value.
+    """
+
+    if object_ is None:
+        return default
+
+    for name in names:
+        if isinstance(object_, Mapping):
+            value = object_.get(name)
+
+        else:
+            value = getattr(
+                object_,
+                name,
+                None,
+            )
+
+        if value is not None:
+            return value
+
+    return default
+
+
+def _pi_statistics_float(
+    value: Any,
+    default: Optional[float] = None,
+) -> Optional[float]:
+    if value is None:
+        return default
+
+    try:
+        normalized_value = float(
+            value
+        )
+
+    except (TypeError, ValueError):
+        return default
+
+    if not math.isfinite(
+        normalized_value
+    ):
+        return default
+
+    return normalized_value
+
+
+def _pi_statistics_identifier(
+    object_: Any,
+    fallback: str,
+) -> str:
+    value = _pi_statistics_get(
+        object_,
+        (
+            "interaction_id",
+            "group_id",
+            "ring_id",
+            "system_id",
+            "aromatic_system_id",
+            "amide_id",
+            "id",
+            "identifier",
+        ),
+        fallback,
+    )
+
+    return str(
+        value
+    )
+
+
+def _pi_statistics_interaction_type(
+    interaction: Any,
+) -> str:
+    value = _pi_statistics_get(
+        interaction,
+        (
+            "interaction_type",
+            "type",
+            "category",
+        ),
+        "unknown",
+    )
+
+    normalized = str(
+        value
+    ).strip().lower()
+
+    aliases = {
+        "pi_pi": "pi-pi",
+        "pi–pi": "pi-pi",
+        "π–π": "pi-pi",
+        "cation_pi": "cation-pi",
+        "cation–π": "cation-pi",
+        "anion_pi": "anion-pi",
+        "anion–π": "anion-pi",
+        "amide_pi": "amide-pi",
+        "amide–π": "amide-pi",
+    }
+
+    return aliases.get(
+        normalized,
+        normalized,
+    )
+
+
+def _pi_statistics_subtype(
+    interaction: Any,
+) -> str:
+    value = _pi_statistics_get(
+        interaction,
+        (
+            "geometry_subtype",
+            "geometry_class",
+            "subtype",
+            "geometry",
+        ),
+        "unclassified",
+    )
+
+    return str(
+        value
+    ).strip().lower()
+
+
+def _pi_statistics_geometry_class(
+    interaction: Any,
+) -> str:
+    value = _pi_statistics_get(
+        interaction,
+        (
+            "global_geometry_class",
+            "geometry_quality",
+        ),
+        "unclassified",
+    )
+
+    return str(
+        value
+    ).strip().lower()
+
+
+def _pi_statistics_strength(
+    interaction: Any,
+) -> str:
+    value = _pi_statistics_get(
+        interaction,
+        (
+            "strength_class",
+            "strength",
+        ),
+        "weak",
+    )
+
+    return str(
+        value
+    ).strip().lower()
+
+
+def _pi_statistics_score(
+    interaction: Any,
+) -> float:
+    value = _pi_statistics_float(
+        _pi_statistics_get(
+            interaction,
+            (
+                "normalized_score",
+                "score",
+                "raw_score",
+                "geometry_confidence",
+            ),
+        ),
+        0.0,
+    )
+
+    return max(
+        0.0,
+        float(value or 0.0),
+    )
+
+
+def _pi_statistics_pose_id(
+    interaction: Any,
+) -> Optional[str]:
+    value = _pi_statistics_get(
+        interaction,
+        (
+            "pose_id",
+            "pose",
+            "pose_index",
+            "model_id",
+            "model_index",
+            "state_id",
+            "state_index",
+        ),
+    )
+
+    if value is not None:
+        return str(
+            value
+        )
+
+    metadata = _pi_statistics_get(
+        interaction,
+        ("metadata",),
+        {},
+    )
+
+    if isinstance(metadata, Mapping):
+        for key in (
+            "pose_id",
+            "pose",
+            "pose_index",
+            "model_id",
+            "model_index",
+            "state_id",
+            "state_index",
+        ):
+            if metadata.get(key) is not None:
+                return str(
+                    metadata[key]
+                )
+
+    if "_pi_group_pose_id" in globals():
+        try:
+            return _pi_group_pose_id(
+                interaction
+            )
+
+        except Exception:
+            pass
+
+    return None
+
+
+def _pi_statistics_atomic_contacts(
+    interaction: Any,
+) -> Tuple[Any, ...]:
+    contacts = _pi_statistics_get(
+        interaction,
+        (
+            "atomic_contacts",
+            "contacts",
+        ),
+        (),
+    )
+
+    try:
+        return tuple(
+            contacts
+        )
+
+    except TypeError:
+        return ()
+
+
+def _pi_statistics_participants(
+    interaction: Any,
+) -> Tuple[Any, Any]:
+    if "_pi_group_participants" in globals():
+        try:
+            return _pi_group_participants(
+                interaction
+            )
+
+        except Exception:
+            pass
+
+    interaction_type = _pi_statistics_interaction_type(
+        interaction
+    )
+
+    if interaction_type == "pi-pi":
+        return (
+            _pi_statistics_get(
+                interaction,
+                (
+                    "ring_1",
+                    "aromatic_system_1",
+                ),
+            ),
+            _pi_statistics_get(
+                interaction,
+                (
+                    "ring_2",
+                    "aromatic_system_2",
+                ),
+            ),
+        )
+
+    ring = _pi_statistics_get(
+        interaction,
+        (
+            "aromatic_system",
+            "ring",
+            "ring_1",
+        ),
+    )
+
+    if interaction_type == "cation-pi":
+        participant_2 = _pi_statistics_get(
+            interaction,
+            (
+                "cation_group",
+                "charged_group",
+            ),
+        )
+
+    elif interaction_type == "anion-pi":
+        participant_2 = _pi_statistics_get(
+            interaction,
+            (
+                "anion_group",
+                "charged_group",
+            ),
+        )
+
+    elif interaction_type == "amide-pi":
+        participant_2 = _pi_statistics_get(
+            interaction,
+            ("amide_group",),
+        )
+
+    else:
+        participant_2 = None
+
+    return (
+        ring,
+        participant_2,
+    )
+
+
+def _pi_statistics_residue_id(
+    object_: Any,
+) -> Optional[str]:
+    if "_pi_group_residue_id" in globals():
+        try:
+            return _pi_group_residue_id(
+                object_
+            )
+
+        except Exception:
+            pass
+
+    if object_ is None:
+        return None
+
+    value = _pi_statistics_get(
+        object_,
+        (
+            "residue_id",
+            "residue_key",
+        ),
+    )
+
+    if value is not None:
+        return str(
+            value
+        )
+
+    chain_id = _pi_statistics_get(
+        object_,
+        (
+            "chain_id",
+            "chain",
+        ),
+        "",
+    )
+
+    residue_name = _pi_statistics_get(
+        object_,
+        (
+            "residue_name",
+            "resname",
+        ),
+        "",
+    )
+
+    residue_number = _pi_statistics_get(
+        object_,
+        (
+            "residue_number",
+            "residue_index",
+            "resid",
+        ),
+        "",
+    )
+
+    if not any(
+        value not in (
+            None,
+            "",
+        )
+        for value in (
+            chain_id,
+            residue_name,
+            residue_number,
+        )
+    ):
+        return None
+
+    return (
+        f"{chain_id}:"
+        f"{residue_name}:"
+        f"{residue_number}"
+    )
+
+
+def _pi_statistics_chain_id(
+    object_: Any,
+) -> Optional[str]:
+    if "_pi_group_chain_id" in globals():
+        try:
+            return _pi_group_chain_id(
+                object_
+            )
+
+        except Exception:
+            pass
+
+    value = _pi_statistics_get(
+        object_,
+        (
+            "chain_id",
+            "chain",
+        ),
+    )
+
+    return (
+        None
+        if value is None
+        else str(value)
+    )
+
+
+def _pi_statistics_participant_role(
+    object_: Any,
+) -> str:
+    value = _pi_statistics_get(
+        object_,
+        (
+            "participant_type",
+            "source_type",
+            "molecule_type",
+            "role",
+        ),
+        "unknown",
+    )
+
+    normalized = str(
+        value
+    ).strip().lower()
+
+    if normalized in {
+        "protein",
+        "receptor",
+        "target",
+        "macromolecule",
+        "protein-ring",
+        "protein_ring",
+    }:
+        return "protein"
+
+    if normalized in {
+        "ligand",
+        "compound",
+        "small-molecule",
+        "small_molecule",
+        "drug",
+        "pose",
+        "ligand-ring",
+        "ligand_ring",
+    }:
+        return "ligand"
+
+    return normalized
+
+
+# -----------------------------------------------------------------------------
+# 13.6. Estatísticas numéricas
+# -----------------------------------------------------------------------------
+
+def _pi_statistics_quantile(
+    sorted_values: Sequence[float],
+    probability: float,
+) -> Optional[float]:
+    """
+    Calculate a linearly interpolated quantile.
+    """
+
+    if not sorted_values:
+        return None
+
+    if len(sorted_values) == 1:
+        return float(
+            sorted_values[0]
+        )
+
+    probability = max(
+        0.0,
+        min(1.0, float(probability)),
+    )
+
+    position = (
+        len(sorted_values) - 1
+    ) * probability
+
+    lower_index = int(
+        math.floor(position)
+    )
+
+    upper_index = int(
+        math.ceil(position)
+    )
+
+    if lower_index == upper_index:
+        return float(
+            sorted_values[lower_index]
+        )
+
+    fraction = (
+        position - lower_index
+    )
+
+    lower_value = float(
+        sorted_values[lower_index]
+    )
+
+    upper_value = float(
+        sorted_values[upper_index]
+    )
+
+    return (
+        lower_value
+        + fraction
+        * (
+            upper_value
+            - lower_value
+        )
+    )
+
+
+def calculate_pi_numeric_statistics(
+    values: Iterable[Any],
+    *,
+    precision: Optional[int] = None,
+) -> PiNumericStatistics:
+    """
+    Calculate descriptive statistics for finite numeric values.
+    """
+
+    normalized_values: List[float] = []
+
+    for value in values:
+        normalized_value = _pi_statistics_float(
+            value
+        )
+
+        if normalized_value is not None:
+            normalized_values.append(
+                normalized_value
+            )
+
+    if not normalized_values:
+        return PiNumericStatistics()
+
+    normalized_values.sort()
+
+    count = len(
+        normalized_values
+    )
+
+    total = sum(
+        normalized_values
+    )
+
+    mean = total / count
+
+    median = _pi_statistics_quantile(
+        normalized_values,
+        0.5,
+    )
+
+    first_quartile = _pi_statistics_quantile(
+        normalized_values,
+        0.25,
+    )
+
+    third_quartile = _pi_statistics_quantile(
+        normalized_values,
+        0.75,
+    )
+
+    variance = (
+        sum(
+            (
+                value - mean
+            ) ** 2
+            for value in normalized_values
+        )
+        / count
+    )
+
+    standard_deviation = math.sqrt(
+        max(0.0, variance)
+    )
+
+    interquartile_range = (
+        None
+        if (
+            first_quartile is None
+            or third_quartile is None
+        )
+        else (
+            third_quartile
+            - first_quartile
+        )
+    )
+
+    result = PiNumericStatistics(
+        count=count,
+        total=total,
+        mean=mean,
+        median=median,
+        minimum=min(normalized_values),
+        maximum=max(normalized_values),
+        standard_deviation=standard_deviation,
+        first_quartile=first_quartile,
+        third_quartile=third_quartile,
+        interquartile_range=interquartile_range,
+    )
+
+    if precision is not None:
+        return _round_pi_numeric_statistics(
+            result,
+            precision=precision,
+        )
+
+    return result
+
+
+def _round_pi_numeric_statistics(
+    statistics: PiNumericStatistics,
+    *,
+    precision: int,
+) -> PiNumericStatistics:
+    def round_optional(
+        value: Optional[float],
+    ) -> Optional[float]:
+        return (
+            None
+            if value is None
+            else round(
+                value,
+                precision,
+            )
+        )
+
+    return PiNumericStatistics(
+        count=statistics.count,
+        total=round(
+            statistics.total,
+            precision,
+        ),
+        mean=round_optional(
+            statistics.mean
+        ),
+        median=round_optional(
+            statistics.median
+        ),
+        minimum=round_optional(
+            statistics.minimum
+        ),
+        maximum=round_optional(
+            statistics.maximum
+        ),
+        standard_deviation=round_optional(
+            statistics.standard_deviation
+        ),
+        first_quartile=round_optional(
+            statistics.first_quartile
+        ),
+        third_quartile=round_optional(
+            statistics.third_quartile
+        ),
+        interquartile_range=round_optional(
+            statistics.interquartile_range
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 13.7. Filtragem estatística
+# -----------------------------------------------------------------------------
+
+def _pi_statistics_interaction_is_eligible(
+    interaction: Any,
+    *,
+    config: PiStatisticsConfig,
+) -> bool:
+    geometry_class = _pi_statistics_geometry_class(
+        interaction
+    )
+
+    subtype = _pi_statistics_subtype(
+        interaction
+    )
+
+    if (
+        geometry_class == "rejected"
+        or subtype == "rejected"
+    ):
+        return config.include_rejected
+
+    if (
+        geometry_class == "borderline"
+        or "borderline" in subtype
+    ):
+        return config.include_borderline
+
+    return True
+
+
+def filter_pi_interactions_for_statistics(
+    interactions: Iterable[Any],
+    *,
+    config: Optional[PiStatisticsConfig] = None,
+) -> List[Any]:
+    """
+    Filter interactions according to statistical inclusion rules.
+    """
+
+    if config is None:
+        config = create_default_pi_statistics_config()
+
+    return [
+        interaction
+        for interaction in interactions
+        if _pi_statistics_interaction_is_eligible(
+            interaction,
+            config=config,
+        )
+    ]
+
+
+# -----------------------------------------------------------------------------
+# 13.8. Descritor de interação
+# -----------------------------------------------------------------------------
+
+def describe_pi_interaction(
+    interaction: Any,
+) -> PiInteractionDescriptor:
+    """
+    Convert an interaction into a lightweight report descriptor.
+    """
+
+    participant_1, participant_2 = (
+        _pi_statistics_participants(
+            interaction
+        )
+    )
+
+    residue_ids = tuple(
+        sorted(
+            {
+                residue_id
+                for participant in (
+                    participant_1,
+                    participant_2,
+                )
+                if (
+                    residue_id
+                    := _pi_statistics_residue_id(
+                        participant
+                    )
+                )
+                is not None
+            }
+        )
+    )
+
+    chain_ids = tuple(
+        sorted(
+            {
+                chain_id
+                for participant in (
+                    participant_1,
+                    participant_2,
+                )
+                if (
+                    chain_id
+                    := _pi_statistics_chain_id(
+                        participant
+                    )
+                )
+                is not None
+            }
+        )
+    )
+
+    ring_ids: List[str] = []
+
+    if participant_1 is not None:
+        ring_ids.append(
+            _pi_statistics_identifier(
+                participant_1,
+                "unknown-participant-1",
+            )
+        )
+
+    if (
+        _pi_statistics_interaction_type(
+            interaction
+        )
+        == "pi-pi"
+        and participant_2 is not None
+    ):
+        ring_ids.append(
+            _pi_statistics_identifier(
+                participant_2,
+                "unknown-participant-2",
+            )
+        )
+
+    rank_value = _pi_statistics_get(
+        interaction,
+        ("rank",),
+    )
+
+    try:
+        rank = (
+            None
+            if rank_value is None
+            else int(rank_value)
+        )
+
+    except (TypeError, ValueError):
+        rank = None
+
+    return PiInteractionDescriptor(
+        interaction_id=_pi_statistics_identifier(
+            interaction,
+            str(id(interaction)),
+        ),
+        interaction_type=(
+            _pi_statistics_interaction_type(
+                interaction
+            )
+        ),
+        geometric_subtype=(
+            _pi_statistics_subtype(
+                interaction
+            )
+        ),
+        geometry_class=(
+            _pi_statistics_geometry_class(
+                interaction
+            )
+        ),
+        strength_class=(
+            _pi_statistics_strength(
+                interaction
+            )
+        ),
+        score=_pi_statistics_score(
+            interaction
+        ),
+        rank=rank,
+        centroid_distance=_pi_statistics_float(
+            _pi_statistics_get(
+                interaction,
+                ("centroid_distance",),
+            )
+        ),
+        minimum_atomic_distance=_pi_statistics_float(
+            _pi_statistics_get(
+                interaction,
+                ("minimum_atomic_distance",),
+            )
+        ),
+        residue_ids=residue_ids,
+        chain_ids=chain_ids,
+        ring_ids=tuple(
+            sorted(
+                set(ring_ids)
+            )
+        ),
+        pose_id=_pi_statistics_pose_id(
+            interaction
+        ),
+        interaction=interaction,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 13.9. Seleção da melhor interação
+# -----------------------------------------------------------------------------
+
+def identify_best_pi_interaction(
+    interactions: Iterable[Any],
+) -> Optional[PiInteractionDescriptor]:
+    """
+    Return the highest-priority interaction.
+    """
+
+    interaction_list = list(
+        interactions
+    )
+
+    if not interaction_list:
+        return None
+
+    geometry_priority = {
+        "optimal": 5,
+        "favorable": 4,
+        "weak": 3,
+        "borderline": 2,
+        "rejected": 1,
+        "unclassified": 0,
+    }
+
+    strength_priority = {
+        "strong": 3,
+        "moderate": 2,
+        "weak": 1,
+    }
+
+    best = max(
+        interaction_list,
+        key=lambda interaction: (
+            _pi_statistics_score(
+                interaction
+            ),
+            geometry_priority.get(
+                _pi_statistics_geometry_class(
+                    interaction
+                ),
+                0,
+            ),
+            strength_priority.get(
+                _pi_statistics_strength(
+                    interaction
+                ),
+                0,
+            ),
+            (
+                _pi_statistics_float(
+                    _pi_statistics_get(
+                        interaction,
+                        (
+                            "geometry_confidence",
+                            "confidence",
+                        ),
+                    ),
+                    0.0,
+                )
+                or 0.0
+            ),
+            -(
+                _pi_statistics_float(
+                    _pi_statistics_get(
+                        interaction,
+                        ("centroid_distance",),
+                    ),
+                    math.inf,
+                )
+                or math.inf
+            ),
+        ),
+    )
+
+    return describe_pi_interaction(
+        best
+    )
+
+
+# -----------------------------------------------------------------------------
+# 13.10. Interação predominante
+# -----------------------------------------------------------------------------
+
+def identify_predominant_pi_interaction(
+    interactions: Iterable[Any],
+    *,
+    mode: str = PI_PREDOMINANCE_BY_COUNT,
+    include_subtype: bool = False,
+) -> Optional[PiPredominantInteraction]:
+    """
+    Identify the predominant interaction category.
+
+    Parameters
+    ----------
+    mode:
+        ``count``, ``total-score`` or ``mean-score``.
+    include_subtype:
+        When True, each interaction type/geometric subtype combination is
+        evaluated independently.
+    """
+
+    mode = str(
+        mode
+    ).strip().lower()
+
+    if mode not in SUPPORTED_PI_PREDOMINANCE_MODES:
+        raise PiStatisticsValidationError(
+            f"Unsupported predominance mode: {mode!r}."
+        )
+
+    interaction_list = list(
+        interactions
+    )
+
+    if not interaction_list:
+        return None
+
+    buckets: Dict[
+        Tuple[str, Optional[str]],
+        List[Any],
+    ] = defaultdict(list)
+
+    for interaction in interaction_list:
+        interaction_type = (
+            _pi_statistics_interaction_type(
+                interaction
+            )
+        )
+
+        subtype = (
+            _pi_statistics_subtype(
+                interaction
+            )
+            if include_subtype
+            else None
+        )
+
+        buckets[
+            (
+                interaction_type,
+                subtype,
+            )
+        ].append(
+            interaction
+        )
+
+    summaries: List[
+        Tuple[
+            Tuple[str, Optional[str]],
+            List[Any],
+            int,
+            float,
+            float,
+            float,
+        ]
+    ] = []
+
+    for key, group_interactions in buckets.items():
+        scores = [
+            _pi_statistics_score(
+                interaction
+            )
+            for interaction in group_interactions
+        ]
+
+        interaction_count = len(
+            group_interactions
+        )
+
+        total_score = sum(
+            scores
+        )
+
+        mean_score = (
+            total_score / interaction_count
+            if interaction_count
+            else 0.0
+        )
+
+        maximum_score = (
+            max(scores)
+            if scores
+            else 0.0
+        )
+
+        summaries.append(
+            (
+                key,
+                group_interactions,
+                interaction_count,
+                total_score,
+                mean_score,
+                maximum_score,
+            )
+        )
+
+    if mode == PI_PREDOMINANCE_BY_COUNT:
+        selected = max(
+            summaries,
+            key=lambda item: (
+                item[2],
+                item[3],
+                item[4],
+                item[5],
+            ),
+        )
+
+    elif mode == PI_PREDOMINANCE_BY_TOTAL_SCORE:
+        selected = max(
+            summaries,
+            key=lambda item: (
+                item[3],
+                item[2],
+                item[4],
+                item[5],
+            ),
+        )
+
+    else:
+        selected = max(
+            summaries,
+            key=lambda item: (
+                item[4],
+                item[3],
+                item[2],
+                item[5],
+            ),
+        )
+
+    (
+        selected_key,
+        selected_interactions,
+        interaction_count,
+        total_score,
+        mean_score,
+        maximum_score,
+    ) = selected
+
+    representative = identify_best_pi_interaction(
+        selected_interactions
+    )
+
+    return PiPredominantInteraction(
+        interaction_type=selected_key[0],
+        geometric_subtype=selected_key[1],
+        interaction_count=interaction_count,
+        total_score=total_score,
+        mean_score=mean_score,
+        maximum_score=maximum_score,
+        proportion=(
+            interaction_count
+            / len(interaction_list)
+        ),
+        selection_mode=mode,
+        representative_interaction=representative,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 13.11. Estatísticas de um subconjunto
+# -----------------------------------------------------------------------------
+
+def summarize_pi_interaction_subset(
+    interactions: Iterable[Any],
+    *,
+    precision: int = 4,
+) -> Dict[str, Any]:
+    """
+    Summarize an arbitrary subset of π interactions.
+    """
+
+    interaction_list = list(
+        interactions
+    )
+
+    scores = [
+        _pi_statistics_score(
+            interaction
+        )
+        for interaction in interaction_list
+    ]
+
+    centroid_distances = [
+        value
+        for interaction in interaction_list
+        if (
+            value := _pi_statistics_float(
+                _pi_statistics_get(
+                    interaction,
+                    ("centroid_distance",),
+                )
+            )
+        )
+        is not None
+    ]
+
+    atomic_distances = [
+        value
+        for interaction in interaction_list
+        if (
+            value := _pi_statistics_float(
+                _pi_statistics_get(
+                    interaction,
+                    ("minimum_atomic_distance",),
+                )
+            )
+        )
+        is not None
+    ]
+
+    type_distribution: Dict[str, int] = defaultdict(int)
+    subtype_distribution: Dict[str, int] = defaultdict(int)
+    strength_distribution: Dict[str, int] = defaultdict(int)
+
+    for interaction in interaction_list:
+        type_distribution[
+            _pi_statistics_interaction_type(
+                interaction
+            )
+        ] += 1
+
+        subtype_distribution[
+            _pi_statistics_subtype(
+                interaction
+            )
+        ] += 1
+
+        strength_distribution[
+            _pi_statistics_strength(
+                interaction
+            )
+        ] += 1
+
+    best_interaction = identify_best_pi_interaction(
+        interaction_list
+    )
+
+    return {
+        "interaction_count": len(
+            interaction_list
+        ),
+        "atomic_contact_count": sum(
+            len(
+                _pi_statistics_atomic_contacts(
+                    interaction
+                )
+            )
+            for interaction in interaction_list
+        ),
+        "total_score": round(
+            sum(scores),
+            precision,
+        ),
+        "mean_score": round(
+            (
+                sum(scores)
+                / len(scores)
+            )
+            if scores
+            else 0.0,
+            precision,
+        ),
+        "maximum_score": round(
+            max(scores)
+            if scores
+            else 0.0,
+            precision,
+        ),
+        "minimum_score": round(
+            min(scores)
+            if scores
+            else 0.0,
+            precision,
+        ),
+        "type_distribution": dict(
+            sorted(
+                type_distribution.items()
+            )
+        ),
+        "subtype_distribution": dict(
+            sorted(
+                subtype_distribution.items()
+            )
+        ),
+        "strength_distribution": dict(
+            sorted(
+                strength_distribution.items()
+            )
+        ),
+        "centroid_distance": (
+            calculate_pi_numeric_statistics(
+                centroid_distances,
+                precision=precision,
+            ).to_dict()
+        ),
+        "minimum_atomic_distance": (
+            calculate_pi_numeric_statistics(
+                atomic_distances,
+                precision=precision,
+            ).to_dict()
+        ),
+        "best_interaction": (
+            None
+            if best_interaction is None
+            else best_interaction.to_dict()
+        ),
+    }
+
+
+# -----------------------------------------------------------------------------
+# 13.12. Estatísticas por grupo
+# -----------------------------------------------------------------------------
+
+def _pi_statistics_group_interactions(
+    interactions: Iterable[Any],
+    *,
+    key_extractor: Callable[[Any], Iterable[str]],
+    include_unknown: bool,
+    unknown_key: str,
+    precision: int,
+) -> Dict[str, Dict[str, Any]]:
+    buckets: Dict[
+        str,
+        List[Any],
+    ] = defaultdict(list)
+
+    for interaction in interactions:
+        keys = tuple(
+            str(key)
+            for key in key_extractor(
+                interaction
+            )
+            if key not in (
+                None,
+                "",
+            )
+        )
+
+        if not keys:
+            if not include_unknown:
+                continue
+
+            keys = (
+                unknown_key,
+            )
+
+        for key in set(keys):
+            buckets[key].append(
+                interaction
+            )
+
+    summarized = {
+        key: summarize_pi_interaction_subset(
+            group_interactions,
+            precision=precision,
+        )
+        for key, group_interactions in buckets.items()
+    }
+
+    return dict(
+        sorted(
+            summarized.items(),
+            key=lambda item: (
+                -item[1]["total_score"],
+                -item[1]["interaction_count"],
+                item[0],
+            ),
+        )
+    )
+
+
+def calculate_pi_statistics_by_type(
+    interactions: Iterable[Any],
+    *,
+    precision: int = 4,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Calculate statistics for each canonical interaction type.
+    """
+
+    return _pi_statistics_group_interactions(
+        interactions,
+        key_extractor=lambda interaction: (
+            _pi_statistics_interaction_type(
+                interaction
+            ),
+        ),
+        include_unknown=True,
+        unknown_key="unknown",
+        precision=precision,
+    )
+
+
+def calculate_pi_statistics_by_residue(
+    interactions: Iterable[Any],
+    *,
+    precision: int = 4,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Calculate statistics for each involved residue.
+    """
+
+    def extract_residues(
+        interaction: Any,
+    ) -> Iterable[str]:
+        participant_1, participant_2 = (
+            _pi_statistics_participants(
+                interaction
+            )
+        )
+
+        return tuple(
+            sorted(
+                {
+                    residue_id
+                    for participant in (
+                        participant_1,
+                        participant_2,
+                    )
+                    if (
+                        residue_id
+                        := _pi_statistics_residue_id(
+                            participant
+                        )
+                    )
+                    is not None
+                }
+            )
+        )
+
+    return _pi_statistics_group_interactions(
+        interactions,
+        key_extractor=extract_residues,
+        include_unknown=False,
+        unknown_key="unknown-residue",
+        precision=precision,
+    )
+
+
+def calculate_pi_statistics_by_chain(
+    interactions: Iterable[Any],
+    *,
+    precision: int = 4,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Calculate statistics for each involved chain.
+    """
+
+    def extract_chains(
+        interaction: Any,
+    ) -> Iterable[str]:
+        participant_1, participant_2 = (
+            _pi_statistics_participants(
+                interaction
+            )
+        )
+
+        return tuple(
+            sorted(
+                {
+                    chain_id
+                    for participant in (
+                        participant_1,
+                        participant_2,
+                    )
+                    if (
+                        chain_id
+                        := _pi_statistics_chain_id(
+                            participant
+                        )
+                    )
+                    is not None
+                }
+            )
+        )
+
+    return _pi_statistics_group_interactions(
+        interactions,
+        key_extractor=extract_chains,
+        include_unknown=True,
+        unknown_key="unknown-chain",
+        precision=precision,
+    )
+
+
+def calculate_pi_statistics_by_pose(
+    interactions: Iterable[Any],
+    *,
+    precision: int = 4,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Calculate statistics for each pose.
+    """
+
+    return _pi_statistics_group_interactions(
+        interactions,
+        key_extractor=lambda interaction: (
+            (
+                _pi_statistics_pose_id(
+                    interaction
+                ),
+            )
+            if _pi_statistics_pose_id(
+                interaction
+            )
+            is not None
+            else ()
+        ),
+        include_unknown=True,
+        unknown_key="unknown-pose",
+        precision=precision,
+    )
+
+
+def calculate_pi_statistics_by_ring(
+    interactions: Iterable[Any],
+    *,
+    precision: int = 4,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Calculate statistics for each aromatic system.
+    """
+
+    def extract_rings(
+        interaction: Any,
+    ) -> Iterable[str]:
+        participant_1, participant_2 = (
+            _pi_statistics_participants(
+                interaction
+            )
+        )
+
+        ring_ids: List[str] = []
+
+        if participant_1 is not None:
+            ring_ids.append(
+                _pi_statistics_identifier(
+                    participant_1,
+                    "unknown-ring-1",
+                )
+            )
+
+        if (
+            _pi_statistics_interaction_type(
+                interaction
+            )
+            == "pi-pi"
+            and participant_2 is not None
+        ):
+            ring_ids.append(
+                _pi_statistics_identifier(
+                    participant_2,
+                    "unknown-ring-2",
+                )
+            )
+
+        return tuple(
+            sorted(
+                set(ring_ids)
+            )
+        )
+
+    return _pi_statistics_group_interactions(
+        interactions,
+        key_extractor=extract_rings,
+        include_unknown=True,
+        unknown_key="unknown-ring",
+        precision=precision,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 13.13. Frequência multipose
+# -----------------------------------------------------------------------------
+
+def calculate_pi_multipose_frequency(
+    interactions: Iterable[Any],
+    *,
+    total_pose_count: Optional[int] = None,
+    precision: int = 4,
+) -> List[PiMultiposeFrequency]:
+    """
+    Calculate the frequency of equivalent interactions across poses.
+    """
+
+    interaction_list = list(
+        interactions
+    )
+
+    if not interaction_list:
+        return []
+
+    if "calculate_pi_interaction_pose_frequency" in globals():
+        try:
+            raw_frequency = calculate_pi_interaction_pose_frequency(
+                interaction_list,
+                total_pose_count=total_pose_count,
+            )
+
+            results: List[PiMultiposeFrequency] = []
+
+            for signature, data in raw_frequency.items():
+                representative = data.get(
+                    "representative_interaction"
+                )
+
+                interaction_type = (
+                    _pi_statistics_interaction_type(
+                        representative
+                    )
+                    if representative is not None
+                    else (
+                        str(signature[0])
+                        if signature
+                        else "unknown"
+                    )
+                )
+
+                participant_ids = tuple(
+                    str(value)
+                    for value in signature[1:]
+                    if not str(value).startswith(
+                        "unknown-pose"
+                    )
+                )
+
+                results.append(
+                    PiMultiposeFrequency(
+                        signature=tuple(
+                            str(value)
+                            for value in signature
+                        ),
+                        interaction_type=interaction_type,
+                        participant_ids=participant_ids,
+                        pose_ids=tuple(
+                            data.get(
+                                "pose_ids",
+                                (),
+                            )
+                        ),
+                        pose_count=int(
+                            data.get(
+                                "pose_count",
+                                0,
+                            )
+                        ),
+                        total_pose_count=int(
+                            data.get(
+                                "total_pose_count",
+                                0,
+                            )
+                        ),
+                        frequency=round(
+                            float(
+                                data.get(
+                                    "frequency",
+                                    0.0,
+                                )
+                            ),
+                            precision,
+                        ),
+                        frequency_percent=round(
+                            float(
+                                data.get(
+                                    "frequency_percent",
+                                    0.0,
+                                )
+                            ),
+                            precision,
+                        ),
+                        interaction_count=int(
+                            data.get(
+                                "interaction_count",
+                                0,
+                            )
+                        ),
+                        total_score=round(
+                            sum(
+                                _pi_statistics_score(
+                                    interaction
+                                )
+                                for interaction in interaction_list
+                                if (
+                                    _pi_statistics_interaction_type(
+                                        interaction
+                                    )
+                                    == interaction_type
+                                )
+                            ),
+                            precision,
+                        ),
+                        mean_score=round(
+                            float(
+                                data.get(
+                                    "mean_score",
+                                    0.0,
+                                )
+                            ),
+                            precision,
+                        ),
+                        maximum_score=round(
+                            float(
+                                data.get(
+                                    "maximum_score",
+                                    0.0,
+                                )
+                            ),
+                            precision,
+                        ),
+                        representative_interaction=(
+                            None
+                            if representative is None
+                            else describe_pi_interaction(
+                                representative
+                            )
+                        ),
+                    )
+                )
+
+            return results
+
+        except Exception:
+            pass
+
+    observed_pose_ids = {
+        pose_id
+        for interaction in interaction_list
+        if (
+            pose_id := _pi_statistics_pose_id(
+                interaction
+            )
+        )
+        is not None
+    }
+
+    denominator = (
+        int(total_pose_count)
+        if total_pose_count is not None
+        else len(observed_pose_ids)
+    )
+
+    if denominator < 0:
+        raise PiStatisticsValidationError(
+            "total_pose_count cannot be negative."
+        )
+
+    buckets: Dict[
+        Tuple[str, str, str],
+        List[Any],
+    ] = defaultdict(list)
+
+    for interaction in interaction_list:
+        participant_1, participant_2 = (
+            _pi_statistics_participants(
+                interaction
+            )
+        )
+
+        participant_1_id = _pi_statistics_identifier(
+            participant_1,
+            "unknown-participant-1",
+        )
+
+        participant_2_id = _pi_statistics_identifier(
+            participant_2,
+            "unknown-participant-2",
+        )
+
+        interaction_type = (
+            _pi_statistics_interaction_type(
+                interaction
+            )
+        )
+
+        if interaction_type == "pi-pi":
+            participant_1_id, participant_2_id = sorted(
+                (
+                    participant_1_id,
+                    participant_2_id,
+                )
+            )
+
+        signature = (
+            interaction_type,
+            participant_1_id,
+            participant_2_id,
+        )
+
+        buckets[
+            signature
+        ].append(
+            interaction
+        )
+
+    results: List[PiMultiposeFrequency] = []
+
+    for signature, group_interactions in buckets.items():
+        pose_ids = tuple(
+            sorted(
+                {
+                    pose_id
+                    for interaction in group_interactions
+                    if (
+                        pose_id
+                        := _pi_statistics_pose_id(
+                            interaction
+                        )
+                    )
+                    is not None
+                }
+            )
+        )
+
+        pose_count = len(
+            pose_ids
+        )
+
+        frequency = (
+            pose_count / denominator
+            if denominator > 0
+            else 0.0
+        )
+
+        scores = [
+            _pi_statistics_score(
+                interaction
+            )
+            for interaction in group_interactions
+        ]
+
+        representative = identify_best_pi_interaction(
+            group_interactions
+        )
+
+        results.append(
+            PiMultiposeFrequency(
+                signature=signature,
+                interaction_type=signature[0],
+                participant_ids=signature[1:],
+                pose_ids=pose_ids,
+                pose_count=pose_count,
+                total_pose_count=denominator,
+                frequency=round(
+                    frequency,
+                    precision,
+                ),
+                frequency_percent=round(
+                    frequency * 100.0,
+                    precision,
+                ),
+                interaction_count=len(
+                    group_interactions
+                ),
+                total_score=round(
+                    sum(scores),
+                    precision,
+                ),
+                mean_score=round(
+                    (
+                        sum(scores)
+                        / len(scores)
+                    )
+                    if scores
+                    else 0.0,
+                    precision,
+                ),
+                maximum_score=round(
+                    max(scores)
+                    if scores
+                    else 0.0,
+                    precision,
+                ),
+                representative_interaction=representative,
+            )
+        )
+
+    results.sort(
+        key=lambda result: (
+            -result.frequency,
+            -result.total_score,
+            -result.maximum_score,
+            result.signature,
+        )
+    )
+
+    return results
+
+
+# -----------------------------------------------------------------------------
+# 13.14. Score total normalizado
+# -----------------------------------------------------------------------------
+
+def calculate_normalized_pi_total_score(
+    interactions: Iterable[Any],
+    *,
+    total_pose_count: Optional[int] = None,
+    scale: float = 100.0,
+) -> float:
+    """
+    Calculate a normalized aggregate score.
+
+    For single-pose analyses, the score is normalized by the theoretical
+    maximum score of all retained interactions.
+
+    For multipose analyses with an explicit pose count, the denominator also
+    accounts for the number of poses.
+    """
+
+    interaction_list = list(
+        interactions
+    )
+
+    if not interaction_list:
+        return 0.0
+
+    scale = float(
+        scale
+    )
+
+    if (
+        not math.isfinite(scale)
+        or scale <= 0.0
+    ):
+        raise PiStatisticsValidationError(
+            "scale must be finite and positive."
+        )
+
+    total_score = sum(
+        _pi_statistics_score(
+            interaction
+        )
+        for interaction in interaction_list
+    )
+
+    theoretical_maximum = (
+        len(interaction_list)
+        * 100.0
+    )
+
+    if (
+        total_pose_count is not None
+        and total_pose_count > 1
+    ):
+        observed_pose_count = len(
+            {
+                pose_id
+                for interaction in interaction_list
+                if (
+                    pose_id
+                    := _pi_statistics_pose_id(
+                        interaction
+                    )
+                )
+                is not None
+            }
+        )
+
+        if observed_pose_count > 0:
+            pose_coverage = min(
+                1.0,
+                observed_pose_count
+                / total_pose_count,
+            )
+
+        else:
+            pose_coverage = 0.0
+
+    else:
+        pose_coverage = 1.0
+
+    normalized_fraction = (
+        total_score
+        / theoretical_maximum
+        if theoretical_maximum
+        > PI_STATISTICS_EPSILON
+        else 0.0
+    )
+
+    return max(
+        0.0,
+        min(
+            scale,
+            normalized_fraction
+            * pose_coverage
+            * scale,
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 13.15. Hotspots
+# -----------------------------------------------------------------------------
+
+def _pi_statistics_resolve_hotspots(
+    interactions: Sequence[Any],
+    *,
+    grouping_result: Optional[Any],
+    config: PiStatisticsConfig,
+) -> List[Any]:
+    if grouping_result is not None:
+        hotspots = _pi_statistics_get(
+            grouping_result,
+            ("hotspots",),
+        )
+
+        if hotspots is not None:
+            return list(
+                hotspots
+            )[
+                :config.top_hotspot_limit
+                or None
+            ]
+
+    if "identify_pi_hotspots" in globals():
+        try:
+            hotspots = identify_pi_hotspots(
+                interactions
+            )
+
+            return hotspots[
+                :config.top_hotspot_limit
+                or None
+            ]
+
+        except Exception:
+            return []
+
+    return []
+
+
+# -----------------------------------------------------------------------------
+# 13.16. Produção do relatório completo
+# -----------------------------------------------------------------------------
+
+def generate_pi_statistics_report(
+    interactions: Iterable[Any],
+    *,
+    grouping_result: Optional[Any] = None,
+    config: Optional[PiStatisticsConfig] = None,
+) -> PiStatisticsReport:
+    """
+    Generate the complete Section 13 statistical report.
+
+    Parameters
+    ----------
+    interactions:
+        Preferably the interactions returned by ``organize_pi_interactions()``.
+    grouping_result:
+        Optional ``PiGroupingResult`` from Section 12. When provided, its
+        hotspots and grouping information are reused.
+    config:
+        Statistical configuration.
+    """
+
+    if config is None:
+        config = create_default_pi_statistics_config()
+
+    if not config.enabled:
+        return PiStatisticsReport(
+            total_interactions=0,
+            total_atomic_contacts=0,
+            total_by_type={},
+            total_by_geometric_subtype={},
+            geometry_class_distribution={},
+            strength_distribution={},
+            chain_distribution={},
+            pose_distribution={},
+            residue_ids=(),
+            chain_ids=(),
+            pose_ids=(),
+            aromatic_system_ids=(),
+            protein_ring_ids=(),
+            ligand_ring_ids=(),
+            residue_count=0,
+            chain_count=0,
+            pose_count=0,
+            aromatic_system_count=0,
+            protein_ring_count=0,
+            ligand_ring_count=0,
+            centroid_distance_statistics=PiNumericStatistics(),
+            minimum_atomic_distance_statistics=PiNumericStatistics(),
+            angle_statistics=PiNumericStatistics(),
+            offset_statistics=PiNumericStatistics(),
+            score_statistics=PiNumericStatistics(),
+            atomic_contact_distance_statistics=None,
+            total_score=0.0,
+            mean_score=0.0,
+            normalized_total_score=0.0,
+            best_interaction=None,
+            predominant_interaction=None,
+            hotspots=[],
+            multipose_frequency=[],
+            statistics_by_type={},
+            statistics_by_residue={},
+            statistics_by_ring={},
+            statistics_by_chain={},
+            statistics_by_pose={},
+            top_interactions=[],
+            metadata={
+                "enabled": False,
+            },
+        )
+
+    interaction_list = (
+        filter_pi_interactions_for_statistics(
+            interactions,
+            config=config,
+        )
+    )
+
+    total_interactions = len(
+        interaction_list
+    )
+
+    total_by_type: Dict[str, int] = defaultdict(int)
+    total_by_subtype: Dict[str, int] = defaultdict(int)
+    geometry_distribution: Dict[str, int] = defaultdict(int)
+    strength_distribution: Dict[str, int] = defaultdict(int)
+    chain_distribution: Dict[str, int] = defaultdict(int)
+    pose_distribution: Dict[str, int] = defaultdict(int)
+
+    residue_ids: Set[str] = set()
+    chain_ids: Set[str] = set()
+    pose_ids: Set[str] = set()
+
+    aromatic_system_ids: Set[str] = set()
+    protein_ring_ids: Set[str] = set()
+    ligand_ring_ids: Set[str] = set()
+
+    centroid_distances: List[float] = []
+    minimum_atomic_distances: List[float] = []
+    angles: List[float] = []
+    offsets: List[float] = []
+    scores: List[float] = []
+    atomic_contact_distances: List[float] = []
+
+    total_atomic_contacts = 0
+
+    for interaction in interaction_list:
+        interaction_type = (
+            _pi_statistics_interaction_type(
+                interaction
+            )
+        )
+
+        subtype = _pi_statistics_subtype(
+            interaction
+        )
+
+        geometry_class = (
+            _pi_statistics_geometry_class(
+                interaction
+            )
+        )
+
+        strength = _pi_statistics_strength(
+            interaction
+        )
+
+        total_by_type[
+            interaction_type
+        ] += 1
+
+        total_by_subtype[
+            f"{interaction_type}:{subtype}"
+        ] += 1
+
+        geometry_distribution[
+            geometry_class
+        ] += 1
+
+        strength_distribution[
+            strength
+        ] += 1
+
+        pose_id = _pi_statistics_pose_id(
+            interaction
+        )
+
+        if pose_id is not None:
+            pose_ids.add(
+                pose_id
+            )
+
+            pose_distribution[
+                pose_id
+            ] += 1
+
+        participant_1, participant_2 = (
+            _pi_statistics_participants(
+                interaction
+            )
+        )
+
+        participants = (
+            participant_1,
+            participant_2,
+        )
+
+        for participant in participants:
+            if participant is None:
+                continue
+
+            residue_id = _pi_statistics_residue_id(
+                participant
+            )
+
+            chain_id = _pi_statistics_chain_id(
+                participant
+            )
+
+            if residue_id is not None:
+                residue_ids.add(
+                    residue_id
+                )
+
+            if chain_id is not None:
+                chain_ids.add(
+                    chain_id
+                )
+
+                chain_distribution[
+                    chain_id
+                ] += 1
+
+        if participant_1 is not None:
+            participant_1_id = (
+                _pi_statistics_identifier(
+                    participant_1,
+                    "unknown-ring-1",
+                )
+            )
+
+            aromatic_system_ids.add(
+                participant_1_id
+            )
+
+            participant_1_role = (
+                _pi_statistics_participant_role(
+                    participant_1
+                )
+            )
+
+            if participant_1_role == "protein":
+                protein_ring_ids.add(
+                    participant_1_id
+                )
+
+            elif participant_1_role == "ligand":
+                ligand_ring_ids.add(
+                    participant_1_id
+                )
+
+        if (
+            interaction_type == "pi-pi"
+            and participant_2 is not None
+        ):
+            participant_2_id = (
+                _pi_statistics_identifier(
+                    participant_2,
+                    "unknown-ring-2",
+                )
+            )
+
+            aromatic_system_ids.add(
+                participant_2_id
+            )
+
+            participant_2_role = (
+                _pi_statistics_participant_role(
+                    participant_2
+                )
+            )
+
+            if participant_2_role == "protein":
+                protein_ring_ids.add(
+                    participant_2_id
+                )
+
+            elif participant_2_role == "ligand":
+                ligand_ring_ids.add(
+                    participant_2_id
+                )
+
+        centroid_distance = _pi_statistics_float(
+            _pi_statistics_get(
+                interaction,
+                ("centroid_distance",),
+            )
+        )
+
+        if centroid_distance is not None:
+            centroid_distances.append(
+                centroid_distance
+            )
+
+        minimum_atomic_distance = (
+            _pi_statistics_float(
+                _pi_statistics_get(
+                    interaction,
+                    ("minimum_atomic_distance",),
+                )
+            )
+        )
+
+        if minimum_atomic_distance is not None:
+            minimum_atomic_distances.append(
+                minimum_atomic_distance
+            )
+
+        angle = _pi_statistics_float(
+            _pi_statistics_get(
+                interaction,
+                (
+                    "plane_angle",
+                    "normal_angle",
+                    "orientation_angle",
+                ),
+            )
+        )
+
+        if angle is not None:
+            angles.append(
+                angle
+            )
+
+        offset = _pi_statistics_float(
+            _pi_statistics_get(
+                interaction,
+                (
+                    "radial_offset",
+                    "lateral_offset",
+                ),
+            )
+        )
+
+        if offset is not None:
+            offsets.append(
+                offset
+            )
+
+        scores.append(
+            _pi_statistics_score(
+                interaction
+            )
+        )
+
+        contacts = _pi_statistics_atomic_contacts(
+            interaction
+        )
+
+        total_atomic_contacts += len(
+            contacts
+        )
+
+        if config.include_atomic_contact_statistics:
+            for contact in contacts:
+                contact_distance = (
+                    _pi_statistics_float(
+                        _pi_statistics_get(
+                            contact,
+                            ("distance",),
+                        )
+                    )
+                )
+
+                if contact_distance is not None:
+                    atomic_contact_distances.append(
+                        contact_distance
+                    )
+
+    total_score = sum(
+        scores
+    )
+
+    mean_score = (
+        total_score / len(scores)
+        if scores
+        else 0.0
+    )
+
+    if config.normalize_total_score:
+        normalized_total_score = (
+            calculate_normalized_pi_total_score(
+                interaction_list,
+                total_pose_count=(
+                    config.total_pose_count
+                ),
+                scale=(
+                    config.normalized_score_scale
+                ),
+            )
+        )
+
+    else:
+        normalized_total_score = total_score
+
+    best_interaction = identify_best_pi_interaction(
+        interaction_list
+    )
+
+    predominant_interaction = (
+        identify_predominant_pi_interaction(
+            interaction_list,
+            mode=(
+                config.predominant_interaction_mode
+            ),
+            include_subtype=False,
+        )
+    )
+
+    hotspots = _pi_statistics_resolve_hotspots(
+        interaction_list,
+        grouping_result=grouping_result,
+        config=config,
+    )
+
+    multipose_frequency = (
+        calculate_pi_multipose_frequency(
+            interaction_list,
+            total_pose_count=(
+                config.total_pose_count
+            ),
+            precision=config.numeric_precision,
+        )
+        if config.calculate_multipose_frequency
+        else []
+    )
+
+    statistics_by_type = (
+        calculate_pi_statistics_by_type(
+            interaction_list,
+            precision=config.numeric_precision,
+        )
+        if config.include_per_type_statistics
+        else {}
+    )
+
+    statistics_by_residue = (
+        calculate_pi_statistics_by_residue(
+            interaction_list,
+            precision=config.numeric_precision,
+        )
+        if config.include_per_residue_statistics
+        else {}
+    )
+
+    statistics_by_ring = (
+        calculate_pi_statistics_by_ring(
+            interaction_list,
+            precision=config.numeric_precision,
+        )
+        if config.include_per_ring_statistics
+        else {}
+    )
+
+    statistics_by_chain = (
+        calculate_pi_statistics_by_chain(
+            interaction_list,
+            precision=config.numeric_precision,
+        )
+        if config.include_per_chain_statistics
+        else {}
+    )
+
+    statistics_by_pose = (
+        calculate_pi_statistics_by_pose(
+            interaction_list,
+            precision=config.numeric_precision,
+        )
+        if config.include_per_pose_statistics
+        else {}
+    )
+
+    ranked_interactions = sorted(
+        interaction_list,
+        key=lambda interaction: (
+            -_pi_statistics_score(
+                interaction
+            ),
+            _pi_statistics_identifier(
+                interaction,
+                "",
+            ),
+        )
+    )
+
+    top_interactions = [
+        describe_pi_interaction(
+            interaction
+        )
+        for interaction in ranked_interactions[
+            :config.top_interaction_limit
+            or None
+        ]
+    ]
+
+    precision = config.numeric_precision
+
+    return PiStatisticsReport(
+        total_interactions=total_interactions,
+        total_atomic_contacts=total_atomic_contacts,
+        total_by_type=dict(
+            sorted(
+                total_by_type.items()
+            )
+        ),
+        total_by_geometric_subtype=dict(
+            sorted(
+                total_by_subtype.items()
+            )
+        ),
+        geometry_class_distribution=dict(
+            sorted(
+                geometry_distribution.items()
+            )
+        ),
+        strength_distribution=dict(
+            sorted(
+                strength_distribution.items()
+            )
+        ),
+        chain_distribution=dict(
+            sorted(
+                chain_distribution.items()
+            )
+        ),
+        pose_distribution=dict(
+            sorted(
+                pose_distribution.items()
+            )
+        ),
+        residue_ids=tuple(
+            sorted(
+                residue_ids
+            )
+        ),
+        chain_ids=tuple(
+            sorted(
+                chain_ids
+            )
+        ),
+        pose_ids=tuple(
+            sorted(
+                pose_ids
+            )
+        ),
+        aromatic_system_ids=tuple(
+            sorted(
+                aromatic_system_ids
+            )
+        ),
+        protein_ring_ids=tuple(
+            sorted(
+                protein_ring_ids
+            )
+        ),
+        ligand_ring_ids=tuple(
+            sorted(
+                ligand_ring_ids
+            )
+        ),
+        residue_count=len(
+            residue_ids
+        ),
+        chain_count=len(
+            chain_ids
+        ),
+        pose_count=len(
+            pose_ids
+        ),
+        aromatic_system_count=len(
+            aromatic_system_ids
+        ),
+        protein_ring_count=len(
+            protein_ring_ids
+        ),
+        ligand_ring_count=len(
+            ligand_ring_ids
+        ),
+        centroid_distance_statistics=(
+            calculate_pi_numeric_statistics(
+                centroid_distances,
+                precision=precision,
+            )
+        ),
+        minimum_atomic_distance_statistics=(
+            calculate_pi_numeric_statistics(
+                minimum_atomic_distances,
+                precision=precision,
+            )
+        ),
+        angle_statistics=(
+            calculate_pi_numeric_statistics(
+                angles,
+                precision=precision,
+            )
+        ),
+        offset_statistics=(
+            calculate_pi_numeric_statistics(
+                offsets,
+                precision=precision,
+            )
+        ),
+        score_statistics=(
+            calculate_pi_numeric_statistics(
+                scores,
+                precision=precision,
+            )
+        ),
+        atomic_contact_distance_statistics=(
+            calculate_pi_numeric_statistics(
+                atomic_contact_distances,
+                precision=precision,
+            )
+            if config.include_atomic_contact_statistics
+            else None
+        ),
+        total_score=round(
+            total_score,
+            precision,
+        ),
+        mean_score=round(
+            mean_score,
+            precision,
+        ),
+        normalized_total_score=round(
+            normalized_total_score,
+            precision,
+        ),
+        best_interaction=best_interaction,
+        predominant_interaction=(
+            predominant_interaction
+        ),
+        hotspots=hotspots,
+        multipose_frequency=(
+            multipose_frequency
+        ),
+        statistics_by_type=statistics_by_type,
+        statistics_by_residue=dict(
+            list(
+                statistics_by_residue.items()
+            )[
+                :config.top_residue_limit
+                or None
+            ]
+        ),
+        statistics_by_ring=dict(
+            list(
+                statistics_by_ring.items()
+            )[
+                :config.top_ring_limit
+                or None
+            ]
+        ),
+        statistics_by_chain=statistics_by_chain,
+        statistics_by_pose=statistics_by_pose,
+        top_interactions=top_interactions,
+        metadata={
+            "schema": "pi-statistics-report",
+            "schema_version": (
+                PI_STATISTICS_SCHEMA_VERSION
+            ),
+            "included_borderline": (
+                config.include_borderline
+            ),
+            "included_rejected": (
+                config.include_rejected
+            ),
+            "predominance_mode": (
+                config.predominant_interaction_mode
+            ),
+            "configured_total_pose_count": (
+                config.total_pose_count
+            ),
+            "observed_pose_count": len(
+                pose_ids
+            ),
+            "atomic_contacts_are_not_interactions": True,
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 13.17. API simplificada
+# -----------------------------------------------------------------------------
+
+def calculate_pi_statistics(
+    interactions: Iterable[Any],
+    *,
+    grouping_result: Optional[Any] = None,
+    config: Optional[PiStatisticsConfig] = None,
+) -> PiStatisticsReport:
+    """
+    Public alias for the complete statistical report.
+    """
+
+    return generate_pi_statistics_report(
+        interactions,
+        grouping_result=grouping_result,
+        config=config,
+    )
+
+
+def summarize_pi_interactions(
+    interactions: Iterable[Any],
+    *,
+    grouping_result: Optional[Any] = None,
+    config: Optional[PiStatisticsConfig] = None,
+) -> Dict[str, Any]:
+    """
+    Return the complete report as a plain dictionary.
+    """
+
+    report = generate_pi_statistics_report(
+        interactions,
+        grouping_result=grouping_result,
+        config=config,
+    )
+
+    return report.to_dict()
+
+
+# -----------------------------------------------------------------------------
+# 13.18. Resumo compacto
+# -----------------------------------------------------------------------------
+
+def create_compact_pi_summary(
+    report: PiStatisticsReport,
+) -> Dict[str, Any]:
+    """
+    Produce a compact summary suitable for logs and DockModel metadata.
+    """
+
+    best_interaction = report.best_interaction
+    predominant = report.predominant_interaction
+
+    return {
+        "total_interactions": (
+            report.total_interactions
+        ),
+        "total_atomic_contacts": (
+            report.total_atomic_contacts
+        ),
+        "total_by_type": dict(
+            report.total_by_type
+        ),
+        "total_by_geometric_subtype": dict(
+            report.total_by_geometric_subtype
+        ),
+        "residue_count": report.residue_count,
+        "aromatic_system_count": (
+            report.aromatic_system_count
+        ),
+        "chain_count": report.chain_count,
+        "pose_count": report.pose_count,
+        "strength_distribution": dict(
+            report.strength_distribution
+        ),
+        "hotspot_count": len(
+            report.hotspots
+        ),
+        "total_score": report.total_score,
+        "mean_score": report.mean_score,
+        "normalized_total_score": (
+            report.normalized_total_score
+        ),
+        "centroid_distance": {
+            "mean": (
+                report
+                .centroid_distance_statistics
+                .mean
+            ),
+            "minimum": (
+                report
+                .centroid_distance_statistics
+                .minimum
+            ),
+            "maximum": (
+                report
+                .centroid_distance_statistics
+                .maximum
+            ),
+        },
+        "best_interaction": (
+            None
+            if best_interaction is None
+            else {
+                "interaction_id": (
+                    best_interaction.interaction_id
+                ),
+                "type": (
+                    best_interaction.interaction_type
+                ),
+                "subtype": (
+                    best_interaction.geometric_subtype
+                ),
+                "score": best_interaction.score,
+            }
+        ),
+        "predominant_interaction": (
+            None
+            if predominant is None
+            else {
+                "type": (
+                    predominant.interaction_type
+                ),
+                "subtype": (
+                    predominant.geometric_subtype
+                ),
+                "count": (
+                    predominant.interaction_count
+                ),
+                "proportion": (
+                    predominant.proportion
+                ),
+            }
+        ),
+    }
+
+
+# -----------------------------------------------------------------------------
+# 13.19. Resumo textual
+# -----------------------------------------------------------------------------
+
+def format_pi_statistics_summary(
+    report: PiStatisticsReport,
+) -> str:
+    """
+    Format a concise human-readable statistical summary.
+    """
+
+    lines: List[str] = [
+        "π-interaction statistics",
+        (
+            f"Total interactions: "
+            f"{report.total_interactions}"
+        ),
+        (
+            f"Atomic contacts: "
+            f"{report.total_atomic_contacts}"
+        ),
+        (
+            f"Residues involved: "
+            f"{report.residue_count}"
+        ),
+        (
+            f"Aromatic systems involved: "
+            f"{report.aromatic_system_count}"
+        ),
+        (
+            f"Chains involved: "
+            f"{report.chain_count}"
+        ),
+        (
+            f"Observed poses: "
+            f"{report.pose_count}"
+        ),
+        (
+            f"Total score: "
+            f"{report.total_score:.2f}"
+        ),
+        (
+            f"Mean score: "
+            f"{report.mean_score:.2f}"
+        ),
+        (
+            f"Normalized total score: "
+            f"{report.normalized_total_score:.2f}"
+        ),
+    ]
+
+    distance_statistics = (
+        report.centroid_distance_statistics
+    )
+
+    if distance_statistics.count:
+        lines.append(
+            "Centroid distance: "
+            f"mean={distance_statistics.mean:.2f} Å, "
+            f"min={distance_statistics.minimum:.2f} Å, "
+            f"max={distance_statistics.maximum:.2f} Å"
+        )
+
+    if report.best_interaction is not None:
+        best = report.best_interaction
+
+        lines.append(
+            "Best interaction: "
+            f"{best.interaction_type}/"
+            f"{best.geometric_subtype} "
+            f"(score={best.score:.2f})"
+        )
+
+    if report.predominant_interaction is not None:
+        predominant = report.predominant_interaction
+
+        lines.append(
+            "Predominant interaction: "
+            f"{predominant.interaction_type} "
+            f"(n={predominant.interaction_count}, "
+            f"{predominant.proportion * 100.0:.1f}%)"
+        )
+
+    lines.append(
+        f"Hotspots: {len(report.hotspots)}"
+    )
+
+    return "\n".join(
+        lines
+    )
+
+
 
