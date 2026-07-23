@@ -38796,4 +38796,5048 @@ def format_pi_statistics_summary(
     )
 
 
+# =============================================================================
+# 14. API PÚBLICA DE ANÁLISE
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 14.1. Constantes
+# -----------------------------------------------------------------------------
+
+PI_ANALYSIS_SCHEMA_VERSION: Final[str] = "1.0"
+
+PI_ANALYSIS_MODE_COMPLETE: Final[str] = "complete"
+PI_ANALYSIS_MODE_PI_PI: Final[str] = "pi-pi"
+PI_ANALYSIS_MODE_CATION_PI: Final[str] = "cation-pi"
+PI_ANALYSIS_MODE_ANION_PI: Final[str] = "anion-pi"
+PI_ANALYSIS_MODE_AMIDE_PI: Final[str] = "amide-pi"
+PI_ANALYSIS_MODE_MULTIPOSE: Final[str] = "multipose"
+
+SUPPORTED_PI_ANALYSIS_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        PI_ANALYSIS_MODE_COMPLETE,
+        PI_ANALYSIS_MODE_PI_PI,
+        PI_ANALYSIS_MODE_CATION_PI,
+        PI_ANALYSIS_MODE_ANION_PI,
+        PI_ANALYSIS_MODE_AMIDE_PI,
+        PI_ANALYSIS_MODE_MULTIPOSE,
+    }
+)
+
+PI_ANALYSIS_STAGE_NORMALIZATION: Final[str] = "normalization"
+PI_ANALYSIS_STAGE_RECOGNITION: Final[str] = "recognition"
+PI_ANALYSIS_STAGE_GEOMETRY: Final[str] = "geometry"
+PI_ANALYSIS_STAGE_DETECTION: Final[str] = "detection"
+PI_ANALYSIS_STAGE_SCORING: Final[str] = "scoring"
+PI_ANALYSIS_STAGE_GROUPING: Final[str] = "grouping"
+PI_ANALYSIS_STAGE_STATISTICS: Final[str] = "statistics"
+PI_ANALYSIS_STAGE_COMPLETED: Final[str] = "completed"
+
+PI_ANALYSIS_EPSILON: Final[float] = 1.0e-12
+
+
+# -----------------------------------------------------------------------------
+# 14.2. Exceções
+# -----------------------------------------------------------------------------
+
+class PiAnalysisError(RuntimeError):
+    """
+    Base exception for the public π-interaction analysis API.
+    """
+
+
+class PiAnalysisConfigurationError(PiAnalysisError):
+    """
+    Raised when the public analysis configuration is invalid.
+    """
+
+
+class PiAnalysisInputError(PiAnalysisError):
+    """
+    Raised when the input structure cannot be analyzed.
+    """
+
+
+class PiAnalysisStageError(PiAnalysisError):
+    """
+    Raised when an internal analysis stage fails.
+    """
+
+    def __init__(
+        self,
+        stage: str,
+        message: str,
+        *,
+        original_exception: Optional[BaseException] = None,
+    ) -> None:
+        self.stage = str(stage)
+        self.original_exception = original_exception
+
+        super().__init__(
+            f"π-analysis failed during {self.stage!r}: {message}"
+        )
+
+
+# -----------------------------------------------------------------------------
+# 14.3. Configuração pública
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiAnalysisConfig:
+    """
+    High-level configuration for the complete π-analysis pipeline.
+
+    The specialized configurations defined in previous sections remain
+    independent and can be replaced by the caller.
+    """
+
+    enabled: bool = True
+
+    enable_pi_pi: bool = True
+    enable_cation_pi: bool = True
+    enable_anion_pi: bool = True
+    enable_amide_pi: bool = True
+
+    normalize_input: bool = True
+    recognize_aromatic_systems: bool = True
+    recognize_charged_groups: bool = True
+    recognize_amide_groups: bool = True
+    calculate_geometries: bool = True
+
+    run_scoring: bool = True
+    run_grouping: bool = True
+    run_statistics: bool = True
+
+    strict: bool = False
+    preserve_intermediate_results: bool = True
+    preserve_empty_categories: bool = True
+
+    # Section-specific configurations
+    pi_pi_config: Optional[Any] = None
+    cation_pi_config: Optional[Any] = None
+    anion_pi_config: Optional[Any] = None
+    amide_pi_config: Optional[Any] = None
+
+    scoring_config: Optional[Any] = None
+    grouping_config: Optional[Any] = None
+    statistics_config: Optional[Any] = None
+
+    # Optional external callbacks.
+    normalizer: Optional[Callable[..., Any]] = None
+    aromatic_recognizer: Optional[Callable[..., Iterable[Any]]] = None
+    positive_group_recognizer: Optional[
+        Callable[..., Iterable[Any]]
+    ] = None
+    negative_group_recognizer: Optional[
+        Callable[..., Iterable[Any]]
+    ] = None
+    amide_group_recognizer: Optional[
+        Callable[..., Iterable[Any]]
+    ] = None
+
+    # Metadata propagation
+    analysis_id: Optional[str] = None
+    pose_id: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.analysis_id is not None:
+            self.analysis_id = str(
+                self.analysis_id
+            )
+
+        if self.pose_id is not None:
+            self.pose_id = str(
+                self.pose_id
+            )
+
+        callback_fields = (
+            "normalizer",
+            "aromatic_recognizer",
+            "positive_group_recognizer",
+            "negative_group_recognizer",
+            "amide_group_recognizer",
+        )
+
+        for field_name in callback_fields:
+            callback = getattr(
+                self,
+                field_name,
+            )
+
+            if (
+                callback is not None
+                and not callable(callback)
+            ):
+                raise PiAnalysisConfigurationError(
+                    f"{field_name} must be callable or None."
+                )
+
+
+def create_default_pi_analysis_config() -> PiAnalysisConfig:
+    """
+    Return the canonical public analysis configuration.
+    """
+
+    return PiAnalysisConfig(
+        pi_pi_config=(
+            create_default_pi_pi_detection_config()
+            if "create_default_pi_pi_detection_config" in globals()
+            else None
+        ),
+        cation_pi_config=(
+            create_default_cation_pi_detection_config()
+            if "create_default_cation_pi_detection_config" in globals()
+            else None
+        ),
+        anion_pi_config=(
+            AnionPiDetectionConfig()
+            if "AnionPiDetectionConfig" in globals()
+            else None
+        ),
+        amide_pi_config=(
+            AmidePiDetectionConfig()
+            if "AmidePiDetectionConfig" in globals()
+            else None
+        ),
+        scoring_config=(
+            create_default_pi_scoring_config()
+            if "create_default_pi_scoring_config" in globals()
+            else None
+        ),
+        grouping_config=(
+            create_default_pi_grouping_config()
+            if "create_default_pi_grouping_config" in globals()
+            else None
+        ),
+        statistics_config=(
+            create_default_pi_statistics_config()
+            if "create_default_pi_statistics_config" in globals()
+            else None
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 14.4. Modelos de reconhecimento
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiRecognizedFeatures:
+    """
+    Chemical features recognized before interaction detection.
+    """
+
+    aromatic_systems: List[Any] = field(
+        default_factory=list
+    )
+
+    positive_groups: List[Any] = field(
+        default_factory=list
+    )
+
+    negative_groups: List[Any] = field(
+        default_factory=list
+    )
+
+    amide_groups: List[Any] = field(
+        default_factory=list
+    )
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    def to_dict(
+        self,
+        *,
+        include_objects: bool = False,
+    ) -> Dict[str, Any]:
+        result = {
+            "aromatic_system_count": len(
+                self.aromatic_systems
+            ),
+            "positive_group_count": len(
+                self.positive_groups
+            ),
+            "negative_group_count": len(
+                self.negative_groups
+            ),
+            "amide_group_count": len(
+                self.amide_groups
+            ),
+            "metadata": dict(
+                self.metadata
+            ),
+        }
+
+        if include_objects:
+            result.update(
+                {
+                    "aromatic_systems": list(
+                        self.aromatic_systems
+                    ),
+                    "positive_groups": list(
+                        self.positive_groups
+                    ),
+                    "negative_groups": list(
+                        self.negative_groups
+                    ),
+                    "amide_groups": list(
+                        self.amide_groups
+                    ),
+                }
+            )
+
+        return result
+
+
+@dataclass(slots=True)
+class PiDetectedInteractions:
+    """
+    Raw detector outputs before consolidation.
+    """
+
+    pi_pi: List[Any] = field(
+        default_factory=list
+    )
+
+    cation_pi: List[Any] = field(
+        default_factory=list
+    )
+
+    anion_pi: List[Any] = field(
+        default_factory=list
+    )
+
+    amide_pi: List[Any] = field(
+        default_factory=list
+    )
+
+    @property
+    def all(self) -> List[Any]:
+        return [
+            *self.pi_pi,
+            *self.cation_pi,
+            *self.anion_pi,
+            *self.amide_pi,
+        ]
+
+    def to_dict(
+        self,
+        *,
+        include_objects: bool = False,
+    ) -> Dict[str, Any]:
+        result = {
+            "pi_pi_count": len(
+                self.pi_pi
+            ),
+            "cation_pi_count": len(
+                self.cation_pi
+            ),
+            "anion_pi_count": len(
+                self.anion_pi
+            ),
+            "amide_pi_count": len(
+                self.amide_pi
+            ),
+            "total_count": len(
+                self.all
+            ),
+        }
+
+        if include_objects:
+            result.update(
+                {
+                    "pi_pi": list(
+                        self.pi_pi
+                    ),
+                    "cation_pi": list(
+                        self.cation_pi
+                    ),
+                    "anion_pi": list(
+                        self.anion_pi
+                    ),
+                    "amide_pi": list(
+                        self.amide_pi
+                    ),
+                    "all": self.all,
+                }
+            )
+
+        return result
+
+
+# -----------------------------------------------------------------------------
+# 14.5. Resultado público
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiAnalysisResult:
+    """
+    Complete output of one π-interaction analysis.
+    """
+
+    analysis_id: str
+    analysis_mode: str
+    pose_id: Optional[str]
+
+    input_structure: Any
+    normalized_structure: Any
+
+    recognized_features: PiRecognizedFeatures
+    detected_interactions: PiDetectedInteractions
+
+    consolidated_result: Optional[Any]
+    grouping_result: Optional[Any]
+    statistics_report: Optional[Any]
+
+    interactions: List[Any]
+
+    success: bool = True
+    completed_stage: str = PI_ANALYSIS_STAGE_COMPLETED
+
+    warnings: List[str] = field(
+        default_factory=list
+    )
+
+    errors: List[str] = field(
+        default_factory=list
+    )
+
+    intermediate_results: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    def __post_init__(self) -> None:
+        if self.analysis_mode not in SUPPORTED_PI_ANALYSIS_MODES:
+            raise PiAnalysisConfigurationError(
+                f"Unsupported analysis mode: {self.analysis_mode!r}."
+            )
+
+    @property
+    def total_interactions(self) -> int:
+        return len(
+            self.interactions
+        )
+
+    @property
+    def total_score(self) -> float:
+        if self.statistics_report is not None:
+            value = _pi_api_get(
+                self.statistics_report,
+                ("total_score",),
+                0.0,
+            )
+
+            return float(
+                value or 0.0
+            )
+
+        return sum(
+            _pi_api_interaction_score(
+                interaction
+            )
+            for interaction in self.interactions
+        )
+
+    @property
+    def normalized_score(self) -> float:
+        if self.statistics_report is None:
+            return 0.0
+
+        value = _pi_api_get(
+            self.statistics_report,
+            (
+                "normalized_total_score",
+                "normalized_score",
+            ),
+            0.0,
+        )
+
+        return float(
+            value or 0.0
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_objects: bool = False,
+        include_intermediate: bool = False,
+    ) -> Dict[str, Any]:
+        result = {
+            "analysis_id": self.analysis_id,
+            "analysis_mode": self.analysis_mode,
+            "pose_id": self.pose_id,
+            "success": self.success,
+            "completed_stage": self.completed_stage,
+            "total_interactions": self.total_interactions,
+            "total_score": self.total_score,
+            "normalized_score": self.normalized_score,
+            "recognized_features": (
+                self.recognized_features.to_dict(
+                    include_objects=include_objects
+                )
+            ),
+            "detected_interactions": (
+                self.detected_interactions.to_dict(
+                    include_objects=include_objects
+                )
+            ),
+            "warnings": list(
+                self.warnings
+            ),
+            "errors": list(
+                self.errors
+            ),
+            "metadata": dict(
+                self.metadata
+            ),
+        }
+
+        if self.consolidated_result is not None:
+            to_dict = getattr(
+                self.consolidated_result,
+                "to_dict",
+                None,
+            )
+
+            result["consolidation"] = (
+                to_dict()
+                if callable(to_dict)
+                else self.consolidated_result
+            )
+
+        else:
+            result["consolidation"] = None
+
+        if self.grouping_result is not None:
+            to_dict = getattr(
+                self.grouping_result,
+                "to_dict",
+                None,
+            )
+
+            result["grouping"] = (
+                to_dict()
+                if callable(to_dict)
+                else self.grouping_result
+            )
+
+        else:
+            result["grouping"] = None
+
+        if self.statistics_report is not None:
+            to_dict = getattr(
+                self.statistics_report,
+                "to_dict",
+                None,
+            )
+
+            if callable(to_dict):
+                try:
+                    result["statistics"] = to_dict(
+                        include_interactions=include_objects
+                    )
+
+                except TypeError:
+                    result["statistics"] = to_dict()
+
+            else:
+                result["statistics"] = (
+                    self.statistics_report
+                )
+
+        else:
+            result["statistics"] = None
+
+        if include_objects:
+            result["interactions"] = list(
+                self.interactions
+            )
+
+            result["input_structure"] = (
+                self.input_structure
+            )
+
+            result["normalized_structure"] = (
+                self.normalized_structure
+            )
+
+        if include_intermediate:
+            result["intermediate_results"] = dict(
+                self.intermediate_results
+            )
+
+        return result
+
+
+@dataclass(slots=True)
+class PiMultiplePoseAnalysisResult:
+    """
+    Result of a multipose π-interaction analysis.
+    """
+
+    analysis_id: str
+
+    pose_results: List[PiAnalysisResult]
+
+    interactions: List[Any]
+
+    consolidated_result: Optional[Any]
+    grouping_result: Optional[Any]
+    statistics_report: Optional[Any]
+
+    pose_count: int
+    successful_pose_count: int
+    failed_pose_count: int
+
+    best_pose_id: Optional[str]
+    best_pose_result: Optional[PiAnalysisResult]
+
+    warnings: List[str] = field(
+        default_factory=list
+    )
+
+    errors: List[str] = field(
+        default_factory=list
+    )
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    @property
+    def success(self) -> bool:
+        return (
+            self.successful_pose_count > 0
+            and self.failed_pose_count == 0
+        )
+
+    @property
+    def partial_success(self) -> bool:
+        return (
+            self.successful_pose_count > 0
+            and self.failed_pose_count > 0
+        )
+
+    @property
+    def total_interactions(self) -> int:
+        return len(
+            self.interactions
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_objects: bool = False,
+        include_pose_results: bool = True,
+    ) -> Dict[str, Any]:
+        result = {
+            "analysis_id": self.analysis_id,
+            "analysis_mode": PI_ANALYSIS_MODE_MULTIPOSE,
+            "success": self.success,
+            "partial_success": self.partial_success,
+            "pose_count": self.pose_count,
+            "successful_pose_count": (
+                self.successful_pose_count
+            ),
+            "failed_pose_count": (
+                self.failed_pose_count
+            ),
+            "total_interactions": (
+                self.total_interactions
+            ),
+            "best_pose_id": self.best_pose_id,
+            "warnings": list(
+                self.warnings
+            ),
+            "errors": list(
+                self.errors
+            ),
+            "metadata": dict(
+                self.metadata
+            ),
+        }
+
+        if include_pose_results:
+            result["pose_results"] = [
+                pose_result.to_dict(
+                    include_objects=include_objects
+                )
+                for pose_result in self.pose_results
+            ]
+
+        if self.statistics_report is not None:
+            to_dict = getattr(
+                self.statistics_report,
+                "to_dict",
+                None,
+            )
+
+            result["statistics"] = (
+                to_dict()
+                if callable(to_dict)
+                else self.statistics_report
+            )
+
+        else:
+            result["statistics"] = None
+
+        if self.grouping_result is not None:
+            to_dict = getattr(
+                self.grouping_result,
+                "to_dict",
+                None,
+            )
+
+            result["grouping"] = (
+                to_dict()
+                if callable(to_dict)
+                else self.grouping_result
+            )
+
+        else:
+            result["grouping"] = None
+
+        if include_objects:
+            result["interactions"] = list(
+                self.interactions
+            )
+
+        return result
+
+
+# -----------------------------------------------------------------------------
+# 14.6. Helpers
+# -----------------------------------------------------------------------------
+
+def _pi_api_get(
+    object_: Any,
+    names: Sequence[str],
+    default: Any = None,
+) -> Any:
+    """
+    Return the first existing non-None attribute or mapping value.
+    """
+
+    if object_ is None:
+        return default
+
+    for name in names:
+        if isinstance(object_, Mapping):
+            value = object_.get(
+                name
+            )
+
+        else:
+            value = getattr(
+                object_,
+                name,
+                None,
+            )
+
+        if value is not None:
+            return value
+
+    return default
+
+
+def _pi_api_as_list(
+    value: Any,
+) -> List[Any]:
+    if value is None:
+        return []
+
+    if isinstance(
+        value,
+        list,
+    ):
+        return value
+
+    if isinstance(
+        value,
+        tuple,
+    ):
+        return list(
+            value
+        )
+
+    try:
+        return list(
+            value
+        )
+
+    except TypeError:
+        return [
+            value
+        ]
+
+
+def _pi_api_analysis_id(
+    *,
+    prefix: str = "pi-analysis",
+    explicit_id: Optional[str] = None,
+    pose_id: Optional[str] = None,
+) -> str:
+    if explicit_id is not None:
+        return str(
+            explicit_id
+        )
+
+    suffix = (
+        str(pose_id)
+        if pose_id is not None
+        else uuid.uuid4().hex[:12]
+    )
+
+    return (
+        f"{prefix}:"
+        f"{suffix}"
+    )
+
+
+def _pi_api_interaction_score(
+    interaction: Any,
+) -> float:
+    value = _pi_api_get(
+        interaction,
+        (
+            "normalized_score",
+            "score",
+            "raw_score",
+            "geometry_confidence",
+        ),
+        0.0,
+    )
+
+    try:
+        value = float(
+            value
+        )
+
+    except (TypeError, ValueError):
+        return 0.0
+
+    if not math.isfinite(
+        value
+    ):
+        return 0.0
+
+    return max(
+        0.0,
+        value,
+    )
+
+
+def _pi_api_interaction_type(
+    interaction: Any,
+) -> str:
+    value = _pi_api_get(
+        interaction,
+        (
+            "interaction_type",
+            "type",
+        ),
+        "unknown",
+    )
+
+    return str(
+        value
+    ).strip().lower()
+
+
+def _pi_api_call_with_supported_arguments(
+    function: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """
+    Call a function while discarding unsupported keyword arguments.
+
+    This allows the public API to integrate with stable functions whose exact
+    optional keyword sets may differ slightly between module revisions.
+    """
+
+    try:
+        signature = inspect.signature(
+            function
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return function(
+            *args,
+            **kwargs,
+        )
+
+    parameters = signature.parameters
+
+    accepts_var_keyword = any(
+        parameter.kind
+        == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+    if accepts_var_keyword:
+        supported_kwargs = kwargs
+
+    else:
+        supported_kwargs = {
+            name: value
+            for name, value in kwargs.items()
+            if name in parameters
+        }
+
+    return function(
+        *args,
+        **supported_kwargs,
+    )
+
+
+def _pi_api_resolve_callable(
+    explicit_callable: Optional[Callable[..., Any]],
+    candidate_names: Sequence[str],
+) -> Optional[Callable[..., Any]]:
+    if explicit_callable is not None:
+        return explicit_callable
+
+    for candidate_name in candidate_names:
+        candidate = globals().get(
+            candidate_name
+        )
+
+        if callable(
+            candidate
+        ):
+            return candidate
+
+    return None
+
+
+# -----------------------------------------------------------------------------
+# 14.7. Normalização de entrada
+# -----------------------------------------------------------------------------
+
+def _pi_api_normalize_structure(
+    structure: Any,
+    *,
+    config: PiAnalysisConfig,
+) -> Any:
+    """
+    Normalize the input structure using Section 3 or a custom callback.
+    """
+
+    if not config.normalize_input:
+        return structure
+
+    normalizer = _pi_api_resolve_callable(
+        config.normalizer,
+        (
+            "normalize_pi_input",
+            "normalize_structure",
+            "normalize_molecular_structure",
+            "normalize_atoms",
+        ),
+    )
+
+    if normalizer is None:
+        # Section 3 may expose accessors rather than one global normalizer.
+        # In that case the original structure remains valid input.
+        return structure
+
+    normalized = _pi_api_call_with_supported_arguments(
+        normalizer,
+        structure,
+        strict=config.strict,
+    )
+
+    return (
+        structure
+        if normalized is None
+        else normalized
+    )
+
+
+# -----------------------------------------------------------------------------
+# 14.8. Reconhecimento de sistemas aromáticos
+# -----------------------------------------------------------------------------
+
+def _pi_api_recognize_aromatic_systems(
+    structure: Any,
+    *,
+    supplied_aromatic_systems: Optional[Iterable[Any]],
+    config: PiAnalysisConfig,
+) -> List[Any]:
+    if supplied_aromatic_systems is not None:
+        return _pi_api_as_list(
+            supplied_aromatic_systems
+        )
+
+    if not config.recognize_aromatic_systems:
+        return []
+
+    recognizer = _pi_api_resolve_callable(
+        config.aromatic_recognizer,
+        (
+            "recognize_aromatic_systems",
+            "identify_aromatic_systems",
+            "detect_aromatic_systems",
+            "find_aromatic_systems",
+        ),
+    )
+
+    if recognizer is None:
+        existing = _pi_api_get(
+            structure,
+            (
+                "aromatic_systems",
+                "rings",
+                "aromatic_rings",
+            ),
+        )
+
+        return _pi_api_as_list(
+            existing
+        )
+
+    return _pi_api_as_list(
+        _pi_api_call_with_supported_arguments(
+            recognizer,
+            structure,
+            strict=config.strict,
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 14.9. Reconhecimento de grupos carregados
+# -----------------------------------------------------------------------------
+
+def _pi_api_recognize_positive_groups(
+    structure: Any,
+    *,
+    supplied_groups: Optional[Iterable[Any]],
+    config: PiAnalysisConfig,
+) -> List[Any]:
+    if supplied_groups is not None:
+        return _pi_api_as_list(
+            supplied_groups
+        )
+
+    if not config.recognize_charged_groups:
+        return []
+
+    recognizer = _pi_api_resolve_callable(
+        config.positive_group_recognizer,
+        (
+            "identify_positive_groups",
+            "recognize_positive_groups",
+            "identify_cationic_groups",
+            "find_positive_groups",
+        ),
+    )
+
+    if recognizer is None:
+        existing = _pi_api_get(
+            structure,
+            (
+                "positive_groups",
+                "cationic_groups",
+                "cations",
+            ),
+        )
+
+        return _pi_api_as_list(
+            existing
+        )
+
+    return _pi_api_as_list(
+        _pi_api_call_with_supported_arguments(
+            recognizer,
+            structure,
+            strict=config.strict,
+        )
+    )
+
+
+def _pi_api_recognize_negative_groups(
+    structure: Any,
+    *,
+    supplied_groups: Optional[Iterable[Any]],
+    config: PiAnalysisConfig,
+) -> List[Any]:
+    if supplied_groups is not None:
+        return _pi_api_as_list(
+            supplied_groups
+        )
+
+    if not config.recognize_charged_groups:
+        return []
+
+    recognizer = _pi_api_resolve_callable(
+        config.negative_group_recognizer,
+        (
+            "identify_negative_groups",
+            "recognize_negative_groups",
+            "identify_anionic_groups",
+            "find_negative_groups",
+        ),
+    )
+
+    if recognizer is None:
+        existing = _pi_api_get(
+            structure,
+            (
+                "negative_groups",
+                "anionic_groups",
+                "anions",
+            ),
+        )
+
+        return _pi_api_as_list(
+            existing
+        )
+
+    return _pi_api_as_list(
+        _pi_api_call_with_supported_arguments(
+            recognizer,
+            structure,
+            strict=config.strict,
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 14.10. Reconhecimento de amidas
+# -----------------------------------------------------------------------------
+
+def _pi_api_recognize_amide_groups(
+    structure: Any,
+    *,
+    supplied_groups: Optional[Iterable[Any]],
+    config: PiAnalysisConfig,
+) -> List[Any]:
+    if supplied_groups is not None:
+        return _pi_api_as_list(
+            supplied_groups
+        )
+
+    if not config.recognize_amide_groups:
+        return []
+
+    recognizer = _pi_api_resolve_callable(
+        config.amide_group_recognizer,
+        (
+            "identify_amide_groups",
+            "recognize_amide_groups",
+            "find_amide_groups",
+        ),
+    )
+
+    if recognizer is None:
+        existing = _pi_api_get(
+            structure,
+            (
+                "amide_groups",
+                "amides",
+            ),
+        )
+
+        return _pi_api_as_list(
+            existing
+        )
+
+    return _pi_api_as_list(
+        _pi_api_call_with_supported_arguments(
+            recognizer,
+            structure,
+            strict=config.strict,
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 14.11. Reconhecimento conjunto
+# -----------------------------------------------------------------------------
+
+def recognize_pi_analysis_features(
+    structure: Any,
+    *,
+    aromatic_systems: Optional[Iterable[Any]] = None,
+    positive_groups: Optional[Iterable[Any]] = None,
+    negative_groups: Optional[Iterable[Any]] = None,
+    amide_groups: Optional[Iterable[Any]] = None,
+    config: Optional[PiAnalysisConfig] = None,
+) -> PiRecognizedFeatures:
+    """
+    Recognize or accept precomputed features needed by the detectors.
+    """
+
+    if config is None:
+        config = create_default_pi_analysis_config()
+
+    recognized_aromatic_systems = (
+        _pi_api_recognize_aromatic_systems(
+            structure,
+            supplied_aromatic_systems=aromatic_systems,
+            config=config,
+        )
+    )
+
+    recognized_positive_groups = (
+        _pi_api_recognize_positive_groups(
+            structure,
+            supplied_groups=positive_groups,
+            config=config,
+        )
+        if config.enable_cation_pi
+        else []
+    )
+
+    recognized_negative_groups = (
+        _pi_api_recognize_negative_groups(
+            structure,
+            supplied_groups=negative_groups,
+            config=config,
+        )
+        if config.enable_anion_pi
+        else []
+    )
+
+    recognized_amide_groups = (
+        _pi_api_recognize_amide_groups(
+            structure,
+            supplied_groups=amide_groups,
+            config=config,
+        )
+        if config.enable_amide_pi
+        else []
+    )
+
+    return PiRecognizedFeatures(
+        aromatic_systems=recognized_aromatic_systems,
+        positive_groups=recognized_positive_groups,
+        negative_groups=recognized_negative_groups,
+        amide_groups=recognized_amide_groups,
+        metadata={
+            "aromatic_systems_supplied": (
+                aromatic_systems is not None
+            ),
+            "positive_groups_supplied": (
+                positive_groups is not None
+            ),
+            "negative_groups_supplied": (
+                negative_groups is not None
+            ),
+            "amide_groups_supplied": (
+                amide_groups is not None
+            ),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 14.12. Anotação de pose
+# -----------------------------------------------------------------------------
+
+def _pi_api_annotate_interaction_pose(
+    interaction: Any,
+    pose_id: Optional[str],
+) -> Any:
+    if pose_id is None:
+        return interaction
+
+    metadata = _pi_api_get(
+        interaction,
+        ("metadata",),
+        {},
+    )
+
+    if isinstance(metadata, Mapping):
+        metadata = dict(
+            metadata
+        )
+
+    else:
+        metadata = {}
+
+    metadata["pose_id"] = str(
+        pose_id
+    )
+
+    updates = {
+        "pose_id": str(
+            pose_id
+        ),
+        "metadata": metadata,
+    }
+
+    if "_pi_group_update_object" in globals():
+        try:
+            return _pi_group_update_object(
+                interaction,
+                updates,
+            )
+
+        except Exception:
+            pass
+
+    if isinstance(
+        interaction,
+        MutableMapping,
+    ):
+        interaction.update(
+            updates
+        )
+
+        return interaction
+
+    if is_dataclass(
+        interaction
+    ):
+        field_names = {
+            field_definition.name
+            for field_definition in fields(
+                interaction
+            )
+        }
+
+        supported_updates = {
+            key: value
+            for key, value in updates.items()
+            if key in field_names
+        }
+
+        parameters = getattr(
+            interaction,
+            "__dataclass_params__",
+            None,
+        )
+
+        if (
+            parameters is not None
+            and parameters.frozen
+        ):
+            return replace(
+                interaction,
+                **supported_updates,
+            )
+
+    for name, value in updates.items():
+        try:
+            setattr(
+                interaction,
+                name,
+                value,
+            )
+
+        except (
+            AttributeError,
+            TypeError,
+        ):
+            continue
+
+    return interaction
+
+
+def _pi_api_annotate_pose_collection(
+    interactions: Iterable[Any],
+    pose_id: Optional[str],
+) -> List[Any]:
+    return [
+        _pi_api_annotate_interaction_pose(
+            interaction,
+            pose_id,
+        )
+        for interaction in interactions
+    ]
+
+
+# -----------------------------------------------------------------------------
+# 14.13. Detecção de todas as categorias
+# -----------------------------------------------------------------------------
+
+def detect_all_pi_interactions(
+    features: PiRecognizedFeatures,
+    *,
+    config: PiAnalysisConfig,
+) -> PiDetectedInteractions:
+    """
+    Run all enabled detectors using recognized features.
+    """
+
+    aromatic_systems = features.aromatic_systems
+
+    detected = PiDetectedInteractions()
+
+    if config.enable_pi_pi:
+        detector = globals().get(
+            "detect_pi_pi_interactions"
+        )
+
+        if not callable(detector):
+            raise PiAnalysisConfigurationError(
+                "detect_pi_pi_interactions() is unavailable."
+            )
+
+        detected.pi_pi = _pi_api_as_list(
+            _pi_api_call_with_supported_arguments(
+                detector,
+                aromatic_systems,
+                config=config.pi_pi_config,
+                strict=config.strict,
+            )
+        )
+
+    if config.enable_cation_pi:
+        detector = globals().get(
+            "detect_cation_pi_interactions"
+        )
+
+        if not callable(detector):
+            raise PiAnalysisConfigurationError(
+                "detect_cation_pi_interactions() is unavailable."
+            )
+
+        detected.cation_pi = _pi_api_as_list(
+            _pi_api_call_with_supported_arguments(
+                detector,
+                aromatic_systems,
+                features.positive_groups,
+                config=config.cation_pi_config,
+                strict=config.strict,
+            )
+        )
+
+    if config.enable_anion_pi:
+        detector = globals().get(
+            "detect_anion_pi_interactions"
+        )
+
+        if not callable(detector):
+            raise PiAnalysisConfigurationError(
+                "detect_anion_pi_interactions() is unavailable."
+            )
+
+        detected.anion_pi = _pi_api_as_list(
+            _pi_api_call_with_supported_arguments(
+                detector,
+                aromatic_systems,
+                features.negative_groups,
+                config=config.anion_pi_config,
+                strict=config.strict,
+            )
+        )
+
+    if config.enable_amide_pi:
+        detector = globals().get(
+            "detect_amide_pi_interactions"
+        )
+
+        if not callable(detector):
+            raise PiAnalysisConfigurationError(
+                "detect_amide_pi_interactions() is unavailable."
+            )
+
+        detected.amide_pi = _pi_api_as_list(
+            _pi_api_call_with_supported_arguments(
+                detector,
+                aromatic_systems,
+                features.amide_groups,
+                config=config.amide_pi_config,
+                strict=config.strict,
+            )
+        )
+
+    if config.pose_id is not None:
+        detected.pi_pi = _pi_api_annotate_pose_collection(
+            detected.pi_pi,
+            config.pose_id,
+        )
+
+        detected.cation_pi = _pi_api_annotate_pose_collection(
+            detected.cation_pi,
+            config.pose_id,
+        )
+
+        detected.anion_pi = _pi_api_annotate_pose_collection(
+            detected.anion_pi,
+            config.pose_id,
+        )
+
+        detected.amide_pi = _pi_api_annotate_pose_collection(
+            detected.amide_pi,
+            config.pose_id,
+        )
+
+    return detected
+
+
+# -----------------------------------------------------------------------------
+# 14.14. Pipeline comum pós-detecção
+# -----------------------------------------------------------------------------
+
+def _pi_api_finalize_detected_interactions(
+    detected: PiDetectedInteractions,
+    *,
+    config: PiAnalysisConfig,
+) -> Tuple[
+    List[Any],
+    Optional[Any],
+    Optional[Any],
+    Optional[Any],
+]:
+    """
+    Consolidate, score, group and summarize detector outputs.
+    """
+
+    consolidated_result: Optional[Any] = None
+    grouping_result: Optional[Any] = None
+    statistics_report: Optional[Any] = None
+
+    if config.run_scoring:
+        consolidation_function = globals().get(
+            "consolidate_classify_and_score_pi_interactions"
+        )
+
+        if not callable(
+            consolidation_function
+        ):
+            raise PiAnalysisConfigurationError(
+                "consolidate_classify_and_score_pi_interactions() "
+                "is unavailable."
+            )
+
+        consolidated_result = (
+            _pi_api_call_with_supported_arguments(
+                consolidation_function,
+                pi_pi_interactions=detected.pi_pi,
+                cation_pi_interactions=detected.cation_pi,
+                anion_pi_interactions=detected.anion_pi,
+                amide_pi_interactions=detected.amide_pi,
+                config=config.scoring_config,
+                strict=config.strict,
+            )
+        )
+
+        interactions = _pi_api_as_list(
+            _pi_api_get(
+                consolidated_result,
+                ("interactions",),
+                [],
+            )
+        )
+
+    else:
+        interactions = detected.all
+
+    if config.run_grouping:
+        grouping_function = globals().get(
+            "organize_pi_interactions"
+        )
+
+        if not callable(
+            grouping_function
+        ):
+            raise PiAnalysisConfigurationError(
+                "organize_pi_interactions() is unavailable."
+            )
+
+        grouping_result = (
+            _pi_api_call_with_supported_arguments(
+                grouping_function,
+                interactions,
+                config=config.grouping_config,
+            )
+        )
+
+        interactions = _pi_api_as_list(
+            _pi_api_get(
+                grouping_result,
+                ("interactions",),
+                interactions,
+            )
+        )
+
+    if config.run_statistics:
+        statistics_function = globals().get(
+            "calculate_pi_statistics"
+        )
+
+        if not callable(
+            statistics_function
+        ):
+            raise PiAnalysisConfigurationError(
+                "calculate_pi_statistics() is unavailable."
+            )
+
+        statistics_report = (
+            _pi_api_call_with_supported_arguments(
+                statistics_function,
+                interactions,
+                grouping_result=grouping_result,
+                config=config.statistics_config,
+            )
+        )
+
+    return (
+        interactions,
+        consolidated_result,
+        grouping_result,
+        statistics_report,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 14.15. Função pública principal
+# -----------------------------------------------------------------------------
+
+def analyze_pi_interactions(
+    structure: Any,
+    *,
+    aromatic_systems: Optional[Iterable[Any]] = None,
+    positive_groups: Optional[Iterable[Any]] = None,
+    negative_groups: Optional[Iterable[Any]] = None,
+    amide_groups: Optional[Iterable[Any]] = None,
+    config: Optional[PiAnalysisConfig] = None,
+    analysis_id: Optional[str] = None,
+    pose_id: Optional[str] = None,
+) -> PiAnalysisResult:
+    """
+    Execute the complete π-interaction analysis pipeline.
+
+    Pipeline
+    --------
+    normalization
+        → recognition
+        → geometry
+        → detection
+        → classification and scoring
+        → deduplication
+        → grouping
+        → statistics
+        → final result
+
+    Parameters
+    ----------
+    structure:
+        Input molecular structure, atom collection, pose or normalized model.
+    aromatic_systems:
+        Optional systems precomputed by Section 4.
+    positive_groups:
+        Optional positive groups precomputed by Section 6.
+    negative_groups:
+        Optional negative groups precomputed by Section 6.
+    amide_groups:
+        Optional amide groups precomputed by Section 7.
+    config:
+        Complete public API configuration.
+    analysis_id:
+        Optional stable analysis identifier.
+    pose_id:
+        Optional pose/model identifier propagated to all interactions.
+    """
+
+    if config is None:
+        config = create_default_pi_analysis_config()
+
+    if analysis_id is not None:
+        config = replace(
+            config,
+            analysis_id=str(
+                analysis_id
+            ),
+        )
+
+    if pose_id is not None:
+        config = replace(
+            config,
+            pose_id=str(
+                pose_id
+            ),
+        )
+
+    resolved_analysis_id = _pi_api_analysis_id(
+        explicit_id=config.analysis_id,
+        pose_id=config.pose_id,
+    )
+
+    if not config.enabled:
+        return PiAnalysisResult(
+            analysis_id=resolved_analysis_id,
+            analysis_mode=PI_ANALYSIS_MODE_COMPLETE,
+            pose_id=config.pose_id,
+            input_structure=structure,
+            normalized_structure=structure,
+            recognized_features=PiRecognizedFeatures(),
+            detected_interactions=PiDetectedInteractions(),
+            consolidated_result=None,
+            grouping_result=None,
+            statistics_report=None,
+            interactions=[],
+            success=True,
+            completed_stage=PI_ANALYSIS_STAGE_COMPLETED,
+            warnings=[
+                "π-interaction analysis is disabled."
+            ],
+            metadata={
+                "enabled": False,
+                "schema_version": (
+                    PI_ANALYSIS_SCHEMA_VERSION
+                ),
+            },
+        )
+
+    intermediate_results: Dict[str, Any] = {}
+
+    # -------------------------------------------------------------------------
+    # Normalization
+    # -------------------------------------------------------------------------
+
+    try:
+        normalized_structure = _pi_api_normalize_structure(
+            structure,
+            config=config,
+        )
+
+    except Exception as exc:
+        raise PiAnalysisStageError(
+            PI_ANALYSIS_STAGE_NORMALIZATION,
+            str(exc),
+            original_exception=exc,
+        ) from exc
+
+    if config.preserve_intermediate_results:
+        intermediate_results[
+            PI_ANALYSIS_STAGE_NORMALIZATION
+        ] = normalized_structure
+
+    # -------------------------------------------------------------------------
+    # Recognition and geometric feature preparation
+    # -------------------------------------------------------------------------
+
+    try:
+        features = recognize_pi_analysis_features(
+            normalized_structure,
+            aromatic_systems=aromatic_systems,
+            positive_groups=positive_groups,
+            negative_groups=negative_groups,
+            amide_groups=amide_groups,
+            config=config,
+        )
+
+    except Exception as exc:
+        raise PiAnalysisStageError(
+            PI_ANALYSIS_STAGE_RECOGNITION,
+            str(exc),
+            original_exception=exc,
+        ) from exc
+
+    if config.preserve_intermediate_results:
+        intermediate_results[
+            PI_ANALYSIS_STAGE_RECOGNITION
+        ] = features
+
+    # Ring centroids, normals, planarity and group centers are expected to have
+    # been calculated by Sections 4–7. Detector functions also calculate any
+    # pair-dependent geometry needed during evaluation.
+
+    if config.preserve_intermediate_results:
+        intermediate_results[
+            PI_ANALYSIS_STAGE_GEOMETRY
+        ] = {
+            "aromatic_system_count": len(
+                features.aromatic_systems
+            ),
+            "positive_group_count": len(
+                features.positive_groups
+            ),
+            "negative_group_count": len(
+                features.negative_groups
+            ),
+            "amide_group_count": len(
+                features.amide_groups
+            ),
+        }
+
+    # -------------------------------------------------------------------------
+    # Detection
+    # -------------------------------------------------------------------------
+
+    try:
+        detected = detect_all_pi_interactions(
+            features,
+            config=config,
+        )
+
+    except Exception as exc:
+        raise PiAnalysisStageError(
+            PI_ANALYSIS_STAGE_DETECTION,
+            str(exc),
+            original_exception=exc,
+        ) from exc
+
+    if config.preserve_intermediate_results:
+        intermediate_results[
+            PI_ANALYSIS_STAGE_DETECTION
+        ] = detected
+
+    # -------------------------------------------------------------------------
+    # Consolidation, scoring, grouping and statistics
+    # -------------------------------------------------------------------------
+
+    try:
+        (
+            interactions,
+            consolidated_result,
+            grouping_result,
+            statistics_report,
+        ) = _pi_api_finalize_detected_interactions(
+            detected,
+            config=config,
+        )
+
+    except Exception as exc:
+        stage = (
+            PI_ANALYSIS_STAGE_SCORING
+            if config.run_scoring
+            else (
+                PI_ANALYSIS_STAGE_GROUPING
+                if config.run_grouping
+                else PI_ANALYSIS_STAGE_STATISTICS
+            )
+        )
+
+        raise PiAnalysisStageError(
+            stage,
+            str(exc),
+            original_exception=exc,
+        ) from exc
+
+    if (
+        config.preserve_intermediate_results
+        and consolidated_result is not None
+    ):
+        intermediate_results[
+            PI_ANALYSIS_STAGE_SCORING
+        ] = consolidated_result
+
+    if (
+        config.preserve_intermediate_results
+        and grouping_result is not None
+    ):
+        intermediate_results[
+            PI_ANALYSIS_STAGE_GROUPING
+        ] = grouping_result
+
+    if (
+        config.preserve_intermediate_results
+        and statistics_report is not None
+    ):
+        intermediate_results[
+            PI_ANALYSIS_STAGE_STATISTICS
+        ] = statistics_report
+
+    warnings: List[str] = []
+
+    if not features.aromatic_systems:
+        warnings.append(
+            "No aromatic systems were recognized."
+        )
+
+    if (
+        config.enable_cation_pi
+        and not features.positive_groups
+    ):
+        warnings.append(
+            "No positive groups were recognized for cation–π analysis."
+        )
+
+    if (
+        config.enable_anion_pi
+        and not features.negative_groups
+    ):
+        warnings.append(
+            "No negative groups were recognized for anion–π analysis."
+        )
+
+    if (
+        config.enable_amide_pi
+        and not features.amide_groups
+    ):
+        warnings.append(
+            "No amide groups were recognized for amide–π analysis."
+        )
+
+    return PiAnalysisResult(
+        analysis_id=resolved_analysis_id,
+        analysis_mode=PI_ANALYSIS_MODE_COMPLETE,
+        pose_id=config.pose_id,
+        input_structure=structure,
+        normalized_structure=normalized_structure,
+        recognized_features=features,
+        detected_interactions=detected,
+        consolidated_result=consolidated_result,
+        grouping_result=grouping_result,
+        statistics_report=statistics_report,
+        interactions=interactions,
+        success=True,
+        completed_stage=PI_ANALYSIS_STAGE_COMPLETED,
+        warnings=warnings,
+        errors=[],
+        intermediate_results=(
+            intermediate_results
+            if config.preserve_intermediate_results
+            else {}
+        ),
+        metadata={
+            "schema": "pi-analysis-result",
+            "schema_version": (
+                PI_ANALYSIS_SCHEMA_VERSION
+            ),
+            "enabled_categories": {
+                "pi_pi": config.enable_pi_pi,
+                "cation_pi": config.enable_cation_pi,
+                "anion_pi": config.enable_anion_pi,
+                "amide_pi": config.enable_amide_pi,
+            },
+            "pipeline": [
+                PI_ANALYSIS_STAGE_NORMALIZATION,
+                PI_ANALYSIS_STAGE_RECOGNITION,
+                PI_ANALYSIS_STAGE_GEOMETRY,
+                PI_ANALYSIS_STAGE_DETECTION,
+                PI_ANALYSIS_STAGE_SCORING,
+                PI_ANALYSIS_STAGE_GROUPING,
+                PI_ANALYSIS_STAGE_STATISTICS,
+            ],
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 14.16. Configuração especializada por categoria
+# -----------------------------------------------------------------------------
+
+def _pi_api_config_for_mode(
+    mode: str,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+) -> PiAnalysisConfig:
+    """
+    Return a configuration restricted to one interaction category.
+    """
+
+    if config is None:
+        config = create_default_pi_analysis_config()
+
+    mode = str(
+        mode
+    ).strip().lower()
+
+    if mode not in {
+        PI_ANALYSIS_MODE_PI_PI,
+        PI_ANALYSIS_MODE_CATION_PI,
+        PI_ANALYSIS_MODE_ANION_PI,
+        PI_ANALYSIS_MODE_AMIDE_PI,
+    }:
+        raise PiAnalysisConfigurationError(
+            f"Unsupported specialized analysis mode: {mode!r}."
+        )
+
+    return replace(
+        config,
+        enable_pi_pi=(
+            mode == PI_ANALYSIS_MODE_PI_PI
+        ),
+        enable_cation_pi=(
+            mode == PI_ANALYSIS_MODE_CATION_PI
+        ),
+        enable_anion_pi=(
+            mode == PI_ANALYSIS_MODE_ANION_PI
+        ),
+        enable_amide_pi=(
+            mode == PI_ANALYSIS_MODE_AMIDE_PI
+        ),
+    )
+
+
+def _pi_api_replace_result_mode(
+    result: PiAnalysisResult,
+    mode: str,
+) -> PiAnalysisResult:
+    result.analysis_mode = mode
+
+    result.metadata[
+        "analysis_mode"
+    ] = mode
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 14.17. API pública π–π
+# -----------------------------------------------------------------------------
+
+def analyze_pi_pi_interactions(
+    structure: Any,
+    *,
+    aromatic_systems: Optional[Iterable[Any]] = None,
+    config: Optional[PiAnalysisConfig] = None,
+    analysis_id: Optional[str] = None,
+    pose_id: Optional[str] = None,
+) -> PiAnalysisResult:
+    """
+    Analyze only π–π interactions.
+    """
+
+    specialized_config = _pi_api_config_for_mode(
+        PI_ANALYSIS_MODE_PI_PI,
+        config=config,
+    )
+
+    result = analyze_pi_interactions(
+        structure,
+        aromatic_systems=aromatic_systems,
+        config=specialized_config,
+        analysis_id=analysis_id,
+        pose_id=pose_id,
+    )
+
+    return _pi_api_replace_result_mode(
+        result,
+        PI_ANALYSIS_MODE_PI_PI,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 14.18. API pública cátion–π
+# -----------------------------------------------------------------------------
+
+def analyze_cation_pi_interactions(
+    structure: Any,
+    *,
+    aromatic_systems: Optional[Iterable[Any]] = None,
+    positive_groups: Optional[Iterable[Any]] = None,
+    config: Optional[PiAnalysisConfig] = None,
+    analysis_id: Optional[str] = None,
+    pose_id: Optional[str] = None,
+) -> PiAnalysisResult:
+    """
+    Analyze only cation–π interactions.
+    """
+
+    specialized_config = _pi_api_config_for_mode(
+        PI_ANALYSIS_MODE_CATION_PI,
+        config=config,
+    )
+
+    result = analyze_pi_interactions(
+        structure,
+        aromatic_systems=aromatic_systems,
+        positive_groups=positive_groups,
+        config=specialized_config,
+        analysis_id=analysis_id,
+        pose_id=pose_id,
+    )
+
+    return _pi_api_replace_result_mode(
+        result,
+        PI_ANALYSIS_MODE_CATION_PI,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 14.19. API pública ânion–π
+# -----------------------------------------------------------------------------
+
+def analyze_anion_pi_interactions(
+    structure: Any,
+    *,
+    aromatic_systems: Optional[Iterable[Any]] = None,
+    negative_groups: Optional[Iterable[Any]] = None,
+    config: Optional[PiAnalysisConfig] = None,
+    analysis_id: Optional[str] = None,
+    pose_id: Optional[str] = None,
+) -> PiAnalysisResult:
+    """
+    Analyze only anion–π interactions.
+    """
+
+    specialized_config = _pi_api_config_for_mode(
+        PI_ANALYSIS_MODE_ANION_PI,
+        config=config,
+    )
+
+    result = analyze_pi_interactions(
+        structure,
+        aromatic_systems=aromatic_systems,
+        negative_groups=negative_groups,
+        config=specialized_config,
+        analysis_id=analysis_id,
+        pose_id=pose_id,
+    )
+
+    return _pi_api_replace_result_mode(
+        result,
+        PI_ANALYSIS_MODE_ANION_PI,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 14.20. API pública amida–π
+# -----------------------------------------------------------------------------
+
+def analyze_amide_pi_interactions(
+    structure: Any,
+    *,
+    aromatic_systems: Optional[Iterable[Any]] = None,
+    amide_groups: Optional[Iterable[Any]] = None,
+    config: Optional[PiAnalysisConfig] = None,
+    analysis_id: Optional[str] = None,
+    pose_id: Optional[str] = None,
+) -> PiAnalysisResult:
+    """
+    Analyze only amide–π interactions.
+    """
+
+    specialized_config = _pi_api_config_for_mode(
+        PI_ANALYSIS_MODE_AMIDE_PI,
+        config=config,
+    )
+
+    result = analyze_pi_interactions(
+        structure,
+        aromatic_systems=aromatic_systems,
+        amide_groups=amide_groups,
+        config=specialized_config,
+        analysis_id=analysis_id,
+        pose_id=pose_id,
+    )
+
+    return _pi_api_replace_result_mode(
+        result,
+        PI_ANALYSIS_MODE_AMIDE_PI,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 14.21. Normalização da entrada multipose
+# -----------------------------------------------------------------------------
+
+def _pi_api_normalize_pose_inputs(
+    poses: Union[
+        Iterable[Any],
+        Mapping[Any, Any],
+    ],
+) -> List[Tuple[str, Any]]:
+    """
+    Normalize pose input into ``[(pose_id, pose), ...]``.
+    """
+
+    normalized: List[
+        Tuple[str, Any]
+    ] = []
+
+    if isinstance(
+        poses,
+        Mapping,
+    ):
+        for pose_id, pose in poses.items():
+            normalized.append(
+                (
+                    str(pose_id),
+                    pose,
+                )
+            )
+
+        return normalized
+
+    for index, item in enumerate(
+        poses,
+        start=1,
+    ):
+        if (
+            isinstance(item, tuple)
+            and len(item) == 2
+        ):
+            pose_id, pose = item
+
+            normalized.append(
+                (
+                    str(pose_id),
+                    pose,
+                )
+            )
+
+            continue
+
+        explicit_pose_id = _pi_api_get(
+            item,
+            (
+                "pose_id",
+                "model_id",
+                "state_id",
+                "id",
+            ),
+        )
+
+        normalized.append(
+            (
+                str(
+                    explicit_pose_id
+                    if explicit_pose_id is not None
+                    else index
+                ),
+                item,
+            )
+        )
+
+    return normalized
+
+
+def _pi_api_resolve_pose_features(
+    source: Optional[
+        Union[
+            Mapping[Any, Iterable[Any]],
+            Sequence[Iterable[Any]],
+            Callable[[str, Any], Iterable[Any]],
+        ]
+    ],
+    *,
+    pose_id: str,
+    pose: Any,
+    index: int,
+) -> Optional[Iterable[Any]]:
+    if source is None:
+        return None
+
+    if callable(
+        source
+    ):
+        return source(
+            pose_id,
+            pose,
+        )
+
+    if isinstance(
+        source,
+        Mapping,
+    ):
+        if pose_id in source:
+            return source[
+                pose_id
+            ]
+
+        try:
+            numeric_pose_id = int(
+                pose_id
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            numeric_pose_id = None
+
+        if (
+            numeric_pose_id is not None
+            and numeric_pose_id in source
+        ):
+            return source[
+                numeric_pose_id
+            ]
+
+        return None
+
+    if index < len(source):
+        return source[
+            index
+        ]
+
+    return None
+
+
+# -----------------------------------------------------------------------------
+# 14.22. Seleção da melhor pose
+# -----------------------------------------------------------------------------
+
+def _pi_api_select_best_pose(
+    pose_results: Sequence[PiAnalysisResult],
+) -> Optional[PiAnalysisResult]:
+    successful_results = [
+        result
+        for result in pose_results
+        if result.success
+    ]
+
+    if not successful_results:
+        return None
+
+    return max(
+        successful_results,
+        key=lambda result: (
+            result.normalized_score,
+            result.total_score,
+            result.total_interactions,
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 14.23. API pública multipose
+# -----------------------------------------------------------------------------
+
+def analyze_multiple_poses_pi(
+    poses: Union[
+        Iterable[Any],
+        Mapping[Any, Any],
+    ],
+    *,
+    aromatic_systems: Optional[
+        Union[
+            Mapping[Any, Iterable[Any]],
+            Sequence[Iterable[Any]],
+            Callable[[str, Any], Iterable[Any]],
+        ]
+    ] = None,
+    positive_groups: Optional[
+        Union[
+            Mapping[Any, Iterable[Any]],
+            Sequence[Iterable[Any]],
+            Callable[[str, Any], Iterable[Any]],
+        ]
+    ] = None,
+    negative_groups: Optional[
+        Union[
+            Mapping[Any, Iterable[Any]],
+            Sequence[Iterable[Any]],
+            Callable[[str, Any], Iterable[Any]],
+        ]
+    ] = None,
+    amide_groups: Optional[
+        Union[
+            Mapping[Any, Iterable[Any]],
+            Sequence[Iterable[Any]],
+            Callable[[str, Any], Iterable[Any]],
+        ]
+    ] = None,
+    config: Optional[PiAnalysisConfig] = None,
+    analysis_id: Optional[str] = None,
+    continue_on_error: bool = True,
+) -> PiMultiplePoseAnalysisResult:
+    """
+    Analyze multiple poses independently and produce a global aggregate.
+
+    Each pose undergoes the complete single-pose pipeline. The final global
+    stage then consolidates all pose interactions while preserving pose
+    identity, calculates multipose frequencies and generates aggregate
+    statistics.
+    """
+
+    if config is None:
+        config = create_default_pi_analysis_config()
+
+    normalized_poses = _pi_api_normalize_pose_inputs(
+        poses
+    )
+
+    resolved_analysis_id = _pi_api_analysis_id(
+        prefix="pi-multipose-analysis",
+        explicit_id=analysis_id or config.analysis_id,
+    )
+
+    pose_results: List[
+        PiAnalysisResult
+    ] = []
+
+    all_pose_interactions: List[Any] = []
+
+    warnings: List[str] = []
+    errors: List[str] = []
+
+    for index, (
+        pose_id,
+        pose,
+    ) in enumerate(
+        normalized_poses
+    ):
+        pose_analysis_id = (
+            f"{resolved_analysis_id}:"
+            f"pose:{pose_id}"
+        )
+
+        pose_config = replace(
+            config,
+            analysis_id=pose_analysis_id,
+            pose_id=pose_id,
+        )
+
+        pose_aromatic_systems = (
+            _pi_api_resolve_pose_features(
+                aromatic_systems,
+                pose_id=pose_id,
+                pose=pose,
+                index=index,
+            )
+        )
+
+        pose_positive_groups = (
+            _pi_api_resolve_pose_features(
+                positive_groups,
+                pose_id=pose_id,
+                pose=pose,
+                index=index,
+            )
+        )
+
+        pose_negative_groups = (
+            _pi_api_resolve_pose_features(
+                negative_groups,
+                pose_id=pose_id,
+                pose=pose,
+                index=index,
+            )
+        )
+
+        pose_amide_groups = (
+            _pi_api_resolve_pose_features(
+                amide_groups,
+                pose_id=pose_id,
+                pose=pose,
+                index=index,
+            )
+        )
+
+        try:
+            pose_result = analyze_pi_interactions(
+                pose,
+                aromatic_systems=pose_aromatic_systems,
+                positive_groups=pose_positive_groups,
+                negative_groups=pose_negative_groups,
+                amide_groups=pose_amide_groups,
+                config=pose_config,
+                analysis_id=pose_analysis_id,
+                pose_id=pose_id,
+            )
+
+        except Exception as exc:
+            error_message = (
+                f"Pose {pose_id!r} failed: {exc}"
+            )
+
+            errors.append(
+                error_message
+            )
+
+            if not continue_on_error:
+                raise
+
+            pose_result = PiAnalysisResult(
+                analysis_id=pose_analysis_id,
+                analysis_mode=PI_ANALYSIS_MODE_COMPLETE,
+                pose_id=pose_id,
+                input_structure=pose,
+                normalized_structure=pose,
+                recognized_features=PiRecognizedFeatures(),
+                detected_interactions=PiDetectedInteractions(),
+                consolidated_result=None,
+                grouping_result=None,
+                statistics_report=None,
+                interactions=[],
+                success=False,
+                completed_stage="failed",
+                warnings=[],
+                errors=[
+                    error_message
+                ],
+                metadata={
+                    "schema": "pi-analysis-result",
+                    "schema_version": (
+                        PI_ANALYSIS_SCHEMA_VERSION
+                    ),
+                },
+            )
+
+        pose_results.append(
+            pose_result
+        )
+
+        if pose_result.success:
+            all_pose_interactions.extend(
+                _pi_api_annotate_pose_collection(
+                    pose_result.interactions,
+                    pose_id,
+                )
+            )
+
+    successful_pose_count = sum(
+        1
+        for result in pose_results
+        if result.success
+    )
+
+    failed_pose_count = (
+        len(pose_results)
+        - successful_pose_count
+    )
+
+    # -------------------------------------------------------------------------
+    # Global multipose consolidation
+    # -------------------------------------------------------------------------
+
+    consolidated_result: Optional[Any] = None
+    grouping_result: Optional[Any] = None
+    statistics_report: Optional[Any] = None
+
+    global_interactions = list(
+        all_pose_interactions
+    )
+
+    if config.run_scoring:
+        scoring_function = globals().get(
+            "classify_and_score_pi_interactions"
+        )
+
+        if not callable(
+            scoring_function
+        ):
+            raise PiAnalysisConfigurationError(
+                "classify_and_score_pi_interactions() is unavailable."
+            )
+
+        global_interactions = _pi_api_as_list(
+            _pi_api_call_with_supported_arguments(
+                scoring_function,
+                global_interactions,
+                config=config.scoring_config,
+                strict=config.strict,
+            )
+        )
+
+    if config.run_grouping:
+        grouping_config = config.grouping_config
+
+        # Multipose interactions must remain distinct at the primary grouping
+        # stage. Their recurrence is evaluated separately as frequency.
+        if (
+            grouping_config is not None
+            and is_dataclass(grouping_config)
+        ):
+            try:
+                grouping_config = replace(
+                    grouping_config,
+                    merge_across_poses=False,
+                )
+
+            except TypeError:
+                pass
+
+        grouping_function = globals().get(
+            "organize_pi_interactions"
+        )
+
+        if not callable(
+            grouping_function
+        ):
+            raise PiAnalysisConfigurationError(
+                "organize_pi_interactions() is unavailable."
+            )
+
+        grouping_result = (
+            _pi_api_call_with_supported_arguments(
+                grouping_function,
+                global_interactions,
+                config=grouping_config,
+            )
+        )
+
+        global_interactions = _pi_api_as_list(
+            _pi_api_get(
+                grouping_result,
+                ("interactions",),
+                global_interactions,
+            )
+        )
+
+    if config.run_statistics:
+        statistics_config = (
+            config.statistics_config
+        )
+
+        if (
+            statistics_config is not None
+            and is_dataclass(
+                statistics_config
+            )
+        ):
+            try:
+                statistics_config = replace(
+                    statistics_config,
+                    total_pose_count=len(
+                        normalized_poses
+                    ),
+                    calculate_multipose_frequency=True,
+                )
+
+            except TypeError:
+                pass
+
+        statistics_function = globals().get(
+            "calculate_pi_statistics"
+        )
+
+        if not callable(
+            statistics_function
+        ):
+            raise PiAnalysisConfigurationError(
+                "calculate_pi_statistics() is unavailable."
+            )
+
+        statistics_report = (
+            _pi_api_call_with_supported_arguments(
+                statistics_function,
+                global_interactions,
+                grouping_result=grouping_result,
+                config=statistics_config,
+            )
+        )
+
+    best_pose_result = _pi_api_select_best_pose(
+        pose_results
+    )
+
+    best_pose_id = (
+        None
+        if best_pose_result is None
+        else best_pose_result.pose_id
+    )
+
+    if failed_pose_count:
+        warnings.append(
+            f"{failed_pose_count} pose(s) failed during analysis."
+        )
+
+    if not normalized_poses:
+        warnings.append(
+            "No poses were supplied."
+        )
+
+    return PiMultiplePoseAnalysisResult(
+        analysis_id=resolved_analysis_id,
+        pose_results=pose_results,
+        interactions=global_interactions,
+        consolidated_result=consolidated_result,
+        grouping_result=grouping_result,
+        statistics_report=statistics_report,
+        pose_count=len(
+            normalized_poses
+        ),
+        successful_pose_count=successful_pose_count,
+        failed_pose_count=failed_pose_count,
+        best_pose_id=best_pose_id,
+        best_pose_result=best_pose_result,
+        warnings=warnings,
+        errors=errors,
+        metadata={
+            "schema": "pi-multipose-analysis-result",
+            "schema_version": (
+                PI_ANALYSIS_SCHEMA_VERSION
+            ),
+            "pose_ids": [
+                pose_id
+                for pose_id, _ in normalized_poses
+            ],
+            "continue_on_error": continue_on_error,
+            "frequency_unit": (
+                "equivalent interaction across poses"
+            ),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 14.24. APIs para entradas já reconhecidas
+# -----------------------------------------------------------------------------
+
+def analyze_recognized_pi_features(
+    features: PiRecognizedFeatures,
+    *,
+    structure: Any = None,
+    config: Optional[PiAnalysisConfig] = None,
+    analysis_id: Optional[str] = None,
+    pose_id: Optional[str] = None,
+) -> PiAnalysisResult:
+    """
+    Analyze features already recognized by Sections 4–7.
+
+    This function skips feature recognition but still performs detection,
+    scoring, deduplication, grouping and statistics.
+    """
+
+    if config is None:
+        config = create_default_pi_analysis_config()
+
+    if pose_id is not None:
+        config = replace(
+            config,
+            pose_id=str(
+                pose_id
+            ),
+        )
+
+    resolved_analysis_id = _pi_api_analysis_id(
+        explicit_id=(
+            analysis_id
+            or config.analysis_id
+        ),
+        pose_id=config.pose_id,
+    )
+
+    detected = detect_all_pi_interactions(
+        features,
+        config=config,
+    )
+
+    (
+        interactions,
+        consolidated_result,
+        grouping_result,
+        statistics_report,
+    ) = _pi_api_finalize_detected_interactions(
+        detected,
+        config=config,
+    )
+
+    return PiAnalysisResult(
+        analysis_id=resolved_analysis_id,
+        analysis_mode=PI_ANALYSIS_MODE_COMPLETE,
+        pose_id=config.pose_id,
+        input_structure=structure,
+        normalized_structure=structure,
+        recognized_features=features,
+        detected_interactions=detected,
+        consolidated_result=consolidated_result,
+        grouping_result=grouping_result,
+        statistics_report=statistics_report,
+        interactions=interactions,
+        success=True,
+        completed_stage=PI_ANALYSIS_STAGE_COMPLETED,
+        metadata={
+            "schema": "pi-analysis-result",
+            "schema_version": (
+                PI_ANALYSIS_SCHEMA_VERSION
+            ),
+            "recognition_skipped": True,
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 14.25. Resumo público
+# -----------------------------------------------------------------------------
+
+def summarize_pi_analysis_result(
+    result: Union[
+        PiAnalysisResult,
+        PiMultiplePoseAnalysisResult,
+    ],
+) -> Dict[str, Any]:
+    """
+    Return a compact summary of a single- or multipose result.
+    """
+
+    if isinstance(
+        result,
+        PiMultiplePoseAnalysisResult,
+    ):
+        statistics_report = (
+            result.statistics_report
+        )
+
+        return {
+            "analysis_id": result.analysis_id,
+            "analysis_mode": (
+                PI_ANALYSIS_MODE_MULTIPOSE
+            ),
+            "success": result.success,
+            "partial_success": (
+                result.partial_success
+            ),
+            "pose_count": result.pose_count,
+            "successful_pose_count": (
+                result.successful_pose_count
+            ),
+            "failed_pose_count": (
+                result.failed_pose_count
+            ),
+            "total_interactions": (
+                result.total_interactions
+            ),
+            "best_pose_id": result.best_pose_id,
+            "total_score": _pi_api_get(
+                statistics_report,
+                ("total_score",),
+                0.0,
+            ),
+            "normalized_score": _pi_api_get(
+                statistics_report,
+                ("normalized_total_score",),
+                0.0,
+            ),
+            "hotspot_count": len(
+                _pi_api_get(
+                    statistics_report,
+                    ("hotspots",),
+                    [],
+                )
+                or []
+            ),
+            "warnings": list(
+                result.warnings
+            ),
+            "errors": list(
+                result.errors
+            ),
+        }
+
+    return {
+        "analysis_id": result.analysis_id,
+        "analysis_mode": result.analysis_mode,
+        "pose_id": result.pose_id,
+        "success": result.success,
+        "completed_stage": result.completed_stage,
+        "total_interactions": (
+            result.total_interactions
+        ),
+        "total_score": result.total_score,
+        "normalized_score": (
+            result.normalized_score
+        ),
+        "recognized_features": (
+            result.recognized_features.to_dict()
+        ),
+        "detected_interactions": (
+            result.detected_interactions.to_dict()
+        ),
+        "warnings": list(
+            result.warnings
+        ),
+        "errors": list(
+            result.errors
+        ),
+    }
+
+
+# -----------------------------------------------------------------------------
+# 14.26. Formatação textual
+# -----------------------------------------------------------------------------
+
+def format_pi_analysis_result(
+    result: Union[
+        PiAnalysisResult,
+        PiMultiplePoseAnalysisResult,
+    ],
+) -> str:
+    """
+    Format a concise human-readable analysis result.
+    """
+
+    if isinstance(
+        result,
+        PiMultiplePoseAnalysisResult,
+    ):
+        lines = [
+            "π-interaction multipose analysis",
+            f"Analysis ID: {result.analysis_id}",
+            f"Poses: {result.pose_count}",
+            (
+                "Successful poses: "
+                f"{result.successful_pose_count}"
+            ),
+            (
+                "Failed poses: "
+                f"{result.failed_pose_count}"
+            ),
+            (
+                "Total interactions: "
+                f"{result.total_interactions}"
+            ),
+            (
+                "Best pose: "
+                f"{result.best_pose_id or 'none'}"
+            ),
+        ]
+
+        statistics_report = (
+            result.statistics_report
+        )
+
+        if statistics_report is not None:
+            lines.extend(
+                [
+                    (
+                        "Total score: "
+                        f"{float(_pi_api_get(
+                            statistics_report,
+                            ('total_score',),
+                            0.0
+                        )):.2f}"
+                    ),
+                    (
+                        "Normalized score: "
+                        f"{float(_pi_api_get(
+                            statistics_report,
+                            ('normalized_total_score',),
+                            0.0
+                        )):.2f}"
+                    ),
+                ]
+            )
+
+        return "\n".join(
+            lines
+        )
+
+    lines = [
+        "π-interaction analysis",
+        f"Analysis ID: {result.analysis_id}",
+        (
+            "Mode: "
+            f"{result.analysis_mode}"
+        ),
+        (
+            "Pose: "
+            f"{result.pose_id or 'not specified'}"
+        ),
+        (
+            "Status: "
+            f"{'success' if result.success else 'failed'}"
+        ),
+        (
+            "Aromatic systems: "
+            f"{len(result.recognized_features.aromatic_systems)}"
+        ),
+        (
+            "Detected interactions: "
+            f"{len(result.detected_interactions.all)}"
+        ),
+        (
+            "Final interactions: "
+            f"{result.total_interactions}"
+        ),
+        (
+            "Total score: "
+            f"{result.total_score:.2f}"
+        ),
+        (
+            "Normalized score: "
+            f"{result.normalized_score:.2f}"
+        ),
+    ]
+
+    return "\n".join(
+        lines
+    )
+
+
+
+# =============================================================================
+# 15. INTEGRAÇÃO COM DOCKMODEL
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 15.1. Constantes
+# -----------------------------------------------------------------------------
+
+DOCK_MODEL_PI_ATTRIBUTE: Final[str] = "pi"
+DOCK_MODEL_PI_EXPLICIT_ATTRIBUTE: Final[str] = "pi_interactions"
+
+DOCK_MODEL_PI_ATTRIBUTE_CANDIDATES: Final[Tuple[str, ...]] = (
+    DOCK_MODEL_PI_ATTRIBUTE,
+    DOCK_MODEL_PI_EXPLICIT_ATTRIBUTE,
+)
+
+DOCK_MODEL_PI_RESULT_ATTRIBUTE: Final[str] = "pi_analysis"
+DOCK_MODEL_PI_STATISTICS_ATTRIBUTE: Final[str] = "pi_statistics"
+DOCK_MODEL_PI_GROUPING_ATTRIBUTE: Final[str] = "pi_grouping"
+
+DOCK_MODEL_STATISTICS_ATTRIBUTE_CANDIDATES: Final[Tuple[str, ...]] = (
+    "statistics",
+    "stats",
+    "interaction_statistics",
+)
+
+DOCK_MODEL_SCORE_ATTRIBUTE_CANDIDATES: Final[Tuple[str, ...]] = (
+    "score",
+    "interaction_score",
+    "total_score",
+)
+
+DOCK_MODEL_PI_SCORE_KEY: Final[str] = "pi"
+DOCK_MODEL_PI_STATISTICS_KEY: Final[str] = "pi"
+
+DOCK_MODEL_PI_INTEGRATION_SCHEMA_VERSION: Final[str] = "1.0"
+
+
+# -----------------------------------------------------------------------------
+# 15.2. Exceções
+# -----------------------------------------------------------------------------
+
+class DockModelPiIntegrationError(RuntimeError):
+    """
+    Base exception for DockModel π-interaction integration.
+    """
+
+
+class DockModelPiAttributeError(DockModelPiIntegrationError):
+    """
+    Raised when the π attribute cannot be resolved or updated.
+    """
+
+
+class DockModelPiAnalysisError(DockModelPiIntegrationError):
+    """
+    Raised when DockModel analysis fails.
+    """
+
+
+class DockModelPiSerializationError(DockModelPiIntegrationError):
+    """
+    Raised when DockModel π results cannot be serialized.
+    """
+
+
+# -----------------------------------------------------------------------------
+# 15.3. Configuração
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class DockModelPiIntegrationConfig:
+    """
+    Configuration for attaching π-analysis results to DockModel objects.
+    """
+
+    enabled: bool = True
+
+    preferred_pi_attribute: str = DOCK_MODEL_PI_ATTRIBUTE
+
+    fallback_pi_attributes: Tuple[str, ...] = (
+        DOCK_MODEL_PI_EXPLICIT_ATTRIBUTE,
+    )
+
+    create_missing_pi_attribute: bool = True
+
+    preserve_previous_results: bool = True
+    append_new_interactions: bool = False
+    deduplicate_when_appending: bool = True
+
+    store_analysis_result: bool = True
+    analysis_result_attribute: str = (
+        DOCK_MODEL_PI_RESULT_ATTRIBUTE
+    )
+
+    store_grouping_result: bool = True
+    grouping_result_attribute: str = (
+        DOCK_MODEL_PI_GROUPING_ATTRIBUTE
+    )
+
+    store_statistics_report: bool = True
+    statistics_attribute: str = (
+        DOCK_MODEL_PI_STATISTICS_ATTRIBUTE
+    )
+
+    update_global_statistics: bool = True
+    update_global_score: bool = True
+
+    score_mode: str = "normalized"
+    score_update_mode: str = "component"
+
+    preserve_previous_score: bool = True
+    preserve_previous_statistics: bool = True
+
+    store_serializable_summary: bool = True
+    serializable_summary_attribute: str = "pi_summary"
+
+    pose_id_attribute_candidates: Tuple[str, ...] = (
+        "pose_id",
+        "model_id",
+        "state_id",
+        "pose",
+        "index",
+        "id",
+    )
+
+    strict: bool = False
+
+    def __post_init__(self) -> None:
+        self.preferred_pi_attribute = str(
+            self.preferred_pi_attribute
+        ).strip()
+
+        if not self.preferred_pi_attribute:
+            raise DockModelPiAttributeError(
+                "preferred_pi_attribute cannot be empty."
+            )
+
+        self.fallback_pi_attributes = tuple(
+            str(attribute).strip()
+            for attribute in self.fallback_pi_attributes
+            if str(attribute).strip()
+        )
+
+        self.analysis_result_attribute = str(
+            self.analysis_result_attribute
+        ).strip()
+
+        self.grouping_result_attribute = str(
+            self.grouping_result_attribute
+        ).strip()
+
+        self.statistics_attribute = str(
+            self.statistics_attribute
+        ).strip()
+
+        self.serializable_summary_attribute = str(
+            self.serializable_summary_attribute
+        ).strip()
+
+        self.score_mode = str(
+            self.score_mode
+        ).strip().lower()
+
+        if self.score_mode not in {
+            "normalized",
+            "total",
+            "mean",
+            "best",
+        }:
+            raise DockModelPiIntegrationError(
+                "score_mode must be 'normalized', 'total', 'mean' or 'best'."
+            )
+
+        self.score_update_mode = str(
+            self.score_update_mode
+        ).strip().lower()
+
+        if self.score_update_mode not in {
+            "component",
+            "replace",
+            "add",
+            "maximum",
+        }:
+            raise DockModelPiIntegrationError(
+                "score_update_mode must be 'component', 'replace', "
+                "'add' or 'maximum'."
+            )
+
+
+def create_default_dock_model_pi_config(
+) -> DockModelPiIntegrationConfig:
+    """
+    Return the canonical DockModel π-integration configuration.
+    """
+
+    return DockModelPiIntegrationConfig()
+
+
+# -----------------------------------------------------------------------------
+# 15.4. Resultado de integração
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class DockModelPiIntegrationResult:
+    """
+    Result of analyzing and updating one DockModel.
+    """
+
+    dock_model: Any
+    analysis_result: PiAnalysisResult
+
+    pi_attribute: str
+
+    previous_interaction_count: int
+    new_interaction_count: int
+    attached_interaction_count: int
+
+    previous_score: Any
+    updated_score: Any
+
+    previous_statistics: Any
+    updated_statistics: Any
+
+    preserved_previous_results: bool
+    success: bool = True
+
+    warnings: List[str] = field(
+        default_factory=list
+    )
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    def to_dict(
+        self,
+        *,
+        include_model: bool = False,
+        include_interactions: bool = False,
+    ) -> Dict[str, Any]:
+        result = {
+            "success": self.success,
+            "pi_attribute": self.pi_attribute,
+            "previous_interaction_count": (
+                self.previous_interaction_count
+            ),
+            "new_interaction_count": (
+                self.new_interaction_count
+            ),
+            "attached_interaction_count": (
+                self.attached_interaction_count
+            ),
+            "previous_score": self.previous_score,
+            "updated_score": self.updated_score,
+            "previous_statistics": self.previous_statistics,
+            "updated_statistics": self.updated_statistics,
+            "preserved_previous_results": (
+                self.preserved_previous_results
+            ),
+            "warnings": list(self.warnings),
+            "metadata": dict(self.metadata),
+            "analysis": self.analysis_result.to_dict(
+                include_objects=include_interactions
+            ),
+        }
+
+        if include_model:
+            result["dock_model"] = self.dock_model
+
+        return result
+
+
+@dataclass(slots=True)
+class DockModelPiMultipleIntegrationResult:
+    """
+    Result of analyzing multiple DockModel objects.
+    """
+
+    model_results: List[DockModelPiIntegrationResult]
+
+    multipose_result: Optional[
+        PiMultiplePoseAnalysisResult
+    ]
+
+    model_count: int
+    successful_model_count: int
+    failed_model_count: int
+
+    best_model: Optional[Any]
+    best_model_index: Optional[int]
+    best_pose_id: Optional[str]
+
+    success: bool
+
+    warnings: List[str] = field(
+        default_factory=list
+    )
+
+    errors: List[str] = field(
+        default_factory=list
+    )
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    def to_dict(
+        self,
+        *,
+        include_models: bool = False,
+    ) -> Dict[str, Any]:
+        return {
+            "success": self.success,
+            "model_count": self.model_count,
+            "successful_model_count": (
+                self.successful_model_count
+            ),
+            "failed_model_count": self.failed_model_count,
+            "best_model_index": self.best_model_index,
+            "best_pose_id": self.best_pose_id,
+            "warnings": list(self.warnings),
+            "errors": list(self.errors),
+            "metadata": dict(self.metadata),
+            "model_results": [
+                result.to_dict(
+                    include_model=include_models
+                )
+                for result in self.model_results
+            ],
+            "multipose_result": (
+                None
+                if self.multipose_result is None
+                else self.multipose_result.to_dict(
+                    include_objects=False
+                )
+            ),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 15.5. Acesso seguro ao DockModel
+# -----------------------------------------------------------------------------
+
+def _dock_model_pi_get(
+    object_: Any,
+    names: Sequence[str],
+    default: Any = None,
+) -> Any:
+    """
+    Return the first existing non-None attribute or mapping value.
+    """
+
+    if object_ is None:
+        return default
+
+    for name in names:
+        if isinstance(object_, Mapping):
+            value = object_.get(name)
+
+        else:
+            value = getattr(
+                object_,
+                name,
+                None,
+            )
+
+        if value is not None:
+            return value
+
+    return default
+
+
+def _dock_model_pi_has_attribute(
+    object_: Any,
+    name: str,
+) -> bool:
+    if isinstance(object_, Mapping):
+        return name in object_
+
+    return hasattr(
+        object_,
+        name,
+    )
+
+
+def _dock_model_pi_update(
+    object_: Any,
+    updates: Mapping[str, Any],
+    *,
+    allow_new_attributes: bool = True,
+) -> Any:
+    """
+    Update mappings, dataclasses and regular objects.
+
+    Frozen dataclasses are recreated and returned.
+    """
+
+    if isinstance(
+        object_,
+        MutableMapping,
+    ):
+        object_.update(
+            updates
+        )
+        return object_
+
+    supported_updates = dict(
+        updates
+    )
+
+    if is_dataclass(
+        object_
+    ):
+        field_names = {
+            field_definition.name
+            for field_definition in fields(
+                object_
+            )
+        }
+
+        supported_updates = {
+            key: value
+            for key, value in updates.items()
+            if key in field_names
+        }
+
+        dataclass_parameters = getattr(
+            object_,
+            "__dataclass_params__",
+            None,
+        )
+
+        if (
+            dataclass_parameters is not None
+            and dataclass_parameters.frozen
+        ):
+            return replace(
+                object_,
+                **supported_updates,
+            )
+
+    for key, value in supported_updates.items():
+        if (
+            not allow_new_attributes
+            and not hasattr(object_, key)
+        ):
+            continue
+
+        try:
+            setattr(
+                object_,
+                key,
+                value,
+            )
+
+        except (
+            AttributeError,
+            TypeError,
+        ):
+            continue
+
+    return object_
+
+
+# -----------------------------------------------------------------------------
+# 15.6. Resolução do atributo pi
+# -----------------------------------------------------------------------------
+
+def resolve_dock_model_pi_attribute(
+    dock_model: Any,
+    *,
+    config: Optional[DockModelPiIntegrationConfig] = None,
+) -> str:
+    """
+    Resolve the DockModel attribute used to store π interactions.
+
+    Resolution order:
+    1. configured preferred attribute, when it already exists;
+    2. configured fallback attributes;
+    3. canonical ``pi`` attribute;
+    4. creation of the preferred attribute, when enabled.
+    """
+
+    if config is None:
+        config = create_default_dock_model_pi_config()
+
+    candidates = tuple(
+        dict.fromkeys(
+            (
+                config.preferred_pi_attribute,
+                *config.fallback_pi_attributes,
+                *DOCK_MODEL_PI_ATTRIBUTE_CANDIDATES,
+            )
+        )
+    )
+
+    for attribute_name in candidates:
+        if _dock_model_pi_has_attribute(
+            dock_model,
+            attribute_name,
+        ):
+            return attribute_name
+
+    if config.create_missing_pi_attribute:
+        return config.preferred_pi_attribute
+
+    raise DockModelPiAttributeError(
+        "DockModel has no compatible π-interaction attribute. "
+        f"Checked: {candidates!r}."
+    )
+
+
+def get_dock_model_pi_interactions(
+    dock_model: Any,
+    *,
+    config: Optional[DockModelPiIntegrationConfig] = None,
+) -> List[Any]:
+    """
+    Return the existing DockModel π interactions.
+    """
+
+    if config is None:
+        config = create_default_dock_model_pi_config()
+
+    attribute_name = resolve_dock_model_pi_attribute(
+        dock_model,
+        config=config,
+    )
+
+    value = _dock_model_pi_get(
+        dock_model,
+        (attribute_name,),
+        [],
+    )
+
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        return list(value)
+
+    try:
+        return list(value)
+
+    except TypeError:
+        return [value]
+
+
+# -----------------------------------------------------------------------------
+# 15.7. Pose e estrutura do DockModel
+# -----------------------------------------------------------------------------
+
+def resolve_dock_model_pose_id(
+    dock_model: Any,
+    *,
+    config: Optional[DockModelPiIntegrationConfig] = None,
+    fallback: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Resolve a pose identifier from DockModel.
+    """
+
+    if config is None:
+        config = create_default_dock_model_pi_config()
+
+    value = _dock_model_pi_get(
+        dock_model,
+        config.pose_id_attribute_candidates,
+    )
+
+    if value is not None:
+        return str(value)
+
+    return fallback
+
+
+def resolve_dock_model_structure(
+    dock_model: Any,
+) -> Any:
+    """
+    Resolve the molecular structure used by the π-analysis API.
+
+    If DockModel itself exposes atoms or structure data, it can be passed
+    directly. Otherwise common structure attributes are inspected.
+    """
+
+    structure = _dock_model_pi_get(
+        dock_model,
+        (
+            "structure",
+            "molecular_structure",
+            "complex",
+            "pose_structure",
+            "model",
+            "atoms",
+        ),
+    )
+
+    return (
+        dock_model
+        if structure is None
+        else structure
+    )
+
+
+# -----------------------------------------------------------------------------
+# 15.8. Deduplicação ao anexar
+# -----------------------------------------------------------------------------
+
+def _dock_model_pi_interaction_signature(
+    interaction: Any,
+) -> Tuple[str, ...]:
+    if "generate_equivalent_pi_interaction_signature" in globals():
+        try:
+            return tuple(
+                generate_equivalent_pi_interaction_signature(
+                    interaction
+                )
+            )
+
+        except Exception:
+            pass
+
+    interaction_type = str(
+        _dock_model_pi_get(
+            interaction,
+            (
+                "interaction_type",
+                "type",
+            ),
+            "unknown",
+        )
+    )
+
+    interaction_id = str(
+        _dock_model_pi_get(
+            interaction,
+            (
+                "interaction_id",
+                "id",
+            ),
+            id(interaction),
+        )
+    )
+
+    pose_id = str(
+        _dock_model_pi_get(
+            interaction,
+            (
+                "pose_id",
+                "pose",
+            ),
+            "unknown-pose",
+        )
+    )
+
+    return (
+        interaction_type,
+        interaction_id,
+        pose_id,
+    )
+
+
+def _dock_model_pi_merge_interaction_lists(
+    previous: Iterable[Any],
+    current: Iterable[Any],
+    *,
+    deduplicate: bool,
+) -> List[Any]:
+    combined = [
+        *previous,
+        *current,
+    ]
+
+    if not deduplicate:
+        return combined
+
+    retained: Dict[
+        Tuple[str, ...],
+        Any,
+    ] = {}
+
+    for interaction in combined:
+        signature = _dock_model_pi_interaction_signature(
+            interaction
+        )
+
+        existing = retained.get(
+            signature
+        )
+
+        if existing is None:
+            retained[signature] = interaction
+            continue
+
+        existing_score = _dock_model_pi_get(
+            existing,
+            (
+                "normalized_score",
+                "score",
+            ),
+            0.0,
+        )
+
+        current_score = _dock_model_pi_get(
+            interaction,
+            (
+                "normalized_score",
+                "score",
+            ),
+            0.0,
+        )
+
+        try:
+            existing_score = float(
+                existing_score
+            )
+
+        except (TypeError, ValueError):
+            existing_score = 0.0
+
+        try:
+            current_score = float(
+                current_score
+            )
+
+        except (TypeError, ValueError):
+            current_score = 0.0
+
+        if current_score > existing_score:
+            retained[signature] = interaction
+
+    return list(
+        retained.values()
+    )
+
+
+# -----------------------------------------------------------------------------
+# 15.9. Score do resultado
+# -----------------------------------------------------------------------------
+
+def resolve_pi_result_score(
+    analysis_result: PiAnalysisResult,
+    *,
+    mode: str = "normalized",
+) -> float:
+    """
+    Resolve the score that will be attached to DockModel.
+    """
+
+    mode = str(mode).strip().lower()
+
+    statistics = analysis_result.statistics_report
+
+    if mode == "normalized":
+        value = _dock_model_pi_get(
+            statistics,
+            (
+                "normalized_total_score",
+                "normalized_score",
+            ),
+            analysis_result.normalized_score,
+        )
+
+    elif mode == "total":
+        value = _dock_model_pi_get(
+            statistics,
+            ("total_score",),
+            analysis_result.total_score,
+        )
+
+    elif mode == "mean":
+        value = _dock_model_pi_get(
+            statistics,
+            ("mean_score",),
+            0.0,
+        )
+
+    elif mode == "best":
+        best_interaction = _dock_model_pi_get(
+            statistics,
+            ("best_interaction",),
+        )
+
+        value = _dock_model_pi_get(
+            best_interaction,
+            ("score",),
+            0.0,
+        )
+
+    else:
+        raise DockModelPiIntegrationError(
+            f"Unsupported score mode: {mode!r}."
+        )
+
+    try:
+        value = float(value)
+
+    except (TypeError, ValueError):
+        return 0.0
+
+    if not math.isfinite(value):
+        return 0.0
+
+    return value
+
+
+# -----------------------------------------------------------------------------
+# 15.10. Atualização das estatísticas globais
+# -----------------------------------------------------------------------------
+
+def _dock_model_pi_resolve_global_statistics_attribute(
+    dock_model: Any,
+) -> Optional[str]:
+    for attribute_name in (
+        DOCK_MODEL_STATISTICS_ATTRIBUTE_CANDIDATES
+    ):
+        if _dock_model_pi_has_attribute(
+            dock_model,
+            attribute_name,
+        ):
+            return attribute_name
+
+    return None
+
+
+def update_dock_model_pi_statistics(
+    dock_model: Any,
+    statistics_report: Any,
+    *,
+    config: Optional[DockModelPiIntegrationConfig] = None,
+) -> Tuple[Any, Any, Any]:
+    """
+    Store π statistics and update a global DockModel statistics container.
+
+    Returns
+    -------
+    tuple
+        Updated DockModel, previous global statistics and updated statistics.
+    """
+
+    if config is None:
+        config = create_default_dock_model_pi_config()
+
+    previous_global_statistics: Any = None
+    updated_global_statistics: Any = None
+
+    updates: Dict[str, Any] = {}
+
+    if config.store_statistics_report:
+        updates[
+            config.statistics_attribute
+        ] = statistics_report
+
+    if config.update_global_statistics:
+        global_attribute = (
+            _dock_model_pi_resolve_global_statistics_attribute(
+                dock_model
+            )
+        )
+
+        if global_attribute is not None:
+            previous_global_statistics = _dock_model_pi_get(
+                dock_model,
+                (global_attribute,),
+            )
+
+            if isinstance(
+                previous_global_statistics,
+                Mapping,
+            ):
+                updated_global_statistics = dict(
+                    previous_global_statistics
+                )
+
+            elif previous_global_statistics is None:
+                updated_global_statistics = {}
+
+            else:
+                updated_global_statistics = {
+                    "previous": (
+                        previous_global_statistics
+                        if config.preserve_previous_statistics
+                        else None
+                    )
+                }
+
+            if hasattr(
+                statistics_report,
+                "to_dict",
+            ):
+                serialized_statistics = (
+                    statistics_report.to_dict()
+                )
+
+            else:
+                serialized_statistics = statistics_report
+
+            updated_global_statistics[
+                DOCK_MODEL_PI_STATISTICS_KEY
+            ] = serialized_statistics
+
+            updates[
+                global_attribute
+            ] = updated_global_statistics
+
+    dock_model = _dock_model_pi_update(
+        dock_model,
+        updates,
+        allow_new_attributes=True,
+    )
+
+    return (
+        dock_model,
+        previous_global_statistics,
+        updated_global_statistics,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 15.11. Atualização do score global
+# -----------------------------------------------------------------------------
+
+def _dock_model_pi_resolve_score_attribute(
+    dock_model: Any,
+) -> Optional[str]:
+    for attribute_name in (
+        DOCK_MODEL_SCORE_ATTRIBUTE_CANDIDATES
+    ):
+        if _dock_model_pi_has_attribute(
+            dock_model,
+            attribute_name,
+        ):
+            return attribute_name
+
+    return None
+
+
+def update_dock_model_pi_score(
+    dock_model: Any,
+    pi_score: float,
+    *,
+    config: Optional[DockModelPiIntegrationConfig] = None,
+) -> Tuple[Any, Any, Any]:
+    """
+    Update DockModel score without assuming a specific internal score model.
+    """
+
+    if config is None:
+        config = create_default_dock_model_pi_config()
+
+    if not config.update_global_score:
+        return (
+            dock_model,
+            None,
+            None,
+        )
+
+    score_attribute = _dock_model_pi_resolve_score_attribute(
+        dock_model
+    )
+
+    if score_attribute is None:
+        return (
+            dock_model,
+            None,
+            None,
+        )
+
+    previous_score = _dock_model_pi_get(
+        dock_model,
+        (score_attribute,),
+    )
+
+    if config.score_update_mode == "component":
+        if isinstance(previous_score, Mapping):
+            updated_score = dict(
+                previous_score
+            )
+
+        elif previous_score is None:
+            updated_score = {}
+
+        else:
+            updated_score = {
+                "base": (
+                    previous_score
+                    if config.preserve_previous_score
+                    else 0.0
+                )
+            }
+
+        updated_score[
+            DOCK_MODEL_PI_SCORE_KEY
+        ] = float(pi_score)
+
+    elif config.score_update_mode == "replace":
+        updated_score = float(
+            pi_score
+        )
+
+    elif config.score_update_mode == "add":
+        try:
+            base_score = float(
+                previous_score
+            )
+
+        except (TypeError, ValueError):
+            base_score = 0.0
+
+        updated_score = (
+            base_score
+            + float(pi_score)
+        )
+
+    elif config.score_update_mode == "maximum":
+        try:
+            base_score = float(
+                previous_score
+            )
+
+        except (TypeError, ValueError):
+            base_score = float(
+                "-inf"
+            )
+
+        updated_score = max(
+            base_score,
+            float(pi_score),
+        )
+
+    else:
+        raise DockModelPiIntegrationError(
+            f"Unsupported score update mode: "
+            f"{config.score_update_mode!r}."
+        )
+
+    dock_model = _dock_model_pi_update(
+        dock_model,
+        {
+            score_attribute: updated_score,
+        },
+        allow_new_attributes=False,
+    )
+
+    return (
+        dock_model,
+        previous_score,
+        updated_score,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 15.12. Serialização
+# -----------------------------------------------------------------------------
+
+def serialize_pi_analysis_result(
+    analysis_result: PiAnalysisResult,
+    *,
+    include_interactions: bool = True,
+    include_intermediate: bool = False,
+) -> Dict[str, Any]:
+    """
+    Serialize a PiAnalysisResult into JSON-compatible structures where possible.
+    """
+
+    try:
+        serialized = analysis_result.to_dict(
+            include_objects=include_interactions,
+            include_intermediate=include_intermediate,
+        )
+
+    except Exception as exc:
+        raise DockModelPiSerializationError(
+            f"Could not serialize π-analysis result: {exc}"
+        ) from exc
+
+    return _make_pi_value_serializable(
+        serialized
+    )
+
+
+def _make_pi_value_serializable(
+    value: Any,
+    *,
+    _visited: Optional[Set[int]] = None,
+) -> Any:
+    """
+    Recursively convert common Python and dataclass values into serializable
+    structures.
+    """
+
+    if _visited is None:
+        _visited = set()
+
+    if value is None or isinstance(
+        value,
+        (
+            str,
+            int,
+            float,
+            bool,
+        ),
+    ):
+        return value
+
+    object_id = id(value)
+
+    if object_id in _visited:
+        return "<recursive-reference>"
+
+    if isinstance(
+        value,
+        Mapping,
+    ):
+        _visited.add(object_id)
+
+        return {
+            str(key): _make_pi_value_serializable(
+                item,
+                _visited=_visited,
+            )
+            for key, item in value.items()
+        }
+
+    if isinstance(
+        value,
+        (
+            list,
+            tuple,
+            set,
+            frozenset,
+        ),
+    ):
+        _visited.add(object_id)
+
+        return [
+            _make_pi_value_serializable(
+                item,
+                _visited=_visited,
+            )
+            for item in value
+        ]
+
+    if is_dataclass(
+        value
+    ):
+        _visited.add(object_id)
+
+        return {
+            field_definition.name: (
+                _make_pi_value_serializable(
+                    getattr(
+                        value,
+                        field_definition.name,
+                    ),
+                    _visited=_visited,
+                )
+            )
+            for field_definition in fields(value)
+        }
+
+    to_dict = getattr(
+        value,
+        "to_dict",
+        None,
+    )
+
+    if callable(to_dict):
+        try:
+            converted = to_dict()
+
+            return _make_pi_value_serializable(
+                converted,
+                _visited=_visited,
+            )
+
+        except Exception:
+            pass
+
+    if hasattr(
+        value,
+        "__dict__",
+    ):
+        _visited.add(object_id)
+
+        return {
+            str(key): _make_pi_value_serializable(
+                item,
+                _visited=_visited,
+            )
+            for key, item in vars(value).items()
+            if not str(key).startswith("_")
+        }
+
+    return repr(value)
+
+
+# -----------------------------------------------------------------------------
+# 15.13. Anexação dos resultados
+# -----------------------------------------------------------------------------
+
+def attach_pi_results(
+    dock_model: Any,
+    analysis_result: PiAnalysisResult,
+    *,
+    config: Optional[DockModelPiIntegrationConfig] = None,
+) -> DockModelPiIntegrationResult:
+    """
+    Attach a complete π-analysis result to DockModel.
+
+    This function does not rerun analysis.
+    """
+
+    if config is None:
+        config = create_default_dock_model_pi_config()
+
+    if not config.enabled:
+        return DockModelPiIntegrationResult(
+            dock_model=dock_model,
+            analysis_result=analysis_result,
+            pi_attribute=config.preferred_pi_attribute,
+            previous_interaction_count=0,
+            new_interaction_count=len(
+                analysis_result.interactions
+            ),
+            attached_interaction_count=0,
+            previous_score=None,
+            updated_score=None,
+            previous_statistics=None,
+            updated_statistics=None,
+            preserved_previous_results=False,
+            success=True,
+            warnings=[
+                "DockModel π integration is disabled."
+            ],
+        )
+
+    pi_attribute = resolve_dock_model_pi_attribute(
+        dock_model,
+        config=config,
+    )
+
+    previous_interactions = (
+        get_dock_model_pi_interactions(
+            dock_model,
+            config=config,
+        )
+    )
+
+    new_interactions = list(
+        analysis_result.interactions
+    )
+
+    if (
+        config.preserve_previous_results
+        and config.append_new_interactions
+    ):
+        attached_interactions = (
+            _dock_model_pi_merge_interaction_lists(
+                previous_interactions,
+                new_interactions,
+                deduplicate=(
+                    config.deduplicate_when_appending
+                ),
+            )
+        )
+
+    elif config.preserve_previous_results:
+        # The previous results are stored in metadata, while the active
+        # ``pi`` attribute receives the latest analysis.
+        attached_interactions = new_interactions
+
+    else:
+        attached_interactions = new_interactions
+
+    previous_analysis_result = _dock_model_pi_get(
+        dock_model,
+        (
+            config.analysis_result_attribute,
+        ),
+    )
+
+    integration_metadata = {
+        "schema": "dock-model-pi-integration",
+        "schema_version": (
+            DOCK_MODEL_PI_INTEGRATION_SCHEMA_VERSION
+        ),
+        "active_pi_attribute": pi_attribute,
+        "previous_interaction_count": len(
+            previous_interactions
+        ),
+        "new_interaction_count": len(
+            new_interactions
+        ),
+        "attached_interaction_count": len(
+            attached_interactions
+        ),
+    }
+
+    if (
+        config.preserve_previous_results
+        and previous_interactions
+        and not config.append_new_interactions
+    ):
+        integration_metadata[
+            "previous_pi_interactions"
+        ] = previous_interactions
+
+    if (
+        config.preserve_previous_results
+        and previous_analysis_result is not None
+    ):
+        integration_metadata[
+            "previous_pi_analysis"
+        ] = previous_analysis_result
+
+    updates: Dict[str, Any] = {
+        pi_attribute: attached_interactions,
+    }
+
+    if config.store_analysis_result:
+        updates[
+            config.analysis_result_attribute
+        ] = analysis_result
+
+    if (
+        config.store_grouping_result
+        and analysis_result.grouping_result is not None
+    ):
+        updates[
+            config.grouping_result_attribute
+        ] = analysis_result.grouping_result
+
+    if config.store_serializable_summary:
+        summary = summarize_pi_analysis_result(
+            analysis_result
+        )
+
+        summary["integration"] = (
+            integration_metadata
+        )
+
+        updates[
+            config.serializable_summary_attribute
+        ] = _make_pi_value_serializable(
+            summary
+        )
+
+    dock_model = _dock_model_pi_update(
+        dock_model,
+        updates,
+        allow_new_attributes=(
+            config.create_missing_pi_attribute
+        ),
+    )
+
+    previous_statistics: Any = None
+    updated_statistics: Any = None
+
+    if analysis_result.statistics_report is not None:
+        (
+            dock_model,
+            previous_statistics,
+            updated_statistics,
+        ) = update_dock_model_pi_statistics(
+            dock_model,
+            analysis_result.statistics_report,
+            config=config,
+        )
+
+    pi_score = resolve_pi_result_score(
+        analysis_result,
+        mode=config.score_mode,
+    )
+
+    (
+        dock_model,
+        previous_score,
+        updated_score,
+    ) = update_dock_model_pi_score(
+        dock_model,
+        pi_score,
+        config=config,
+    )
+
+    warnings: List[str] = []
+
+    if (
+        config.preserve_previous_results
+        and previous_interactions
+        and not config.append_new_interactions
+    ):
+        warnings.append(
+            "Previous π interactions were preserved in integration metadata "
+            "and replaced in the active DockModel attribute."
+        )
+
+    return DockModelPiIntegrationResult(
+        dock_model=dock_model,
+        analysis_result=analysis_result,
+        pi_attribute=pi_attribute,
+        previous_interaction_count=len(
+            previous_interactions
+        ),
+        new_interaction_count=len(
+            new_interactions
+        ),
+        attached_interaction_count=len(
+            attached_interactions
+        ),
+        previous_score=previous_score,
+        updated_score=updated_score,
+        previous_statistics=previous_statistics,
+        updated_statistics=updated_statistics,
+        preserved_previous_results=(
+            config.preserve_previous_results
+        ),
+        success=True,
+        warnings=warnings,
+        metadata=integration_metadata,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 15.14. Análise de um DockModel
+# -----------------------------------------------------------------------------
+
+def analyze_dock_model_pi(
+    dock_model: Any,
+    *,
+    analysis_config: Optional[PiAnalysisConfig] = None,
+    integration_config: Optional[
+        DockModelPiIntegrationConfig
+    ] = None,
+    aromatic_systems: Optional[Iterable[Any]] = None,
+    positive_groups: Optional[Iterable[Any]] = None,
+    negative_groups: Optional[Iterable[Any]] = None,
+    amide_groups: Optional[Iterable[Any]] = None,
+    pose_id: Optional[str] = None,
+    analysis_id: Optional[str] = None,
+) -> DockModelPiIntegrationResult:
+    """
+    Analyze one DockModel and attach the resulting π interactions.
+
+    DockModel's internal docking algorithm is not modified.
+    """
+
+    if analysis_config is None:
+        analysis_config = create_default_pi_analysis_config()
+
+    if integration_config is None:
+        integration_config = create_default_dock_model_pi_config()
+
+    resolved_pose_id = (
+        str(pose_id)
+        if pose_id is not None
+        else resolve_dock_model_pose_id(
+            dock_model,
+            config=integration_config,
+        )
+    )
+
+    structure = resolve_dock_model_structure(
+        dock_model
+    )
+
+    try:
+        analysis_result = analyze_pi_interactions(
+            structure,
+            aromatic_systems=aromatic_systems,
+            positive_groups=positive_groups,
+            negative_groups=negative_groups,
+            amide_groups=amide_groups,
+            config=analysis_config,
+            analysis_id=analysis_id,
+            pose_id=resolved_pose_id,
+        )
+
+    except Exception as exc:
+        raise DockModelPiAnalysisError(
+            f"Could not analyze DockModel π interactions: {exc}"
+        ) from exc
+
+    return attach_pi_results(
+        dock_model,
+        analysis_result,
+        config=integration_config,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 15.15. Análise especializada de um DockModel
+# -----------------------------------------------------------------------------
+
+def analyze_dock_model_pi_pi(
+    dock_model: Any,
+    *,
+    analysis_config: Optional[PiAnalysisConfig] = None,
+    integration_config: Optional[
+        DockModelPiIntegrationConfig
+    ] = None,
+    aromatic_systems: Optional[Iterable[Any]] = None,
+    pose_id: Optional[str] = None,
+) -> DockModelPiIntegrationResult:
+    """
+    Analyze only π–π interactions for one DockModel.
+    """
+
+    if analysis_config is None:
+        analysis_config = create_default_pi_analysis_config()
+
+    specialized_config = _pi_api_config_for_mode(
+        PI_ANALYSIS_MODE_PI_PI,
+        config=analysis_config,
+    )
+
+    return analyze_dock_model_pi(
+        dock_model,
+        analysis_config=specialized_config,
+        integration_config=integration_config,
+        aromatic_systems=aromatic_systems,
+        pose_id=pose_id,
+    )
+
+
+def analyze_dock_model_cation_pi(
+    dock_model: Any,
+    *,
+    analysis_config: Optional[PiAnalysisConfig] = None,
+    integration_config: Optional[
+        DockModelPiIntegrationConfig
+    ] = None,
+    aromatic_systems: Optional[Iterable[Any]] = None,
+    positive_groups: Optional[Iterable[Any]] = None,
+    pose_id: Optional[str] = None,
+) -> DockModelPiIntegrationResult:
+    """
+    Analyze only cation–π interactions for one DockModel.
+    """
+
+    if analysis_config is None:
+        analysis_config = create_default_pi_analysis_config()
+
+    specialized_config = _pi_api_config_for_mode(
+        PI_ANALYSIS_MODE_CATION_PI,
+        config=analysis_config,
+    )
+
+    return analyze_dock_model_pi(
+        dock_model,
+        analysis_config=specialized_config,
+        integration_config=integration_config,
+        aromatic_systems=aromatic_systems,
+        positive_groups=positive_groups,
+        pose_id=pose_id,
+    )
+
+
+def analyze_dock_model_anion_pi(
+    dock_model: Any,
+    *,
+    analysis_config: Optional[PiAnalysisConfig] = None,
+    integration_config: Optional[
+        DockModelPiIntegrationConfig
+    ] = None,
+    aromatic_systems: Optional[Iterable[Any]] = None,
+    negative_groups: Optional[Iterable[Any]] = None,
+    pose_id: Optional[str] = None,
+) -> DockModelPiIntegrationResult:
+    """
+    Analyze only anion–π interactions for one DockModel.
+    """
+
+    if analysis_config is None:
+        analysis_config = create_default_pi_analysis_config()
+
+    specialized_config = _pi_api_config_for_mode(
+        PI_ANALYSIS_MODE_ANION_PI,
+        config=analysis_config,
+    )
+
+    return analyze_dock_model_pi(
+        dock_model,
+        analysis_config=specialized_config,
+        integration_config=integration_config,
+        aromatic_systems=aromatic_systems,
+        negative_groups=negative_groups,
+        pose_id=pose_id,
+    )
+
+
+def analyze_dock_model_amide_pi(
+    dock_model: Any,
+    *,
+    analysis_config: Optional[PiAnalysisConfig] = None,
+    integration_config: Optional[
+        DockModelPiIntegrationConfig
+    ] = None,
+    aromatic_systems: Optional[Iterable[Any]] = None,
+    amide_groups: Optional[Iterable[Any]] = None,
+    pose_id: Optional[str] = None,
+) -> DockModelPiIntegrationResult:
+    """
+    Analyze only amide–π interactions for one DockModel.
+    """
+
+    if analysis_config is None:
+        analysis_config = create_default_pi_analysis_config()
+
+    specialized_config = _pi_api_config_for_mode(
+        PI_ANALYSIS_MODE_AMIDE_PI,
+        config=analysis_config,
+    )
+
+    return analyze_dock_model_pi(
+        dock_model,
+        analysis_config=specialized_config,
+        integration_config=integration_config,
+        aromatic_systems=aromatic_systems,
+        amide_groups=amide_groups,
+        pose_id=pose_id,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 15.16. Resolução de grupos por DockModel
+# -----------------------------------------------------------------------------
+
+def _dock_model_pi_resolve_feature_source(
+    source: Optional[
+        Union[
+            Mapping[Any, Iterable[Any]],
+            Sequence[Iterable[Any]],
+            Callable[[int, Any], Iterable[Any]],
+        ]
+    ],
+    *,
+    index: int,
+    dock_model: Any,
+    pose_id: Optional[str],
+) -> Optional[Iterable[Any]]:
+    if source is None:
+        return None
+
+    if callable(source):
+        return source(
+            index,
+            dock_model,
+        )
+
+    if isinstance(source, Mapping):
+        keys = (
+            pose_id,
+            index,
+            str(index),
+        )
+
+        for key in keys:
+            if key is not None and key in source:
+                return source[key]
+
+        return None
+
+    if index < len(source):
+        return source[index]
+
+    return None
+
+
+# -----------------------------------------------------------------------------
+# 15.17. Análise de múltiplos DockModels
+# -----------------------------------------------------------------------------
+
+def analyze_multiple_dock_models_pi(
+    dock_models: Iterable[Any],
+    *,
+    analysis_config: Optional[PiAnalysisConfig] = None,
+    integration_config: Optional[
+        DockModelPiIntegrationConfig
+    ] = None,
+    aromatic_systems: Optional[
+        Union[
+            Mapping[Any, Iterable[Any]],
+            Sequence[Iterable[Any]],
+            Callable[[int, Any], Iterable[Any]],
+        ]
+    ] = None,
+    positive_groups: Optional[
+        Union[
+            Mapping[Any, Iterable[Any]],
+            Sequence[Iterable[Any]],
+            Callable[[int, Any], Iterable[Any]],
+        ]
+    ] = None,
+    negative_groups: Optional[
+        Union[
+            Mapping[Any, Iterable[Any]],
+            Sequence[Iterable[Any]],
+            Callable[[int, Any], Iterable[Any]],
+        ]
+    ] = None,
+    amide_groups: Optional[
+        Union[
+            Mapping[Any, Iterable[Any]],
+            Sequence[Iterable[Any]],
+            Callable[[int, Any], Iterable[Any]],
+        ]
+    ] = None,
+    continue_on_error: bool = True,
+    run_global_multipose_analysis: bool = True,
+) -> DockModelPiMultipleIntegrationResult:
+    """
+    Analyze multiple DockModel objects and update each object independently.
+
+    A global multipose report can also be generated from the resulting models.
+    """
+
+    if analysis_config is None:
+        analysis_config = create_default_pi_analysis_config()
+
+    if integration_config is None:
+        integration_config = create_default_dock_model_pi_config()
+
+    model_list = list(
+        dock_models
+    )
+
+    model_results: List[
+        DockModelPiIntegrationResult
+    ] = []
+
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    successful_models: List[Any] = []
+    successful_pose_map: Dict[str, Any] = {}
+
+    for index, dock_model in enumerate(
+        model_list
+    ):
+        pose_id = resolve_dock_model_pose_id(
+            dock_model,
+            config=integration_config,
+            fallback=str(index + 1),
+        )
+
+        model_aromatic_systems = (
+            _dock_model_pi_resolve_feature_source(
+                aromatic_systems,
+                index=index,
+                dock_model=dock_model,
+                pose_id=pose_id,
+            )
+        )
+
+        model_positive_groups = (
+            _dock_model_pi_resolve_feature_source(
+                positive_groups,
+                index=index,
+                dock_model=dock_model,
+                pose_id=pose_id,
+            )
+        )
+
+        model_negative_groups = (
+            _dock_model_pi_resolve_feature_source(
+                negative_groups,
+                index=index,
+                dock_model=dock_model,
+                pose_id=pose_id,
+            )
+        )
+
+        model_amide_groups = (
+            _dock_model_pi_resolve_feature_source(
+                amide_groups,
+                index=index,
+                dock_model=dock_model,
+                pose_id=pose_id,
+            )
+        )
+
+        try:
+            integration_result = analyze_dock_model_pi(
+                dock_model,
+                analysis_config=analysis_config,
+                integration_config=integration_config,
+                aromatic_systems=model_aromatic_systems,
+                positive_groups=model_positive_groups,
+                negative_groups=model_negative_groups,
+                amide_groups=model_amide_groups,
+                pose_id=pose_id,
+            )
+
+        except Exception as exc:
+            error_message = (
+                f"DockModel {index} failed during π analysis: {exc}"
+            )
+
+            errors.append(
+                error_message
+            )
+
+            if not continue_on_error:
+                raise
+
+            continue
+
+        model_results.append(
+            integration_result
+        )
+
+        successful_models.append(
+            integration_result.dock_model
+        )
+
+        successful_pose_map[
+            str(pose_id)
+        ] = resolve_dock_model_structure(
+            integration_result.dock_model
+        )
+
+    multipose_result: Optional[
+        PiMultiplePoseAnalysisResult
+    ] = None
+
+    if (
+        run_global_multipose_analysis
+        and successful_pose_map
+    ):
+        try:
+            multipose_result = analyze_multiple_poses_pi(
+                successful_pose_map,
+                config=analysis_config,
+                continue_on_error=continue_on_error,
+            )
+
+        except Exception as exc:
+            warning_message = (
+                "Global multipose π analysis failed: "
+                f"{exc}"
+            )
+
+            warnings.append(
+                warning_message
+            )
+
+            if not continue_on_error:
+                raise
+
+    best_result: Optional[
+        DockModelPiIntegrationResult
+    ] = None
+
+    if model_results:
+        best_result = max(
+            model_results,
+            key=lambda result: (
+                result.analysis_result.normalized_score,
+                result.analysis_result.total_score,
+                result.analysis_result.total_interactions,
+            ),
+        )
+
+    best_model = (
+        None
+        if best_result is None
+        else best_result.dock_model
+    )
+
+    best_model_index: Optional[int] = None
+
+    if best_model is not None:
+        for index, candidate_model in enumerate(
+            model_list
+        ):
+            if candidate_model is best_model:
+                best_model_index = index
+                break
+
+    best_pose_id = (
+        None
+        if best_result is None
+        else best_result.analysis_result.pose_id
+    )
+
+    successful_model_count = len(
+        model_results
+    )
+
+    failed_model_count = (
+        len(model_list)
+        - successful_model_count
+    )
+
+    return DockModelPiMultipleIntegrationResult(
+        model_results=model_results,
+        multipose_result=multipose_result,
+        model_count=len(model_list),
+        successful_model_count=successful_model_count,
+        failed_model_count=failed_model_count,
+        best_model=best_model,
+        best_model_index=best_model_index,
+        best_pose_id=best_pose_id,
+        success=(
+            successful_model_count > 0
+            and failed_model_count == 0
+        ),
+        warnings=warnings,
+        errors=errors,
+        metadata={
+            "schema": "dock-model-pi-multiple-integration",
+            "schema_version": (
+                DOCK_MODEL_PI_INTEGRATION_SCHEMA_VERSION
+            ),
+            "global_multipose_analysis": (
+                run_global_multipose_analysis
+            ),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 15.18. Reanexação sem nova análise
+# -----------------------------------------------------------------------------
+
+def reattach_existing_pi_analysis(
+    dock_model: Any,
+    *,
+    integration_config: Optional[
+        DockModelPiIntegrationConfig
+    ] = None,
+) -> DockModelPiIntegrationResult:
+    """
+    Reattach an existing PiAnalysisResult already stored in DockModel.
+    """
+
+    if integration_config is None:
+        integration_config = create_default_dock_model_pi_config()
+
+    analysis_result = _dock_model_pi_get(
+        dock_model,
+        (
+            integration_config.analysis_result_attribute,
+            DOCK_MODEL_PI_RESULT_ATTRIBUTE,
+        ),
+    )
+
+    if not isinstance(
+        analysis_result,
+        PiAnalysisResult,
+    ):
+        raise DockModelPiIntegrationError(
+            "DockModel does not contain a valid PiAnalysisResult."
+        )
+
+    return attach_pi_results(
+        dock_model,
+        analysis_result,
+        config=integration_config,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 15.19. Remoção segura dos resultados ativos
+# -----------------------------------------------------------------------------
+
+def clear_dock_model_pi_results(
+    dock_model: Any,
+    *,
+    config: Optional[DockModelPiIntegrationConfig] = None,
+    preserve_history: bool = True,
+) -> Any:
+    """
+    Clear active π interactions while optionally preserving them as history.
+    """
+
+    if config is None:
+        config = create_default_dock_model_pi_config()
+
+    pi_attribute = resolve_dock_model_pi_attribute(
+        dock_model,
+        config=config,
+    )
+
+    previous_interactions = get_dock_model_pi_interactions(
+        dock_model,
+        config=config,
+    )
+
+    updates: Dict[str, Any] = {
+        pi_attribute: [],
+    }
+
+    if preserve_history and previous_interactions:
+        summary = _dock_model_pi_get(
+            dock_model,
+            (
+                config.serializable_summary_attribute,
+            ),
+            {},
+        )
+
+        if not isinstance(summary, Mapping):
+            summary = {}
+
+        summary = dict(summary)
+
+        summary["cleared_previous_pi_interactions"] = (
+            _make_pi_value_serializable(
+                previous_interactions
+            )
+        )
+
+        updates[
+            config.serializable_summary_attribute
+        ] = summary
+
+    return _dock_model_pi_update(
+        dock_model,
+        updates,
+        allow_new_attributes=True,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 15.20. Resumo da integração
+# -----------------------------------------------------------------------------
+
+def summarize_dock_model_pi_integration(
+    result: Union[
+        DockModelPiIntegrationResult,
+        DockModelPiMultipleIntegrationResult,
+    ],
+) -> Dict[str, Any]:
+    """
+    Produce a compact summary of DockModel π integration.
+    """
+
+    if isinstance(
+        result,
+        DockModelPiMultipleIntegrationResult,
+    ):
+        return {
+            "model_count": result.model_count,
+            "successful_model_count": (
+                result.successful_model_count
+            ),
+            "failed_model_count": (
+                result.failed_model_count
+            ),
+            "best_model_index": (
+                result.best_model_index
+            ),
+            "best_pose_id": result.best_pose_id,
+            "multipose_analysis_available": (
+                result.multipose_result is not None
+            ),
+            "warnings": list(
+                result.warnings
+            ),
+            "errors": list(
+                result.errors
+            ),
+        }
+
+    return {
+        "success": result.success,
+        "pi_attribute": result.pi_attribute,
+        "previous_interaction_count": (
+            result.previous_interaction_count
+        ),
+        "new_interaction_count": (
+            result.new_interaction_count
+        ),
+        "attached_interaction_count": (
+            result.attached_interaction_count
+        ),
+        "updated_score": result.updated_score,
+        "preserved_previous_results": (
+            result.preserved_previous_results
+        ),
+        "analysis": summarize_pi_analysis_result(
+            result.analysis_result
+        ),
+        "warnings": list(
+            result.warnings
+        ),
+    }
+
+
 
