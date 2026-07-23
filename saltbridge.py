@@ -19507,6 +19507,4672 @@ def analyze_salt_bridges_multipose(
     }
 
 
+# =============================================================================
+# 16. SERIALIZATION AND EXPORT PREPARATION
+# =============================================================================
+
+
+# =============================================================================
+# 16.1. SERIALIZATION UTILITIES
+# =============================================================================
+
+
+def is_json_primitive(
+    value: Any,
+) -> bool:
+    """
+    Return whether a value is directly JSON serializable.
+
+    Parameters
+    ----------
+    value
+        Value to inspect.
+
+    Returns
+    -------
+    bool
+        Whether the value is a JSON primitive.
+    """
+
+    return (
+        value is None
+        or isinstance(
+            value,
+            (
+                str,
+                int,
+                float,
+                bool,
+            ),
+        )
+    )
+
+
+def sanitize_json_number(
+    value: Any,
+) -> Optional[Union[int, float]]:
+    """
+    Convert a numeric-like value into a JSON-safe number.
+
+    Non-finite floating-point values are converted to ``None``.
+
+    Parameters
+    ----------
+    value
+        Numeric-like value.
+
+    Returns
+    -------
+    Optional[Union[int, float]]
+        JSON-safe numeric value.
+    """
+
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return int(value)
+
+    if isinstance(value, int):
+        return value
+
+    normalized_value = safe_float(
+        value
+    )
+
+    if (
+        normalized_value is None
+        or not math.isfinite(normalized_value)
+    ):
+        return None
+
+    return normalized_value
+
+
+def sanitize_json_key(
+    value: Any,
+) -> str:
+    """
+    Convert a mapping key into a stable JSON string key.
+
+    Parameters
+    ----------
+    value
+        Mapping key.
+
+    Returns
+    -------
+    str
+        JSON-safe key.
+    """
+
+    if value is None:
+        return "null"
+
+    if isinstance(value, tuple):
+        return "|".join(
+            sanitize_json_key(
+                item
+            )
+            for item in value
+        )
+
+    if isinstance(value, list):
+        return "|".join(
+            sanitize_json_key(
+                item
+            )
+            for item in value
+        )
+
+    if isinstance(value, set):
+        return "|".join(
+            sorted(
+                sanitize_json_key(
+                    item
+                )
+                for item in value
+            )
+        )
+
+    return str(value)
+
+
+def make_json_safe(
+    value: Any,
+    *,
+    max_depth: int = 20,
+    current_depth: int = 0,
+    fallback_to_string: bool = True,
+) -> Any:
+    """
+    Recursively convert a value into JSON-safe data.
+
+    Parameters
+    ----------
+    value
+        Value to convert.
+    max_depth
+        Maximum recursion depth.
+    current_depth
+        Current recursion depth.
+    fallback_to_string
+        Whether unsupported objects should be converted to strings.
+
+    Returns
+    -------
+    Any
+        JSON-compatible representation.
+
+    Raises
+    ------
+    SaltBridgeSerializationError
+        If maximum depth is exceeded or an unsupported value cannot be handled.
+    """
+
+    if current_depth > max_depth:
+        raise SaltBridgeSerializationError(
+            "Maximum serialization depth exceeded."
+        )
+
+    if value is None:
+        return None
+
+    if isinstance(
+        value,
+        (
+            str,
+            bool,
+            int,
+        ),
+    ):
+        return value
+
+    if isinstance(value, float):
+        return (
+            value
+            if math.isfinite(value)
+            else None
+        )
+
+    if isinstance(value, Mapping):
+        return {
+            sanitize_json_key(
+                key
+            ): make_json_safe(
+                item,
+                max_depth=max_depth,
+                current_depth=(
+                    current_depth + 1
+                ),
+                fallback_to_string=(
+                    fallback_to_string
+                ),
+            )
+            for key, item in value.items()
+        }
+
+    if isinstance(
+        value,
+        (
+            list,
+            tuple,
+            set,
+            frozenset,
+        ),
+    ):
+        iterable_value = (
+            sorted(
+                value,
+                key=repr,
+            )
+            if isinstance(
+                value,
+                (
+                    set,
+                    frozenset,
+                ),
+            )
+            else value
+        )
+
+        return [
+            make_json_safe(
+                item,
+                max_depth=max_depth,
+                current_depth=(
+                    current_depth + 1
+                ),
+                fallback_to_string=(
+                    fallback_to_string
+                ),
+            )
+            for item in iterable_value
+        ]
+
+    if hasattr(
+        value,
+        "tolist",
+    ):
+        try:
+            return make_json_safe(
+                value.tolist(),
+                max_depth=max_depth,
+                current_depth=(
+                    current_depth + 1
+                ),
+                fallback_to_string=(
+                    fallback_to_string
+                ),
+            )
+
+        except Exception:
+            pass
+
+    if fallback_to_string:
+        return str(value)
+
+    raise SaltBridgeSerializationError(
+        "Unsupported value encountered during JSON serialization: "
+        f"{type(value).__name__}."
+    )
+
+
+def serialize_coordinate(
+    coordinate: Optional[
+        Sequence[float]
+    ],
+) -> Optional[List[float]]:
+    """
+    Convert a coordinate into a JSON-safe three-value list.
+
+    Parameters
+    ----------
+    coordinate
+        Coordinate-like value.
+
+    Returns
+    -------
+    Optional[List[float]]
+        Serialized coordinate or ``None``.
+    """
+
+    if coordinate is None:
+        return None
+
+    try:
+        normalized_coordinate = (
+            normalize_coordinate(
+                coordinate
+            )
+        )
+
+    except SaltBridgeGeometryError:
+        return None
+
+    return [
+        float(
+            normalized_coordinate[0]
+        ),
+        float(
+            normalized_coordinate[1]
+        ),
+        float(
+            normalized_coordinate[2]
+        ),
+    ]
+
+
+# =============================================================================
+# 16.2. ATOM AND RESIDUE SERIALIZATION
+# =============================================================================
+
+
+def atom_reference_to_dict(
+    atom: Any,
+    *,
+    include_coordinate: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """
+    Build a compact serializable atom reference.
+
+    The molecular object itself is not serialized.
+
+    Parameters
+    ----------
+    atom
+        Atom-like object.
+    include_coordinate
+        Whether atom coordinates should be included.
+
+    Returns
+    -------
+    Optional[Dict[str, Any]]
+        Atom reference or ``None``.
+    """
+
+    if atom is None:
+        return None
+
+    residue = get_atom_residue(
+        atom
+    )
+
+    atom_data: Dict[str, Any] = {
+        "name": get_atom_name(
+            atom
+        ),
+        "element": get_atom_element(
+            atom
+        ),
+        "serial": get_atom_serial(
+            atom
+        ),
+        "atom_label": make_atom_label(
+            atom
+        ),
+        "atom_identity": make_json_safe(
+            atom_identity(
+                atom
+            )
+        ),
+        "residue": (
+            residue_reference_to_dict(
+                residue
+            )
+            if residue is not None
+            else None
+        ),
+    }
+
+    if include_coordinate:
+        atom_data[
+            "coordinate"
+        ] = serialize_coordinate(
+            get_atom_coordinate(
+                atom,
+                required=False,
+            )
+        )
+
+    return atom_data
+
+
+def residue_reference_to_dict(
+    residue: Any,
+) -> Optional[Dict[str, Any]]:
+    """
+    Build a compact serializable residue reference.
+
+    Parameters
+    ----------
+    residue
+        Residue-like object.
+
+    Returns
+    -------
+    Optional[Dict[str, Any]]
+        Residue reference or ``None``.
+    """
+
+    if residue is None:
+        return None
+
+    return {
+        "name": get_residue_name(
+            residue
+        ),
+        "number": get_residue_number(
+            residue
+        ),
+        "chain_id": get_chain_id(
+            residue
+        ),
+        "label": make_residue_label(
+            residue,
+            fallback="unknown_residue",
+        ),
+        "identity": make_json_safe(
+            residue_identity(
+                residue
+            )
+        ),
+    }
+
+
+# =============================================================================
+# 16.3. CHARGED ATOM SERIALIZATION
+# =============================================================================
+
+
+def charged_atom_to_dict(
+    charged_atom: ChargedAtom,
+    *,
+    include_atom_reference: bool = True,
+    include_metadata: bool = True,
+) -> Dict[str, Any]:
+    """
+    Convert a ChargedAtom into a serializable dictionary.
+
+    Parameters
+    ----------
+    charged_atom
+        Charged atom.
+    include_atom_reference
+        Whether the underlying atom reference should be included.
+    include_metadata
+        Whether metadata should be included.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Serialized charged atom.
+    """
+
+    if not isinstance(
+        charged_atom,
+        ChargedAtom,
+    ):
+        raise SaltBridgeSerializationError(
+            "charged_atom must be a ChargedAtom instance."
+        )
+
+    atom_data: Dict[str, Any] = {
+        "name": charged_atom.name,
+        "element": charged_atom.element,
+        "coordinate": serialize_coordinate(
+            charged_atom.coordinate
+        ),
+        "formal_charge": sanitize_json_number(
+            charged_atom.formal_charge
+        ),
+        "partial_charge": sanitize_json_number(
+            charged_atom.partial_charge
+        ),
+        "effective_charge": sanitize_json_number(
+            charged_atom.effective_charge
+        ),
+        "polarity": charged_atom.polarity,
+        "source": charged_atom.source,
+        "has_coordinates": (
+            charged_atom.has_coordinates
+        ),
+        "is_positive": (
+            charged_atom.is_positive
+        ),
+        "is_negative": (
+            charged_atom.is_negative
+        ),
+        "residue": residue_reference_to_dict(
+            charged_atom.residue
+        ),
+    }
+
+    if include_atom_reference:
+        atom_data[
+            "atom"
+        ] = atom_reference_to_dict(
+            charged_atom.atom,
+            include_coordinate=False,
+        )
+
+    if include_metadata:
+        atom_data[
+            "metadata"
+        ] = make_json_safe(
+            charged_atom.metadata
+        )
+
+    return atom_data
+
+
+# =============================================================================
+# 16.4. CHARGED GROUP SERIALIZATION
+# =============================================================================
+
+
+def charged_group_to_dict(
+    group: ChargedGroup,
+    *,
+    include_atoms: bool = True,
+    include_metadata: bool = True,
+) -> Dict[str, Any]:
+    """
+    Convert a ChargedGroup into a serializable dictionary.
+
+    Parameters
+    ----------
+    group
+        Charged group.
+    include_atoms
+        Whether charged atoms should be included.
+    include_metadata
+        Whether group metadata should be included.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Serialized charged group.
+    """
+
+    if not isinstance(
+        group,
+        ChargedGroup,
+    ):
+        raise SaltBridgeSerializationError(
+            "group must be a ChargedGroup instance."
+        )
+
+    group_data: Dict[str, Any] = {
+        "group_id": group.group_id,
+        "group_type": group.group_type,
+        "polarity": group.polarity,
+        "center": serialize_coordinate(
+            group.center
+        ),
+        "net_charge": sanitize_json_number(
+            group.net_charge
+        ),
+        "source": group.source,
+        "confidence": sanitize_json_number(
+            group.confidence
+        ),
+        "residue": residue_reference_to_dict(
+            group.residue
+        ),
+        "representative_atom": (
+            atom_reference_to_dict(
+                group.representative_atom
+            )
+        ),
+        "atom_count": len(
+            group.atoms
+        ),
+        "label": make_group_label(
+            group
+        ),
+        "identity": make_json_safe(
+            charged_group_identity(
+                group
+            )
+        ),
+    }
+
+    if include_atoms:
+        group_data["atoms"] = [
+            charged_atom_to_dict(
+                charged_atom,
+                include_atom_reference=True,
+                include_metadata=(
+                    include_metadata
+                ),
+            )
+            for charged_atom in group.atoms
+        ]
+
+    if include_metadata:
+        group_data[
+            "metadata"
+        ] = make_json_safe(
+            group.metadata
+        )
+
+    return group_data
+
+
+# =============================================================================
+# 16.5. GEOMETRY SERIALIZATION
+# =============================================================================
+
+
+def salt_bridge_geometry_to_dict(
+    geometry: SaltBridgeGeometry,
+) -> Dict[str, Any]:
+    """
+    Convert SaltBridgeGeometry into a serializable dictionary.
+
+    Parameters
+    ----------
+    geometry
+        Salt-bridge geometry.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Serialized geometry.
+    """
+
+    if not isinstance(
+        geometry,
+        SaltBridgeGeometry,
+    ):
+        raise SaltBridgeSerializationError(
+            "geometry must be a SaltBridgeGeometry instance."
+        )
+
+    return {
+        "center_distance": sanitize_json_number(
+            geometry.center_distance
+        ),
+        "minimum_atom_distance": sanitize_json_number(
+            geometry.minimum_atom_distance
+        ),
+        "maximum_atom_distance": sanitize_json_number(
+            geometry.maximum_atom_distance
+        ),
+        "mean_atom_distance": sanitize_json_number(
+            geometry.mean_atom_distance
+        ),
+        "contact_count": safe_int(
+            geometry.contact_count,
+            default=0,
+        ),
+        "closest_positive_atom": (
+            atom_reference_to_dict(
+                geometry.closest_positive_atom
+            )
+        ),
+        "closest_negative_atom": (
+            atom_reference_to_dict(
+                geometry.closest_negative_atom
+            )
+        ),
+        "valid": bool(
+            geometry.valid
+        ),
+        "rejection_reason": (
+            geometry.rejection_reason
+        ),
+    }
+
+
+# =============================================================================
+# 16.6. INTERACTION SERIALIZATION
+# =============================================================================
+
+
+def salt_bridge_interaction_to_dict(
+    interaction: SaltBridgeInteraction,
+    *,
+    include_groups: bool = True,
+    include_group_atoms: bool = True,
+    include_metadata: bool = True,
+    compact: bool = False,
+) -> Dict[str, Any]:
+    """
+    Convert a SaltBridgeInteraction into a serializable dictionary.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+    include_groups
+        Whether full charged-group data should be included.
+    include_group_atoms
+        Whether charged-group atoms should be included.
+    include_metadata
+        Whether interaction metadata should be included.
+    compact
+        Whether a compact representation should be generated.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Serialized interaction.
+    """
+
+    if not isinstance(
+        interaction,
+        SaltBridgeInteraction,
+    ):
+        raise SaltBridgeSerializationError(
+            "interaction must be a SaltBridgeInteraction instance."
+        )
+
+    if compact:
+        return make_json_safe(
+            build_interaction_summary_record(
+                interaction
+            )
+        )
+
+    interaction_data: Dict[str, Any] = {
+        "interaction_id": (
+            interaction.interaction_id
+        ),
+        "interaction_type": (
+            interaction.interaction_type
+        ),
+        "strength": interaction.strength,
+        "score": sanitize_json_number(
+            interaction.score
+        ),
+        "pose_id": make_json_safe(
+            interaction.pose_id
+        ),
+        "model_id": make_json_safe(
+            interaction.model_id
+        ),
+        "geometry": (
+            salt_bridge_geometry_to_dict(
+                interaction.geometry
+            )
+        ),
+    }
+
+    if include_groups:
+        interaction_data["cation"] = (
+            charged_group_to_dict(
+                interaction.cation,
+                include_atoms=(
+                    include_group_atoms
+                ),
+                include_metadata=(
+                    include_metadata
+                ),
+            )
+        )
+
+        interaction_data["anion"] = (
+            charged_group_to_dict(
+                interaction.anion,
+                include_atoms=(
+                    include_group_atoms
+                ),
+                include_metadata=(
+                    include_metadata
+                ),
+            )
+        )
+
+    else:
+        interaction_data[
+            "cation"
+        ] = {
+            "group_id": (
+                interaction.cation.group_id
+            ),
+            "group_type": (
+                interaction.cation.group_type
+            ),
+            "label": make_group_label(
+                interaction.cation
+            ),
+            "residue": (
+                residue_reference_to_dict(
+                    interaction.cation.residue
+                )
+            ),
+        }
+
+        interaction_data[
+            "anion"
+        ] = {
+            "group_id": (
+                interaction.anion.group_id
+            ),
+            "group_type": (
+                interaction.anion.group_type
+            ),
+            "label": make_group_label(
+                interaction.anion
+            ),
+            "residue": (
+                residue_reference_to_dict(
+                    interaction.anion.residue
+                )
+            ),
+        }
+
+    if include_metadata:
+        interaction_data[
+            "metadata"
+        ] = make_json_safe(
+            interaction.metadata
+        )
+
+    return interaction_data
+
+
+# =============================================================================
+# 16.7. RESULT SERIALIZATION
+# =============================================================================
+
+
+def salt_bridge_result_to_dict(
+    result: SaltBridgeResult,
+    *,
+    include_interactions: bool = True,
+    include_groups: bool = True,
+    include_group_atoms: bool = True,
+    include_statistics: bool = True,
+    include_metadata: bool = True,
+    include_warnings: bool = True,
+    compact_interactions: bool = False,
+) -> Dict[str, Any]:
+    """
+    Convert a SaltBridgeResult into a serializable dictionary.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+    include_interactions
+        Whether interactions should be included.
+    include_groups
+        Whether recognized charged groups should be included.
+    include_group_atoms
+        Whether atoms within recognized groups should be included.
+    include_statistics
+        Whether statistics should be included.
+    include_metadata
+        Whether metadata should be included.
+    include_warnings
+        Whether warnings should be included.
+    compact_interactions
+        Whether interactions should use flat summary records.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Serialized result.
+    """
+
+    if not isinstance(
+        result,
+        SaltBridgeResult,
+    ):
+        raise SaltBridgeSerializationError(
+            "result must be a SaltBridgeResult instance."
+        )
+
+    result_data: Dict[str, Any] = {
+        "schema": "dockanalyzer.saltbridge",
+        "schema_version": "1.0",
+        "module_version": __version__,
+        "pose_id": make_json_safe(
+            result.pose_id
+        ),
+        "model_id": make_json_safe(
+            result.model_id
+        ),
+        "interaction_count": len(
+            result.interactions
+        ),
+        "cationic_group_count": len(
+            result.cationic_groups
+        ),
+        "anionic_group_count": len(
+            result.anionic_groups
+        ),
+    }
+
+    if include_interactions:
+        result_data[
+            "interactions"
+        ] = [
+            salt_bridge_interaction_to_dict(
+                interaction,
+                include_groups=(
+                    not compact_interactions
+                ),
+                include_group_atoms=(
+                    include_group_atoms
+                ),
+                include_metadata=(
+                    include_metadata
+                ),
+                compact=(
+                    compact_interactions
+                ),
+            )
+            for interaction in result.interactions
+        ]
+
+    if include_groups:
+        result_data[
+            "cationic_groups"
+        ] = [
+            charged_group_to_dict(
+                group,
+                include_atoms=(
+                    include_group_atoms
+                ),
+                include_metadata=(
+                    include_metadata
+                ),
+            )
+            for group in result.cationic_groups
+        ]
+
+        result_data[
+            "anionic_groups"
+        ] = [
+            charged_group_to_dict(
+                group,
+                include_atoms=(
+                    include_group_atoms
+                ),
+                include_metadata=(
+                    include_metadata
+                ),
+            )
+            for group in result.anionic_groups
+        ]
+
+    if include_statistics:
+        result_data[
+            "statistics"
+        ] = make_json_safe(
+            result.statistics
+        )
+
+    if include_warnings:
+        result_data[
+            "warnings"
+        ] = [
+            str(warning)
+            for warning in result.warnings
+        ]
+
+    if include_metadata:
+        result_data[
+            "metadata"
+        ] = make_json_safe(
+            result.metadata
+        )
+
+    return make_json_safe(
+        result_data
+    )
+
+
+# =============================================================================
+# 16.8. JSON SERIALIZATION
+# =============================================================================
+
+
+def serialize_salt_bridge_result(
+    result: SaltBridgeResult,
+    *,
+    indent: Optional[int] = 2,
+    sort_keys: bool = False,
+    ensure_ascii: bool = False,
+    compact_interactions: bool = False,
+    include_groups: bool = True,
+    include_group_atoms: bool = True,
+    include_statistics: bool = True,
+    include_metadata: bool = True,
+) -> str:
+    """
+    Serialize a SaltBridgeResult to JSON.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+    indent
+        JSON indentation level.
+    sort_keys
+        Whether JSON keys should be sorted.
+    ensure_ascii
+        Whether non-ASCII characters should be escaped.
+    compact_interactions
+        Whether flat interaction records should be used.
+    include_groups
+        Whether recognized charged groups should be included.
+    include_group_atoms
+        Whether group atoms should be included.
+    include_statistics
+        Whether statistics should be included.
+    include_metadata
+        Whether metadata should be included.
+
+    Returns
+    -------
+    str
+        JSON document.
+    """
+
+    try:
+        payload = salt_bridge_result_to_dict(
+            result,
+            include_interactions=True,
+            include_groups=include_groups,
+            include_group_atoms=(
+                include_group_atoms
+            ),
+            include_statistics=(
+                include_statistics
+            ),
+            include_metadata=(
+                include_metadata
+            ),
+            include_warnings=True,
+            compact_interactions=(
+                compact_interactions
+            ),
+        )
+
+        return json.dumps(
+            payload,
+            indent=indent,
+            sort_keys=sort_keys,
+            ensure_ascii=ensure_ascii,
+            allow_nan=False,
+        )
+
+    except SaltBridgeSerializationError:
+        raise
+
+    except (
+        TypeError,
+        ValueError,
+    ) as error:
+        raise SaltBridgeSerializationError(
+            "Could not serialize SaltBridgeResult to JSON."
+        ) from error
+
+
+def serialize_salt_bridge_interactions(
+    interactions: Iterable[
+        SaltBridgeInteraction
+    ],
+    *,
+    indent: Optional[int] = 2,
+    compact: bool = False,
+    include_metadata: bool = True,
+) -> str:
+    """
+    Serialize salt-bridge interactions to JSON.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    indent
+        JSON indentation level.
+    compact
+        Whether flat summary records should be used.
+    include_metadata
+        Whether interaction metadata should be included.
+
+    Returns
+    -------
+    str
+        JSON document.
+    """
+
+    try:
+        payload = [
+            salt_bridge_interaction_to_dict(
+                interaction,
+                include_groups=not compact,
+                include_group_atoms=not compact,
+                include_metadata=(
+                    include_metadata
+                ),
+                compact=compact,
+            )
+            for interaction in interactions
+        ]
+
+        return json.dumps(
+            make_json_safe(
+                payload
+            ),
+            indent=indent,
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+
+    except SaltBridgeSerializationError:
+        raise
+
+    except (
+        TypeError,
+        ValueError,
+    ) as error:
+        raise SaltBridgeSerializationError(
+            "Could not serialize salt-bridge interactions."
+        ) from error
+
+
+# =============================================================================
+# 16.9. TABLE EXPORT RECORDS
+# =============================================================================
+
+
+def salt_bridge_interactions_to_rows(
+    interactions: Iterable[
+        SaltBridgeInteraction
+    ],
+    *,
+    include_invalid: bool = False,
+    sort_by_score: bool = True,
+) -> List[Dict[str, Any]]:
+    """
+    Convert interactions into flat tabular rows.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    include_invalid
+        Whether invalid interactions should be included.
+    sort_by_score
+        Whether rows should be ordered by decreasing score.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Flat table rows.
+    """
+
+    rows = build_interaction_summary_table(
+        interactions,
+        include_invalid=(
+            include_invalid
+        ),
+        sort_by_score=sort_by_score,
+    )
+
+    return [
+        make_json_safe(
+            row
+        )
+        for row in rows
+    ]
+
+
+def salt_bridge_groups_to_rows(
+    groups: Iterable[ChargedGroup],
+) -> List[Dict[str, Any]]:
+    """
+    Convert charged groups into flat tabular rows.
+
+    Parameters
+    ----------
+    groups
+        Charged groups.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Flat group rows.
+    """
+
+    rows: List[Dict[str, Any]] = []
+
+    for group in groups:
+        if not isinstance(
+            group,
+            ChargedGroup,
+        ):
+            raise SaltBridgeSerializationError(
+                "All values must be ChargedGroup instances."
+            )
+
+        residue_data = (
+            residue_reference_to_dict(
+                group.residue
+            )
+            or {}
+        )
+
+        center = serialize_coordinate(
+            group.center
+        )
+
+        rows.append(
+            {
+                "group_id": group.group_id,
+                "group_type": (
+                    group.group_type
+                ),
+                "polarity": group.polarity,
+                "net_charge": (
+                    sanitize_json_number(
+                        group.net_charge
+                    )
+                ),
+                "confidence": (
+                    sanitize_json_number(
+                        group.confidence
+                    )
+                ),
+                "source": group.source,
+                "atom_count": len(
+                    group.atoms
+                ),
+                "residue_label": (
+                    residue_data.get(
+                        "label"
+                    )
+                ),
+                "residue_name": (
+                    residue_data.get(
+                        "name"
+                    )
+                ),
+                "residue_number": (
+                    residue_data.get(
+                        "number"
+                    )
+                ),
+                "chain_id": (
+                    residue_data.get(
+                        "chain_id"
+                    )
+                ),
+                "center_x": (
+                    center[0]
+                    if center is not None
+                    else None
+                ),
+                "center_y": (
+                    center[1]
+                    if center is not None
+                    else None
+                ),
+                "center_z": (
+                    center[2]
+                    if center is not None
+                    else None
+                ),
+            }
+        )
+
+    return rows
+
+
+def salt_bridge_statistics_to_rows(
+    statistics_data: Mapping[str, Any],
+    *,
+    prefix: str = "",
+) -> List[Dict[str, Any]]:
+    """
+    Flatten nested statistics into metric-value rows.
+
+    Parameters
+    ----------
+    statistics_data
+        Statistics mapping.
+    prefix
+        Optional metric prefix.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Flattened statistics rows.
+    """
+
+    rows: List[Dict[str, Any]] = []
+
+    def walk(
+        value: Any,
+        path: str,
+    ) -> None:
+        if isinstance(value, Mapping):
+            for key, nested_value in value.items():
+                normalized_key = sanitize_json_key(
+                    key
+                )
+
+                nested_path = (
+                    f"{path}.{normalized_key}"
+                    if path
+                    else normalized_key
+                )
+
+                walk(
+                    nested_value,
+                    nested_path,
+                )
+
+            return
+
+        if isinstance(
+            value,
+            (
+                list,
+                tuple,
+                set,
+            ),
+        ):
+            rows.append(
+                {
+                    "metric": path,
+                    "value": make_json_safe(
+                        value
+                    ),
+                }
+            )
+
+            return
+
+        rows.append(
+            {
+                "metric": path,
+                "value": make_json_safe(
+                    value
+                ),
+            }
+        )
+
+    walk(
+        statistics_data,
+        prefix,
+    )
+
+    return rows
+
+
+# =============================================================================
+# 16.10. RESIDUE SUMMARY EXPORT
+# =============================================================================
+
+
+def build_residue_salt_bridge_summary_rows(
+    interactions: Iterable[
+        SaltBridgeInteraction
+    ],
+) -> List[Dict[str, Any]]:
+    """
+    Build residue-level salt-bridge summary rows.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Residue summary rows.
+    """
+
+    residue_groups = (
+        group_salt_bridges_by_any_residue(
+            interactions
+        )
+    )
+
+    hotspot_records = (
+        identify_residue_hotspots(
+            interactions,
+            include_singletons=True,
+        )
+    )
+
+    hotspot_by_key = {
+        sanitize_json_key(
+            record.get(
+                "residue_key"
+            )
+        ): record
+        for record in hotspot_records
+    }
+
+    rows: List[Dict[str, Any]] = []
+
+    for residue_key, residue_interactions in (
+        residue_groups.items()
+    ):
+        group_summary = (
+            summarize_interaction_group(
+                residue_interactions
+            )
+        )
+
+        normalized_key = sanitize_json_key(
+            residue_key
+        )
+
+        hotspot = hotspot_by_key.get(
+            normalized_key,
+            {},
+        )
+
+        cation_count = sum(
+            1
+            for interaction
+            in residue_interactions
+            if residue_identity(
+                interaction.cation.residue
+            )
+            == residue_key
+        )
+
+        anion_count = sum(
+            1
+            for interaction
+            in residue_interactions
+            if residue_identity(
+                interaction.anion.residue
+            )
+            == residue_key
+        )
+
+        rows.append(
+            {
+                "residue_key": (
+                    normalized_key
+                ),
+                "residue_label": (
+                    hotspot.get(
+                        "residue_label",
+                        normalized_key,
+                    )
+                ),
+                "interaction_count": (
+                    group_summary.get(
+                        "interaction_count",
+                        0,
+                    )
+                ),
+                "cation_interaction_count": (
+                    cation_count
+                ),
+                "anion_interaction_count": (
+                    anion_count
+                ),
+                "total_score": (
+                    group_summary.get(
+                        "total_score",
+                        0.0,
+                    )
+                ),
+                "mean_score": (
+                    group_summary.get(
+                        "mean_score"
+                    )
+                ),
+                "minimum_distance": (
+                    group_summary.get(
+                        "minimum_distance"
+                    )
+                ),
+                "mean_distance": (
+                    group_summary.get(
+                        "mean_distance"
+                    )
+                ),
+                "strong_count": (
+                    group_summary
+                    .get(
+                        "strength_counts",
+                        {},
+                    )
+                    .get(
+                        STRENGTH_STRONG,
+                        0,
+                    )
+                ),
+                "moderate_count": (
+                    group_summary
+                    .get(
+                        "strength_counts",
+                        {},
+                    )
+                    .get(
+                        STRENGTH_MODERATE,
+                        0,
+                    )
+                ),
+                "weak_count": (
+                    group_summary
+                    .get(
+                        "strength_counts",
+                        {},
+                    )
+                    .get(
+                        STRENGTH_WEAK,
+                        0,
+                    )
+                ),
+                "hotspot_score": (
+                    hotspot.get(
+                        "hotspot_score"
+                    )
+                ),
+                "hotspot_rank": (
+                    hotspot.get(
+                        "rank"
+                    )
+                ),
+            }
+        )
+
+    rows.sort(
+        key=lambda row: (
+            -(
+                safe_float(
+                    row.get(
+                        "hotspot_score"
+                    ),
+                    default=0.0,
+                )
+                or 0.0
+            ),
+            -(
+                safe_float(
+                    row.get(
+                        "total_score"
+                    ),
+                    default=0.0,
+                )
+                or 0.0
+            ),
+            str(
+                row.get(
+                    "residue_label",
+                    "",
+                )
+            ),
+        )
+    )
+
+    return rows
+
+
+# =============================================================================
+# 16.11. POSE SUMMARY EXPORT
+# =============================================================================
+
+
+def build_pose_salt_bridge_summary_rows(
+    results: Iterable[
+        SaltBridgeResult
+    ],
+) -> List[Dict[str, Any]]:
+    """
+    Build pose-level summary rows.
+
+    Parameters
+    ----------
+    results
+        Pose-level results.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Pose summary rows.
+    """
+
+    ranking = rank_salt_bridge_poses(
+        results
+    )
+
+    rows: List[Dict[str, Any]] = []
+
+    for ranking_record in ranking:
+        result = ranking_record[
+            "result"
+        ]
+
+        summary = (
+            result.metadata.get(
+                "compact_summary"
+            )
+            or build_compact_salt_bridge_summary(
+                result
+            )
+        )
+
+        rows.append(
+            {
+                "rank": ranking_record[
+                    "rank"
+                ],
+                "pose_id": result.pose_id,
+                "model_id": result.model_id,
+                "ranking_score": (
+                    ranking_record[
+                        "ranking_score"
+                    ]
+                ),
+                "interaction_count": (
+                    summary[
+                        "interaction_count"
+                    ]
+                ),
+                "total_score": (
+                    summary[
+                        "total_score"
+                    ]
+                ),
+                "mean_score": (
+                    summary[
+                        "mean_score"
+                    ]
+                ),
+                "best_score": (
+                    summary[
+                        "best_score"
+                    ]
+                ),
+                "minimum_distance": (
+                    summary[
+                        "minimum_distance"
+                    ]
+                ),
+                "mean_distance": (
+                    summary[
+                        "mean_distance"
+                    ]
+                ),
+                "strong_count": (
+                    summary[
+                        "strong_count"
+                    ]
+                ),
+                "moderate_count": (
+                    summary[
+                        "moderate_count"
+                    ]
+                ),
+                "weak_count": (
+                    summary[
+                        "weak_count"
+                    ]
+                ),
+                "residue_count": (
+                    summary[
+                        "residue_count"
+                    ]
+                ),
+                "hotspot_count": (
+                    summary[
+                        "hotspot_count"
+                    ]
+                ),
+                "intrachain_count": (
+                    summary[
+                        "intrachain_count"
+                    ]
+                ),
+                "interchain_count": (
+                    summary[
+                        "interchain_count"
+                    ]
+                ),
+            }
+        )
+
+    return make_json_safe(
+        rows
+    )
+
+
+# =============================================================================
+# 16.12. MULTIPOSE SERIALIZATION
+# =============================================================================
+
+
+def salt_bridge_multipose_to_dict(
+    multipose_result: Mapping[str, Any],
+    *,
+    include_pose_results: bool = True,
+    include_pose_interactions: bool = True,
+    compact_pose_interactions: bool = True,
+    include_statistics: bool = True,
+    include_persistence: bool = True,
+    include_consensus: bool = True,
+) -> Dict[str, Any]:
+    """
+    Convert a complete multipose result into serializable data.
+
+    Parameters
+    ----------
+    multipose_result
+        Result returned by ``analyze_salt_bridges_multipose``.
+    include_pose_results
+        Whether individual pose results should be included.
+    include_pose_interactions
+        Whether pose interactions should be included.
+    compact_pose_interactions
+        Whether pose interactions should use flat records.
+    include_statistics
+        Whether multipose statistics should be included.
+    include_persistence
+        Whether persistence records should be included.
+    include_consensus
+        Whether consensus records should be included.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Serialized multipose result.
+    """
+
+    if not isinstance(
+        multipose_result,
+        Mapping,
+    ):
+        raise SaltBridgeSerializationError(
+            "multipose_result must be a mapping."
+        )
+
+    payload: Dict[str, Any] = {
+        "schema": (
+            "dockanalyzer.saltbridge.multipose"
+        ),
+        "schema_version": "1.0",
+        "module_version": __version__,
+        "compact_summary": make_json_safe(
+            multipose_result.get(
+                "compact_summary",
+                {},
+            )
+        ),
+        "text_summary": str(
+            multipose_result.get(
+                "text_summary",
+                "",
+            )
+        ),
+        "warnings": make_json_safe(
+            multipose_result.get(
+                "warnings",
+                [],
+            )
+        ),
+        "metadata": make_json_safe(
+            multipose_result.get(
+                "metadata",
+                {},
+            )
+        ),
+    }
+
+    if include_pose_results:
+        pose_results = (
+            multipose_result.get(
+                "results",
+                [],
+            )
+        )
+
+        payload[
+            "results"
+        ] = [
+            salt_bridge_result_to_dict(
+                result,
+                include_interactions=(
+                    include_pose_interactions
+                ),
+                include_groups=False,
+                include_group_atoms=False,
+                include_statistics=True,
+                include_metadata=True,
+                include_warnings=True,
+                compact_interactions=(
+                    compact_pose_interactions
+                ),
+            )
+            for result in pose_results
+            if isinstance(
+                result,
+                SaltBridgeResult,
+            )
+        ]
+
+    if include_statistics:
+        payload[
+            "statistics"
+        ] = make_json_safe(
+            multipose_result.get(
+                "statistics",
+                {},
+            )
+        )
+
+    if include_persistence:
+        payload[
+            "persistence"
+        ] = make_json_safe(
+            multipose_result.get(
+                "persistence",
+                [],
+            )
+        )
+
+    if include_consensus:
+        payload[
+            "consensus_interactions"
+        ] = make_json_safe(
+            multipose_result.get(
+                "consensus_interactions",
+                [],
+            )
+        )
+
+    payload[
+        "pose_ranking"
+    ] = make_json_safe(
+        [
+            {
+                key: value
+                for key, value
+                in record.items()
+                if key != "result"
+            }
+            for record in multipose_result.get(
+                "pose_ranking",
+                [],
+            )
+        ]
+    )
+
+    return make_json_safe(
+        payload
+    )
+
+
+def serialize_salt_bridge_multipose(
+    multipose_result: Mapping[str, Any],
+    *,
+    indent: Optional[int] = 2,
+    include_pose_results: bool = True,
+    compact_pose_interactions: bool = True,
+) -> str:
+    """
+    Serialize complete multipose salt-bridge analysis to JSON.
+
+    Parameters
+    ----------
+    multipose_result
+        Complete multipose analysis.
+    indent
+        JSON indentation level.
+    include_pose_results
+        Whether individual results should be included.
+    compact_pose_interactions
+        Whether individual interactions should be compact.
+
+    Returns
+    -------
+    str
+        JSON document.
+    """
+
+    try:
+        payload = salt_bridge_multipose_to_dict(
+            multipose_result,
+            include_pose_results=(
+                include_pose_results
+            ),
+            include_pose_interactions=True,
+            compact_pose_interactions=(
+                compact_pose_interactions
+            ),
+            include_statistics=True,
+            include_persistence=True,
+            include_consensus=True,
+        )
+
+        return json.dumps(
+            payload,
+            indent=indent,
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+
+    except SaltBridgeSerializationError:
+        raise
+
+    except (
+        TypeError,
+        ValueError,
+    ) as error:
+        raise SaltBridgeSerializationError(
+            "Could not serialize multipose salt-bridge analysis."
+        ) from error
+
+
+# =============================================================================
+# 16.13. EXPORT PAYLOAD ASSEMBLY
+# =============================================================================
+
+
+def build_salt_bridge_export_payload(
+    result: SaltBridgeResult,
+    *,
+    include_full_result: bool = True,
+    include_interaction_table: bool = True,
+    include_group_tables: bool = True,
+    include_residue_summary: bool = True,
+    include_statistics_table: bool = True,
+) -> Dict[str, Any]:
+    """
+    Build a complete export payload for one SaltBridgeResult.
+
+    This function prepares data but does not write files.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+    include_full_result
+        Whether the complete serialized result should be included.
+    include_interaction_table
+        Whether a flat interaction table should be included.
+    include_group_tables
+        Whether cationic and anionic group tables should be included.
+    include_residue_summary
+        Whether residue summary rows should be included.
+    include_statistics_table
+        Whether flattened statistics should be included.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Export payload.
+    """
+
+    if not isinstance(
+        result,
+        SaltBridgeResult,
+    ):
+        raise SaltBridgeSerializationError(
+            "result must be a SaltBridgeResult instance."
+        )
+
+    if not result.statistics:
+        calculate_salt_bridge_result_statistics(
+            result,
+            in_place=True,
+        )
+
+    payload: Dict[str, Any] = {
+        "schema": (
+            "dockanalyzer.saltbridge.export"
+        ),
+        "schema_version": "1.0",
+        "module_version": __version__,
+        "summary": (
+            build_compact_salt_bridge_summary(
+                result
+            )
+        ),
+        "text_summary": (
+            build_salt_bridge_text_summary(
+                result
+            )
+        ),
+        "pose_id": result.pose_id,
+        "model_id": result.model_id,
+    }
+
+    if include_full_result:
+        payload[
+            "result"
+        ] = salt_bridge_result_to_dict(
+            result,
+            include_interactions=True,
+            include_groups=True,
+            include_group_atoms=True,
+            include_statistics=True,
+            include_metadata=True,
+            include_warnings=True,
+            compact_interactions=False,
+        )
+
+    if include_interaction_table:
+        payload[
+            "interaction_rows"
+        ] = salt_bridge_interactions_to_rows(
+            result.interactions,
+            include_invalid=True,
+            sort_by_score=True,
+        )
+
+    if include_group_tables:
+        payload[
+            "cationic_group_rows"
+        ] = salt_bridge_groups_to_rows(
+            result.cationic_groups
+        )
+
+        payload[
+            "anionic_group_rows"
+        ] = salt_bridge_groups_to_rows(
+            result.anionic_groups
+        )
+
+    if include_residue_summary:
+        payload[
+            "residue_summary_rows"
+        ] = (
+            build_residue_salt_bridge_summary_rows(
+                result.interactions
+            )
+        )
+
+    if include_statistics_table:
+        payload[
+            "statistics_rows"
+        ] = salt_bridge_statistics_to_rows(
+            result.statistics
+        )
+
+    return make_json_safe(
+        payload
+    )
+
+
+def build_multipose_salt_bridge_export_payload(
+    multipose_result: Mapping[str, Any],
+    *,
+    include_pose_results: bool = True,
+    include_pose_interaction_rows: bool = True,
+) -> Dict[str, Any]:
+    """
+    Build a complete multipose export payload.
+
+    Parameters
+    ----------
+    multipose_result
+        Complete multipose analysis result.
+    include_pose_results
+        Whether serialized pose results should be included.
+    include_pose_interaction_rows
+        Whether a unified interaction table should be included.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Multipose export payload.
+    """
+
+    if not isinstance(
+        multipose_result,
+        Mapping,
+    ):
+        raise SaltBridgeSerializationError(
+            "multipose_result must be a mapping."
+        )
+
+    results = [
+        result
+        for result in multipose_result.get(
+            "results",
+            [],
+        )
+        if isinstance(
+            result,
+            SaltBridgeResult,
+        )
+    ]
+
+    payload: Dict[str, Any] = {
+        "schema": (
+            "dockanalyzer.saltbridge.multipose.export"
+        ),
+        "schema_version": "1.0",
+        "module_version": __version__,
+        "summary": make_json_safe(
+            multipose_result.get(
+                "compact_summary",
+                {},
+            )
+        ),
+        "text_summary": str(
+            multipose_result.get(
+                "text_summary",
+                "",
+            )
+        ),
+        "pose_summary_rows": (
+            build_pose_salt_bridge_summary_rows(
+                results
+            )
+        ),
+        "persistence_rows": make_json_safe(
+            multipose_result.get(
+                "persistence",
+                [],
+            )
+        ),
+        "consensus_rows": make_json_safe(
+            multipose_result.get(
+                "consensus_interactions",
+                [],
+            )
+        ),
+        "statistics": make_json_safe(
+            multipose_result.get(
+                "statistics",
+                {},
+            )
+        ),
+        "metadata": make_json_safe(
+            multipose_result.get(
+                "metadata",
+                {},
+            )
+        ),
+        "warnings": make_json_safe(
+            multipose_result.get(
+                "warnings",
+                [],
+            )
+        ),
+    }
+
+    if include_pose_results:
+        payload[
+            "results"
+        ] = [
+            salt_bridge_result_to_dict(
+                result,
+                include_interactions=True,
+                include_groups=False,
+                include_group_atoms=False,
+                include_statistics=True,
+                include_metadata=True,
+                include_warnings=True,
+                compact_interactions=True,
+            )
+            for result in results
+        ]
+
+    if include_pose_interaction_rows:
+        interaction_rows: List[
+            Dict[str, Any]
+        ] = []
+
+        for result in results:
+            pose_rows = (
+                salt_bridge_interactions_to_rows(
+                    result.interactions,
+                    include_invalid=True,
+                    sort_by_score=True,
+                )
+            )
+
+            for row in pose_rows:
+                row.setdefault(
+                    "pose_id",
+                    result.pose_id,
+                )
+
+                row.setdefault(
+                    "model_id",
+                    result.model_id,
+                )
+
+                interaction_rows.append(
+                    row
+                )
+
+        payload[
+            "interaction_rows"
+        ] = interaction_rows
+
+    return make_json_safe(
+        payload
+    )
+
+
+# =============================================================================
+# 16.14. EXPORT FORMAT ROUTING
+# =============================================================================
+
+
+def normalize_salt_bridge_export_format(
+    export_format: str,
+) -> str:
+    """
+    Normalize an export format identifier.
+
+    Parameters
+    ----------
+    export_format
+        Export format name.
+
+    Returns
+    -------
+    str
+        Normalized format.
+
+    Raises
+    ------
+    SaltBridgeSerializationError
+        If the format is unsupported.
+    """
+
+    normalized_format = normalize_text(
+        export_format,
+        default="json",
+        lowercase=True,
+    )
+
+    format_aliases = {
+        "dictionary": "dict",
+        "mapping": "dict",
+        "json_string": "json",
+        "table": "rows",
+        "records": "rows",
+        "interaction_rows": "rows",
+        "summary": "compact_summary",
+        "text": "text_summary",
+    }
+
+    normalized_format = (
+        format_aliases.get(
+            normalized_format,
+            normalized_format,
+        )
+    )
+
+    supported_formats = {
+        "dict",
+        "json",
+        "rows",
+        "compact_summary",
+        "text_summary",
+        "export_payload",
+    }
+
+    if normalized_format not in supported_formats:
+        raise SaltBridgeSerializationError(
+            "Unsupported salt-bridge export format: "
+            f"{export_format!r}."
+        )
+
+    return normalized_format
+
+
+def prepare_salt_bridge_export(
+    result: SaltBridgeResult,
+    export_format: str = "dict",
+    **options: Any,
+) -> Any:
+    """
+    Prepare a SaltBridgeResult in a requested export representation.
+
+    This function does not write files.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+    export_format
+        Output representation.
+    **options
+        Format-specific options.
+
+    Returns
+    -------
+    Any
+        Prepared export data.
+    """
+
+    normalized_format = (
+        normalize_salt_bridge_export_format(
+            export_format
+        )
+    )
+
+    if normalized_format == "dict":
+        return salt_bridge_result_to_dict(
+            result,
+            **options,
+        )
+
+    if normalized_format == "json":
+        return serialize_salt_bridge_result(
+            result,
+            **options,
+        )
+
+    if normalized_format == "rows":
+        return salt_bridge_interactions_to_rows(
+            result.interactions,
+            **options,
+        )
+
+    if normalized_format == "compact_summary":
+        return build_compact_salt_bridge_summary(
+            result
+        )
+
+    if normalized_format == "text_summary":
+        return build_salt_bridge_text_summary(
+            result
+        )
+
+    if normalized_format == "export_payload":
+        return build_salt_bridge_export_payload(
+            result,
+            **options,
+        )
+
+    raise SaltBridgeSerializationError(
+        "Internal export format routing failure."
+    )
+
+
+# =============================================================================
+# 17. CHIMERAX COMPATIBILITY
+# =============================================================================
+
+
+# =============================================================================
+# 17.1. CHIMERAX AVAILABILITY AND VALIDATION
+# =============================================================================
+
+
+def require_chimerax() -> None:
+    """
+    Ensure that ChimeraX integration is available.
+
+    Raises
+    ------
+    ChimeraXUnavailableError
+        If ChimeraX modules could not be imported.
+    """
+
+    if not HAS_CHIMERAX:
+        raise ChimeraXUnavailableError(
+            "ChimeraX integration is unavailable in the current environment."
+        )
+
+
+def is_chimerax_atomic_model(
+    value: Any,
+) -> bool:
+    """
+    Return whether an object appears to be a ChimeraX atomic model.
+
+    Parameters
+    ----------
+    value
+        Object to inspect.
+
+    Returns
+    -------
+    bool
+        Whether the object resembles a ChimeraX atomic model.
+    """
+
+    if value is None:
+        return False
+
+    if not HAS_CHIMERAX:
+        return False
+
+    candidate_attributes = (
+        "atoms",
+        "residues",
+        "session",
+        "id_string",
+    )
+
+    return all(
+        hasattr(
+            value,
+            attribute_name,
+        )
+        for attribute_name in candidate_attributes
+    )
+
+
+def get_chimerax_session(
+    value: Any,
+    *,
+    required: bool = True,
+) -> Any:
+    """
+    Resolve a ChimeraX session from an object.
+
+    Parameters
+    ----------
+    value
+        Session-like object or object containing a session.
+    required
+        Whether failure should raise an exception.
+
+    Returns
+    -------
+    Any
+        Resolved ChimeraX session or ``None``.
+
+    Raises
+    ------
+    ChimeraXSaltBridgeError
+        If no session can be resolved and ``required`` is true.
+    """
+
+    if value is None:
+        if required:
+            raise ChimeraXSaltBridgeError(
+                "A ChimeraX session is required."
+            )
+
+        return None
+
+    if hasattr(
+        value,
+        "models",
+    ) and hasattr(
+        value,
+        "logger",
+    ):
+        return value
+
+    session = get_value(
+        value,
+        "session",
+        None,
+    )
+
+    if session is not None:
+        return session
+
+    if required:
+        raise ChimeraXSaltBridgeError(
+            "Could not resolve a ChimeraX session."
+        )
+
+    return None
+
+
+# =============================================================================
+# 17.2. CHIMERAX MODEL SPECIFICATIONS
+# =============================================================================
+
+
+def get_chimerax_model_spec(
+    model: Any,
+    *,
+    fallback: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Build a ChimeraX model specification.
+
+    Parameters
+    ----------
+    model
+        ChimeraX model-like object.
+    fallback
+        Value returned when no model identifier is available.
+
+    Returns
+    -------
+    Optional[str]
+        ChimeraX model specification.
+    """
+
+    if model is None:
+        return fallback
+
+    id_string = get_value(
+        model,
+        "id_string",
+        None,
+    )
+
+    if id_string:
+        normalized_id = str(
+            id_string
+        ).strip()
+
+        if normalized_id.startswith(
+            "#"
+        ):
+            return normalized_id
+
+        return f"#{normalized_id}"
+
+    model_id = get_value(
+        model,
+        "id",
+        None,
+    )
+
+    if model_id is not None:
+        if isinstance(
+            model_id,
+            (
+                tuple,
+                list,
+            ),
+        ):
+            identifier = ".".join(
+                str(item)
+                for item in model_id
+            )
+
+        else:
+            identifier = str(
+                model_id
+            )
+
+        if identifier:
+            return f"#{identifier}"
+
+    return fallback
+
+
+def get_atom_chimerax_model(
+    atom: Any,
+) -> Any:
+    """
+    Resolve the ChimeraX model associated with an atom.
+
+    Parameters
+    ----------
+    atom
+        Atom-like object.
+
+    Returns
+    -------
+    Any
+        ChimeraX model-like object or ``None``.
+    """
+
+    if atom is None:
+        return None
+
+    structure = get_value(
+        atom,
+        "structure",
+        None,
+    )
+
+    if structure is not None:
+        return structure
+
+    residue = get_atom_residue(
+        atom
+    )
+
+    if residue is not None:
+        structure = get_value(
+            residue,
+            "structure",
+            None,
+        )
+
+        if structure is not None:
+            return structure
+
+    return None
+
+
+# =============================================================================
+# 17.3. ATOM SPECIFICATIONS
+# =============================================================================
+
+
+def escape_chimerax_spec_text(
+    value: Any,
+) -> str:
+    """
+    Escape text used in ChimeraX atom specifications.
+
+    Parameters
+    ----------
+    value
+        Text-like value.
+
+    Returns
+    -------
+    str
+        Sanitized specification component.
+    """
+
+    text = str(
+        value
+    ).strip()
+
+    return (
+        text.replace(
+            "\\",
+            "\\\\",
+        )
+        .replace(
+            '"',
+            '\\"',
+        )
+    )
+
+
+def atom_to_chimerax_spec(
+    atom: Any,
+    *,
+    include_model: bool = True,
+    include_chain: bool = True,
+    include_residue: bool = True,
+    include_atom_name: bool = True,
+) -> Optional[str]:
+    """
+    Build a ChimeraX specification for one atom.
+
+    Parameters
+    ----------
+    atom
+        Atom-like object.
+    include_model
+        Whether the model identifier should be included.
+    include_chain
+        Whether the chain identifier should be included.
+    include_residue
+        Whether the residue identifier should be included.
+    include_atom_name
+        Whether the atom name should be included.
+
+    Returns
+    -------
+    Optional[str]
+        ChimeraX atom specification or ``None``.
+    """
+
+    if atom is None:
+        return None
+
+    specification_parts: List[str] = []
+
+    if include_model:
+        model = get_atom_chimerax_model(
+            atom
+        )
+
+        model_spec = get_chimerax_model_spec(
+            model
+        )
+
+        if model_spec:
+            specification_parts.append(
+                model_spec
+            )
+
+    residue = get_atom_residue(
+        atom
+    )
+
+    if include_chain and residue is not None:
+        chain_id = get_chain_id(
+            residue
+        )
+
+        if chain_id:
+            specification_parts.append(
+                f"/{escape_chimerax_spec_text(chain_id)}"
+            )
+
+    if include_residue and residue is not None:
+        residue_number = get_residue_number(
+            residue
+        )
+
+        if residue_number is not None:
+            specification_parts.append(
+                f":{escape_chimerax_spec_text(residue_number)}"
+            )
+
+    if include_atom_name:
+        atom_name = get_atom_name(
+            atom
+        )
+
+        if atom_name:
+            specification_parts.append(
+                f"@{escape_chimerax_spec_text(atom_name)}"
+            )
+
+    if not specification_parts:
+        serial = get_atom_serial(
+            atom
+        )
+
+        if serial is not None:
+            return f"@serial_number={serial}"
+
+        return None
+
+    return "".join(
+        specification_parts
+    )
+
+
+def atoms_to_chimerax_spec(
+    atoms: Iterable[Any],
+    *,
+    operator: str = " ",
+) -> Optional[str]:
+    """
+    Build a combined ChimeraX specification for multiple atoms.
+
+    Parameters
+    ----------
+    atoms
+        Atom-like objects.
+    operator
+        Specification separator.
+
+    Returns
+    -------
+    Optional[str]
+        Combined ChimeraX specification.
+    """
+
+    specifications = unique_preserve_order(
+        specification
+        for specification in (
+            atom_to_chimerax_spec(
+                atom
+            )
+            for atom in atoms
+        )
+        if specification
+    )
+
+    if not specifications:
+        return None
+
+    return operator.join(
+        specifications
+    )
+
+
+# =============================================================================
+# 17.4. RESIDUE SPECIFICATIONS
+# =============================================================================
+
+
+def residue_to_chimerax_spec(
+    residue: Any,
+    *,
+    include_model: bool = True,
+    include_chain: bool = True,
+) -> Optional[str]:
+    """
+    Build a ChimeraX specification for one residue.
+
+    Parameters
+    ----------
+    residue
+        Residue-like object.
+    include_model
+        Whether the model identifier should be included.
+    include_chain
+        Whether the chain identifier should be included.
+
+    Returns
+    -------
+    Optional[str]
+        ChimeraX residue specification.
+    """
+
+    if residue is None:
+        return None
+
+    specification_parts: List[str] = []
+
+    if include_model:
+        model = get_value(
+            residue,
+            "structure",
+            None,
+        )
+
+        model_spec = get_chimerax_model_spec(
+            model
+        )
+
+        if model_spec:
+            specification_parts.append(
+                model_spec
+            )
+
+    if include_chain:
+        chain_id = get_chain_id(
+            residue
+        )
+
+        if chain_id:
+            specification_parts.append(
+                f"/{escape_chimerax_spec_text(chain_id)}"
+            )
+
+    residue_number = get_residue_number(
+        residue
+    )
+
+    if residue_number is not None:
+        specification_parts.append(
+            f":{escape_chimerax_spec_text(residue_number)}"
+        )
+
+    if not specification_parts:
+        return None
+
+    return "".join(
+        specification_parts
+    )
+
+
+def residues_to_chimerax_spec(
+    residues: Iterable[Any],
+    *,
+    operator: str = " ",
+) -> Optional[str]:
+    """
+    Build a combined ChimeraX specification for residues.
+
+    Parameters
+    ----------
+    residues
+        Residue-like objects.
+    operator
+        Specification separator.
+
+    Returns
+    -------
+    Optional[str]
+        Combined ChimeraX specification.
+    """
+
+    specifications = unique_preserve_order(
+        specification
+        for specification in (
+            residue_to_chimerax_spec(
+                residue
+            )
+            for residue in residues
+        )
+        if specification
+    )
+
+    if not specifications:
+        return None
+
+    return operator.join(
+        specifications
+    )
+
+
+# =============================================================================
+# 17.5. CHARGED GROUP SPECIFICATIONS
+# =============================================================================
+
+
+def charged_group_to_chimerax_spec(
+    group: ChargedGroup,
+    *,
+    representative_only: bool = False,
+) -> Optional[str]:
+    """
+    Build a ChimeraX specification for a charged group.
+
+    Parameters
+    ----------
+    group
+        Charged group.
+    representative_only
+        Whether only the representative atom should be selected.
+
+    Returns
+    -------
+    Optional[str]
+        ChimeraX atom specification.
+    """
+
+    if not isinstance(
+        group,
+        ChargedGroup,
+    ):
+        raise ChimeraXSaltBridgeError(
+            "group must be a ChargedGroup instance."
+        )
+
+    if (
+        representative_only
+        and group.representative_atom is not None
+    ):
+        return atom_to_chimerax_spec(
+            group.representative_atom
+        )
+
+    group_atoms = [
+        charged_atom.atom
+        for charged_atom in group.atoms
+        if charged_atom.atom is not None
+    ]
+
+    if group_atoms:
+        return atoms_to_chimerax_spec(
+            group_atoms
+        )
+
+    if group.representative_atom is not None:
+        return atom_to_chimerax_spec(
+            group.representative_atom
+        )
+
+    return residue_to_chimerax_spec(
+        group.residue
+    )
+
+
+def salt_bridge_interaction_to_chimerax_spec(
+    interaction: SaltBridgeInteraction,
+    *,
+    residues_only: bool = False,
+    representative_atoms_only: bool = False,
+) -> Optional[str]:
+    """
+    Build a ChimeraX specification for one salt bridge.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+    residues_only
+        Whether entire residues should be selected.
+    representative_atoms_only
+        Whether only representative group atoms should be selected.
+
+    Returns
+    -------
+    Optional[str]
+        Combined ChimeraX specification.
+    """
+
+    if not isinstance(
+        interaction,
+        SaltBridgeInteraction,
+    ):
+        raise ChimeraXSaltBridgeError(
+            "interaction must be a SaltBridgeInteraction instance."
+        )
+
+    if residues_only:
+        return residues_to_chimerax_spec(
+            (
+                interaction.cation.residue,
+                interaction.anion.residue,
+            )
+        )
+
+    cation_spec = charged_group_to_chimerax_spec(
+        interaction.cation,
+        representative_only=(
+            representative_atoms_only
+        ),
+    )
+
+    anion_spec = charged_group_to_chimerax_spec(
+        interaction.anion,
+        representative_only=(
+            representative_atoms_only
+        ),
+    )
+
+    specifications = [
+        specification
+        for specification in (
+            cation_spec,
+            anion_spec,
+        )
+        if specification
+    ]
+
+    if not specifications:
+        return None
+
+    return " ".join(
+        specifications
+    )
+
+
+# =============================================================================
+# 17.6. RESULT SPECIFICATIONS
+# =============================================================================
+
+
+def salt_bridge_result_to_chimerax_spec(
+    result: SaltBridgeResult,
+    *,
+    valid_only: bool = True,
+    residues_only: bool = False,
+    representative_atoms_only: bool = False,
+) -> Optional[str]:
+    """
+    Build a ChimeraX selection specification for a complete result.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+    valid_only
+        Whether rejected interactions should be excluded.
+    residues_only
+        Whether complete residues should be selected.
+    representative_atoms_only
+        Whether only representative atoms should be selected.
+
+    Returns
+    -------
+    Optional[str]
+        Combined ChimeraX specification.
+    """
+
+    if not isinstance(
+        result,
+        SaltBridgeResult,
+    ):
+        raise ChimeraXSaltBridgeError(
+            "result must be a SaltBridgeResult instance."
+        )
+
+    interaction_specs: List[str] = []
+
+    for interaction in result.interactions:
+        if (
+            valid_only
+            and not interaction.geometry.valid
+        ):
+            continue
+
+        interaction_spec = (
+            salt_bridge_interaction_to_chimerax_spec(
+                interaction,
+                residues_only=residues_only,
+                representative_atoms_only=(
+                    representative_atoms_only
+                ),
+            )
+        )
+
+        if interaction_spec:
+            interaction_specs.append(
+                interaction_spec
+            )
+
+    unique_specs = unique_preserve_order(
+        interaction_specs
+    )
+
+    if not unique_specs:
+        return None
+
+    return " ".join(
+        unique_specs
+    )
+
+
+# =============================================================================
+# 17.7. SELECTION COMMANDS
+# =============================================================================
+
+
+def build_select_salt_bridge_command(
+    result: SaltBridgeResult,
+    *,
+    valid_only: bool = True,
+    residues_only: bool = False,
+    representative_atoms_only: bool = False,
+    clear_existing: bool = True,
+) -> Optional[str]:
+    """
+    Build a ChimeraX selection command for salt bridges.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+    valid_only
+        Whether invalid interactions should be excluded.
+    residues_only
+        Whether complete residues should be selected.
+    representative_atoms_only
+        Whether only representative atoms should be selected.
+    clear_existing
+        Whether the existing selection should be cleared.
+
+    Returns
+    -------
+    Optional[str]
+        ChimeraX command string.
+    """
+
+    atom_spec = salt_bridge_result_to_chimerax_spec(
+        result,
+        valid_only=valid_only,
+        residues_only=residues_only,
+        representative_atoms_only=(
+            representative_atoms_only
+        ),
+    )
+
+    if not atom_spec:
+        return None
+
+    select_command = f"select {atom_spec}"
+
+    if clear_existing:
+        return (
+            "select clear; "
+            + select_command
+        )
+
+    return select_command
+
+
+def build_select_interaction_command(
+    interaction: SaltBridgeInteraction,
+    *,
+    residues_only: bool = False,
+    representative_atoms_only: bool = False,
+    clear_existing: bool = True,
+) -> Optional[str]:
+    """
+    Build a selection command for one salt bridge.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+    residues_only
+        Whether complete residues should be selected.
+    representative_atoms_only
+        Whether only representative atoms should be selected.
+    clear_existing
+        Whether the existing selection should be cleared.
+
+    Returns
+    -------
+    Optional[str]
+        ChimeraX command.
+    """
+
+    atom_spec = (
+        salt_bridge_interaction_to_chimerax_spec(
+            interaction,
+            residues_only=residues_only,
+            representative_atoms_only=(
+                representative_atoms_only
+            ),
+        )
+    )
+
+    if not atom_spec:
+        return None
+
+    command = f"select {atom_spec}"
+
+    if clear_existing:
+        return f"select clear; {command}"
+
+    return command
+
+
+# =============================================================================
+# 17.8. DISPLAY COMMANDS
+# =============================================================================
+
+
+def normalize_chimerax_color(
+    color: Optional[str],
+    *,
+    default: str,
+) -> str:
+    """
+    Normalize a ChimeraX color name.
+
+    Parameters
+    ----------
+    color
+        Color name.
+    default
+        Fallback color.
+
+    Returns
+    -------
+    str
+        Normalized color name.
+    """
+
+    normalized_color = normalize_text(
+        color,
+        default=default,
+        lowercase=True,
+    )
+
+    return (
+        normalized_color
+        or default
+    )
+
+
+def get_salt_bridge_strength_color(
+    interaction: SaltBridgeInteraction,
+) -> str:
+    """
+    Return a default ChimeraX color based on interaction strength.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+
+    Returns
+    -------
+    str
+        ChimeraX color name.
+    """
+
+    strength = normalize_text(
+        interaction.strength,
+        default=STRENGTH_REJECTED,
+        lowercase=True,
+    )
+
+    color_mapping = {
+        STRENGTH_STRONG: "magenta",
+        STRENGTH_MODERATE: "purple",
+        STRENGTH_WEAK: "orchid",
+        STRENGTH_REJECTED: "gray",
+    }
+
+    return color_mapping.get(
+        strength,
+        "magenta",
+    )
+
+
+def build_show_salt_bridge_command(
+    result: SaltBridgeResult,
+    *,
+    valid_only: bool = True,
+    residues_only: bool = False,
+    display_style: str = "stick",
+    color: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Build ChimeraX commands to show salt-bridge participants.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+    valid_only
+        Whether invalid interactions should be excluded.
+    residues_only
+        Whether complete residues should be displayed.
+    display_style
+        ChimeraX display style.
+    color
+        Optional display color.
+
+    Returns
+    -------
+    Optional[str]
+        ChimeraX command string.
+    """
+
+    atom_spec = salt_bridge_result_to_chimerax_spec(
+        result,
+        valid_only=valid_only,
+        residues_only=residues_only,
+    )
+
+    if not atom_spec:
+        return None
+
+    normalized_style = normalize_text(
+        display_style,
+        default="stick",
+        lowercase=True,
+    )
+
+    command_parts = [
+        f"show {atom_spec}",
+        f"style {atom_spec} {normalized_style}",
+    ]
+
+    if color:
+        normalized_color = normalize_chimerax_color(
+            color,
+            default="magenta",
+        )
+
+        command_parts.append(
+            f"color {atom_spec} {normalized_color}"
+        )
+
+    return "; ".join(
+        command_parts
+    )
+
+
+# =============================================================================
+# 17.9. PSEUDOBOND ENDPOINT RESOLUTION
+# =============================================================================
+
+
+def resolve_salt_bridge_pseudobond_atoms(
+    interaction: SaltBridgeInteraction,
+) -> Tuple[Any, Any]:
+    """
+    Resolve atoms used as salt-bridge pseudobond endpoints.
+
+    Priority:
+
+    1. closest atomic contact;
+    2. representative atoms;
+    3. first available atom in each charged group.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+
+    Returns
+    -------
+    Tuple[Any, Any]
+        Positive and negative endpoint atoms.
+
+    Raises
+    ------
+    ChimeraXSaltBridgeError
+        If suitable atoms cannot be resolved.
+    """
+
+    if not isinstance(
+        interaction,
+        SaltBridgeInteraction,
+    ):
+        raise ChimeraXSaltBridgeError(
+            "interaction must be a SaltBridgeInteraction instance."
+        )
+
+    positive_atom = (
+        interaction.geometry.closest_positive_atom
+    )
+
+    negative_atom = (
+        interaction.geometry.closest_negative_atom
+    )
+
+    if positive_atom is None:
+        positive_atom = (
+            interaction.cation.representative_atom
+        )
+
+    if negative_atom is None:
+        negative_atom = (
+            interaction.anion.representative_atom
+        )
+
+    if (
+        positive_atom is None
+        and interaction.cation.atoms
+    ):
+        positive_atom = (
+            interaction.cation.atoms[0].atom
+        )
+
+    if (
+        negative_atom is None
+        and interaction.anion.atoms
+    ):
+        negative_atom = (
+            interaction.anion.atoms[0].atom
+        )
+
+    if (
+        positive_atom is None
+        or negative_atom is None
+    ):
+        raise ChimeraXSaltBridgeError(
+            "Could not resolve pseudobond endpoint atoms."
+        )
+
+    return (
+        positive_atom,
+        negative_atom,
+    )
+
+
+def build_salt_bridge_pseudobond_specs(
+    interaction: SaltBridgeInteraction,
+) -> Tuple[str, str]:
+    """
+    Build ChimeraX atom specifications for pseudobond endpoints.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+
+    Returns
+    -------
+    Tuple[str, str]
+        Positive and negative atom specifications.
+    """
+
+    positive_atom, negative_atom = (
+        resolve_salt_bridge_pseudobond_atoms(
+            interaction
+        )
+    )
+
+    positive_spec = atom_to_chimerax_spec(
+        positive_atom
+    )
+
+    negative_spec = atom_to_chimerax_spec(
+        negative_atom
+    )
+
+    if (
+        not positive_spec
+        or not negative_spec
+    ):
+        raise ChimeraXSaltBridgeError(
+            "Could not build pseudobond atom specifications."
+        )
+
+    return (
+        positive_spec,
+        negative_spec,
+    )
+
+
+# =============================================================================
+# 17.10. PSEUDOBOND GROUP NAMING
+# =============================================================================
+
+
+def sanitize_chimerax_group_name(
+    value: Any,
+    *,
+    default: str = "DockAnalyzer salt bridges",
+) -> str:
+    """
+    Sanitize a ChimeraX pseudobond group name.
+
+    Parameters
+    ----------
+    value
+        Group name.
+    default
+        Fallback name.
+
+    Returns
+    -------
+    str
+        Sanitized group name.
+    """
+
+    normalized_name = str(
+        value or default
+    ).strip()
+
+    if not normalized_name:
+        normalized_name = default
+
+    return normalized_name.replace(
+        '"',
+        "'",
+    )
+
+
+def make_salt_bridge_pseudobond_group_name(
+    interaction: Optional[
+        SaltBridgeInteraction
+    ] = None,
+    *,
+    base_name: str = "DockAnalyzer salt bridges",
+    separate_by_strength: bool = False,
+    separate_by_pose: bool = False,
+) -> str:
+    """
+    Build a pseudobond group name.
+
+    Parameters
+    ----------
+    interaction
+        Optional salt-bridge interaction.
+    base_name
+        Base group name.
+    separate_by_strength
+        Whether strength should be included.
+    separate_by_pose
+        Whether pose identifier should be included.
+
+    Returns
+    -------
+    str
+        Pseudobond group name.
+    """
+
+    name_parts = [
+        sanitize_chimerax_group_name(
+            base_name
+        )
+    ]
+
+    if interaction is not None:
+        if separate_by_strength:
+            strength = normalize_text(
+                interaction.strength,
+                default="unclassified",
+                lowercase=True,
+            )
+
+            name_parts.append(
+                strength
+            )
+
+        if (
+            separate_by_pose
+            and interaction.pose_id is not None
+        ):
+            name_parts.append(
+                f"pose {interaction.pose_id}"
+            )
+
+    return " - ".join(
+        name_parts
+    )
+
+
+# =============================================================================
+# 17.11. PSEUDOBOND COMMAND GENERATION
+# =============================================================================
+
+
+def build_create_salt_bridge_pseudobond_command(
+    interaction: SaltBridgeInteraction,
+    *,
+    group_name: Optional[str] = None,
+    color: Optional[str] = None,
+    radius: float = 0.15,
+    dashes: int = 6,
+    separate_by_strength: bool = False,
+    separate_by_pose: bool = False,
+) -> str:
+    """
+    Build a ChimeraX command to create one salt-bridge pseudobond.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+    group_name
+        Optional pseudobond group name.
+    color
+        Optional pseudobond color.
+    radius
+        Pseudobond radius.
+    dashes
+        Number of pseudobond dashes.
+    separate_by_strength
+        Whether group names should include strength.
+    separate_by_pose
+        Whether group names should include pose identifier.
+
+    Returns
+    -------
+    str
+        ChimeraX command string.
+    """
+
+    positive_spec, negative_spec = (
+        build_salt_bridge_pseudobond_specs(
+            interaction
+        )
+    )
+
+    resolved_group_name = (
+        make_salt_bridge_pseudobond_group_name(
+            interaction,
+            base_name=(
+                group_name
+                or "DockAnalyzer salt bridges"
+            ),
+            separate_by_strength=(
+                separate_by_strength
+            ),
+            separate_by_pose=(
+                separate_by_pose
+            ),
+        )
+    )
+
+    resolved_color = (
+        normalize_chimerax_color(
+            color,
+            default=(
+                get_salt_bridge_strength_color(
+                    interaction
+                )
+            ),
+        )
+    )
+
+    normalized_radius = safe_float(
+        radius,
+        default=0.15,
+    )
+
+    normalized_dashes = safe_int(
+        dashes,
+        default=6,
+    )
+
+    if (
+        normalized_radius is None
+        or normalized_radius <= 0.0
+    ):
+        raise ChimeraXSaltBridgeError(
+            "Pseudobond radius must be positive."
+        )
+
+    if (
+        normalized_dashes is None
+        or normalized_dashes < 0
+    ):
+        raise ChimeraXSaltBridgeError(
+            "Pseudobond dash count cannot be negative."
+        )
+
+    escaped_group_name = (
+        resolved_group_name.replace(
+            '"',
+            '\\"',
+        )
+    )
+
+    return (
+        f'pbond {positive_spec} {negative_spec} '
+        f'color {resolved_color} '
+        f'radius {normalized_radius:.3f} '
+        f'dashes {normalized_dashes} '
+        f'name "{escaped_group_name}"'
+    )
+
+
+def build_create_salt_bridge_pseudobonds_commands(
+    interactions: Iterable[
+        SaltBridgeInteraction
+    ],
+    *,
+    valid_only: bool = True,
+    group_name: str = "DockAnalyzer salt bridges",
+    color_by_strength: bool = True,
+    color: Optional[str] = None,
+    radius: float = 0.15,
+    dashes: int = 6,
+    separate_by_strength: bool = False,
+    separate_by_pose: bool = False,
+) -> List[str]:
+    """
+    Build ChimeraX pseudobond creation commands.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    valid_only
+        Whether invalid interactions should be excluded.
+    group_name
+        Base pseudobond group name.
+    color_by_strength
+        Whether interaction strength should determine color.
+    color
+        Optional fixed color.
+    radius
+        Pseudobond radius.
+    dashes
+        Number of dashes.
+    separate_by_strength
+        Whether separate strength groups should be created.
+    separate_by_pose
+        Whether separate pose groups should be created.
+
+    Returns
+    -------
+    List[str]
+        ChimeraX commands.
+    """
+
+    commands: List[str] = []
+
+    for interaction in interactions:
+        if not isinstance(
+            interaction,
+            SaltBridgeInteraction,
+        ):
+            raise ChimeraXSaltBridgeError(
+                "All values must be SaltBridgeInteraction instances."
+            )
+
+        if (
+            valid_only
+            and not interaction.geometry.valid
+        ):
+            continue
+
+        interaction_color = (
+            None
+            if color_by_strength
+            else color
+        )
+
+        if (
+            color_by_strength
+            and color is not None
+        ):
+            interaction_color = color
+
+        command = (
+            build_create_salt_bridge_pseudobond_command(
+                interaction,
+                group_name=group_name,
+                color=interaction_color,
+                radius=radius,
+                dashes=dashes,
+                separate_by_strength=(
+                    separate_by_strength
+                ),
+                separate_by_pose=(
+                    separate_by_pose
+                ),
+            )
+        )
+
+        commands.append(
+            command
+        )
+
+    return commands
+
+
+def build_create_result_pseudobonds_commands(
+    result: SaltBridgeResult,
+    **options: Any,
+) -> List[str]:
+    """
+    Build pseudobond commands for a complete SaltBridgeResult.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+    **options
+        Options forwarded to
+        ``build_create_salt_bridge_pseudobonds_commands``.
+
+    Returns
+    -------
+    List[str]
+        ChimeraX commands.
+    """
+
+    if not isinstance(
+        result,
+        SaltBridgeResult,
+    ):
+        raise ChimeraXSaltBridgeError(
+            "result must be a SaltBridgeResult instance."
+        )
+
+    return build_create_salt_bridge_pseudobonds_commands(
+        result.interactions,
+        **options,
+    )
+
+
+# =============================================================================
+# 17.12. PSEUDOBOND DELETION COMMANDS
+# =============================================================================
+
+
+def build_delete_salt_bridge_pseudobonds_command(
+    *,
+    group_name: str = "DockAnalyzer salt bridges",
+) -> str:
+    """
+    Build a command to delete a salt-bridge pseudobond group.
+
+    Parameters
+    ----------
+    group_name
+        Pseudobond group name.
+
+    Returns
+    -------
+    str
+        ChimeraX command.
+    """
+
+    normalized_group_name = (
+        sanitize_chimerax_group_name(
+            group_name
+        )
+    )
+
+    escaped_group_name = (
+        normalized_group_name.replace(
+            '"',
+            '\\"',
+        )
+    )
+
+    return (
+        f'pbond delete name "{escaped_group_name}"'
+    )
+
+
+def build_hide_salt_bridge_pseudobonds_command(
+    *,
+    group_name: str = "DockAnalyzer salt bridges",
+) -> str:
+    """
+    Build a command to hide a salt-bridge pseudobond group.
+
+    Parameters
+    ----------
+    group_name
+        Pseudobond group name.
+
+    Returns
+    -------
+    str
+        ChimeraX command.
+    """
+
+    normalized_group_name = (
+        sanitize_chimerax_group_name(
+            group_name
+        )
+    )
+
+    escaped_group_name = (
+        normalized_group_name.replace(
+            '"',
+            '\\"',
+        )
+    )
+
+    return (
+        f'hide pseudobonds name "{escaped_group_name}"'
+    )
+
+
+def build_show_salt_bridge_pseudobonds_command(
+    *,
+    group_name: str = "DockAnalyzer salt bridges",
+) -> str:
+    """
+    Build a command to show a salt-bridge pseudobond group.
+
+    Parameters
+    ----------
+    group_name
+        Pseudobond group name.
+
+    Returns
+    -------
+    str
+        ChimeraX command.
+    """
+
+    normalized_group_name = (
+        sanitize_chimerax_group_name(
+            group_name
+        )
+    )
+
+    escaped_group_name = (
+        normalized_group_name.replace(
+            '"',
+            '\\"',
+        )
+    )
+
+    return (
+        f'show pseudobonds name "{escaped_group_name}"'
+    )
+
+
+# =============================================================================
+# 17.13. CHIMERAX COMMAND EXECUTION
+# =============================================================================
+
+
+def run_chimerax_command(
+    session: Any,
+    command: str,
+    *,
+    log: bool = False,
+) -> Any:
+    """
+    Execute one ChimeraX command.
+
+    Parameters
+    ----------
+    session
+        ChimeraX session.
+    command
+        Command string.
+    log
+        Whether the command should be logged by ChimeraX.
+
+    Returns
+    -------
+    Any
+        Command result.
+
+    Raises
+    ------
+    ChimeraXUnavailableError
+        If ChimeraX is unavailable.
+    ChimeraXSaltBridgeError
+        If command execution fails.
+    """
+
+    require_chimerax()
+
+    resolved_session = get_chimerax_session(
+        session,
+        required=True,
+    )
+
+    normalized_command = str(
+        command
+    ).strip()
+
+    if not normalized_command:
+        raise ChimeraXSaltBridgeError(
+            "A non-empty ChimeraX command is required."
+        )
+
+    try:
+        return chimerax_run(
+            resolved_session,
+            normalized_command,
+            log=log,
+        )
+
+    except Exception as error:
+        raise ChimeraXSaltBridgeError(
+            "ChimeraX command execution failed: "
+            f"{normalized_command}"
+        ) from error
+
+
+def run_chimerax_commands(
+    session: Any,
+    commands: Iterable[str],
+    *,
+    log: bool = False,
+    continue_on_error: bool = False,
+    warnings: Optional[List[str]] = None,
+) -> List[Any]:
+    """
+    Execute multiple ChimeraX commands.
+
+    Parameters
+    ----------
+    session
+        ChimeraX session.
+    commands
+        Command strings.
+    log
+        Whether commands should be logged.
+    continue_on_error
+        Whether execution should continue after failures.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    List[Any]
+        Command results.
+    """
+
+    command_results: List[Any] = []
+
+    for command_index, command in enumerate(
+        commands,
+        start=1,
+    ):
+        try:
+            command_result = run_chimerax_command(
+                session,
+                command,
+                log=log,
+            )
+
+            command_results.append(
+                command_result
+            )
+
+        except ChimeraXSaltBridgeError as error:
+            message = (
+                "ChimeraX salt-bridge command failed "
+                f"at index {command_index}: {error}"
+            )
+
+            if warnings is not None:
+                warnings.append(
+                    message
+                )
+
+            if not continue_on_error:
+                raise
+
+    return command_results
+
+
+# =============================================================================
+# 17.14. DIRECT SELECTION AND VISUALIZATION
+# =============================================================================
+
+
+def select_salt_bridges_in_chimerax(
+    session: Any,
+    result: SaltBridgeResult,
+    *,
+    valid_only: bool = True,
+    residues_only: bool = False,
+    representative_atoms_only: bool = False,
+    clear_existing: bool = True,
+    log: bool = False,
+) -> Any:
+    """
+    Select salt-bridge participants in ChimeraX.
+
+    Parameters
+    ----------
+    session
+        ChimeraX session.
+    result
+        Salt-bridge result.
+    valid_only
+        Whether rejected interactions should be excluded.
+    residues_only
+        Whether complete residues should be selected.
+    representative_atoms_only
+        Whether only representative atoms should be selected.
+    clear_existing
+        Whether the previous selection should be cleared.
+    log
+        Whether the command should be logged.
+
+    Returns
+    -------
+    Any
+        ChimeraX command result.
+    """
+
+    command = build_select_salt_bridge_command(
+        result,
+        valid_only=valid_only,
+        residues_only=residues_only,
+        representative_atoms_only=(
+            representative_atoms_only
+        ),
+        clear_existing=clear_existing,
+    )
+
+    if command is None:
+        return None
+
+    return run_chimerax_command(
+        session,
+        command,
+        log=log,
+    )
+
+
+def create_salt_bridge_pseudobonds_in_chimerax(
+    session: Any,
+    result: SaltBridgeResult,
+    *,
+    valid_only: bool = True,
+    group_name: str = "DockAnalyzer salt bridges",
+    color_by_strength: bool = True,
+    color: Optional[str] = None,
+    radius: float = 0.15,
+    dashes: int = 6,
+    separate_by_strength: bool = False,
+    separate_by_pose: bool = False,
+    clear_existing: bool = False,
+    continue_on_error: bool = False,
+    warnings: Optional[List[str]] = None,
+    log: bool = False,
+) -> List[Any]:
+    """
+    Create salt-bridge pseudobonds in ChimeraX.
+
+    Parameters
+    ----------
+    session
+        ChimeraX session.
+    result
+        Salt-bridge result.
+    valid_only
+        Whether rejected interactions should be excluded.
+    group_name
+        Base pseudobond group name.
+    color_by_strength
+        Whether pseudobonds should be colored by strength.
+    color
+        Optional fixed color.
+    radius
+        Pseudobond radius.
+    dashes
+        Number of pseudobond dashes.
+    separate_by_strength
+        Whether separate strength groups should be created.
+    separate_by_pose
+        Whether separate pose groups should be created.
+    clear_existing
+        Whether the existing pseudobond group should be deleted first.
+    continue_on_error
+        Whether execution should continue after command failures.
+    warnings
+        Optional warning collector.
+    log
+        Whether commands should be logged.
+
+    Returns
+    -------
+    List[Any]
+        ChimeraX command results.
+    """
+
+    require_chimerax()
+
+    commands: List[str] = []
+
+    if clear_existing:
+        commands.append(
+            build_delete_salt_bridge_pseudobonds_command(
+                group_name=group_name
+            )
+        )
+
+    commands.extend(
+        build_create_result_pseudobonds_commands(
+            result,
+            valid_only=valid_only,
+            group_name=group_name,
+            color_by_strength=(
+                color_by_strength
+            ),
+            color=color,
+            radius=radius,
+            dashes=dashes,
+            separate_by_strength=(
+                separate_by_strength
+            ),
+            separate_by_pose=(
+                separate_by_pose
+            ),
+        )
+    )
+
+    return run_chimerax_commands(
+        session,
+        commands,
+        log=log,
+        continue_on_error=(
+            continue_on_error
+        ),
+        warnings=warnings,
+    )
+
+
+# =============================================================================
+# 17.15. COMPLETE VISUALIZATION COMMAND SET
+# =============================================================================
+
+
+def build_salt_bridge_visualization_commands(
+    result: SaltBridgeResult,
+    *,
+    valid_only: bool = True,
+    group_name: str = "DockAnalyzer salt bridges",
+    display_residues: bool = True,
+    display_style: str = "stick",
+    color_participants: bool = False,
+    participant_color: str = "magenta",
+    color_by_strength: bool = True,
+    pseudobond_color: Optional[str] = None,
+    pseudobond_radius: float = 0.15,
+    pseudobond_dashes: int = 6,
+    separate_by_strength: bool = False,
+    separate_by_pose: bool = False,
+    clear_existing_pseudobonds: bool = True,
+    select_participants: bool = True,
+) -> List[str]:
+    """
+    Build a complete ChimeraX visualization command set.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+    valid_only
+        Whether invalid interactions should be excluded.
+    group_name
+        Pseudobond group name.
+    display_residues
+        Whether entire interacting residues should be displayed.
+    display_style
+        Participant display style.
+    color_participants
+        Whether interacting atoms or residues should be colored.
+    participant_color
+        Participant color.
+    color_by_strength
+        Whether pseudobonds should be colored by strength.
+    pseudobond_color
+        Optional fixed pseudobond color.
+    pseudobond_radius
+        Pseudobond radius.
+    pseudobond_dashes
+        Pseudobond dash count.
+    separate_by_strength
+        Whether pseudobonds should be grouped by strength.
+    separate_by_pose
+        Whether pseudobonds should be grouped by pose.
+    clear_existing_pseudobonds
+        Whether existing pseudobonds should be deleted first.
+    select_participants
+        Whether participants should be selected.
+
+    Returns
+    -------
+    List[str]
+        ChimeraX command strings.
+    """
+
+    commands: List[str] = []
+
+    if clear_existing_pseudobonds:
+        commands.append(
+            build_delete_salt_bridge_pseudobonds_command(
+                group_name=group_name
+            )
+        )
+
+    display_command = (
+        build_show_salt_bridge_command(
+            result,
+            valid_only=valid_only,
+            residues_only=display_residues,
+            display_style=display_style,
+            color=(
+                participant_color
+                if color_participants
+                else None
+            ),
+        )
+    )
+
+    if display_command:
+        commands.append(
+            display_command
+        )
+
+    if select_participants:
+        selection_command = (
+            build_select_salt_bridge_command(
+                result,
+                valid_only=valid_only,
+                residues_only=display_residues,
+                representative_atoms_only=False,
+                clear_existing=True,
+            )
+        )
+
+        if selection_command:
+            commands.append(
+                selection_command
+            )
+
+    commands.extend(
+        build_create_result_pseudobonds_commands(
+            result,
+            valid_only=valid_only,
+            group_name=group_name,
+            color_by_strength=(
+                color_by_strength
+            ),
+            color=pseudobond_color,
+            radius=pseudobond_radius,
+            dashes=pseudobond_dashes,
+            separate_by_strength=(
+                separate_by_strength
+            ),
+            separate_by_pose=(
+                separate_by_pose
+            ),
+        )
+    )
+
+    return commands
+
+
+def visualize_salt_bridges_in_chimerax(
+    session: Any,
+    result: SaltBridgeResult,
+    *,
+    continue_on_error: bool = False,
+    warnings: Optional[List[str]] = None,
+    log: bool = False,
+    **visualization_options: Any,
+) -> List[Any]:
+    """
+    Visualize salt bridges in ChimeraX.
+
+    Parameters
+    ----------
+    session
+        ChimeraX session.
+    result
+        Salt-bridge result.
+    continue_on_error
+        Whether command execution should continue after failures.
+    warnings
+        Optional warning collector.
+    log
+        Whether commands should be logged.
+    **visualization_options
+        Options forwarded to
+        ``build_salt_bridge_visualization_commands``.
+
+    Returns
+    -------
+    List[Any]
+        ChimeraX command results.
+    """
+
+    commands = (
+        build_salt_bridge_visualization_commands(
+            result,
+            **visualization_options,
+        )
+    )
+
+    return run_chimerax_commands(
+        session,
+        commands,
+        log=log,
+        continue_on_error=(
+            continue_on_error
+        ),
+        warnings=warnings,
+    )
+
+
+# =============================================================================
+# 17.16. MULTIPOSE CHIMERAX VISUALIZATION
+# =============================================================================
+
+
+def build_multipose_salt_bridge_visualization_commands(
+    results: Iterable[SaltBridgeResult],
+    *,
+    valid_only: bool = True,
+    base_group_name: str = "DockAnalyzer salt bridges",
+    separate_by_pose: bool = True,
+    separate_by_strength: bool = False,
+    color_by_strength: bool = True,
+    pseudobond_radius: float = 0.15,
+    pseudobond_dashes: int = 6,
+) -> List[str]:
+    """
+    Build pseudobond commands for multiple pose results.
+
+    Parameters
+    ----------
+    results
+        Pose-level salt-bridge results.
+    valid_only
+        Whether invalid interactions should be excluded.
+    base_group_name
+        Base pseudobond group name.
+    separate_by_pose
+        Whether each pose should use a separate group.
+    separate_by_strength
+        Whether strength should also define groups.
+    color_by_strength
+        Whether pseudobond colors should reflect strength.
+    pseudobond_radius
+        Pseudobond radius.
+    pseudobond_dashes
+        Pseudobond dash count.
+
+    Returns
+    -------
+    List[str]
+        ChimeraX commands.
+    """
+
+    commands: List[str] = []
+
+    for result in results:
+        if not isinstance(
+            result,
+            SaltBridgeResult,
+        ):
+            raise ChimeraXSaltBridgeError(
+                "All values must be SaltBridgeResult instances."
+            )
+
+        commands.extend(
+            build_create_result_pseudobonds_commands(
+                result,
+                valid_only=valid_only,
+                group_name=base_group_name,
+                color_by_strength=(
+                    color_by_strength
+                ),
+                radius=pseudobond_radius,
+                dashes=pseudobond_dashes,
+                separate_by_strength=(
+                    separate_by_strength
+                ),
+                separate_by_pose=(
+                    separate_by_pose
+                ),
+            )
+        )
+
+    return commands
+
+
+def visualize_multipose_salt_bridges_in_chimerax(
+    session: Any,
+    results: Iterable[SaltBridgeResult],
+    *,
+    continue_on_error: bool = True,
+    warnings: Optional[List[str]] = None,
+    log: bool = False,
+    **options: Any,
+) -> List[Any]:
+    """
+    Visualize salt bridges from multiple poses in ChimeraX.
+
+    Parameters
+    ----------
+    session
+        ChimeraX session.
+    results
+        Pose-level results.
+    continue_on_error
+        Whether command execution should continue after failures.
+    warnings
+        Optional warning collector.
+    log
+        Whether commands should be logged.
+    **options
+        Visualization options.
+
+    Returns
+    -------
+    List[Any]
+        ChimeraX command results.
+    """
+
+    commands = (
+        build_multipose_salt_bridge_visualization_commands(
+            results,
+            **options,
+        )
+    )
+
+    return run_chimerax_commands(
+        session,
+        commands,
+        log=log,
+        continue_on_error=(
+            continue_on_error
+        ),
+        warnings=warnings,
+    )
+
+
+# =============================================================================
+# 17.17. CHIMERAX EXPORT RECORDS
+# =============================================================================
+
+
+def build_chimerax_salt_bridge_record(
+    interaction: SaltBridgeInteraction,
+) -> Dict[str, Any]:
+    """
+    Build a ChimeraX-oriented interaction record.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+
+    Returns
+    -------
+    Dict[str, Any]
+        ChimeraX-oriented record.
+    """
+
+    positive_spec, negative_spec = (
+        build_salt_bridge_pseudobond_specs(
+            interaction
+        )
+    )
+
+    return {
+        "interaction_id": (
+            interaction.interaction_id
+        ),
+        "pose_id": interaction.pose_id,
+        "model_id": interaction.model_id,
+        "strength": interaction.strength,
+        "score": sanitize_json_number(
+            interaction.score
+        ),
+        "positive_atom_spec": (
+            positive_spec
+        ),
+        "negative_atom_spec": (
+            negative_spec
+        ),
+        "cation_group_spec": (
+            charged_group_to_chimerax_spec(
+                interaction.cation
+            )
+        ),
+        "anion_group_spec": (
+            charged_group_to_chimerax_spec(
+                interaction.anion
+            )
+        ),
+        "residue_spec": (
+            salt_bridge_interaction_to_chimerax_spec(
+                interaction,
+                residues_only=True,
+            )
+        ),
+        "selection_spec": (
+            salt_bridge_interaction_to_chimerax_spec(
+                interaction
+            )
+        ),
+        "pseudobond_group": (
+            make_salt_bridge_pseudobond_group_name(
+                interaction
+            )
+        ),
+        "color": (
+            get_salt_bridge_strength_color(
+                interaction
+            )
+        ),
+    }
+
+
+def build_chimerax_salt_bridge_records(
+    result: SaltBridgeResult,
+    *,
+    valid_only: bool = True,
+) -> List[Dict[str, Any]]:
+    """
+    Build ChimeraX-oriented records for a result.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+    valid_only
+        Whether invalid interactions should be excluded.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        ChimeraX records.
+    """
+
+    records: List[
+        Dict[str, Any]
+    ] = []
+
+    for interaction in result.interactions:
+        if (
+            valid_only
+            and not interaction.geometry.valid
+        ):
+            continue
+
+        try:
+            record = (
+                build_chimerax_salt_bridge_record(
+                    interaction
+                )
+            )
+
+        except ChimeraXSaltBridgeError:
+            continue
+
+        records.append(
+            record
+        )
+
+    return records
+
+
 
 
 
