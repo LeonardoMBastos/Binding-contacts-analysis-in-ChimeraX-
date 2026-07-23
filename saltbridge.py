@@ -11493,6 +11493,4355 @@ def analyze_and_deduplicate_salt_bridges(
     )
 
 
+# =============================================================================
+# 12. GROUPING
+# =============================================================================
+
+
+# =============================================================================
+# 12.1. GROUPING KEY NORMALIZATION
+# =============================================================================
+
+
+def normalize_grouping_identifier(
+    value: Any,
+    *,
+    fallback: str = "unknown",
+) -> str:
+    """
+    Normalize a value used as a grouping identifier.
+
+    Parameters
+    ----------
+    value
+        Identifier-like value.
+    fallback
+        Value returned when the identifier is unavailable.
+
+    Returns
+    -------
+    str
+        Normalized grouping identifier.
+    """
+
+    if value is None:
+        return fallback
+
+    normalized_value = normalize_text(
+        value,
+        default=fallback,
+    )
+
+    return normalized_value or fallback
+
+
+def charged_group_grouping_key(
+    group: ChargedGroup,
+    *,
+    include_group_type: bool = True,
+    include_polarity: bool = True,
+) -> Tuple[Any, ...]:
+    """
+    Build a stable grouping key for a charged group.
+
+    Parameters
+    ----------
+    group
+        Charged group.
+    include_group_type
+        Whether the chemical group type should be included.
+    include_polarity
+        Whether group polarity should be included.
+
+    Returns
+    -------
+    Tuple[Any, ...]
+        Hashable charged-group key.
+    """
+
+    if not isinstance(group, ChargedGroup):
+        raise SaltBridgeDetectionError(
+            "group must be a ChargedGroup instance."
+        )
+
+    key_parts: List[Any] = [
+        residue_identity(group.residue),
+        tuple(
+            sorted(
+                (
+                    repr(charged_atom_identity(charged_atom)),
+                    charged_atom_identity(charged_atom),
+                )
+                for charged_atom in group.atoms
+            )
+        ),
+    ]
+
+    if include_group_type:
+        key_parts.append(group.group_type)
+
+    if include_polarity:
+        key_parts.append(group.polarity)
+
+    return tuple(key_parts)
+
+
+def interaction_residue_grouping_key(
+    interaction: SaltBridgeInteraction,
+    *,
+    directional: bool = True,
+) -> Tuple[Any, ...]:
+    """
+    Build a residue-pair grouping key for an interaction.
+
+    Salt bridges are intrinsically directional because one side is cationic
+    and the other is anionic. When ``directional`` is disabled, both residue
+    identities are sorted to produce an undirected residue-pair key.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+    directional
+        Whether cation-anion direction should be preserved.
+
+    Returns
+    -------
+    Tuple[Any, ...]
+        Hashable residue-pair key.
+    """
+
+    if not isinstance(interaction, SaltBridgeInteraction):
+        raise SaltBridgeDetectionError(
+            "interaction must be a SaltBridgeInteraction instance."
+        )
+
+    cation_residue_key = residue_identity(
+        interaction.cation.residue
+    )
+
+    anion_residue_key = residue_identity(
+        interaction.anion.residue
+    )
+
+    if directional:
+        return (
+            "cation_to_anion",
+            cation_residue_key,
+            anion_residue_key,
+        )
+
+    ordered_residues = tuple(
+        sorted(
+            (
+                (
+                    repr(cation_residue_key),
+                    cation_residue_key,
+                ),
+                (
+                    repr(anion_residue_key),
+                    anion_residue_key,
+                ),
+            )
+        )
+    )
+
+    return (
+        "undirected_residue_pair",
+        ordered_residues,
+    )
+
+
+def interaction_group_pair_grouping_key(
+    interaction: SaltBridgeInteraction,
+) -> Tuple[Any, ...]:
+    """
+    Build a grouping key from the complete charged-group pair.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+
+    Returns
+    -------
+    Tuple[Any, ...]
+        Hashable charged-group-pair key.
+    """
+
+    return (
+        "charged_group_pair",
+        charged_group_grouping_key(
+            interaction.cation
+        ),
+        charged_group_grouping_key(
+            interaction.anion
+        ),
+    )
+
+
+def interaction_chain_pair_grouping_key(
+    interaction: SaltBridgeInteraction,
+    *,
+    directional: bool = True,
+) -> Tuple[str, str]:
+    """
+    Build a chain-pair grouping key.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+    directional
+        Whether cation-anion chain direction should be preserved.
+
+    Returns
+    -------
+    Tuple[str, str]
+        Cation and anion chain identifiers.
+    """
+
+    cation_chain = normalize_grouping_identifier(
+        get_chain_id(interaction.cation.residue),
+        fallback="unknown_chain",
+    )
+
+    anion_chain = normalize_grouping_identifier(
+        get_chain_id(interaction.anion.residue),
+        fallback="unknown_chain",
+    )
+
+    if directional:
+        return cation_chain, anion_chain
+
+    return tuple(
+        sorted(
+            (
+                cation_chain,
+                anion_chain,
+            )
+        )
+    )
+
+
+def interaction_pose_grouping_key(
+    interaction: SaltBridgeInteraction,
+) -> str:
+    """
+    Return a normalized pose grouping key.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+
+    Returns
+    -------
+    str
+        Pose identifier.
+    """
+
+    return normalize_grouping_identifier(
+        interaction.pose_id,
+        fallback="unassigned_pose",
+    )
+
+
+def interaction_model_grouping_key(
+    interaction: SaltBridgeInteraction,
+) -> str:
+    """
+    Return a normalized model grouping key.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+
+    Returns
+    -------
+    str
+        Model identifier.
+    """
+
+    return normalize_grouping_identifier(
+        interaction.model_id,
+        fallback="unassigned_model",
+    )
+
+
+# =============================================================================
+# 12.2. GENERIC GROUPING UTILITIES
+# =============================================================================
+
+
+def group_interactions_by_key(
+    interactions: Iterable[SaltBridgeInteraction],
+    key_function: Callable[
+        [SaltBridgeInteraction],
+        Hashable,
+    ],
+) -> Dict[Hashable, List[SaltBridgeInteraction]]:
+    """
+    Group interactions using a custom key function.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    key_function
+        Function returning a hashable grouping key.
+
+    Returns
+    -------
+    Dict[Hashable, List[SaltBridgeInteraction]]
+        Mapping from keys to interaction lists.
+    """
+
+    if not callable(key_function):
+        raise SaltBridgeDetectionError(
+            "key_function must be callable."
+        )
+
+    grouped_interactions: Dict[
+        Hashable,
+        List[SaltBridgeInteraction],
+    ] = defaultdict(list)
+
+    for interaction in interactions:
+        if not isinstance(interaction, SaltBridgeInteraction):
+            raise SaltBridgeDetectionError(
+                "All values must be SaltBridgeInteraction instances."
+            )
+
+        grouping_key = key_function(interaction)
+
+        try:
+            hash(grouping_key)
+        except TypeError as error:
+            raise SaltBridgeDetectionError(
+                "Grouping keys must be hashable."
+            ) from error
+
+        grouped_interactions[grouping_key].append(
+            interaction
+        )
+
+    return dict(grouped_interactions)
+
+
+def sort_interaction_groups(
+    grouped_interactions: Mapping[
+        Hashable,
+        Iterable[SaltBridgeInteraction],
+    ],
+    *,
+    sort_interactions: bool = True,
+) -> Dict[Hashable, List[SaltBridgeInteraction]]:
+    """
+    Sort interactions inside grouped collections.
+
+    Parameters
+    ----------
+    grouped_interactions
+        Mapping of grouping keys to interactions.
+    sort_interactions
+        Whether interactions should be sorted by score.
+
+    Returns
+    -------
+    Dict[Hashable, List[SaltBridgeInteraction]]
+        Normalized grouped interaction mapping.
+    """
+
+    normalized_groups: Dict[
+        Hashable,
+        List[SaltBridgeInteraction],
+    ] = {}
+
+    for grouping_key, interactions in grouped_interactions.items():
+        interaction_list = list(interactions)
+
+        if sort_interactions:
+            interaction_list = sort_salt_bridges_by_score(
+                interaction_list,
+                descending=True,
+            )
+
+        normalized_groups[grouping_key] = interaction_list
+
+    return normalized_groups
+
+
+def filter_interaction_groups_by_size(
+    grouped_interactions: Mapping[
+        Hashable,
+        Iterable[SaltBridgeInteraction],
+    ],
+    *,
+    minimum_size: int = 1,
+    maximum_size: Optional[int] = None,
+) -> Dict[Hashable, List[SaltBridgeInteraction]]:
+    """
+    Filter grouped interaction collections by group size.
+
+    Parameters
+    ----------
+    grouped_interactions
+        Mapping of grouping keys to interactions.
+    minimum_size
+        Minimum accepted group size.
+    maximum_size
+        Optional maximum accepted group size.
+
+    Returns
+    -------
+    Dict[Hashable, List[SaltBridgeInteraction]]
+        Filtered grouping mapping.
+    """
+
+    normalized_minimum = safe_int(minimum_size)
+
+    if normalized_minimum is None or normalized_minimum < 1:
+        raise SaltBridgeDetectionError(
+            "minimum_size must be at least one."
+        )
+
+    normalized_maximum = None
+
+    if maximum_size is not None:
+        normalized_maximum = safe_int(maximum_size)
+
+        if normalized_maximum is None or normalized_maximum < 1:
+            raise SaltBridgeDetectionError(
+                "maximum_size must be at least one."
+            )
+
+        if normalized_maximum < normalized_minimum:
+            raise SaltBridgeDetectionError(
+                "maximum_size cannot be smaller than minimum_size."
+            )
+
+    filtered_groups: Dict[
+        Hashable,
+        List[SaltBridgeInteraction],
+    ] = {}
+
+    for grouping_key, interactions in grouped_interactions.items():
+        interaction_list = list(interactions)
+        group_size = len(interaction_list)
+
+        if group_size < normalized_minimum:
+            continue
+
+        if (
+            normalized_maximum is not None
+            and group_size > normalized_maximum
+        ):
+            continue
+
+        filtered_groups[grouping_key] = interaction_list
+
+    return filtered_groups
+
+
+# =============================================================================
+# 12.3. RESIDUE-LEVEL GROUPING
+# =============================================================================
+
+
+def group_salt_bridges_by_residue_pair(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    directional: bool = True,
+    sort_interactions: bool = True,
+) -> Dict[
+    Tuple[Any, ...],
+    List[SaltBridgeInteraction],
+]:
+    """
+    Group salt bridges by interacting residue pair.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    directional
+        Whether cation-anion direction should be preserved.
+    sort_interactions
+        Whether interactions should be sorted by score.
+
+    Returns
+    -------
+    Dict[Tuple[Any, ...], List[SaltBridgeInteraction]]
+        Residue-pair groups.
+    """
+
+    grouped_interactions = group_interactions_by_key(
+        interactions,
+        lambda interaction: interaction_residue_grouping_key(
+            interaction,
+            directional=directional,
+        ),
+    )
+
+    return sort_interaction_groups(
+        grouped_interactions,
+        sort_interactions=sort_interactions,
+    )
+
+
+def group_salt_bridges_by_cation_residue(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    sort_interactions: bool = True,
+) -> Dict[
+    Tuple[Any, ...],
+    List[SaltBridgeInteraction],
+]:
+    """
+    Group interactions by cationic residue.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    sort_interactions
+        Whether interactions should be sorted by score.
+
+    Returns
+    -------
+    Dict[Tuple[Any, ...], List[SaltBridgeInteraction]]
+        Cationic-residue groups.
+    """
+
+    grouped_interactions = group_interactions_by_key(
+        interactions,
+        lambda interaction: residue_identity(
+            interaction.cation.residue
+        ),
+    )
+
+    return sort_interaction_groups(
+        grouped_interactions,
+        sort_interactions=sort_interactions,
+    )
+
+
+def group_salt_bridges_by_anion_residue(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    sort_interactions: bool = True,
+) -> Dict[
+    Tuple[Any, ...],
+    List[SaltBridgeInteraction],
+]:
+    """
+    Group interactions by anionic residue.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    sort_interactions
+        Whether interactions should be sorted by score.
+
+    Returns
+    -------
+    Dict[Tuple[Any, ...], List[SaltBridgeInteraction]]
+        Anionic-residue groups.
+    """
+
+    grouped_interactions = group_interactions_by_key(
+        interactions,
+        lambda interaction: residue_identity(
+            interaction.anion.residue
+        ),
+    )
+
+    return sort_interaction_groups(
+        grouped_interactions,
+        sort_interactions=sort_interactions,
+    )
+
+
+def group_salt_bridges_by_any_residue(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    sort_interactions: bool = True,
+) -> Dict[
+    Tuple[Any, ...],
+    List[SaltBridgeInteraction],
+]:
+    """
+    Group interactions by every participating residue.
+
+    Each salt bridge is included once in the cationic residue group and once
+    in the anionic residue group. Self-pairs, if present, are included only
+    once.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    sort_interactions
+        Whether interactions should be sorted by score.
+
+    Returns
+    -------
+    Dict[Tuple[Any, ...], List[SaltBridgeInteraction]]
+        Residue-to-interaction mapping.
+    """
+
+    grouped_interactions: Dict[
+        Tuple[Any, ...],
+        List[SaltBridgeInteraction],
+    ] = defaultdict(list)
+
+    for interaction in interactions:
+        cation_residue_key = residue_identity(
+            interaction.cation.residue
+        )
+
+        anion_residue_key = residue_identity(
+            interaction.anion.residue
+        )
+
+        grouped_interactions[cation_residue_key].append(
+            interaction
+        )
+
+        if anion_residue_key != cation_residue_key:
+            grouped_interactions[anion_residue_key].append(
+                interaction
+            )
+
+    return sort_interaction_groups(
+        grouped_interactions,
+        sort_interactions=sort_interactions,
+    )
+
+
+# =============================================================================
+# 12.4. CHARGED-GROUP AND CHEMICAL-TYPE GROUPING
+# =============================================================================
+
+
+def group_salt_bridges_by_charged_group_pair(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    sort_interactions: bool = True,
+) -> Dict[
+    Tuple[Any, ...],
+    List[SaltBridgeInteraction],
+]:
+    """
+    Group salt bridges by complete cation-anion charged-group identity.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    sort_interactions
+        Whether interactions should be sorted by score.
+
+    Returns
+    -------
+    Dict[Tuple[Any, ...], List[SaltBridgeInteraction]]
+        Charged-group-pair groups.
+    """
+
+    grouped_interactions = group_interactions_by_key(
+        interactions,
+        interaction_group_pair_grouping_key,
+    )
+
+    return sort_interaction_groups(
+        grouped_interactions,
+        sort_interactions=sort_interactions,
+    )
+
+
+def group_salt_bridges_by_group_type(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    directional: bool = True,
+    sort_interactions: bool = True,
+) -> Dict[
+    Tuple[str, str],
+    List[SaltBridgeInteraction],
+]:
+    """
+    Group salt bridges by cationic and anionic chemical group types.
+
+    Examples include:
+
+    - ammonium to carboxylate;
+    - guanidinium to phosphate;
+    - imidazolium to sulfonate.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    directional
+        Whether cation-anion direction should be preserved.
+    sort_interactions
+        Whether interactions should be sorted by score.
+
+    Returns
+    -------
+    Dict[Tuple[str, str], List[SaltBridgeInteraction]]
+        Chemical-type groups.
+    """
+
+    def make_type_key(
+        interaction: SaltBridgeInteraction,
+    ) -> Tuple[str, str]:
+        cation_type = normalize_grouping_identifier(
+            interaction.cation.group_type,
+            fallback="unknown_cation",
+        )
+
+        anion_type = normalize_grouping_identifier(
+            interaction.anion.group_type,
+            fallback="unknown_anion",
+        )
+
+        if directional:
+            return cation_type, anion_type
+
+        return tuple(
+            sorted(
+                (
+                    cation_type,
+                    anion_type,
+                )
+            )
+        )
+
+    grouped_interactions = group_interactions_by_key(
+        interactions,
+        make_type_key,
+    )
+
+    return sort_interaction_groups(
+        grouped_interactions,
+        sort_interactions=sort_interactions,
+    )
+
+
+def group_salt_bridges_by_strength(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    include_rejected: bool = False,
+    sort_interactions: bool = True,
+) -> Dict[str, List[SaltBridgeInteraction]]:
+    """
+    Group salt bridges by strength classification.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    include_rejected
+        Whether rejected interactions should be included.
+    sort_interactions
+        Whether interactions should be sorted by score.
+
+    Returns
+    -------
+    Dict[str, List[SaltBridgeInteraction]]
+        Strength groups.
+    """
+
+    grouped_interactions: Dict[
+        str,
+        List[SaltBridgeInteraction],
+    ] = defaultdict(list)
+
+    for interaction in interactions:
+        strength = normalize_grouping_identifier(
+            interaction.strength,
+            fallback=STRENGTH_REJECTED,
+        ).lower()
+
+        if (
+            strength == STRENGTH_REJECTED
+            and not include_rejected
+        ):
+            continue
+
+        grouped_interactions[strength].append(
+            interaction
+        )
+
+    return sort_interaction_groups(
+        grouped_interactions,
+        sort_interactions=sort_interactions,
+    )
+
+
+# =============================================================================
+# 12.5. CHAIN, POSE, AND MODEL GROUPING
+# =============================================================================
+
+
+def group_salt_bridges_by_chain_pair(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    directional: bool = True,
+    sort_interactions: bool = True,
+) -> Dict[
+    Tuple[str, str],
+    List[SaltBridgeInteraction],
+]:
+    """
+    Group salt bridges by cationic and anionic chain pair.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    directional
+        Whether cation-anion direction should be preserved.
+    sort_interactions
+        Whether interactions should be sorted by score.
+
+    Returns
+    -------
+    Dict[Tuple[str, str], List[SaltBridgeInteraction]]
+        Chain-pair groups.
+    """
+
+    grouped_interactions = group_interactions_by_key(
+        interactions,
+        lambda interaction: interaction_chain_pair_grouping_key(
+            interaction,
+            directional=directional,
+        ),
+    )
+
+    return sort_interaction_groups(
+        grouped_interactions,
+        sort_interactions=sort_interactions,
+    )
+
+
+def group_salt_bridges_by_pose(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    sort_interactions: bool = True,
+) -> Dict[str, List[SaltBridgeInteraction]]:
+    """
+    Group salt bridges by docking-pose identifier.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    sort_interactions
+        Whether interactions should be sorted by score.
+
+    Returns
+    -------
+    Dict[str, List[SaltBridgeInteraction]]
+        Pose groups.
+    """
+
+    grouped_interactions = group_interactions_by_key(
+        interactions,
+        interaction_pose_grouping_key,
+    )
+
+    return sort_interaction_groups(
+        grouped_interactions,
+        sort_interactions=sort_interactions,
+    )
+
+
+def group_salt_bridges_by_model(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    sort_interactions: bool = True,
+) -> Dict[str, List[SaltBridgeInteraction]]:
+    """
+    Group salt bridges by molecular-model identifier.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    sort_interactions
+        Whether interactions should be sorted by score.
+
+    Returns
+    -------
+    Dict[str, List[SaltBridgeInteraction]]
+        Model groups.
+    """
+
+    grouped_interactions = group_interactions_by_key(
+        interactions,
+        interaction_model_grouping_key,
+    )
+
+    return sort_interaction_groups(
+        grouped_interactions,
+        sort_interactions=sort_interactions,
+    )
+
+
+def group_salt_bridges_by_model_and_pose(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    sort_interactions: bool = True,
+) -> Dict[
+    Tuple[str, str],
+    List[SaltBridgeInteraction],
+]:
+    """
+    Group salt bridges by model and pose identifiers.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    sort_interactions
+        Whether interactions should be sorted by score.
+
+    Returns
+    -------
+    Dict[Tuple[str, str], List[SaltBridgeInteraction]]
+        Model-pose groups.
+    """
+
+    grouped_interactions = group_interactions_by_key(
+        interactions,
+        lambda interaction: (
+            interaction_model_grouping_key(
+                interaction
+            ),
+            interaction_pose_grouping_key(
+                interaction
+            ),
+        ),
+    )
+
+    return sort_interaction_groups(
+        grouped_interactions,
+        sort_interactions=sort_interactions,
+    )
+
+
+# =============================================================================
+# 12.6. INTERFACIAL GROUPING
+# =============================================================================
+
+
+def interaction_is_intrachain(
+    interaction: SaltBridgeInteraction,
+) -> bool:
+    """
+    Return whether both residues belong to the same chain.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+
+    Returns
+    -------
+    bool
+        Whether the interaction is intrachain.
+    """
+
+    cation_chain, anion_chain = (
+        interaction_chain_pair_grouping_key(
+            interaction,
+            directional=True,
+        )
+    )
+
+    return cation_chain == anion_chain
+
+
+def interaction_is_interchain(
+    interaction: SaltBridgeInteraction,
+) -> bool:
+    """
+    Return whether the residues belong to different chains.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+
+    Returns
+    -------
+    bool
+        Whether the interaction is interchain.
+    """
+
+    return not interaction_is_intrachain(
+        interaction
+    )
+
+
+def group_salt_bridges_by_interface_type(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    sort_interactions: bool = True,
+) -> Dict[str, List[SaltBridgeInteraction]]:
+    """
+    Group interactions as intrachain or interchain.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    sort_interactions
+        Whether interactions should be sorted by score.
+
+    Returns
+    -------
+    Dict[str, List[SaltBridgeInteraction]]
+        Interface-type groups.
+    """
+
+    grouped_interactions: Dict[
+        str,
+        List[SaltBridgeInteraction],
+    ] = defaultdict(list)
+
+    for interaction in interactions:
+        interface_type = (
+            "intrachain"
+            if interaction_is_intrachain(interaction)
+            else "interchain"
+        )
+
+        grouped_interactions[interface_type].append(
+            interaction
+        )
+
+    return sort_interaction_groups(
+        grouped_interactions,
+        sort_interactions=sort_interactions,
+    )
+
+
+# =============================================================================
+# 12.7. GROUP SUMMARY GENERATION
+# =============================================================================
+
+
+def summarize_interaction_group(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    group_key: Optional[Hashable] = None,
+) -> Dict[str, Any]:
+    """
+    Build a compact summary for one interaction group.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions in one group.
+    group_key
+        Optional grouping key.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Group summary.
+    """
+
+    interaction_list = list(interactions)
+
+    valid_interactions = [
+        interaction
+        for interaction in interaction_list
+        if interaction.geometry.valid
+    ]
+
+    rejected_interactions = [
+        interaction
+        for interaction in interaction_list
+        if not interaction.geometry.valid
+    ]
+
+    scores = [
+        float(interaction.score)
+        for interaction in valid_interactions
+        if safe_float(interaction.score) is not None
+    ]
+
+    distances = [
+        float(interaction.distance)
+        for interaction in valid_interactions
+        if safe_float(interaction.distance) is not None
+    ]
+
+    strength_counts = {
+        STRENGTH_STRONG: 0,
+        STRENGTH_MODERATE: 0,
+        STRENGTH_WEAK: 0,
+        STRENGTH_REJECTED: 0,
+    }
+
+    for interaction in interaction_list:
+        strength = normalize_text(
+            interaction.strength,
+            default=STRENGTH_REJECTED,
+            lowercase=True,
+        )
+
+        strength_counts.setdefault(
+            strength,
+            0,
+        )
+
+        strength_counts[strength] += 1
+
+    best_interaction = get_best_salt_bridge(
+        valid_interactions
+    )
+
+    participating_residues = unique_preserve_order(
+        (
+            residue
+            for interaction in interaction_list
+            for residue in (
+                interaction.cation.residue,
+                interaction.anion.residue,
+            )
+            if residue is not None
+        ),
+        key=residue_identity,
+    )
+
+    participating_chains = unique_preserve_order(
+        (
+            get_chain_id(residue)
+            for residue in participating_residues
+        ),
+    )
+
+    return {
+        "group_key": group_key,
+        "interaction_count": len(interaction_list),
+        "valid_interaction_count": len(valid_interactions),
+        "rejected_interaction_count": len(rejected_interactions),
+        "total_score": sum(scores) if scores else 0.0,
+        "mean_score": (
+            statistics.fmean(scores)
+            if scores
+            else 0.0
+        ),
+        "minimum_distance": (
+            min(distances)
+            if distances
+            else None
+        ),
+        "maximum_distance": (
+            max(distances)
+            if distances
+            else None
+        ),
+        "mean_distance": (
+            statistics.fmean(distances)
+            if distances
+            else None
+        ),
+        "strength_counts": strength_counts,
+        "residue_count": len(participating_residues),
+        "chain_count": len(participating_chains),
+        "best_interaction_id": (
+            best_interaction.interaction_id
+            if best_interaction is not None
+            else None
+        ),
+        "best_score": (
+            best_interaction.score
+            if best_interaction is not None
+            else 0.0
+        ),
+    }
+
+
+def summarize_interaction_groups(
+    grouped_interactions: Mapping[
+        Hashable,
+        Iterable[SaltBridgeInteraction],
+    ],
+) -> Dict[Hashable, Dict[str, Any]]:
+    """
+    Summarize all groups in a grouped-interaction mapping.
+
+    Parameters
+    ----------
+    grouped_interactions
+        Grouped salt-bridge interactions.
+
+    Returns
+    -------
+    Dict[Hashable, Dict[str, Any]]
+        Group summaries.
+    """
+
+    return {
+        grouping_key: summarize_interaction_group(
+            interactions,
+            group_key=grouping_key,
+        )
+        for grouping_key, interactions
+        in grouped_interactions.items()
+    }
+
+
+# =============================================================================
+# 12.8. RESIDUE HOTSPOT ANALYSIS
+# =============================================================================
+
+
+def calculate_residue_hotspot_score(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    count_weight: float = 1.0,
+    score_weight: float = 1.0,
+    strong_bonus: float = 0.5,
+    moderate_bonus: float = 0.25,
+) -> float:
+    """
+    Calculate a residue hotspot score.
+
+    The score combines interaction count, cumulative interaction score, and
+    optional bonuses for strong and moderate salt bridges.
+
+    Parameters
+    ----------
+    interactions
+        Interactions involving one residue.
+    count_weight
+        Weight applied to the number of valid interactions.
+    score_weight
+        Weight applied to cumulative interaction score.
+    strong_bonus
+        Additional value per strong interaction.
+    moderate_bonus
+        Additional value per moderate interaction.
+
+    Returns
+    -------
+    float
+        Residue hotspot score.
+    """
+
+    normalized_count_weight = safe_float(
+        count_weight,
+        default=1.0,
+    )
+
+    normalized_score_weight = safe_float(
+        score_weight,
+        default=1.0,
+    )
+
+    normalized_strong_bonus = safe_float(
+        strong_bonus,
+        default=0.5,
+    )
+
+    normalized_moderate_bonus = safe_float(
+        moderate_bonus,
+        default=0.25,
+    )
+
+    interaction_list = [
+        interaction
+        for interaction in interactions
+        if interaction.geometry.valid
+    ]
+
+    total_score = sum(
+        max(
+            0.0,
+            safe_float(
+                interaction.score,
+                default=0.0,
+            ) or 0.0,
+        )
+        for interaction in interaction_list
+    )
+
+    strong_count = sum(
+        1
+        for interaction in interaction_list
+        if interaction.strength == STRENGTH_STRONG
+    )
+
+    moderate_count = sum(
+        1
+        for interaction in interaction_list
+        if interaction.strength == STRENGTH_MODERATE
+    )
+
+    return (
+        len(interaction_list)
+        * (normalized_count_weight or 0.0)
+        + total_score
+        * (normalized_score_weight or 0.0)
+        + strong_count
+        * (normalized_strong_bonus or 0.0)
+        + moderate_count
+        * (normalized_moderate_bonus or 0.0)
+    )
+
+
+def identify_residue_hotspots(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    minimum_interactions: int = 2,
+    minimum_hotspot_score: float = 0.0,
+    include_singletons: bool = False,
+) -> List[Dict[str, Any]]:
+    """
+    Identify residues participating in multiple or high-scoring salt bridges.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    minimum_interactions
+        Minimum number of valid interactions required.
+    minimum_hotspot_score
+        Minimum accepted hotspot score.
+    include_singletons
+        Whether one-interaction residues may be retained.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Hotspot records sorted by decreasing hotspot score.
+    """
+
+    normalized_minimum_interactions = safe_int(
+        minimum_interactions,
+        default=2,
+    )
+
+    normalized_minimum_score = safe_float(
+        minimum_hotspot_score,
+        default=0.0,
+    )
+
+    if (
+        normalized_minimum_interactions is None
+        or normalized_minimum_interactions < 1
+    ):
+        raise SaltBridgeDetectionError(
+            "minimum_interactions must be at least one."
+        )
+
+    residue_groups = group_salt_bridges_by_any_residue(
+        interactions,
+        sort_interactions=True,
+    )
+
+    hotspot_records: List[Dict[str, Any]] = []
+
+    for residue_key, residue_interactions in residue_groups.items():
+        valid_interactions = [
+            interaction
+            for interaction in residue_interactions
+            if interaction.geometry.valid
+        ]
+
+        interaction_count = len(
+            valid_interactions
+        )
+
+        if (
+            not include_singletons
+            and interaction_count
+            < normalized_minimum_interactions
+        ):
+            continue
+
+        hotspot_score = calculate_residue_hotspot_score(
+            valid_interactions
+        )
+
+        if hotspot_score < (
+            normalized_minimum_score or 0.0
+        ):
+            continue
+
+        residue = None
+
+        for interaction in valid_interactions:
+            if (
+                residue_identity(
+                    interaction.cation.residue
+                )
+                == residue_key
+            ):
+                residue = interaction.cation.residue
+                break
+
+            if (
+                residue_identity(
+                    interaction.anion.residue
+                )
+                == residue_key
+            ):
+                residue = interaction.anion.residue
+                break
+
+        cationic_count = sum(
+            1
+            for interaction in valid_interactions
+            if residue_identity(
+                interaction.cation.residue
+            ) == residue_key
+        )
+
+        anionic_count = sum(
+            1
+            for interaction in valid_interactions
+            if residue_identity(
+                interaction.anion.residue
+            ) == residue_key
+        )
+
+        partner_residues = unique_preserve_order(
+            (
+                (
+                    interaction.anion.residue
+                    if residue_identity(
+                        interaction.cation.residue
+                    ) == residue_key
+                    else interaction.cation.residue
+                )
+                for interaction in valid_interactions
+            ),
+            key=residue_identity,
+        )
+
+        best_interaction = get_best_salt_bridge(
+            valid_interactions
+        )
+
+        hotspot_records.append(
+            {
+                "residue_key": residue_key,
+                "residue": residue,
+                "residue_label": make_residue_label(
+                    residue,
+                    fallback="unknown_residue",
+                ),
+                "interaction_count": interaction_count,
+                "cationic_interaction_count": cationic_count,
+                "anionic_interaction_count": anionic_count,
+                "partner_count": len(partner_residues),
+                "hotspot_score": hotspot_score,
+                "total_interaction_score": sum(
+                    interaction.score
+                    for interaction in valid_interactions
+                ),
+                "strong_count": sum(
+                    1
+                    for interaction in valid_interactions
+                    if interaction.strength
+                    == STRENGTH_STRONG
+                ),
+                "moderate_count": sum(
+                    1
+                    for interaction in valid_interactions
+                    if interaction.strength
+                    == STRENGTH_MODERATE
+                ),
+                "weak_count": sum(
+                    1
+                    for interaction in valid_interactions
+                    if interaction.strength
+                    == STRENGTH_WEAK
+                ),
+                "minimum_distance": min(
+                    interaction.distance
+                    for interaction in valid_interactions
+                ),
+                "best_interaction_id": (
+                    best_interaction.interaction_id
+                    if best_interaction is not None
+                    else None
+                ),
+                "interaction_ids": [
+                    interaction.interaction_id
+                    for interaction in valid_interactions
+                ],
+            }
+        )
+
+    hotspot_records.sort(
+        key=lambda record: (
+            -record["hotspot_score"],
+            -record["interaction_count"],
+            record["minimum_distance"],
+            record["residue_label"],
+        )
+    )
+
+    for rank, hotspot_record in enumerate(
+        hotspot_records,
+        start=1,
+    ):
+        hotspot_record["rank"] = rank
+
+    return hotspot_records
+
+
+# =============================================================================
+# 12.9. COMPLETE GROUPING ASSEMBLY
+# =============================================================================
+
+
+def build_salt_bridge_groupings(
+    interactions: Iterable[SaltBridgeInteraction],
+    config: Optional[SaltBridgeConfig] = None,
+) -> Dict[str, Any]:
+    """
+    Build the complete grouping collection for salt bridges.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Complete grouping dictionary.
+    """
+
+    resolved_config = resolve_config(config)
+    interaction_list = list(interactions)
+
+    include_rejected = bool(
+        getattr(
+            resolved_config,
+            "include_rejected_in_grouping",
+            False,
+        )
+    )
+
+    grouping_interactions = (
+        interaction_list
+        if include_rejected
+        else [
+            interaction
+            for interaction in interaction_list
+            if interaction.geometry.valid
+        ]
+    )
+
+    residue_pairs = group_salt_bridges_by_residue_pair(
+        grouping_interactions,
+        directional=True,
+    )
+
+    cation_residues = group_salt_bridges_by_cation_residue(
+        grouping_interactions
+    )
+
+    anion_residues = group_salt_bridges_by_anion_residue(
+        grouping_interactions
+    )
+
+    all_residues = group_salt_bridges_by_any_residue(
+        grouping_interactions
+    )
+
+    charged_group_pairs = (
+        group_salt_bridges_by_charged_group_pair(
+            grouping_interactions
+        )
+    )
+
+    group_types = group_salt_bridges_by_group_type(
+        grouping_interactions
+    )
+
+    strengths = group_salt_bridges_by_strength(
+        grouping_interactions,
+        include_rejected=include_rejected,
+    )
+
+    chain_pairs = group_salt_bridges_by_chain_pair(
+        grouping_interactions
+    )
+
+    interface_types = (
+        group_salt_bridges_by_interface_type(
+            grouping_interactions
+        )
+    )
+
+    poses = group_salt_bridges_by_pose(
+        grouping_interactions
+    )
+
+    models = group_salt_bridges_by_model(
+        grouping_interactions
+    )
+
+    model_poses = group_salt_bridges_by_model_and_pose(
+        grouping_interactions
+    )
+
+    minimum_hotspot_interactions = safe_int(
+        getattr(
+            resolved_config,
+            "minimum_hotspot_interactions",
+            2,
+        ),
+        default=2,
+    )
+
+    minimum_hotspot_score = safe_float(
+        getattr(
+            resolved_config,
+            "minimum_hotspot_score",
+            0.0,
+        ),
+        default=0.0,
+    )
+
+    hotspots = identify_residue_hotspots(
+        grouping_interactions,
+        minimum_interactions=(
+            minimum_hotspot_interactions or 2
+        ),
+        minimum_hotspot_score=(
+            minimum_hotspot_score or 0.0
+        ),
+        include_singletons=False,
+    )
+
+    return {
+        "residue_pairs": residue_pairs,
+        "cation_residues": cation_residues,
+        "anion_residues": anion_residues,
+        "all_residues": all_residues,
+        "charged_group_pairs": charged_group_pairs,
+        "group_types": group_types,
+        "strengths": strengths,
+        "chain_pairs": chain_pairs,
+        "interface_types": interface_types,
+        "poses": poses,
+        "models": models,
+        "model_poses": model_poses,
+        "hotspots": hotspots,
+        "summaries": {
+            "residue_pairs": summarize_interaction_groups(
+                residue_pairs
+            ),
+            "cation_residues": summarize_interaction_groups(
+                cation_residues
+            ),
+            "anion_residues": summarize_interaction_groups(
+                anion_residues
+            ),
+            "all_residues": summarize_interaction_groups(
+                all_residues
+            ),
+            "charged_group_pairs": summarize_interaction_groups(
+                charged_group_pairs
+            ),
+            "group_types": summarize_interaction_groups(
+                group_types
+            ),
+            "strengths": summarize_interaction_groups(
+                strengths
+            ),
+            "chain_pairs": summarize_interaction_groups(
+                chain_pairs
+            ),
+            "interface_types": summarize_interaction_groups(
+                interface_types
+            ),
+            "poses": summarize_interaction_groups(
+                poses
+            ),
+            "models": summarize_interaction_groups(
+                models
+            ),
+            "model_poses": summarize_interaction_groups(
+                model_poses
+            ),
+        },
+        "metadata": {
+            "input_interaction_count": len(
+                interaction_list
+            ),
+            "grouped_interaction_count": len(
+                grouping_interactions
+            ),
+            "include_rejected": include_rejected,
+            "residue_pair_group_count": len(
+                residue_pairs
+            ),
+            "residue_group_count": len(
+                all_residues
+            ),
+            "charged_group_pair_count": len(
+                charged_group_pairs
+            ),
+            "group_type_count": len(
+                group_types
+            ),
+            "chain_pair_count": len(
+                chain_pairs
+            ),
+            "pose_count": len(poses),
+            "model_count": len(models),
+            "hotspot_count": len(hotspots),
+        },
+    }
+
+
+# =============================================================================
+# 12.10. RESULT-LEVEL GROUPING
+# =============================================================================
+
+
+def group_salt_bridge_result(
+    result: SaltBridgeResult,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    in_place: bool = True,
+    store_full_groups: Optional[bool] = None,
+) -> SaltBridgeResult:
+    """
+    Build and attach grouping information to a SaltBridgeResult.
+
+    Full interaction-group mappings may be stored in result metadata for
+    immediate use. When compact storage is requested, only group summaries,
+    hotspots, and grouping metadata are retained.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+    config
+        Salt-bridge configuration.
+    in_place
+        Whether the original result should be modified.
+    store_full_groups
+        Whether full grouped interaction mappings should be stored.
+
+    Returns
+    -------
+    SaltBridgeResult
+        Result with attached grouping data.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not isinstance(result, SaltBridgeResult):
+        raise SaltBridgeDetectionError(
+            "result must be a SaltBridgeResult instance."
+        )
+
+    target_result = result
+
+    if not in_place:
+        target_result = SaltBridgeResult(
+            interactions=list(result.interactions),
+            cationic_groups=list(
+                result.cationic_groups
+            ),
+            anionic_groups=list(
+                result.anionic_groups
+            ),
+            statistics=dict(result.statistics),
+            warnings=list(result.warnings),
+            pose_id=result.pose_id,
+            model_id=result.model_id,
+            metadata=dict(result.metadata),
+        )
+
+    grouping_data = build_salt_bridge_groupings(
+        target_result.interactions,
+        resolved_config,
+    )
+
+    if store_full_groups is None:
+        store_full_groups = not bool(
+            getattr(
+                resolved_config,
+                "compact_results",
+                False,
+            )
+        )
+
+    target_result.metadata[
+        "grouping_completed"
+    ] = True
+
+    target_result.metadata[
+        "grouping_metadata"
+    ] = grouping_data["metadata"]
+
+    target_result.metadata[
+        "group_summaries"
+    ] = grouping_data["summaries"]
+
+    target_result.metadata[
+        "hotspots"
+    ] = grouping_data["hotspots"]
+
+    if store_full_groups:
+        target_result.metadata[
+            "groups"
+        ] = {
+            key: value
+            for key, value in grouping_data.items()
+            if key not in {
+                "summaries",
+                "hotspots",
+                "metadata",
+            }
+        }
+
+    else:
+        target_result.metadata.pop(
+            "groups",
+            None,
+        )
+
+    return target_result
+
+
+# =============================================================================
+# 12.11. GROUP ACCESS HELPERS
+# =============================================================================
+
+
+def get_result_groupings(
+    result: SaltBridgeResult,
+) -> Mapping[str, Any]:
+    """
+    Return full grouped interactions stored in a result.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+
+    Returns
+    -------
+    Mapping[str, Any]
+        Stored grouping mapping.
+
+    Raises
+    ------
+    SaltBridgeDetectionError
+        If grouping data is unavailable.
+    """
+
+    if not isinstance(result, SaltBridgeResult):
+        raise SaltBridgeDetectionError(
+            "result must be a SaltBridgeResult instance."
+        )
+
+    groupings = result.metadata.get(
+        "groups"
+    )
+
+    if groupings is None:
+        raise SaltBridgeDetectionError(
+            "Full grouping data is not stored in this result."
+        )
+
+    return groupings
+
+
+def get_result_group_summaries(
+    result: SaltBridgeResult,
+) -> Mapping[str, Any]:
+    """
+    Return grouping summaries stored in a result.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+
+    Returns
+    -------
+    Mapping[str, Any]
+        Group summary mapping.
+    """
+
+    if not isinstance(result, SaltBridgeResult):
+        raise SaltBridgeDetectionError(
+            "result must be a SaltBridgeResult instance."
+        )
+
+    return result.metadata.get(
+        "group_summaries",
+        {},
+    )
+
+
+def get_result_hotspots(
+    result: SaltBridgeResult,
+) -> List[Dict[str, Any]]:
+    """
+    Return residue hotspots stored in a result.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Hotspot records.
+    """
+
+    if not isinstance(result, SaltBridgeResult):
+        raise SaltBridgeDetectionError(
+            "result must be a SaltBridgeResult instance."
+        )
+
+    return list(
+        result.metadata.get(
+            "hotspots",
+            [],
+        )
+    )
+
+
+# =============================================================================
+# 12.12. COMPLETE PIPELINE THROUGH GROUPING
+# =============================================================================
+
+
+def analyze_grouped_salt_bridges(
+    source: Any,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    pose_id: Optional[Union[str, int]] = None,
+    model_id: Optional[Union[str, int]] = None,
+    warnings: Optional[List[str]] = None,
+    deduplication_mode: Optional[str] = None,
+    store_full_groups: Optional[bool] = None,
+) -> SaltBridgeResult:
+    """
+    Execute salt-bridge analysis through the grouping stage.
+
+    The workflow includes:
+
+    1. charged-group recognition;
+    2. central detection;
+    3. strength classification;
+    4. scoring;
+    5. interaction deduplication;
+    6. grouping;
+    7. hotspot identification.
+
+    Statistics, DockModel integration, multipose orchestration,
+    serialization, and ChimeraX compatibility remain separate.
+
+    Parameters
+    ----------
+    source
+        Molecular source.
+    config
+        Salt-bridge configuration.
+    pose_id
+        Optional docking-pose identifier.
+    model_id
+        Optional molecular-model identifier.
+    warnings
+        Optional warning collector.
+    deduplication_mode
+        Optional interaction deduplication mode.
+    store_full_groups
+        Whether full interaction groups should be stored.
+
+    Returns
+    -------
+    SaltBridgeResult
+        Classified, scored, deduplicated, and grouped result.
+    """
+
+    resolved_config = resolve_config(config)
+
+    result = analyze_and_deduplicate_salt_bridges(
+        source,
+        resolved_config,
+        pose_id=pose_id,
+        model_id=model_id,
+        warnings=warnings,
+        deduplication_mode=deduplication_mode,
+    )
+
+    return group_salt_bridge_result(
+        result,
+        resolved_config,
+        in_place=True,
+        store_full_groups=store_full_groups,
+    )
+
+
+# =============================================================================
+# 13. STATISTICS AND SUMMARIES
+# =============================================================================
+
+
+# =============================================================================
+# 13.1. NUMERIC STATISTICS UTILITIES
+# =============================================================================
+
+
+def calculate_numeric_statistics(
+    values: Iterable[Any],
+    *,
+    ignore_invalid: bool = True,
+) -> Dict[str, Optional[float]]:
+    """
+    Calculate descriptive statistics for a numeric collection.
+
+    Parameters
+    ----------
+    values
+        Numeric or numeric-like values.
+    ignore_invalid
+        Whether invalid and non-finite values should be ignored.
+
+    Returns
+    -------
+    Dict[str, Optional[float]]
+        Count, sum, mean, median, minimum, maximum, standard deviation,
+        variance, and quartiles.
+    """
+
+    numeric_values: List[float] = []
+
+    for value in values:
+        normalized_value = safe_float(value)
+
+        if (
+            normalized_value is None
+            or not math.isfinite(normalized_value)
+        ):
+            if ignore_invalid:
+                continue
+
+            raise SaltBridgeDetectionError(
+                "Numeric statistics require finite values."
+            )
+
+        numeric_values.append(normalized_value)
+
+    value_count = len(numeric_values)
+
+    if value_count == 0:
+        return {
+            "count": 0,
+            "sum": 0.0,
+            "mean": None,
+            "median": None,
+            "minimum": None,
+            "maximum": None,
+            "standard_deviation": None,
+            "variance": None,
+            "first_quartile": None,
+            "third_quartile": None,
+            "interquartile_range": None,
+        }
+
+    sorted_values = sorted(numeric_values)
+
+    mean_value = statistics.fmean(
+        sorted_values
+    )
+
+    median_value = statistics.median(
+        sorted_values
+    )
+
+    variance_value = (
+        statistics.pvariance(sorted_values)
+        if value_count > 1
+        else 0.0
+    )
+
+    standard_deviation = math.sqrt(
+        variance_value
+    )
+
+    if value_count == 1:
+        first_quartile = sorted_values[0]
+        third_quartile = sorted_values[0]
+
+    else:
+        quartiles = statistics.quantiles(
+            sorted_values,
+            n=4,
+            method="inclusive",
+        )
+
+        first_quartile = quartiles[0]
+        third_quartile = quartiles[2]
+
+    return {
+        "count": value_count,
+        "sum": sum(sorted_values),
+        "mean": mean_value,
+        "median": median_value,
+        "minimum": sorted_values[0],
+        "maximum": sorted_values[-1],
+        "standard_deviation": standard_deviation,
+        "variance": variance_value,
+        "first_quartile": first_quartile,
+        "third_quartile": third_quartile,
+        "interquartile_range": (
+            third_quartile - first_quartile
+        ),
+    }
+
+
+def calculate_percentage(
+    count: int,
+    total: int,
+) -> float:
+    """
+    Calculate a percentage while safely handling zero totals.
+
+    Parameters
+    ----------
+    count
+        Partial count.
+    total
+        Total count.
+
+    Returns
+    -------
+    float
+        Percentage between 0.0 and 100.0.
+    """
+
+    normalized_count = safe_int(
+        count,
+        default=0,
+    )
+
+    normalized_total = safe_int(
+        total,
+        default=0,
+    )
+
+    if (
+        normalized_total is None
+        or normalized_total <= 0
+    ):
+        return 0.0
+
+    return (
+        max(0, normalized_count or 0)
+        / normalized_total
+        * 100.0
+    )
+
+
+def normalize_count_distribution(
+    counts: Mapping[Any, int],
+) -> Dict[Any, Dict[str, Union[int, float]]]:
+    """
+    Convert raw counts into count-and-percentage records.
+
+    Parameters
+    ----------
+    counts
+        Mapping from category to count.
+
+    Returns
+    -------
+    Dict[Any, Dict[str, Union[int, float]]]
+        Category count and percentage records.
+    """
+
+    total_count = sum(
+        max(
+            0,
+            safe_int(count, default=0) or 0,
+        )
+        for count in counts.values()
+    )
+
+    return {
+        category: {
+            "count": max(
+                0,
+                safe_int(count, default=0) or 0,
+            ),
+            "percentage": calculate_percentage(
+                safe_int(count, default=0) or 0,
+                total_count,
+            ),
+        }
+        for category, count in counts.items()
+    }
+
+
+# =============================================================================
+# 13.2. INTERACTION COLLECTION NORMALIZATION
+# =============================================================================
+
+
+def normalize_interaction_collection(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    include_invalid: bool = False,
+) -> List[SaltBridgeInteraction]:
+    """
+    Validate and normalize an interaction collection.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    include_invalid
+        Whether geometrically invalid interactions should be retained.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Validated interaction list.
+    """
+
+    normalized_interactions: List[
+        SaltBridgeInteraction
+    ] = []
+
+    for interaction in interactions:
+        if not isinstance(
+            interaction,
+            SaltBridgeInteraction,
+        ):
+            raise SaltBridgeDetectionError(
+                "All values must be SaltBridgeInteraction instances."
+            )
+
+        if (
+            not include_invalid
+            and not interaction.geometry.valid
+        ):
+            continue
+
+        normalized_interactions.append(
+            interaction
+        )
+
+    return normalized_interactions
+
+
+def get_scored_interactions(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    include_zero: bool = True,
+) -> List[SaltBridgeInteraction]:
+    """
+    Return interactions containing valid finite scores.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    include_zero
+        Whether zero-score interactions should be retained.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Scored interactions.
+    """
+
+    scored_interactions: List[
+        SaltBridgeInteraction
+    ] = []
+
+    for interaction in interactions:
+        score = safe_float(
+            interaction.score
+        )
+
+        if score is None or not math.isfinite(score):
+            continue
+
+        if not include_zero and score <= 0.0:
+            continue
+
+        scored_interactions.append(
+            interaction
+        )
+
+    return scored_interactions
+
+
+# =============================================================================
+# 13.3. GLOBAL INTERACTION COUNTS
+# =============================================================================
+
+
+def count_valid_salt_bridges(
+    interactions: Iterable[SaltBridgeInteraction],
+) -> int:
+    """
+    Count geometrically valid salt bridges.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+
+    Returns
+    -------
+    int
+        Number of valid interactions.
+    """
+
+    return sum(
+        1
+        for interaction in interactions
+        if interaction.geometry.valid
+    )
+
+
+def count_rejected_salt_bridges(
+    interactions: Iterable[SaltBridgeInteraction],
+) -> int:
+    """
+    Count geometrically rejected salt-bridge candidates.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+
+    Returns
+    -------
+    int
+        Number of rejected candidates.
+    """
+
+    return sum(
+        1
+        for interaction in interactions
+        if not interaction.geometry.valid
+    )
+
+
+def count_atomic_contacts(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    valid_only: bool = True,
+) -> int:
+    """
+    Count all atomic contacts represented by salt bridges.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    valid_only
+        Whether invalid interactions should be ignored.
+
+    Returns
+    -------
+    int
+        Total atomic contact count.
+    """
+
+    total_contacts = 0
+
+    for interaction in interactions:
+        if (
+            valid_only
+            and not interaction.geometry.valid
+        ):
+            continue
+
+        contact_count = safe_int(
+            interaction.geometry.contact_count,
+            default=0,
+        )
+
+        total_contacts += max(
+            0,
+            contact_count or 0,
+        )
+
+    return total_contacts
+
+
+def calculate_interaction_count_statistics(
+    interactions: Iterable[SaltBridgeInteraction],
+) -> Dict[str, Any]:
+    """
+    Calculate global interaction-count statistics.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Global counts and validity percentages.
+    """
+
+    interaction_list = list(interactions)
+
+    total_count = len(interaction_list)
+
+    valid_count = count_valid_salt_bridges(
+        interaction_list
+    )
+
+    rejected_count = count_rejected_salt_bridges(
+        interaction_list
+    )
+
+    atomic_contact_count = count_atomic_contacts(
+        interaction_list,
+        valid_only=True,
+    )
+
+    return {
+        "total_interaction_count": total_count,
+        "valid_interaction_count": valid_count,
+        "rejected_interaction_count": rejected_count,
+        "valid_percentage": calculate_percentage(
+            valid_count,
+            total_count,
+        ),
+        "rejected_percentage": calculate_percentage(
+            rejected_count,
+            total_count,
+        ),
+        "total_atomic_contact_count": (
+            atomic_contact_count
+        ),
+        "mean_atomic_contacts_per_valid_interaction": (
+            atomic_contact_count / valid_count
+            if valid_count > 0
+            else 0.0
+        ),
+    }
+
+
+# =============================================================================
+# 13.4. DISTANCE STATISTICS
+# =============================================================================
+
+
+def calculate_distance_statistics(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    include_invalid: bool = False,
+) -> Dict[str, Dict[str, Optional[float]]]:
+    """
+    Calculate distance statistics for salt bridges.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    include_invalid
+        Whether invalid interactions should be included.
+
+    Returns
+    -------
+    Dict[str, Dict[str, Optional[float]]]
+        Minimum-atom, center, mean-contact, and maximum-contact statistics.
+    """
+
+    normalized_interactions = (
+        normalize_interaction_collection(
+            interactions,
+            include_invalid=include_invalid,
+        )
+    )
+
+    minimum_atom_distances = [
+        interaction.geometry.minimum_atom_distance
+        for interaction in normalized_interactions
+    ]
+
+    center_distances = [
+        interaction.geometry.center_distance
+        for interaction in normalized_interactions
+    ]
+
+    mean_contact_distances = [
+        interaction.geometry.mean_atom_distance
+        for interaction in normalized_interactions
+        if interaction.geometry.mean_atom_distance
+        is not None
+    ]
+
+    maximum_contact_distances = [
+        interaction.geometry.maximum_atom_distance
+        for interaction in normalized_interactions
+        if interaction.geometry.maximum_atom_distance
+        is not None
+    ]
+
+    return {
+        "minimum_atom_distance": (
+            calculate_numeric_statistics(
+                minimum_atom_distances
+            )
+        ),
+        "center_distance": (
+            calculate_numeric_statistics(
+                center_distances
+            )
+        ),
+        "mean_contact_distance": (
+            calculate_numeric_statistics(
+                mean_contact_distances
+            )
+        ),
+        "maximum_contact_distance": (
+            calculate_numeric_statistics(
+                maximum_contact_distances
+            )
+        ),
+    }
+
+
+# =============================================================================
+# 13.5. SCORE STATISTICS
+# =============================================================================
+
+
+def calculate_score_statistics(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    include_invalid: bool = False,
+    include_zero: bool = True,
+) -> Dict[str, Any]:
+    """
+    Calculate score statistics for salt bridges.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    include_invalid
+        Whether invalid interactions should be included.
+    include_zero
+        Whether zero scores should be included.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Descriptive score statistics and best interaction information.
+    """
+
+    normalized_interactions = (
+        normalize_interaction_collection(
+            interactions,
+            include_invalid=include_invalid,
+        )
+    )
+
+    scored_interactions = get_scored_interactions(
+        normalized_interactions,
+        include_zero=include_zero,
+    )
+
+    score_values = [
+        interaction.score
+        for interaction in scored_interactions
+    ]
+
+    score_statistics = (
+        calculate_numeric_statistics(
+            score_values
+        )
+    )
+
+    best_interaction = get_best_salt_bridge(
+        scored_interactions
+    )
+
+    score_statistics.update(
+        {
+            "scored_interaction_count": len(
+                scored_interactions
+            ),
+            "best_interaction_id": (
+                best_interaction.interaction_id
+                if best_interaction is not None
+                else None
+            ),
+            "best_interaction_score": (
+                best_interaction.score
+                if best_interaction is not None
+                else None
+            ),
+            "best_interaction_distance": (
+                best_interaction.distance
+                if best_interaction is not None
+                else None
+            ),
+            "best_interaction_strength": (
+                best_interaction.strength
+                if best_interaction is not None
+                else None
+            ),
+        }
+    )
+
+    return score_statistics
+
+
+# =============================================================================
+# 13.6. STRENGTH DISTRIBUTION
+# =============================================================================
+
+
+def calculate_strength_distribution(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    include_rejected: bool = True,
+) -> Dict[str, Dict[str, Union[int, float]]]:
+    """
+    Calculate the distribution of interaction strengths.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    include_rejected
+        Whether rejected interactions should be included.
+
+    Returns
+    -------
+    Dict[str, Dict[str, Union[int, float]]]
+        Counts and percentages by strength.
+    """
+
+    strength_counts: Dict[str, int] = {
+        STRENGTH_STRONG: 0,
+        STRENGTH_MODERATE: 0,
+        STRENGTH_WEAK: 0,
+    }
+
+    if include_rejected:
+        strength_counts[
+            STRENGTH_REJECTED
+        ] = 0
+
+    for interaction in interactions:
+        strength = normalize_text(
+            interaction.strength,
+            default=STRENGTH_REJECTED,
+            lowercase=True,
+        )
+
+        if (
+            strength == STRENGTH_REJECTED
+            and not include_rejected
+        ):
+            continue
+
+        strength_counts.setdefault(
+            strength,
+            0,
+        )
+
+        strength_counts[strength] += 1
+
+    return normalize_count_distribution(
+        strength_counts
+    )
+
+
+# =============================================================================
+# 13.7. CHEMICAL-TYPE DISTRIBUTION
+# =============================================================================
+
+
+def calculate_group_type_distribution(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    directional: bool = True,
+    include_invalid: bool = False,
+) -> Dict[
+    Tuple[str, str],
+    Dict[str, Union[int, float]],
+]:
+    """
+    Calculate the distribution of cation-anion chemical group pairs.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    directional
+        Whether cation-anion direction should be preserved.
+    include_invalid
+        Whether invalid interactions should be included.
+
+    Returns
+    -------
+    Dict[Tuple[str, str], Dict[str, Union[int, float]]]
+        Counts and percentages by chemical group pair.
+    """
+
+    normalized_interactions = (
+        normalize_interaction_collection(
+            interactions,
+            include_invalid=include_invalid,
+        )
+    )
+
+    group_type_counts: Dict[
+        Tuple[str, str],
+        int,
+    ] = {}
+
+    for interaction in normalized_interactions:
+        cation_type = normalize_grouping_identifier(
+            interaction.cation.group_type,
+            fallback="unknown_cation",
+        )
+
+        anion_type = normalize_grouping_identifier(
+            interaction.anion.group_type,
+            fallback="unknown_anion",
+        )
+
+        if directional:
+            group_type_key = (
+                cation_type,
+                anion_type,
+            )
+
+        else:
+            group_type_key = tuple(
+                sorted(
+                    (
+                        cation_type,
+                        anion_type,
+                    )
+                )
+            )
+
+        group_type_counts[group_type_key] = (
+            group_type_counts.get(
+                group_type_key,
+                0,
+            )
+            + 1
+        )
+
+    return normalize_count_distribution(
+        group_type_counts
+    )
+
+
+def calculate_group_source_distribution(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    include_invalid: bool = False,
+) -> Dict[str, Any]:
+    """
+    Calculate distributions of charged-group recognition sources.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    include_invalid
+        Whether invalid interactions should be included.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Cationic, anionic, and paired source distributions.
+    """
+
+    normalized_interactions = (
+        normalize_interaction_collection(
+            interactions,
+            include_invalid=include_invalid,
+        )
+    )
+
+    cation_source_counts: Dict[str, int] = {}
+    anion_source_counts: Dict[str, int] = {}
+    source_pair_counts: Dict[
+        Tuple[str, str],
+        int,
+    ] = {}
+
+    for interaction in normalized_interactions:
+        cation_source = (
+            normalize_grouping_identifier(
+                interaction.cation.source,
+                fallback="unknown",
+            )
+        )
+
+        anion_source = (
+            normalize_grouping_identifier(
+                interaction.anion.source,
+                fallback="unknown",
+            )
+        )
+
+        cation_source_counts[cation_source] = (
+            cation_source_counts.get(
+                cation_source,
+                0,
+            )
+            + 1
+        )
+
+        anion_source_counts[anion_source] = (
+            anion_source_counts.get(
+                anion_source,
+                0,
+            )
+            + 1
+        )
+
+        source_pair_key = (
+            cation_source,
+            anion_source,
+        )
+
+        source_pair_counts[source_pair_key] = (
+            source_pair_counts.get(
+                source_pair_key,
+                0,
+            )
+            + 1
+        )
+
+    return {
+        "cation_sources": (
+            normalize_count_distribution(
+                cation_source_counts
+            )
+        ),
+        "anion_sources": (
+            normalize_count_distribution(
+                anion_source_counts
+            )
+        ),
+        "source_pairs": (
+            normalize_count_distribution(
+                source_pair_counts
+            )
+        ),
+    }
+
+
+# =============================================================================
+# 13.8. RESIDUE STATISTICS
+# =============================================================================
+
+
+def collect_participating_residues(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    valid_only: bool = True,
+) -> List[ResidueLike]:
+    """
+    Collect unique residues participating in salt bridges.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    valid_only
+        Whether invalid interactions should be ignored.
+
+    Returns
+    -------
+    List[ResidueLike]
+        Unique participating residues.
+    """
+
+    residues: List[ResidueLike] = []
+
+    for interaction in interactions:
+        if (
+            valid_only
+            and not interaction.geometry.valid
+        ):
+            continue
+
+        if interaction.cation.residue is not None:
+            residues.append(
+                interaction.cation.residue
+            )
+
+        if interaction.anion.residue is not None:
+            residues.append(
+                interaction.anion.residue
+            )
+
+    return unique_preserve_order(
+        residues,
+        key=residue_identity,
+    )
+
+
+def calculate_residue_participation_statistics(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    include_invalid: bool = False,
+) -> Dict[str, Any]:
+    """
+    Calculate residue participation statistics.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    include_invalid
+        Whether invalid interactions should be included.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Unique residue counts and residue-role distributions.
+    """
+
+    normalized_interactions = (
+        normalize_interaction_collection(
+            interactions,
+            include_invalid=include_invalid,
+        )
+    )
+
+    cation_residue_groups = (
+        group_salt_bridges_by_cation_residue(
+            normalized_interactions
+        )
+    )
+
+    anion_residue_groups = (
+        group_salt_bridges_by_anion_residue(
+            normalized_interactions
+        )
+    )
+
+    all_residue_groups = (
+        group_salt_bridges_by_any_residue(
+            normalized_interactions
+        )
+    )
+
+    participating_residues = (
+        collect_participating_residues(
+            normalized_interactions,
+            valid_only=False,
+        )
+    )
+
+    residue_interaction_counts = [
+        len(residue_interactions)
+        for residue_interactions
+        in all_residue_groups.values()
+    ]
+
+    most_connected_residue_key = None
+    most_connected_interaction_count = 0
+
+    if all_residue_groups:
+        (
+            most_connected_residue_key,
+            most_connected_residue_interactions,
+        ) = max(
+            all_residue_groups.items(),
+            key=lambda item: (
+                len(item[1]),
+                sum(
+                    interaction.score
+                    for interaction in item[1]
+                ),
+            ),
+        )
+
+        most_connected_interaction_count = len(
+            most_connected_residue_interactions
+        )
+
+    return {
+        "unique_residue_count": len(
+            participating_residues
+        ),
+        "unique_cationic_residue_count": len(
+            cation_residue_groups
+        ),
+        "unique_anionic_residue_count": len(
+            anion_residue_groups
+        ),
+        "residue_interaction_count_statistics": (
+            calculate_numeric_statistics(
+                residue_interaction_counts
+            )
+        ),
+        "most_connected_residue_key": (
+            most_connected_residue_key
+        ),
+        "most_connected_residue_interaction_count": (
+            most_connected_interaction_count
+        ),
+    }
+
+
+# =============================================================================
+# 13.9. CHAIN AND INTERFACE STATISTICS
+# =============================================================================
+
+
+def calculate_interface_statistics(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    include_invalid: bool = False,
+) -> Dict[str, Any]:
+    """
+    Calculate intrachain, interchain, and chain-pair statistics.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    include_invalid
+        Whether invalid interactions should be included.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Interface and chain-pair statistics.
+    """
+
+    normalized_interactions = (
+        normalize_interaction_collection(
+            interactions,
+            include_invalid=include_invalid,
+        )
+    )
+
+    interface_groups = (
+        group_salt_bridges_by_interface_type(
+            normalized_interactions
+        )
+    )
+
+    chain_pair_groups = (
+        group_salt_bridges_by_chain_pair(
+            normalized_interactions
+        )
+    )
+
+    intrachain_count = len(
+        interface_groups.get(
+            "intrachain",
+            [],
+        )
+    )
+
+    interchain_count = len(
+        interface_groups.get(
+            "interchain",
+            [],
+        )
+    )
+
+    total_count = len(
+        normalized_interactions
+    )
+
+    chain_pair_counts = {
+        chain_pair: len(
+            chain_interactions
+        )
+        for chain_pair, chain_interactions
+        in chain_pair_groups.items()
+    }
+
+    return {
+        "intrachain_interaction_count": (
+            intrachain_count
+        ),
+        "interchain_interaction_count": (
+            interchain_count
+        ),
+        "intrachain_percentage": (
+            calculate_percentage(
+                intrachain_count,
+                total_count,
+            )
+        ),
+        "interchain_percentage": (
+            calculate_percentage(
+                interchain_count,
+                total_count,
+            )
+        ),
+        "unique_chain_pair_count": len(
+            chain_pair_groups
+        ),
+        "chain_pair_distribution": (
+            normalize_count_distribution(
+                chain_pair_counts
+            )
+        ),
+    }
+
+
+# =============================================================================
+# 13.10. POSE AND MODEL STATISTICS
+# =============================================================================
+
+
+def calculate_pose_statistics(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    include_invalid: bool = False,
+) -> Dict[str, Any]:
+    """
+    Calculate interaction statistics by docking pose.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    include_invalid
+        Whether invalid interactions should be included.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Pose counts, scores, and best-pose information.
+    """
+
+    normalized_interactions = (
+        normalize_interaction_collection(
+            interactions,
+            include_invalid=include_invalid,
+        )
+    )
+
+    pose_groups = group_salt_bridges_by_pose(
+        normalized_interactions
+    )
+
+    pose_summaries = summarize_interaction_groups(
+        pose_groups
+    )
+
+    best_pose = None
+    best_pose_score = None
+
+    if pose_summaries:
+        best_pose, best_summary = max(
+            pose_summaries.items(),
+            key=lambda item: (
+                item[1]["total_score"],
+                item[1]["interaction_count"],
+                -(
+                    item[1]["minimum_distance"]
+                    if item[1]["minimum_distance"]
+                    is not None
+                    else math.inf
+                ),
+            ),
+        )
+
+        best_pose_score = best_summary[
+            "total_score"
+        ]
+
+    interactions_per_pose = [
+        summary["interaction_count"]
+        for summary in pose_summaries.values()
+    ]
+
+    scores_per_pose = [
+        summary["total_score"]
+        for summary in pose_summaries.values()
+    ]
+
+    return {
+        "pose_count": len(pose_groups),
+        "interactions_per_pose": (
+            calculate_numeric_statistics(
+                interactions_per_pose
+            )
+        ),
+        "scores_per_pose": (
+            calculate_numeric_statistics(
+                scores_per_pose
+            )
+        ),
+        "best_pose_id": best_pose,
+        "best_pose_score": best_pose_score,
+        "pose_summaries": pose_summaries,
+    }
+
+
+def calculate_model_statistics(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    include_invalid: bool = False,
+) -> Dict[str, Any]:
+    """
+    Calculate interaction statistics by molecular model.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    include_invalid
+        Whether invalid interactions should be included.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Model counts, scores, and best-model information.
+    """
+
+    normalized_interactions = (
+        normalize_interaction_collection(
+            interactions,
+            include_invalid=include_invalid,
+        )
+    )
+
+    model_groups = group_salt_bridges_by_model(
+        normalized_interactions
+    )
+
+    model_summaries = summarize_interaction_groups(
+        model_groups
+    )
+
+    best_model = None
+    best_model_score = None
+
+    if model_summaries:
+        best_model, best_summary = max(
+            model_summaries.items(),
+            key=lambda item: (
+                item[1]["total_score"],
+                item[1]["interaction_count"],
+                -(
+                    item[1]["minimum_distance"]
+                    if item[1]["minimum_distance"]
+                    is not None
+                    else math.inf
+                ),
+            ),
+        )
+
+        best_model_score = best_summary[
+            "total_score"
+        ]
+
+    interactions_per_model = [
+        summary["interaction_count"]
+        for summary in model_summaries.values()
+    ]
+
+    scores_per_model = [
+        summary["total_score"]
+        for summary in model_summaries.values()
+    ]
+
+    return {
+        "model_count": len(model_groups),
+        "interactions_per_model": (
+            calculate_numeric_statistics(
+                interactions_per_model
+            )
+        ),
+        "scores_per_model": (
+            calculate_numeric_statistics(
+                scores_per_model
+            )
+        ),
+        "best_model_id": best_model,
+        "best_model_score": best_model_score,
+        "model_summaries": model_summaries,
+    }
+
+
+# =============================================================================
+# 13.11. HOTSPOT STATISTICS
+# =============================================================================
+
+
+def calculate_hotspot_statistics(
+    interactions: Iterable[SaltBridgeInteraction],
+    config: Optional[SaltBridgeConfig] = None,
+) -> Dict[str, Any]:
+    """
+    Calculate residue-hotspot statistics.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Hotspot count, score distribution, and highest-ranked hotspot.
+    """
+
+    resolved_config = resolve_config(config)
+
+    minimum_interactions = safe_int(
+        getattr(
+            resolved_config,
+            "minimum_hotspot_interactions",
+            2,
+        ),
+        default=2,
+    )
+
+    minimum_score = safe_float(
+        getattr(
+            resolved_config,
+            "minimum_hotspot_score",
+            0.0,
+        ),
+        default=0.0,
+    )
+
+    hotspots = identify_residue_hotspots(
+        interactions,
+        minimum_interactions=(
+            minimum_interactions or 2
+        ),
+        minimum_hotspot_score=(
+            minimum_score or 0.0
+        ),
+        include_singletons=False,
+    )
+
+    hotspot_scores = [
+        hotspot["hotspot_score"]
+        for hotspot in hotspots
+    ]
+
+    interaction_counts = [
+        hotspot["interaction_count"]
+        for hotspot in hotspots
+    ]
+
+    top_hotspot = (
+        hotspots[0]
+        if hotspots
+        else None
+    )
+
+    return {
+        "hotspot_count": len(hotspots),
+        "hotspot_score_statistics": (
+            calculate_numeric_statistics(
+                hotspot_scores
+            )
+        ),
+        "hotspot_interaction_count_statistics": (
+            calculate_numeric_statistics(
+                interaction_counts
+            )
+        ),
+        "top_hotspot": top_hotspot,
+        "hotspots": hotspots,
+    }
+
+
+# =============================================================================
+# 13.12. RECOGNIZED GROUP STATISTICS
+# =============================================================================
+
+
+def calculate_recognized_group_statistics(
+    cationic_groups: Iterable[ChargedGroup],
+    anionic_groups: Iterable[ChargedGroup],
+) -> Dict[str, Any]:
+    """
+    Calculate statistics for recognized charged groups.
+
+    Parameters
+    ----------
+    cationic_groups
+        Recognized positively charged groups.
+    anionic_groups
+        Recognized negatively charged groups.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Group counts, source distributions, confidence statistics, and types.
+    """
+
+    cation_list = list(
+        cationic_groups
+    )
+
+    anion_list = list(
+        anionic_groups
+    )
+
+    cation_type_counts: Dict[str, int] = {}
+    anion_type_counts: Dict[str, int] = {}
+
+    cation_source_counts: Dict[str, int] = {}
+    anion_source_counts: Dict[str, int] = {}
+
+    for group in cation_list:
+        group_type = normalize_grouping_identifier(
+            group.group_type,
+            fallback="unknown_cation",
+        )
+
+        group_source = normalize_grouping_identifier(
+            group.source,
+            fallback="unknown",
+        )
+
+        cation_type_counts[group_type] = (
+            cation_type_counts.get(
+                group_type,
+                0,
+            )
+            + 1
+        )
+
+        cation_source_counts[group_source] = (
+            cation_source_counts.get(
+                group_source,
+                0,
+            )
+            + 1
+        )
+
+    for group in anion_list:
+        group_type = normalize_grouping_identifier(
+            group.group_type,
+            fallback="unknown_anion",
+        )
+
+        group_source = normalize_grouping_identifier(
+            group.source,
+            fallback="unknown",
+        )
+
+        anion_type_counts[group_type] = (
+            anion_type_counts.get(
+                group_type,
+                0,
+            )
+            + 1
+        )
+
+        anion_source_counts[group_source] = (
+            anion_source_counts.get(
+                group_source,
+                0,
+            )
+            + 1
+        )
+
+    cation_confidences = [
+        group.confidence
+        for group in cation_list
+    ]
+
+    anion_confidences = [
+        group.confidence
+        for group in anion_list
+    ]
+
+    return {
+        "cationic_group_count": len(
+            cation_list
+        ),
+        "anionic_group_count": len(
+            anion_list
+        ),
+        "total_charged_group_count": (
+            len(cation_list)
+            + len(anion_list)
+        ),
+        "cation_type_distribution": (
+            normalize_count_distribution(
+                cation_type_counts
+            )
+        ),
+        "anion_type_distribution": (
+            normalize_count_distribution(
+                anion_type_counts
+            )
+        ),
+        "cation_source_distribution": (
+            normalize_count_distribution(
+                cation_source_counts
+            )
+        ),
+        "anion_source_distribution": (
+            normalize_count_distribution(
+                anion_source_counts
+            )
+        ),
+        "cation_confidence_statistics": (
+            calculate_numeric_statistics(
+                cation_confidences
+            )
+        ),
+        "anion_confidence_statistics": (
+            calculate_numeric_statistics(
+                anion_confidences
+            )
+        ),
+    }
+
+
+# =============================================================================
+# 13.13. COMPLETE STATISTICS ASSEMBLY
+# =============================================================================
+
+
+def calculate_salt_bridge_statistics(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    cationic_groups: Optional[
+        Iterable[ChargedGroup]
+    ] = None,
+    anionic_groups: Optional[
+        Iterable[ChargedGroup]
+    ] = None,
+    config: Optional[SaltBridgeConfig] = None,
+    include_invalid: bool = False,
+    include_pose_details: bool = True,
+    include_model_details: bool = True,
+    include_hotspot_details: bool = True,
+) -> Dict[str, Any]:
+    """
+    Calculate complete salt-bridge statistics.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    cationic_groups
+        Optional recognized cationic groups.
+    anionic_groups
+        Optional recognized anionic groups.
+    config
+        Salt-bridge configuration.
+    include_invalid
+        Whether invalid interactions should be included in descriptive
+        distributions.
+    include_pose_details
+        Whether pose-level statistics should be calculated.
+    include_model_details
+        Whether model-level statistics should be calculated.
+    include_hotspot_details
+        Whether hotspot statistics should be calculated.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Complete statistics dictionary.
+    """
+
+    resolved_config = resolve_config(config)
+
+    interaction_list = list(
+        interactions
+    )
+
+    normalized_interactions = (
+        normalize_interaction_collection(
+            interaction_list,
+            include_invalid=include_invalid,
+        )
+    )
+
+    statistics_data: Dict[str, Any] = {
+        "counts": (
+            calculate_interaction_count_statistics(
+                interaction_list
+            )
+        ),
+        "distances": (
+            calculate_distance_statistics(
+                normalized_interactions,
+                include_invalid=True,
+            )
+        ),
+        "scores": (
+            calculate_score_statistics(
+                normalized_interactions,
+                include_invalid=True,
+                include_zero=True,
+            )
+        ),
+        "strength_distribution": (
+            calculate_strength_distribution(
+                interaction_list,
+                include_rejected=True,
+            )
+        ),
+        "group_type_distribution": (
+            calculate_group_type_distribution(
+                normalized_interactions,
+                directional=True,
+                include_invalid=True,
+            )
+        ),
+        "recognition_source_distribution": (
+            calculate_group_source_distribution(
+                normalized_interactions,
+                include_invalid=True,
+            )
+        ),
+        "residues": (
+            calculate_residue_participation_statistics(
+                normalized_interactions,
+                include_invalid=True,
+            )
+        ),
+        "interfaces": (
+            calculate_interface_statistics(
+                normalized_interactions,
+                include_invalid=True,
+            )
+        ),
+    }
+
+    if (
+        cationic_groups is not None
+        or anionic_groups is not None
+    ):
+        statistics_data[
+            "recognized_groups"
+        ] = calculate_recognized_group_statistics(
+            cationic_groups or [],
+            anionic_groups or [],
+        )
+
+    if include_pose_details:
+        statistics_data[
+            "poses"
+        ] = calculate_pose_statistics(
+            normalized_interactions,
+            include_invalid=True,
+        )
+
+    if include_model_details:
+        statistics_data[
+            "models"
+        ] = calculate_model_statistics(
+            normalized_interactions,
+            include_invalid=True,
+        )
+
+    if include_hotspot_details:
+        statistics_data[
+            "hotspots"
+        ] = calculate_hotspot_statistics(
+            normalized_interactions,
+            resolved_config,
+        )
+
+    statistics_data["metadata"] = {
+        "statistics_version": "1.0",
+        "include_invalid": include_invalid,
+        "input_interaction_count": len(
+            interaction_list
+        ),
+        "analyzed_interaction_count": len(
+            normalized_interactions
+        ),
+        "pose_details_included": (
+            include_pose_details
+        ),
+        "model_details_included": (
+            include_model_details
+        ),
+        "hotspot_details_included": (
+            include_hotspot_details
+        ),
+    }
+
+    return statistics_data
+
+
+# =============================================================================
+# 13.14. RESULT-LEVEL STATISTICS
+# =============================================================================
+
+
+def calculate_salt_bridge_result_statistics(
+    result: SaltBridgeResult,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    in_place: bool = True,
+    include_invalid: bool = False,
+    include_pose_details: bool = True,
+    include_model_details: bool = True,
+    include_hotspot_details: bool = True,
+) -> SaltBridgeResult:
+    """
+    Calculate and attach statistics to a SaltBridgeResult.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+    config
+        Salt-bridge configuration.
+    in_place
+        Whether the original result should be modified.
+    include_invalid
+        Whether invalid interactions should be included.
+    include_pose_details
+        Whether pose-level details should be stored.
+    include_model_details
+        Whether model-level details should be stored.
+    include_hotspot_details
+        Whether hotspot details should be stored.
+
+    Returns
+    -------
+    SaltBridgeResult
+        Result with populated statistics.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not isinstance(result, SaltBridgeResult):
+        raise SaltBridgeDetectionError(
+            "result must be a SaltBridgeResult instance."
+        )
+
+    target_result = result
+
+    if not in_place:
+        target_result = SaltBridgeResult(
+            interactions=list(
+                result.interactions
+            ),
+            cationic_groups=list(
+                result.cationic_groups
+            ),
+            anionic_groups=list(
+                result.anionic_groups
+            ),
+            statistics=dict(
+                result.statistics
+            ),
+            warnings=list(
+                result.warnings
+            ),
+            pose_id=result.pose_id,
+            model_id=result.model_id,
+            metadata=dict(
+                result.metadata
+            ),
+        )
+
+    statistics_data = (
+        calculate_salt_bridge_statistics(
+            target_result.interactions,
+            cationic_groups=(
+                target_result.cationic_groups
+            ),
+            anionic_groups=(
+                target_result.anionic_groups
+            ),
+            config=resolved_config,
+            include_invalid=include_invalid,
+            include_pose_details=(
+                include_pose_details
+            ),
+            include_model_details=(
+                include_model_details
+            ),
+            include_hotspot_details=(
+                include_hotspot_details
+            ),
+        )
+    )
+
+    target_result.statistics = (
+        statistics_data
+    )
+
+    target_result.metadata[
+        "statistics_completed"
+    ] = True
+
+    target_result.metadata[
+        "statistics_interaction_count"
+    ] = statistics_data[
+        "metadata"
+    ][
+        "analyzed_interaction_count"
+    ]
+
+    target_result.metadata[
+        "statistics_include_invalid"
+    ] = include_invalid
+
+    return target_result
+
+
+# =============================================================================
+# 13.15. COMPACT SUMMARY GENERATION
+# =============================================================================
+
+
+def build_compact_salt_bridge_summary(
+    result: SaltBridgeResult,
+    config: Optional[SaltBridgeConfig] = None,
+) -> Dict[str, Any]:
+    """
+    Build a compact machine-readable salt-bridge summary.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Compact summary suitable for reports and DockModel integration.
+    """
+
+    if not isinstance(result, SaltBridgeResult):
+        raise SaltBridgeDetectionError(
+            "result must be a SaltBridgeResult instance."
+        )
+
+    if not result.statistics:
+        calculate_salt_bridge_result_statistics(
+            result,
+            config,
+            in_place=True,
+        )
+
+    counts = result.statistics.get(
+        "counts",
+        {},
+    )
+
+    distances = result.statistics.get(
+        "distances",
+        {},
+    )
+
+    scores = result.statistics.get(
+        "scores",
+        {},
+    )
+
+    residues = result.statistics.get(
+        "residues",
+        {},
+    )
+
+    interfaces = result.statistics.get(
+        "interfaces",
+        {},
+    )
+
+    hotspots = result.statistics.get(
+        "hotspots",
+        {},
+    )
+
+    minimum_distance_statistics = (
+        distances.get(
+            "minimum_atom_distance",
+            {},
+        )
+    )
+
+    top_hotspot = hotspots.get(
+        "top_hotspot"
+    )
+
+    return {
+        "interaction_count": counts.get(
+            "valid_interaction_count",
+            0,
+        ),
+        "rejected_candidate_count": counts.get(
+            "rejected_interaction_count",
+            0,
+        ),
+        "atomic_contact_count": counts.get(
+            "total_atomic_contact_count",
+            0,
+        ),
+        "total_score": scores.get(
+            "sum",
+            0.0,
+        ),
+        "mean_score": scores.get(
+            "mean"
+        ),
+        "best_score": scores.get(
+            "best_interaction_score"
+        ),
+        "best_interaction_id": scores.get(
+            "best_interaction_id"
+        ),
+        "minimum_distance": (
+            minimum_distance_statistics.get(
+                "minimum"
+            )
+        ),
+        "mean_distance": (
+            minimum_distance_statistics.get(
+                "mean"
+            )
+        ),
+        "maximum_distance": (
+            minimum_distance_statistics.get(
+                "maximum"
+            )
+        ),
+        "strong_count": (
+            result.statistics
+            .get(
+                "strength_distribution",
+                {},
+            )
+            .get(
+                STRENGTH_STRONG,
+                {},
+            )
+            .get(
+                "count",
+                0,
+            )
+        ),
+        "moderate_count": (
+            result.statistics
+            .get(
+                "strength_distribution",
+                {},
+            )
+            .get(
+                STRENGTH_MODERATE,
+                {},
+            )
+            .get(
+                "count",
+                0,
+            )
+        ),
+        "weak_count": (
+            result.statistics
+            .get(
+                "strength_distribution",
+                {},
+            )
+            .get(
+                STRENGTH_WEAK,
+                {},
+            )
+            .get(
+                "count",
+                0,
+            )
+        ),
+        "residue_count": residues.get(
+            "unique_residue_count",
+            0,
+        ),
+        "cationic_residue_count": residues.get(
+            "unique_cationic_residue_count",
+            0,
+        ),
+        "anionic_residue_count": residues.get(
+            "unique_anionic_residue_count",
+            0,
+        ),
+        "intrachain_count": interfaces.get(
+            "intrachain_interaction_count",
+            0,
+        ),
+        "interchain_count": interfaces.get(
+            "interchain_interaction_count",
+            0,
+        ),
+        "hotspot_count": hotspots.get(
+            "hotspot_count",
+            0,
+        ),
+        "top_hotspot_label": (
+            top_hotspot.get(
+                "residue_label"
+            )
+            if top_hotspot is not None
+            else None
+        ),
+        "top_hotspot_score": (
+            top_hotspot.get(
+                "hotspot_score"
+            )
+            if top_hotspot is not None
+            else None
+        ),
+        "pose_id": result.pose_id,
+        "model_id": result.model_id,
+    }
+
+
+def build_salt_bridge_text_summary(
+    result: SaltBridgeResult,
+    config: Optional[SaltBridgeConfig] = None,
+) -> str:
+    """
+    Build a concise human-readable salt-bridge summary.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    str
+        Human-readable summary.
+    """
+
+    summary = build_compact_salt_bridge_summary(
+        result,
+        config,
+    )
+
+    interaction_count = summary[
+        "interaction_count"
+    ]
+
+    if interaction_count == 0:
+        return (
+            "No valid salt bridges were detected."
+        )
+
+    summary_parts = [
+        (
+            f"{interaction_count} valid salt bridge"
+            f"{'' if interaction_count == 1 else 's'}"
+        ),
+        (
+            f"{summary['strong_count']} strong"
+        ),
+        (
+            f"{summary['moderate_count']} moderate"
+        ),
+        (
+            f"{summary['weak_count']} weak"
+        ),
+        (
+            f"total score {summary['total_score']:.3f}"
+        ),
+    ]
+
+    if summary["minimum_distance"] is not None:
+        summary_parts.append(
+            "minimum distance "
+            f"{summary['minimum_distance']:.3f} Å"
+        )
+
+    if summary["residue_count"] > 0:
+        summary_parts.append(
+            f"{summary['residue_count']} participating residues"
+        )
+
+    if summary["hotspot_count"] > 0:
+        hotspot_label = (
+            summary["top_hotspot_label"]
+            or "unknown residue"
+        )
+
+        summary_parts.append(
+            f"{summary['hotspot_count']} hotspots, "
+            f"top hotspot {hotspot_label}"
+        )
+
+    return "; ".join(summary_parts) + "."
+
+
+# =============================================================================
+# 13.16. TABULAR SUMMARY RECORDS
+# =============================================================================
+
+
+def build_interaction_summary_record(
+    interaction: SaltBridgeInteraction,
+) -> Dict[str, Any]:
+    """
+    Build a flat summary record for one interaction.
+
+    The record is suitable for table creation and later serialization.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Flat interaction record.
+    """
+
+    return {
+        "interaction_id": (
+            interaction.interaction_id
+        ),
+        "interaction_type": (
+            interaction.interaction_type
+        ),
+        "strength": interaction.strength,
+        "score": interaction.score,
+        "valid": interaction.geometry.valid,
+        "rejection_reason": (
+            interaction.geometry.rejection_reason
+        ),
+        "minimum_atom_distance": (
+            interaction.geometry.minimum_atom_distance
+        ),
+        "center_distance": (
+            interaction.geometry.center_distance
+        ),
+        "mean_atom_distance": (
+            interaction.geometry.mean_atom_distance
+        ),
+        "maximum_atom_distance": (
+            interaction.geometry.maximum_atom_distance
+        ),
+        "atomic_contact_count": (
+            interaction.geometry.contact_count
+        ),
+        "cation_group_type": (
+            interaction.cation.group_type
+        ),
+        "anion_group_type": (
+            interaction.anion.group_type
+        ),
+        "cation_source": (
+            interaction.cation.source
+        ),
+        "anion_source": (
+            interaction.anion.source
+        ),
+        "cation_confidence": (
+            interaction.cation.confidence
+        ),
+        "anion_confidence": (
+            interaction.anion.confidence
+        ),
+        "cation_residue": make_residue_label(
+            interaction.cation.residue,
+            fallback="unknown_residue",
+        ),
+        "anion_residue": make_residue_label(
+            interaction.anion.residue,
+            fallback="unknown_residue",
+        ),
+        "cation_chain": get_chain_id(
+            interaction.cation.residue
+        ),
+        "anion_chain": get_chain_id(
+            interaction.anion.residue
+        ),
+        "pose_id": interaction.pose_id,
+        "model_id": interaction.model_id,
+    }
+
+
+def build_interaction_summary_table(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    include_invalid: bool = False,
+    sort_by_score: bool = True,
+) -> List[Dict[str, Any]]:
+    """
+    Build flat summary records for multiple interactions.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    include_invalid
+        Whether invalid interactions should be included.
+    sort_by_score
+        Whether interactions should be sorted by decreasing score.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Interaction summary records.
+    """
+
+    normalized_interactions = (
+        normalize_interaction_collection(
+            interactions,
+            include_invalid=include_invalid,
+        )
+    )
+
+    if sort_by_score:
+        normalized_interactions = (
+            sort_salt_bridges_by_score(
+                normalized_interactions,
+                descending=True,
+            )
+        )
+
+    return [
+        build_interaction_summary_record(
+            interaction
+        )
+        for interaction in normalized_interactions
+    ]
+
+
+# =============================================================================
+# 13.17. COMPLETE PIPELINE THROUGH STATISTICS
+# =============================================================================
+
+
+def analyze_salt_bridges_with_statistics(
+    source: Any,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    pose_id: Optional[Union[str, int]] = None,
+    model_id: Optional[Union[str, int]] = None,
+    warnings: Optional[List[str]] = None,
+    deduplication_mode: Optional[str] = None,
+    store_full_groups: Optional[bool] = None,
+    include_invalid_statistics: bool = False,
+) -> SaltBridgeResult:
+    """
+    Execute salt-bridge analysis through the statistics stage.
+
+    The workflow includes:
+
+    1. charged-group recognition;
+    2. central detection;
+    3. classification;
+    4. scoring;
+    5. deduplication;
+    6. grouping;
+    7. hotspot identification;
+    8. statistical analysis;
+    9. compact summary generation.
+
+    Parameters
+    ----------
+    source
+        Molecular source.
+    config
+        Salt-bridge configuration.
+    pose_id
+        Optional docking-pose identifier.
+    model_id
+        Optional molecular-model identifier.
+    warnings
+        Optional warning collector.
+    deduplication_mode
+        Optional interaction deduplication mode.
+    store_full_groups
+        Whether complete grouping mappings should be stored.
+    include_invalid_statistics
+        Whether invalid candidates should enter descriptive statistics.
+
+    Returns
+    -------
+    SaltBridgeResult
+        Fully analyzed result through Section 13.
+    """
+
+    resolved_config = resolve_config(config)
+
+    result = analyze_grouped_salt_bridges(
+        source,
+        resolved_config,
+        pose_id=pose_id,
+        model_id=model_id,
+        warnings=warnings,
+        deduplication_mode=deduplication_mode,
+        store_full_groups=store_full_groups,
+    )
+
+    result = calculate_salt_bridge_result_statistics(
+        result,
+        resolved_config,
+        in_place=True,
+        include_invalid=(
+            include_invalid_statistics
+        ),
+        include_pose_details=True,
+        include_model_details=True,
+        include_hotspot_details=True,
+    )
+
+    result.metadata[
+        "compact_summary"
+    ] = build_compact_salt_bridge_summary(
+        result,
+        resolved_config,
+    )
+
+    result.metadata[
+        "text_summary"
+    ] = build_salt_bridge_text_summary(
+        result,
+        resolved_config,
+    )
+
+    return result
+
+
 
 
 
