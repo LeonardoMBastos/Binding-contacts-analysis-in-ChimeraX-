@@ -625,5 +625,1801 @@ for public_name in _SECTION_1_PUBLIC_NAMES:
 # =============================================================================
 
 
+# =============================================================================
+# Section 2 — Constants, categories and canonical names
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 2.1. Numerical constants and tolerances
+# -----------------------------------------------------------------------------
+
+SCORE_EPSILON: Final[float] = 1.0e-12
+SCORE_COMPARISON_TOLERANCE: Final[float] = 1.0e-9
+SCORE_ROUND_DIGITS: Final[int] = 8
+
+MIN_GEOMETRY_MULTIPLIER: Final[float] = 0.0
+MAX_GEOMETRY_MULTIPLIER: Final[float] = 1.0
+
+MIN_STRENGTH_MULTIPLIER: Final[float] = 0.0
+MIN_CLASSIFICATION_MULTIPLIER: Final[float] = 0.0
+
+DEFAULT_UNKNOWN_SCORE: Final[float] = 0.0
+DEFAULT_NEUTRAL_MULTIPLIER: Final[float] = 1.0
+DEFAULT_REJECTED_MULTIPLIER: Final[float] = 0.0
+
+
+# -----------------------------------------------------------------------------
+# 2.2. Canonical interaction-family names
+# -----------------------------------------------------------------------------
+
+SCORE_TYPE_CONTACT: Final[str] = "contact"
+SCORE_TYPE_HYDROGEN_BOND: Final[str] = "hydrogen_bond"
+SCORE_TYPE_HYDROPHOBIC: Final[str] = "hydrophobic"
+SCORE_TYPE_PI: Final[str] = "pi"
+SCORE_TYPE_SALT_BRIDGE: Final[str] = "salt_bridge"
+SCORE_TYPE_CLASH: Final[str] = "clash"
+SCORE_TYPE_UNKNOWN: Final[str] = "unknown"
+
+
+# -----------------------------------------------------------------------------
+# 2.3. Canonical contact subtypes
+# -----------------------------------------------------------------------------
+
+SCORE_TYPE_VAN_DER_WAALS: Final[str] = "van_der_waals"
+SCORE_TYPE_CLOSE_CONTACT: Final[str] = "close_contact"
+SCORE_TYPE_POLAR_CONTACT: Final[str] = "polar_contact"
+SCORE_TYPE_NONPOLAR_CONTACT: Final[str] = "nonpolar_contact"
+SCORE_TYPE_METAL_CONTACT: Final[str] = "metal_contact"
+
+
+# -----------------------------------------------------------------------------
+# 2.4. Canonical hydrogen-bond subtypes
+# -----------------------------------------------------------------------------
+
+SCORE_TYPE_HBOND: Final[str] = SCORE_TYPE_HYDROGEN_BOND
+SCORE_TYPE_HBOND_DIRECT: Final[str] = "hydrogen_bond_direct"
+SCORE_TYPE_HBOND_INFERRED: Final[str] = "hydrogen_bond_inferred"
+SCORE_TYPE_HBOND_WATER_MEDIATED: Final[str] = "hydrogen_bond_water_mediated"
+SCORE_TYPE_HBOND_CHARGE_ASSISTED: Final[str] = "hydrogen_bond_charge_assisted"
+SCORE_TYPE_HBOND_WEAK: Final[str] = "hydrogen_bond_weak"
+
+
+# -----------------------------------------------------------------------------
+# 2.5. Canonical hydrophobic-interaction subtypes
+# -----------------------------------------------------------------------------
+
+SCORE_TYPE_HYDROPHOBIC_ATOMIC: Final[str] = "hydrophobic_atomic"
+SCORE_TYPE_HYDROPHOBIC_GROUP: Final[str] = "hydrophobic_group"
+SCORE_TYPE_HYDROPHOBIC_RESIDUE: Final[str] = "hydrophobic_residue"
+SCORE_TYPE_HYDROPHOBIC_CLUSTER: Final[str] = "hydrophobic_cluster"
+
+
+# -----------------------------------------------------------------------------
+# 2.6. Canonical pi-interaction subtypes
+# -----------------------------------------------------------------------------
+
+SCORE_TYPE_PI_STACKING: Final[str] = "pi_stacking"
+SCORE_TYPE_PI_PARALLEL: Final[str] = "pi_parallel"
+SCORE_TYPE_PI_OFFSET: Final[str] = "pi_offset"
+SCORE_TYPE_PI_T_SHAPED: Final[str] = "pi_t_shaped"
+
+SCORE_TYPE_CATION_PI: Final[str] = "cation_pi"
+SCORE_TYPE_ANION_PI: Final[str] = "anion_pi"
+SCORE_TYPE_AMIDE_PI: Final[str] = "amide_pi"
+
+SCORE_TYPE_PI_UNKNOWN: Final[str] = "pi_unknown"
+
+
+# -----------------------------------------------------------------------------
+# 2.7. Canonical salt-bridge subtypes
+# -----------------------------------------------------------------------------
+
+SCORE_TYPE_SALTBRIDGE: Final[str] = SCORE_TYPE_SALT_BRIDGE
+SCORE_TYPE_SALT_BRIDGE_ATOMIC: Final[str] = "salt_bridge_atomic"
+SCORE_TYPE_SALT_BRIDGE_GROUP: Final[str] = "salt_bridge_group"
+SCORE_TYPE_SALT_BRIDGE_CENTER: Final[str] = "salt_bridge_center"
+SCORE_TYPE_SALT_BRIDGE_HISTIDINE: Final[str] = "salt_bridge_histidine"
+SCORE_TYPE_SALT_BRIDGE_BIDENTATE: Final[str] = "salt_bridge_bidentate"
+
+
+# -----------------------------------------------------------------------------
+# 2.8. Canonical clash subtypes
+# -----------------------------------------------------------------------------
+
+SCORE_TYPE_STERIC_CLASH: Final[str] = SCORE_TYPE_CLASH
+SCORE_TYPE_CLASH_MINOR: Final[str] = "clash_minor"
+SCORE_TYPE_CLASH_MODERATE: Final[str] = "clash_moderate"
+SCORE_TYPE_CLASH_SEVERE: Final[str] = "clash_severe"
+
+
+# -----------------------------------------------------------------------------
+# 2.9. Interaction-family collections
+# -----------------------------------------------------------------------------
+
+CANONICAL_INTERACTION_FAMILIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORE_TYPE_CONTACT,
+        SCORE_TYPE_HYDROGEN_BOND,
+        SCORE_TYPE_HYDROPHOBIC,
+        SCORE_TYPE_PI,
+        SCORE_TYPE_SALT_BRIDGE,
+        SCORE_TYPE_CLASH,
+        SCORE_TYPE_UNKNOWN,
+    }
+)
+
+CONTACT_INTERACTION_TYPES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORE_TYPE_CONTACT,
+        SCORE_TYPE_VAN_DER_WAALS,
+        SCORE_TYPE_CLOSE_CONTACT,
+        SCORE_TYPE_POLAR_CONTACT,
+        SCORE_TYPE_NONPOLAR_CONTACT,
+        SCORE_TYPE_METAL_CONTACT,
+    }
+)
+
+HYDROGEN_BOND_INTERACTION_TYPES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORE_TYPE_HYDROGEN_BOND,
+        SCORE_TYPE_HBOND_DIRECT,
+        SCORE_TYPE_HBOND_INFERRED,
+        SCORE_TYPE_HBOND_WATER_MEDIATED,
+        SCORE_TYPE_HBOND_CHARGE_ASSISTED,
+        SCORE_TYPE_HBOND_WEAK,
+    }
+)
+
+HYDROPHOBIC_INTERACTION_TYPES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORE_TYPE_HYDROPHOBIC,
+        SCORE_TYPE_HYDROPHOBIC_ATOMIC,
+        SCORE_TYPE_HYDROPHOBIC_GROUP,
+        SCORE_TYPE_HYDROPHOBIC_RESIDUE,
+        SCORE_TYPE_HYDROPHOBIC_CLUSTER,
+    }
+)
+
+PI_INTERACTION_TYPES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORE_TYPE_PI,
+        SCORE_TYPE_PI_STACKING,
+        SCORE_TYPE_PI_PARALLEL,
+        SCORE_TYPE_PI_OFFSET,
+        SCORE_TYPE_PI_T_SHAPED,
+        SCORE_TYPE_CATION_PI,
+        SCORE_TYPE_ANION_PI,
+        SCORE_TYPE_AMIDE_PI,
+        SCORE_TYPE_PI_UNKNOWN,
+    }
+)
+
+SALT_BRIDGE_INTERACTION_TYPES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORE_TYPE_SALT_BRIDGE,
+        SCORE_TYPE_SALT_BRIDGE_ATOMIC,
+        SCORE_TYPE_SALT_BRIDGE_GROUP,
+        SCORE_TYPE_SALT_BRIDGE_CENTER,
+        SCORE_TYPE_SALT_BRIDGE_HISTIDINE,
+        SCORE_TYPE_SALT_BRIDGE_BIDENTATE,
+    }
+)
+
+CLASH_INTERACTION_TYPES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORE_TYPE_CLASH,
+        SCORE_TYPE_CLASH_MINOR,
+        SCORE_TYPE_CLASH_MODERATE,
+        SCORE_TYPE_CLASH_SEVERE,
+    }
+)
+
+CANONICAL_INTERACTION_TYPES: Final[FrozenSet[str]] = frozenset(
+    set(CONTACT_INTERACTION_TYPES)
+    | set(HYDROGEN_BOND_INTERACTION_TYPES)
+    | set(HYDROPHOBIC_INTERACTION_TYPES)
+    | set(PI_INTERACTION_TYPES)
+    | set(SALT_BRIDGE_INTERACTION_TYPES)
+    | set(CLASH_INTERACTION_TYPES)
+    | {SCORE_TYPE_UNKNOWN}
+)
+
+
+# -----------------------------------------------------------------------------
+# 2.10. Favorable, unfavorable and neutral categories
+# -----------------------------------------------------------------------------
+
+FAVORABLE_INTERACTION_FAMILIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORE_TYPE_HYDROGEN_BOND,
+        SCORE_TYPE_HYDROPHOBIC,
+        SCORE_TYPE_PI,
+        SCORE_TYPE_SALT_BRIDGE,
+    }
+)
+
+PENALTY_INTERACTION_FAMILIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORE_TYPE_CLASH,
+    }
+)
+
+NEUTRAL_INTERACTION_FAMILIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORE_TYPE_CONTACT,
+        SCORE_TYPE_UNKNOWN,
+    }
+)
+
+FAVORABLE_INTERACTION_TYPES: Final[FrozenSet[str]] = frozenset(
+    set(HYDROGEN_BOND_INTERACTION_TYPES)
+    | set(HYDROPHOBIC_INTERACTION_TYPES)
+    | set(PI_INTERACTION_TYPES)
+    | set(SALT_BRIDGE_INTERACTION_TYPES)
+)
+
+PENALTY_INTERACTION_TYPES: Final[FrozenSet[str]] = frozenset(
+    CLASH_INTERACTION_TYPES
+)
+
+NEUTRAL_INTERACTION_TYPES: Final[FrozenSet[str]] = frozenset(
+    set(CONTACT_INTERACTION_TYPES)
+    | {SCORE_TYPE_UNKNOWN}
+)
+
+
+# -----------------------------------------------------------------------------
+# 2.11. Canonical strength names
+# -----------------------------------------------------------------------------
+
+STRENGTH_STRONG: Final[str] = "strong"
+STRENGTH_MODERATE: Final[str] = "moderate"
+STRENGTH_WEAK: Final[str] = "weak"
+STRENGTH_UNCLASSIFIED: Final[str] = "unclassified"
+STRENGTH_UNKNOWN: Final[str] = "unknown"
+
+CANONICAL_STRENGTHS: Final[FrozenSet[str]] = frozenset(
+    {
+        STRENGTH_STRONG,
+        STRENGTH_MODERATE,
+        STRENGTH_WEAK,
+        STRENGTH_UNCLASSIFIED,
+        STRENGTH_UNKNOWN,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 2.12. Canonical geometry-quality names
+# -----------------------------------------------------------------------------
+
+GEOMETRY_OPTIMAL: Final[str] = "optimal"
+GEOMETRY_FAVORABLE: Final[str] = "favorable"
+GEOMETRY_WEAK: Final[str] = "weak"
+GEOMETRY_BORDERLINE: Final[str] = "borderline"
+GEOMETRY_REJECTED: Final[str] = "rejected"
+GEOMETRY_UNCLASSIFIED: Final[str] = "unclassified"
+GEOMETRY_UNKNOWN: Final[str] = "unknown"
+
+CANONICAL_GEOMETRY_QUALITIES: Final[FrozenSet[str]] = frozenset(
+    {
+        GEOMETRY_OPTIMAL,
+        GEOMETRY_FAVORABLE,
+        GEOMETRY_WEAK,
+        GEOMETRY_BORDERLINE,
+        GEOMETRY_REJECTED,
+        GEOMETRY_UNCLASSIFIED,
+        GEOMETRY_UNKNOWN,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 2.13. Canonical interaction classifications
+# -----------------------------------------------------------------------------
+
+CLASSIFICATION_FAVORABLE: Final[str] = "favorable"
+CLASSIFICATION_BORDERLINE: Final[str] = "borderline"
+CLASSIFICATION_UNFAVORABLE: Final[str] = "unfavorable"
+CLASSIFICATION_REJECTED: Final[str] = "rejected"
+CLASSIFICATION_UNCLASSIFIED: Final[str] = "unclassified"
+CLASSIFICATION_UNKNOWN: Final[str] = "unknown"
+
+CLASSIFICATION_PARALLEL: Final[str] = "parallel"
+CLASSIFICATION_OFFSET: Final[str] = "offset"
+CLASSIFICATION_T_SHAPED: Final[str] = "t_shaped"
+
+CLASSIFICATION_DIRECT: Final[str] = "direct"
+CLASSIFICATION_INFERRED: Final[str] = "inferred"
+CLASSIFICATION_CHARGE_ASSISTED: Final[str] = "charge_assisted"
+CLASSIFICATION_WATER_MEDIATED: Final[str] = "water_mediated"
+
+CLASSIFICATION_MINOR: Final[str] = "minor"
+CLASSIFICATION_MODERATE: Final[str] = "moderate"
+CLASSIFICATION_SEVERE: Final[str] = "severe"
+
+CANONICAL_CLASSIFICATIONS: Final[FrozenSet[str]] = frozenset(
+    {
+        CLASSIFICATION_FAVORABLE,
+        CLASSIFICATION_BORDERLINE,
+        CLASSIFICATION_UNFAVORABLE,
+        CLASSIFICATION_REJECTED,
+        CLASSIFICATION_UNCLASSIFIED,
+        CLASSIFICATION_UNKNOWN,
+        CLASSIFICATION_PARALLEL,
+        CLASSIFICATION_OFFSET,
+        CLASSIFICATION_T_SHAPED,
+        CLASSIFICATION_DIRECT,
+        CLASSIFICATION_INFERRED,
+        CLASSIFICATION_CHARGE_ASSISTED,
+        CLASSIFICATION_WATER_MEDIATED,
+        CLASSIFICATION_MINOR,
+        CLASSIFICATION_MODERATE,
+        CLASSIFICATION_SEVERE,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 2.14. Interaction-polarity names
+# -----------------------------------------------------------------------------
+
+POLARITY_FAVORABLE: Final[str] = "favorable"
+POLARITY_PENALTY: Final[str] = "penalty"
+POLARITY_NEUTRAL: Final[str] = "neutral"
+POLARITY_UNKNOWN: Final[str] = "unknown"
+
+CANONICAL_POLARITIES: Final[FrozenSet[str]] = frozenset(
+    {
+        POLARITY_FAVORABLE,
+        POLARITY_PENALTY,
+        POLARITY_NEUTRAL,
+        POLARITY_UNKNOWN,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 2.15. Normalization modes
+# -----------------------------------------------------------------------------
+
+NORMALIZATION_NONE: Final[str] = "none"
+NORMALIZATION_INTERACTION_COUNT: Final[str] = "interaction_count"
+NORMALIZATION_RESIDUE_COUNT: Final[str] = "residue_count"
+NORMALIZATION_LIGAND_HEAVY_ATOMS: Final[str] = "ligand_heavy_atoms"
+NORMALIZATION_CONTACT_COUNT: Final[str] = "contact_count"
+NORMALIZATION_MAXIMUM_ABSOLUTE: Final[str] = "maximum_absolute"
+NORMALIZATION_MIN_MAX: Final[str] = "min_max"
+NORMALIZATION_Z_SCORE: Final[str] = "z_score"
+
+NORMALIZATION_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        NORMALIZATION_NONE,
+        NORMALIZATION_INTERACTION_COUNT,
+        NORMALIZATION_RESIDUE_COUNT,
+        NORMALIZATION_LIGAND_HEAVY_ATOMS,
+        NORMALIZATION_CONTACT_COUNT,
+        NORMALIZATION_MAXIMUM_ABSOLUTE,
+        NORMALIZATION_MIN_MAX,
+        NORMALIZATION_Z_SCORE,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 2.16. Aggregation modes
+# -----------------------------------------------------------------------------
+
+AGGREGATION_SUM: Final[str] = "sum"
+AGGREGATION_MEAN: Final[str] = "mean"
+AGGREGATION_MAXIMUM: Final[str] = "maximum"
+AGGREGATION_MINIMUM: Final[str] = "minimum"
+AGGREGATION_WEIGHTED_MEAN: Final[str] = "weighted_mean"
+
+AGGREGATION_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        AGGREGATION_SUM,
+        AGGREGATION_MEAN,
+        AGGREGATION_MAXIMUM,
+        AGGREGATION_MINIMUM,
+        AGGREGATION_WEIGHTED_MEAN,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 2.17. Deduplication modes
+# -----------------------------------------------------------------------------
+
+DEDUPLICATION_NONE: Final[str] = "none"
+DEDUPLICATION_EXACT: Final[str] = "exact"
+DEDUPLICATION_ATOM_PAIR: Final[str] = "atom_pair"
+DEDUPLICATION_RESIDUE_PAIR: Final[str] = "residue_pair"
+DEDUPLICATION_INTERACTION_GROUP: Final[str] = "interaction_group"
+
+DEDUPLICATION_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        DEDUPLICATION_NONE,
+        DEDUPLICATION_EXACT,
+        DEDUPLICATION_ATOM_PAIR,
+        DEDUPLICATION_RESIDUE_PAIR,
+        DEDUPLICATION_INTERACTION_GROUP,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 2.18. Score-direction names
+# -----------------------------------------------------------------------------
+
+SCORE_DIRECTION_HIGHER_IS_BETTER: Final[str] = "higher_is_better"
+SCORE_DIRECTION_LOWER_IS_BETTER: Final[str] = "lower_is_better"
+
+SCORE_DIRECTIONS: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORE_DIRECTION_HIGHER_IS_BETTER,
+        SCORE_DIRECTION_LOWER_IS_BETTER,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 2.19. Canonical interaction-family mapping
+# -----------------------------------------------------------------------------
+
+INTERACTION_TYPE_TO_FAMILY: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        # General contacts
+        SCORE_TYPE_CONTACT: SCORE_TYPE_CONTACT,
+        SCORE_TYPE_VAN_DER_WAALS: SCORE_TYPE_CONTACT,
+        SCORE_TYPE_CLOSE_CONTACT: SCORE_TYPE_CONTACT,
+        SCORE_TYPE_POLAR_CONTACT: SCORE_TYPE_CONTACT,
+        SCORE_TYPE_NONPOLAR_CONTACT: SCORE_TYPE_CONTACT,
+        SCORE_TYPE_METAL_CONTACT: SCORE_TYPE_CONTACT,
+
+        # Hydrogen bonds
+        SCORE_TYPE_HYDROGEN_BOND: SCORE_TYPE_HYDROGEN_BOND,
+        SCORE_TYPE_HBOND_DIRECT: SCORE_TYPE_HYDROGEN_BOND,
+        SCORE_TYPE_HBOND_INFERRED: SCORE_TYPE_HYDROGEN_BOND,
+        SCORE_TYPE_HBOND_WATER_MEDIATED: SCORE_TYPE_HYDROGEN_BOND,
+        SCORE_TYPE_HBOND_CHARGE_ASSISTED: SCORE_TYPE_HYDROGEN_BOND,
+        SCORE_TYPE_HBOND_WEAK: SCORE_TYPE_HYDROGEN_BOND,
+
+        # Hydrophobic interactions
+        SCORE_TYPE_HYDROPHOBIC: SCORE_TYPE_HYDROPHOBIC,
+        SCORE_TYPE_HYDROPHOBIC_ATOMIC: SCORE_TYPE_HYDROPHOBIC,
+        SCORE_TYPE_HYDROPHOBIC_GROUP: SCORE_TYPE_HYDROPHOBIC,
+        SCORE_TYPE_HYDROPHOBIC_RESIDUE: SCORE_TYPE_HYDROPHOBIC,
+        SCORE_TYPE_HYDROPHOBIC_CLUSTER: SCORE_TYPE_HYDROPHOBIC,
+
+        # Pi interactions
+        SCORE_TYPE_PI: SCORE_TYPE_PI,
+        SCORE_TYPE_PI_STACKING: SCORE_TYPE_PI,
+        SCORE_TYPE_PI_PARALLEL: SCORE_TYPE_PI,
+        SCORE_TYPE_PI_OFFSET: SCORE_TYPE_PI,
+        SCORE_TYPE_PI_T_SHAPED: SCORE_TYPE_PI,
+        SCORE_TYPE_CATION_PI: SCORE_TYPE_PI,
+        SCORE_TYPE_ANION_PI: SCORE_TYPE_PI,
+        SCORE_TYPE_AMIDE_PI: SCORE_TYPE_PI,
+        SCORE_TYPE_PI_UNKNOWN: SCORE_TYPE_PI,
+
+        # Salt bridges
+        SCORE_TYPE_SALT_BRIDGE: SCORE_TYPE_SALT_BRIDGE,
+        SCORE_TYPE_SALT_BRIDGE_ATOMIC: SCORE_TYPE_SALT_BRIDGE,
+        SCORE_TYPE_SALT_BRIDGE_GROUP: SCORE_TYPE_SALT_BRIDGE,
+        SCORE_TYPE_SALT_BRIDGE_CENTER: SCORE_TYPE_SALT_BRIDGE,
+        SCORE_TYPE_SALT_BRIDGE_HISTIDINE: SCORE_TYPE_SALT_BRIDGE,
+        SCORE_TYPE_SALT_BRIDGE_BIDENTATE: SCORE_TYPE_SALT_BRIDGE,
+
+        # Clashes
+        SCORE_TYPE_CLASH: SCORE_TYPE_CLASH,
+        SCORE_TYPE_CLASH_MINOR: SCORE_TYPE_CLASH,
+        SCORE_TYPE_CLASH_MODERATE: SCORE_TYPE_CLASH,
+        SCORE_TYPE_CLASH_SEVERE: SCORE_TYPE_CLASH,
+
+        # Unknown
+        SCORE_TYPE_UNKNOWN: SCORE_TYPE_UNKNOWN,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 2.20. Raw interaction-type aliases
+# -----------------------------------------------------------------------------
+#
+# All alias keys must already be normalized to lowercase snake_case. The
+# ``normalize_interaction_type`` function performs the textual cleanup before
+# consulting this mapping.
+# -----------------------------------------------------------------------------
+
+INTERACTION_TYPE_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        # General contact aliases
+        "contact": SCORE_TYPE_CONTACT,
+        "contacts": SCORE_TYPE_CONTACT,
+        "atomic_contact": SCORE_TYPE_CONTACT,
+        "atom_contact": SCORE_TYPE_CONTACT,
+        "generic_contact": SCORE_TYPE_CONTACT,
+
+        "vdw": SCORE_TYPE_VAN_DER_WAALS,
+        "vanderwaals": SCORE_TYPE_VAN_DER_WAALS,
+        "van_der_waals": SCORE_TYPE_VAN_DER_WAALS,
+        "van_der_waals_contact": SCORE_TYPE_VAN_DER_WAALS,
+
+        "close_contact": SCORE_TYPE_CLOSE_CONTACT,
+        "short_contact": SCORE_TYPE_CLOSE_CONTACT,
+
+        "polar_contact": SCORE_TYPE_POLAR_CONTACT,
+        "nonpolar_contact": SCORE_TYPE_NONPOLAR_CONTACT,
+        "non_polar_contact": SCORE_TYPE_NONPOLAR_CONTACT,
+        "metal_contact": SCORE_TYPE_METAL_CONTACT,
+
+        # Hydrogen-bond aliases
+        "hbond": SCORE_TYPE_HYDROGEN_BOND,
+        "h_bond": SCORE_TYPE_HYDROGEN_BOND,
+        "hbonds": SCORE_TYPE_HYDROGEN_BOND,
+        "hydrogenbond": SCORE_TYPE_HYDROGEN_BOND,
+        "hydrogen_bond": SCORE_TYPE_HYDROGEN_BOND,
+        "hydrogen_bonds": SCORE_TYPE_HYDROGEN_BOND,
+
+        "direct_hbond": SCORE_TYPE_HBOND_DIRECT,
+        "direct_hydrogen_bond": SCORE_TYPE_HBOND_DIRECT,
+        "hydrogen_bond_direct": SCORE_TYPE_HBOND_DIRECT,
+
+        "inferred_hbond": SCORE_TYPE_HBOND_INFERRED,
+        "inferred_hydrogen_bond": SCORE_TYPE_HBOND_INFERRED,
+        "hydrogen_bond_inferred": SCORE_TYPE_HBOND_INFERRED,
+
+        "water_hbond": SCORE_TYPE_HBOND_WATER_MEDIATED,
+        "water_mediated_hbond": SCORE_TYPE_HBOND_WATER_MEDIATED,
+        "water_mediated_hydrogen_bond": SCORE_TYPE_HBOND_WATER_MEDIATED,
+        "hydrogen_bond_water_mediated": SCORE_TYPE_HBOND_WATER_MEDIATED,
+
+        "charge_assisted_hbond": SCORE_TYPE_HBOND_CHARGE_ASSISTED,
+        "charge_assisted_hydrogen_bond": SCORE_TYPE_HBOND_CHARGE_ASSISTED,
+        "hydrogen_bond_charge_assisted": SCORE_TYPE_HBOND_CHARGE_ASSISTED,
+
+        "weak_hbond": SCORE_TYPE_HBOND_WEAK,
+        "weak_hydrogen_bond": SCORE_TYPE_HBOND_WEAK,
+
+        # Hydrophobic aliases
+        "hydrophobic": SCORE_TYPE_HYDROPHOBIC,
+        "hydrophobic_contact": SCORE_TYPE_HYDROPHOBIC,
+        "hydrophobic_interaction": SCORE_TYPE_HYDROPHOBIC,
+        "nonpolar": SCORE_TYPE_HYDROPHOBIC,
+        "nonpolar_interaction": SCORE_TYPE_HYDROPHOBIC,
+
+        "atomic_hydrophobic": SCORE_TYPE_HYDROPHOBIC_ATOMIC,
+        "hydrophobic_atomic": SCORE_TYPE_HYDROPHOBIC_ATOMIC,
+        "hydrophobic_atom_pair": SCORE_TYPE_HYDROPHOBIC_ATOMIC,
+
+        "group_hydrophobic": SCORE_TYPE_HYDROPHOBIC_GROUP,
+        "hydrophobic_group": SCORE_TYPE_HYDROPHOBIC_GROUP,
+
+        "residue_hydrophobic": SCORE_TYPE_HYDROPHOBIC_RESIDUE,
+        "hydrophobic_residue": SCORE_TYPE_HYDROPHOBIC_RESIDUE,
+
+        "hydrophobic_cluster": SCORE_TYPE_HYDROPHOBIC_CLUSTER,
+
+        # General pi aliases
+        "pi": SCORE_TYPE_PI,
+        "pi_interaction": SCORE_TYPE_PI,
+        "aromatic_interaction": SCORE_TYPE_PI,
+
+        "pi_stack": SCORE_TYPE_PI_STACKING,
+        "pi_stacking": SCORE_TYPE_PI_STACKING,
+        "pistacking": SCORE_TYPE_PI_STACKING,
+        "aromatic_stacking": SCORE_TYPE_PI_STACKING,
+
+        "pi_parallel": SCORE_TYPE_PI_PARALLEL,
+        "parallel_pi": SCORE_TYPE_PI_PARALLEL,
+        "parallel_stacking": SCORE_TYPE_PI_PARALLEL,
+        "face_to_face": SCORE_TYPE_PI_PARALLEL,
+        "face_to_face_pi": SCORE_TYPE_PI_PARALLEL,
+
+        "pi_offset": SCORE_TYPE_PI_OFFSET,
+        "offset_pi": SCORE_TYPE_PI_OFFSET,
+        "offset_stacking": SCORE_TYPE_PI_OFFSET,
+        "parallel_displaced": SCORE_TYPE_PI_OFFSET,
+        "parallel_displaced_pi": SCORE_TYPE_PI_OFFSET,
+        "displaced_pi": SCORE_TYPE_PI_OFFSET,
+
+        "pi_t_shaped": SCORE_TYPE_PI_T_SHAPED,
+        "t_shaped_pi": SCORE_TYPE_PI_T_SHAPED,
+        "t_shape": SCORE_TYPE_PI_T_SHAPED,
+        "t_shaped": SCORE_TYPE_PI_T_SHAPED,
+        "edge_to_face": SCORE_TYPE_PI_T_SHAPED,
+        "edge_to_face_pi": SCORE_TYPE_PI_T_SHAPED,
+
+        "cation_pi": SCORE_TYPE_CATION_PI,
+        "cationpi": SCORE_TYPE_CATION_PI,
+        "cation_aromatic": SCORE_TYPE_CATION_PI,
+        "positive_pi": SCORE_TYPE_CATION_PI,
+
+        "anion_pi": SCORE_TYPE_ANION_PI,
+        "anionpi": SCORE_TYPE_ANION_PI,
+        "anion_aromatic": SCORE_TYPE_ANION_PI,
+        "negative_pi": SCORE_TYPE_ANION_PI,
+
+        "amide_pi": SCORE_TYPE_AMIDE_PI,
+        "amidepi": SCORE_TYPE_AMIDE_PI,
+        "amide_aromatic": SCORE_TYPE_AMIDE_PI,
+
+        "pi_unknown": SCORE_TYPE_PI_UNKNOWN,
+        "unknown_pi": SCORE_TYPE_PI_UNKNOWN,
+
+        # Salt-bridge aliases
+        "saltbridge": SCORE_TYPE_SALT_BRIDGE,
+        "salt_bridge": SCORE_TYPE_SALT_BRIDGE,
+        "salt_bridges": SCORE_TYPE_SALT_BRIDGE,
+        "ionic_interaction": SCORE_TYPE_SALT_BRIDGE,
+        "ionic_contact": SCORE_TYPE_SALT_BRIDGE,
+        "ion_pair": SCORE_TYPE_SALT_BRIDGE,
+
+        "atomic_salt_bridge": SCORE_TYPE_SALT_BRIDGE_ATOMIC,
+        "salt_bridge_atomic": SCORE_TYPE_SALT_BRIDGE_ATOMIC,
+
+        "group_salt_bridge": SCORE_TYPE_SALT_BRIDGE_GROUP,
+        "salt_bridge_group": SCORE_TYPE_SALT_BRIDGE_GROUP,
+
+        "center_salt_bridge": SCORE_TYPE_SALT_BRIDGE_CENTER,
+        "centre_salt_bridge": SCORE_TYPE_SALT_BRIDGE_CENTER,
+        "salt_bridge_center": SCORE_TYPE_SALT_BRIDGE_CENTER,
+        "salt_bridge_centre": SCORE_TYPE_SALT_BRIDGE_CENTER,
+
+        "histidine_salt_bridge": SCORE_TYPE_SALT_BRIDGE_HISTIDINE,
+        "salt_bridge_histidine": SCORE_TYPE_SALT_BRIDGE_HISTIDINE,
+
+        "bidentate_salt_bridge": SCORE_TYPE_SALT_BRIDGE_BIDENTATE,
+        "salt_bridge_bidentate": SCORE_TYPE_SALT_BRIDGE_BIDENTATE,
+
+        # Clash aliases
+        "clash": SCORE_TYPE_CLASH,
+        "clashes": SCORE_TYPE_CLASH,
+        "steric_clash": SCORE_TYPE_CLASH,
+        "steric_overlap": SCORE_TYPE_CLASH,
+        "overlap": SCORE_TYPE_CLASH,
+
+        "minor_clash": SCORE_TYPE_CLASH_MINOR,
+        "clash_minor": SCORE_TYPE_CLASH_MINOR,
+        "weak_clash": SCORE_TYPE_CLASH_MINOR,
+
+        "moderate_clash": SCORE_TYPE_CLASH_MODERATE,
+        "clash_moderate": SCORE_TYPE_CLASH_MODERATE,
+
+        "severe_clash": SCORE_TYPE_CLASH_SEVERE,
+        "clash_severe": SCORE_TYPE_CLASH_SEVERE,
+        "strong_clash": SCORE_TYPE_CLASH_SEVERE,
+
+        # Unknown aliases
+        "unknown": SCORE_TYPE_UNKNOWN,
+        "unclassified": SCORE_TYPE_UNKNOWN,
+        "undefined": SCORE_TYPE_UNKNOWN,
+        "other": SCORE_TYPE_UNKNOWN,
+        "none": SCORE_TYPE_UNKNOWN,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 2.21. Strength aliases
+# -----------------------------------------------------------------------------
+
+STRENGTH_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "strong": STRENGTH_STRONG,
+        "high": STRENGTH_STRONG,
+        "very_strong": STRENGTH_STRONG,
+        "optimal": STRENGTH_STRONG,
+
+        "moderate": STRENGTH_MODERATE,
+        "medium": STRENGTH_MODERATE,
+        "intermediate": STRENGTH_MODERATE,
+        "normal": STRENGTH_MODERATE,
+
+        "weak": STRENGTH_WEAK,
+        "low": STRENGTH_WEAK,
+        "poor": STRENGTH_WEAK,
+
+        "unclassified": STRENGTH_UNCLASSIFIED,
+        "not_classified": STRENGTH_UNCLASSIFIED,
+        "unspecified": STRENGTH_UNCLASSIFIED,
+
+        "unknown": STRENGTH_UNKNOWN,
+        "undefined": STRENGTH_UNKNOWN,
+        "none": STRENGTH_UNKNOWN,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 2.22. Geometry-quality aliases
+# -----------------------------------------------------------------------------
+
+GEOMETRY_QUALITY_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "optimal": GEOMETRY_OPTIMAL,
+        "ideal": GEOMETRY_OPTIMAL,
+        "excellent": GEOMETRY_OPTIMAL,
+
+        "favorable": GEOMETRY_FAVORABLE,
+        "favourable": GEOMETRY_FAVORABLE,
+        "good": GEOMETRY_FAVORABLE,
+        "accepted": GEOMETRY_FAVORABLE,
+
+        "weak": GEOMETRY_WEAK,
+        "poor": GEOMETRY_WEAK,
+        "suboptimal": GEOMETRY_WEAK,
+
+        "borderline": GEOMETRY_BORDERLINE,
+        "marginal": GEOMETRY_BORDERLINE,
+        "limit": GEOMETRY_BORDERLINE,
+
+        "rejected": GEOMETRY_REJECTED,
+        "invalid": GEOMETRY_REJECTED,
+        "unfavorable": GEOMETRY_REJECTED,
+        "unfavourable": GEOMETRY_REJECTED,
+        "failed": GEOMETRY_REJECTED,
+
+        "unclassified": GEOMETRY_UNCLASSIFIED,
+        "not_classified": GEOMETRY_UNCLASSIFIED,
+        "unspecified": GEOMETRY_UNCLASSIFIED,
+
+        "unknown": GEOMETRY_UNKNOWN,
+        "undefined": GEOMETRY_UNKNOWN,
+        "none": GEOMETRY_UNKNOWN,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 2.23. Classification aliases
+# -----------------------------------------------------------------------------
+
+CLASSIFICATION_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "favorable": CLASSIFICATION_FAVORABLE,
+        "favourable": CLASSIFICATION_FAVORABLE,
+        "accepted": CLASSIFICATION_FAVORABLE,
+        "valid": CLASSIFICATION_FAVORABLE,
+
+        "borderline": CLASSIFICATION_BORDERLINE,
+        "marginal": CLASSIFICATION_BORDERLINE,
+        "weak": CLASSIFICATION_BORDERLINE,
+
+        "unfavorable": CLASSIFICATION_UNFAVORABLE,
+        "unfavourable": CLASSIFICATION_UNFAVORABLE,
+        "poor": CLASSIFICATION_UNFAVORABLE,
+
+        "rejected": CLASSIFICATION_REJECTED,
+        "invalid": CLASSIFICATION_REJECTED,
+        "failed": CLASSIFICATION_REJECTED,
+
+        "unclassified": CLASSIFICATION_UNCLASSIFIED,
+        "not_classified": CLASSIFICATION_UNCLASSIFIED,
+        "unspecified": CLASSIFICATION_UNCLASSIFIED,
+
+        "unknown": CLASSIFICATION_UNKNOWN,
+        "undefined": CLASSIFICATION_UNKNOWN,
+        "none": CLASSIFICATION_UNKNOWN,
+
+        "parallel": CLASSIFICATION_PARALLEL,
+        "face_to_face": CLASSIFICATION_PARALLEL,
+
+        "offset": CLASSIFICATION_OFFSET,
+        "displaced": CLASSIFICATION_OFFSET,
+        "parallel_displaced": CLASSIFICATION_OFFSET,
+
+        "t_shaped": CLASSIFICATION_T_SHAPED,
+        "t_shape": CLASSIFICATION_T_SHAPED,
+        "edge_to_face": CLASSIFICATION_T_SHAPED,
+
+        "direct": CLASSIFICATION_DIRECT,
+        "explicit": CLASSIFICATION_DIRECT,
+
+        "inferred": CLASSIFICATION_INFERRED,
+        "implicit": CLASSIFICATION_INFERRED,
+
+        "charge_assisted": CLASSIFICATION_CHARGE_ASSISTED,
+        "ionic_assisted": CLASSIFICATION_CHARGE_ASSISTED,
+
+        "water_mediated": CLASSIFICATION_WATER_MEDIATED,
+        "water_bridge": CLASSIFICATION_WATER_MEDIATED,
+
+        "minor": CLASSIFICATION_MINOR,
+        "mild": CLASSIFICATION_MINOR,
+
+        "moderate": CLASSIFICATION_MODERATE,
+        "medium": CLASSIFICATION_MODERATE,
+
+        "severe": CLASSIFICATION_SEVERE,
+        "strong": CLASSIFICATION_SEVERE,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 2.24. Text-normalization helper
+# -----------------------------------------------------------------------------
+
+def _normalize_scoring_name(value: Any) -> str:
+    """
+    Convert an arbitrary scoring label into normalized lowercase snake case.
+
+    This private helper performs only textual cleanup. It does not validate
+    whether the result is a recognized DockAnalyzer category.
+
+    Parameters
+    ----------
+    value
+        Arbitrary label-like value.
+
+    Returns
+    -------
+    str
+        Normalized textual representation. Empty or ``None`` values produce
+        an empty string.
+    """
+
+    if value is None:
+        return ""
+
+    if isinstance(value, Enum):
+        value = value.value
+
+    text = str(value).strip().lower()
+
+    if not text:
+        return ""
+
+    replacements = {
+        "π": "pi",
+        "–": "_",
+        "—": "_",
+        "-": "_",
+        "/": "_",
+        "\\": "_",
+        ":": "_",
+        ";": "_",
+        ",": "_",
+        ".": "_",
+        "+": "_plus_",
+        "−": "_minus_",
+        " ": "_",
+        "\t": "_",
+        "\n": "_",
+        "\r": "_",
+    }
+
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    while "__" in text:
+        text = text.replace("__", "_")
+
+    return text.strip("_")
+
+
+# -----------------------------------------------------------------------------
+# 2.25. Interaction-type normalization
+# -----------------------------------------------------------------------------
+
+def normalize_interaction_type(
+    value: Any,
+    *,
+    default: str = SCORE_TYPE_UNKNOWN,
+    preserve_unknown: bool = False,
+) -> str:
+    """
+    Return the canonical DockAnalyzer name for an interaction type.
+
+    Parameters
+    ----------
+    value
+        Interaction name, enum, class label or serialized value.
+    default
+        Value returned when the input is missing or cannot be recognized.
+    preserve_unknown
+        When ``True``, an unrecognized normalized label is returned instead
+        of being replaced by ``default``.
+
+    Returns
+    -------
+    str
+        Canonical interaction-type name.
+
+    Examples
+    --------
+    ``"H-bond"`` becomes ``"hydrogen_bond"``.
+
+    ``"π–π parallel"`` becomes ``"pi_parallel"``.
+
+    ``"cation-pi"`` becomes ``"cation_pi"``.
+
+    ``"saltbridge"`` becomes ``"salt_bridge"``.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return default
+
+    if normalized in CANONICAL_INTERACTION_TYPES:
+        return normalized
+
+    alias = INTERACTION_TYPE_ALIASES.get(normalized)
+
+    if alias is not None:
+        return alias
+
+    if preserve_unknown:
+        return normalized
+
+    return default
+
+
+def canonical_interaction_family(
+    value: Any,
+    *,
+    default: str = SCORE_TYPE_UNKNOWN,
+) -> str:
+    """
+    Return the general canonical family for an interaction type.
+
+    Examples
+    --------
+    ``pi_parallel`` returns ``pi``.
+
+    ``hydrogen_bond_direct`` returns ``hydrogen_bond``.
+
+    ``clash_severe`` returns ``clash``.
+    """
+
+    interaction_type = normalize_interaction_type(
+        value,
+        default=default,
+    )
+
+    return INTERACTION_TYPE_TO_FAMILY.get(
+        interaction_type,
+        default,
+    )
+
+
+def is_canonical_interaction_type(value: Any) -> bool:
+    """Return whether a value resolves to an explicitly canonical type."""
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return False
+
+    return normalized in CANONICAL_INTERACTION_TYPES
+
+
+def is_known_interaction_type(value: Any) -> bool:
+    """
+    Return whether an interaction type is canonical or has a known alias.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return False
+
+    return (
+        normalized in CANONICAL_INTERACTION_TYPES
+        or normalized in INTERACTION_TYPE_ALIASES
+    )
+
+
+# -----------------------------------------------------------------------------
+# 2.26. Strength normalization
+# -----------------------------------------------------------------------------
+
+def normalize_interaction_strength(
+    value: Any,
+    *,
+    default: str = STRENGTH_UNKNOWN,
+    preserve_unknown: bool = False,
+) -> str:
+    """
+    Normalize an interaction-strength label.
+
+    Unrecognized values return ``default`` unless ``preserve_unknown`` is
+    enabled.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return default
+
+    if normalized in CANONICAL_STRENGTHS:
+        return normalized
+
+    alias = STRENGTH_ALIASES.get(normalized)
+
+    if alias is not None:
+        return alias
+
+    if preserve_unknown:
+        return normalized
+
+    return default
+
+
+# -----------------------------------------------------------------------------
+# 2.27. Geometry-quality normalization
+# -----------------------------------------------------------------------------
+
+def normalize_geometry_quality(
+    value: Any,
+    *,
+    default: str = GEOMETRY_UNKNOWN,
+    preserve_unknown: bool = False,
+) -> str:
+    """
+    Normalize a geometric-quality label.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return default
+
+    if normalized in CANONICAL_GEOMETRY_QUALITIES:
+        return normalized
+
+    alias = GEOMETRY_QUALITY_ALIASES.get(normalized)
+
+    if alias is not None:
+        return alias
+
+    if preserve_unknown:
+        return normalized
+
+    return default
+
+
+# -----------------------------------------------------------------------------
+# 2.28. Classification normalization
+# -----------------------------------------------------------------------------
+
+def normalize_interaction_classification(
+    value: Any,
+    *,
+    default: str = CLASSIFICATION_UNKNOWN,
+    preserve_unknown: bool = False,
+) -> str:
+    """
+    Normalize a geometric or chemical interaction classification.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return default
+
+    if normalized in CANONICAL_CLASSIFICATIONS:
+        return normalized
+
+    alias = CLASSIFICATION_ALIASES.get(normalized)
+
+    if alias is not None:
+        return alias
+
+    if preserve_unknown:
+        return normalized
+
+    return default
+
+
+# -----------------------------------------------------------------------------
+# 2.29. Polarity classification
+# -----------------------------------------------------------------------------
+
+def get_interaction_polarity(value: Any) -> str:
+    """
+    Return whether an interaction is favorable, penalizing or neutral.
+
+    Unknown custom interaction types return ``unknown``.
+    """
+
+    interaction_type = normalize_interaction_type(
+        value,
+        default=SCORE_TYPE_UNKNOWN,
+    )
+
+    family = canonical_interaction_family(interaction_type)
+
+    if (
+        interaction_type in FAVORABLE_INTERACTION_TYPES
+        or family in FAVORABLE_INTERACTION_FAMILIES
+    ):
+        return POLARITY_FAVORABLE
+
+    if (
+        interaction_type in PENALTY_INTERACTION_TYPES
+        or family in PENALTY_INTERACTION_FAMILIES
+    ):
+        return POLARITY_PENALTY
+
+    if (
+        interaction_type in NEUTRAL_INTERACTION_TYPES
+        or family in NEUTRAL_INTERACTION_FAMILIES
+    ):
+        return POLARITY_NEUTRAL
+
+    return POLARITY_UNKNOWN
+
+
+def is_favorable_interaction_type(value: Any) -> bool:
+    """Return whether an interaction type is favorable by default."""
+
+    return get_interaction_polarity(value) == POLARITY_FAVORABLE
+
+
+def is_penalty_interaction_type(value: Any) -> bool:
+    """Return whether an interaction type represents a penalty."""
+
+    return get_interaction_polarity(value) == POLARITY_PENALTY
+
+
+def is_neutral_interaction_type(value: Any) -> bool:
+    """Return whether an interaction type is neutral by default."""
+
+    return get_interaction_polarity(value) == POLARITY_NEUTRAL
+
+
+# -----------------------------------------------------------------------------
+# 2.30. Strategy-name normalization
+# -----------------------------------------------------------------------------
+
+_NORMALIZATION_MODE_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "none": NORMALIZATION_NONE,
+        "raw": NORMALIZATION_NONE,
+        "no_normalization": NORMALIZATION_NONE,
+
+        "interaction": NORMALIZATION_INTERACTION_COUNT,
+        "interactions": NORMALIZATION_INTERACTION_COUNT,
+        "interaction_count": NORMALIZATION_INTERACTION_COUNT,
+        "per_interaction": NORMALIZATION_INTERACTION_COUNT,
+
+        "residue": NORMALIZATION_RESIDUE_COUNT,
+        "residues": NORMALIZATION_RESIDUE_COUNT,
+        "residue_count": NORMALIZATION_RESIDUE_COUNT,
+        "per_residue": NORMALIZATION_RESIDUE_COUNT,
+
+        "heavy_atoms": NORMALIZATION_LIGAND_HEAVY_ATOMS,
+        "ligand_atoms": NORMALIZATION_LIGAND_HEAVY_ATOMS,
+        "ligand_heavy_atoms": NORMALIZATION_LIGAND_HEAVY_ATOMS,
+        "per_heavy_atom": NORMALIZATION_LIGAND_HEAVY_ATOMS,
+
+        "contacts": NORMALIZATION_CONTACT_COUNT,
+        "contact_count": NORMALIZATION_CONTACT_COUNT,
+        "per_contact": NORMALIZATION_CONTACT_COUNT,
+
+        "max_abs": NORMALIZATION_MAXIMUM_ABSOLUTE,
+        "maximum_absolute": NORMALIZATION_MAXIMUM_ABSOLUTE,
+        "maximum_absolute_value": NORMALIZATION_MAXIMUM_ABSOLUTE,
+
+        "minmax": NORMALIZATION_MIN_MAX,
+        "min_max": NORMALIZATION_MIN_MAX,
+
+        "zscore": NORMALIZATION_Z_SCORE,
+        "z_score": NORMALIZATION_Z_SCORE,
+        "standard_score": NORMALIZATION_Z_SCORE,
+    }
+)
+
+_AGGREGATION_MODE_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "sum": AGGREGATION_SUM,
+        "total": AGGREGATION_SUM,
+
+        "mean": AGGREGATION_MEAN,
+        "average": AGGREGATION_MEAN,
+        "avg": AGGREGATION_MEAN,
+
+        "maximum": AGGREGATION_MAXIMUM,
+        "max": AGGREGATION_MAXIMUM,
+        "best": AGGREGATION_MAXIMUM,
+
+        "minimum": AGGREGATION_MINIMUM,
+        "min": AGGREGATION_MINIMUM,
+        "worst": AGGREGATION_MINIMUM,
+
+        "weighted_mean": AGGREGATION_WEIGHTED_MEAN,
+        "weighted_average": AGGREGATION_WEIGHTED_MEAN,
+        "weighted_avg": AGGREGATION_WEIGHTED_MEAN,
+    }
+)
+
+_DEDUPLICATION_MODE_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "none": DEDUPLICATION_NONE,
+        "off": DEDUPLICATION_NONE,
+        "disabled": DEDUPLICATION_NONE,
+
+        "exact": DEDUPLICATION_EXACT,
+        "identity": DEDUPLICATION_EXACT,
+
+        "atom_pair": DEDUPLICATION_ATOM_PAIR,
+        "atoms": DEDUPLICATION_ATOM_PAIR,
+        "atomic": DEDUPLICATION_ATOM_PAIR,
+
+        "residue_pair": DEDUPLICATION_RESIDUE_PAIR,
+        "residues": DEDUPLICATION_RESIDUE_PAIR,
+
+        "interaction_group": DEDUPLICATION_INTERACTION_GROUP,
+        "group": DEDUPLICATION_INTERACTION_GROUP,
+        "chemical_group": DEDUPLICATION_INTERACTION_GROUP,
+    }
+)
+
+
+def normalize_normalization_mode(
+    value: Any,
+    *,
+    default: str = NORMALIZATION_NONE,
+) -> str:
+    """Normalize a score-normalization mode."""
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return default
+
+    if normalized in NORMALIZATION_MODES:
+        return normalized
+
+    return _NORMALIZATION_MODE_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def normalize_aggregation_mode(
+    value: Any,
+    *,
+    default: str = AGGREGATION_SUM,
+) -> str:
+    """Normalize a score-aggregation mode."""
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return default
+
+    if normalized in AGGREGATION_MODES:
+        return normalized
+
+    return _AGGREGATION_MODE_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def normalize_deduplication_mode(
+    value: Any,
+    *,
+    default: str = DEDUPLICATION_EXACT,
+) -> str:
+    """Normalize an interaction-deduplication mode."""
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return default
+
+    if normalized in DEDUPLICATION_MODES:
+        return normalized
+
+    return _DEDUPLICATION_MODE_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def normalize_score_direction(
+    value: Any,
+    *,
+    default: str = SCORE_DIRECTION_HIGHER_IS_BETTER,
+) -> str:
+    """Normalize a score-ranking direction."""
+
+    normalized = _normalize_scoring_name(value)
+
+    aliases = {
+        "higher_is_better": SCORE_DIRECTION_HIGHER_IS_BETTER,
+        "higher": SCORE_DIRECTION_HIGHER_IS_BETTER,
+        "descending": SCORE_DIRECTION_HIGHER_IS_BETTER,
+        "maximize": SCORE_DIRECTION_HIGHER_IS_BETTER,
+        "maximise": SCORE_DIRECTION_HIGHER_IS_BETTER,
+
+        "lower_is_better": SCORE_DIRECTION_LOWER_IS_BETTER,
+        "lower": SCORE_DIRECTION_LOWER_IS_BETTER,
+        "ascending": SCORE_DIRECTION_LOWER_IS_BETTER,
+        "minimize": SCORE_DIRECTION_LOWER_IS_BETTER,
+        "minimise": SCORE_DIRECTION_LOWER_IS_BETTER,
+    }
+
+    return aliases.get(
+        normalized,
+        default,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 2.31. Stable canonical ordering
+# -----------------------------------------------------------------------------
+#
+# This ordering is used later for deterministic tables, reports and serialized
+# outputs. It is not a ranking of interaction importance.
+# -----------------------------------------------------------------------------
+
+INTERACTION_FAMILY_ORDER: Final[Tuple[str, ...]] = (
+    SCORE_TYPE_HYDROGEN_BOND,
+    SCORE_TYPE_SALT_BRIDGE,
+    SCORE_TYPE_HYDROPHOBIC,
+    SCORE_TYPE_PI,
+    SCORE_TYPE_CONTACT,
+    SCORE_TYPE_CLASH,
+    SCORE_TYPE_UNKNOWN,
+)
+
+INTERACTION_TYPE_ORDER: Final[Tuple[str, ...]] = (
+    # Hydrogen bonds
+    SCORE_TYPE_HYDROGEN_BOND,
+    SCORE_TYPE_HBOND_DIRECT,
+    SCORE_TYPE_HBOND_CHARGE_ASSISTED,
+    SCORE_TYPE_HBOND_WATER_MEDIATED,
+    SCORE_TYPE_HBOND_INFERRED,
+    SCORE_TYPE_HBOND_WEAK,
+
+    # Salt bridges
+    SCORE_TYPE_SALT_BRIDGE,
+    SCORE_TYPE_SALT_BRIDGE_GROUP,
+    SCORE_TYPE_SALT_BRIDGE_CENTER,
+    SCORE_TYPE_SALT_BRIDGE_ATOMIC,
+    SCORE_TYPE_SALT_BRIDGE_BIDENTATE,
+    SCORE_TYPE_SALT_BRIDGE_HISTIDINE,
+
+    # Hydrophobic interactions
+    SCORE_TYPE_HYDROPHOBIC,
+    SCORE_TYPE_HYDROPHOBIC_GROUP,
+    SCORE_TYPE_HYDROPHOBIC_RESIDUE,
+    SCORE_TYPE_HYDROPHOBIC_CLUSTER,
+    SCORE_TYPE_HYDROPHOBIC_ATOMIC,
+
+    # Pi interactions
+    SCORE_TYPE_PI,
+    SCORE_TYPE_PI_STACKING,
+    SCORE_TYPE_PI_PARALLEL,
+    SCORE_TYPE_PI_OFFSET,
+    SCORE_TYPE_PI_T_SHAPED,
+    SCORE_TYPE_CATION_PI,
+    SCORE_TYPE_ANION_PI,
+    SCORE_TYPE_AMIDE_PI,
+    SCORE_TYPE_PI_UNKNOWN,
+
+    # General contacts
+    SCORE_TYPE_CONTACT,
+    SCORE_TYPE_VAN_DER_WAALS,
+    SCORE_TYPE_CLOSE_CONTACT,
+    SCORE_TYPE_POLAR_CONTACT,
+    SCORE_TYPE_NONPOLAR_CONTACT,
+    SCORE_TYPE_METAL_CONTACT,
+
+    # Clashes
+    SCORE_TYPE_CLASH,
+    SCORE_TYPE_CLASH_MINOR,
+    SCORE_TYPE_CLASH_MODERATE,
+    SCORE_TYPE_CLASH_SEVERE,
+
+    # Unknown
+    SCORE_TYPE_UNKNOWN,
+)
+
+INTERACTION_TYPE_ORDER_INDEX: Final[Mapping[str, int]] = MappingProxyType(
+    {
+        interaction_type: index
+        for index, interaction_type in enumerate(INTERACTION_TYPE_ORDER)
+    }
+)
+
+
+def interaction_type_sort_key(value: Any) -> Tuple[int, str]:
+    """
+    Return a deterministic sorting key for interaction types.
+
+    Known types follow ``INTERACTION_TYPE_ORDER``. Unknown custom labels are
+    sorted alphabetically after all canonical types.
+    """
+
+    canonical = normalize_interaction_type(
+        value,
+        preserve_unknown=True,
+    )
+
+    index = INTERACTION_TYPE_ORDER_INDEX.get(
+        canonical,
+        len(INTERACTION_TYPE_ORDER),
+    )
+
+    return index, canonical
+
+
+# -----------------------------------------------------------------------------
+# 2.32. Canonical labels for reports
+# -----------------------------------------------------------------------------
+
+INTERACTION_DISPLAY_NAMES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        SCORE_TYPE_CONTACT: "Contact",
+        SCORE_TYPE_VAN_DER_WAALS: "van der Waals contact",
+        SCORE_TYPE_CLOSE_CONTACT: "Close contact",
+        SCORE_TYPE_POLAR_CONTACT: "Polar contact",
+        SCORE_TYPE_NONPOLAR_CONTACT: "Nonpolar contact",
+        SCORE_TYPE_METAL_CONTACT: "Metal contact",
+
+        SCORE_TYPE_HYDROGEN_BOND: "Hydrogen bond",
+        SCORE_TYPE_HBOND_DIRECT: "Direct hydrogen bond",
+        SCORE_TYPE_HBOND_INFERRED: "Inferred hydrogen bond",
+        SCORE_TYPE_HBOND_WATER_MEDIATED: "Water-mediated hydrogen bond",
+        SCORE_TYPE_HBOND_CHARGE_ASSISTED: "Charge-assisted hydrogen bond",
+        SCORE_TYPE_HBOND_WEAK: "Weak hydrogen bond",
+
+        SCORE_TYPE_HYDROPHOBIC: "Hydrophobic interaction",
+        SCORE_TYPE_HYDROPHOBIC_ATOMIC: "Atomic hydrophobic contact",
+        SCORE_TYPE_HYDROPHOBIC_GROUP: "Hydrophobic group interaction",
+        SCORE_TYPE_HYDROPHOBIC_RESIDUE: "Hydrophobic residue interaction",
+        SCORE_TYPE_HYDROPHOBIC_CLUSTER: "Hydrophobic cluster",
+
+        SCORE_TYPE_PI: "Pi interaction",
+        SCORE_TYPE_PI_STACKING: "Pi stacking",
+        SCORE_TYPE_PI_PARALLEL: "Parallel pi stacking",
+        SCORE_TYPE_PI_OFFSET: "Offset pi stacking",
+        SCORE_TYPE_PI_T_SHAPED: "T-shaped pi interaction",
+        SCORE_TYPE_CATION_PI: "Cation-pi interaction",
+        SCORE_TYPE_ANION_PI: "Anion-pi interaction",
+        SCORE_TYPE_AMIDE_PI: "Amide-pi interaction",
+        SCORE_TYPE_PI_UNKNOWN: "Unclassified pi interaction",
+
+        SCORE_TYPE_SALT_BRIDGE: "Salt bridge",
+        SCORE_TYPE_SALT_BRIDGE_ATOMIC: "Atomic salt bridge",
+        SCORE_TYPE_SALT_BRIDGE_GROUP: "Group salt bridge",
+        SCORE_TYPE_SALT_BRIDGE_CENTER: "Charge-center salt bridge",
+        SCORE_TYPE_SALT_BRIDGE_HISTIDINE: "Histidine salt bridge",
+        SCORE_TYPE_SALT_BRIDGE_BIDENTATE: "Bidentate salt bridge",
+
+        SCORE_TYPE_CLASH: "Steric clash",
+        SCORE_TYPE_CLASH_MINOR: "Minor steric clash",
+        SCORE_TYPE_CLASH_MODERATE: "Moderate steric clash",
+        SCORE_TYPE_CLASH_SEVERE: "Severe steric clash",
+
+        SCORE_TYPE_UNKNOWN: "Unknown interaction",
+    }
+)
+
+
+def interaction_type_display_name(
+    value: Any,
+    *,
+    default: Optional[str] = None,
+) -> str:
+    """
+    Return a human-readable display name for an interaction type.
+    """
+
+    canonical = normalize_interaction_type(
+        value,
+        preserve_unknown=True,
+    )
+
+    display_name = INTERACTION_DISPLAY_NAMES.get(canonical)
+
+    if display_name is not None:
+        return display_name
+
+    if default is not None:
+        return default
+
+    if not canonical:
+        return INTERACTION_DISPLAY_NAMES[SCORE_TYPE_UNKNOWN]
+
+    return canonical.replace("_", " ").capitalize()
+
+
+# -----------------------------------------------------------------------------
+# 2.33. Initial consistency validation
+# -----------------------------------------------------------------------------
+
+def _validate_section_2_constants() -> None:
+    """
+    Validate internal consistency of the Section 2 constant mappings.
+
+    This function runs once during module import. It checks only programming
+    invariants and does not validate user-supplied scoring configurations.
+    """
+
+    missing_family_mappings = (
+        CANONICAL_INTERACTION_TYPES
+        - set(INTERACTION_TYPE_TO_FAMILY)
+    )
+
+    if missing_family_mappings:
+        raise RuntimeError(
+            "Missing interaction-family mappings for: "
+            + ", ".join(sorted(missing_family_mappings))
+        )
+
+    invalid_family_targets = {
+        family
+        for family in INTERACTION_TYPE_TO_FAMILY.values()
+        if family not in CANONICAL_INTERACTION_FAMILIES
+    }
+
+    if invalid_family_targets:
+        raise RuntimeError(
+            "Invalid interaction-family targets: "
+            + ", ".join(sorted(invalid_family_targets))
+        )
+
+    invalid_alias_targets = {
+        interaction_type
+        for interaction_type in INTERACTION_TYPE_ALIASES.values()
+        if interaction_type not in CANONICAL_INTERACTION_TYPES
+    }
+
+    if invalid_alias_targets:
+        raise RuntimeError(
+            "Invalid interaction-type alias targets: "
+            + ", ".join(sorted(invalid_alias_targets))
+        )
+
+    missing_display_names = (
+        CANONICAL_INTERACTION_TYPES
+        - set(INTERACTION_DISPLAY_NAMES)
+    )
+
+    if missing_display_names:
+        raise RuntimeError(
+            "Missing interaction display names for: "
+            + ", ".join(sorted(missing_display_names))
+        )
+
+    if not FAVORABLE_INTERACTION_TYPES.isdisjoint(
+        PENALTY_INTERACTION_TYPES
+    ):
+        raise RuntimeError(
+            "An interaction type cannot be both favorable and penalizing."
+        )
+
+    if not FAVORABLE_INTERACTION_TYPES.isdisjoint(
+        NEUTRAL_INTERACTION_TYPES
+    ):
+        raise RuntimeError(
+            "An interaction type cannot be both favorable and neutral."
+        )
+
+    if not PENALTY_INTERACTION_TYPES.isdisjoint(
+        NEUTRAL_INTERACTION_TYPES
+    ):
+        raise RuntimeError(
+            "An interaction type cannot be both penalizing and neutral."
+        )
+
+
+_validate_section_2_constants()
+
+
+# -----------------------------------------------------------------------------
+# 2.34. Section public interface
+# -----------------------------------------------------------------------------
+
+_SECTION_2_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    # Numerical constants
+    "SCORE_EPSILON",
+    "SCORE_COMPARISON_TOLERANCE",
+    "SCORE_ROUND_DIGITS",
+    "MIN_GEOMETRY_MULTIPLIER",
+    "MAX_GEOMETRY_MULTIPLIER",
+    "MIN_STRENGTH_MULTIPLIER",
+    "MIN_CLASSIFICATION_MULTIPLIER",
+    "DEFAULT_UNKNOWN_SCORE",
+    "DEFAULT_NEUTRAL_MULTIPLIER",
+    "DEFAULT_REJECTED_MULTIPLIER",
+
+    # General interaction families
+    "SCORE_TYPE_CONTACT",
+    "SCORE_TYPE_HYDROGEN_BOND",
+    "SCORE_TYPE_HBOND",
+    "SCORE_TYPE_HYDROPHOBIC",
+    "SCORE_TYPE_PI",
+    "SCORE_TYPE_SALT_BRIDGE",
+    "SCORE_TYPE_SALTBRIDGE",
+    "SCORE_TYPE_CLASH",
+    "SCORE_TYPE_STERIC_CLASH",
+    "SCORE_TYPE_UNKNOWN",
+
+    # Contact types
+    "SCORE_TYPE_VAN_DER_WAALS",
+    "SCORE_TYPE_CLOSE_CONTACT",
+    "SCORE_TYPE_POLAR_CONTACT",
+    "SCORE_TYPE_NONPOLAR_CONTACT",
+    "SCORE_TYPE_METAL_CONTACT",
+
+    # Hydrogen bonds
+    "SCORE_TYPE_HBOND_DIRECT",
+    "SCORE_TYPE_HBOND_INFERRED",
+    "SCORE_TYPE_HBOND_WATER_MEDIATED",
+    "SCORE_TYPE_HBOND_CHARGE_ASSISTED",
+    "SCORE_TYPE_HBOND_WEAK",
+
+    # Hydrophobic interactions
+    "SCORE_TYPE_HYDROPHOBIC_ATOMIC",
+    "SCORE_TYPE_HYDROPHOBIC_GROUP",
+    "SCORE_TYPE_HYDROPHOBIC_RESIDUE",
+    "SCORE_TYPE_HYDROPHOBIC_CLUSTER",
+
+    # Pi interactions
+    "SCORE_TYPE_PI_STACKING",
+    "SCORE_TYPE_PI_PARALLEL",
+    "SCORE_TYPE_PI_OFFSET",
+    "SCORE_TYPE_PI_T_SHAPED",
+    "SCORE_TYPE_CATION_PI",
+    "SCORE_TYPE_ANION_PI",
+    "SCORE_TYPE_AMIDE_PI",
+    "SCORE_TYPE_PI_UNKNOWN",
+
+    # Salt bridges
+    "SCORE_TYPE_SALT_BRIDGE_ATOMIC",
+    "SCORE_TYPE_SALT_BRIDGE_GROUP",
+    "SCORE_TYPE_SALT_BRIDGE_CENTER",
+    "SCORE_TYPE_SALT_BRIDGE_HISTIDINE",
+    "SCORE_TYPE_SALT_BRIDGE_BIDENTATE",
+
+    # Clashes
+    "SCORE_TYPE_CLASH_MINOR",
+    "SCORE_TYPE_CLASH_MODERATE",
+    "SCORE_TYPE_CLASH_SEVERE",
+
+    # Collections
+    "CANONICAL_INTERACTION_FAMILIES",
+    "CANONICAL_INTERACTION_TYPES",
+    "CONTACT_INTERACTION_TYPES",
+    "HYDROGEN_BOND_INTERACTION_TYPES",
+    "HYDROPHOBIC_INTERACTION_TYPES",
+    "PI_INTERACTION_TYPES",
+    "SALT_BRIDGE_INTERACTION_TYPES",
+    "CLASH_INTERACTION_TYPES",
+    "FAVORABLE_INTERACTION_FAMILIES",
+    "PENALTY_INTERACTION_FAMILIES",
+    "NEUTRAL_INTERACTION_FAMILIES",
+    "FAVORABLE_INTERACTION_TYPES",
+    "PENALTY_INTERACTION_TYPES",
+    "NEUTRAL_INTERACTION_TYPES",
+
+    # Strengths
+    "STRENGTH_STRONG",
+    "STRENGTH_MODERATE",
+    "STRENGTH_WEAK",
+    "STRENGTH_UNCLASSIFIED",
+    "STRENGTH_UNKNOWN",
+    "CANONICAL_STRENGTHS",
+
+    # Geometry qualities
+    "GEOMETRY_OPTIMAL",
+    "GEOMETRY_FAVORABLE",
+    "GEOMETRY_WEAK",
+    "GEOMETRY_BORDERLINE",
+    "GEOMETRY_REJECTED",
+    "GEOMETRY_UNCLASSIFIED",
+    "GEOMETRY_UNKNOWN",
+    "CANONICAL_GEOMETRY_QUALITIES",
+
+    # Classifications
+    "CLASSIFICATION_FAVORABLE",
+    "CLASSIFICATION_BORDERLINE",
+    "CLASSIFICATION_UNFAVORABLE",
+    "CLASSIFICATION_REJECTED",
+    "CLASSIFICATION_UNCLASSIFIED",
+    "CLASSIFICATION_UNKNOWN",
+    "CLASSIFICATION_PARALLEL",
+    "CLASSIFICATION_OFFSET",
+    "CLASSIFICATION_T_SHAPED",
+    "CLASSIFICATION_DIRECT",
+    "CLASSIFICATION_INFERRED",
+    "CLASSIFICATION_CHARGE_ASSISTED",
+    "CLASSIFICATION_WATER_MEDIATED",
+    "CLASSIFICATION_MINOR",
+    "CLASSIFICATION_MODERATE",
+    "CLASSIFICATION_SEVERE",
+    "CANONICAL_CLASSIFICATIONS",
+
+    # Polarities
+    "POLARITY_FAVORABLE",
+    "POLARITY_PENALTY",
+    "POLARITY_NEUTRAL",
+    "POLARITY_UNKNOWN",
+    "CANONICAL_POLARITIES",
+
+    # Normalization
+    "NORMALIZATION_NONE",
+    "NORMALIZATION_INTERACTION_COUNT",
+    "NORMALIZATION_RESIDUE_COUNT",
+    "NORMALIZATION_LIGAND_HEAVY_ATOMS",
+    "NORMALIZATION_CONTACT_COUNT",
+    "NORMALIZATION_MAXIMUM_ABSOLUTE",
+    "NORMALIZATION_MIN_MAX",
+    "NORMALIZATION_Z_SCORE",
+    "NORMALIZATION_MODES",
+
+    # Aggregation
+    "AGGREGATION_SUM",
+    "AGGREGATION_MEAN",
+    "AGGREGATION_MAXIMUM",
+    "AGGREGATION_MINIMUM",
+    "AGGREGATION_WEIGHTED_MEAN",
+    "AGGREGATION_MODES",
+
+    # Deduplication
+    "DEDUPLICATION_NONE",
+    "DEDUPLICATION_EXACT",
+    "DEDUPLICATION_ATOM_PAIR",
+    "DEDUPLICATION_RESIDUE_PAIR",
+    "DEDUPLICATION_INTERACTION_GROUP",
+    "DEDUPLICATION_MODES",
+
+    # Score directions
+    "SCORE_DIRECTION_HIGHER_IS_BETTER",
+    "SCORE_DIRECTION_LOWER_IS_BETTER",
+    "SCORE_DIRECTIONS",
+
+    # Mappings and ordering
+    "INTERACTION_TYPE_TO_FAMILY",
+    "INTERACTION_TYPE_ALIASES",
+    "STRENGTH_ALIASES",
+    "GEOMETRY_QUALITY_ALIASES",
+    "CLASSIFICATION_ALIASES",
+    "INTERACTION_FAMILY_ORDER",
+    "INTERACTION_TYPE_ORDER",
+    "INTERACTION_TYPE_ORDER_INDEX",
+    "INTERACTION_DISPLAY_NAMES",
+
+    # Public functions
+    "normalize_interaction_type",
+    "canonical_interaction_family",
+    "is_canonical_interaction_type",
+    "is_known_interaction_type",
+    "normalize_interaction_strength",
+    "normalize_geometry_quality",
+    "normalize_interaction_classification",
+    "get_interaction_polarity",
+    "is_favorable_interaction_type",
+    "is_penalty_interaction_type",
+    "is_neutral_interaction_type",
+    "normalize_normalization_mode",
+    "normalize_aggregation_mode",
+    "normalize_deduplication_mode",
+    "normalize_score_direction",
+    "interaction_type_sort_key",
+    "interaction_type_display_name",
+)
+
+for public_name in _SECTION_2_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+# =============================================================================
+# End of Section 2
+# =============================================================================
+
+
 
 
