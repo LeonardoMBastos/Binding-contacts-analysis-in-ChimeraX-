@@ -7426,6 +7426,1265 @@ def evaluate_group_pair_geometry(
         config,
     )
 
+# =============================================================================
+# 9. CENTRAL DETECTION
+# =============================================================================
+
+
+# =============================================================================
+# 9.1. DETECTION INPUT VALIDATION
+# =============================================================================
+
+
+def validate_detection_groups(
+    cationic_groups: Iterable[ChargedGroup],
+    anionic_groups: Iterable[ChargedGroup],
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    warnings: Optional[List[str]] = None,
+) -> Tuple[List[ChargedGroup], List[ChargedGroup]]:
+    """
+    Validate charged groups before central salt-bridge detection.
+
+    Parameters
+    ----------
+    cationic_groups
+        Candidate positively charged groups.
+    anionic_groups
+        Candidate negatively charged groups.
+    config
+        Salt-bridge configuration.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    Tuple[List[ChargedGroup], List[ChargedGroup]]
+        Validated cationic groups followed by validated anionic groups.
+    """
+
+    resolved_config = resolve_config(config)
+
+    validated_cations: List[ChargedGroup] = []
+    validated_anions: List[ChargedGroup] = []
+
+    for group in cationic_groups:
+        if not isinstance(group, ChargedGroup):
+            error = InvalidChargedGroupError(
+                "All cationic candidates must be ChargedGroup instances."
+            )
+
+            handle_error(
+                error,
+                config=resolved_config,
+                warnings=warnings,
+                context="Cationic-group validation failed",
+            )
+
+            continue
+
+        if not group.is_positive:
+            error = InvalidChargedGroupError(
+                "A cationic candidate has non-positive polarity."
+            )
+
+            handle_error(
+                error,
+                config=resolved_config,
+                warnings=warnings,
+                context=make_group_label(group),
+            )
+
+            continue
+
+        try:
+            if validate_charged_group(
+                group,
+                resolved_config,
+                require_coordinates=True,
+            ):
+                validated_cations.append(group)
+
+        except SaltBridgeError as error:
+            handle_error(
+                error,
+                config=resolved_config,
+                warnings=warnings,
+                context=(
+                    f"Cationic-group validation failed for "
+                    f"{make_group_label(group)}"
+                ),
+            )
+
+    for group in anionic_groups:
+        if not isinstance(group, ChargedGroup):
+            error = InvalidChargedGroupError(
+                "All anionic candidates must be ChargedGroup instances."
+            )
+
+            handle_error(
+                error,
+                config=resolved_config,
+                warnings=warnings,
+                context="Anionic-group validation failed",
+            )
+
+            continue
+
+        if not group.is_negative:
+            error = InvalidChargedGroupError(
+                "An anionic candidate has non-negative polarity."
+            )
+
+            handle_error(
+                error,
+                config=resolved_config,
+                warnings=warnings,
+                context=make_group_label(group),
+            )
+
+            continue
+
+        try:
+            if validate_charged_group(
+                group,
+                resolved_config,
+                require_coordinates=True,
+            ):
+                validated_anions.append(group)
+
+        except SaltBridgeError as error:
+            handle_error(
+                error,
+                config=resolved_config,
+                warnings=warnings,
+                context=(
+                    f"Anionic-group validation failed for "
+                    f"{make_group_label(group)}"
+                ),
+            )
+
+    return validated_cations, validated_anions
+
+
+def normalize_pose_identifier(
+    pose_id: Optional[Union[str, int]],
+) -> Optional[Union[str, int]]:
+    """
+    Normalize a docking-pose identifier.
+
+    Parameters
+    ----------
+    pose_id
+        Pose identifier.
+
+    Returns
+    -------
+    Optional[Union[str, int]]
+        Normalized identifier or ``None``.
+    """
+
+    if pose_id is None:
+        return None
+
+    if isinstance(pose_id, int):
+        return pose_id
+
+    normalized_value = normalize_text(pose_id)
+
+    return normalized_value or None
+
+
+def normalize_model_identifier(
+    model_id: Optional[Union[str, int]],
+) -> Optional[Union[str, int]]:
+    """
+    Normalize a molecular-model identifier.
+
+    Parameters
+    ----------
+    model_id
+        Model identifier.
+
+    Returns
+    -------
+    Optional[Union[str, int]]
+        Normalized identifier or ``None``.
+    """
+
+    if model_id is None:
+        return None
+
+    if isinstance(model_id, int):
+        return model_id
+
+    normalized_value = normalize_text(model_id)
+
+    return normalized_value or None
+
+
+# =============================================================================
+# 9.2. INTERACTION CONSTRUCTION
+# =============================================================================
+
+
+def make_interaction_identifier(
+    cation: ChargedGroup,
+    anion: ChargedGroup,
+    *,
+    pose_id: Optional[Union[str, int]] = None,
+    model_id: Optional[Union[str, int]] = None,
+    index: Optional[int] = None,
+) -> str:
+    """
+    Build a deterministic human-readable interaction identifier.
+
+    The identifier is intended for reporting and serialization. Definitive
+    duplicate detection remains the responsibility of Section 11.
+
+    Parameters
+    ----------
+    cation
+        Positively charged group.
+    anion
+        Negatively charged group.
+    pose_id
+        Optional docking-pose identifier.
+    model_id
+        Optional model identifier.
+    index
+        Optional interaction sequence number.
+
+    Returns
+    -------
+    str
+        Interaction identifier.
+    """
+
+    cation_label = make_group_label(cation)
+    anion_label = make_group_label(anion)
+
+    normalized_cation_label = (
+        cation_label
+        .replace(":", "_")
+        .replace("[", "_")
+        .replace("]", "")
+        .replace(",", "_")
+        .replace(" ", "_")
+    )
+
+    normalized_anion_label = (
+        anion_label
+        .replace(":", "_")
+        .replace("[", "_")
+        .replace("]", "")
+        .replace(",", "_")
+        .replace(" ", "_")
+    )
+
+    identifier_parts = ["salt_bridge"]
+
+    if model_id is not None:
+        identifier_parts.append(
+            f"model_{str(model_id).replace(' ', '_')}"
+        )
+
+    if pose_id is not None:
+        identifier_parts.append(
+            f"pose_{str(pose_id).replace(' ', '_')}"
+        )
+
+    identifier_parts.extend(
+        (
+            normalized_cation_label,
+            normalized_anion_label,
+        )
+    )
+
+    if index is not None:
+        identifier_parts.append(str(int(index)))
+
+    return "__".join(identifier_parts)
+
+
+def build_salt_bridge_interaction(
+    cation: ChargedGroup,
+    anion: ChargedGroup,
+    geometry: SaltBridgeGeometry,
+    *,
+    pose_id: Optional[Union[str, int]] = None,
+    model_id: Optional[Union[str, int]] = None,
+    interaction_id: Optional[str] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> SaltBridgeInteraction:
+    """
+    Build a SaltBridgeInteraction from validated groups and geometry.
+
+    This function does not perform final strength classification or scoring.
+    Those values retain their neutral initial state until Section 10 is
+    applied.
+
+    Parameters
+    ----------
+    cation
+        Positively charged group.
+    anion
+        Negatively charged group.
+    geometry
+        Evaluated interaction geometry.
+    pose_id
+        Optional docking-pose identifier.
+    model_id
+        Optional molecular-model identifier.
+    interaction_id
+        Optional explicit interaction identifier.
+    metadata
+        Optional compact interaction metadata.
+
+    Returns
+    -------
+    SaltBridgeInteraction
+        Constructed interaction.
+    """
+
+    validate_group_pair_polarity(
+        cation,
+        anion,
+    )
+
+    if not isinstance(geometry, SaltBridgeGeometry):
+        raise InvalidInteractionError(
+            "geometry must be a SaltBridgeGeometry instance."
+        )
+
+    normalized_pose_id = normalize_pose_identifier(pose_id)
+    normalized_model_id = normalize_model_identifier(model_id)
+
+    final_interaction_id = (
+        normalize_text(interaction_id)
+        if interaction_id is not None
+        else make_interaction_identifier(
+            cation,
+            anion,
+            pose_id=normalized_pose_id,
+            model_id=normalized_model_id,
+        )
+    )
+
+    interaction_metadata = {
+        "detection_stage": "central_detection",
+        "geometry_valid": geometry.valid,
+        "classification_pending": True,
+        "scoring_pending": True,
+    }
+
+    if metadata:
+        interaction_metadata.update(dict(metadata))
+
+    return SaltBridgeInteraction(
+        cation=cation,
+        anion=anion,
+        geometry=geometry,
+        interaction_type=SALT_BRIDGE,
+        strength=STRENGTH_WEAK,
+        score=0.0,
+        pose_id=normalized_pose_id,
+        model_id=normalized_model_id,
+        interaction_id=final_interaction_id,
+        metadata=interaction_metadata,
+    )
+
+
+# =============================================================================
+# 9.3. SINGLE-PAIR DETECTION
+# =============================================================================
+
+
+def detect_salt_bridge_pair(
+    cation: ChargedGroup,
+    anion: ChargedGroup,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    pose_id: Optional[Union[str, int]] = None,
+    model_id: Optional[Union[str, int]] = None,
+    interaction_id: Optional[str] = None,
+    warnings: Optional[List[str]] = None,
+) -> Optional[SaltBridgeInteraction]:
+    """
+    Detect a salt bridge between one cationic and one anionic group.
+
+    Parameters
+    ----------
+    cation
+        Positively charged group.
+    anion
+        Negatively charged group.
+    config
+        Salt-bridge configuration.
+    pose_id
+        Optional docking-pose identifier.
+    model_id
+        Optional molecular-model identifier.
+    interaction_id
+        Optional explicit interaction identifier.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    Optional[SaltBridgeInteraction]
+        Detected interaction or ``None``.
+    """
+
+    resolved_config = resolve_config(config)
+
+    try:
+        validate_group_pair_polarity(
+            cation,
+            anion,
+        )
+
+        if not candidate_pair_passes_center_prefilter(
+            cation,
+            anion,
+            resolved_config,
+        ):
+            return None
+
+        geometry = evaluate_salt_bridge_geometry(
+            cation,
+            anion,
+            resolved_config,
+        )
+
+        if (
+            not geometry.valid
+            and not resolved_config.preserve_invalid_candidates
+        ):
+            return None
+
+        return build_salt_bridge_interaction(
+            cation,
+            anion,
+            geometry,
+            pose_id=pose_id,
+            model_id=model_id,
+            interaction_id=interaction_id,
+            metadata={
+                "preserved_invalid_candidate": not geometry.valid,
+            },
+        )
+
+    except SaltBridgeError as error:
+        handle_error(
+            error,
+            config=resolved_config,
+            warnings=warnings,
+            context=(
+                "Salt-bridge pair detection failed for "
+                f"{make_group_label(cation)} and "
+                f"{make_group_label(anion)}"
+            ),
+        )
+
+        return None
+
+
+def detect_salt_bridge_between_groups(
+    first_group: ChargedGroup,
+    second_group: ChargedGroup,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    pose_id: Optional[Union[str, int]] = None,
+    model_id: Optional[Union[str, int]] = None,
+    warnings: Optional[List[str]] = None,
+) -> Optional[SaltBridgeInteraction]:
+    """
+    Detect a salt bridge between oppositely charged groups in any input order.
+
+    Parameters
+    ----------
+    first_group
+        First charged group.
+    second_group
+        Second charged group.
+    config
+        Salt-bridge configuration.
+    pose_id
+        Optional docking-pose identifier.
+    model_id
+        Optional molecular-model identifier.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    Optional[SaltBridgeInteraction]
+        Detected interaction or ``None``.
+    """
+
+    if first_group.is_positive and second_group.is_negative:
+        cation = first_group
+        anion = second_group
+
+    elif first_group.is_negative and second_group.is_positive:
+        cation = second_group
+        anion = first_group
+
+    else:
+        error = InvalidInteractionError(
+            "Central salt-bridge detection requires opposite polarities."
+        )
+
+        handle_error(
+            error,
+            config=config,
+            warnings=warnings,
+            context="Salt-bridge pair detection failed",
+        )
+
+        return None
+
+    return detect_salt_bridge_pair(
+        cation,
+        anion,
+        config,
+        pose_id=pose_id,
+        model_id=model_id,
+        warnings=warnings,
+    )
+
+
+# =============================================================================
+# 9.4. MULTIPLE-PAIR DETECTION
+# =============================================================================
+
+
+def iter_detected_salt_bridges(
+    cationic_groups: Iterable[ChargedGroup],
+    anionic_groups: Iterable[ChargedGroup],
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    pose_id: Optional[Union[str, int]] = None,
+    model_id: Optional[Union[str, int]] = None,
+    warnings: Optional[List[str]] = None,
+) -> Iterator[SaltBridgeInteraction]:
+    """
+    Yield salt bridges detected from cationic and anionic group collections.
+
+    Detection is performed lazily. Candidate generation and geometry
+    evaluation do not require materializing the complete Cartesian product.
+
+    Parameters
+    ----------
+    cationic_groups
+        Positively charged groups.
+    anionic_groups
+        Negatively charged groups.
+    config
+        Salt-bridge configuration.
+    pose_id
+        Optional docking-pose identifier.
+    model_id
+        Optional molecular-model identifier.
+    warnings
+        Optional warning collector.
+
+    Yields
+    ------
+    SaltBridgeInteraction
+        Detected interaction.
+    """
+
+    resolved_config = resolve_config(config)
+
+    (
+        validated_cations,
+        validated_anions,
+    ) = validate_detection_groups(
+        cationic_groups,
+        anionic_groups,
+        resolved_config,
+        warnings=warnings,
+    )
+
+    interaction_index = 0
+
+    for cation, anion, geometry in iter_geometric_candidates(
+        validated_cations,
+        validated_anions,
+        resolved_config,
+        warnings=warnings,
+    ):
+        if (
+            not geometry.valid
+            and not resolved_config.preserve_invalid_candidates
+        ):
+            continue
+
+        interaction_index += 1
+
+        interaction_id = make_interaction_identifier(
+            cation,
+            anion,
+            pose_id=pose_id,
+            model_id=model_id,
+            index=interaction_index,
+        )
+
+        try:
+            yield build_salt_bridge_interaction(
+                cation,
+                anion,
+                geometry,
+                pose_id=pose_id,
+                model_id=model_id,
+                interaction_id=interaction_id,
+                metadata={
+                    "candidate_index": interaction_index,
+                    "preserved_invalid_candidate": not geometry.valid,
+                },
+            )
+
+        except SaltBridgeError as error:
+            handle_error(
+                error,
+                config=resolved_config,
+                warnings=warnings,
+                context=(
+                    "Interaction construction failed for "
+                    f"{make_group_label(cation)} and "
+                    f"{make_group_label(anion)}"
+                ),
+            )
+
+
+def detect_salt_bridges_from_groups(
+    cationic_groups: Iterable[ChargedGroup],
+    anionic_groups: Iterable[ChargedGroup],
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    pose_id: Optional[Union[str, int]] = None,
+    model_id: Optional[Union[str, int]] = None,
+    warnings: Optional[List[str]] = None,
+) -> List[SaltBridgeInteraction]:
+    """
+    Detect all salt bridges from previously recognized charged groups.
+
+    Parameters
+    ----------
+    cationic_groups
+        Positively charged groups.
+    anionic_groups
+        Negatively charged groups.
+    config
+        Salt-bridge configuration.
+    pose_id
+        Optional docking-pose identifier.
+    model_id
+        Optional molecular-model identifier.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Detected salt-bridge interactions.
+    """
+
+    return list(
+        iter_detected_salt_bridges(
+            cationic_groups,
+            anionic_groups,
+            config,
+            pose_id=pose_id,
+            model_id=model_id,
+            warnings=warnings,
+        )
+    )
+
+
+# =============================================================================
+# 9.5. SOURCE-LEVEL DETECTION
+# =============================================================================
+
+
+def detect_salt_bridges(
+    source: Any,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    pose_id: Optional[Union[str, int]] = None,
+    model_id: Optional[Union[str, int]] = None,
+    warnings: Optional[List[str]] = None,
+) -> SaltBridgeResult:
+    """
+    Recognize charged groups and detect salt bridges in a molecular source.
+
+    This is the principal source-level detection function. It performs:
+
+    1. charged-group recognition;
+    2. group validation and consolidation;
+    3. cation-anion candidate generation;
+    4. geometric evaluation;
+    5. SaltBridgeInteraction construction;
+    6. SaltBridgeResult assembly.
+
+    Final classification, scoring, deduplication, grouping, and statistics are
+    intentionally left to later sections.
+
+    Parameters
+    ----------
+    source
+        Molecular structure, model, residue collection, or atom collection.
+    config
+        Salt-bridge configuration.
+    pose_id
+        Optional docking-pose identifier.
+    model_id
+        Optional molecular-model identifier.
+    warnings
+        Optional external warning collector.
+
+    Returns
+    -------
+    SaltBridgeResult
+        Central detection result.
+    """
+
+    resolved_config = resolve_config(config)
+
+    local_warnings: List[str] = []
+
+    if warnings is not None:
+        local_warnings.extend(warnings)
+
+    normalized_pose_id = normalize_pose_identifier(pose_id)
+    normalized_model_id = normalize_model_identifier(model_id)
+
+    try:
+        (
+            cationic_groups,
+            anionic_groups,
+        ) = recognize_charged_groups(
+            source,
+            resolved_config,
+            warnings=local_warnings,
+        )
+
+    except SaltBridgeError as error:
+        handle_error(
+            error,
+            config=resolved_config,
+            warnings=local_warnings,
+            context="Charged-group recognition failed",
+        )
+
+        cationic_groups = []
+        anionic_groups = []
+
+    interactions = detect_salt_bridges_from_groups(
+        cationic_groups,
+        anionic_groups,
+        resolved_config,
+        pose_id=normalized_pose_id,
+        model_id=normalized_model_id,
+        warnings=local_warnings,
+    )
+
+    result = SaltBridgeResult(
+        interactions=interactions,
+        cationic_groups=cationic_groups,
+        anionic_groups=anionic_groups,
+        statistics={},
+        warnings=unique_preserve_order(local_warnings),
+        pose_id=normalized_pose_id,
+        model_id=normalized_model_id,
+        metadata={
+            "analysis_stage": "central_detection",
+            "classification_completed": False,
+            "scoring_completed": False,
+            "deduplication_completed": False,
+            "grouping_completed": False,
+            "statistics_completed": False,
+            "recognized_cation_count": len(cationic_groups),
+            "recognized_anion_count": len(anionic_groups),
+            "raw_interaction_count": len(interactions),
+            "preserve_invalid_candidates": (
+                resolved_config.preserve_invalid_candidates
+            ),
+        },
+    )
+
+    if warnings is not None:
+        warnings.clear()
+        warnings.extend(result.warnings)
+
+    return result
+
+
+# =============================================================================
+# 9.6. PRE-RECOGNIZED GROUP RESULT ASSEMBLY
+# =============================================================================
+
+
+def detect_salt_bridges_in_group_collection(
+    groups: Iterable[ChargedGroup],
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    pose_id: Optional[Union[str, int]] = None,
+    model_id: Optional[Union[str, int]] = None,
+    warnings: Optional[List[str]] = None,
+) -> SaltBridgeResult:
+    """
+    Detect salt bridges from a mixed collection of charged groups.
+
+    Parameters
+    ----------
+    groups
+        Mixed positive and negative charged groups.
+    config
+        Salt-bridge configuration.
+    pose_id
+        Optional docking-pose identifier.
+    model_id
+        Optional molecular-model identifier.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    SaltBridgeResult
+        Central detection result.
+    """
+
+    resolved_config = resolve_config(config)
+    local_warnings: List[str] = []
+
+    if warnings is not None:
+        local_warnings.extend(warnings)
+
+    group_list = list(groups)
+
+    try:
+        consolidated_groups = consolidate_charged_groups(
+            group_list,
+            resolved_config,
+            warnings=local_warnings,
+        )
+
+        (
+            cationic_groups,
+            anionic_groups,
+        ) = split_charged_groups(
+            consolidated_groups,
+        )
+
+    except SaltBridgeError as error:
+        handle_error(
+            error,
+            config=resolved_config,
+            warnings=local_warnings,
+            context="Charged-group collection processing failed",
+        )
+
+        cationic_groups = []
+        anionic_groups = []
+
+    interactions = detect_salt_bridges_from_groups(
+        cationic_groups,
+        anionic_groups,
+        resolved_config,
+        pose_id=pose_id,
+        model_id=model_id,
+        warnings=local_warnings,
+    )
+
+    result = SaltBridgeResult(
+        interactions=interactions,
+        cationic_groups=cationic_groups,
+        anionic_groups=anionic_groups,
+        statistics={},
+        warnings=unique_preserve_order(local_warnings),
+        pose_id=normalize_pose_identifier(pose_id),
+        model_id=normalize_model_identifier(model_id),
+        metadata={
+            "analysis_stage": "central_detection",
+            "input_mode": "pre_recognized_groups",
+            "classification_completed": False,
+            "scoring_completed": False,
+            "deduplication_completed": False,
+            "grouping_completed": False,
+            "statistics_completed": False,
+            "input_group_count": len(group_list),
+            "recognized_cation_count": len(cationic_groups),
+            "recognized_anion_count": len(anionic_groups),
+            "raw_interaction_count": len(interactions),
+        },
+    )
+
+    if warnings is not None:
+        warnings.clear()
+        warnings.extend(result.warnings)
+
+    return result
+
+
+# =============================================================================
+# 9.7. CROSS-SOURCE DETECTION
+# =============================================================================
+
+
+def detect_salt_bridges_between_sources(
+    positive_source: Any,
+    negative_source: Any,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    pose_id: Optional[Union[str, int]] = None,
+    model_id: Optional[Union[str, int]] = None,
+    warnings: Optional[List[str]] = None,
+) -> SaltBridgeResult:
+    """
+    Detect salt bridges between two molecular sources.
+
+    Only cationic groups from ``positive_source`` and anionic groups from
+    ``negative_source`` are used. This is useful for receptor-ligand,
+    protein-protein, or chain-chain analyses with a defined direction.
+
+    Parameters
+    ----------
+    positive_source
+        Source providing candidate cationic groups.
+    negative_source
+        Source providing candidate anionic groups.
+    config
+        Salt-bridge configuration.
+    pose_id
+        Optional docking-pose identifier.
+    model_id
+        Optional molecular-model identifier.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    SaltBridgeResult
+        Cross-source detection result.
+    """
+
+    resolved_config = resolve_config(config)
+    local_warnings: List[str] = []
+
+    if warnings is not None:
+        local_warnings.extend(warnings)
+
+    positive_cations = recognize_cationic_groups(
+        positive_source,
+        resolved_config,
+        warnings=local_warnings,
+    )
+
+    negative_anions = recognize_anionic_groups(
+        negative_source,
+        resolved_config,
+        warnings=local_warnings,
+    )
+
+    interactions = detect_salt_bridges_from_groups(
+        positive_cations,
+        negative_anions,
+        resolved_config,
+        pose_id=pose_id,
+        model_id=model_id,
+        warnings=local_warnings,
+    )
+
+    result = SaltBridgeResult(
+        interactions=interactions,
+        cationic_groups=positive_cations,
+        anionic_groups=negative_anions,
+        statistics={},
+        warnings=unique_preserve_order(local_warnings),
+        pose_id=normalize_pose_identifier(pose_id),
+        model_id=normalize_model_identifier(model_id),
+        metadata={
+            "analysis_stage": "central_detection",
+            "input_mode": "directed_cross_source",
+            "classification_completed": False,
+            "scoring_completed": False,
+            "deduplication_completed": False,
+            "grouping_completed": False,
+            "statistics_completed": False,
+            "recognized_cation_count": len(positive_cations),
+            "recognized_anion_count": len(negative_anions),
+            "raw_interaction_count": len(interactions),
+        },
+    )
+
+    if warnings is not None:
+        warnings.clear()
+        warnings.extend(result.warnings)
+
+    return result
+
+
+def detect_bidirectional_salt_bridges_between_sources(
+    first_source: Any,
+    second_source: Any,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    pose_id: Optional[Union[str, int]] = None,
+    model_id: Optional[Union[str, int]] = None,
+    warnings: Optional[List[str]] = None,
+) -> SaltBridgeResult:
+    """
+    Detect salt bridges between two sources in both charge directions.
+
+    The function evaluates:
+
+    - cations from the first source against anions from the second source;
+    - cations from the second source against anions from the first source.
+
+    Internal interactions within either individual source are not evaluated.
+
+    Parameters
+    ----------
+    first_source
+        First molecular source.
+    second_source
+        Second molecular source.
+    config
+        Salt-bridge configuration.
+    pose_id
+        Optional docking-pose identifier.
+    model_id
+        Optional molecular-model identifier.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    SaltBridgeResult
+        Bidirectional cross-source detection result.
+    """
+
+    resolved_config = resolve_config(config)
+    local_warnings: List[str] = []
+
+    if warnings is not None:
+        local_warnings.extend(warnings)
+
+    (
+        first_cations,
+        first_anions,
+    ) = recognize_charged_groups(
+        first_source,
+        resolved_config,
+        warnings=local_warnings,
+    )
+
+    (
+        second_cations,
+        second_anions,
+    ) = recognize_charged_groups(
+        second_source,
+        resolved_config,
+        warnings=local_warnings,
+    )
+
+    first_to_second = detect_salt_bridges_from_groups(
+        first_cations,
+        second_anions,
+        resolved_config,
+        pose_id=pose_id,
+        model_id=model_id,
+        warnings=local_warnings,
+    )
+
+    second_to_first = detect_salt_bridges_from_groups(
+        second_cations,
+        first_anions,
+        resolved_config,
+        pose_id=pose_id,
+        model_id=model_id,
+        warnings=local_warnings,
+    )
+
+    all_cations = first_cations + second_cations
+    all_anions = first_anions + second_anions
+    all_interactions = first_to_second + second_to_first
+
+    for interaction in first_to_second:
+        interaction.metadata["cross_source_direction"] = (
+            "first_cation_to_second_anion"
+        )
+
+    for interaction in second_to_first:
+        interaction.metadata["cross_source_direction"] = (
+            "second_cation_to_first_anion"
+        )
+
+    result = SaltBridgeResult(
+        interactions=all_interactions,
+        cationic_groups=all_cations,
+        anionic_groups=all_anions,
+        statistics={},
+        warnings=unique_preserve_order(local_warnings),
+        pose_id=normalize_pose_identifier(pose_id),
+        model_id=normalize_model_identifier(model_id),
+        metadata={
+            "analysis_stage": "central_detection",
+            "input_mode": "bidirectional_cross_source",
+            "classification_completed": False,
+            "scoring_completed": False,
+            "deduplication_completed": False,
+            "grouping_completed": False,
+            "statistics_completed": False,
+            "first_source_cation_count": len(first_cations),
+            "first_source_anion_count": len(first_anions),
+            "second_source_cation_count": len(second_cations),
+            "second_source_anion_count": len(second_anions),
+            "first_to_second_interaction_count": len(first_to_second),
+            "second_to_first_interaction_count": len(second_to_first),
+            "raw_interaction_count": len(all_interactions),
+        },
+    )
+
+    if warnings is not None:
+        warnings.clear()
+        warnings.extend(result.warnings)
+
+    return result
+
+
+# =============================================================================
+# 9.8. RESULT FILTERING AND BASIC ACCESS
+# =============================================================================
+
+
+def get_valid_salt_bridges(
+    result: SaltBridgeResult,
+) -> List[SaltBridgeInteraction]:
+    """
+    Return geometrically valid interactions from a detection result.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Valid interactions.
+    """
+
+    if not isinstance(result, SaltBridgeResult):
+        raise SaltBridgeDetectionError(
+            "result must be a SaltBridgeResult instance."
+        )
+
+    return [
+        interaction
+        for interaction in result.interactions
+        if interaction.geometry.valid
+    ]
+
+
+def get_rejected_salt_bridge_candidates(
+    result: SaltBridgeResult,
+) -> List[SaltBridgeInteraction]:
+    """
+    Return preserved geometrically rejected candidates.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Invalid preserved candidates.
+    """
+
+    if not isinstance(result, SaltBridgeResult):
+        raise SaltBridgeDetectionError(
+            "result must be a SaltBridgeResult instance."
+        )
+
+    return [
+        interaction
+        for interaction in result.interactions
+        if not interaction.geometry.valid
+    ]
+
+
+def filter_salt_bridges_by_distance(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    maximum_distance: float,
+    minimum_distance: float = 0.0,
+    use_center_distance: bool = False,
+) -> List[SaltBridgeInteraction]:
+    """
+    Filter detected interactions by a distance interval.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    maximum_distance
+        Maximum accepted distance.
+    minimum_distance
+        Minimum accepted distance.
+    use_center_distance
+        Whether center distance should be used instead of minimum atom
+        distance.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Filtered interactions.
+    """
+
+    normalized_maximum = safe_float(maximum_distance)
+    normalized_minimum = safe_float(minimum_distance)
+
+    if normalized_maximum is None or normalized_maximum <= 0.0:
+        raise SaltBridgeDetectionError(
+            "maximum_distance must be greater than zero."
+        )
+
+    if normalized_minimum is None or normalized_minimum < 0.0:
+        raise SaltBridgeDetectionError(
+            "minimum_distance cannot be negative."
+        )
+
+    if normalized_minimum > normalized_maximum:
+        raise SaltBridgeDetectionError(
+            "minimum_distance cannot exceed maximum_distance."
+        )
+
+    filtered_interactions: List[SaltBridgeInteraction] = []
+
+    for interaction in interactions:
+        selected_distance = (
+            interaction.center_distance
+            if use_center_distance
+            else interaction.distance
+        )
+
+        if (
+            normalized_minimum
+            <= selected_distance
+            <= normalized_maximum
+        ):
+            filtered_interactions.append(interaction)
+
+    return filtered_interactions
+
+
+
 
 
 
