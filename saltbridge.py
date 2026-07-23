@@ -2887,6 +2887,4549 @@ def pairwise_candidates(
 
 
 
+# =============================================================================
+# 7. CHARGED-GROUP RECOGNITION
+# =============================================================================
+
+
+# =============================================================================
+# 7.1. CHARGE NORMALIZATION AND READING
+# =============================================================================
+
+
+_PROTEIN_RESIDUE_NAMES = frozenset({
+    "ALA",
+    "ARG",
+    "ASN",
+    "ASP",
+    "ASH",
+    "CYS",
+    "CYM",
+    "CYX",
+    "GLN",
+    "GLU",
+    "GLH",
+    "GLY",
+    "HIS",
+    "HID",
+    "HIE",
+    "HIP",
+    "HSD",
+    "HSE",
+    "HSP",
+    "ILE",
+    "LEU",
+    "LYS",
+    "LYN",
+    "MET",
+    "PHE",
+    "PRO",
+    "SER",
+    "THR",
+    "TRP",
+    "TYR",
+    "VAL",
+})
+
+_NUCLEIC_ACID_RESIDUE_NAMES = frozenset({
+    "A",
+    "C",
+    "G",
+    "T",
+    "U",
+    "DA",
+    "DC",
+    "DG",
+    "DT",
+    "DU",
+    "ADE",
+    "CYT",
+    "GUA",
+    "THY",
+    "URA",
+    "RA",
+    "RC",
+    "RG",
+    "RU",
+})
+
+_POSITIVELY_PROTONATED_HISTIDINES = frozenset({
+    "HIP",
+    "HSP",
+})
+
+_NEUTRAL_HISTIDINES = frozenset({
+    "HIS",
+    "HID",
+    "HIE",
+    "HSD",
+    "HSE",
+})
+
+_NEUTRALIZED_ACIDIC_RESIDUES = frozenset({
+    "ASH",
+    "GLH",
+})
+
+_NEUTRALIZED_BASIC_RESIDUES = frozenset({
+    "LYN",
+})
+
+_PHOSPHATE_ATOM_NAMES = frozenset({
+    "P",
+    "OP1",
+    "OP2",
+    "OP3",
+    "O1P",
+    "O2P",
+    "O3P",
+})
+
+_CARBOXYLATE_OXYGEN_NAMES = frozenset({
+    "OD1",
+    "OD2",
+    "OE1",
+    "OE2",
+    "OXT",
+})
+
+_AMINO_TERMINAL_NAMES = frozenset({
+    "N",
+    "NT",
+    "N1",
+})
+
+_CARBOXY_TERMINAL_NAMES = frozenset({
+    "C",
+    "O",
+    "OXT",
+    "OT1",
+    "OT2",
+})
+
+_FORMAL_CHARGE_ATTRIBUTE_NAMES = (
+    "formal_charge",
+    "formalCharge",
+    "charge_formal",
+    "integer_charge",
+)
+
+_PARTIAL_CHARGE_ATTRIBUTE_NAMES = (
+    "partial_charge",
+    "partialCharge",
+    "charge",
+    "atomic_charge",
+    "gasteiger_charge",
+    "gasteigerCharge",
+)
+
+_ATOM_NEIGHBOR_ATTRIBUTE_NAMES = (
+    "neighbors",
+    "bonded_atoms",
+    "bondedAtoms",
+)
+
+_ATOM_BOND_ATTRIBUTE_NAMES = (
+    "bonds",
+    "bond_list",
+)
+
+_RESIDUE_ATOM_ATTRIBUTE_NAMES = (
+    "atoms",
+    "atom_list",
+)
+
+_STRUCTURE_RESIDUE_ATTRIBUTE_NAMES = (
+    "residues",
+    "residue_list",
+)
+
+
+def normalize_charge_value(
+    value: Any,
+    *,
+    default: Optional[float] = None,
+) -> Optional[float]:
+    """
+    Normalize a formal or partial charge value.
+
+    Parameters
+    ----------
+    value
+        Numeric charge, numeric string, or library-specific charge object.
+    default
+        Value returned when the charge cannot be interpreted.
+
+    Returns
+    -------
+    Optional[float]
+        Finite normalized charge or the provided default.
+    """
+
+    if value is None:
+        return default
+
+    if isinstance(value, str):
+        normalized_text = value.strip()
+
+        charge_aliases = {
+            "+": 1.0,
+            "++": 2.0,
+            "+++": 3.0,
+            "-": -1.0,
+            "--": -2.0,
+            "---": -3.0,
+            "POSITIVE": 1.0,
+            "NEGATIVE": -1.0,
+            "NEUTRAL": 0.0,
+        }
+
+        alias_value = charge_aliases.get(normalized_text.upper())
+
+        if alias_value is not None:
+            return alias_value
+
+        if normalized_text.endswith("+"):
+            magnitude_text = normalized_text[:-1].strip()
+
+            if not magnitude_text:
+                return 1.0
+
+            magnitude = safe_float(magnitude_text)
+
+            if magnitude is not None:
+                return abs(magnitude)
+
+        if normalized_text.endswith("-"):
+            magnitude_text = normalized_text[:-1].strip()
+
+            if not magnitude_text:
+                return -1.0
+
+            magnitude = safe_float(magnitude_text)
+
+            if magnitude is not None:
+                return -abs(magnitude)
+
+    nested_value = safe_getattr(
+        value,
+        ("value", "charge", "formal_charge"),
+        default=_MISSING,
+    )
+
+    if nested_value is not _MISSING and nested_value is not value:
+        value = nested_value
+
+    return safe_float(
+        value,
+        default=default,
+        finite_only=True,
+    )
+
+
+def get_atom_formal_charge(
+    atom: AtomLike,
+) -> Optional[float]:
+    """
+    Return an explicit formal charge from an atom-like object.
+
+    Parameters
+    ----------
+    atom
+        Molecular atom-like object.
+
+    Returns
+    -------
+    Optional[float]
+        Formal charge or ``None`` when unavailable.
+    """
+
+    raw_charge = get_value(
+        atom,
+        _FORMAL_CHARGE_ATTRIBUTE_NAMES,
+        default=None,
+        call=True,
+    )
+
+    return normalize_charge_value(raw_charge)
+
+
+def get_atom_partial_charge(
+    atom: AtomLike,
+) -> Optional[float]:
+    """
+    Return an explicit partial charge from an atom-like object.
+
+    Parameters
+    ----------
+    atom
+        Molecular atom-like object.
+
+    Returns
+    -------
+    Optional[float]
+        Partial charge or ``None`` when unavailable.
+    """
+
+    raw_charge = get_value(
+        atom,
+        _PARTIAL_CHARGE_ATTRIBUTE_NAMES,
+        default=None,
+        call=True,
+    )
+
+    return normalize_charge_value(raw_charge)
+
+
+def classify_numeric_charge(
+    charge: Optional[float],
+    *,
+    positive_threshold: float,
+    negative_threshold: float,
+) -> str:
+    """
+    Classify a numeric charge as positive, negative, or neutral.
+
+    Parameters
+    ----------
+    charge
+        Numeric atomic or group charge.
+    positive_threshold
+        Minimum positive value accepted as positively charged.
+    negative_threshold
+        Maximum negative value accepted as negatively charged.
+
+    Returns
+    -------
+    str
+        ``"positive"``, ``"negative"``, or ``"neutral"``.
+    """
+
+    if charge is None:
+        return "neutral"
+
+    normalized_charge = safe_float(charge)
+
+    if normalized_charge is None:
+        return "neutral"
+
+    if normalized_charge >= positive_threshold:
+        return "positive"
+
+    if normalized_charge <= negative_threshold:
+        return "negative"
+
+    return "neutral"
+
+
+def get_atom_charge_polarity(
+    atom: AtomLike,
+    config: Optional[SaltBridgeConfig] = None,
+) -> Tuple[str, str, Optional[float], Optional[float]]:
+    """
+    Determine atomic charge polarity from explicit charge information.
+
+    Formal charge is evaluated before partial charge.
+
+    Parameters
+    ----------
+    atom
+        Molecular atom-like object.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    Tuple[str, str, Optional[float], Optional[float]]
+        Polarity, recognition source, formal charge, and partial charge.
+    """
+
+    resolved_config = resolve_config(config)
+
+    formal_charge = get_atom_formal_charge(atom)
+    partial_charge = get_atom_partial_charge(atom)
+
+    if (
+        resolved_config.recognize_formal_charges
+        and formal_charge is not None
+    ):
+        formal_polarity = classify_numeric_charge(
+            formal_charge,
+            positive_threshold=0.5,
+            negative_threshold=-0.5,
+        )
+
+        if formal_polarity != "neutral":
+            return (
+                formal_polarity,
+                "formal_charge",
+                formal_charge,
+                partial_charge,
+            )
+
+    if (
+        resolved_config.recognize_partial_charges
+        and partial_charge is not None
+    ):
+        partial_polarity = classify_numeric_charge(
+            partial_charge,
+            positive_threshold=(
+                resolved_config.partial_charge_positive_threshold
+            ),
+            negative_threshold=(
+                resolved_config.partial_charge_negative_threshold
+            ),
+        )
+
+        if partial_polarity != "neutral":
+            return (
+                partial_polarity,
+                "partial_charge",
+                formal_charge,
+                partial_charge,
+            )
+
+    return (
+        "neutral",
+        "unknown",
+        formal_charge,
+        partial_charge,
+    )
+
+
+def make_charged_atom(
+    atom: AtomLike,
+    *,
+    polarity: Optional[str] = None,
+    source: Optional[str] = None,
+    config: Optional[SaltBridgeConfig] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ChargedAtom:
+    """
+    Create a ChargedAtom wrapper from an original atom object.
+
+    Parameters
+    ----------
+    atom
+        Original molecular atom.
+    polarity
+        Explicit polarity override.
+    source
+        Explicit recognition-source override.
+    config
+        Salt-bridge configuration.
+    metadata
+        Optional compact metadata mapping.
+
+    Returns
+    -------
+    ChargedAtom
+        Validated charged-atom representation.
+    """
+
+    resolved_config = resolve_config(config)
+
+    (
+        detected_polarity,
+        detected_source,
+        formal_charge,
+        partial_charge,
+    ) = get_atom_charge_polarity(
+        atom,
+        resolved_config,
+    )
+
+    final_polarity = normalize_text(
+        polarity if polarity is not None else detected_polarity,
+        default="neutral",
+        lowercase=True,
+    )
+
+    final_source = normalize_text(
+        source if source is not None else detected_source,
+        default="unknown",
+        lowercase=True,
+    )
+
+    return ChargedAtom(
+        atom=atom,
+        coordinate=get_atom_coordinate(
+            atom,
+            strict=resolved_config.strict,
+        ),
+        element=get_atom_element(atom),
+        name=get_atom_name(atom),
+        residue=get_atom_residue(atom),
+        formal_charge=formal_charge,
+        partial_charge=partial_charge,
+        polarity=final_polarity,
+        source=final_source,
+        metadata=dict(metadata or {}),
+    )
+
+
+def get_atom_neighbors(
+    atom: AtomLike,
+) -> Tuple[AtomLike, ...]:
+    """
+    Return atoms directly bonded to an atom.
+
+    Parameters
+    ----------
+    atom
+        Molecular atom-like object.
+
+    Returns
+    -------
+    Tuple[AtomLike, ...]
+        Unique neighboring atoms.
+    """
+
+    neighbors = get_value(
+        atom,
+        _ATOM_NEIGHBOR_ATTRIBUTE_NAMES,
+        default=_MISSING,
+        call=True,
+    )
+
+    if neighbors is not _MISSING:
+        try:
+            return tuple(
+                unique_preserve_order(
+                    (
+                        neighbor
+                        for neighbor in neighbors
+                        if neighbor is not None
+                    ),
+                    key=atom_identity,
+                )
+            )
+        except TypeError:
+            pass
+
+    bonds = get_value(
+        atom,
+        _ATOM_BOND_ATTRIBUTE_NAMES,
+        default=(),
+        call=True,
+    )
+
+    collected_neighbors: List[AtomLike] = []
+
+    try:
+        bond_iterator = iter(bonds)
+    except TypeError:
+        bond_iterator = iter(())
+
+    for bond in bond_iterator:
+        bond_atoms = get_value(
+            bond,
+            ("atoms", "endpoints"),
+            default=_MISSING,
+            call=True,
+        )
+
+        if bond_atoms is not _MISSING:
+            try:
+                for bonded_atom in bond_atoms:
+                    if bonded_atom is not atom and bonded_atom is not None:
+                        collected_neighbors.append(bonded_atom)
+
+                continue
+            except TypeError:
+                pass
+
+        first_atom = get_value(
+            bond,
+            ("atom1", "first_atom", "a1"),
+            default=None,
+        )
+
+        second_atom = get_value(
+            bond,
+            ("atom2", "second_atom", "a2"),
+            default=None,
+        )
+
+        if first_atom is atom and second_atom is not None:
+            collected_neighbors.append(second_atom)
+
+        elif second_atom is atom and first_atom is not None:
+            collected_neighbors.append(first_atom)
+
+    return tuple(
+        unique_preserve_order(
+            collected_neighbors,
+            key=atom_identity,
+        )
+    )
+
+
+def get_residue_atoms(
+    residue: Optional[ResidueLike],
+) -> Tuple[AtomLike, ...]:
+    """
+    Return all atoms associated with a residue.
+
+    Parameters
+    ----------
+    residue
+        Residue-like object.
+
+    Returns
+    -------
+    Tuple[AtomLike, ...]
+        Residue atoms.
+    """
+
+    if residue is None:
+        return ()
+
+    atom_collection = get_value(
+        residue,
+        _RESIDUE_ATOM_ATTRIBUTE_NAMES,
+        default=(),
+        call=True,
+    )
+
+    try:
+        return tuple(
+            atom
+            for atom in atom_collection
+            if atom is not None
+        )
+    except TypeError:
+        return ()
+
+
+def get_atom_by_name(
+    residue: Optional[ResidueLike],
+    atom_name: str,
+) -> Optional[AtomLike]:
+    """
+    Return the first residue atom matching an atom name.
+
+    Parameters
+    ----------
+    residue
+        Residue-like object.
+    atom_name
+        Target atom name.
+
+    Returns
+    -------
+    Optional[AtomLike]
+        Matching atom or ``None``.
+    """
+
+    normalized_target = normalize_text(
+        atom_name,
+        uppercase=True,
+    )
+
+    for atom in get_residue_atoms(residue):
+        if normalize_text(
+            get_atom_name(atom),
+            uppercase=True,
+        ) == normalized_target:
+            return atom
+
+    return None
+
+
+def get_atoms_by_names(
+    residue: Optional[ResidueLike],
+    atom_names: Iterable[str],
+) -> Tuple[AtomLike, ...]:
+    """
+    Return residue atoms matching any requested atom name.
+
+    Parameters
+    ----------
+    residue
+        Residue-like object.
+    atom_names
+        Accepted atom names.
+
+    Returns
+    -------
+    Tuple[AtomLike, ...]
+        Matching atoms in residue order.
+    """
+
+    normalized_names = {
+        normalize_text(name, uppercase=True)
+        for name in atom_names
+    }
+
+    return tuple(
+        atom
+        for atom in get_residue_atoms(residue)
+        if normalize_text(
+            get_atom_name(atom),
+            uppercase=True,
+        ) in normalized_names
+    )
+
+
+def classify_residue_category(
+    residue: Optional[ResidueLike],
+) -> str:
+    """
+    Classify a residue as protein, nucleic acid, or ligand-like.
+
+    Parameters
+    ----------
+    residue
+        Residue-like object.
+
+    Returns
+    -------
+    str
+        ``"protein"``, ``"nucleic_acid"``, or ``"ligand"``.
+    """
+
+    residue_name = get_residue_name(residue)
+
+    if residue_name in _PROTEIN_RESIDUE_NAMES:
+        return "protein"
+
+    if residue_name in _NUCLEIC_ACID_RESIDUE_NAMES:
+        return "nucleic_acid"
+
+    polymer_type = normalize_text(
+        get_value(
+            residue,
+            (
+                "polymer_type",
+                "polymerType",
+                "structure_category",
+            ),
+            default="",
+        ),
+        lowercase=True,
+    )
+
+    if "protein" in polymer_type or "amino" in polymer_type:
+        return "protein"
+
+    if (
+        "nucleic" in polymer_type
+        or "dna" in polymer_type
+        or "rna" in polymer_type
+    ):
+        return "nucleic_acid"
+
+    return "ligand"
+
+
+def residue_category_is_enabled(
+    residue: Optional[ResidueLike],
+    config: Optional[SaltBridgeConfig] = None,
+) -> bool:
+    """
+    Return whether a residue category is enabled by the configuration.
+
+    Parameters
+    ----------
+    residue
+        Residue-like object.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    bool
+        Whether the residue should be analyzed.
+    """
+
+    resolved_config = resolve_config(config)
+    category = classify_residue_category(residue)
+
+    if category == "protein":
+        return resolved_config.include_protein_groups
+
+    if category == "nucleic_acid":
+        return resolved_config.include_nucleic_acid_groups
+
+    return resolved_config.include_ligand_groups
+
+
+# =============================================================================
+# 7.2. STANDARD CATIONIC-GROUP RECOGNITION
+# =============================================================================
+
+
+def recognize_arginine_group(
+    residue: ResidueLike,
+    config: Optional[SaltBridgeConfig] = None,
+) -> Optional[ChargedGroup]:
+    """
+    Recognize the positively charged arginine guanidinium group.
+
+    Parameters
+    ----------
+    residue
+        Arginine residue.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    Optional[ChargedGroup]
+        Recognized guanidinium group or ``None``.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if get_residue_name(residue) != "ARG":
+        return None
+
+    atoms = get_atoms_by_names(
+        residue,
+        ("NE", "CZ", "NH1", "NH2"),
+    )
+
+    charged_atoms = tuple(
+        make_charged_atom(
+            atom,
+            polarity="positive",
+            source="canonical_residue",
+            config=resolved_config,
+        )
+        for atom in atoms
+    )
+
+    if not charged_atoms:
+        return None
+
+    return ChargedGroup(
+        atoms=charged_atoms,
+        polarity="positive",
+        group_type="guanidinium",
+        center=mean_coordinate(
+            (
+                charged_atom.coordinate
+                for charged_atom in charged_atoms
+                if charged_atom.coordinate is not None
+            ),
+            strict=resolved_config.strict,
+        ),
+        net_charge=1.0,
+        residue=residue,
+        representative_atom=next(
+            (
+                charged_atom
+                for charged_atom in charged_atoms
+                if charged_atom.name.upper() == "CZ"
+            ),
+            charged_atoms[0],
+        ),
+        source="canonical_residue",
+        confidence=1.0,
+        metadata={
+            "residue_name": "ARG",
+            "charge_model": "delocalized",
+        },
+    )
+
+
+def recognize_lysine_group(
+    residue: ResidueLike,
+    config: Optional[SaltBridgeConfig] = None,
+) -> Optional[ChargedGroup]:
+    """
+    Recognize the positively charged lysine terminal ammonium group.
+
+    Parameters
+    ----------
+    residue
+        Lysine residue.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    Optional[ChargedGroup]
+        Recognized ammonium group or ``None``.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if get_residue_name(residue) != "LYS":
+        return None
+
+    atom = get_atom_by_name(residue, "NZ")
+
+    if atom is None:
+        return None
+
+    charged_atom = make_charged_atom(
+        atom,
+        polarity="positive",
+        source="canonical_residue",
+        config=resolved_config,
+    )
+
+    return ChargedGroup(
+        atoms=(charged_atom,),
+        polarity="positive",
+        group_type="ammonium",
+        center=charged_atom.coordinate,
+        net_charge=1.0,
+        residue=residue,
+        representative_atom=charged_atom,
+        source="canonical_residue",
+        confidence=1.0,
+        metadata={
+            "residue_name": "LYS",
+            "charge_model": "localized",
+        },
+    )
+
+
+def recognize_histidine_group(
+    residue: ResidueLike,
+    config: Optional[SaltBridgeConfig] = None,
+) -> Optional[ChargedGroup]:
+    """
+    Recognize a positively protonated histidine imidazolium group.
+
+    Neutral histidine variants are not assigned a positive charge unless
+    explicit atomic charges independently support that assignment.
+
+    Parameters
+    ----------
+    residue
+        Histidine-like residue.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    Optional[ChargedGroup]
+        Recognized imidazolium group or ``None``.
+    """
+
+    resolved_config = resolve_config(config)
+    residue_name = get_residue_name(residue)
+
+    if not resolved_config.allow_histidine_cations:
+        return None
+
+    if residue_name not in _POSITIVELY_PROTONATED_HISTIDINES:
+        return None
+
+    atoms = get_atoms_by_names(
+        residue,
+        ("CG", "ND1", "CD2", "CE1", "NE2"),
+    )
+
+    charged_atoms = tuple(
+        make_charged_atom(
+            atom,
+            polarity="positive",
+            source="canonical_residue",
+            config=resolved_config,
+        )
+        for atom in atoms
+    )
+
+    if not charged_atoms:
+        return None
+
+    representative_atom = next(
+        (
+            charged_atom
+            for charged_atom in charged_atoms
+            if charged_atom.name.upper() in {"ND1", "NE2"}
+        ),
+        charged_atoms[0],
+    )
+
+    return ChargedGroup(
+        atoms=charged_atoms,
+        polarity="positive",
+        group_type="imidazolium",
+        center=mean_coordinate(
+            (
+                charged_atom.coordinate
+                for charged_atom in charged_atoms
+                if charged_atom.coordinate is not None
+            ),
+            strict=resolved_config.strict,
+        ),
+        net_charge=1.0,
+        residue=residue,
+        representative_atom=representative_atom,
+        source="canonical_residue",
+        confidence=1.0,
+        metadata={
+            "residue_name": residue_name,
+            "charge_model": "delocalized",
+        },
+    )
+
+
+def recognize_canonical_cationic_group(
+    residue: ResidueLike,
+    config: Optional[SaltBridgeConfig] = None,
+) -> Optional[ChargedGroup]:
+    """
+    Recognize a canonical cationic protein-residue group.
+
+    Parameters
+    ----------
+    residue
+        Residue-like object.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    Optional[ChargedGroup]
+        Recognized group or ``None``.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not resolved_config.recognize_canonical_residues:
+        return None
+
+    residue_name = get_residue_name(residue)
+
+    recognizers = {
+        "ARG": recognize_arginine_group,
+        "LYS": recognize_lysine_group,
+        "HIP": recognize_histidine_group,
+        "HSP": recognize_histidine_group,
+    }
+
+    recognizer = recognizers.get(residue_name)
+
+    if recognizer is None:
+        return None
+
+    return recognizer(residue, resolved_config)
+
+
+# =============================================================================
+# 7.3. STANDARD ANIONIC-GROUP RECOGNITION
+# =============================================================================
+
+
+def recognize_aspartate_group(
+    residue: ResidueLike,
+    config: Optional[SaltBridgeConfig] = None,
+) -> Optional[ChargedGroup]:
+    """
+    Recognize the negatively charged aspartate carboxylate group.
+
+    Parameters
+    ----------
+    residue
+        Aspartate residue.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    Optional[ChargedGroup]
+        Recognized carboxylate group or ``None``.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if get_residue_name(residue) != "ASP":
+        return None
+
+    atoms = get_atoms_by_names(
+        residue,
+        ("CG", "OD1", "OD2"),
+    )
+
+    charged_atoms = tuple(
+        make_charged_atom(
+            atom,
+            polarity="negative",
+            source="canonical_residue",
+            config=resolved_config,
+        )
+        for atom in atoms
+    )
+
+    if not charged_atoms:
+        return None
+
+    representative_atom = next(
+        (
+            charged_atom
+            for charged_atom in charged_atoms
+            if charged_atom.name.upper() == "CG"
+        ),
+        charged_atoms[0],
+    )
+
+    return ChargedGroup(
+        atoms=charged_atoms,
+        polarity="negative",
+        group_type="carboxylate",
+        center=mean_coordinate(
+            (
+                charged_atom.coordinate
+                for charged_atom in charged_atoms
+                if charged_atom.coordinate is not None
+            ),
+            strict=resolved_config.strict,
+        ),
+        net_charge=-1.0,
+        residue=residue,
+        representative_atom=representative_atom,
+        source="canonical_residue",
+        confidence=1.0,
+        metadata={
+            "residue_name": "ASP",
+            "charge_model": "delocalized",
+        },
+    )
+
+
+def recognize_glutamate_group(
+    residue: ResidueLike,
+    config: Optional[SaltBridgeConfig] = None,
+) -> Optional[ChargedGroup]:
+    """
+    Recognize the negatively charged glutamate carboxylate group.
+
+    Parameters
+    ----------
+    residue
+        Glutamate residue.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    Optional[ChargedGroup]
+        Recognized carboxylate group or ``None``.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if get_residue_name(residue) != "GLU":
+        return None
+
+    atoms = get_atoms_by_names(
+        residue,
+        ("CD", "OE1", "OE2"),
+    )
+
+    charged_atoms = tuple(
+        make_charged_atom(
+            atom,
+            polarity="negative",
+            source="canonical_residue",
+            config=resolved_config,
+        )
+        for atom in atoms
+    )
+
+    if not charged_atoms:
+        return None
+
+    representative_atom = next(
+        (
+            charged_atom
+            for charged_atom in charged_atoms
+            if charged_atom.name.upper() == "CD"
+        ),
+        charged_atoms[0],
+    )
+
+    return ChargedGroup(
+        atoms=charged_atoms,
+        polarity="negative",
+        group_type="carboxylate",
+        center=mean_coordinate(
+            (
+                charged_atom.coordinate
+                for charged_atom in charged_atoms
+                if charged_atom.coordinate is not None
+            ),
+            strict=resolved_config.strict,
+        ),
+        net_charge=-1.0,
+        residue=residue,
+        representative_atom=representative_atom,
+        source="canonical_residue",
+        confidence=1.0,
+        metadata={
+            "residue_name": "GLU",
+            "charge_model": "delocalized",
+        },
+    )
+
+
+def recognize_canonical_anionic_group(
+    residue: ResidueLike,
+    config: Optional[SaltBridgeConfig] = None,
+) -> Optional[ChargedGroup]:
+    """
+    Recognize a canonical anionic protein-residue group.
+
+    Parameters
+    ----------
+    residue
+        Residue-like object.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    Optional[ChargedGroup]
+        Recognized group or ``None``.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not resolved_config.recognize_canonical_residues:
+        return None
+
+    residue_name = get_residue_name(residue)
+
+    recognizers = {
+        "ASP": recognize_aspartate_group,
+        "GLU": recognize_glutamate_group,
+    }
+
+    recognizer = recognizers.get(residue_name)
+
+    if recognizer is None:
+        return None
+
+    return recognizer(residue, resolved_config)
+
+
+# =============================================================================
+# 7.4. LIGAND CHARGED-GROUP RECOGNITION
+# =============================================================================
+
+
+def infer_group_type_from_atoms(
+    atoms: Sequence[AtomLike],
+    polarity: str,
+) -> str:
+    """
+    Infer a compact chemical-group type from atom elements and connectivity.
+
+    Parameters
+    ----------
+    atoms
+        Atoms defining a charged group.
+    polarity
+        Expected group polarity.
+
+    Returns
+    -------
+    str
+        Inferred group-type label.
+    """
+
+    normalized_polarity = normalize_text(
+        polarity,
+        lowercase=True,
+    )
+
+    element_counts: Dict[str, int] = defaultdict(int)
+
+    for atom in atoms:
+        element_counts[get_atom_element(atom)] += 1
+
+    nitrogen_count = element_counts.get("N", 0)
+    oxygen_count = element_counts.get("O", 0)
+    sulfur_count = element_counts.get("S", 0)
+    phosphorus_count = element_counts.get("P", 0)
+    carbon_count = element_counts.get("C", 0)
+
+    if normalized_polarity == "positive":
+        if nitrogen_count >= 3 and carbon_count >= 1:
+            return "guanidinium_like"
+
+        if nitrogen_count >= 2:
+            return "protonated_nitrogen_cluster"
+
+        if nitrogen_count == 1:
+            return "cationic_nitrogen"
+
+        if phosphorus_count >= 1:
+            return "phosphonium"
+
+        if sulfur_count >= 1:
+            return "sulfonium"
+
+        return "cationic_group"
+
+    if phosphorus_count >= 1 and oxygen_count >= 2:
+        return "phosphate"
+
+    if sulfur_count >= 1 and oxygen_count >= 2:
+        return "sulfate_or_sulfonate"
+
+    if carbon_count >= 1 and oxygen_count >= 2:
+        return "carboxylate_like"
+
+    if oxygen_count >= 1:
+        return "anionic_oxygen"
+
+    if sulfur_count >= 1:
+        return "anionic_sulfur"
+
+    return "anionic_group"
+
+
+def build_formal_charge_components(
+    atoms: Iterable[AtomLike],
+    *,
+    polarity: str,
+    config: Optional[SaltBridgeConfig] = None,
+) -> List[Tuple[AtomLike, ...]]:
+    """
+    Build connected components of atoms carrying the requested formal polarity.
+
+    Parameters
+    ----------
+    atoms
+        Input atom collection.
+    polarity
+        Requested polarity.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    List[Tuple[AtomLike, ...]]
+        Connected charged-atom components.
+    """
+
+    resolved_config = resolve_config(config)
+    normalized_polarity = normalize_text(
+        polarity,
+        lowercase=True,
+    )
+
+    selected_atoms: List[AtomLike] = []
+
+    for atom in atoms:
+        formal_charge = get_atom_formal_charge(atom)
+
+        detected_polarity = classify_numeric_charge(
+            formal_charge,
+            positive_threshold=0.5,
+            negative_threshold=-0.5,
+        )
+
+        if detected_polarity == normalized_polarity:
+            selected_atoms.append(atom)
+
+    selected_identity_map = {
+        atom_identity(atom): atom
+        for atom in selected_atoms
+    }
+
+    remaining_keys = set(selected_identity_map)
+    components: List[Tuple[AtomLike, ...]] = []
+
+    while remaining_keys:
+        initial_key = remaining_keys.pop()
+        stack = [selected_identity_map[initial_key]]
+        component: List[AtomLike] = []
+
+        while stack:
+            current_atom = stack.pop()
+            current_key = atom_identity(current_atom)
+
+            if any(
+                atom_identity(existing_atom) == current_key
+                for existing_atom in component
+            ):
+                continue
+
+            component.append(current_atom)
+
+            for neighbor in get_atom_neighbors(current_atom):
+                neighbor_key = atom_identity(neighbor)
+
+                if neighbor_key in remaining_keys:
+                    remaining_keys.remove(neighbor_key)
+                    stack.append(selected_identity_map[neighbor_key])
+
+        components.append(tuple(component))
+
+    return components
+
+
+def expand_charged_component(
+    charged_atoms: Sequence[AtomLike],
+    *,
+    polarity: str,
+) -> Tuple[AtomLike, ...]:
+    """
+    Expand explicitly charged atoms to include directly bonded heteroatoms.
+
+    This expansion captures delocalized groups when only one atom carries an
+    explicit formal charge in the source format.
+
+    Parameters
+    ----------
+    charged_atoms
+        Atoms with explicit charge.
+    polarity
+        Group polarity.
+
+    Returns
+    -------
+    Tuple[AtomLike, ...]
+        Expanded atom component.
+    """
+
+    normalized_polarity = normalize_text(
+        polarity,
+        lowercase=True,
+    )
+
+    expanded_atoms: List[AtomLike] = list(charged_atoms)
+
+    allowed_elements = (
+        {"N", "C", "P", "S"}
+        if normalized_polarity == "positive"
+        else {"O", "S", "P", "C", "N"}
+    )
+
+    for atom in charged_atoms:
+        for neighbor in get_atom_neighbors(atom):
+            if get_atom_element(neighbor) in allowed_elements:
+                expanded_atoms.append(neighbor)
+
+                for second_neighbor in get_atom_neighbors(neighbor):
+                    if get_atom_element(second_neighbor) in allowed_elements:
+                        expanded_atoms.append(second_neighbor)
+
+    return tuple(
+        unique_preserve_order(
+            expanded_atoms,
+            key=atom_identity,
+        )
+    )
+
+
+def recognize_ligand_groups_by_formal_charge(
+    residue: ResidueLike,
+    config: Optional[SaltBridgeConfig] = None,
+) -> List[ChargedGroup]:
+    """
+    Recognize ligand charged groups using explicit formal charges.
+
+    Parameters
+    ----------
+    residue
+        Ligand-like residue.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    List[ChargedGroup]
+        Recognized cationic and anionic ligand groups.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not resolved_config.recognize_formal_charges:
+        return []
+
+    residue_atoms = get_residue_atoms(residue)
+    groups: List[ChargedGroup] = []
+
+    for polarity in ("positive", "negative"):
+        components = build_formal_charge_components(
+            residue_atoms,
+            polarity=polarity,
+            config=resolved_config,
+        )
+
+        for component in components:
+            expanded_component = expand_charged_component(
+                component,
+                polarity=polarity,
+            )
+
+            charged_atoms = tuple(
+                make_charged_atom(
+                    atom,
+                    polarity=polarity,
+                    source="formal_charge",
+                    config=resolved_config,
+                )
+                for atom in expanded_component
+            )
+
+            formal_charges = tuple(
+                charge
+                for charge in (
+                    get_atom_formal_charge(atom)
+                    for atom in component
+                )
+                if charge is not None
+            )
+
+            net_charge = (
+                sum(formal_charges)
+                if formal_charges
+                else (
+                    1.0
+                    if polarity == "positive"
+                    else -1.0
+                )
+            )
+
+            groups.append(
+                ChargedGroup(
+                    atoms=charged_atoms,
+                    polarity=polarity,
+                    group_type=infer_group_type_from_atoms(
+                        expanded_component,
+                        polarity,
+                    ),
+                    center=mean_coordinate(
+                        (
+                            charged_atom.coordinate
+                            for charged_atom in charged_atoms
+                            if charged_atom.coordinate is not None
+                        ),
+                        strict=resolved_config.strict,
+                    ),
+                    net_charge=net_charge,
+                    residue=residue,
+                    representative_atom=charged_atoms[0],
+                    source="formal_charge",
+                    confidence=1.0,
+                    metadata={
+                        "residue_category": "ligand",
+                        "explicitly_charged_atom_count": len(component),
+                        "expanded_atom_count": len(expanded_component),
+                    },
+                )
+            )
+
+    return groups
+
+
+def recognize_ligand_groups_by_partial_charge(
+    residue: ResidueLike,
+    config: Optional[SaltBridgeConfig] = None,
+) -> List[ChargedGroup]:
+    """
+    Recognize ligand charged atoms using partial-charge thresholds.
+
+    Partial-charge recognition is conservative and initially produces
+    single-atom groups. Later consolidation may merge adjacent atoms that
+    belong to the same chemically delocalized group.
+
+    Parameters
+    ----------
+    residue
+        Ligand-like residue.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    List[ChargedGroup]
+        Partial-charge-derived groups.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not resolved_config.recognize_partial_charges:
+        return []
+
+    groups: List[ChargedGroup] = []
+
+    for atom in get_residue_atoms(residue):
+        partial_charge = get_atom_partial_charge(atom)
+
+        polarity = classify_numeric_charge(
+            partial_charge,
+            positive_threshold=(
+                resolved_config.partial_charge_positive_threshold
+            ),
+            negative_threshold=(
+                resolved_config.partial_charge_negative_threshold
+            ),
+        )
+
+        if polarity == "neutral":
+            continue
+
+        charged_atom = make_charged_atom(
+            atom,
+            polarity=polarity,
+            source="partial_charge",
+            config=resolved_config,
+        )
+
+        groups.append(
+            ChargedGroup(
+                atoms=(charged_atom,),
+                polarity=polarity,
+                group_type=infer_group_type_from_atoms(
+                    (atom,),
+                    polarity,
+                ),
+                center=charged_atom.coordinate,
+                net_charge=partial_charge,
+                residue=residue,
+                representative_atom=charged_atom,
+                source="partial_charge",
+                confidence=0.65,
+                metadata={
+                    "residue_category": "ligand",
+                    "threshold_based": True,
+                },
+            )
+        )
+
+    return groups
+
+
+def detect_carboxylate_like_groups(
+    residue: ResidueLike,
+    config: Optional[SaltBridgeConfig] = None,
+) -> List[ChargedGroup]:
+    """
+    Detect carboxylate-like groups from local carbon-oxygen connectivity.
+
+    Parameters
+    ----------
+    residue
+        Ligand-like residue.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    List[ChargedGroup]
+        Inferred carboxylate-like groups.
+    """
+
+    resolved_config = resolve_config(config)
+    groups: List[ChargedGroup] = []
+
+    for carbon_atom in get_residue_atoms(residue):
+        if get_atom_element(carbon_atom) != "C":
+            continue
+
+        oxygen_neighbors = tuple(
+            neighbor
+            for neighbor in get_atom_neighbors(carbon_atom)
+            if get_atom_element(neighbor) == "O"
+        )
+
+        if len(oxygen_neighbors) < 2:
+            continue
+
+        component_atoms = (carbon_atom,) + oxygen_neighbors
+
+        explicit_negative_evidence = any(
+            (
+                get_atom_formal_charge(oxygen_atom) is not None
+                and get_atom_formal_charge(oxygen_atom) < 0.0
+            )
+            or (
+                get_atom_partial_charge(oxygen_atom) is not None
+                and get_atom_partial_charge(oxygen_atom)
+                <= resolved_config.partial_charge_negative_threshold
+            )
+            for oxygen_atom in oxygen_neighbors
+        )
+
+        confidence = (
+            0.90
+            if explicit_negative_evidence
+            else 0.60
+        )
+
+        if (
+            confidence < resolved_config.minimum_recognition_confidence
+            and not resolved_config.allow_ambiguous_groups
+        ):
+            continue
+
+        charged_atoms = tuple(
+            make_charged_atom(
+                atom,
+                polarity="negative",
+                source="chemical_inference",
+                config=resolved_config,
+            )
+            for atom in component_atoms
+        )
+
+        groups.append(
+            ChargedGroup(
+                atoms=charged_atoms,
+                polarity="negative",
+                group_type="carboxylate_like",
+                center=mean_coordinate(
+                    (
+                        charged_atom.coordinate
+                        for charged_atom in charged_atoms
+                        if charged_atom.coordinate is not None
+                    ),
+                    strict=resolved_config.strict,
+                ),
+                net_charge=-1.0 if explicit_negative_evidence else None,
+                residue=residue,
+                representative_atom=charged_atoms[0],
+                source="chemical_inference",
+                confidence=confidence,
+                metadata={
+                    "residue_category": "ligand",
+                    "oxygen_count": len(oxygen_neighbors),
+                    "explicit_charge_evidence": explicit_negative_evidence,
+                },
+            )
+        )
+
+    return groups
+
+
+def detect_phosphate_or_sulfonate_groups(
+    residue: ResidueLike,
+    config: Optional[SaltBridgeConfig] = None,
+) -> List[ChargedGroup]:
+    """
+    Detect phosphate-, sulfate-, and sulfonate-like anionic groups.
+
+    Parameters
+    ----------
+    residue
+        Ligand-like residue.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    List[ChargedGroup]
+        Inferred anionic heteroatom groups.
+    """
+
+    resolved_config = resolve_config(config)
+    groups: List[ChargedGroup] = []
+
+    for central_atom in get_residue_atoms(residue):
+        central_element = get_atom_element(central_atom)
+
+        if central_element not in {"P", "S"}:
+            continue
+
+        oxygen_neighbors = tuple(
+            neighbor
+            for neighbor in get_atom_neighbors(central_atom)
+            if get_atom_element(neighbor) == "O"
+        )
+
+        minimum_oxygen_count = (
+            3
+            if central_element == "P"
+            else 2
+        )
+
+        if len(oxygen_neighbors) < minimum_oxygen_count:
+            continue
+
+        component_atoms = (central_atom,) + oxygen_neighbors
+
+        explicit_negative_evidence = any(
+            (
+                get_atom_formal_charge(oxygen_atom) is not None
+                and get_atom_formal_charge(oxygen_atom) < 0.0
+            )
+            or (
+                get_atom_partial_charge(oxygen_atom) is not None
+                and get_atom_partial_charge(oxygen_atom)
+                <= resolved_config.partial_charge_negative_threshold
+            )
+            for oxygen_atom in oxygen_neighbors
+        )
+
+        confidence = (
+            0.95
+            if explicit_negative_evidence
+            else 0.75
+        )
+
+        charged_atoms = tuple(
+            make_charged_atom(
+                atom,
+                polarity="negative",
+                source="chemical_inference",
+                config=resolved_config,
+            )
+            for atom in component_atoms
+        )
+
+        group_type = (
+            "phosphate"
+            if central_element == "P"
+            else "sulfate_or_sulfonate"
+        )
+
+        groups.append(
+            ChargedGroup(
+                atoms=charged_atoms,
+                polarity="negative",
+                group_type=group_type,
+                center=mean_coordinate(
+                    (
+                        charged_atom.coordinate
+                        for charged_atom in charged_atoms
+                        if charged_atom.coordinate is not None
+                    ),
+                    strict=resolved_config.strict,
+                ),
+                net_charge=-1.0 if explicit_negative_evidence else None,
+                residue=residue,
+                representative_atom=charged_atoms[0],
+                source="chemical_inference",
+                confidence=confidence,
+                metadata={
+                    "residue_category": "ligand",
+                    "central_element": central_element,
+                    "oxygen_count": len(oxygen_neighbors),
+                    "explicit_charge_evidence": explicit_negative_evidence,
+                },
+            )
+        )
+
+    return groups
+
+
+def detect_cationic_nitrogen_groups(
+    residue: ResidueLike,
+    config: Optional[SaltBridgeConfig] = None,
+) -> List[ChargedGroup]:
+    """
+    Detect ligand cationic nitrogen groups.
+
+    Explicit charge evidence is preferred. A nitrogen without explicit charge
+    is retained only when ambiguity is allowed and its local connectivity is
+    compatible with a protonated or quaternary nitrogen center.
+
+    Parameters
+    ----------
+    residue
+        Ligand-like residue.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    List[ChargedGroup]
+        Inferred cationic nitrogen groups.
+    """
+
+    resolved_config = resolve_config(config)
+    groups: List[ChargedGroup] = []
+
+    for nitrogen_atom in get_residue_atoms(residue):
+        if get_atom_element(nitrogen_atom) != "N":
+            continue
+
+        formal_charge = get_atom_formal_charge(nitrogen_atom)
+        partial_charge = get_atom_partial_charge(nitrogen_atom)
+        neighbors = get_atom_neighbors(nitrogen_atom)
+
+        explicit_positive = (
+            formal_charge is not None
+            and formal_charge > 0.0
+        )
+
+        partial_positive = (
+            partial_charge is not None
+            and partial_charge
+            >= resolved_config.partial_charge_positive_threshold
+        )
+
+        quaternary_like = len(neighbors) >= 4
+
+        if explicit_positive:
+            confidence = 1.0
+
+        elif partial_positive:
+            confidence = 0.75
+
+        elif quaternary_like and resolved_config.allow_ambiguous_groups:
+            confidence = 0.55
+
+        else:
+            continue
+
+        charged_atom = make_charged_atom(
+            nitrogen_atom,
+            polarity="positive",
+            source="chemical_inference",
+            config=resolved_config,
+        )
+
+        groups.append(
+            ChargedGroup(
+                atoms=(charged_atom,),
+                polarity="positive",
+                group_type="cationic_nitrogen",
+                center=charged_atom.coordinate,
+                net_charge=(
+                    formal_charge
+                    if formal_charge is not None
+                    else partial_charge
+                ),
+                residue=residue,
+                representative_atom=charged_atom,
+                source="chemical_inference",
+                confidence=confidence,
+                metadata={
+                    "residue_category": "ligand",
+                    "neighbor_count": len(neighbors),
+                    "quaternary_like": quaternary_like,
+                },
+            )
+        )
+
+    return groups
+
+
+def recognize_ligand_charged_groups(
+    residue: ResidueLike,
+    config: Optional[SaltBridgeConfig] = None,
+) -> List[ChargedGroup]:
+    """
+    Recognize charged groups in a ligand-like residue.
+
+    Parameters
+    ----------
+    residue
+        Ligand-like residue.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    List[ChargedGroup]
+        Recognized ligand charged groups.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not resolved_config.include_ligand_groups:
+        return []
+
+    groups: List[ChargedGroup] = []
+
+    groups.extend(
+        recognize_ligand_groups_by_formal_charge(
+            residue,
+            resolved_config,
+        )
+    )
+
+    if resolved_config.infer_charge_from_chemistry:
+        groups.extend(
+            detect_carboxylate_like_groups(
+                residue,
+                resolved_config,
+            )
+        )
+
+        groups.extend(
+            detect_phosphate_or_sulfonate_groups(
+                residue,
+                resolved_config,
+            )
+        )
+
+        groups.extend(
+            detect_cationic_nitrogen_groups(
+                residue,
+                resolved_config,
+            )
+        )
+
+    groups.extend(
+        recognize_ligand_groups_by_partial_charge(
+            residue,
+            resolved_config,
+        )
+    )
+
+    return groups
+
+
+# =============================================================================
+# 7.5. FORMAL-CHARGE-BASED RECOGNITION
+# =============================================================================
+
+
+def recognize_single_atom_formal_charge_group(
+    atom: AtomLike,
+    config: Optional[SaltBridgeConfig] = None,
+) -> Optional[ChargedGroup]:
+    """
+    Recognize a single-atom charged group from explicit formal charge.
+
+    This fallback is useful when residue-level connectivity is unavailable.
+
+    Parameters
+    ----------
+    atom
+        Atom-like object.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    Optional[ChargedGroup]
+        Charged group or ``None``.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not resolved_config.recognize_formal_charges:
+        return None
+
+    formal_charge = get_atom_formal_charge(atom)
+
+    polarity = classify_numeric_charge(
+        formal_charge,
+        positive_threshold=0.5,
+        negative_threshold=-0.5,
+    )
+
+    if polarity == "neutral":
+        return None
+
+    charged_atom = make_charged_atom(
+        atom,
+        polarity=polarity,
+        source="formal_charge",
+        config=resolved_config,
+    )
+
+    return ChargedGroup(
+        atoms=(charged_atom,),
+        polarity=polarity,
+        group_type=infer_group_type_from_atoms(
+            (atom,),
+            polarity,
+        ),
+        center=charged_atom.coordinate,
+        net_charge=formal_charge,
+        residue=get_atom_residue(atom),
+        representative_atom=charged_atom,
+        source="formal_charge",
+        confidence=1.0,
+        metadata={
+            "single_atom_fallback": True,
+        },
+    )
+
+
+def recognize_single_atom_partial_charge_group(
+    atom: AtomLike,
+    config: Optional[SaltBridgeConfig] = None,
+) -> Optional[ChargedGroup]:
+    """
+    Recognize a single-atom group from partial charge.
+
+    Parameters
+    ----------
+    atom
+        Atom-like object.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    Optional[ChargedGroup]
+        Charged group or ``None``.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not resolved_config.recognize_partial_charges:
+        return None
+
+    partial_charge = get_atom_partial_charge(atom)
+
+    polarity = classify_numeric_charge(
+        partial_charge,
+        positive_threshold=(
+            resolved_config.partial_charge_positive_threshold
+        ),
+        negative_threshold=(
+            resolved_config.partial_charge_negative_threshold
+        ),
+    )
+
+    if polarity == "neutral":
+        return None
+
+    charged_atom = make_charged_atom(
+        atom,
+        polarity=polarity,
+        source="partial_charge",
+        config=resolved_config,
+    )
+
+    return ChargedGroup(
+        atoms=(charged_atom,),
+        polarity=polarity,
+        group_type=infer_group_type_from_atoms(
+            (atom,),
+            polarity,
+        ),
+        center=charged_atom.coordinate,
+        net_charge=partial_charge,
+        residue=get_atom_residue(atom),
+        representative_atom=charged_atom,
+        source="partial_charge",
+        confidence=0.65,
+        metadata={
+            "single_atom_fallback": True,
+        },
+    )
+
+
+# =============================================================================
+# 7.6. CHARGED-GROUP VALIDATION
+# =============================================================================
+
+
+def estimate_group_charge(
+    group: ChargedGroup,
+) -> Optional[float]:
+    """
+    Estimate a charged-group net charge from available atomic values.
+
+    Parameters
+    ----------
+    group
+        Charged group.
+
+    Returns
+    -------
+    Optional[float]
+        Estimated charge or ``None``.
+    """
+
+    if group.net_charge is not None:
+        return group.net_charge
+
+    formal_charges = tuple(
+        charged_atom.formal_charge
+        for charged_atom in group.atoms
+        if charged_atom.formal_charge is not None
+    )
+
+    if formal_charges:
+        return float(sum(formal_charges))
+
+    partial_charges = tuple(
+        charged_atom.partial_charge
+        for charged_atom in group.atoms
+        if charged_atom.partial_charge is not None
+    )
+
+    if partial_charges:
+        return float(sum(partial_charges))
+
+    return None
+
+
+def group_charge_is_consistent(
+    group: ChargedGroup,
+) -> bool:
+    """
+    Return whether estimated charge agrees with group polarity.
+
+    Parameters
+    ----------
+    group
+        Charged group.
+
+    Returns
+    -------
+    bool
+        Whether charge and polarity are consistent.
+    """
+
+    estimated_charge = estimate_group_charge(group)
+
+    if estimated_charge is None:
+        return True
+
+    if group.is_positive:
+        return estimated_charge >= 0.0
+
+    return estimated_charge <= 0.0
+
+
+def group_atoms_share_residue(
+    group: ChargedGroup,
+) -> bool:
+    """
+    Return whether all charged atoms belong to the same residue.
+
+    Parameters
+    ----------
+    group
+        Charged group.
+
+    Returns
+    -------
+    bool
+        Whether all parent residues are compatible.
+    """
+
+    residue_keys = {
+        residue_identity(charged_atom.residue)
+        for charged_atom in group.atoms
+        if charged_atom.residue is not None
+    }
+
+    return len(residue_keys) <= 1
+
+
+def validate_charged_group(
+    group: ChargedGroup,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    require_coordinates: bool = True,
+) -> bool:
+    """
+    Validate a charged group against recognition requirements.
+
+    Parameters
+    ----------
+    group
+        Charged group.
+    config
+        Salt-bridge configuration.
+    require_coordinates
+        Whether at least one valid atom coordinate is required.
+
+    Returns
+    -------
+    bool
+        ``True`` when the group is accepted.
+
+    Raises
+    ------
+    InvalidChargedGroupError
+        If the group is invalid in strict mode.
+    """
+
+    resolved_config = resolve_config(config)
+
+    validation_errors: List[str] = []
+
+    if not group.atoms:
+        validation_errors.append(
+            "The charged group does not contain atoms."
+        )
+
+    if group.polarity not in {"positive", "negative"}:
+        validation_errors.append(
+            "The charged group has an unsupported polarity."
+        )
+
+    if not group_atoms_share_residue(group):
+        validation_errors.append(
+            "The charged-group atoms belong to incompatible residues."
+        )
+
+    if not group_charge_is_consistent(group):
+        validation_errors.append(
+            "The estimated charge is inconsistent with group polarity."
+        )
+
+    if not 0.0 <= group.confidence <= 1.0:
+        validation_errors.append(
+            "Recognition confidence is outside the allowed range."
+        )
+
+    if (
+        group.confidence
+        < resolved_config.minimum_recognition_confidence
+        and not resolved_config.allow_ambiguous_groups
+    ):
+        validation_errors.append(
+            "Recognition confidence is below the configured minimum."
+        )
+
+    if require_coordinates and not group.coordinates:
+        validation_errors.append(
+            "The charged group does not contain valid coordinates."
+        )
+
+    estimated_charge = estimate_group_charge(group)
+
+    if (
+        estimated_charge is not None
+        and abs(estimated_charge)
+        < resolved_config.minimum_group_charge
+        and group.source in {"formal_charge", "partial_charge"}
+    ):
+        validation_errors.append(
+            "The estimated group charge is below the configured minimum."
+        )
+
+    if validation_errors:
+        error = InvalidChargedGroupError(
+            " ".join(validation_errors)
+        )
+
+        if resolved_config.strict:
+            raise error
+
+        return False
+
+    return True
+
+
+def validate_charged_groups(
+    groups: Iterable[ChargedGroup],
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    require_coordinates: bool = True,
+    warnings: Optional[List[str]] = None,
+) -> List[ChargedGroup]:
+    """
+    Validate and retain acceptable charged groups.
+
+    Parameters
+    ----------
+    groups
+        Candidate charged groups.
+    config
+        Salt-bridge configuration.
+    require_coordinates
+        Whether valid coordinates are required.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    List[ChargedGroup]
+        Valid charged groups.
+    """
+
+    resolved_config = resolve_config(config)
+    valid_groups: List[ChargedGroup] = []
+
+    for group in groups:
+        try:
+            if validate_charged_group(
+                group,
+                resolved_config,
+                require_coordinates=require_coordinates,
+            ):
+                valid_groups.append(group)
+
+        except SaltBridgeError as error:
+            handle_error(
+                error,
+                config=resolved_config,
+                warnings=warnings,
+                context="Charged-group validation failed",
+            )
+
+    return valid_groups
+
+
+# =============================================================================
+# 7.7. CHARGED-GROUP CONSOLIDATION AND DEDUPLICATION
+# =============================================================================
+
+
+_RECOGNITION_SOURCE_PRIORITY = {
+    "canonical_residue": 5,
+    "formal_charge": 4,
+    "chemical_inference": 3,
+    "partial_charge": 2,
+    "unknown": 1,
+}
+
+
+def charged_group_source_priority(
+    group: ChargedGroup,
+) -> int:
+    """
+    Return the priority assigned to a charged-group recognition source.
+
+    Parameters
+    ----------
+    group
+        Charged group.
+
+    Returns
+    -------
+    int
+        Source-priority value.
+    """
+
+    return _RECOGNITION_SOURCE_PRIORITY.get(
+        group.source,
+        0,
+    )
+
+
+def groups_atomically_overlap(
+    first: ChargedGroup,
+    second: ChargedGroup,
+) -> bool:
+    """
+    Return whether two charged groups share at least one original atom.
+
+    Parameters
+    ----------
+    first
+        First charged group.
+    second
+        Second charged group.
+
+    Returns
+    -------
+    bool
+        Whether the groups overlap.
+    """
+
+    first_atom_keys = {
+        charged_atom_identity(charged_atom)
+        for charged_atom in first.atoms
+    }
+
+    second_atom_keys = {
+        charged_atom_identity(charged_atom)
+        for charged_atom in second.atoms
+    }
+
+    return bool(first_atom_keys & second_atom_keys)
+
+
+def groups_are_duplicates(
+    first: ChargedGroup,
+    second: ChargedGroup,
+) -> bool:
+    """
+    Return whether two groups represent the same chemical charged feature.
+
+    Parameters
+    ----------
+    first
+        First charged group.
+    second
+        Second charged group.
+
+    Returns
+    -------
+    bool
+        Whether the groups should be considered duplicates.
+    """
+
+    if first.polarity != second.polarity:
+        return False
+
+    if residue_identity(first.residue) != residue_identity(second.residue):
+        return False
+
+    first_atom_keys = {
+        charged_atom_identity(charged_atom)
+        for charged_atom in first.atoms
+    }
+
+    second_atom_keys = {
+        charged_atom_identity(charged_atom)
+        for charged_atom in second.atoms
+    }
+
+    if first_atom_keys == second_atom_keys:
+        return True
+
+    if not first_atom_keys or not second_atom_keys:
+        return False
+
+    overlap = first_atom_keys & second_atom_keys
+
+    if not overlap:
+        return False
+
+    smaller_size = min(
+        len(first_atom_keys),
+        len(second_atom_keys),
+    )
+
+    overlap_fraction = len(overlap) / smaller_size
+
+    return overlap_fraction >= 0.5
+
+
+def select_preferred_group(
+    first: ChargedGroup,
+    second: ChargedGroup,
+) -> ChargedGroup:
+    """
+    Select the preferred representation of two duplicate groups.
+
+    Parameters
+    ----------
+    first
+        First charged group.
+    second
+        Second charged group.
+
+    Returns
+    -------
+    ChargedGroup
+        Preferred group.
+    """
+
+    first_priority = charged_group_source_priority(first)
+    second_priority = charged_group_source_priority(second)
+
+    if first_priority != second_priority:
+        return (
+            first
+            if first_priority > second_priority
+            else second
+        )
+
+    if first.confidence != second.confidence:
+        return (
+            first
+            if first.confidence > second.confidence
+            else second
+        )
+
+    if first.atom_count != second.atom_count:
+        return (
+            first
+            if first.atom_count > second.atom_count
+            else second
+        )
+
+    first_has_charge = estimate_group_charge(first) is not None
+    second_has_charge = estimate_group_charge(second) is not None
+
+    if first_has_charge != second_has_charge:
+        return first if first_has_charge else second
+
+    return first
+
+
+def deduplicate_charged_groups(
+    groups: Iterable[ChargedGroup],
+    config: Optional[SaltBridgeConfig] = None,
+) -> List[ChargedGroup]:
+    """
+    Remove duplicate charged-group representations.
+
+    Parameters
+    ----------
+    groups
+        Candidate charged groups.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    List[ChargedGroup]
+        Deduplicated groups.
+    """
+
+    resolved_config = resolve_config(config)
+    group_list = list(groups)
+
+    if not resolved_config.deduplicate_groups:
+        return group_list
+
+    retained_groups: List[ChargedGroup] = []
+
+    for candidate_group in group_list:
+        duplicate_index: Optional[int] = None
+
+        for index, retained_group in enumerate(retained_groups):
+            if groups_are_duplicates(
+                candidate_group,
+                retained_group,
+            ):
+                duplicate_index = index
+                break
+
+        if duplicate_index is None:
+            retained_groups.append(candidate_group)
+            continue
+
+        retained_groups[duplicate_index] = select_preferred_group(
+            retained_groups[duplicate_index],
+            candidate_group,
+        )
+
+    return retained_groups
+
+
+def assign_group_identifiers(
+    groups: Iterable[ChargedGroup],
+    *,
+    prefix: str = "charged_group",
+) -> List[ChargedGroup]:
+    """
+    Assign deterministic identifiers to charged groups lacking an identifier.
+
+    Parameters
+    ----------
+    groups
+        Charged groups.
+    prefix
+        Identifier prefix.
+
+    Returns
+    -------
+    List[ChargedGroup]
+        Same group objects with assigned identifiers.
+    """
+
+    group_list = list(groups)
+
+    for index, group in enumerate(group_list, start=1):
+        if group.group_id:
+            continue
+
+        residue_label = make_residue_label(
+            group.residue,
+            fallback="unknown",
+        )
+
+        normalized_residue_label = (
+            residue_label
+            .replace(":", "_")
+            .replace(" ", "_")
+        )
+
+        group.group_id = (
+            f"{prefix}_{normalized_residue_label}_"
+            f"{group.polarity}_{index}"
+        )
+
+    return group_list
+
+
+def consolidate_charged_groups(
+    groups: Iterable[ChargedGroup],
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    warnings: Optional[List[str]] = None,
+) -> List[ChargedGroup]:
+    """
+    Validate, deduplicate, sort, and identify charged groups.
+
+    Parameters
+    ----------
+    groups
+        Candidate groups.
+    config
+        Salt-bridge configuration.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    List[ChargedGroup]
+        Consolidated charged groups.
+    """
+
+    resolved_config = resolve_config(config)
+
+    validated_groups = validate_charged_groups(
+        groups,
+        resolved_config,
+        warnings=warnings,
+    )
+
+    deduplicated_groups = deduplicate_charged_groups(
+        validated_groups,
+        resolved_config,
+    )
+
+    deduplicated_groups.sort(
+        key=lambda group: (
+            group.polarity,
+            make_residue_label(group.residue),
+            group.group_type,
+            -group.confidence,
+        )
+    )
+
+    return assign_group_identifiers(
+        deduplicated_groups,
+    )
+
+
+# =============================================================================
+# 7.8. PUBLIC RECOGNITION API
+# =============================================================================
+
+
+def recognize_terminal_groups(
+    residues: Sequence[ResidueLike],
+    config: Optional[SaltBridgeConfig] = None,
+) -> List[ChargedGroup]:
+    """
+    Recognize protein N-terminal and C-terminal charged groups.
+
+    Terminal recognition is conservative and relies on residue order plus
+    standard terminal atom names. Explicitly capped or modified termini should
+    be represented by their actual formal charges whenever available.
+
+    Parameters
+    ----------
+    residues
+        Ordered protein residues.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    List[ChargedGroup]
+        Recognized terminal groups.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not resolved_config.allow_terminal_groups:
+        return []
+
+    protein_residues = [
+        residue
+        for residue in residues
+        if classify_residue_category(residue) == "protein"
+    ]
+
+    if not protein_residues:
+        return []
+
+    groups: List[ChargedGroup] = []
+
+    residues_by_chain: Dict[str, List[ResidueLike]] = defaultdict(list)
+
+    for residue in protein_residues:
+        residues_by_chain[get_chain_id(residue)].append(residue)
+
+    for chain_residues in residues_by_chain.values():
+        if not chain_residues:
+            continue
+
+        first_residue = chain_residues[0]
+        last_residue = chain_residues[-1]
+
+        n_terminal_atom = next(
+            (
+                atom
+                for atom in get_residue_atoms(first_residue)
+                if normalize_text(
+                    get_atom_name(atom),
+                    uppercase=True,
+                ) in _AMINO_TERMINAL_NAMES
+            ),
+            None,
+        )
+
+        if n_terminal_atom is not None:
+            explicit_charge = get_atom_formal_charge(n_terminal_atom)
+
+            if explicit_charge is None or explicit_charge >= 0.0:
+                charged_atom = make_charged_atom(
+                    n_terminal_atom,
+                    polarity="positive",
+                    source="terminal_inference",
+                    config=resolved_config,
+                )
+
+                groups.append(
+                    ChargedGroup(
+                        atoms=(charged_atom,),
+                        polarity="positive",
+                        group_type="n_terminus",
+                        center=charged_atom.coordinate,
+                        net_charge=(
+                            explicit_charge
+                            if explicit_charge is not None
+                            else 1.0
+                        ),
+                        residue=first_residue,
+                        representative_atom=charged_atom,
+                        source="terminal_inference",
+                        confidence=0.80,
+                        metadata={
+                            "terminal_type": "N",
+                        },
+                    )
+                )
+
+        c_terminal_atoms = get_atoms_by_names(
+            last_residue,
+            ("C", "O", "OXT", "OT1", "OT2"),
+        )
+
+        oxygen_atoms = tuple(
+            atom
+            for atom in c_terminal_atoms
+            if get_atom_element(atom) == "O"
+        )
+
+        carbon_atoms = tuple(
+            atom
+            for atom in c_terminal_atoms
+            if get_atom_element(atom) == "C"
+        )
+
+        if len(oxygen_atoms) >= 2:
+            component_atoms = carbon_atoms[:1] + oxygen_atoms
+
+            charged_atoms = tuple(
+                make_charged_atom(
+                    atom,
+                    polarity="negative",
+                    source="terminal_inference",
+                    config=resolved_config,
+                )
+                for atom in component_atoms
+            )
+
+            groups.append(
+                ChargedGroup(
+                    atoms=charged_atoms,
+                    polarity="negative",
+                    group_type="c_terminus",
+                    center=mean_coordinate(
+                        (
+                            charged_atom.coordinate
+                            for charged_atom in charged_atoms
+                            if charged_atom.coordinate is not None
+                        ),
+                        strict=resolved_config.strict,
+                    ),
+                    net_charge=-1.0,
+                    residue=last_residue,
+                    representative_atom=charged_atoms[0],
+                    source="terminal_inference",
+                    confidence=0.80,
+                    metadata={
+                        "terminal_type": "C",
+                    },
+                )
+            )
+
+    return groups
+
+
+def recognize_nucleic_acid_phosphate_groups(
+    residue: ResidueLike,
+    config: Optional[SaltBridgeConfig] = None,
+) -> List[ChargedGroup]:
+    """
+    Recognize negatively charged phosphate groups in nucleic acids.
+
+    Parameters
+    ----------
+    residue
+        Nucleic-acid residue.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    List[ChargedGroup]
+        Recognized phosphate groups.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not resolved_config.include_nucleic_acid_groups:
+        return []
+
+    phosphorus_atoms = tuple(
+        atom
+        for atom in get_residue_atoms(residue)
+        if (
+            get_atom_element(atom) == "P"
+            or normalize_text(
+                get_atom_name(atom),
+                uppercase=True,
+            ) == "P"
+        )
+    )
+
+    groups: List[ChargedGroup] = []
+
+    for phosphorus_atom in phosphorus_atoms:
+        oxygen_neighbors = tuple(
+            neighbor
+            for neighbor in get_atom_neighbors(phosphorus_atom)
+            if get_atom_element(neighbor) == "O"
+        )
+
+        if not oxygen_neighbors:
+            named_atoms = get_atoms_by_names(
+                residue,
+                _PHOSPHATE_ATOM_NAMES,
+            )
+
+            oxygen_neighbors = tuple(
+                atom
+                for atom in named_atoms
+                if get_atom_element(atom) == "O"
+            )
+
+        if len(oxygen_neighbors) < 2:
+            continue
+
+        component_atoms = (phosphorus_atom,) + oxygen_neighbors
+
+        charged_atoms = tuple(
+            make_charged_atom(
+                atom,
+                polarity="negative",
+                source="nucleic_acid_phosphate",
+                config=resolved_config,
+            )
+            for atom in component_atoms
+        )
+
+        groups.append(
+            ChargedGroup(
+                atoms=charged_atoms,
+                polarity="negative",
+                group_type="phosphate",
+                center=mean_coordinate(
+                    (
+                        charged_atom.coordinate
+                        for charged_atom in charged_atoms
+                        if charged_atom.coordinate is not None
+                    ),
+                    strict=resolved_config.strict,
+                ),
+                net_charge=-1.0,
+                residue=residue,
+                representative_atom=charged_atoms[0],
+                source="nucleic_acid_phosphate",
+                confidence=1.0,
+                metadata={
+                    "residue_category": "nucleic_acid",
+                },
+            )
+        )
+
+    return groups
+
+
+def recognize_residue_charged_groups(
+    residue: ResidueLike,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    warnings: Optional[List[str]] = None,
+) -> List[ChargedGroup]:
+    """
+    Recognize all charged groups associated with one residue.
+
+    Parameters
+    ----------
+    residue
+        Residue-like object.
+    config
+        Salt-bridge configuration.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    List[ChargedGroup]
+        Recognized charged groups.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not residue_category_is_enabled(
+        residue,
+        resolved_config,
+    ):
+        return []
+
+    residue_category = classify_residue_category(residue)
+    groups: List[ChargedGroup] = []
+
+    try:
+        if residue_category == "protein":
+            canonical_cation = recognize_canonical_cationic_group(
+                residue,
+                resolved_config,
+            )
+
+            if canonical_cation is not None:
+                groups.append(canonical_cation)
+
+            canonical_anion = recognize_canonical_anionic_group(
+                residue,
+                resolved_config,
+            )
+
+            if canonical_anion is not None:
+                groups.append(canonical_anion)
+
+        elif residue_category == "nucleic_acid":
+            groups.extend(
+                recognize_nucleic_acid_phosphate_groups(
+                    residue,
+                    resolved_config,
+                )
+            )
+
+        else:
+            groups.extend(
+                recognize_ligand_charged_groups(
+                    residue,
+                    resolved_config,
+                )
+            )
+
+    except SaltBridgeError as error:
+        handle_error(
+            error,
+            config=resolved_config,
+            warnings=warnings,
+            context=(
+                f"Charge recognition failed for "
+                f"{make_residue_label(residue)}"
+            ),
+        )
+
+    return groups
+
+
+def recognize_charged_groups(
+    source: Any,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    warnings: Optional[List[str]] = None,
+) -> Tuple[List[ChargedGroup], List[ChargedGroup]]:
+    """
+    Recognize all cationic and anionic groups in a molecular source.
+
+    The source may be a structure, a residue collection, a residue, or an atom
+    collection. Residue-level recognition is preferred because it supports
+    canonical and chemically grouped features. Atom-level charge recognition
+    is used only as a fallback when residues cannot be obtained.
+
+    Parameters
+    ----------
+    source
+        Molecular structure, residue collection, or atom collection.
+    config
+        Salt-bridge configuration.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    Tuple[List[ChargedGroup], List[ChargedGroup]]
+        Cationic groups followed by anionic groups.
+    """
+
+    resolved_config = resolve_config(config)
+    collected_groups: List[ChargedGroup] = []
+
+    residue_list = list(iter_residues(source))
+
+    source_looks_like_single_residue = (
+        source is not None
+        and bool(get_residue_name(source))
+        and bool(get_residue_atoms(source))
+    )
+
+    if source_looks_like_single_residue:
+        residue_list = [source]
+
+    if residue_list:
+        for residue in residue_list:
+            collected_groups.extend(
+                recognize_residue_charged_groups(
+                    residue,
+                    resolved_config,
+                    warnings=warnings,
+                )
+            )
+
+        collected_groups.extend(
+            recognize_terminal_groups(
+                residue_list,
+                resolved_config,
+            )
+        )
+
+    else:
+        for atom in iter_atoms(source):
+            group = recognize_single_atom_formal_charge_group(
+                atom,
+                resolved_config,
+            )
+
+            if group is None:
+                group = recognize_single_atom_partial_charge_group(
+                    atom,
+                    resolved_config,
+                )
+
+            if group is not None:
+                collected_groups.append(group)
+
+    consolidated_groups = consolidate_charged_groups(
+        collected_groups,
+        resolved_config,
+        warnings=warnings,
+    )
+
+    cationic_groups = [
+        group
+        for group in consolidated_groups
+        if group.is_positive
+    ]
+
+    anionic_groups = [
+        group
+        for group in consolidated_groups
+        if group.is_negative
+    ]
+
+    return cationic_groups, anionic_groups
+
+
+def recognize_cationic_groups(
+    source: Any,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    warnings: Optional[List[str]] = None,
+) -> List[ChargedGroup]:
+    """
+    Recognize only positively charged groups.
+
+    Parameters
+    ----------
+    source
+        Molecular source.
+    config
+        Salt-bridge configuration.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    List[ChargedGroup]
+        Recognized cationic groups.
+    """
+
+    cationic_groups, _ = recognize_charged_groups(
+        source,
+        config,
+        warnings=warnings,
+    )
+
+    return cationic_groups
+
+
+def recognize_anionic_groups(
+    source: Any,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    warnings: Optional[List[str]] = None,
+) -> List[ChargedGroup]:
+    """
+    Recognize only negatively charged groups.
+
+    Parameters
+    ----------
+    source
+        Molecular source.
+    config
+        Salt-bridge configuration.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    List[ChargedGroup]
+        Recognized anionic groups.
+    """
+
+    _, anionic_groups = recognize_charged_groups(
+        source,
+        config,
+        warnings=warnings,
+    )
+
+    return anionic_groups
+
+
+def split_charged_groups(
+    groups: Iterable[ChargedGroup],
+) -> Tuple[List[ChargedGroup], List[ChargedGroup]]:
+    """
+    Split charged groups into positive and negative collections.
+
+    Parameters
+    ----------
+    groups
+        Charged groups.
+
+    Returns
+    -------
+    Tuple[List[ChargedGroup], List[ChargedGroup]]
+        Cationic groups followed by anionic groups.
+    """
+
+    cationic_groups: List[ChargedGroup] = []
+    anionic_groups: List[ChargedGroup] = []
+
+    for group in groups:
+        if group.is_positive:
+            cationic_groups.append(group)
+
+        elif group.is_negative:
+            anionic_groups.append(group)
+
+        else:
+            raise InvalidChargedGroupError(
+                "A charged group cannot have neutral polarity."
+            )
+
+    return cationic_groups, anionic_groups
+
+
+# =============================================================================
+# 8. GEOMETRY
+# =============================================================================
+
+
+# =============================================================================
+# 8.1. GROUP COORDINATE ACCESS AND CENTER CALCULATION
+# =============================================================================
+
+
+def get_charged_atom_coordinate(
+    charged_atom: ChargedAtom,
+    *,
+    strict: bool = False,
+) -> Optional[Coordinate]:
+    """
+    Return the Cartesian coordinate associated with a charged atom.
+
+    The coordinate stored in the ChargedAtom instance is preferred. When it is
+    unavailable, the function attempts to recover the coordinate from the
+    original atom object.
+
+    Parameters
+    ----------
+    charged_atom
+        Charged-atom representation.
+    strict
+        Whether missing or invalid coordinates should raise an exception.
+
+    Returns
+    -------
+    Optional[Coordinate]
+        Normalized Cartesian coordinate or ``None``.
+    """
+
+    if not isinstance(charged_atom, ChargedAtom):
+        raise SaltBridgeGeometryError(
+            "charged_atom must be a ChargedAtom instance."
+        )
+
+    if charged_atom.coordinate is not None:
+        return normalize_coordinate(
+            charged_atom.coordinate,
+            strict=strict,
+        )
+
+    coordinate = get_atom_coordinate(
+        charged_atom.atom,
+        strict=strict,
+    )
+
+    if coordinate is not None:
+        charged_atom.coordinate = coordinate
+
+    return coordinate
+
+
+def iter_group_coordinates(
+    group: ChargedGroup,
+    *,
+    strict: bool = False,
+) -> Iterator[Tuple[ChargedAtom, Coordinate]]:
+    """
+    Yield charged atoms together with their valid coordinates.
+
+    Parameters
+    ----------
+    group
+        Charged group.
+    strict
+        Whether missing coordinates should raise an exception.
+
+    Yields
+    ------
+    Tuple[ChargedAtom, Coordinate]
+        Charged atom and normalized coordinate.
+    """
+
+    if not isinstance(group, ChargedGroup):
+        raise SaltBridgeGeometryError(
+            "group must be a ChargedGroup instance."
+        )
+
+    for charged_atom in group.atoms:
+        coordinate = get_charged_atom_coordinate(
+            charged_atom,
+            strict=strict,
+        )
+
+        if coordinate is not None:
+            yield charged_atom, coordinate
+
+
+def calculate_group_center(
+    group: ChargedGroup,
+    *,
+    refresh: bool = False,
+    strict: bool = True,
+) -> Optional[Coordinate]:
+    """
+    Calculate the arithmetic center of a charged group.
+
+    The existing stored center is reused unless ``refresh`` is enabled.
+    The calculated value is stored back in the group to avoid repeated work.
+
+    Parameters
+    ----------
+    group
+        Charged group.
+    refresh
+        Whether an existing center should be recalculated.
+    strict
+        Whether the absence of valid coordinates should raise an exception.
+
+    Returns
+    -------
+    Optional[Coordinate]
+        Group center or ``None``.
+    """
+
+    if not isinstance(group, ChargedGroup):
+        raise SaltBridgeGeometryError(
+            "group must be a ChargedGroup instance."
+        )
+
+    if group.center is not None and not refresh:
+        return normalize_coordinate(
+            group.center,
+            strict=strict,
+        )
+
+    coordinates = (
+        coordinate
+        for _, coordinate in iter_group_coordinates(
+            group,
+            strict=strict,
+        )
+    )
+
+    calculated_center = mean_coordinate(
+        coordinates,
+        strict=strict,
+    )
+
+    if calculated_center is not None:
+        group.center = calculated_center
+
+    return calculated_center
+
+
+def resolve_group_center(
+    group: ChargedGroup,
+    *,
+    strict: bool = True,
+) -> Optional[Coordinate]:
+    """
+    Return a valid representative center for a charged group.
+
+    Parameters
+    ----------
+    group
+        Charged group.
+    strict
+        Whether unavailable center coordinates should raise an exception.
+
+    Returns
+    -------
+    Optional[Coordinate]
+        Representative group center.
+    """
+
+    if group.center is not None:
+        normalized_center = normalize_coordinate(
+            group.center,
+            strict=False,
+        )
+
+        if normalized_center is not None:
+            return normalized_center
+
+    return calculate_group_center(
+        group,
+        refresh=True,
+        strict=strict,
+    )
+
+
+def refresh_group_geometry(
+    group: ChargedGroup,
+    *,
+    strict: bool = True,
+) -> ChargedGroup:
+    """
+    Refresh atom coordinates and the representative center of a group.
+
+    Parameters
+    ----------
+    group
+        Charged group.
+    strict
+        Whether coordinate failures should raise an exception.
+
+    Returns
+    -------
+    ChargedGroup
+        Same group object with refreshed geometric data.
+    """
+
+    for charged_atom in group.atoms:
+        coordinate = get_atom_coordinate(
+            charged_atom.atom,
+            strict=strict,
+        )
+
+        if coordinate is not None:
+            charged_atom.coordinate = coordinate
+
+    group.center = calculate_group_center(
+        group,
+        refresh=True,
+        strict=strict,
+    )
+
+    return group
+
+
+# =============================================================================
+# 8.2. CENTER-TO-CENTER GEOMETRY
+# =============================================================================
+
+
+def calculate_group_center_distance(
+    first_group: ChargedGroup,
+    second_group: ChargedGroup,
+    *,
+    strict: bool = True,
+) -> float:
+    """
+    Calculate the distance between two charged-group centers.
+
+    Parameters
+    ----------
+    first_group
+        First charged group.
+    second_group
+        Second charged group.
+    strict
+        Whether unavailable centers should raise an exception.
+
+    Returns
+    -------
+    float
+        Center-to-center distance in angstroms.
+
+    Raises
+    ------
+    MissingCoordinatesError
+        If one of the group centers cannot be resolved.
+    """
+
+    first_center = resolve_group_center(
+        first_group,
+        strict=strict,
+    )
+
+    second_center = resolve_group_center(
+        second_group,
+        strict=strict,
+    )
+
+    if first_center is None or second_center is None:
+        raise MissingCoordinatesError(
+            "Both charged groups require valid center coordinates."
+        )
+
+    return distance(first_center, second_center)
+
+
+def groups_are_center_neighbors(
+    first_group: ChargedGroup,
+    second_group: ChargedGroup,
+    cutoff: float,
+    *,
+    strict: bool = False,
+) -> bool:
+    """
+    Return whether two group centers are within a distance cutoff.
+
+    Parameters
+    ----------
+    first_group
+        First charged group.
+    second_group
+        Second charged group.
+    cutoff
+        Maximum accepted center distance.
+    strict
+        Whether missing coordinates should raise an exception.
+
+    Returns
+    -------
+    bool
+        Whether the centers are within the cutoff.
+    """
+
+    normalized_cutoff = safe_float(cutoff)
+
+    if normalized_cutoff is None or normalized_cutoff <= 0.0:
+        raise SaltBridgeGeometryError(
+            "The center-distance cutoff must be greater than zero."
+        )
+
+    try:
+        center_distance = calculate_group_center_distance(
+            first_group,
+            second_group,
+            strict=strict,
+        )
+
+    except SaltBridgeGeometryError:
+        if strict:
+            raise
+
+        return False
+
+    return center_distance <= normalized_cutoff
+
+
+# =============================================================================
+# 8.3. ATOM-PAIR DISTANCE ITERATION
+# =============================================================================
+
+
+def iter_intergroup_atom_distances(
+    first_group: ChargedGroup,
+    second_group: ChargedGroup,
+    *,
+    cutoff: Optional[float] = None,
+    minimum_distance: Optional[float] = None,
+    strict: bool = False,
+) -> Iterator[Tuple[ChargedAtom, ChargedAtom, float]]:
+    """
+    Yield atom-pair distances between two charged groups.
+
+    The function operates as a generator and does not create a complete
+    distance matrix. Optional lower and upper distance filters are evaluated
+    using squared distances before the square root is calculated.
+
+    Parameters
+    ----------
+    first_group
+        First charged group.
+    second_group
+        Second charged group.
+    cutoff
+        Optional maximum distance to retain.
+    minimum_distance
+        Optional minimum distance to retain.
+    strict
+        Whether invalid coordinates should raise an exception.
+
+    Yields
+    ------
+    Tuple[ChargedAtom, ChargedAtom, float]
+        First atom, second atom, and Euclidean distance.
+    """
+
+    maximum_distance = (
+        safe_float(cutoff)
+        if cutoff is not None
+        else None
+    )
+
+    lower_distance = (
+        safe_float(minimum_distance)
+        if minimum_distance is not None
+        else None
+    )
+
+    if maximum_distance is not None and maximum_distance <= 0.0:
+        raise SaltBridgeGeometryError(
+            "The atom-distance cutoff must be greater than zero."
+        )
+
+    if lower_distance is not None and lower_distance < 0.0:
+        raise SaltBridgeGeometryError(
+            "The minimum atom distance cannot be negative."
+        )
+
+    if (
+        maximum_distance is not None
+        and lower_distance is not None
+        and lower_distance > maximum_distance
+    ):
+        raise SaltBridgeGeometryError(
+            "The minimum atom distance cannot exceed the maximum cutoff."
+        )
+
+    maximum_squared = (
+        maximum_distance ** 2
+        if maximum_distance is not None
+        else None
+    )
+
+    lower_squared = (
+        lower_distance ** 2
+        if lower_distance is not None
+        else None
+    )
+
+    second_coordinates = tuple(
+        iter_group_coordinates(
+            second_group,
+            strict=strict,
+        )
+    )
+
+    if not second_coordinates:
+        if strict:
+            raise MissingCoordinatesError(
+                "The second charged group has no valid atom coordinates."
+            )
+
+        return
+
+    first_coordinate_found = False
+
+    for first_atom, first_coordinate in iter_group_coordinates(
+        first_group,
+        strict=strict,
+    ):
+        first_coordinate_found = True
+
+        for second_atom, second_coordinate in second_coordinates:
+            pair_squared_distance = squared_distance(
+                first_coordinate,
+                second_coordinate,
+            )
+
+            if (
+                maximum_squared is not None
+                and pair_squared_distance > maximum_squared
+            ):
+                continue
+
+            if (
+                lower_squared is not None
+                and pair_squared_distance < lower_squared
+            ):
+                continue
+
+            yield (
+                first_atom,
+                second_atom,
+                math.sqrt(pair_squared_distance),
+            )
+
+    if not first_coordinate_found and strict:
+        raise MissingCoordinatesError(
+            "The first charged group has no valid atom coordinates."
+        )
+
+
+def iter_cation_anion_atom_distances(
+    cation: ChargedGroup,
+    anion: ChargedGroup,
+    *,
+    cutoff: Optional[float] = None,
+    minimum_distance: Optional[float] = None,
+    strict: bool = False,
+) -> Iterator[Tuple[ChargedAtom, ChargedAtom, float]]:
+    """
+    Yield atom-pair distances in cation-to-anion order.
+
+    Parameters
+    ----------
+    cation
+        Positively charged group.
+    anion
+        Negatively charged group.
+    cutoff
+        Optional maximum distance to retain.
+    minimum_distance
+        Optional minimum distance to retain.
+    strict
+        Whether coordinate failures should raise an exception.
+
+    Yields
+    ------
+    Tuple[ChargedAtom, ChargedAtom, float]
+        Positive atom, negative atom, and distance.
+    """
+
+    if not cation.is_positive:
+        raise InvalidChargedGroupError(
+            "The first group must have positive polarity."
+        )
+
+    if not anion.is_negative:
+        raise InvalidChargedGroupError(
+            "The second group must have negative polarity."
+        )
+
+    yield from iter_intergroup_atom_distances(
+        cation,
+        anion,
+        cutoff=cutoff,
+        minimum_distance=minimum_distance,
+        strict=strict,
+    )
+
+
+# =============================================================================
+# 8.4. CLOSEST-CONTACT GEOMETRY
+# =============================================================================
+
+
+def find_closest_atom_pair(
+    first_group: ChargedGroup,
+    second_group: ChargedGroup,
+    *,
+    strict: bool = True,
+) -> Tuple[ChargedAtom, ChargedAtom, float]:
+    """
+    Find the shortest atom-to-atom distance between two charged groups.
+
+    Parameters
+    ----------
+    first_group
+        First charged group.
+    second_group
+        Second charged group.
+    strict
+        Whether missing coordinates should raise an exception.
+
+    Returns
+    -------
+    Tuple[ChargedAtom, ChargedAtom, float]
+        Closest atom pair and corresponding distance.
+
+    Raises
+    ------
+    DegenerateGeometryError
+        If no valid atom pair can be evaluated.
+    """
+
+    closest_first_atom: Optional[ChargedAtom] = None
+    closest_second_atom: Optional[ChargedAtom] = None
+    closest_distance = math.inf
+
+    for first_atom, second_atom, atom_distance in (
+        iter_intergroup_atom_distances(
+            first_group,
+            second_group,
+            strict=strict,
+        )
+    ):
+        if atom_distance < closest_distance:
+            closest_first_atom = first_atom
+            closest_second_atom = second_atom
+            closest_distance = atom_distance
+
+    if (
+        closest_first_atom is None
+        or closest_second_atom is None
+        or not math.isfinite(closest_distance)
+    ):
+        raise DegenerateGeometryError(
+            "No valid atom pair was available for distance calculation."
+        )
+
+    return (
+        closest_first_atom,
+        closest_second_atom,
+        closest_distance,
+    )
+
+
+def find_closest_cation_anion_pair(
+    cation: ChargedGroup,
+    anion: ChargedGroup,
+    *,
+    strict: bool = True,
+) -> Tuple[ChargedAtom, ChargedAtom, float]:
+    """
+    Find the closest positive-negative atom pair.
+
+    Parameters
+    ----------
+    cation
+        Positively charged group.
+    anion
+        Negatively charged group.
+    strict
+        Whether coordinate failures should raise an exception.
+
+    Returns
+    -------
+    Tuple[ChargedAtom, ChargedAtom, float]
+        Positive atom, negative atom, and minimum distance.
+    """
+
+    if not cation.is_positive:
+        raise InvalidChargedGroupError(
+            "The cation group must have positive polarity."
+        )
+
+    if not anion.is_negative:
+        raise InvalidChargedGroupError(
+            "The anion group must have negative polarity."
+        )
+
+    positive_atom, negative_atom, minimum_distance = (
+        find_closest_atom_pair(
+            cation,
+            anion,
+            strict=strict,
+        )
+    )
+
+    return (
+        positive_atom,
+        negative_atom,
+        minimum_distance,
+    )
+
+
+def calculate_minimum_atom_distance(
+    first_group: ChargedGroup,
+    second_group: ChargedGroup,
+    *,
+    strict: bool = True,
+) -> float:
+    """
+    Return the shortest atom-to-atom distance between two groups.
+
+    Parameters
+    ----------
+    first_group
+        First charged group.
+    second_group
+        Second charged group.
+    strict
+        Whether missing coordinates should raise an exception.
+
+    Returns
+    -------
+    float
+        Minimum atom distance in angstroms.
+    """
+
+    _, _, minimum_distance = find_closest_atom_pair(
+        first_group,
+        second_group,
+        strict=strict,
+    )
+
+    return minimum_distance
+
+
+# =============================================================================
+# 8.5. CONTACT COLLECTION AND SUMMARY
+# =============================================================================
+
+
+def collect_atomic_contacts(
+    cation: ChargedGroup,
+    anion: ChargedGroup,
+    *,
+    cutoff: float,
+    minimum_distance: float = 0.0,
+    strict: bool = False,
+) -> List[Tuple[ChargedAtom, ChargedAtom, float]]:
+    """
+    Collect cation-anion atom pairs satisfying a distance interval.
+
+    This function materializes only accepted contacts, not the full distance
+    matrix.
+
+    Parameters
+    ----------
+    cation
+        Positively charged group.
+    anion
+        Negatively charged group.
+    cutoff
+        Maximum accepted contact distance.
+    minimum_distance
+        Minimum accepted contact distance.
+    strict
+        Whether coordinate failures should raise an exception.
+
+    Returns
+    -------
+    List[Tuple[ChargedAtom, ChargedAtom, float]]
+        Accepted atomic contacts sorted by increasing distance.
+    """
+
+    contacts = list(
+        iter_cation_anion_atom_distances(
+            cation,
+            anion,
+            cutoff=cutoff,
+            minimum_distance=minimum_distance,
+            strict=strict,
+        )
+    )
+
+    contacts.sort(key=lambda contact: contact[2])
+
+    return contacts
+
+
+def count_atomic_contacts(
+    cation: ChargedGroup,
+    anion: ChargedGroup,
+    *,
+    cutoff: float,
+    minimum_distance: float = 0.0,
+    strict: bool = False,
+) -> int:
+    """
+    Count atom pairs satisfying a distance interval.
+
+    Parameters
+    ----------
+    cation
+        Positively charged group.
+    anion
+        Negatively charged group.
+    cutoff
+        Maximum accepted contact distance.
+    minimum_distance
+        Minimum accepted contact distance.
+    strict
+        Whether coordinate failures should raise an exception.
+
+    Returns
+    -------
+    int
+        Number of accepted atom pairs.
+    """
+
+    return sum(
+        1
+        for _ in iter_cation_anion_atom_distances(
+            cation,
+            anion,
+            cutoff=cutoff,
+            minimum_distance=minimum_distance,
+            strict=strict,
+        )
+    )
+
+
+def summarize_atomic_contacts(
+    contacts: Iterable[
+        Tuple[ChargedAtom, ChargedAtom, float]
+    ],
+) -> Dict[str, Any]:
+    """
+    Summarize retained cation-anion atomic contacts.
+
+    Parameters
+    ----------
+    contacts
+        Iterable of positive atom, negative atom, and distance tuples.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Contact count, minimum, maximum, mean, and closest atom pair.
+    """
+
+    contact_count = 0
+    distance_sum = 0.0
+    minimum_distance = math.inf
+    maximum_distance = -math.inf
+
+    closest_positive_atom: Optional[ChargedAtom] = None
+    closest_negative_atom: Optional[ChargedAtom] = None
+
+    for positive_atom, negative_atom, atom_distance in contacts:
+        normalized_distance = safe_float(atom_distance)
+
+        if normalized_distance is None or normalized_distance < 0.0:
+            raise SaltBridgeGeometryError(
+                "Atomic contact distances must be finite and non-negative."
+            )
+
+        contact_count += 1
+        distance_sum += normalized_distance
+
+        if normalized_distance < minimum_distance:
+            minimum_distance = normalized_distance
+            closest_positive_atom = positive_atom
+            closest_negative_atom = negative_atom
+
+        if normalized_distance > maximum_distance:
+            maximum_distance = normalized_distance
+
+    if contact_count == 0:
+        return {
+            "contact_count": 0,
+            "minimum_distance": None,
+            "maximum_distance": None,
+            "mean_distance": None,
+            "closest_positive_atom": None,
+            "closest_negative_atom": None,
+        }
+
+    return {
+        "contact_count": contact_count,
+        "minimum_distance": minimum_distance,
+        "maximum_distance": maximum_distance,
+        "mean_distance": distance_sum / contact_count,
+        "closest_positive_atom": closest_positive_atom,
+        "closest_negative_atom": closest_negative_atom,
+    }
+
+
+# =============================================================================
+# 8.6. GEOMETRIC VALIDATION
+# =============================================================================
+
+
+def validate_group_pair_polarity(
+    cation: ChargedGroup,
+    anion: ChargedGroup,
+) -> None:
+    """
+    Validate the polarity and identity of a candidate group pair.
+
+    Parameters
+    ----------
+    cation
+        Expected positively charged group.
+    anion
+        Expected negatively charged group.
+
+    Raises
+    ------
+    InvalidInteractionError
+        If group polarity is invalid or both references describe the same
+        charged feature.
+    """
+
+    if not isinstance(cation, ChargedGroup):
+        raise InvalidInteractionError(
+            "The cation must be a ChargedGroup instance."
+        )
+
+    if not isinstance(anion, ChargedGroup):
+        raise InvalidInteractionError(
+            "The anion must be a ChargedGroup instance."
+        )
+
+    if not cation.is_positive:
+        raise InvalidInteractionError(
+            "The cation group must have positive polarity."
+        )
+
+    if not anion.is_negative:
+        raise InvalidInteractionError(
+            "The anion group must have negative polarity."
+        )
+
+    cation_atoms = {
+        charged_atom_identity(charged_atom)
+        for charged_atom in cation.atoms
+    }
+
+    anion_atoms = {
+        charged_atom_identity(charged_atom)
+        for charged_atom in anion.atoms
+    }
+
+    if cation_atoms & anion_atoms:
+        raise InvalidInteractionError(
+            "A salt-bridge pair cannot share the same original atom."
+        )
+
+
+def evaluate_distance_criteria(
+    *,
+    center_distance: float,
+    minimum_atom_distance: float,
+    contact_count: int,
+    config: Optional[SaltBridgeConfig] = None,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Evaluate geometric salt-bridge acceptance criteria.
+
+    Parameters
+    ----------
+    center_distance
+        Distance between charged-group centers.
+    minimum_atom_distance
+        Shortest atom-to-atom distance.
+    contact_count
+        Number of retained atomic contacts.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    Tuple[bool, Optional[str]]
+        Validity flag and rejection reason.
+    """
+
+    resolved_config = resolve_config(config)
+
+    normalized_center_distance = safe_float(center_distance)
+    normalized_minimum_distance = safe_float(minimum_atom_distance)
+    normalized_contact_count = safe_int(contact_count)
+
+    if normalized_center_distance is None:
+        return False, "The group-center distance is invalid."
+
+    if normalized_minimum_distance is None:
+        return False, "The minimum atom distance is invalid."
+
+    if normalized_contact_count is None or normalized_contact_count < 0:
+        return False, "The atomic contact count is invalid."
+
+    if (
+        normalized_minimum_distance
+        < resolved_config.minimum_contact_distance
+    ):
+        return (
+            False,
+            "The minimum atom distance is below the allowed overlap limit.",
+        )
+
+    if (
+        resolved_config.use_minimum_atom_distance
+        and normalized_minimum_distance
+        > resolved_config.distance_cutoff
+    ):
+        return (
+            False,
+            "The minimum atom distance exceeds the salt-bridge cutoff.",
+        )
+
+    if (
+        resolved_config.use_center_distance
+        and normalized_center_distance
+        > resolved_config.center_distance_cutoff
+    ):
+        return (
+            False,
+            "The group-center distance exceeds the configured cutoff.",
+        )
+
+    if normalized_contact_count < resolved_config.minimum_contact_count:
+        return (
+            False,
+            "The number of atomic contacts is below the configured minimum.",
+        )
+
+    return True, None
+
+
+def candidate_pair_passes_center_prefilter(
+    cation: ChargedGroup,
+    anion: ChargedGroup,
+    config: Optional[SaltBridgeConfig] = None,
+) -> bool:
+    """
+    Apply a low-cost group-center prefilter to a candidate pair.
+
+    A tolerance equal to the atomic contact cutoff is added to the configured
+    center cutoff because large delocalized groups may contain close atoms even
+    when their arithmetic centers are farther apart.
+
+    Parameters
+    ----------
+    cation
+        Positively charged group.
+    anion
+        Negatively charged group.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    bool
+        Whether the pair should proceed to atom-level evaluation.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not resolved_config.use_center_distance:
+        return True
+
+    try:
+        center_distance = calculate_group_center_distance(
+            cation,
+            anion,
+            strict=resolved_config.strict,
+        )
+
+    except SaltBridgeGeometryError:
+        if resolved_config.strict:
+            raise
+
+        return False
+
+    prefilter_cutoff = (
+        resolved_config.center_distance_cutoff
+        + resolved_config.atomic_contact_cutoff
+    )
+
+    return center_distance <= prefilter_cutoff
+
+
+# =============================================================================
+# 8.7. COMPLETE SALT-BRIDGE GEOMETRY EVALUATION
+# =============================================================================
+
+
+def evaluate_salt_bridge_geometry(
+    cation: ChargedGroup,
+    anion: ChargedGroup,
+    config: Optional[SaltBridgeConfig] = None,
+) -> SaltBridgeGeometry:
+    """
+    Evaluate the complete geometry of a cation-anion candidate pair.
+
+    The evaluation calculates:
+
+    - group-center distance;
+    - shortest atom-to-atom distance;
+    - number of contacts within the atomic contact cutoff;
+    - optional mean and maximum contact distances;
+    - closest positive-negative atom pair;
+    - validity and rejection reason.
+
+    Parameters
+    ----------
+    cation
+        Positively charged group.
+    anion
+        Negatively charged group.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    SaltBridgeGeometry
+        Complete geometric evaluation.
+
+    Raises
+    ------
+    SaltBridgeGeometryError
+        If required geometry cannot be calculated.
+    """
+
+    resolved_config = resolve_config(config)
+
+    validate_group_pair_polarity(
+        cation,
+        anion,
+    )
+
+    center_distance = calculate_group_center_distance(
+        cation,
+        anion,
+        strict=resolved_config.strict,
+    )
+
+    (
+        closest_positive_atom,
+        closest_negative_atom,
+        minimum_atom_distance,
+    ) = find_closest_cation_anion_pair(
+        cation,
+        anion,
+        strict=resolved_config.strict,
+    )
+
+    contacts = collect_atomic_contacts(
+        cation,
+        anion,
+        cutoff=resolved_config.atomic_contact_cutoff,
+        minimum_distance=resolved_config.minimum_contact_distance,
+        strict=resolved_config.strict,
+    )
+
+    contact_count = len(contacts)
+
+    maximum_atom_distance: Optional[float] = None
+    mean_atom_distance: Optional[float] = None
+
+    if resolved_config.calculate_all_contact_distances and contacts:
+        contact_summary = summarize_atomic_contacts(contacts)
+
+        maximum_atom_distance = contact_summary[
+            "maximum_distance"
+        ]
+
+        mean_atom_distance = contact_summary[
+            "mean_distance"
+        ]
+
+    valid, rejection_reason = evaluate_distance_criteria(
+        center_distance=center_distance,
+        minimum_atom_distance=minimum_atom_distance,
+        contact_count=contact_count,
+        config=resolved_config,
+    )
+
+    return SaltBridgeGeometry(
+        center_distance=center_distance,
+        minimum_atom_distance=minimum_atom_distance,
+        maximum_atom_distance=maximum_atom_distance,
+        mean_atom_distance=mean_atom_distance,
+        contact_count=contact_count,
+        closest_positive_atom=closest_positive_atom,
+        closest_negative_atom=closest_negative_atom,
+        valid=valid,
+        rejection_reason=rejection_reason,
+    )
+
+
+def try_evaluate_salt_bridge_geometry(
+    cation: ChargedGroup,
+    anion: ChargedGroup,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    warnings: Optional[List[str]] = None,
+) -> Optional[SaltBridgeGeometry]:
+    """
+    Evaluate candidate geometry using strict or permissive error handling.
+
+    Parameters
+    ----------
+    cation
+        Positively charged group.
+    anion
+        Negatively charged group.
+    config
+        Salt-bridge configuration.
+    warnings
+        Optional warning collector.
+
+    Returns
+    -------
+    Optional[SaltBridgeGeometry]
+        Evaluated geometry or ``None`` after a permissively handled failure.
+    """
+
+    resolved_config = resolve_config(config)
+
+    try:
+        return evaluate_salt_bridge_geometry(
+            cation,
+            anion,
+            resolved_config,
+        )
+
+    except SaltBridgeError as error:
+        handle_error(
+            error,
+            config=resolved_config,
+            warnings=warnings,
+            context=(
+                "Salt-bridge geometry evaluation failed for "
+                f"{make_group_label(cation)} and "
+                f"{make_group_label(anion)}"
+            ),
+        )
+
+        return None
+
+
+# =============================================================================
+# 8.8. BATCH GEOMETRY ITERATION
+# =============================================================================
+
+
+def iter_geometric_candidates(
+    cationic_groups: Iterable[ChargedGroup],
+    anionic_groups: Iterable[ChargedGroup],
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    warnings: Optional[List[str]] = None,
+) -> Iterator[
+    Tuple[ChargedGroup, ChargedGroup, SaltBridgeGeometry]
+]:
+    """
+    Yield geometrically evaluated cation-anion candidate pairs.
+
+    Candidate pairs are generated lazily. The center prefilter is applied
+    before the more expensive atom-level evaluation.
+
+    Parameters
+    ----------
+    cationic_groups
+        Positively charged groups.
+    anionic_groups
+        Negatively charged groups.
+    config
+        Salt-bridge configuration.
+    warnings
+        Optional warning collector.
+
+    Yields
+    ------
+    Tuple[ChargedGroup, ChargedGroup, SaltBridgeGeometry]
+        Cation, anion, and evaluated geometry.
+    """
+
+    resolved_config = resolve_config(config)
+
+    for cation, anion in pairwise_candidates(
+        cationic_groups,
+        anionic_groups,
+    ):
+        try:
+            if not candidate_pair_passes_center_prefilter(
+                cation,
+                anion,
+                resolved_config,
+            ):
+                continue
+
+            geometry = try_evaluate_salt_bridge_geometry(
+                cation,
+                anion,
+                resolved_config,
+                warnings=warnings,
+            )
+
+            if geometry is None:
+                continue
+
+            if (
+                geometry.valid
+                or resolved_config.preserve_invalid_candidates
+            ):
+                yield cation, anion, geometry
+
+        except SaltBridgeError as error:
+            handle_error(
+                error,
+                config=resolved_config,
+                warnings=warnings,
+                context=(
+                    "Candidate geometry processing failed for "
+                    f"{make_group_label(cation)} and "
+                    f"{make_group_label(anion)}"
+                ),
+            )
+
+
+def evaluate_group_pair_geometry(
+    first_group: ChargedGroup,
+    second_group: ChargedGroup,
+    config: Optional[SaltBridgeConfig] = None,
+) -> SaltBridgeGeometry:
+    """
+    Evaluate two oppositely charged groups regardless of input order.
+
+    Parameters
+    ----------
+    first_group
+        First charged group.
+    second_group
+        Second charged group.
+    config
+        Salt-bridge configuration.
+
+    Returns
+    -------
+    SaltBridgeGeometry
+        Evaluated geometry.
+
+    Raises
+    ------
+    InvalidInteractionError
+        If the groups do not have opposite polarities.
+    """
+
+    if first_group.is_positive and second_group.is_negative:
+        cation = first_group
+        anion = second_group
+
+    elif first_group.is_negative and second_group.is_positive:
+        cation = second_group
+        anion = first_group
+
+    else:
+        raise InvalidInteractionError(
+            "Salt-bridge geometry requires groups with opposite polarities."
+        )
+
+    return evaluate_salt_bridge_geometry(
+        cation,
+        anion,
+        config,
+    )
+
+
+
+
+
 
 
 
