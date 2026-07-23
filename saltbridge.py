@@ -24174,7 +24174,3078 @@ def build_chimerax_salt_bridge_records(
 
 
 
+# =============================================================================
+# 18. SELF-TESTS
+# =============================================================================
 
+
+# =============================================================================
+# 18.1. TEST INFRASTRUCTURE
+# =============================================================================
+
+
+@dataclass
+class _MockChain:
+    """
+    Minimal chain-like object used by salt-bridge self-tests.
+    """
+
+    chain_id: str = "A"
+
+    @property
+    def id(self) -> str:
+        """
+        Return the chain identifier.
+        """
+
+        return self.chain_id
+
+
+@dataclass
+class _MockStructure:
+    """
+    Minimal structure-like object used by salt-bridge self-tests.
+    """
+
+    name: str = "mock_structure"
+    id_string: str = "1"
+    session: Any = None
+
+    @property
+    def id(self) -> Tuple[int]:
+        """
+        Return a ChimeraX-like model identifier.
+        """
+
+        try:
+            model_id = int(
+                str(
+                    self.id_string
+                ).split(".")[0]
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            model_id = 1
+
+        return (
+            model_id,
+        )
+
+
+@dataclass
+class _MockResidue:
+    """
+    Minimal residue-like object used by salt-bridge self-tests.
+    """
+
+    name: str
+    number: int
+    chain_id: str = "A"
+    atoms: List[Any] = field(
+        default_factory=list
+    )
+    structure: Any = None
+    insertion_code: str = ""
+
+    def __post_init__(
+        self,
+    ) -> None:
+        """
+        Initialize chain and atom ownership.
+        """
+
+        self.chain = _MockChain(
+            self.chain_id
+        )
+
+        if self.structure is None:
+            self.structure = _MockStructure()
+
+        for atom in self.atoms:
+            atom.residue = self
+            atom.structure = self.structure
+
+    @property
+    def id(self) -> int:
+        """
+        Return the residue number.
+        """
+
+        return self.number
+
+    @property
+    def principal_atom(
+        self,
+    ) -> Any:
+        """
+        Return the first atom, when available.
+        """
+
+        if not self.atoms:
+            return None
+
+        return self.atoms[0]
+
+    def add_atom(
+        self,
+        atom: Any,
+    ) -> Any:
+        """
+        Add an atom and update ownership references.
+        """
+
+        atom.residue = self
+        atom.structure = self.structure
+
+        self.atoms.append(
+            atom
+        )
+
+        return atom
+
+
+@dataclass
+class _MockAtom:
+    """
+    Minimal atom-like object used by salt-bridge self-tests.
+    """
+
+    name: str
+    element: str
+    coord: Tuple[float, float, float]
+    serial_number: int = 1
+    formal_charge: Optional[float] = None
+    partial_charge: Optional[float] = None
+    residue: Any = None
+    structure: Any = None
+
+    @property
+    def coordinates(
+        self,
+    ) -> Tuple[float, float, float]:
+        """
+        Return atom coordinates.
+        """
+
+        return self.coord
+
+    @coordinates.setter
+    def coordinates(
+        self,
+        value: Sequence[float],
+    ) -> None:
+        """
+        Set atom coordinates.
+        """
+
+        self.coord = _test_coordinate_tuple(
+            value
+        )
+
+    @property
+    def scene_coord(
+        self,
+    ) -> Tuple[float, float, float]:
+        """
+        Return a ChimeraX-like scene coordinate.
+        """
+
+        return self.coord
+
+    @property
+    def serial(
+        self,
+    ) -> int:
+        """
+        Return the atom serial number.
+        """
+
+        return self.serial_number
+
+    @property
+    def idatm_type(
+        self,
+    ) -> str:
+        """
+        Return a minimal atom-type-like value.
+        """
+
+        return self.element
+
+
+@dataclass
+class _MockDockModel:
+    """
+    Minimal DockModel-like object used by integration self-tests.
+    """
+
+    source: Any
+    pose_id: Optional[
+        Union[str, int]
+    ] = None
+    model_id: Optional[
+        Union[str, int]
+    ] = None
+
+    saltbridge: List[Any] = field(
+        default_factory=list
+    )
+
+    statistics: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    score: float = 0.0
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+
+@dataclass
+class _SelfTestRecord:
+    """
+    Record describing one self-test execution.
+    """
+
+    name: str
+    passed: bool
+    duration_seconds: float = 0.0
+    message: str = ""
+    exception_type: Optional[str] = None
+
+
+@dataclass
+class _SelfTestReport:
+    """
+    Aggregated salt-bridge self-test report.
+    """
+
+    module_name: str = "saltbridge"
+    module_version: str = __version__
+
+    records: List[
+        _SelfTestRecord
+    ] = field(
+        default_factory=list
+    )
+
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    @property
+    def test_count(
+        self,
+    ) -> int:
+        """
+        Return the number of executed tests.
+        """
+
+        return len(
+            self.records
+        )
+
+    @property
+    def passed_count(
+        self,
+    ) -> int:
+        """
+        Return the number of passed tests.
+        """
+
+        return sum(
+            1
+            for record in self.records
+            if record.passed
+        )
+
+    @property
+    def failed_count(
+        self,
+    ) -> int:
+        """
+        Return the number of failed tests.
+        """
+
+        return (
+            self.test_count
+            - self.passed_count
+        )
+
+    @property
+    def success(
+        self,
+    ) -> bool:
+        """
+        Return whether all tests passed.
+        """
+
+        return (
+            self.test_count > 0
+            and self.failed_count == 0
+        )
+
+    def add_record(
+        self,
+        record: _SelfTestRecord,
+    ) -> None:
+        """
+        Add one self-test record.
+        """
+
+        if not isinstance(
+            record,
+            _SelfTestRecord,
+        ):
+            raise SaltBridgeSelfTestError(
+                "record must be a _SelfTestRecord instance."
+            )
+
+        self.records.append(
+            record
+        )
+
+    def to_dict(
+        self,
+    ) -> Dict[str, Any]:
+        """
+        Convert the report into a JSON-safe dictionary.
+        """
+
+        return {
+            "module_name": self.module_name,
+            "module_version": (
+                self.module_version
+            ),
+            "success": self.success,
+            "test_count": self.test_count,
+            "passed_count": (
+                self.passed_count
+            ),
+            "failed_count": (
+                self.failed_count
+            ),
+            "started_at": self.started_at,
+            "finished_at": (
+                self.finished_at
+            ),
+            "records": [
+                {
+                    "name": record.name,
+                    "passed": (
+                        record.passed
+                    ),
+                    "duration_seconds": (
+                        record.duration_seconds
+                    ),
+                    "message": (
+                        record.message
+                    ),
+                    "exception_type": (
+                        record.exception_type
+                    ),
+                }
+                for record in self.records
+            ],
+            "metadata": make_json_safe(
+                self.metadata
+            ),
+        }
+
+
+def _test_coordinate_tuple(
+    coordinate: Sequence[float],
+) -> Tuple[float, float, float]:
+    """
+    Convert a coordinate-like value into a three-float tuple.
+    """
+
+    if coordinate is None:
+        raise SaltBridgeSelfTestError(
+            "A coordinate is required."
+        )
+
+    try:
+        coordinate_values = tuple(
+            float(value)
+            for value in coordinate
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ) as error:
+        raise SaltBridgeSelfTestError(
+            "Invalid test coordinate."
+        ) from error
+
+    if len(
+        coordinate_values
+    ) != 3:
+        raise SaltBridgeSelfTestError(
+            "Test coordinates must contain exactly three values."
+        )
+
+    if not all(
+        math.isfinite(value)
+        for value in coordinate_values
+    ):
+        raise SaltBridgeSelfTestError(
+            "Test coordinates must be finite."
+        )
+
+    return (
+        coordinate_values[0],
+        coordinate_values[1],
+        coordinate_values[2],
+    )
+
+
+def _make_test_atom(
+    name: str,
+    element: str,
+    coordinate: Sequence[float],
+    *,
+    serial_number: int = 1,
+    formal_charge: Optional[float] = None,
+    partial_charge: Optional[float] = None,
+    residue: Optional[
+        _MockResidue
+    ] = None,
+) -> _MockAtom:
+    """
+    Create one atom for salt-bridge self-tests.
+    """
+
+    atom = _MockAtom(
+        name=str(name),
+        element=str(element),
+        coord=_test_coordinate_tuple(
+            coordinate
+        ),
+        serial_number=int(
+            serial_number
+        ),
+        formal_charge=(
+            formal_charge
+        ),
+        partial_charge=(
+            partial_charge
+        ),
+        residue=residue,
+        structure=(
+            residue.structure
+            if residue is not None
+            else None
+        ),
+    )
+
+    if (
+        residue is not None
+        and atom not in residue.atoms
+    ):
+        residue.add_atom(
+            atom
+        )
+
+    return atom
+
+
+def _make_test_residue(
+    name: str,
+    number: int,
+    *,
+    chain_id: str = "A",
+    structure: Optional[
+        _MockStructure
+    ] = None,
+) -> _MockResidue:
+    """
+    Create an empty residue for salt-bridge self-tests.
+    """
+
+    return _MockResidue(
+        name=str(
+            name
+        ).upper(),
+        number=int(
+            number
+        ),
+        chain_id=str(
+            chain_id
+        ),
+        atoms=[],
+        structure=(
+            structure
+            if structure is not None
+            else _MockStructure()
+        ),
+    )
+
+
+def _make_test_structure(
+    *,
+    name: str = "mock_structure",
+    model_id: Union[str, int] = 1,
+) -> _MockStructure:
+    """
+    Create a structure-like object for self-tests.
+    """
+
+    return _MockStructure(
+        name=name,
+        id_string=str(
+            model_id
+        ),
+    )
+
+
+def _translate_coordinate(
+    coordinate: Sequence[float],
+    translation: Sequence[float],
+) -> Tuple[float, float, float]:
+    """
+    Translate one three-dimensional coordinate.
+    """
+
+    point = _test_coordinate_tuple(
+        coordinate
+    )
+
+    shift = _test_coordinate_tuple(
+        translation
+    )
+
+    return (
+        point[0] + shift[0],
+        point[1] + shift[1],
+        point[2] + shift[2],
+    )
+
+
+def _rotate_coordinate_z(
+    coordinate: Sequence[float],
+    angle_degrees: float,
+    *,
+    origin: Sequence[float] = (
+        0.0,
+        0.0,
+        0.0,
+    ),
+) -> Tuple[float, float, float]:
+    """
+    Rotate one coordinate around the z axis.
+    """
+
+    point = _test_coordinate_tuple(
+        coordinate
+    )
+
+    rotation_origin = (
+        _test_coordinate_tuple(
+            origin
+        )
+    )
+
+    angle_radians = math.radians(
+        float(
+            angle_degrees
+        )
+    )
+
+    cosine = math.cos(
+        angle_radians
+    )
+
+    sine = math.sin(
+        angle_radians
+    )
+
+    relative_x = (
+        point[0]
+        - rotation_origin[0]
+    )
+
+    relative_y = (
+        point[1]
+        - rotation_origin[1]
+    )
+
+    rotated_x = (
+        relative_x * cosine
+        - relative_y * sine
+    )
+
+    rotated_y = (
+        relative_x * sine
+        + relative_y * cosine
+    )
+
+    return (
+        rotated_x
+        + rotation_origin[0],
+        rotated_y
+        + rotation_origin[1],
+        point[2],
+    )
+
+
+def _transform_test_atoms(
+    atoms: Iterable[_MockAtom],
+    *,
+    translation: Sequence[float] = (
+        0.0,
+        0.0,
+        0.0,
+    ),
+    rotation_z_degrees: float = 0.0,
+    origin: Sequence[float] = (
+        0.0,
+        0.0,
+        0.0,
+    ),
+    in_place: bool = False,
+) -> List[_MockAtom]:
+    """
+    Apply rotation and translation to test atoms.
+    """
+
+    transformed_atoms: List[
+        _MockAtom
+    ] = []
+
+    for atom in atoms:
+        rotated_coordinate = (
+            _rotate_coordinate_z(
+                atom.coord,
+                rotation_z_degrees,
+                origin=origin,
+            )
+        )
+
+        transformed_coordinate = (
+            _translate_coordinate(
+                rotated_coordinate,
+                translation,
+            )
+        )
+
+        if in_place:
+            atom.coord = (
+                transformed_coordinate
+            )
+
+            transformed_atom = atom
+
+        else:
+            transformed_atom = (
+                _make_test_atom(
+                    atom.name,
+                    atom.element,
+                    transformed_coordinate,
+                    serial_number=(
+                        atom.serial_number
+                    ),
+                    formal_charge=(
+                        atom.formal_charge
+                    ),
+                    partial_charge=(
+                        atom.partial_charge
+                    ),
+                )
+            )
+
+        transformed_atoms.append(
+            transformed_atom
+        )
+
+    return transformed_atoms
+
+
+def _make_mock_lysine(
+    *,
+    number: int = 10,
+    chain_id: str = "A",
+    nz_coordinate: Sequence[float] = (
+        0.0,
+        0.0,
+        0.0,
+    ),
+    structure: Optional[
+        _MockStructure
+    ] = None,
+) -> _MockResidue:
+    """
+    Create a minimal positively charged lysine residue.
+    """
+
+    residue = _make_test_residue(
+        "LYS",
+        number,
+        chain_id=chain_id,
+        structure=structure,
+    )
+
+    nz = _make_test_atom(
+        "NZ",
+        "N",
+        nz_coordinate,
+        serial_number=1,
+        formal_charge=1.0,
+        residue=residue,
+    )
+
+    _make_test_atom(
+        "CE",
+        "C",
+        _translate_coordinate(
+            nz_coordinate,
+            (
+                -1.45,
+                0.0,
+                0.0,
+            ),
+        ),
+        serial_number=2,
+        residue=residue,
+    )
+
+    assert nz in residue.atoms
+
+    return residue
+
+
+def _make_mock_arginine(
+    *,
+    number: int = 20,
+    chain_id: str = "A",
+    center: Sequence[float] = (
+        0.0,
+        0.0,
+        0.0,
+    ),
+    structure: Optional[
+        _MockStructure
+    ] = None,
+) -> _MockResidue:
+    """
+    Create a minimal positively charged arginine residue.
+    """
+
+    residue = _make_test_residue(
+        "ARG",
+        number,
+        chain_id=chain_id,
+        structure=structure,
+    )
+
+    center_coordinate = (
+        _test_coordinate_tuple(
+            center
+        )
+    )
+
+    _make_test_atom(
+        "CZ",
+        "C",
+        center_coordinate,
+        serial_number=1,
+        residue=residue,
+    )
+
+    _make_test_atom(
+        "NE",
+        "N",
+        _translate_coordinate(
+            center_coordinate,
+            (
+                -1.25,
+                0.0,
+                0.0,
+            ),
+        ),
+        serial_number=2,
+        partial_charge=0.33,
+        residue=residue,
+    )
+
+    _make_test_atom(
+        "NH1",
+        "N",
+        _translate_coordinate(
+            center_coordinate,
+            (
+                0.65,
+                1.05,
+                0.0,
+            ),
+        ),
+        serial_number=3,
+        partial_charge=0.33,
+        residue=residue,
+    )
+
+    _make_test_atom(
+        "NH2",
+        "N",
+        _translate_coordinate(
+            center_coordinate,
+            (
+                0.65,
+                -1.05,
+                0.0,
+            ),
+        ),
+        serial_number=4,
+        partial_charge=0.34,
+        residue=residue,
+    )
+
+    return residue
+
+
+def _make_mock_hip(
+    *,
+    number: int = 30,
+    chain_id: str = "A",
+    center: Sequence[float] = (
+        0.0,
+        0.0,
+        0.0,
+    ),
+    structure: Optional[
+        _MockStructure
+    ] = None,
+) -> _MockResidue:
+    """
+    Create a minimal protonated histidine residue.
+    """
+
+    residue = _make_test_residue(
+        "HIP",
+        number,
+        chain_id=chain_id,
+        structure=structure,
+    )
+
+    center_coordinate = (
+        _test_coordinate_tuple(
+            center
+        )
+    )
+
+    atom_definitions = (
+        (
+            "CG",
+            "C",
+            (
+                -1.0,
+                0.0,
+                0.0,
+            ),
+        ),
+        (
+            "ND1",
+            "N",
+            (
+                -0.30,
+                1.0,
+                0.0,
+            ),
+        ),
+        (
+            "CE1",
+            "C",
+            (
+                0.90,
+                0.65,
+                0.0,
+            ),
+        ),
+        (
+            "NE2",
+            "N",
+            (
+                0.90,
+                -0.65,
+                0.0,
+            ),
+        ),
+        (
+            "CD2",
+            "C",
+            (
+                -0.30,
+                -1.0,
+                0.0,
+            ),
+        ),
+    )
+
+    for serial_number, (
+        atom_name,
+        element,
+        offset,
+    ) in enumerate(
+        atom_definitions,
+        start=1,
+    ):
+        partial_charge = (
+            0.50
+            if atom_name in {
+                "ND1",
+                "NE2",
+            }
+            else None
+        )
+
+        _make_test_atom(
+            atom_name,
+            element,
+            _translate_coordinate(
+                center_coordinate,
+                offset,
+            ),
+            serial_number=(
+                serial_number
+            ),
+            partial_charge=(
+                partial_charge
+            ),
+            residue=residue,
+        )
+
+    return residue
+
+
+def _make_mock_aspartate(
+    *,
+    number: int = 40,
+    chain_id: str = "B",
+    center: Sequence[float] = (
+        3.0,
+        0.0,
+        0.0,
+    ),
+    structure: Optional[
+        _MockStructure
+    ] = None,
+) -> _MockResidue:
+    """
+    Create a minimal negatively charged aspartate residue.
+    """
+
+    residue = _make_test_residue(
+        "ASP",
+        number,
+        chain_id=chain_id,
+        structure=structure,
+    )
+
+    center_coordinate = (
+        _test_coordinate_tuple(
+            center
+        )
+    )
+
+    _make_test_atom(
+        "CG",
+        "C",
+        center_coordinate,
+        serial_number=1,
+        residue=residue,
+    )
+
+    _make_test_atom(
+        "OD1",
+        "O",
+        _translate_coordinate(
+            center_coordinate,
+            (
+                0.0,
+                0.65,
+                0.0,
+            ),
+        ),
+        serial_number=2,
+        partial_charge=-0.50,
+        residue=residue,
+    )
+
+    _make_test_atom(
+        "OD2",
+        "O",
+        _translate_coordinate(
+            center_coordinate,
+            (
+                0.0,
+                -0.65,
+                0.0,
+            ),
+        ),
+        serial_number=3,
+        partial_charge=-0.50,
+        residue=residue,
+    )
+
+    return residue
+
+
+def _make_mock_glutamate(
+    *,
+    number: int = 50,
+    chain_id: str = "B",
+    center: Sequence[float] = (
+        3.0,
+        0.0,
+        0.0,
+    ),
+    structure: Optional[
+        _MockStructure
+    ] = None,
+) -> _MockResidue:
+    """
+    Create a minimal negatively charged glutamate residue.
+    """
+
+    residue = _make_test_residue(
+        "GLU",
+        number,
+        chain_id=chain_id,
+        structure=structure,
+    )
+
+    center_coordinate = (
+        _test_coordinate_tuple(
+            center
+        )
+    )
+
+    _make_test_atom(
+        "CD",
+        "C",
+        center_coordinate,
+        serial_number=1,
+        residue=residue,
+    )
+
+    _make_test_atom(
+        "OE1",
+        "O",
+        _translate_coordinate(
+            center_coordinate,
+            (
+                0.0,
+                0.65,
+                0.0,
+            ),
+        ),
+        serial_number=2,
+        partial_charge=-0.50,
+        residue=residue,
+    )
+
+    _make_test_atom(
+        "OE2",
+        "O",
+        _translate_coordinate(
+            center_coordinate,
+            (
+                0.0,
+                -0.65,
+                0.0,
+            ),
+        ),
+        serial_number=3,
+        partial_charge=-0.50,
+        residue=residue,
+    )
+
+    return residue
+
+
+def _make_mock_cationic_ligand(
+    *,
+    residue_name: str = "LIG",
+    number: int = 101,
+    chain_id: str = "L",
+    center: Sequence[float] = (
+        0.0,
+        0.0,
+        0.0,
+    ),
+    formal_charge: float = 1.0,
+    structure: Optional[
+        _MockStructure
+    ] = None,
+) -> _MockResidue:
+    """
+    Create a minimal ligand containing a cationic nitrogen.
+    """
+
+    residue = _make_test_residue(
+        residue_name,
+        number,
+        chain_id=chain_id,
+        structure=structure,
+    )
+
+    center_coordinate = (
+        _test_coordinate_tuple(
+            center
+        )
+    )
+
+    _make_test_atom(
+        "N1",
+        "N",
+        center_coordinate,
+        serial_number=1,
+        formal_charge=(
+            formal_charge
+        ),
+        residue=residue,
+    )
+
+    for serial_number, offset in enumerate(
+        (
+            (
+                1.4,
+                0.0,
+                0.0,
+            ),
+            (
+                -0.7,
+                1.2,
+                0.0,
+            ),
+            (
+                -0.7,
+                -1.2,
+                0.0,
+            ),
+        ),
+        start=2,
+    ):
+        _make_test_atom(
+            f"C{serial_number - 1}",
+            "C",
+            _translate_coordinate(
+                center_coordinate,
+                offset,
+            ),
+            serial_number=(
+                serial_number
+            ),
+            residue=residue,
+        )
+
+    return residue
+
+
+def _make_mock_carboxylate_ligand(
+    *,
+    residue_name: str = "LIG",
+    number: int = 102,
+    chain_id: str = "L",
+    center: Sequence[float] = (
+        3.0,
+        0.0,
+        0.0,
+    ),
+    structure: Optional[
+        _MockStructure
+    ] = None,
+) -> _MockResidue:
+    """
+    Create a minimal ligand carboxylate.
+    """
+
+    residue = _make_test_residue(
+        residue_name,
+        number,
+        chain_id=chain_id,
+        structure=structure,
+    )
+
+    center_coordinate = (
+        _test_coordinate_tuple(
+            center
+        )
+    )
+
+    _make_test_atom(
+        "C1",
+        "C",
+        center_coordinate,
+        serial_number=1,
+        residue=residue,
+    )
+
+    _make_test_atom(
+        "O1",
+        "O",
+        _translate_coordinate(
+            center_coordinate,
+            (
+                0.0,
+                0.65,
+                0.0,
+            ),
+        ),
+        serial_number=2,
+        partial_charge=-0.50,
+        residue=residue,
+    )
+
+    _make_test_atom(
+        "O2",
+        "O",
+        _translate_coordinate(
+            center_coordinate,
+            (
+                0.0,
+                -0.65,
+                0.0,
+            ),
+        ),
+        serial_number=3,
+        partial_charge=-0.50,
+        residue=residue,
+    )
+
+    return residue
+
+
+def _make_mock_phosphate_ligand(
+    *,
+    residue_name: str = "LIG",
+    number: int = 103,
+    chain_id: str = "L",
+    center: Sequence[float] = (
+        3.0,
+        0.0,
+        0.0,
+    ),
+    structure: Optional[
+        _MockStructure
+    ] = None,
+) -> _MockResidue:
+    """
+    Create a minimal ligand phosphate group.
+    """
+
+    residue = _make_test_residue(
+        residue_name,
+        number,
+        chain_id=chain_id,
+        structure=structure,
+    )
+
+    center_coordinate = (
+        _test_coordinate_tuple(
+            center
+        )
+    )
+
+    _make_test_atom(
+        "P1",
+        "P",
+        center_coordinate,
+        serial_number=1,
+        formal_charge=0.0,
+        residue=residue,
+    )
+
+    phosphate_offsets = (
+        (
+            1.0,
+            0.0,
+            0.0,
+        ),
+        (
+            -1.0,
+            0.0,
+            0.0,
+        ),
+        (
+            0.0,
+            1.0,
+            0.0,
+        ),
+        (
+            0.0,
+            -1.0,
+            0.0,
+        ),
+    )
+
+    for serial_number, offset in enumerate(
+        phosphate_offsets,
+        start=2,
+    ):
+        _make_test_atom(
+            f"O{serial_number - 1}",
+            "O",
+            _translate_coordinate(
+                center_coordinate,
+                offset,
+            ),
+            serial_number=(
+                serial_number
+            ),
+            partial_charge=-0.50,
+            residue=residue,
+        )
+
+    return residue
+
+
+def _make_mock_sulfonate_ligand(
+    *,
+    residue_name: str = "LIG",
+    number: int = 104,
+    chain_id: str = "L",
+    center: Sequence[float] = (
+        3.0,
+        0.0,
+        0.0,
+    ),
+    structure: Optional[
+        _MockStructure
+    ] = None,
+) -> _MockResidue:
+    """
+    Create a minimal ligand sulfonate group.
+    """
+
+    residue = _make_test_residue(
+        residue_name,
+        number,
+        chain_id=chain_id,
+        structure=structure,
+    )
+
+    center_coordinate = (
+        _test_coordinate_tuple(
+            center
+        )
+    )
+
+    _make_test_atom(
+        "S1",
+        "S",
+        center_coordinate,
+        serial_number=1,
+        residue=residue,
+    )
+
+    sulfonate_offsets = (
+        (
+            1.0,
+            0.0,
+            0.0,
+        ),
+        (
+            -0.5,
+            0.866,
+            0.0,
+        ),
+        (
+            -0.5,
+            -0.866,
+            0.0,
+        ),
+    )
+
+    for serial_number, offset in enumerate(
+        sulfonate_offsets,
+        start=2,
+    ):
+        _make_test_atom(
+            f"O{serial_number - 1}",
+            "O",
+            _translate_coordinate(
+                center_coordinate,
+                offset,
+            ),
+            serial_number=(
+                serial_number
+            ),
+            partial_charge=(
+                -1.0 / 3.0
+            ),
+            residue=residue,
+        )
+
+    return residue
+
+
+def _make_mock_neutral_ligand(
+    *,
+    residue_name: str = "LIG",
+    number: int = 105,
+    chain_id: str = "L",
+    center: Sequence[float] = (
+        0.0,
+        0.0,
+        0.0,
+    ),
+    structure: Optional[
+        _MockStructure
+    ] = None,
+) -> _MockResidue:
+    """
+    Create a neutral ligand used in negative tests.
+    """
+
+    residue = _make_test_residue(
+        residue_name,
+        number,
+        chain_id=chain_id,
+        structure=structure,
+    )
+
+    center_coordinate = (
+        _test_coordinate_tuple(
+            center
+        )
+    )
+
+    _make_test_atom(
+        "C1",
+        "C",
+        center_coordinate,
+        serial_number=1,
+        residue=residue,
+    )
+
+    _make_test_atom(
+        "O1",
+        "O",
+        _translate_coordinate(
+            center_coordinate,
+            (
+                1.3,
+                0.0,
+                0.0,
+            ),
+        ),
+        serial_number=2,
+        partial_charge=-0.20,
+        residue=residue,
+    )
+
+    _make_test_atom(
+        "N1",
+        "N",
+        _translate_coordinate(
+            center_coordinate,
+            (
+                -1.3,
+                0.0,
+                0.0,
+            ),
+        ),
+        serial_number=3,
+        partial_charge=0.20,
+        residue=residue,
+    )
+
+    return residue
+
+
+def _make_test_source(
+    residues: Iterable[
+        _MockResidue
+    ],
+) -> List[_MockResidue]:
+    """
+    Materialize a residue collection used as a test source.
+    """
+
+    return list(
+        residues
+    )
+
+
+def _make_test_charged_atom(
+    *,
+    name: str,
+    element: str,
+    coordinate: Sequence[float],
+    polarity: str,
+    effective_charge: float,
+    source: str = "self_test",
+    residue: Optional[
+        _MockResidue
+    ] = None,
+    serial_number: int = 1,
+) -> ChargedAtom:
+    """
+    Create a ChargedAtom dataclass for direct tests.
+    """
+
+    atom = _make_test_atom(
+        name,
+        element,
+        coordinate,
+        serial_number=(
+            serial_number
+        ),
+        formal_charge=(
+            effective_charge
+        ),
+        residue=residue,
+    )
+
+    return ChargedAtom(
+        atom=atom,
+        residue=residue,
+        name=name,
+        element=element,
+        coordinate=(
+            _test_coordinate_tuple(
+                coordinate
+            )
+        ),
+        formal_charge=(
+            effective_charge
+        ),
+        partial_charge=None,
+        effective_charge=(
+            effective_charge
+        ),
+        polarity=polarity,
+        source=source,
+        metadata={
+            "self_test": True,
+        },
+    )
+
+
+def _make_test_charged_group(
+    *,
+    group_id: str,
+    group_type: str,
+    polarity: str,
+    center: Sequence[float],
+    net_charge: float,
+    atom_names: Optional[
+        Sequence[str]
+    ] = None,
+    residue: Optional[
+        _MockResidue
+    ] = None,
+    confidence: float = 1.0,
+    source: str = "self_test",
+) -> ChargedGroup:
+    """
+    Create a ChargedGroup dataclass for direct tests.
+    """
+
+    center_coordinate = (
+        _test_coordinate_tuple(
+            center
+        )
+    )
+
+    if atom_names is None:
+        atom_names = (
+            "N1",
+        ) if polarity == "positive" else (
+            "O1",
+        )
+
+    charged_atoms: List[
+        ChargedAtom
+    ] = []
+
+    atom_count = len(
+        atom_names
+    )
+
+    charge_per_atom = (
+        net_charge / atom_count
+        if atom_count > 0
+        else net_charge
+    )
+
+    for atom_index, atom_name in enumerate(
+        atom_names,
+        start=1,
+    ):
+        angle = (
+            2.0
+            * math.pi
+            * (
+                atom_index - 1
+            )
+            / max(
+                atom_count,
+                1,
+            )
+        )
+
+        coordinate = (
+            center_coordinate[0]
+            + 0.30
+            * math.cos(
+                angle
+            ),
+            center_coordinate[1]
+            + 0.30
+            * math.sin(
+                angle
+            ),
+            center_coordinate[2],
+        )
+
+        element = (
+            "N"
+            if polarity == "positive"
+            else "O"
+        )
+
+        charged_atoms.append(
+            _make_test_charged_atom(
+                name=atom_name,
+                element=element,
+                coordinate=coordinate,
+                polarity=polarity,
+                effective_charge=(
+                    charge_per_atom
+                ),
+                source=source,
+                residue=residue,
+                serial_number=(
+                    atom_index
+                ),
+            )
+        )
+
+    representative_atom = (
+        charged_atoms[0].atom
+        if charged_atoms
+        else None
+    )
+
+    return ChargedGroup(
+        group_id=group_id,
+        group_type=group_type,
+        polarity=polarity,
+        atoms=charged_atoms,
+        residue=residue,
+        center=center_coordinate,
+        net_charge=net_charge,
+        representative_atom=(
+            representative_atom
+        ),
+        source=source,
+        confidence=confidence,
+        metadata={
+            "self_test": True,
+        },
+    )
+
+
+def _make_test_cation_group(
+    *,
+    group_id: str = "test_cation",
+    center: Sequence[float] = (
+        0.0,
+        0.0,
+        0.0,
+    ),
+    group_type: str = "ammonium",
+    residue: Optional[
+        _MockResidue
+    ] = None,
+    net_charge: float = 1.0,
+) -> ChargedGroup:
+    """
+    Create a positive charged group for tests.
+    """
+
+    return _make_test_charged_group(
+        group_id=group_id,
+        group_type=group_type,
+        polarity="positive",
+        center=center,
+        net_charge=net_charge,
+        atom_names=(
+            "N1",
+        ),
+        residue=residue,
+    )
+
+
+def _make_test_anion_group(
+    *,
+    group_id: str = "test_anion",
+    center: Sequence[float] = (
+        3.0,
+        0.0,
+        0.0,
+    ),
+    group_type: str = "carboxylate",
+    residue: Optional[
+        _MockResidue
+    ] = None,
+    net_charge: float = -1.0,
+) -> ChargedGroup:
+    """
+    Create a negative charged group for tests.
+    """
+
+    return _make_test_charged_group(
+        group_id=group_id,
+        group_type=group_type,
+        polarity="negative",
+        center=center,
+        net_charge=net_charge,
+        atom_names=(
+            "O1",
+            "O2",
+        ),
+        residue=residue,
+    )
+
+
+def _make_test_geometry(
+    *,
+    center_distance: float = 3.0,
+    minimum_atom_distance: float = 2.7,
+    maximum_atom_distance: float = 3.3,
+    mean_atom_distance: float = 3.0,
+    contact_count: int = 1,
+    valid: bool = True,
+    rejection_reason: Optional[str] = None,
+    positive_atom: Any = None,
+    negative_atom: Any = None,
+) -> SaltBridgeGeometry:
+    """
+    Create SaltBridgeGeometry for direct tests.
+    """
+
+    return SaltBridgeGeometry(
+        center_distance=float(
+            center_distance
+        ),
+        minimum_atom_distance=float(
+            minimum_atom_distance
+        ),
+        maximum_atom_distance=float(
+            maximum_atom_distance
+        ),
+        mean_atom_distance=float(
+            mean_atom_distance
+        ),
+        contact_count=int(
+            contact_count
+        ),
+        closest_positive_atom=(
+            positive_atom
+        ),
+        closest_negative_atom=(
+            negative_atom
+        ),
+        valid=bool(
+            valid
+        ),
+        rejection_reason=(
+            rejection_reason
+        ),
+    )
+
+
+def _make_test_interaction(
+    *,
+    interaction_id: str = (
+        "salt_bridge_test_001"
+    ),
+    cation: Optional[
+        ChargedGroup
+    ] = None,
+    anion: Optional[
+        ChargedGroup
+    ] = None,
+    geometry: Optional[
+        SaltBridgeGeometry
+    ] = None,
+    interaction_type: str = SALT_BRIDGE,
+    strength: str = STRENGTH_STRONG,
+    score: float = 1.0,
+    pose_id: Optional[
+        Union[str, int]
+    ] = 1,
+    model_id: Optional[
+        Union[str, int]
+    ] = "model_1",
+) -> SaltBridgeInteraction:
+    """
+    Create SaltBridgeInteraction for direct tests.
+    """
+
+    resolved_cation = (
+        cation
+        if cation is not None
+        else _make_test_cation_group()
+    )
+
+    resolved_anion = (
+        anion
+        if anion is not None
+        else _make_test_anion_group()
+    )
+
+    if geometry is None:
+        positive_atom = (
+            resolved_cation
+            .representative_atom
+        )
+
+        negative_atom = (
+            resolved_anion
+            .representative_atom
+        )
+
+        geometry = _make_test_geometry(
+            positive_atom=(
+                positive_atom
+            ),
+            negative_atom=(
+                negative_atom
+            ),
+        )
+
+    return SaltBridgeInteraction(
+        interaction_id=interaction_id,
+        interaction_type=(
+            interaction_type
+        ),
+        cation=resolved_cation,
+        anion=resolved_anion,
+        geometry=geometry,
+        strength=strength,
+        score=float(
+            score
+        ),
+        pose_id=pose_id,
+        model_id=model_id,
+        metadata={
+            "self_test": True,
+        },
+    )
+
+
+def _make_test_result(
+    *,
+    interactions: Optional[
+        Iterable[
+            SaltBridgeInteraction
+        ]
+    ] = None,
+    cationic_groups: Optional[
+        Iterable[ChargedGroup]
+    ] = None,
+    anionic_groups: Optional[
+        Iterable[ChargedGroup]
+    ] = None,
+    pose_id: Optional[
+        Union[str, int]
+    ] = 1,
+    model_id: Optional[
+        Union[str, int]
+    ] = "model_1",
+) -> SaltBridgeResult:
+    """
+    Create SaltBridgeResult for direct tests.
+    """
+
+    interaction_list = (
+        list(
+            interactions
+        )
+        if interactions is not None
+        else [
+            _make_test_interaction(
+                pose_id=pose_id,
+                model_id=model_id,
+            )
+        ]
+    )
+
+    if cationic_groups is None:
+        cationic_group_list = (
+            unique_preserve_order(
+                interaction.cation
+                for interaction
+                in interaction_list
+            )
+        )
+
+    else:
+        cationic_group_list = list(
+            cationic_groups
+        )
+
+    if anionic_groups is None:
+        anionic_group_list = (
+            unique_preserve_order(
+                interaction.anion
+                for interaction
+                in interaction_list
+            )
+        )
+
+    else:
+        anionic_group_list = list(
+            anionic_groups
+        )
+
+    return SaltBridgeResult(
+        interactions=interaction_list,
+        cationic_groups=list(
+            cationic_group_list
+        ),
+        anionic_groups=list(
+            anionic_group_list
+        ),
+        statistics={},
+        pose_id=pose_id,
+        model_id=model_id,
+        warnings=[],
+        metadata={
+            "self_test": True,
+        },
+    )
+
+
+def _make_test_pose_results(
+    *,
+    pose_count: int = 3,
+) -> List[SaltBridgeResult]:
+    """
+    Create multiple pose results for persistence and ranking tests.
+    """
+
+    if pose_count < 1:
+        raise SaltBridgeSelfTestError(
+            "pose_count must be at least one."
+        )
+
+    results: List[
+        SaltBridgeResult
+    ] = []
+
+    for pose_index in range(
+        1,
+        pose_count + 1,
+    ):
+        cation_residue = (
+            _make_mock_lysine(
+                number=10,
+                chain_id="A",
+            )
+        )
+
+        anion_residue = (
+            _make_mock_aspartate(
+                number=40,
+                chain_id="B",
+                center=(
+                    2.8
+                    + 0.15
+                    * pose_index,
+                    0.0,
+                    0.0,
+                ),
+            )
+        )
+
+        cation_group = (
+            _make_test_cation_group(
+                group_id=(
+                    f"cation_pose_{pose_index}"
+                ),
+                center=(
+                    0.0,
+                    0.0,
+                    0.0,
+                ),
+                residue=(
+                    cation_residue
+                ),
+            )
+        )
+
+        anion_group = (
+            _make_test_anion_group(
+                group_id=(
+                    f"anion_pose_{pose_index}"
+                ),
+                center=(
+                    2.8
+                    + 0.15
+                    * pose_index,
+                    0.0,
+                    0.0,
+                ),
+                residue=(
+                    anion_residue
+                ),
+            )
+        )
+
+        score = (
+            1.0
+            + 0.25
+            * pose_index
+        )
+
+        interaction = (
+            _make_test_interaction(
+                interaction_id=(
+                    "persistent_salt_bridge_"
+                    f"{pose_index}"
+                ),
+                cation=(
+                    cation_group
+                ),
+                anion=(
+                    anion_group
+                ),
+                score=score,
+                pose_id=(
+                    pose_index
+                ),
+                model_id=(
+                    f"model_{pose_index}"
+                ),
+            )
+        )
+
+        results.append(
+            _make_test_result(
+                interactions=[
+                    interaction
+                ],
+                pose_id=pose_index,
+                model_id=(
+                    f"model_{pose_index}"
+                ),
+            )
+        )
+
+    return results
+
+
+def _assert_true(
+    condition: Any,
+    message: str = (
+        "Expected condition to be true."
+    ),
+) -> None:
+    """
+    Assert that a condition evaluates to true.
+    """
+
+    if not condition:
+        raise SaltBridgeSelfTestError(
+            message
+        )
+
+
+def _assert_false(
+    condition: Any,
+    message: str = (
+        "Expected condition to be false."
+    ),
+) -> None:
+    """
+    Assert that a condition evaluates to false.
+    """
+
+    if condition:
+        raise SaltBridgeSelfTestError(
+            message
+        )
+
+
+def _assert_equal(
+    actual: Any,
+    expected: Any,
+    message: Optional[str] = None,
+) -> None:
+    """
+    Assert strict equality.
+    """
+
+    if actual != expected:
+        raise SaltBridgeSelfTestError(
+            message
+            or (
+                "Values are not equal: "
+                f"actual={actual!r}, "
+                f"expected={expected!r}."
+            )
+        )
+
+
+def _assert_not_equal(
+    actual: Any,
+    unexpected: Any,
+    message: Optional[str] = None,
+) -> None:
+    """
+    Assert inequality.
+    """
+
+    if actual == unexpected:
+        raise SaltBridgeSelfTestError(
+            message
+            or (
+                "Values unexpectedly match: "
+                f"value={actual!r}."
+            )
+        )
+
+
+def _assert_is_none(
+    value: Any,
+    message: str = (
+        "Expected value to be None."
+    ),
+) -> None:
+    """
+    Assert that a value is None.
+    """
+
+    if value is not None:
+        raise SaltBridgeSelfTestError(
+            message
+        )
+
+
+def _assert_is_not_none(
+    value: Any,
+    message: str = (
+        "Expected a non-None value."
+    ),
+) -> None:
+    """
+    Assert that a value is not None.
+    """
+
+    if value is None:
+        raise SaltBridgeSelfTestError(
+            message
+        )
+
+
+def _assert_is_instance(
+    value: Any,
+    expected_type: Any,
+    message: Optional[str] = None,
+) -> None:
+    """
+    Assert an object's type.
+    """
+
+    if not isinstance(
+        value,
+        expected_type,
+    ):
+        raise SaltBridgeSelfTestError(
+            message
+            or (
+                "Unexpected object type: "
+                f"actual={type(value).__name__}, "
+                f"expected={expected_type}."
+            )
+        )
+
+
+def _assert_length(
+    value: Any,
+    expected_length: int,
+    message: Optional[str] = None,
+) -> None:
+    """
+    Assert collection length.
+    """
+
+    try:
+        actual_length = len(
+            value
+        )
+
+    except TypeError as error:
+        raise SaltBridgeSelfTestError(
+            "Object has no measurable length."
+        ) from error
+
+    if actual_length != expected_length:
+        raise SaltBridgeSelfTestError(
+            message
+            or (
+                "Unexpected collection length: "
+                f"actual={actual_length}, "
+                f"expected={expected_length}."
+            )
+        )
+
+
+def _assert_empty(
+    value: Any,
+    message: str = (
+        "Expected an empty value."
+    ),
+) -> None:
+    """
+    Assert an empty collection.
+    """
+
+    _assert_length(
+        value,
+        0,
+        message,
+    )
+
+
+def _assert_not_empty(
+    value: Any,
+    message: str = (
+        "Expected a non-empty value."
+    ),
+) -> None:
+    """
+    Assert a non-empty collection.
+    """
+
+    try:
+        value_length = len(
+            value
+        )
+
+    except TypeError as error:
+        raise SaltBridgeSelfTestError(
+            "Object has no measurable length."
+        ) from error
+
+    if value_length == 0:
+        raise SaltBridgeSelfTestError(
+            message
+        )
+
+
+def _assert_almost_equal(
+    actual: Any,
+    expected: Any,
+    *,
+    tolerance: float = 1e-6,
+    message: Optional[str] = None,
+) -> None:
+    """
+    Assert approximate numeric equality.
+    """
+
+    actual_value = safe_float(
+        actual
+    )
+
+    expected_value = safe_float(
+        expected
+    )
+
+    if (
+        actual_value is None
+        or expected_value is None
+    ):
+        raise SaltBridgeSelfTestError(
+            message
+            or (
+                "Approximate comparison requires "
+                "numeric values."
+            )
+        )
+
+    if not math.isclose(
+        actual_value,
+        expected_value,
+        rel_tol=tolerance,
+        abs_tol=tolerance,
+    ):
+        raise SaltBridgeSelfTestError(
+            message
+            or (
+                "Numeric values differ: "
+                f"actual={actual_value}, "
+                f"expected={expected_value}, "
+                f"tolerance={tolerance}."
+            )
+        )
+
+
+def _assert_sequence_almost_equal(
+    actual: Sequence[Any],
+    expected: Sequence[Any],
+    *,
+    tolerance: float = 1e-6,
+    message: Optional[str] = None,
+) -> None:
+    """
+    Assert approximate equality between numeric sequences.
+    """
+
+    actual_values = list(
+        actual
+    )
+
+    expected_values = list(
+        expected
+    )
+
+    if len(
+        actual_values
+    ) != len(
+        expected_values
+    ):
+        raise SaltBridgeSelfTestError(
+            message
+            or (
+                "Sequences have different lengths."
+            )
+        )
+
+    for index, (
+        actual_value,
+        expected_value,
+    ) in enumerate(
+        zip(
+            actual_values,
+            expected_values,
+        )
+    ):
+        _assert_almost_equal(
+            actual_value,
+            expected_value,
+            tolerance=tolerance,
+            message=(
+                message
+                or (
+                    "Sequence values differ "
+                    f"at index {index}."
+                )
+            ),
+        )
+
+
+def _assert_between(
+    value: Any,
+    minimum: float,
+    maximum: float,
+    *,
+    inclusive: bool = True,
+    message: Optional[str] = None,
+) -> None:
+    """
+    Assert that a numeric value lies within a range.
+    """
+
+    numeric_value = safe_float(
+        value
+    )
+
+    if numeric_value is None:
+        raise SaltBridgeSelfTestError(
+            "Range assertion requires a numeric value."
+        )
+
+    if inclusive:
+        valid = (
+            minimum
+            <= numeric_value
+            <= maximum
+        )
+
+    else:
+        valid = (
+            minimum
+            < numeric_value
+            < maximum
+        )
+
+    if not valid:
+        raise SaltBridgeSelfTestError(
+            message
+            or (
+                "Value lies outside expected range: "
+                f"value={numeric_value}, "
+                f"minimum={minimum}, "
+                f"maximum={maximum}."
+            )
+        )
+
+
+def _assert_contains(
+    container: Any,
+    expected_item: Any,
+    message: Optional[str] = None,
+) -> None:
+    """
+    Assert that a container includes an item.
+    """
+
+    if expected_item not in container:
+        raise SaltBridgeSelfTestError(
+            message
+            or (
+                f"Expected item {expected_item!r} "
+                "was not found."
+            )
+        )
+
+
+def _assert_mapping_contains_keys(
+    mapping: Mapping[str, Any],
+    expected_keys: Iterable[str],
+    *,
+    message: Optional[str] = None,
+) -> None:
+    """
+    Assert that a mapping contains all expected keys.
+    """
+
+    if not isinstance(
+        mapping,
+        Mapping,
+    ):
+        raise SaltBridgeSelfTestError(
+            "Expected a mapping."
+        )
+
+    missing_keys = [
+        key
+        for key in expected_keys
+        if key not in mapping
+    ]
+
+    if missing_keys:
+        raise SaltBridgeSelfTestError(
+            message
+            or (
+                "Mapping is missing keys: "
+                + ", ".join(
+                    repr(key)
+                    for key in missing_keys
+                )
+            )
+        )
+
+
+def _assert_raises(
+    expected_exception: Any,
+    callable_object: Callable[
+        ...,
+        Any,
+    ],
+    *args: Any,
+    **kwargs: Any,
+) -> BaseException:
+    """
+    Assert that a callable raises the expected exception.
+    """
+
+    try:
+        callable_object(
+            *args,
+            **kwargs,
+        )
+
+    except expected_exception as error:
+        return error
+
+    except Exception as error:
+        raise SaltBridgeSelfTestError(
+            "Unexpected exception type: "
+            f"actual={type(error).__name__}, "
+            f"expected={expected_exception}."
+        ) from error
+
+    raise SaltBridgeSelfTestError(
+        "Expected exception was not raised: "
+        f"{expected_exception}."
+    )
+
+
+def _assert_json_serializable(
+    value: Any,
+    *,
+    message: Optional[str] = None,
+) -> None:
+    """
+    Assert that a value can be serialized as strict JSON.
+    """
+
+    try:
+        json.dumps(
+            value,
+            allow_nan=False,
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ) as error:
+        raise SaltBridgeSelfTestError(
+            message
+            or (
+                "Value is not strictly JSON serializable."
+            )
+        ) from error
+
+
+def _assert_valid_charged_group(
+    group: ChargedGroup,
+    *,
+    expected_polarity: Optional[
+        str
+    ] = None,
+) -> None:
+    """
+    Assert basic ChargedGroup invariants.
+    """
+
+    _assert_is_instance(
+        group,
+        ChargedGroup,
+    )
+
+    _assert_not_empty(
+        group.atoms,
+        "Charged group must contain atoms.",
+    )
+
+    _assert_is_not_none(
+        group.center,
+        "Charged group must have a center.",
+    )
+
+    _assert_equal(
+        len(
+            group.center
+        ),
+        3,
+        "Charged-group center must be three-dimensional.",
+    )
+
+    if expected_polarity is not None:
+        _assert_equal(
+            group.polarity,
+            expected_polarity,
+        )
+
+    if group.polarity == "positive":
+        _assert_true(
+            group.net_charge > 0.0,
+            "Positive groups must have positive net charge.",
+        )
+
+    elif group.polarity == "negative":
+        _assert_true(
+            group.net_charge < 0.0,
+            "Negative groups must have negative net charge.",
+        )
+
+    else:
+        raise SaltBridgeSelfTestError(
+            "Unsupported charged-group polarity."
+        )
+
+
+def _assert_valid_geometry(
+    geometry: SaltBridgeGeometry,
+    *,
+    expected_valid: Optional[
+        bool
+    ] = None,
+) -> None:
+    """
+    Assert basic SaltBridgeGeometry invariants.
+    """
+
+    _assert_is_instance(
+        geometry,
+        SaltBridgeGeometry,
+    )
+
+    for value_name in (
+        "center_distance",
+        "minimum_atom_distance",
+        "maximum_atom_distance",
+        "mean_atom_distance",
+    ):
+        value = get_value(
+            geometry,
+            value_name,
+            None,
+        )
+
+        _assert_is_not_none(
+            value,
+            (
+                f"Geometry field {value_name!r} "
+                "must not be None."
+            ),
+        )
+
+        _assert_true(
+            float(
+                value
+            ) >= 0.0,
+            (
+                f"Geometry field {value_name!r} "
+                "must not be negative."
+            ),
+        )
+
+    _assert_true(
+        geometry.minimum_atom_distance
+        <= geometry.maximum_atom_distance,
+        (
+            "Minimum atom distance cannot exceed "
+            "maximum atom distance."
+        ),
+    )
+
+    _assert_true(
+        geometry.contact_count >= 0,
+        "Contact count cannot be negative.",
+    )
+
+    if expected_valid is not None:
+        _assert_equal(
+            geometry.valid,
+            expected_valid,
+        )
+
+
+def _assert_valid_interaction(
+    interaction: SaltBridgeInteraction,
+    *,
+    expected_valid: Optional[
+        bool
+    ] = None,
+) -> None:
+    """
+    Assert basic SaltBridgeInteraction invariants.
+    """
+
+    _assert_is_instance(
+        interaction,
+        SaltBridgeInteraction,
+    )
+
+    _assert_valid_charged_group(
+        interaction.cation,
+        expected_polarity=(
+            "positive"
+        ),
+    )
+
+    _assert_valid_charged_group(
+        interaction.anion,
+        expected_polarity=(
+            "negative"
+        ),
+    )
+
+    _assert_valid_geometry(
+        interaction.geometry,
+        expected_valid=(
+            expected_valid
+        ),
+    )
+
+    _assert_true(
+        interaction.score >= 0.0,
+        "Interaction score cannot be negative.",
+    )
+
+    _assert_is_not_none(
+        interaction.interaction_id,
+        "Interaction identifier is required.",
+    )
+
+
+def _assert_valid_result(
+    result: SaltBridgeResult,
+) -> None:
+    """
+    Assert basic SaltBridgeResult invariants.
+    """
+
+    _assert_is_instance(
+        result,
+        SaltBridgeResult,
+    )
+
+    _assert_is_instance(
+        result.interactions,
+        list,
+    )
+
+    _assert_is_instance(
+        result.cationic_groups,
+        list,
+    )
+
+    _assert_is_instance(
+        result.anionic_groups,
+        list,
+    )
+
+    _assert_is_instance(
+        result.statistics,
+        Mapping,
+    )
+
+    _assert_is_instance(
+        result.metadata,
+        Mapping,
+    )
+
+    for interaction in (
+        result.interactions
+    ):
+        _assert_valid_interaction(
+            interaction
+        )
+
+
+def _run_self_test_case(
+    test_name: str,
+    test_callable: Callable[
+        [],
+        Any,
+    ],
+    *,
+    raise_on_failure: bool = False,
+) -> _SelfTestRecord:
+    """
+    Execute one self-test and return its record.
+    """
+
+    import time
+
+    start_time = (
+        time.perf_counter()
+    )
+
+    try:
+        test_callable()
+
+    except Exception as error:
+        duration = (
+            time.perf_counter()
+            - start_time
+        )
+
+        record = _SelfTestRecord(
+            name=test_name,
+            passed=False,
+            duration_seconds=(
+                duration
+            ),
+            message=str(
+                error
+            ),
+            exception_type=(
+                type(
+                    error
+                ).__name__
+            ),
+        )
+
+        if raise_on_failure:
+            raise SaltBridgeSelfTestError(
+                f"Self-test failed: {test_name}: {error}"
+            ) from error
+
+        return record
+
+    duration = (
+        time.perf_counter()
+        - start_time
+    )
+
+    return _SelfTestRecord(
+        name=test_name,
+        passed=True,
+        duration_seconds=duration,
+        message="passed",
+        exception_type=None,
+    )
+
+
+def _run_self_test_group(
+    tests: Iterable[
+        Tuple[
+            str,
+            Callable[
+                [],
+                Any,
+            ],
+        ]
+    ],
+    *,
+    report: Optional[
+        _SelfTestReport
+    ] = None,
+    raise_on_failure: bool = False,
+) -> _SelfTestReport:
+    """
+    Execute a group of named self-tests.
+    """
+
+    resolved_report = (
+        report
+        if report is not None
+        else _SelfTestReport()
+    )
+
+    for test_name, test_callable in tests:
+        test_record = (
+            _run_self_test_case(
+                test_name,
+                test_callable,
+                raise_on_failure=(
+                    raise_on_failure
+                ),
+            )
+        )
+
+        resolved_report.add_record(
+            test_record
+        )
+
+    return resolved_report
+
+
+def _format_self_test_record(
+    record: _SelfTestRecord,
+) -> str:
+    """
+    Format one self-test record.
+    """
+
+    status = (
+        "PASS"
+        if record.passed
+        else "FAIL"
+    )
+
+    line = (
+        f"[{status}] {record.name} "
+        f"({record.duration_seconds:.6f} s)"
+    )
+
+    if (
+        not record.passed
+        and record.message
+    ):
+        line += (
+            f": {record.message}"
+        )
+
+    return line
+
+
+def _format_self_test_report(
+    report: _SelfTestReport,
+    *,
+    include_records: bool = True,
+) -> str:
+    """
+    Format a complete self-test report.
+    """
+
+    lines = [
+        (
+            "DockAnalyzer saltbridge.py "
+            "self-test report"
+        ),
+        (
+            f"Module version: "
+            f"{report.module_version}"
+        ),
+        (
+            f"Tests: {report.test_count}"
+        ),
+        (
+            f"Passed: {report.passed_count}"
+        ),
+        (
+            f"Failed: {report.failed_count}"
+        ),
+        (
+            "Status: "
+            + (
+                "SUCCESS"
+                if report.success
+                else "FAILURE"
+            )
+        ),
+    ]
+
+    if include_records:
+        lines.append(
+            ""
+        )
+
+        lines.extend(
+            _format_self_test_record(
+                record
+            )
+            for record in report.records
+        )
+
+    return "\n".join(
+        lines
+    )
+
+
+def _print_self_test_report(
+    report: _SelfTestReport,
+    *,
+    include_records: bool = True,
+) -> None:
+    """
+    Print a salt-bridge self-test report.
+    """
+
+    print(
+        _format_self_test_report(
+            report,
+            include_records=(
+                include_records
+            ),
+        )
+    )
+
+
+def _test_infrastructure_smoke_test() -> None:
+    """
+    Verify the fundamental self-test infrastructure.
+    """
+
+    structure = _make_test_structure(
+        model_id=1
+    )
+
+    lysine = _make_mock_lysine(
+        structure=structure
+    )
+
+    aspartate = _make_mock_aspartate(
+        structure=structure
+    )
+
+    _assert_equal(
+        lysine.name,
+        "LYS",
+    )
+
+    _assert_equal(
+        aspartate.name,
+        "ASP",
+    )
+
+    _assert_not_empty(
+        lysine.atoms
+    )
+
+    _assert_not_empty(
+        aspartate.atoms
+    )
+
+    cation = _make_test_cation_group(
+        residue=lysine
+    )
+
+    anion = _make_test_anion_group(
+        residue=aspartate
+    )
+
+    _assert_valid_charged_group(
+        cation,
+        expected_polarity=(
+            "positive"
+        ),
+    )
+
+    _assert_valid_charged_group(
+        anion,
+        expected_polarity=(
+            "negative"
+        ),
+    )
+
+    interaction = _make_test_interaction(
+        cation=cation,
+        anion=anion,
+    )
+
+    _assert_valid_interaction(
+        interaction,
+        expected_valid=True,
+    )
+
+    result = _make_test_result(
+        interactions=[
+            interaction
+        ]
+    )
+
+    _assert_valid_result(
+        result
+    )
+
+    serialized_result = (
+        salt_bridge_result_to_dict(
+            result
+        )
+    )
+
+    _assert_json_serializable(
+        serialized_result
+    )
+
+
+def run_salt_bridge_test_infrastructure_smoke_test(
+    *,
+    raise_on_failure: bool = True,
+) -> _SelfTestRecord:
+    """
+    Run the Section 18.1 infrastructure smoke test.
+    """
+
+    return _run_self_test_case(
+        "18.1.test_infrastructure_smoke_test",
+        _test_infrastructure_smoke_test,
+        raise_on_failure=(
+            raise_on_failure
+        ),
+    )
 
 
 
