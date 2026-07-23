@@ -33849,3 +33849,3045 @@ def calculate_and_attach_multiple_pi_statistics(
 # -----------------------------------------------------------------------------
 # End of section 11.
 # -----------------------------------------------------------------------------
+
+# =============================================================================
+# 12. INTEGRAÇÃO COM DOCKMODEL
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 12.1. Constantes de integração
+# -----------------------------------------------------------------------------
+
+PI_DOCKMODEL_INTEGRATION_SCHEMA_VERSION: Final[str] = "1.0"
+
+PI_DOCKMODEL_ATTRIBUTE: Final[str] = "pi"
+PI_DOCKMODEL_STATISTICS_ATTRIBUTE: Final[str] = "pi_statistics"
+PI_DOCKMODEL_SCORE_ATTRIBUTE: Final[str] = "pi_score"
+PI_DOCKMODEL_METADATA_KEY: Final[str] = "pi_analysis"
+
+PI_RESULT_REPLACEMENT_REPLACE: Final[str] = "replace"
+PI_RESULT_REPLACEMENT_APPEND: Final[str] = "append"
+PI_RESULT_REPLACEMENT_MERGE: Final[str] = "merge"
+PI_RESULT_REPLACEMENT_PRESERVE: Final[str] = "preserve"
+
+SUPPORTED_PI_RESULT_REPLACEMENT_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        PI_RESULT_REPLACEMENT_REPLACE,
+        PI_RESULT_REPLACEMENT_APPEND,
+        PI_RESULT_REPLACEMENT_MERGE,
+        PI_RESULT_REPLACEMENT_PRESERVE,
+    }
+)
+
+PI_SCORE_UPDATE_REPLACE: Final[str] = "replace"
+PI_SCORE_UPDATE_ADD: Final[str] = "add"
+PI_SCORE_UPDATE_MAXIMUM: Final[str] = "maximum"
+PI_SCORE_UPDATE_PRESERVE: Final[str] = "preserve"
+
+SUPPORTED_PI_SCORE_UPDATE_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        PI_SCORE_UPDATE_REPLACE,
+        PI_SCORE_UPDATE_ADD,
+        PI_SCORE_UPDATE_MAXIMUM,
+        PI_SCORE_UPDATE_PRESERVE,
+    }
+)
+
+DEFAULT_PI_DOCKMODEL_RESULT_ATTRIBUTE: Final[str] = PI_DOCKMODEL_ATTRIBUTE
+DEFAULT_PI_DOCKMODEL_SCORE_ATTRIBUTE: Final[str] = PI_DOCKMODEL_SCORE_ATTRIBUTE
+DEFAULT_PI_DOCKMODEL_STATISTICS_ATTRIBUTE: Final[str] = (
+    PI_DOCKMODEL_STATISTICS_ATTRIBUTE
+)
+
+DEFAULT_PI_SCORE_METADATA_KEYS: Final[Tuple[str, ...]] = (
+    "score",
+    "interaction_score",
+    "total_interaction_score",
+)
+
+DEFAULT_DOCKMODEL_POSE_ID_ATTRIBUTES: Final[Tuple[str, ...]] = (
+    "pose_id",
+    "model_id",
+    "dock_id",
+    "name",
+    "id",
+)
+
+DEFAULT_DOCKMODEL_STRUCTURE_ATTRIBUTES: Final[Tuple[str, ...]] = (
+    "structure",
+    "complex",
+    "molecule",
+    "mol",
+    "model",
+)
+
+DEFAULT_DOCKMODEL_RECEPTOR_ATTRIBUTES: Final[Tuple[str, ...]] = (
+    "receptor",
+    "protein",
+    "target",
+    "macromolecule",
+)
+
+DEFAULT_DOCKMODEL_LIGAND_ATTRIBUTES: Final[Tuple[str, ...]] = (
+    "ligand",
+    "pose",
+    "docked_ligand",
+    "small_molecule",
+)
+
+
+# -----------------------------------------------------------------------------
+# 12.2. Exceções
+# -----------------------------------------------------------------------------
+
+class PiDockModelIntegrationError(RuntimeError):
+    """
+    Base exception for DockModel π-interaction integration failures.
+    """
+
+
+class PiDockModelValidationError(PiDockModelIntegrationError):
+    """
+    Raised when a DockModel object cannot be analyzed safely.
+    """
+
+
+class PiDockModelAttachmentError(PiDockModelIntegrationError):
+    """
+    Raised when π-interaction results cannot be attached.
+    """
+
+
+class PiDockModelBatchError(PiDockModelIntegrationError):
+    """
+    Raised when a multipose DockModel analysis fails.
+    """
+
+
+# -----------------------------------------------------------------------------
+# 12.3. Configuração de integração
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PiDockModelIntegrationConfig:
+    """
+    Configuration for integrating π-interaction analysis with DockModel.
+
+    The integration uses duck typing and therefore does not require importing
+    the concrete DockModel class.
+    """
+
+    result_attribute: str = DEFAULT_PI_DOCKMODEL_RESULT_ATTRIBUTE
+    statistics_attribute: str = DEFAULT_PI_DOCKMODEL_STATISTICS_ATTRIBUTE
+    score_attribute: str = DEFAULT_PI_DOCKMODEL_SCORE_ATTRIBUTE
+
+    replacement_mode: str = PI_RESULT_REPLACEMENT_REPLACE
+    score_update_mode: str = PI_SCORE_UPDATE_REPLACE
+
+    update_statistics: bool = True
+    update_score: bool = True
+    update_metadata: bool = True
+
+    preserve_existing_results: bool = True
+    preserve_existing_statistics: bool = True
+    preserve_existing_score: bool = True
+
+    deduplicate_interactions: bool = True
+    sort_interactions: bool = True
+    validate_model: bool = True
+    validate_results: bool = True
+
+    attach_analysis_result: bool = True
+    attach_global_statistics: bool = True
+    attach_serialized_summary: bool = True
+
+    serialize_interactions: bool = False
+    serialize_statistics: bool = True
+    serialize_grouping: bool = False
+
+    fail_fast: bool = True
+    rollback_on_failure: bool = True
+
+    pose_id_attributes: Tuple[str, ...] = (
+        DEFAULT_DOCKMODEL_POSE_ID_ATTRIBUTES
+    )
+    structure_attributes: Tuple[str, ...] = (
+        DEFAULT_DOCKMODEL_STRUCTURE_ATTRIBUTES
+    )
+    receptor_attributes: Tuple[str, ...] = (
+        DEFAULT_DOCKMODEL_RECEPTOR_ATTRIBUTES
+    )
+    ligand_attributes: Tuple[str, ...] = (
+        DEFAULT_DOCKMODEL_LIGAND_ATTRIBUTES
+    )
+
+    metadata_key: str = PI_DOCKMODEL_METADATA_KEY
+    score_metadata_keys: Tuple[str, ...] = DEFAULT_PI_SCORE_METADATA_KEYS
+
+    def __post_init__(self) -> None:
+        string_fields = (
+            "result_attribute",
+            "statistics_attribute",
+            "score_attribute",
+            "metadata_key",
+        )
+
+        for field_name in string_fields:
+            value = str(
+                getattr(self, field_name)
+            ).strip()
+
+            if not value:
+                raise ValueError(
+                    f"{field_name} cannot be empty."
+                )
+
+            object.__setattr__(
+                self,
+                field_name,
+                value,
+            )
+
+        replacement_mode = str(
+            self.replacement_mode
+        ).strip().lower()
+
+        if (
+            replacement_mode
+            not in SUPPORTED_PI_RESULT_REPLACEMENT_MODES
+        ):
+            raise ValueError(
+                "Unsupported result replacement mode: "
+                f"{replacement_mode!r}."
+            )
+
+        object.__setattr__(
+            self,
+            "replacement_mode",
+            replacement_mode,
+        )
+
+        score_update_mode = str(
+            self.score_update_mode
+        ).strip().lower()
+
+        if (
+            score_update_mode
+            not in SUPPORTED_PI_SCORE_UPDATE_MODES
+        ):
+            raise ValueError(
+                "Unsupported score update mode: "
+                f"{score_update_mode!r}."
+            )
+
+        object.__setattr__(
+            self,
+            "score_update_mode",
+            score_update_mode,
+        )
+
+        tuple_fields = (
+            "pose_id_attributes",
+            "structure_attributes",
+            "receptor_attributes",
+            "ligand_attributes",
+            "score_metadata_keys",
+        )
+
+        for field_name in tuple_fields:
+            raw_values = getattr(
+                self,
+                field_name,
+            )
+
+            normalized_values = tuple(
+                str(value).strip()
+                for value in raw_values
+                if str(value).strip()
+            )
+
+            object.__setattr__(
+                self,
+                field_name,
+                normalized_values,
+            )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            field_definition.name: (
+                list(getattr(self, field_definition.name))
+                if isinstance(
+                    getattr(self, field_definition.name),
+                    tuple,
+                )
+                else getattr(self, field_definition.name)
+            )
+            for field_definition in fields(self)
+        }
+
+
+def create_default_pi_dock_model_config() -> PiDockModelIntegrationConfig:
+    """
+    Create the default DockModel integration configuration.
+    """
+
+    return PiDockModelIntegrationConfig()
+
+
+# -----------------------------------------------------------------------------
+# 12.4. Snapshot para rollback
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiDockModelSnapshot:
+    """
+    Snapshot of DockModel attributes modified by this integration.
+    """
+
+    values: Dict[str, Any] = field(
+        default_factory=dict
+    )
+    existing_attributes: Set[str] = field(
+        default_factory=set
+    )
+
+    def restore(
+        self,
+        dock_model: Any,
+    ) -> None:
+        """
+        Restore all captured attributes.
+        """
+
+        for attribute_name in self.existing_attributes:
+            try:
+                setattr(
+                    dock_model,
+                    attribute_name,
+                    self.values[attribute_name],
+                )
+
+            except Exception:
+                pass
+
+        for attribute_name in (
+            set(self.values)
+            - self.existing_attributes
+        ):
+            try:
+                delattr(
+                    dock_model,
+                    attribute_name,
+                )
+
+            except Exception:
+                pass
+
+
+def create_pi_dock_model_snapshot(
+    dock_model: Any,
+    *,
+    integration_config: PiDockModelIntegrationConfig,
+) -> PiDockModelSnapshot:
+    """
+    Capture attributes that may be changed during attachment.
+    """
+
+    attribute_names = {
+        integration_config.result_attribute,
+        integration_config.statistics_attribute,
+        integration_config.score_attribute,
+        "metadata",
+        "statistics",
+        "score",
+        "total_score",
+        "interaction_score",
+        "pi_analysis_result",
+        "pi_grouping",
+        "pi_summary",
+    }
+
+    existing_attributes: Set[str] = set()
+    values: Dict[str, Any] = {}
+
+    for attribute_name in attribute_names:
+        if hasattr(
+            dock_model,
+            attribute_name,
+        ):
+            existing_attributes.add(
+                attribute_name
+            )
+
+            try:
+                values[attribute_name] = copy.deepcopy(
+                    getattr(
+                        dock_model,
+                        attribute_name,
+                    )
+                )
+
+            except Exception:
+                values[attribute_name] = getattr(
+                    dock_model,
+                    attribute_name,
+                )
+
+        else:
+            values[attribute_name] = None
+
+    return PiDockModelSnapshot(
+        values=values,
+        existing_attributes=existing_attributes,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.5. Resultado de integração de uma pose
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiDockModelAnalysisResult:
+    """
+    Complete result of one DockModel π-interaction analysis.
+    """
+
+    dock_model: Any
+    pose_id: str
+
+    analysis_result: PiAnalysisResult
+    grouping_result: PiGroupingResult
+    global_statistics: PiGlobalStatistics
+
+    interactions: List[PiInteraction] = field(
+        default_factory=list
+    )
+
+    attached: bool = False
+    score_updated: bool = False
+    statistics_updated: bool = False
+
+    previous_interaction_count: int = 0
+    final_interaction_count: int = 0
+
+    previous_score: Optional[float] = None
+    final_score: Optional[float] = None
+
+    warnings: List[str] = field(
+        default_factory=list
+    )
+    errors: List[str] = field(
+        default_factory=list
+    )
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    @property
+    def valid(self) -> bool:
+        return (
+            self.analysis_result is not None
+            and self.grouping_result is not None
+            and self.global_statistics is not None
+            and not self.errors
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_interactions: bool = True,
+        include_analysis_result: bool = True,
+    ) -> Dict[str, Any]:
+        result: Dict[str, Any] = {
+            "pose_id": self.pose_id,
+            "attached": self.attached,
+            "score_updated": self.score_updated,
+            "statistics_updated": self.statistics_updated,
+            "previous_interaction_count": (
+                self.previous_interaction_count
+            ),
+            "final_interaction_count": (
+                self.final_interaction_count
+            ),
+            "previous_score": self.previous_score,
+            "final_score": self.final_score,
+            "valid": self.valid,
+            "warnings": list(self.warnings),
+            "errors": list(self.errors),
+            "statistics": self.global_statistics.to_dict(),
+            "metadata": dict(self.metadata),
+        }
+
+        if include_interactions:
+            result["interactions"] = [
+                interaction.to_dict()
+                if hasattr(interaction, "to_dict")
+                else _make_serializable(
+                    interaction
+                )
+                for interaction in self.interactions
+            ]
+
+        if include_analysis_result:
+            result["analysis_result"] = (
+                self.analysis_result.to_dict()
+                if hasattr(
+                    self.analysis_result,
+                    "to_dict",
+                )
+                else _make_serializable(
+                    self.analysis_result
+                )
+            )
+
+        return result
+
+
+# -----------------------------------------------------------------------------
+# 12.6. Resultado de integração multipose
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiDockModelMultiPoseAnalysisResult:
+    """
+    Complete result for multiple DockModel poses.
+    """
+
+    results: List[PiDockModelAnalysisResult] = field(
+        default_factory=list
+    )
+
+    global_statistics: Optional[
+        PiGlobalStatistics
+    ] = None
+
+    best_pose_id: Optional[str] = None
+    best_pose_index: Optional[int] = None
+    best_pose_score: Optional[float] = None
+
+    successful_models: int = 0
+    failed_models: int = 0
+
+    warnings: List[str] = field(
+        default_factory=list
+    )
+    errors: List[str] = field(
+        default_factory=list
+    )
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    @property
+    def valid(self) -> bool:
+        return (
+            self.successful_models > 0
+            and self.failed_models == 0
+            and not self.errors
+        )
+
+    @property
+    def pose_results(self) -> List[PiAnalysisResult]:
+        return [
+            result.analysis_result
+            for result in self.results
+            if result.valid
+        ]
+
+    @property
+    def dock_models(self) -> List[Any]:
+        return [
+            result.dock_model
+            for result in self.results
+        ]
+
+    def to_dict(
+        self,
+        *,
+        include_interactions: bool = False,
+    ) -> Dict[str, Any]:
+        return {
+            "schema_version": (
+                PI_DOCKMODEL_INTEGRATION_SCHEMA_VERSION
+            ),
+            "successful_models": self.successful_models,
+            "failed_models": self.failed_models,
+            "best_pose_id": self.best_pose_id,
+            "best_pose_index": self.best_pose_index,
+            "best_pose_score": self.best_pose_score,
+            "valid": self.valid,
+            "results": [
+                result.to_dict(
+                    include_interactions=(
+                        include_interactions
+                    ),
+                    include_analysis_result=False,
+                )
+                for result in self.results
+            ],
+            "global_statistics": (
+                self.global_statistics.to_dict()
+                if self.global_statistics is not None
+                else None
+            ),
+            "warnings": list(self.warnings),
+            "errors": list(self.errors),
+            "metadata": dict(self.metadata),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 12.7. Utilitários genéricos
+# -----------------------------------------------------------------------------
+
+def _make_serializable(
+    value: Any,
+    *,
+    _visited: Optional[Set[int]] = None,
+) -> Any:
+    """
+    Recursively convert arbitrary values into JSON-compatible structures.
+    """
+
+    if _visited is None:
+        _visited = set()
+
+    if value is None or isinstance(
+        value,
+        (
+            str,
+            int,
+            float,
+            bool,
+        ),
+    ):
+        return value
+
+    value_id = id(value)
+
+    if value_id in _visited:
+        return "<recursive-reference>"
+
+    _visited.add(value_id)
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _make_serializable(
+                item,
+                _visited=_visited,
+            )
+            for key, item in value.items()
+        }
+
+    if isinstance(
+        value,
+        (
+            list,
+            tuple,
+            set,
+            frozenset,
+        ),
+    ):
+        return [
+            _make_serializable(
+                item,
+                _visited=_visited,
+            )
+            for item in value
+        ]
+
+    if is_dataclass(value):
+        return {
+            field_definition.name: _make_serializable(
+                getattr(
+                    value,
+                    field_definition.name,
+                ),
+                _visited=_visited,
+            )
+            for field_definition in fields(value)
+        }
+
+    if hasattr(value, "to_dict"):
+        try:
+            return _make_serializable(
+                value.to_dict(),
+                _visited=_visited,
+            )
+
+        except Exception:
+            pass
+
+    if hasattr(value, "__dict__"):
+        return {
+            str(key): _make_serializable(
+                item,
+                _visited=_visited,
+            )
+            for key, item in vars(value).items()
+            if not str(key).startswith("_")
+        }
+
+    return repr(value)
+
+
+def _get_first_existing_attribute(
+    object_: Any,
+    attribute_names: Iterable[str],
+    *,
+    allow_none: bool = False,
+) -> Tuple[Optional[str], Any]:
+    """
+    Return the first existing attribute and its value.
+    """
+
+    for attribute_name in attribute_names:
+        if not hasattr(
+            object_,
+            attribute_name,
+        ):
+            continue
+
+        try:
+            value = getattr(
+                object_,
+                attribute_name,
+            )
+
+        except Exception:
+            continue
+
+        if value is None and not allow_none:
+            continue
+
+        return (
+            attribute_name,
+            value,
+        )
+
+    return (
+        None,
+        None,
+    )
+
+
+def _set_dock_model_attribute(
+    dock_model: Any,
+    attribute_name: str,
+    value: Any,
+    *,
+    required: bool = True,
+) -> bool:
+    """
+    Set a DockModel attribute with explicit error handling.
+    """
+
+    try:
+        setattr(
+            dock_model,
+            attribute_name,
+            value,
+        )
+
+        return True
+
+    except Exception as exc:
+        if required:
+            raise PiDockModelAttachmentError(
+                "Could not assign DockModel attribute "
+                f"{attribute_name!r}: {exc}"
+            ) from exc
+
+        return False
+
+
+def _ensure_mutable_metadata(
+    dock_model: Any,
+) -> MutableMapping[str, Any]:
+    """
+    Return a mutable metadata mapping, creating it if needed.
+    """
+
+    metadata = getattr(
+        dock_model,
+        "metadata",
+        None,
+    )
+
+    if isinstance(
+        metadata,
+        MutableMapping,
+    ):
+        return metadata
+
+    if metadata is None:
+        metadata = {}
+
+    elif isinstance(metadata, Mapping):
+        metadata = dict(metadata)
+
+    else:
+        metadata = {
+            "previous_metadata": _make_serializable(
+                metadata
+            )
+        }
+
+    _set_dock_model_attribute(
+        dock_model,
+        "metadata",
+        metadata,
+        required=True,
+    )
+
+    return metadata
+
+
+def _get_numeric_attribute(
+    object_: Any,
+    attribute_name: str,
+) -> Optional[float]:
+    """
+    Safely obtain a finite numeric attribute.
+    """
+
+    if not hasattr(
+        object_,
+        attribute_name,
+    ):
+        return None
+
+    try:
+        value = getattr(
+            object_,
+            attribute_name,
+        )
+
+    except Exception:
+        return None
+
+    return _normalize_optional_numeric(
+        value
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.8. Identificação e validação do DockModel
+# -----------------------------------------------------------------------------
+
+def get_dock_model_pose_id(
+    dock_model: Any,
+    *,
+    integration_config: Optional[
+        PiDockModelIntegrationConfig
+    ] = None,
+    fallback_index: Optional[int] = None,
+) -> str:
+    """
+    Resolve a stable pose identifier from a DockModel instance.
+    """
+
+    config = (
+        integration_config
+        if integration_config is not None
+        else create_default_pi_dock_model_config()
+    )
+
+    _, value = _get_first_existing_attribute(
+        dock_model,
+        config.pose_id_attributes,
+    )
+
+    if value is not None:
+        normalized = str(value).strip()
+
+        if normalized:
+            return normalized
+
+    if fallback_index is not None:
+        return f"pose_{fallback_index}"
+
+    return f"pose_{id(dock_model)}"
+
+
+def validate_dock_model_for_pi_analysis(
+    dock_model: Any,
+    *,
+    integration_config: Optional[
+        PiDockModelIntegrationConfig
+    ] = None,
+) -> Tuple[bool, Tuple[str, ...]]:
+    """
+    Validate whether an object can be used in π-interaction analysis.
+    """
+
+    config = (
+        integration_config
+        if integration_config is not None
+        else create_default_pi_dock_model_config()
+    )
+
+    messages: List[str] = []
+
+    if dock_model is None:
+        return (
+            False,
+            ("DockModel cannot be None.",),
+        )
+
+    structure_attribute, structure = (
+        _get_first_existing_attribute(
+            dock_model,
+            config.structure_attributes,
+        )
+    )
+
+    receptor_attribute, receptor = (
+        _get_first_existing_attribute(
+            dock_model,
+            config.receptor_attributes,
+        )
+    )
+
+    ligand_attribute, ligand = (
+        _get_first_existing_attribute(
+            dock_model,
+            config.ligand_attributes,
+        )
+    )
+
+    if structure is None and (
+        receptor is None or ligand is None
+    ):
+        messages.append(
+            "DockModel must provide either a complete structure "
+            "or both receptor and ligand objects."
+        )
+
+    if (
+        structure_attribute is None
+        and receptor_attribute is None
+    ):
+        messages.append(
+            "No receptor or complex structure attribute was found."
+        )
+
+    if (
+        structure_attribute is None
+        and ligand_attribute is None
+    ):
+        messages.append(
+            "No ligand or complete structure attribute was found."
+        )
+
+    result_attribute = config.result_attribute
+
+    if hasattr(
+        dock_model,
+        result_attribute,
+    ):
+        try:
+            existing = getattr(
+                dock_model,
+                result_attribute,
+            )
+
+            if (
+                existing is not None
+                and not isinstance(
+                    existing,
+                    (
+                        list,
+                        tuple,
+                    ),
+                )
+            ):
+                messages.append(
+                    f"Existing {result_attribute!r} attribute is "
+                    "not a list or tuple."
+                )
+
+        except Exception:
+            messages.append(
+                f"Could not read existing {result_attribute!r} attribute."
+            )
+
+    return (
+        not messages,
+        tuple(messages),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.9. Extração de entrada a partir do DockModel
+# -----------------------------------------------------------------------------
+
+def extract_pi_analysis_source_from_dock_model(
+    dock_model: Any,
+    *,
+    integration_config: Optional[
+        PiDockModelIntegrationConfig
+    ] = None,
+) -> Any:
+    """
+    Extract the source object passed to normalize_pi_analysis_input().
+    """
+
+    config = (
+        integration_config
+        if integration_config is not None
+        else create_default_pi_dock_model_config()
+    )
+
+    _, structure = _get_first_existing_attribute(
+        dock_model,
+        config.structure_attributes,
+    )
+
+    if structure is not None:
+        return structure
+
+    _, receptor = _get_first_existing_attribute(
+        dock_model,
+        config.receptor_attributes,
+    )
+
+    _, ligand = _get_first_existing_attribute(
+        dock_model,
+        config.ligand_attributes,
+    )
+
+    if receptor is None or ligand is None:
+        raise PiDockModelValidationError(
+            "Could not extract receptor and ligand from DockModel."
+        )
+
+    return {
+        "receptor": receptor,
+        "ligand": ligand,
+        "dock_model": dock_model,
+    }
+
+
+def normalize_dock_model_pi_input(
+    dock_model: Any,
+    *,
+    analysis_config: Optional[
+        PiAnalysisConfig
+    ] = None,
+    integration_config: Optional[
+        PiDockModelIntegrationConfig
+    ] = None,
+) -> PiNormalizedInput:
+    """
+    Normalize DockModel molecular data for π-interaction analysis.
+    """
+
+    config = (
+        integration_config
+        if integration_config is not None
+        else create_default_pi_dock_model_config()
+    )
+
+    if config.validate_model:
+        valid, messages = (
+            validate_dock_model_for_pi_analysis(
+                dock_model,
+                integration_config=config,
+            )
+        )
+
+        if not valid:
+            raise PiDockModelValidationError(
+                "; ".join(messages)
+            )
+
+    source = extract_pi_analysis_source_from_dock_model(
+        dock_model,
+        integration_config=config,
+    )
+
+    try:
+        return normalize_pi_analysis_input(
+            source,
+            config=analysis_config,
+        )
+
+    except TypeError:
+        return normalize_pi_analysis_input(
+            source
+        )
+
+
+# -----------------------------------------------------------------------------
+# 12.10. Obtenção dos resultados anteriores
+# -----------------------------------------------------------------------------
+
+def get_existing_dock_model_pi_interactions(
+    dock_model: Any,
+    *,
+    integration_config: Optional[
+        PiDockModelIntegrationConfig
+    ] = None,
+) -> List[PiInteraction]:
+    """
+    Read previously attached π interactions.
+    """
+
+    config = (
+        integration_config
+        if integration_config is not None
+        else create_default_pi_dock_model_config()
+    )
+
+    existing = getattr(
+        dock_model,
+        config.result_attribute,
+        None,
+    )
+
+    if existing is None:
+        return []
+
+    if isinstance(
+        existing,
+        PiAnalysisResult,
+    ):
+        return list(
+            getattr(
+                existing,
+                "interactions",
+                (),
+            )
+            or ()
+        )
+
+    if isinstance(
+        existing,
+        PiGroupingResult,
+    ):
+        return list(
+            existing.interactions
+        )
+
+    if isinstance(
+        existing,
+        PiDockModelAnalysisResult,
+    ):
+        return list(
+            existing.interactions
+        )
+
+    if isinstance(
+        existing,
+        (
+            list,
+            tuple,
+        ),
+    ):
+        return [
+            interaction
+            for interaction in existing
+            if isinstance(
+                interaction,
+                PiInteraction,
+            )
+        ]
+
+    return []
+
+
+def get_existing_dock_model_pi_score(
+    dock_model: Any,
+    *,
+    integration_config: Optional[
+        PiDockModelIntegrationConfig
+    ] = None,
+) -> Optional[float]:
+    """
+    Read the previous π score from DockModel.
+    """
+
+    config = (
+        integration_config
+        if integration_config is not None
+        else create_default_pi_dock_model_config()
+    )
+
+    direct_score = _get_numeric_attribute(
+        dock_model,
+        config.score_attribute,
+    )
+
+    if direct_score is not None:
+        return direct_score
+
+    metadata = getattr(
+        dock_model,
+        "metadata",
+        None,
+    )
+
+    if isinstance(metadata, Mapping):
+        integration_metadata = metadata.get(
+            config.metadata_key,
+            {},
+        )
+
+        if isinstance(
+            integration_metadata,
+            Mapping,
+        ):
+            score = _normalize_optional_numeric(
+                integration_metadata.get(
+                    "total_score"
+                )
+            )
+
+            if score is not None:
+                return score
+
+    return None
+
+
+# -----------------------------------------------------------------------------
+# 12.11. Mesclagem e preservação de interações
+# -----------------------------------------------------------------------------
+
+def merge_pi_interaction_collections(
+    previous_interactions: Iterable[PiInteraction],
+    new_interactions: Iterable[PiInteraction],
+    *,
+    mode: str = PI_RESULT_REPLACEMENT_REPLACE,
+    deduplicate: bool = True,
+    sort_results: bool = True,
+) -> List[PiInteraction]:
+    """
+    Combine previous and new interaction collections.
+    """
+
+    normalized_mode = str(
+        mode
+    ).strip().lower()
+
+    if (
+        normalized_mode
+        not in SUPPORTED_PI_RESULT_REPLACEMENT_MODES
+    ):
+        raise ValueError(
+            f"Unsupported replacement mode: {mode!r}."
+        )
+
+    previous = list(
+        previous_interactions
+    )
+
+    new = list(
+        new_interactions
+    )
+
+    if normalized_mode == PI_RESULT_REPLACEMENT_REPLACE:
+        merged = new
+
+    elif normalized_mode == PI_RESULT_REPLACEMENT_APPEND:
+        merged = previous + new
+
+    elif normalized_mode == PI_RESULT_REPLACEMENT_PRESERVE:
+        merged = previous if previous else new
+
+    else:
+        previous_by_id = {
+            interaction.interaction_id: interaction
+            for interaction in previous
+        }
+
+        for interaction in new:
+            existing = previous_by_id.get(
+                interaction.interaction_id
+            )
+
+            if existing is None:
+                previous_by_id[
+                    interaction.interaction_id
+                ] = interaction
+
+                continue
+
+            existing_score = (
+                _normalize_optional_numeric(
+                    existing.total_score
+                )
+                or 0.0
+            )
+
+            new_score = (
+                _normalize_optional_numeric(
+                    interaction.total_score
+                )
+                or 0.0
+            )
+
+            if new_score >= existing_score:
+                previous_by_id[
+                    interaction.interaction_id
+                ] = interaction
+
+        merged = list(
+            previous_by_id.values()
+        )
+
+    if deduplicate:
+        merged = deduplicate_pi_interactions(
+            merged
+        )
+
+    if sort_results:
+        merged = rank_pi_interactions(
+            merged,
+            score_attribute="total_score",
+            descending=True,
+            update_metadata=True,
+        )
+
+    return merged
+
+
+# -----------------------------------------------------------------------------
+# 12.12. Atualização de score
+# -----------------------------------------------------------------------------
+
+def combine_dock_model_pi_score(
+    previous_score: Optional[Number],
+    new_score: Optional[Number],
+    *,
+    mode: str = PI_SCORE_UPDATE_REPLACE,
+    preserve_existing_score: bool = True,
+) -> float:
+    """
+    Combine the previous DockModel π score and the newly calculated score.
+    """
+
+    normalized_mode = str(
+        mode
+    ).strip().lower()
+
+    if (
+        normalized_mode
+        not in SUPPORTED_PI_SCORE_UPDATE_MODES
+    ):
+        raise ValueError(
+            f"Unsupported score update mode: {mode!r}."
+        )
+
+    previous = _normalize_optional_numeric(
+        previous_score
+    )
+
+    new = _normalize_optional_numeric(
+        new_score
+    )
+
+    if normalized_mode == PI_SCORE_UPDATE_PRESERVE:
+        if previous is not None:
+            return previous
+
+        return new or 0.0
+
+    if normalized_mode == PI_SCORE_UPDATE_ADD:
+        return (
+            (previous or 0.0)
+            + (new or 0.0)
+        )
+
+    if normalized_mode == PI_SCORE_UPDATE_MAXIMUM:
+        available = [
+            value
+            for value in (
+                previous,
+                new,
+            )
+            if value is not None
+        ]
+
+        return max(available) if available else 0.0
+
+    if (
+        preserve_existing_score
+        and new is None
+        and previous is not None
+    ):
+        return previous
+
+    return new or 0.0
+
+
+def update_dock_model_pi_score(
+    dock_model: Any,
+    new_score: Number,
+    *,
+    integration_config: Optional[
+        PiDockModelIntegrationConfig
+    ] = None,
+) -> Tuple[Optional[float], float]:
+    """
+    Update the dedicated π score and optional generic DockModel scores.
+    """
+
+    config = (
+        integration_config
+        if integration_config is not None
+        else create_default_pi_dock_model_config()
+    )
+
+    previous_score = get_existing_dock_model_pi_score(
+        dock_model,
+        integration_config=config,
+    )
+
+    final_score = combine_dock_model_pi_score(
+        previous_score,
+        new_score,
+        mode=config.score_update_mode,
+        preserve_existing_score=(
+            config.preserve_existing_score
+        ),
+    )
+
+    _set_dock_model_attribute(
+        dock_model,
+        config.score_attribute,
+        final_score,
+        required=True,
+    )
+
+    if config.update_metadata:
+        metadata = _ensure_mutable_metadata(
+            dock_model
+        )
+
+        integration_metadata = metadata.setdefault(
+            config.metadata_key,
+            {},
+        )
+
+        if not isinstance(
+            integration_metadata,
+            MutableMapping,
+        ):
+            integration_metadata = {
+                "previous_value": _make_serializable(
+                    integration_metadata
+                )
+            }
+
+            metadata[
+                config.metadata_key
+            ] = integration_metadata
+
+        integration_metadata[
+            "total_score"
+        ] = final_score
+
+        integration_metadata[
+            "previous_score"
+        ] = previous_score
+
+        integration_metadata[
+            "score_update_mode"
+        ] = config.score_update_mode
+
+    return (
+        previous_score,
+        final_score,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.13. Atualização opcional de score genérico do DockModel
+# -----------------------------------------------------------------------------
+
+def update_generic_dock_model_score_metadata(
+    dock_model: Any,
+    pi_score: float,
+    *,
+    integration_config: Optional[
+        PiDockModelIntegrationConfig
+    ] = None,
+) -> None:
+    """
+    Register the π score without modifying the docking affinity itself.
+    """
+
+    config = (
+        integration_config
+        if integration_config is not None
+        else create_default_pi_dock_model_config()
+    )
+
+    metadata = _ensure_mutable_metadata(
+        dock_model
+    )
+
+    score_components = metadata.setdefault(
+        "score_components",
+        {},
+    )
+
+    if not isinstance(
+        score_components,
+        MutableMapping,
+    ):
+        score_components = {
+            "previous_value": _make_serializable(
+                score_components
+            )
+        }
+
+        metadata[
+            "score_components"
+        ] = score_components
+
+    score_components["pi"] = float(
+        pi_score
+    )
+
+    integration_metadata = metadata.setdefault(
+        config.metadata_key,
+        {},
+    )
+
+    if isinstance(
+        integration_metadata,
+        MutableMapping,
+    ):
+        integration_metadata[
+            "generic_score_modified"
+        ] = False
+
+        integration_metadata[
+            "score_component_registered"
+        ] = True
+
+
+# -----------------------------------------------------------------------------
+# 12.14. Serialização da integração
+# -----------------------------------------------------------------------------
+
+def serialize_pi_dock_model_analysis(
+    result: PiDockModelAnalysisResult,
+    *,
+    include_interactions: bool = False,
+    include_grouping: bool = False,
+) -> Dict[str, Any]:
+    """
+    Serialize one DockModel integration result.
+    """
+
+    serialized = result.to_dict(
+        include_interactions=(
+            include_interactions
+        ),
+        include_analysis_result=False,
+    )
+
+    if include_grouping:
+        serialized[
+            "grouping_result"
+        ] = (
+            result.grouping_result.to_dict()
+            if hasattr(
+                result.grouping_result,
+                "to_dict",
+            )
+            else _make_serializable(
+                result.grouping_result
+            )
+        )
+
+    return serialized
+
+
+def serialize_multiple_pi_dock_model_analysis(
+    result: PiDockModelMultiPoseAnalysisResult,
+    *,
+    include_interactions: bool = False,
+) -> Dict[str, Any]:
+    """
+    Serialize a multipose DockModel integration result.
+    """
+
+    return result.to_dict(
+        include_interactions=include_interactions
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.15. Anexação dos resultados ao DockModel
+# -----------------------------------------------------------------------------
+
+def attach_pi_results(
+    dock_model: Any,
+    analysis_result: PiAnalysisResult,
+    *,
+    grouping_result: Optional[
+        PiGroupingResult
+    ] = None,
+    global_statistics: Optional[
+        PiGlobalStatistics
+    ] = None,
+    integration_config: Optional[
+        PiDockModelIntegrationConfig
+    ] = None,
+) -> PiDockModelAnalysisResult:
+    """
+    Attach π-interaction results to one DockModel.
+
+    The primary DockModel attribute receives a standardized list of
+    PiInteraction objects.
+    """
+
+    config = (
+        integration_config
+        if integration_config is not None
+        else create_default_pi_dock_model_config()
+    )
+
+    if not isinstance(
+        analysis_result,
+        PiAnalysisResult,
+    ):
+        raise TypeError(
+            "analysis_result must be a PiAnalysisResult."
+        )
+
+    pose_id = get_dock_model_pose_id(
+        dock_model,
+        integration_config=config,
+    )
+
+    snapshot = (
+        create_pi_dock_model_snapshot(
+            dock_model,
+            integration_config=config,
+        )
+        if config.rollback_on_failure
+        else None
+    )
+
+    previous_interactions = (
+        get_existing_dock_model_pi_interactions(
+            dock_model,
+            integration_config=config,
+        )
+    )
+
+    previous_score = (
+        get_existing_dock_model_pi_score(
+            dock_model,
+            integration_config=config,
+        )
+    )
+
+    new_interactions = list(
+        getattr(
+            analysis_result,
+            "interactions",
+            (),
+        )
+        or ()
+    )
+
+    if grouping_result is None:
+        grouping_result = get_pi_grouping_result(
+            analysis_result
+        )
+
+    if global_statistics is None:
+        global_statistics = (
+            calculate_pi_global_statistics(
+                grouping_result
+            )
+        )
+
+    try:
+        final_interactions = (
+            merge_pi_interaction_collections(
+                previous_interactions,
+                new_interactions,
+                mode=config.replacement_mode,
+                deduplicate=(
+                    config.deduplicate_interactions
+                ),
+                sort_results=config.sort_interactions,
+            )
+        )
+
+        _set_dock_model_attribute(
+            dock_model,
+            config.result_attribute,
+            final_interactions,
+            required=True,
+        )
+
+        if config.attach_analysis_result:
+            _set_dock_model_attribute(
+                dock_model,
+                "pi_analysis_result",
+                analysis_result,
+                required=False,
+            )
+
+        if config.serialize_grouping:
+            grouping_value: Any = (
+                grouping_result.to_dict()
+                if hasattr(
+                    grouping_result,
+                    "to_dict",
+                )
+                else _make_serializable(
+                    grouping_result
+                )
+            )
+
+        else:
+            grouping_value = grouping_result
+
+        _set_dock_model_attribute(
+            dock_model,
+            "pi_grouping",
+            grouping_value,
+            required=False,
+        )
+
+        statistics_updated = False
+
+        if config.update_statistics:
+            statistics_value: Any
+
+            if config.serialize_statistics:
+                statistics_value = (
+                    global_statistics.to_dict()
+                )
+
+            else:
+                statistics_value = global_statistics
+
+            _set_dock_model_attribute(
+                dock_model,
+                config.statistics_attribute,
+                statistics_value,
+                required=True,
+            )
+
+            statistics_updated = True
+
+        score_updated = False
+        final_score = previous_score
+
+        if config.update_score:
+            _, final_score = (
+                update_dock_model_pi_score(
+                    dock_model,
+                    global_statistics.total_score,
+                    integration_config=config,
+                )
+            )
+
+            update_generic_dock_model_score_metadata(
+                dock_model,
+                final_score,
+                integration_config=config,
+            )
+
+            score_updated = True
+
+        if config.update_metadata:
+            metadata = _ensure_mutable_metadata(
+                dock_model
+            )
+
+            integration_metadata = metadata.setdefault(
+                config.metadata_key,
+                {},
+            )
+
+            if not isinstance(
+                integration_metadata,
+                MutableMapping,
+            ):
+                integration_metadata = {}
+
+                metadata[
+                    config.metadata_key
+                ] = integration_metadata
+
+            integration_metadata.update(
+                {
+                    "schema_version": (
+                        PI_DOCKMODEL_INTEGRATION_SCHEMA_VERSION
+                    ),
+                    "pose_id": pose_id,
+                    "result_attribute": (
+                        config.result_attribute
+                    ),
+                    "statistics_attribute": (
+                        config.statistics_attribute
+                    ),
+                    "score_attribute": (
+                        config.score_attribute
+                    ),
+                    "replacement_mode": (
+                        config.replacement_mode
+                    ),
+                    "previous_interaction_count": len(
+                        previous_interactions
+                    ),
+                    "new_interaction_count": len(
+                        new_interactions
+                    ),
+                    "final_interaction_count": len(
+                        final_interactions
+                    ),
+                    "total_score": final_score,
+                    "interaction_type_distribution": dict(
+                        global_statistics
+                        .interaction_type_distribution
+                    ),
+                    "strength_distribution": dict(
+                        global_statistics
+                        .strength_distribution
+                    ),
+                    "hotspot_count": (
+                        global_statistics.hotspot_count
+                    ),
+                }
+            )
+
+            if config.attach_serialized_summary:
+                integration_metadata[
+                    "summary"
+                ] = summarize_pi_statistics(
+                    global_statistics
+                )
+
+        integration_result = (
+            PiDockModelAnalysisResult(
+                dock_model=dock_model,
+                pose_id=pose_id,
+                analysis_result=analysis_result,
+                grouping_result=grouping_result,
+                global_statistics=global_statistics,
+                interactions=final_interactions,
+                attached=True,
+                score_updated=score_updated,
+                statistics_updated=(
+                    statistics_updated
+                ),
+                previous_interaction_count=len(
+                    previous_interactions
+                ),
+                final_interaction_count=len(
+                    final_interactions
+                ),
+                previous_score=previous_score,
+                final_score=final_score,
+                metadata={
+                    "integration_config": (
+                        config.to_dict()
+                    )
+                },
+            )
+        )
+
+        if config.attach_serialized_summary:
+            _set_dock_model_attribute(
+                dock_model,
+                "pi_summary",
+                serialize_pi_dock_model_analysis(
+                    integration_result,
+                    include_interactions=(
+                        config.serialize_interactions
+                    ),
+                    include_grouping=(
+                        config.serialize_grouping
+                    ),
+                ),
+                required=False,
+            )
+
+        return integration_result
+
+    except Exception as exc:
+        if snapshot is not None:
+            snapshot.restore(
+                dock_model
+            )
+
+        if isinstance(
+            exc,
+            PiDockModelIntegrationError,
+        ):
+            raise
+
+        raise PiDockModelAttachmentError(
+            "Failed to attach π-interaction results "
+            f"to DockModel {pose_id!r}: {exc}"
+        ) from exc
+
+
+# -----------------------------------------------------------------------------
+# 12.16. Construção do PiAnalysisResult
+# -----------------------------------------------------------------------------
+
+def build_pi_analysis_result(
+    normalized_input: PiNormalizedInput,
+    interactions: Sequence[PiInteraction],
+    grouping_result: PiGroupingResult,
+    global_statistics: PiGlobalStatistics,
+    *,
+    pose_id: Optional[str] = None,
+    analysis_config: Optional[
+        PiAnalysisConfig
+    ] = None,
+) -> PiAnalysisResult:
+    """
+    Build and populate the canonical PiAnalysisResult.
+    """
+
+    try:
+        supported_fields = {
+            field_definition.name
+            for field_definition in fields(
+                PiAnalysisResult
+            )
+        }
+
+    except TypeError:
+        supported_fields = set()
+
+    candidate_values: Dict[str, Any] = {
+        "interactions": list(interactions),
+        "statistics": build_canonical_pi_statistics(
+            interactions,
+            grouping_result=grouping_result,
+        ),
+        "valid": True,
+        "metadata": {
+            "schema_version": (
+                PI_DOCKMODEL_INTEGRATION_SCHEMA_VERSION
+            ),
+            "pose_id": pose_id,
+            "analysis_config": (
+                analysis_config.to_dict()
+                if (
+                    analysis_config is not None
+                    and hasattr(
+                        analysis_config,
+                        "to_dict",
+                    )
+                )
+                else _make_serializable(
+                    analysis_config
+                )
+            ),
+        },
+    }
+
+    constructor_values = {
+        key: value
+        for key, value in candidate_values.items()
+        if (
+            not supported_fields
+            or key in supported_fields
+        )
+    }
+
+    try:
+        result = PiAnalysisResult(
+            **constructor_values
+        )
+
+    except TypeError:
+        result = PiAnalysisResult()
+
+    assignments = {
+        "pose_id": pose_id,
+        "normalized_input": normalized_input,
+        "interactions": list(interactions),
+        "residue_summaries": (
+            grouping_result.residue_summaries
+        ),
+        "receptor_residue_summaries": (
+            grouping_result
+            .receptor_residue_summaries
+        ),
+        "ligand_residue_summaries": (
+            grouping_result
+            .ligand_residue_summaries
+        ),
+        "residue_pairs": (
+            grouping_result.residue_pairs
+        ),
+        "hotspots": grouping_result.hotspots,
+        "interaction_groups": (
+            grouping_result.interaction_groups
+        ),
+        "global_statistics": global_statistics,
+        "total_score": (
+            global_statistics.total_score
+        ),
+        "geometry_score": (
+            global_statistics.total_geometry_score
+        ),
+        "strength_score": (
+            global_statistics.total_strength_score
+        ),
+        "valid": True,
+    }
+
+    for attribute_name, value in assignments.items():
+        _set_supported_attribute(
+            result,
+            attribute_name,
+            value,
+        )
+
+    metadata = getattr(
+        result,
+        "metadata",
+        None,
+    )
+
+    if isinstance(metadata, MutableMapping):
+        metadata.update(
+            {
+                "pose_id": pose_id,
+                "statistics": (
+                    summarize_pi_statistics(
+                        global_statistics
+                    )
+                ),
+            }
+        )
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 12.17. Análise de uma pose DockModel
+# -----------------------------------------------------------------------------
+
+def analyze_dock_model_pi(
+    dock_model: Any,
+    *,
+    analysis_config: Optional[
+        PiAnalysisConfig
+    ] = None,
+    scoring_config: Optional[
+        PiScoringConfig
+    ] = None,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+    statistics_config: Optional[
+        PiStatisticsConfig
+    ] = None,
+    integration_config: Optional[
+        PiDockModelIntegrationConfig
+    ] = None,
+    attach_results: bool = True,
+) -> PiDockModelAnalysisResult:
+    """
+    Analyze π interactions for one DockModel pose.
+
+    Pipeline:
+        1. validate DockModel;
+        2. normalize receptor/ligand data;
+        3. detect π interactions;
+        4. classify and score;
+        5. group by residues and hotspots;
+        6. calculate global statistics;
+        7. attach results to DockModel.
+    """
+
+    integration = (
+        integration_config
+        if integration_config is not None
+        else create_default_pi_dock_model_config()
+    )
+
+    pose_id = get_dock_model_pose_id(
+        dock_model,
+        integration_config=integration,
+    )
+
+    if integration.validate_model:
+        valid, validation_messages = (
+            validate_dock_model_for_pi_analysis(
+                dock_model,
+                integration_config=integration,
+            )
+        )
+
+        if not valid:
+            raise PiDockModelValidationError(
+                f"DockModel {pose_id!r} is invalid: "
+                + "; ".join(
+                    validation_messages
+                )
+            )
+
+    normalized_input = normalize_dock_model_pi_input(
+        dock_model,
+        analysis_config=analysis_config,
+        integration_config=integration,
+    )
+
+    detected_interactions = (
+        detect_pi_interactions_from_normalized_input(
+            normalized_input,
+            config=analysis_config,
+        )
+    )
+
+    scored_interactions, grouping_result = (
+        classify_and_score_pi_interactions(
+            detected_interactions,
+            config=analysis_config,
+            scoring_config=scoring_config,
+            grouping_config=grouping_config,
+            include_invalid=True,
+            update_grouping=True,
+        )
+    )
+
+    if grouping_result is None:
+        grouping_result = group_pi_interactions(
+            scored_interactions,
+            grouping_config=grouping_config,
+            annotate_interactions=True,
+            validate_result=True,
+        )
+
+    if integration.validate_results:
+        scored_interactions = (
+            validate_scored_pi_interactions(
+                scored_interactions,
+                scoring_config=scoring_config,
+                remove_invalid=False,
+            )
+        )
+
+    global_statistics = (
+        calculate_pi_global_statistics(
+            grouping_result,
+            grouping_config=grouping_config,
+            statistics_config=statistics_config,
+        )
+    )
+
+    analysis_result = build_pi_analysis_result(
+        normalized_input,
+        scored_interactions,
+        grouping_result,
+        global_statistics,
+        pose_id=pose_id,
+        analysis_config=analysis_config,
+    )
+
+    attach_pi_grouping_to_analysis_result(
+        analysis_result,
+        grouping_result,
+    )
+
+    attach_pi_statistics_to_analysis_result(
+        analysis_result,
+        global_statistics,
+        canonical_statistics=(
+            build_canonical_pi_statistics(
+                scored_interactions,
+                grouping_result=grouping_result,
+                statistics_config=statistics_config,
+            )
+        ),
+    )
+
+    if attach_results:
+        return attach_pi_results(
+            dock_model,
+            analysis_result,
+            grouping_result=grouping_result,
+            global_statistics=global_statistics,
+            integration_config=integration,
+        )
+
+    return PiDockModelAnalysisResult(
+        dock_model=dock_model,
+        pose_id=pose_id,
+        analysis_result=analysis_result,
+        grouping_result=grouping_result,
+        global_statistics=global_statistics,
+        interactions=list(
+            scored_interactions
+        ),
+        attached=False,
+        score_updated=False,
+        statistics_updated=False,
+        previous_interaction_count=len(
+            get_existing_dock_model_pi_interactions(
+                dock_model,
+                integration_config=integration,
+            )
+        ),
+        final_interaction_count=len(
+            scored_interactions
+        ),
+        previous_score=(
+            get_existing_dock_model_pi_score(
+                dock_model,
+                integration_config=integration,
+            )
+        ),
+        final_score=(
+            global_statistics.total_score
+        ),
+        metadata={
+            "integration_config": (
+                integration.to_dict()
+            )
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.18. Alias compatível com nomenclatura anterior
+# -----------------------------------------------------------------------------
+
+def analyze_dock_model_pi_interactions(
+    dock_model: Any,
+    **kwargs: Any,
+) -> PiDockModelAnalysisResult:
+    """
+    Compatibility alias for analyze_dock_model_pi().
+    """
+
+    return analyze_dock_model_pi(
+        dock_model,
+        **kwargs,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.19. Análise multipose
+# -----------------------------------------------------------------------------
+
+def analyze_multiple_dock_models_pi(
+    dock_models: Iterable[Any],
+    *,
+    analysis_config: Optional[
+        PiAnalysisConfig
+    ] = None,
+    scoring_config: Optional[
+        PiScoringConfig
+    ] = None,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+    statistics_config: Optional[
+        PiStatisticsConfig
+    ] = None,
+    integration_config: Optional[
+        PiDockModelIntegrationConfig
+    ] = None,
+    attach_results: bool = True,
+) -> PiDockModelMultiPoseAnalysisResult:
+    """
+    Analyze π interactions for multiple DockModel poses.
+    """
+
+    integration = (
+        integration_config
+        if integration_config is not None
+        else create_default_pi_dock_model_config()
+    )
+
+    model_list = list(
+        dock_models
+    )
+
+    results: List[
+        PiDockModelAnalysisResult
+    ] = []
+
+    warnings: List[str] = []
+    errors: List[str] = []
+
+    successful_models = 0
+    failed_models = 0
+
+    for model_index, dock_model in enumerate(
+        model_list,
+        start=1,
+    ):
+        pose_id = get_dock_model_pose_id(
+            dock_model,
+            integration_config=integration,
+            fallback_index=model_index,
+        )
+
+        try:
+            result = analyze_dock_model_pi(
+                dock_model,
+                analysis_config=analysis_config,
+                scoring_config=scoring_config,
+                grouping_config=grouping_config,
+                statistics_config=statistics_config,
+                integration_config=integration,
+                attach_results=attach_results,
+            )
+
+            result.metadata[
+                "input_index"
+            ] = model_index
+
+            results.append(
+                result
+            )
+
+            successful_models += 1
+
+        except Exception as exc:
+            failed_models += 1
+
+            message = (
+                f"Pose {pose_id!r} failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+            errors.append(message)
+
+            if integration.fail_fast:
+                raise PiDockModelBatchError(
+                    message
+                ) from exc
+
+    successful_results = [
+        result
+        for result in results
+        if result.valid
+    ]
+
+    global_statistics: Optional[
+        PiGlobalStatistics
+    ] = None
+
+    if successful_results:
+        global_statistics = (
+            calculate_multiple_pi_pose_statistics(
+                [
+                    result.analysis_result
+                    for result in successful_results
+                ],
+                pose_ids=[
+                    result.pose_id
+                    for result in successful_results
+                ],
+                grouping_config=grouping_config,
+                statistics_config=statistics_config,
+            )
+        )
+
+        pose_rank_by_id = {
+            pose.pose_id: pose
+            for pose
+            in global_statistics.pose_statistics
+        }
+
+        for result in successful_results:
+            pose_statistics = (
+                pose_rank_by_id.get(
+                    result.pose_id
+                )
+            )
+
+            if pose_statistics is None:
+                continue
+
+            result.metadata[
+                "pose_rank"
+            ] = pose_statistics.rank
+
+            result.metadata[
+                "pose_composite_score"
+            ] = pose_statistics.composite_score
+
+            if integration.update_metadata:
+                model_metadata = (
+                    _ensure_mutable_metadata(
+                        result.dock_model
+                    )
+                )
+
+                integration_metadata = (
+                    model_metadata.setdefault(
+                        integration.metadata_key,
+                        {},
+                    )
+                )
+
+                if isinstance(
+                    integration_metadata,
+                    MutableMapping,
+                ):
+                    integration_metadata[
+                        "pose_rank"
+                    ] = pose_statistics.rank
+
+                    integration_metadata[
+                        "pose_composite_score"
+                    ] = (
+                        pose_statistics.composite_score
+                    )
+
+                    integration_metadata[
+                        "best_pose"
+                    ] = (
+                        result.pose_id
+                        == global_statistics.best_pose_id
+                    )
+
+    multi_result = (
+        PiDockModelMultiPoseAnalysisResult(
+            results=results,
+            global_statistics=global_statistics,
+            best_pose_id=(
+                global_statistics.best_pose_id
+                if global_statistics is not None
+                else None
+            ),
+            best_pose_index=(
+                global_statistics.best_pose_index
+                if global_statistics is not None
+                else None
+            ),
+            best_pose_score=(
+                global_statistics.best_pose_score
+                if global_statistics is not None
+                else None
+            ),
+            successful_models=successful_models,
+            failed_models=failed_models,
+            warnings=warnings,
+            errors=errors,
+            metadata={
+                "schema_version": (
+                    PI_DOCKMODEL_INTEGRATION_SCHEMA_VERSION
+                ),
+                "integration_config": (
+                    integration.to_dict()
+                ),
+                "input_model_count": len(
+                    model_list
+                ),
+            },
+        )
+    )
+
+    return multi_result
+
+
+# -----------------------------------------------------------------------------
+# 12.20. Alias multipose compatível
+# -----------------------------------------------------------------------------
+
+def analyze_multiple_dock_models_pi_interactions(
+    dock_models: Iterable[Any],
+    **kwargs: Any,
+) -> PiDockModelMultiPoseAnalysisResult:
+    """
+    Compatibility alias for analyze_multiple_dock_models_pi().
+    """
+
+    return analyze_multiple_dock_models_pi(
+        dock_models,
+        **kwargs,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.21. Criação de PiMultiPoseResult
+# -----------------------------------------------------------------------------
+
+def build_pi_multi_pose_result(
+    multi_analysis: PiDockModelMultiPoseAnalysisResult,
+) -> PiMultiPoseResult:
+    """
+    Convert the integration-specific multipose result to PiMultiPoseResult.
+    """
+
+    if not isinstance(
+        multi_analysis,
+        PiDockModelMultiPoseAnalysisResult,
+    ):
+        raise TypeError(
+            "multi_analysis must be a "
+            "PiDockModelMultiPoseAnalysisResult."
+        )
+
+    try:
+        supported_fields = {
+            field_definition.name
+            for field_definition in fields(
+                PiMultiPoseResult
+            )
+        }
+
+    except TypeError:
+        supported_fields = set()
+
+    candidate_values = {
+        "results": [
+            result.analysis_result
+            for result in multi_analysis.results
+            if result.valid
+        ],
+        "pose_results": [
+            result.analysis_result
+            for result in multi_analysis.results
+            if result.valid
+        ],
+        "statistics": (
+            multi_analysis.global_statistics
+        ),
+        "best_pose_id": (
+            multi_analysis.best_pose_id
+        ),
+        "best_pose_index": (
+            multi_analysis.best_pose_index
+        ),
+        "best_pose_score": (
+            multi_analysis.best_pose_score
+        ),
+        "metadata": dict(
+            multi_analysis.metadata
+        ),
+    }
+
+    constructor_values = {
+        key: value
+        for key, value in candidate_values.items()
+        if (
+            not supported_fields
+            or key in supported_fields
+        )
+    }
+
+    try:
+        result = PiMultiPoseResult(
+            **constructor_values
+        )
+
+    except TypeError:
+        result = PiMultiPoseResult()
+
+    for attribute_name, value in candidate_values.items():
+        _set_supported_attribute(
+            result,
+            attribute_name,
+            value,
+        )
+
+    if multi_analysis.global_statistics is not None:
+        attach_pi_statistics_to_multi_pose_result(
+            result,
+            multi_analysis.global_statistics,
+        )
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 12.22. Preservação explícita de resultados anteriores
+# -----------------------------------------------------------------------------
+
+def preserve_existing_pi_results(
+    dock_model: Any,
+    *,
+    integration_config: Optional[
+        PiDockModelIntegrationConfig
+    ] = None,
+) -> Dict[str, Any]:
+    """
+    Return a serialized copy of current π-analysis data.
+    """
+
+    config = (
+        integration_config
+        if integration_config is not None
+        else create_default_pi_dock_model_config()
+    )
+
+    interactions = (
+        get_existing_dock_model_pi_interactions(
+            dock_model,
+            integration_config=config,
+        )
+    )
+
+    statistics = getattr(
+        dock_model,
+        config.statistics_attribute,
+        None,
+    )
+
+    score = get_existing_dock_model_pi_score(
+        dock_model,
+        integration_config=config,
+    )
+
+    return {
+        "pose_id": get_dock_model_pose_id(
+            dock_model,
+            integration_config=config,
+        ),
+        "interactions": [
+            interaction.to_dict()
+            if hasattr(
+                interaction,
+                "to_dict",
+            )
+            else _make_serializable(
+                interaction
+            )
+            for interaction in interactions
+        ],
+        "statistics": _make_serializable(
+            statistics
+        ),
+        "score": score,
+    }
+
+
+# -----------------------------------------------------------------------------
+# 12.23. Limpeza dos resultados π
+# -----------------------------------------------------------------------------
+
+def clear_dock_model_pi_results(
+    dock_model: Any,
+    *,
+    integration_config: Optional[
+        PiDockModelIntegrationConfig
+    ] = None,
+    clear_metadata: bool = True,
+    clear_statistics: bool = True,
+    clear_score: bool = True,
+) -> None:
+    """
+    Remove π-interaction analysis data from one DockModel.
+    """
+
+    config = (
+        integration_config
+        if integration_config is not None
+        else create_default_pi_dock_model_config()
+    )
+
+    _set_dock_model_attribute(
+        dock_model,
+        config.result_attribute,
+        [],
+        required=True,
+    )
+
+    if clear_statistics:
+        _set_dock_model_attribute(
+            dock_model,
+            config.statistics_attribute,
+            None,
+            required=False,
+        )
+
+    if clear_score:
+        _set_dock_model_attribute(
+            dock_model,
+            config.score_attribute,
+            None,
+            required=False,
+        )
+
+    for attribute_name in (
+        "pi_analysis_result",
+        "pi_grouping",
+        "pi_summary",
+    ):
+        if hasattr(
+            dock_model,
+            attribute_name,
+        ):
+            try:
+                setattr(
+                    dock_model,
+                    attribute_name,
+                    None,
+                )
+
+            except Exception:
+                pass
+
+    if clear_metadata:
+        metadata = getattr(
+            dock_model,
+            "metadata",
+            None,
+        )
+
+        if isinstance(
+            metadata,
+            MutableMapping,
+        ):
+            metadata.pop(
+                config.metadata_key,
+                None,
+            )
+
+            score_components = metadata.get(
+                "score_components"
+            )
+
+            if isinstance(
+                score_components,
+                MutableMapping,
+            ):
+                score_components.pop(
+                    "pi",
+                    None,
+                )
+
+
+# -----------------------------------------------------------------------------
+# 12.24. Validação após anexação
+# -----------------------------------------------------------------------------
+
+def validate_attached_pi_results(
+    dock_model: Any,
+    *,
+    integration_config: Optional[
+        PiDockModelIntegrationConfig
+    ] = None,
+) -> Tuple[bool, Tuple[str, ...]]:
+    """
+    Validate π-interaction data attached to DockModel.
+    """
+
+    config = (
+        integration_config
+        if integration_config is not None
+        else create_default_pi_dock_model_config()
+    )
+
+    messages: List[str] = []
+
+    if not hasattr(
+        dock_model,
+        config.result_attribute,
+    ):
+        messages.append(
+            f"Missing {config.result_attribute!r} attribute."
+        )
+
+    else:
+        interactions = getattr(
+            dock_model,
+            config.result_attribute,
+        )
+
+        if not isinstance(
+            interactions,
+            (
+                list,
+                tuple,
+            ),
+        ):
+            messages.append(
+                f"{config.result_attribute!r} must be a list or tuple."
+            )
+
+        else:
+            invalid_items = [
+                index
+                for index, interaction in enumerate(
+                    interactions
+                )
+                if not isinstance(
+                    interaction,
+                    PiInteraction,
+                )
+            ]
+
+            if invalid_items:
+                messages.append(
+                    "Invalid interaction items at indices "
+                    f"{invalid_items!r}."
+                )
+
+    if config.update_statistics:
+        if not hasattr(
+            dock_model,
+            config.statistics_attribute,
+        ):
+            messages.append(
+                f"Missing {config.statistics_attribute!r} attribute."
+            )
+
+    if config.update_score:
+        score = _get_numeric_attribute(
+            dock_model,
+            config.score_attribute,
+        )
+
+        if score is None:
+            messages.append(
+                f"Invalid or missing {config.score_attribute!r}."
+            )
+
+    metadata = getattr(
+        dock_model,
+        "metadata",
+        None,
+    )
+
+    if (
+        config.update_metadata
+        and (
+            not isinstance(
+                metadata,
+                Mapping,
+            )
+            or config.metadata_key not in metadata
+        )
+    ):
+        messages.append(
+            "DockModel π-analysis metadata is unavailable."
+        )
+
+    return (
+        not messages,
+        tuple(messages),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 12.25. Resumo da integração
+# -----------------------------------------------------------------------------
+
+def summarize_dock_model_pi_analysis(
+    result: PiDockModelAnalysisResult,
+) -> Dict[str, Any]:
+    """
+    Generate a compact integration summary.
+    """
+
+    return {
+        "pose_id": result.pose_id,
+        "valid": result.valid,
+        "attached": result.attached,
+        "interaction_count": (
+            result.final_interaction_count
+        ),
+        "previous_interaction_count": (
+            result.previous_interaction_count
+        ),
+        "total_score": result.final_score,
+        "interaction_type_distribution": dict(
+            result.global_statistics
+            .interaction_type_distribution
+        ),
+        "geometry_distribution": dict(
+            result.global_statistics
+            .geometry_distribution
+        ),
+        "strength_distribution": dict(
+            result.global_statistics
+            .strength_distribution
+        ),
+        "residue_count": (
+            result.global_statistics
+            .unique_residue_count
+        ),
+        "residue_pair_count": (
+            result.global_statistics
+            .unique_residue_pair_count
+        ),
+        "hotspot_count": (
+            result.global_statistics.hotspot_count
+        ),
+        "top_interactions": list(
+            result.global_statistics
+            .top_interactions
+        ),
+        "top_hotspots": list(
+            result.global_statistics
+            .top_hotspots
+        ),
+        "warnings": list(result.warnings),
+        "errors": list(result.errors),
+    }
+
+
+def format_dock_model_pi_analysis_summary(
+    result: PiDockModelAnalysisResult,
+) -> str:
+    """
+    Format a human-readable DockModel integration report.
+    """
+
+    lines = [
+        f"DockModel π analysis: {result.pose_id}",
+        "=" * 40,
+        f"Valid: {result.valid}",
+        f"Attached: {result.attached}",
+        (
+            "Interactions: "
+            f"{result.final_interaction_count}"
+        ),
+        (
+            "Previous interactions: "
+            f"{result.previous_interaction_count}"
+        ),
+        (
+            "π score: "
+            f"{result.final_score or 0.0:.4f}"
+        ),
+        (
+            "Residues: "
+            f"{result.global_statistics.unique_residue_count}"
+        ),
+        (
+            "Residue pairs: "
+            f"{result.global_statistics.unique_residue_pair_count}"
+        ),
+        (
+            "Hotspots: "
+            f"{result.global_statistics.hotspot_count}"
+        ),
+        "",
+        "Interaction types:",
+    ]
+
+    for interaction_type, count in sorted(
+        result.global_statistics
+        .interaction_type_distribution
+        .items(),
+        key=lambda item: (
+            -item[1],
+            item[0],
+        ),
+    ):
+        lines.append(
+            f"  - {interaction_type}: {count}"
+        )
+
+    if result.warnings:
+        lines.extend(
+            [
+                "",
+                "Warnings:",
+            ]
+        )
+
+        lines.extend(
+            f"  - {warning}"
+            for warning in result.warnings
+        )
+
+    if result.errors:
+        lines.extend(
+            [
+                "",
+                "Errors:",
+            ]
+        )
+
+        lines.extend(
+            f"  - {error}"
+            for error in result.errors
+        )
+
+    return "\n".join(lines)
+
+
+# -----------------------------------------------------------------------------
+# 12.26. API pública simplificada
+# -----------------------------------------------------------------------------
+
+def run_pi_analysis_for_dock_model(
+    dock_model: Any,
+    *,
+    config: Optional[
+        PiAnalysisConfig
+    ] = None,
+    scoring_config: Optional[
+        PiScoringConfig
+    ] = None,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+    statistics_config: Optional[
+        PiStatisticsConfig
+    ] = None,
+    integration_config: Optional[
+        PiDockModelIntegrationConfig
+    ] = None,
+) -> PiDockModelAnalysisResult:
+    """
+    High-level public entry point for one DockModel.
+    """
+
+    return analyze_dock_model_pi(
+        dock_model,
+        analysis_config=config,
+        scoring_config=scoring_config,
+        grouping_config=grouping_config,
+        statistics_config=statistics_config,
+        integration_config=integration_config,
+        attach_results=True,
+    )
+
+
+def run_pi_analysis_for_multiple_dock_models(
+    dock_models: Iterable[Any],
+    *,
+    config: Optional[
+        PiAnalysisConfig
+    ] = None,
+    scoring_config: Optional[
+        PiScoringConfig
+    ] = None,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+    statistics_config: Optional[
+        PiStatisticsConfig
+    ] = None,
+    integration_config: Optional[
+        PiDockModelIntegrationConfig
+    ] = None,
+) -> PiDockModelMultiPoseAnalysisResult:
+    """
+    High-level public entry point for multiple DockModel poses.
+    """
+
+    return analyze_multiple_dock_models_pi(
+        dock_models,
+        analysis_config=config,
+        scoring_config=scoring_config,
+        grouping_config=grouping_config,
+        statistics_config=statistics_config,
+        integration_config=integration_config,
+        attach_results=True,
+    )
+
+
+# -----------------------------------------------------------------------------
+# End of section 12.
+# -----------------------------------------------------------------------------
