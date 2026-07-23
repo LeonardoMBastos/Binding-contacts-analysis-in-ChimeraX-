@@ -13258,5 +13258,2804 @@ def summarize_pi_ring_geometries(
 # -----------------------------------------------------------------------------
 
 
+# =============================================================================
+# 6. DETECÇÃO E GEOMETRIA DE GRUPOS CARREGADOS
+# =============================================================================
 
+# -----------------------------------------------------------------------------
+# 6.1. Tipos e constantes auxiliares
+# -----------------------------------------------------------------------------
+
+ChargedGroupAtomTuple: TypeAlias = Tuple[Any, ...]
+
+
+CHARGE_POSITIVE: Final[str] = "positive"
+CHARGE_NEGATIVE: Final[str] = "negative"
+CHARGE_NEUTRAL: Final[str] = "neutral"
+CHARGE_UNKNOWN: Final[str] = "unknown"
+
+
+SUPPORTED_CHARGE_SIGNS: Final[FrozenSet[str]] = frozenset(
+    {
+        CHARGE_POSITIVE,
+        CHARGE_NEGATIVE,
+        CHARGE_NEUTRAL,
+        CHARGE_UNKNOWN,
+    }
+)
+
+
+POSITIVE_GROUP_AMMONIUM: Final[str] = "ammonium"
+POSITIVE_GROUP_GUANIDINIUM: Final[str] = "guanidinium"
+POSITIVE_GROUP_IMIDAZOLIUM: Final[str] = "imidazolium"
+POSITIVE_GROUP_METAL: Final[str] = "metal_cation"
+POSITIVE_GROUP_GENERIC: Final[str] = "generic_cation"
+
+
+NEGATIVE_GROUP_CARBOXYLATE: Final[str] = "carboxylate"
+NEGATIVE_GROUP_PHOSPHATE: Final[str] = "phosphate"
+NEGATIVE_GROUP_SULFATE: Final[str] = "sulfate"
+NEGATIVE_GROUP_SULFONATE: Final[str] = "sulfonate"
+NEGATIVE_GROUP_PHENOLATE: Final[str] = "phenolate"
+NEGATIVE_GROUP_GENERIC: Final[str] = "generic_anion"
+
+
+STANDARD_POSITIVE_RESIDUE_GROUPS: Final[
+    Mapping[str, Tuple[Mapping[str, Any], ...]]
+] = {
+    "LYS": (
+        {
+            "group_type": POSITIVE_GROUP_AMMONIUM,
+            "atom_names": ("NZ",),
+            "support_atom_names": ("CE",),
+            "formal_charge": 1.0,
+        },
+    ),
+    "LYN": (),
+    "ARG": (
+        {
+            "group_type": POSITIVE_GROUP_GUANIDINIUM,
+            "atom_names": ("CZ", "NH1", "NH2"),
+            "support_atom_names": ("NE",),
+            "formal_charge": 1.0,
+        },
+    ),
+    "HIP": (
+        {
+            "group_type": POSITIVE_GROUP_IMIDAZOLIUM,
+            "atom_names": ("CG", "ND1", "CE1", "NE2", "CD2"),
+            "support_atom_names": ("CB",),
+            "formal_charge": 1.0,
+        },
+    ),
+    "HSP": (
+        {
+            "group_type": POSITIVE_GROUP_IMIDAZOLIUM,
+            "atom_names": ("CG", "ND1", "CE1", "NE2", "CD2"),
+            "support_atom_names": ("CB",),
+            "formal_charge": 1.0,
+        },
+    ),
+}
+
+
+STANDARD_NEGATIVE_RESIDUE_GROUPS: Final[
+    Mapping[str, Tuple[Mapping[str, Any], ...]]
+] = {
+    "ASP": (
+        {
+            "group_type": NEGATIVE_GROUP_CARBOXYLATE,
+            "atom_names": ("CG", "OD1", "OD2"),
+            "charge_atom_names": ("OD1", "OD2"),
+            "support_atom_names": ("CB",),
+            "formal_charge": -1.0,
+        },
+    ),
+    "ASH": (),
+    "GLU": (
+        {
+            "group_type": NEGATIVE_GROUP_CARBOXYLATE,
+            "atom_names": ("CD", "OE1", "OE2"),
+            "charge_atom_names": ("OE1", "OE2"),
+            "support_atom_names": ("CG",),
+            "formal_charge": -1.0,
+        },
+    ),
+    "GLH": (),
+    "TYM": (
+        {
+            "group_type": NEGATIVE_GROUP_PHENOLATE,
+            "atom_names": ("CZ", "OH"),
+            "charge_atom_names": ("OH",),
+            "support_atom_names": ("CE1", "CE2"),
+            "formal_charge": -1.0,
+        },
+    ),
+    "CYM": (
+        {
+            "group_type": NEGATIVE_GROUP_GENERIC,
+            "atom_names": ("SG",),
+            "charge_atom_names": ("SG",),
+            "support_atom_names": ("CB",),
+            "formal_charge": -1.0,
+        },
+    ),
+}
+
+
+NUCLEIC_ACID_PHOSPHATE_ATOM_NAMES: Final[Tuple[str, ...]] = (
+    "P",
+    "OP1",
+    "OP2",
+    "O1P",
+    "O2P",
+)
+
+
+COMMON_METAL_ELEMENTS: Final[FrozenSet[str]] = frozenset(
+    {
+        "LI",
+        "NA",
+        "K",
+        "MG",
+        "CA",
+        "MN",
+        "FE",
+        "CO",
+        "NI",
+        "CU",
+        "ZN",
+        "CD",
+        "HG",
+    }
+)
+
+
+POSITIVE_GROUP_ELEMENTS: Final[FrozenSet[str]] = frozenset(
+    {
+        "N",
+        "P",
+        "S",
+    }
+)
+
+
+NEGATIVE_GROUP_ELEMENTS: Final[FrozenSet[str]] = frozenset(
+    {
+        "O",
+        "S",
+        "P",
+        "N",
+    }
+)
+
+
+DEFAULT_CHARGE_GROUP_BOND_DEPTH: Final[int] = 1
+
+DEFAULT_MINIMUM_GROUP_CHARGE_MAGNITUDE: Final[float] = 0.25
+
+DEFAULT_LOCAL_CHARGE_NEIGHBOR_DISTANCE: Final[float] = 1.95
+
+DEFAULT_CHARGE_CENTER_WEIGHT_FLOOR: Final[float] = 0.05
+
+
+# -----------------------------------------------------------------------------
+# 6.2. Normalização de sinais de carga
+# -----------------------------------------------------------------------------
+
+def normalize_charge_sign(
+    value: Any,
+    *,
+    default: str = CHARGE_UNKNOWN,
+) -> str:
+    """
+    Normalize a charge-sign description.
+    """
+
+    if value is None:
+        return default
+
+    if isinstance(value, bool):
+        return default
+
+    if isinstance(value, (int, float)):
+        numeric_value = _normalize_optional_numeric(value)
+
+        if numeric_value is None:
+            return default
+
+        if numeric_value > 0.0:
+            return CHARGE_POSITIVE
+
+        if numeric_value < 0.0:
+            return CHARGE_NEGATIVE
+
+        return CHARGE_NEUTRAL
+
+    normalized = str(value).strip().lower()
+
+    aliases = {
+        "+": CHARGE_POSITIVE,
+        "positive": CHARGE_POSITIVE,
+        "cation": CHARGE_POSITIVE,
+        "cationic": CHARGE_POSITIVE,
+        "pos": CHARGE_POSITIVE,
+        "-": CHARGE_NEGATIVE,
+        "negative": CHARGE_NEGATIVE,
+        "anion": CHARGE_NEGATIVE,
+        "anionic": CHARGE_NEGATIVE,
+        "neg": CHARGE_NEGATIVE,
+        "0": CHARGE_NEUTRAL,
+        "neutral": CHARGE_NEUTRAL,
+        "unknown": CHARGE_UNKNOWN,
+        "none": CHARGE_UNKNOWN,
+    }
+
+    return aliases.get(normalized, default)
+
+
+def charge_sign_from_value(
+    charge: Optional[Number],
+    *,
+    tolerance: float = 1.0e-8,
+) -> str:
+    """
+    Return the charge sign associated with a numeric charge.
+    """
+
+    numeric_charge = _normalize_optional_numeric(charge)
+
+    if numeric_charge is None:
+        return CHARGE_UNKNOWN
+
+    tolerance_value = _coerce_non_negative_float(
+        tolerance,
+        field_name="tolerance",
+    )
+
+    if numeric_charge > tolerance_value:
+        return CHARGE_POSITIVE
+
+    if numeric_charge < -tolerance_value:
+        return CHARGE_NEGATIVE
+
+    return CHARGE_NEUTRAL
+
+
+# -----------------------------------------------------------------------------
+# 6.3. Cálculo de cargas agregadas
+# -----------------------------------------------------------------------------
+
+def calculate_group_formal_charge(
+    atoms: Iterable[Any],
+) -> Optional[float]:
+    """
+    Sum explicit formal charges for a group.
+
+    ``None`` is returned when no atom exposes formal-charge information.
+    """
+
+    charges = [
+        get_atom_formal_charge(atom)
+        for atom in atoms
+    ]
+
+    known_charges = [
+        charge
+        for charge in charges
+        if charge is not None
+    ]
+
+    if not known_charges:
+        return None
+
+    return float(sum(known_charges))
+
+
+def calculate_group_partial_charge(
+    atoms: Iterable[Any],
+) -> Optional[float]:
+    """
+    Sum explicit partial charges for a group.
+    """
+
+    charges = [
+        get_atom_partial_charge(atom)
+        for atom in atoms
+    ]
+
+    known_charges = [
+        charge
+        for charge in charges
+        if charge is not None
+    ]
+
+    if not known_charges:
+        return None
+
+    return float(sum(known_charges))
+
+
+def calculate_group_effective_charge(
+    atoms: Iterable[Any],
+    *,
+    inferred_charge: Optional[float] = None,
+    prefer_formal: bool = True,
+) -> Optional[float]:
+    """
+    Return the best available charge estimate for a group.
+    """
+
+    atom_tuple = tuple(atoms)
+
+    formal_charge = calculate_group_formal_charge(atom_tuple)
+    partial_charge = calculate_group_partial_charge(atom_tuple)
+
+    if prefer_formal and formal_charge is not None:
+        if abs(formal_charge) > 1.0e-8:
+            return formal_charge
+
+    if partial_charge is not None:
+        if abs(partial_charge) > 1.0e-8:
+            return partial_charge
+
+    if formal_charge is not None:
+        return formal_charge
+
+    return _normalize_optional_numeric(inferred_charge)
+
+
+def group_has_positive_charge(
+    atoms: Iterable[Any],
+    *,
+    inferred_charge: Optional[float] = None,
+    minimum_magnitude: float = DEFAULT_MINIMUM_GROUP_CHARGE_MAGNITUDE,
+) -> bool:
+    """
+    Return whether a group has a sufficiently positive effective charge.
+    """
+
+    charge = calculate_group_effective_charge(
+        atoms,
+        inferred_charge=inferred_charge,
+    )
+
+    return (
+        charge is not None
+        and charge >= minimum_magnitude
+    )
+
+
+def group_has_negative_charge(
+    atoms: Iterable[Any],
+    *,
+    inferred_charge: Optional[float] = None,
+    minimum_magnitude: float = DEFAULT_MINIMUM_GROUP_CHARGE_MAGNITUDE,
+) -> bool:
+    """
+    Return whether a group has a sufficiently negative effective charge.
+    """
+
+    charge = calculate_group_effective_charge(
+        atoms,
+        inferred_charge=inferred_charge,
+    )
+
+    return (
+        charge is not None
+        and charge <= -minimum_magnitude
+    )
+
+
+# -----------------------------------------------------------------------------
+# 6.4. Centro geométrico e centro ponderado por carga
+# -----------------------------------------------------------------------------
+
+def calculate_charge_weighted_center(
+    atoms: Iterable[Any],
+    *,
+    charge_sign: Optional[str] = None,
+    use_scene_coordinates: bool = True,
+    weight_floor: float = DEFAULT_CHARGE_CENTER_WEIGHT_FLOOR,
+    fallback_to_centroid: bool = True,
+) -> Optional[Coordinate3D]:
+    """
+    Calculate a center weighted by the magnitude of atomic charge.
+
+    For positive groups, only positive atomic contributions are preferred.
+    For negative groups, only negative contributions are preferred.
+    """
+
+    atom_tuple = tuple(atoms)
+
+    if not atom_tuple:
+        return None
+
+    normalized_sign = normalize_charge_sign(
+        charge_sign,
+        default=CHARGE_UNKNOWN,
+    )
+
+    weighted_coordinates: List[
+        Tuple[Coordinate3D, float]
+    ] = []
+
+    for atom in atom_tuple:
+        coordinate = get_atom_coordinate(
+            atom,
+            use_scene_coordinates=use_scene_coordinates,
+        )
+
+        if coordinate is None:
+            continue
+
+        formal_charge = get_atom_formal_charge(atom)
+        partial_charge = get_atom_partial_charge(atom)
+
+        charge = (
+            formal_charge
+            if formal_charge is not None
+            else partial_charge
+        )
+
+        if charge is None:
+            continue
+
+        if normalized_sign == CHARGE_POSITIVE:
+            weight = max(0.0, charge)
+
+        elif normalized_sign == CHARGE_NEGATIVE:
+            weight = max(0.0, -charge)
+
+        else:
+            weight = abs(charge)
+
+        if weight < weight_floor:
+            continue
+
+        weighted_coordinates.append(
+            (
+                coordinate,
+                weight,
+            )
+        )
+
+    total_weight = sum(
+        weight
+        for _, weight in weighted_coordinates
+    )
+
+    if total_weight > 0.0:
+        return (
+            sum(
+                coordinate[0] * weight
+                for coordinate, weight in weighted_coordinates
+            ) / total_weight,
+            sum(
+                coordinate[1] * weight
+                for coordinate, weight in weighted_coordinates
+            ) / total_weight,
+            sum(
+                coordinate[2] * weight
+                for coordinate, weight in weighted_coordinates
+            ) / total_weight,
+        )
+
+    if not fallback_to_centroid:
+        return None
+
+    coordinates = get_atom_coordinates(
+        atom_tuple,
+        use_scene_coordinates=use_scene_coordinates,
+        skip_invalid=True,
+    )
+
+    if not coordinates:
+        return None
+
+    return calculate_centroid(coordinates)
+
+
+def calculate_charged_group_center(
+    group_atoms: Iterable[Any],
+    *,
+    charge_atoms: Optional[Iterable[Any]] = None,
+    charge_sign: Optional[str] = None,
+    use_scene_coordinates: bool = True,
+) -> Optional[Coordinate3D]:
+    """
+    Calculate the chemically relevant center of a charged group.
+    """
+
+    atom_tuple = tuple(group_atoms)
+    charge_atom_tuple = tuple(charge_atoms or ())
+
+    preferred_atoms = (
+        charge_atom_tuple
+        if charge_atom_tuple
+        else atom_tuple
+    )
+
+    center = calculate_charge_weighted_center(
+        preferred_atoms,
+        charge_sign=charge_sign,
+        use_scene_coordinates=use_scene_coordinates,
+        fallback_to_centroid=True,
+    )
+
+    if center is not None:
+        return center
+
+    coordinates = get_atom_coordinates(
+        atom_tuple,
+        use_scene_coordinates=use_scene_coordinates,
+        skip_invalid=True,
+    )
+
+    if not coordinates:
+        return None
+
+    return calculate_centroid(coordinates)
+
+
+# -----------------------------------------------------------------------------
+# 6.5. Vetor direcional de grupos carregados
+# -----------------------------------------------------------------------------
+
+def calculate_group_direction_vector(
+    center: Sequence[Number],
+    support_atoms: Iterable[Any],
+    *,
+    use_scene_coordinates: bool = True,
+    point_away_from_support: bool = True,
+) -> Optional[Vector3D]:
+    """
+    Calculate a direction vector for a charged functional group.
+
+    The vector usually points from the supporting molecular scaffold toward
+    the charged center.
+    """
+
+    normalized_center = _coerce_coordinate3d(
+        center,
+        field_name="center",
+    )
+
+    assert normalized_center is not None
+
+    support_coordinates = get_atom_coordinates(
+        support_atoms,
+        use_scene_coordinates=use_scene_coordinates,
+        skip_invalid=True,
+    )
+
+    if not support_coordinates:
+        return None
+
+    support_center = calculate_centroid(
+        support_coordinates
+    )
+
+    if point_away_from_support:
+        vector = subtract_vectors(
+            normalized_center,
+            support_center,
+        )
+
+    else:
+        vector = subtract_vectors(
+            support_center,
+            normalized_center,
+        )
+
+    return normalize_vector(vector)
+
+
+def calculate_group_plane_normal(
+    atoms: Iterable[Any],
+    *,
+    use_scene_coordinates: bool = True,
+) -> Optional[Vector3D]:
+    """
+    Fit a plane normal to a planar charged group.
+    """
+
+    atom_tuple = tuple(atoms)
+
+    if len(atom_tuple) < 3:
+        return None
+
+    plane = fit_plane_to_atoms(
+        atom_tuple,
+        use_scene_coordinates=use_scene_coordinates,
+        skip_invalid=True,
+        strict=False,
+    )
+
+    if plane is None:
+        return None
+
+    return orient_normal_deterministically(
+        plane.normal
+    )
+
+
+# -----------------------------------------------------------------------------
+# 6.6. Construção de grupos carregados conhecidos
+# -----------------------------------------------------------------------------
+
+def _create_known_residue_charged_group(
+    residue: Any,
+    definition: Mapping[str, Any],
+    *,
+    charge_sign: str,
+    participant_type: Optional[str] = None,
+    group_index: Optional[int] = None,
+    use_scene_coordinates: bool = True,
+    ligand_residue_names: Optional[Collection[str]] = None,
+    receptor_residue_names: Optional[Collection[str]] = None,
+) -> Optional[PiChargedGroup]:
+    """
+    Create a charged group from a residue-specific definition.
+    """
+
+    atom_map = map_atoms_by_name(residue)
+
+    required_names = tuple(
+        str(name).strip().upper()
+        for name in definition.get(
+            "atom_names",
+            (),
+        )
+    )
+
+    charge_names = tuple(
+        str(name).strip().upper()
+        for name in definition.get(
+            "charge_atom_names",
+            required_names,
+        )
+    )
+
+    support_names = tuple(
+        str(name).strip().upper()
+        for name in definition.get(
+            "support_atom_names",
+            (),
+        )
+    )
+
+    atoms = tuple(
+        atom_map[name]
+        for name in required_names
+        if name in atom_map
+    )
+
+    if len(atoms) != len(required_names):
+        return None
+
+    if not all(
+        atom_has_valid_coordinate(
+            atom,
+            use_scene_coordinates=use_scene_coordinates,
+        )
+        for atom in atoms
+    ):
+        return None
+
+    charge_atoms = tuple(
+        atom_map[name]
+        for name in charge_names
+        if name in atom_map
+    )
+
+    support_atoms = tuple(
+        atom_map[name]
+        for name in support_names
+        if name in atom_map
+    )
+
+    inferred_charge = _normalize_optional_numeric(
+        definition.get("formal_charge")
+    )
+
+    center = calculate_charged_group_center(
+        atoms,
+        charge_atoms=charge_atoms,
+        charge_sign=charge_sign,
+        use_scene_coordinates=use_scene_coordinates,
+    )
+
+    if center is None:
+        return None
+
+    direction = calculate_group_direction_vector(
+        center,
+        support_atoms,
+        use_scene_coordinates=use_scene_coordinates,
+    )
+
+    plane_normal = calculate_group_plane_normal(
+        atoms,
+        use_scene_coordinates=use_scene_coordinates,
+    )
+
+    residue_name = get_residue_name(residue)
+    residue_number = get_residue_number(residue)
+    chain_id = get_residue_chain_id(residue)
+
+    model = _safe_get_value(
+        residue,
+        (
+            "structure",
+            "model",
+            "molecule",
+        ),
+        default=None,
+    )
+
+    normalized_participant_type = (
+        participant_type
+        or infer_participant_type(
+            residue,
+            ligand_residue_names=ligand_residue_names,
+            receptor_residue_names=receptor_residue_names,
+        )
+    )
+
+    formal_charge = calculate_group_formal_charge(atoms)
+    partial_charge = calculate_group_partial_charge(atoms)
+
+    effective_charge = calculate_group_effective_charge(
+        atoms,
+        inferred_charge=inferred_charge,
+    )
+
+    return PiChargedGroup(
+        atoms=atoms,
+        atom_references=create_pi_atom_references(
+            atoms,
+            skip_invalid=False,
+        ),
+        charge_atoms=charge_atoms,
+        support_atoms=support_atoms,
+        group_index=group_index,
+        group_type=str(
+            definition.get(
+                "group_type",
+                (
+                    POSITIVE_GROUP_GENERIC
+                    if charge_sign == CHARGE_POSITIVE
+                    else NEGATIVE_GROUP_GENERIC
+                ),
+            )
+        ),
+        charge_sign=charge_sign,
+        center=center,
+        direction=direction,
+        plane_normal=plane_normal,
+        formal_charge=formal_charge,
+        partial_charge=partial_charge,
+        effective_charge=effective_charge,
+        residue_name=residue_name,
+        residue_number=residue_number,
+        chain_id=chain_id,
+        model_id=get_model_identifier(model),
+        participant_type=normalized_participant_type,
+        valid=True,
+        metadata={
+            "detection_method": "known_residue_definition",
+            "definition": dict(definition),
+        },
+    )
+
+
+def detect_known_residue_charged_groups(
+    residue: Any,
+    *,
+    include_positive: bool = True,
+    include_negative: bool = True,
+    participant_type: Optional[str] = None,
+    use_scene_coordinates: bool = True,
+    ligand_residue_names: Optional[Collection[str]] = None,
+    receptor_residue_names: Optional[Collection[str]] = None,
+) -> List[PiChargedGroup]:
+    """
+    Detect known charged groups in protein residues.
+    """
+
+    residue_name = get_residue_name(residue)
+    groups: List[PiChargedGroup] = []
+
+    if include_positive:
+        positive_definitions = (
+            STANDARD_POSITIVE_RESIDUE_GROUPS.get(
+                residue_name,
+                (),
+            )
+        )
+
+        for definition in positive_definitions:
+            group = _create_known_residue_charged_group(
+                residue,
+                definition,
+                charge_sign=CHARGE_POSITIVE,
+                participant_type=participant_type,
+                group_index=len(groups) + 1,
+                use_scene_coordinates=use_scene_coordinates,
+                ligand_residue_names=ligand_residue_names,
+                receptor_residue_names=receptor_residue_names,
+            )
+
+            if group is not None:
+                groups.append(group)
+
+    if include_negative:
+        negative_definitions = (
+            STANDARD_NEGATIVE_RESIDUE_GROUPS.get(
+                residue_name,
+                (),
+            )
+        )
+
+        for definition in negative_definitions:
+            group = _create_known_residue_charged_group(
+                residue,
+                definition,
+                charge_sign=CHARGE_NEGATIVE,
+                participant_type=participant_type,
+                group_index=len(groups) + 1,
+                use_scene_coordinates=use_scene_coordinates,
+                ligand_residue_names=ligand_residue_names,
+                receptor_residue_names=receptor_residue_names,
+            )
+
+            if group is not None:
+                groups.append(group)
+
+    return groups
+
+
+# -----------------------------------------------------------------------------
+# 6.7. Detecção de grupos fosfato
+# -----------------------------------------------------------------------------
+
+def detect_phosphate_groups(
+    atoms_or_residue: Any,
+    *,
+    participant_type: Optional[str] = None,
+    require_negative_charge: bool = False,
+    use_scene_coordinates: bool = True,
+) -> List[PiChargedGroup]:
+    """
+    Detect phosphate groups centered on phosphorus atoms.
+    """
+
+    atoms = normalize_atom_collection(
+        atoms_or_residue,
+        include_hydrogens=False,
+        valid_coordinates_only=True,
+    )
+
+    atom_identity_set = {
+        id(atom)
+        for atom in atoms
+    }
+
+    groups: List[PiChargedGroup] = []
+
+    for phosphorus in atoms:
+        if get_atom_element(phosphorus) != "P":
+            continue
+
+        bonded_oxygens = tuple(
+            neighbor
+            for neighbor in get_bonded_atoms(
+                phosphorus,
+                include_hydrogens=False,
+            )
+            if (
+                id(neighbor) in atom_identity_set
+                and get_atom_element(neighbor) == "O"
+            )
+        )
+
+        if len(bonded_oxygens) < 3:
+            continue
+
+        group_atoms = (
+            phosphorus,
+            *bonded_oxygens,
+        )
+
+        inferred_charge = calculate_group_effective_charge(
+            group_atoms,
+            inferred_charge=-1.0,
+        )
+
+        if (
+            require_negative_charge
+            and (
+                inferred_charge is None
+                or inferred_charge >= 0.0
+            )
+        ):
+            continue
+
+        negative_oxygens = tuple(
+            oxygen
+            for oxygen in bonded_oxygens
+            if atom_has_negative_charge(
+                oxygen,
+                infer_from_type=True,
+            )
+        )
+
+        charge_atoms = (
+            negative_oxygens
+            if negative_oxygens
+            else bonded_oxygens
+        )
+
+        center = calculate_charged_group_center(
+            group_atoms,
+            charge_atoms=charge_atoms,
+            charge_sign=CHARGE_NEGATIVE,
+            use_scene_coordinates=use_scene_coordinates,
+        )
+
+        if center is None:
+            continue
+
+        residue = get_atom_residue(phosphorus)
+        model = get_atom_model(phosphorus)
+
+        group = PiChargedGroup(
+            atoms=tuple(group_atoms),
+            atom_references=create_pi_atom_references(
+                group_atoms
+            ),
+            charge_atoms=charge_atoms,
+            support_atoms=(phosphorus,),
+            group_index=len(groups) + 1,
+            group_type=NEGATIVE_GROUP_PHOSPHATE,
+            charge_sign=CHARGE_NEGATIVE,
+            center=center,
+            direction=None,
+            plane_normal=calculate_group_plane_normal(
+                bonded_oxygens,
+                use_scene_coordinates=use_scene_coordinates,
+            ),
+            formal_charge=calculate_group_formal_charge(
+                group_atoms
+            ),
+            partial_charge=calculate_group_partial_charge(
+                group_atoms
+            ),
+            effective_charge=inferred_charge,
+            residue_name=get_residue_name(
+                residue or phosphorus
+            ),
+            residue_number=get_residue_number(
+                residue or phosphorus
+            ),
+            chain_id=get_residue_chain_id(
+                residue or phosphorus
+            ),
+            model_id=get_model_identifier(model),
+            participant_type=(
+                participant_type
+                or infer_participant_type(
+                    residue or phosphorus
+                )
+            ),
+            valid=True,
+            metadata={
+                "detection_method": "phosphorus_connectivity",
+                "oxygen_count": len(bonded_oxygens),
+            },
+        )
+
+        groups.append(group)
+
+    return groups
+
+
+# -----------------------------------------------------------------------------
+# 6.8. Detecção de carboxilatos genéricos
+# -----------------------------------------------------------------------------
+
+def detect_carboxylate_groups(
+    atoms_or_residue: Any,
+    *,
+    participant_type: Optional[str] = None,
+    require_negative_charge: bool = False,
+    use_scene_coordinates: bool = True,
+) -> List[PiChargedGroup]:
+    """
+    Detect generic carboxylate groups from carbon–oxygen connectivity.
+    """
+
+    atoms = normalize_atom_collection(
+        atoms_or_residue,
+        include_hydrogens=False,
+        valid_coordinates_only=True,
+    )
+
+    atom_identity_set = {
+        id(atom)
+        for atom in atoms
+    }
+
+    groups: List[PiChargedGroup] = []
+
+    for carbon in atoms:
+        if get_atom_element(carbon) != "C":
+            continue
+
+        bonded_oxygens = tuple(
+            neighbor
+            for neighbor in get_bonded_atoms(
+                carbon,
+                include_hydrogens=False,
+            )
+            if (
+                id(neighbor) in atom_identity_set
+                and get_atom_element(neighbor) == "O"
+            )
+        )
+
+        if len(bonded_oxygens) != 2:
+            continue
+
+        bond_orders = tuple(
+            get_bond_order(carbon, oxygen)
+            for oxygen in bonded_oxygens
+        )
+
+        aromatic_like = any(
+            order is not None
+            and abs(order - 1.5) <= 0.20
+            for order in bond_orders
+        )
+
+        double_bond_count = sum(
+            1
+            for order in bond_orders
+            if order is not None
+            and order >= 1.75
+        )
+
+        negative_oxygen_count = sum(
+            1
+            for oxygen in bonded_oxygens
+            if atom_has_negative_charge(oxygen)
+        )
+
+        carboxylate_like = (
+            aromatic_like
+            or double_bond_count == 1
+            or negative_oxygen_count >= 1
+        )
+
+        if not carboxylate_like:
+            continue
+
+        group_atoms = (
+            carbon,
+            *bonded_oxygens,
+        )
+
+        inferred_charge = calculate_group_effective_charge(
+            group_atoms,
+            inferred_charge=-1.0,
+        )
+
+        if (
+            require_negative_charge
+            and (
+                inferred_charge is None
+                or inferred_charge >= 0.0
+            )
+        ):
+            continue
+
+        negative_oxygens = tuple(
+            oxygen
+            for oxygen in bonded_oxygens
+            if atom_has_negative_charge(oxygen)
+        )
+
+        charge_atoms = (
+            negative_oxygens
+            if negative_oxygens
+            else bonded_oxygens
+        )
+
+        center = calculate_charged_group_center(
+            group_atoms,
+            charge_atoms=charge_atoms,
+            charge_sign=CHARGE_NEGATIVE,
+            use_scene_coordinates=use_scene_coordinates,
+        )
+
+        if center is None:
+            continue
+
+        support_atoms = tuple(
+            neighbor
+            for neighbor in get_bonded_atoms(
+                carbon,
+                include_hydrogens=False,
+            )
+            if (
+                id(neighbor) in atom_identity_set
+                and neighbor not in bonded_oxygens
+            )
+        )
+
+        residue = get_atom_residue(carbon)
+        model = get_atom_model(carbon)
+
+        groups.append(
+            PiChargedGroup(
+                atoms=group_atoms,
+                atom_references=create_pi_atom_references(
+                    group_atoms
+                ),
+                charge_atoms=charge_atoms,
+                support_atoms=support_atoms,
+                group_index=len(groups) + 1,
+                group_type=NEGATIVE_GROUP_CARBOXYLATE,
+                charge_sign=CHARGE_NEGATIVE,
+                center=center,
+                direction=calculate_group_direction_vector(
+                    center,
+                    support_atoms,
+                    use_scene_coordinates=use_scene_coordinates,
+                ),
+                plane_normal=calculate_group_plane_normal(
+                    group_atoms,
+                    use_scene_coordinates=use_scene_coordinates,
+                ),
+                formal_charge=calculate_group_formal_charge(
+                    group_atoms
+                ),
+                partial_charge=calculate_group_partial_charge(
+                    group_atoms
+                ),
+                effective_charge=inferred_charge,
+                residue_name=get_residue_name(
+                    residue or carbon
+                ),
+                residue_number=get_residue_number(
+                    residue or carbon
+                ),
+                chain_id=get_residue_chain_id(
+                    residue or carbon
+                ),
+                model_id=get_model_identifier(model),
+                participant_type=(
+                    participant_type
+                    or infer_participant_type(
+                        residue or carbon
+                    )
+                ),
+                valid=True,
+                metadata={
+                    "detection_method": (
+                        "carboxylate_connectivity"
+                    ),
+                    "bond_orders": list(bond_orders),
+                },
+            )
+        )
+
+    return groups
+
+
+# -----------------------------------------------------------------------------
+# 6.9. Detecção de amônio e nitrogênios catiônicos
+# -----------------------------------------------------------------------------
+
+def _infer_nitrogen_positive_group_type(
+    nitrogen: Any,
+    bonded_atoms: Sequence[Any],
+) -> str:
+    """
+    Infer a positive nitrogen group class.
+    """
+
+    carbon_neighbors = [
+        atom
+        for atom in bonded_atoms
+        if get_atom_element(atom) == "C"
+    ]
+
+    nitrogen_neighbors = [
+        atom
+        for atom in bonded_atoms
+        if get_atom_element(atom) == "N"
+    ]
+
+    if len(carbon_neighbors) >= 4:
+        return POSITIVE_GROUP_AMMONIUM
+
+    if nitrogen_neighbors:
+        return POSITIVE_GROUP_GUANIDINIUM
+
+    return POSITIVE_GROUP_GENERIC
+
+
+def detect_positive_nitrogen_groups(
+    atoms_or_residue: Any,
+    *,
+    participant_type: Optional[str] = None,
+    require_explicit_charge: bool = False,
+    use_scene_coordinates: bool = True,
+) -> List[PiChargedGroup]:
+    """
+    Detect positively charged nitrogen centers.
+    """
+
+    atoms = normalize_atom_collection(
+        atoms_or_residue,
+        include_hydrogens=True,
+        valid_coordinates_only=True,
+    )
+
+    atom_identity_set = {
+        id(atom)
+        for atom in atoms
+    }
+
+    groups: List[PiChargedGroup] = []
+
+    for nitrogen in atoms:
+        if get_atom_element(nitrogen) != "N":
+            continue
+
+        explicit_positive = atom_has_positive_charge(
+            nitrogen,
+            infer_from_type=True,
+        )
+
+        bonded_atoms = tuple(
+            neighbor
+            for neighbor in get_bonded_atoms(
+                nitrogen,
+                include_hydrogens=True,
+            )
+            if id(neighbor) in atom_identity_set
+        )
+
+        heavy_neighbors = tuple(
+            atom
+            for atom in bonded_atoms
+            if is_heavy_atom(atom)
+        )
+
+        hydrogen_neighbors = tuple(
+            atom
+            for atom in bonded_atoms
+            if is_hydrogen_atom(atom)
+        )
+
+        valence_estimate = (
+            len(heavy_neighbors)
+            + len(hydrogen_neighbors)
+        )
+
+        quaternary_like = len(heavy_neighbors) >= 4
+
+        protonated_like = (
+            valence_estimate >= 4
+            and len(hydrogen_neighbors) >= 1
+        )
+
+        if require_explicit_charge:
+            if not explicit_positive:
+                continue
+
+        elif not (
+            explicit_positive
+            or quaternary_like
+            or protonated_like
+        ):
+            continue
+
+        support_atoms = heavy_neighbors
+
+        center = get_atom_coordinate(
+            nitrogen,
+            use_scene_coordinates=use_scene_coordinates,
+        )
+
+        if center is None:
+            continue
+
+        residue = get_atom_residue(nitrogen)
+        model = get_atom_model(nitrogen)
+
+        effective_charge = calculate_group_effective_charge(
+            (nitrogen,),
+            inferred_charge=1.0,
+        )
+
+        groups.append(
+            PiChargedGroup(
+                atoms=(nitrogen,),
+                atom_references=create_pi_atom_references(
+                    (nitrogen,)
+                ),
+                charge_atoms=(nitrogen,),
+                support_atoms=support_atoms,
+                group_index=len(groups) + 1,
+                group_type=_infer_nitrogen_positive_group_type(
+                    nitrogen,
+                    bonded_atoms,
+                ),
+                charge_sign=CHARGE_POSITIVE,
+                center=center,
+                direction=calculate_group_direction_vector(
+                    center,
+                    support_atoms,
+                    use_scene_coordinates=use_scene_coordinates,
+                ),
+                plane_normal=None,
+                formal_charge=get_atom_formal_charge(
+                    nitrogen
+                ),
+                partial_charge=get_atom_partial_charge(
+                    nitrogen
+                ),
+                effective_charge=effective_charge,
+                residue_name=get_residue_name(
+                    residue or nitrogen
+                ),
+                residue_number=get_residue_number(
+                    residue or nitrogen
+                ),
+                chain_id=get_residue_chain_id(
+                    residue or nitrogen
+                ),
+                model_id=get_model_identifier(model),
+                participant_type=(
+                    participant_type
+                    or infer_participant_type(
+                        residue or nitrogen
+                    )
+                ),
+                valid=True,
+                metadata={
+                    "detection_method": (
+                        "positive_nitrogen_connectivity"
+                    ),
+                    "explicit_positive_charge": (
+                        explicit_positive
+                    ),
+                    "heavy_neighbor_count": len(
+                        heavy_neighbors
+                    ),
+                    "hydrogen_neighbor_count": len(
+                        hydrogen_neighbors
+                    ),
+                },
+            )
+        )
+
+    return groups
+
+
+# -----------------------------------------------------------------------------
+# 6.10. Detecção de metais catiônicos
+# -----------------------------------------------------------------------------
+
+def detect_metal_cations(
+    atoms_or_model: Any,
+    *,
+    participant_type: Optional[str] = None,
+    require_positive_charge: bool = False,
+    use_scene_coordinates: bool = True,
+) -> List[PiChargedGroup]:
+    """
+    Detect monoatomic metal cations.
+    """
+
+    atoms = normalize_atom_collection(
+        atoms_or_model,
+        include_hydrogens=False,
+        valid_coordinates_only=True,
+    )
+
+    groups: List[PiChargedGroup] = []
+
+    for atom in atoms:
+        element = get_atom_element(atom)
+
+        if element not in COMMON_METAL_ELEMENTS:
+            continue
+
+        formal_charge = get_atom_formal_charge(atom)
+        partial_charge = get_atom_partial_charge(atom)
+
+        explicit_positive = (
+            formal_charge is not None
+            and formal_charge > 0.0
+        ) or (
+            partial_charge is not None
+            and partial_charge > 0.0
+        )
+
+        if require_positive_charge and not explicit_positive:
+            continue
+
+        inferred_charge = (
+            formal_charge
+            if formal_charge is not None
+            else partial_charge
+        )
+
+        if inferred_charge is None:
+            inferred_charge = 2.0 if element in {
+                "MG",
+                "CA",
+                "ZN",
+                "FE",
+                "MN",
+                "CU",
+                "CO",
+                "NI",
+                "CD",
+                "HG",
+            } else 1.0
+
+        center = get_atom_coordinate(
+            atom,
+            use_scene_coordinates=use_scene_coordinates,
+        )
+
+        if center is None:
+            continue
+
+        residue = get_atom_residue(atom)
+        model = get_atom_model(atom)
+
+        groups.append(
+            PiChargedGroup(
+                atoms=(atom,),
+                atom_references=create_pi_atom_references(
+                    (atom,)
+                ),
+                charge_atoms=(atom,),
+                support_atoms=(),
+                group_index=len(groups) + 1,
+                group_type=POSITIVE_GROUP_METAL,
+                charge_sign=CHARGE_POSITIVE,
+                center=center,
+                direction=None,
+                plane_normal=None,
+                formal_charge=formal_charge,
+                partial_charge=partial_charge,
+                effective_charge=inferred_charge,
+                residue_name=get_residue_name(
+                    residue or atom
+                ),
+                residue_number=get_residue_number(
+                    residue or atom
+                ),
+                chain_id=get_residue_chain_id(
+                    residue or atom
+                ),
+                model_id=get_model_identifier(model),
+                participant_type=(
+                    participant_type
+                    or infer_participant_type(
+                        residue or atom
+                    )
+                ),
+                valid=True,
+                metadata={
+                    "detection_method": "metal_element",
+                    "element": element,
+                },
+            )
+        )
+
+    return groups
+
+
+# -----------------------------------------------------------------------------
+# 6.11. Detecção genérica por cargas atômicas
+# -----------------------------------------------------------------------------
+
+def _expand_local_charged_environment(
+    atom: Any,
+    allowed_atom_ids: Set[int],
+    *,
+    bond_depth: int = DEFAULT_CHARGE_GROUP_BOND_DEPTH,
+) -> Tuple[Any, ...]:
+    """
+    Expand a charged atom into a local bonded environment.
+    """
+
+    if bond_depth < 0:
+        raise ValueError(
+            "bond_depth must be non-negative."
+        )
+
+    collected: List[Any] = [atom]
+    visited: Set[int] = {id(atom)}
+    frontier: List[Tuple[Any, int]] = [
+        (
+            atom,
+            0,
+        )
+    ]
+
+    while frontier:
+        current, depth = frontier.pop(0)
+
+        if depth >= bond_depth:
+            continue
+
+        for neighbor in get_bonded_atoms(
+            current,
+            include_hydrogens=False,
+        ):
+            neighbor_id = id(neighbor)
+
+            if neighbor_id not in allowed_atom_ids:
+                continue
+
+            if neighbor_id in visited:
+                continue
+
+            visited.add(neighbor_id)
+            collected.append(neighbor)
+            frontier.append(
+                (
+                    neighbor,
+                    depth + 1,
+                )
+            )
+
+    return tuple(collected)
+
+
+def detect_explicitly_charged_atom_groups(
+    atoms_or_model: Any,
+    *,
+    charge_sign: Optional[str] = None,
+    participant_type: Optional[str] = None,
+    bond_depth: int = DEFAULT_CHARGE_GROUP_BOND_DEPTH,
+    minimum_charge_magnitude: float = (
+        DEFAULT_MINIMUM_GROUP_CHARGE_MAGNITUDE
+    ),
+    use_scene_coordinates: bool = True,
+) -> List[PiChargedGroup]:
+    """
+    Detect generic groups centered on explicitly charged atoms.
+    """
+
+    atoms = normalize_atom_collection(
+        atoms_or_model,
+        include_hydrogens=False,
+        valid_coordinates_only=True,
+    )
+
+    allowed_atom_ids = {
+        id(atom)
+        for atom in atoms
+    }
+
+    requested_sign = normalize_charge_sign(
+        charge_sign,
+        default=CHARGE_UNKNOWN,
+    )
+
+    groups: List[PiChargedGroup] = []
+
+    for atom in atoms:
+        effective_charge = get_atom_effective_charge(atom)
+
+        if effective_charge is None:
+            continue
+
+        detected_sign = charge_sign_from_value(
+            effective_charge
+        )
+
+        if detected_sign not in {
+            CHARGE_POSITIVE,
+            CHARGE_NEGATIVE,
+        }:
+            continue
+
+        if (
+            abs(effective_charge)
+            < minimum_charge_magnitude
+        ):
+            continue
+
+        if (
+            requested_sign != CHARGE_UNKNOWN
+            and detected_sign != requested_sign
+        ):
+            continue
+
+        group_atoms = _expand_local_charged_environment(
+            atom,
+            allowed_atom_ids,
+            bond_depth=bond_depth,
+        )
+
+        center = calculate_charged_group_center(
+            group_atoms,
+            charge_atoms=(atom,),
+            charge_sign=detected_sign,
+            use_scene_coordinates=use_scene_coordinates,
+        )
+
+        if center is None:
+            continue
+
+        support_atoms = tuple(
+            candidate
+            for candidate in group_atoms
+            if candidate is not atom
+        )
+
+        residue = get_atom_residue(atom)
+        model = get_atom_model(atom)
+
+        groups.append(
+            PiChargedGroup(
+                atoms=group_atoms,
+                atom_references=create_pi_atom_references(
+                    group_atoms
+                ),
+                charge_atoms=(atom,),
+                support_atoms=support_atoms,
+                group_index=len(groups) + 1,
+                group_type=(
+                    POSITIVE_GROUP_GENERIC
+                    if detected_sign == CHARGE_POSITIVE
+                    else NEGATIVE_GROUP_GENERIC
+                ),
+                charge_sign=detected_sign,
+                center=center,
+                direction=calculate_group_direction_vector(
+                    center,
+                    support_atoms,
+                    use_scene_coordinates=use_scene_coordinates,
+                ),
+                plane_normal=calculate_group_plane_normal(
+                    group_atoms,
+                    use_scene_coordinates=use_scene_coordinates,
+                ),
+                formal_charge=calculate_group_formal_charge(
+                    group_atoms
+                ),
+                partial_charge=calculate_group_partial_charge(
+                    group_atoms
+                ),
+                effective_charge=calculate_group_effective_charge(
+                    group_atoms,
+                    inferred_charge=effective_charge,
+                ),
+                residue_name=get_residue_name(
+                    residue or atom
+                ),
+                residue_number=get_residue_number(
+                    residue or atom
+                ),
+                chain_id=get_residue_chain_id(
+                    residue or atom
+                ),
+                model_id=get_model_identifier(model),
+                participant_type=(
+                    participant_type
+                    or infer_participant_type(
+                        residue or atom
+                    )
+                ),
+                valid=True,
+                metadata={
+                    "detection_method": (
+                        "explicit_atomic_charge"
+                    ),
+                    "central_atom": get_atom_identifier(
+                        atom
+                    ),
+                    "bond_depth": bond_depth,
+                },
+            )
+        )
+
+    return groups
+
+
+# -----------------------------------------------------------------------------
+# 6.12. Identidade e deduplicação de grupos carregados
+# -----------------------------------------------------------------------------
+
+def get_charged_group_identity_key(
+    group: PiChargedGroup,
+) -> Tuple[Any, ...]:
+    """
+    Return a hashable identity key for a charged group.
+    """
+
+    if not isinstance(group, PiChargedGroup):
+        raise TypeError(
+            "group must be a PiChargedGroup."
+        )
+
+    atom_ids = tuple(
+        sorted(
+            id(atom)
+            for atom in group.atoms
+        )
+    )
+
+    charge_atom_ids = tuple(
+        sorted(
+            id(atom)
+            for atom in group.charge_atoms
+        )
+    )
+
+    return (
+        group.model_id,
+        group.chain_id,
+        group.residue_name,
+        group.residue_number,
+        group.group_type,
+        group.charge_sign,
+        atom_ids,
+        charge_atom_ids,
+    )
+
+
+def _charged_group_priority(
+    group: PiChargedGroup,
+) -> Tuple[int, float, int]:
+    """
+    Return a priority tuple used during deduplication.
+    """
+
+    method = str(
+        group.metadata.get(
+            "detection_method",
+            "",
+        )
+    )
+
+    method_priority = {
+        "known_residue_definition": 5,
+        "phosphorus_connectivity": 4,
+        "carboxylate_connectivity": 4,
+        "positive_nitrogen_connectivity": 4,
+        "metal_element": 4,
+        "explicit_atomic_charge": 2,
+    }.get(method, 1)
+
+    charge_magnitude = abs(
+        group.effective_charge
+        if group.effective_charge is not None
+        else 0.0
+    )
+
+    return (
+        method_priority,
+        charge_magnitude,
+        len(group.atoms),
+    )
+
+
+def charged_groups_overlap(
+    group_1: PiChargedGroup,
+    group_2: PiChargedGroup,
+    *,
+    minimum_shared_fraction: float = 0.50,
+) -> bool:
+    """
+    Return whether two charged groups substantially overlap.
+    """
+
+    atom_ids_1 = {
+        id(atom)
+        for atom in group_1.atoms
+    }
+
+    atom_ids_2 = {
+        id(atom)
+        for atom in group_2.atoms
+    }
+
+    if not atom_ids_1 or not atom_ids_2:
+        return False
+
+    shared_count = len(
+        atom_ids_1 & atom_ids_2
+    )
+
+    denominator = min(
+        len(atom_ids_1),
+        len(atom_ids_2),
+    )
+
+    return (
+        shared_count / denominator
+        >= minimum_shared_fraction
+    )
+
+
+def deduplicate_charged_groups(
+    groups: Iterable[PiChargedGroup],
+) -> List[PiChargedGroup]:
+    """
+    Remove identical or substantially overlapping charged groups.
+    """
+
+    group_list = list(groups)
+    unique: List[PiChargedGroup] = []
+
+    group_list.sort(
+        key=_charged_group_priority,
+        reverse=True,
+    )
+
+    for candidate in group_list:
+        duplicate_index: Optional[int] = None
+
+        for index, existing in enumerate(unique):
+            same_sign = (
+                candidate.charge_sign
+                == existing.charge_sign
+            )
+
+            same_model = (
+                candidate.model_id
+                == existing.model_id
+            )
+
+            same_residue = (
+                candidate.chain_id
+                == existing.chain_id
+                and candidate.residue_name
+                == existing.residue_name
+                and candidate.residue_number
+                == existing.residue_number
+            )
+
+            if not (
+                same_sign
+                and same_model
+                and same_residue
+            ):
+                continue
+
+            if (
+                get_charged_group_identity_key(candidate)
+                == get_charged_group_identity_key(existing)
+            ) or charged_groups_overlap(
+                candidate,
+                existing,
+            ):
+                duplicate_index = index
+                break
+
+        if duplicate_index is None:
+            unique.append(candidate)
+            continue
+
+        existing = unique[duplicate_index]
+
+        if (
+            _charged_group_priority(candidate)
+            > _charged_group_priority(existing)
+        ):
+            unique[duplicate_index] = candidate
+
+    unique.sort(
+        key=lambda group: (
+            group.model_id or "",
+            group.chain_id or "",
+            str(group.residue_number or ""),
+            group.residue_name or "",
+            group.charge_sign,
+            group.group_type,
+        )
+    )
+
+    for group_index, group in enumerate(
+        unique,
+        start=1,
+    ):
+        group.group_index = group_index
+
+        if not group.group_id:
+            group.group_id = group.build_group_id()
+
+    return unique
+
+
+# -----------------------------------------------------------------------------
+# 6.13. Validação de grupos carregados
+# -----------------------------------------------------------------------------
+
+def validate_charged_group(
+    group: PiChargedGroup,
+    *,
+    minimum_charge_magnitude: float = (
+        DEFAULT_MINIMUM_GROUP_CHARGE_MAGNITUDE
+    ),
+    require_center: bool = True,
+    require_charge_evidence: bool = True,
+) -> Tuple[bool, Tuple[str, ...]]:
+    """
+    Validate a charged group.
+    """
+
+    if not isinstance(group, PiChargedGroup):
+        raise TypeError(
+            "group must be a PiChargedGroup."
+        )
+
+    messages: List[str] = []
+
+    if not group.atoms:
+        messages.append(
+            "Charged group contains no atoms."
+        )
+
+    if group.charge_sign not in {
+        CHARGE_POSITIVE,
+        CHARGE_NEGATIVE,
+    }:
+        messages.append(
+            "Charged group sign must be positive or negative."
+        )
+
+    if require_center and group.center is None:
+        messages.append(
+            "Charged group center is unavailable."
+        )
+
+    if group.center is not None:
+        try:
+            _coerce_coordinate3d(
+                group.center,
+                field_name="group.center",
+            )
+
+        except (TypeError, ValueError):
+            messages.append(
+                "Charged group center is invalid."
+            )
+
+    effective_charge = group.effective_charge
+
+    if effective_charge is None:
+        effective_charge = calculate_group_effective_charge(
+            group.atoms
+        )
+
+        group.effective_charge = effective_charge
+
+    if require_charge_evidence:
+        if effective_charge is None:
+            messages.append(
+                "No explicit or inferred charge is available."
+            )
+
+        elif (
+            abs(effective_charge)
+            < minimum_charge_magnitude
+        ):
+            messages.append(
+                "Charge magnitude is below the configured threshold."
+            )
+
+        elif (
+            group.charge_sign == CHARGE_POSITIVE
+            and effective_charge <= 0.0
+        ):
+            messages.append(
+                "Effective charge is inconsistent with a positive group."
+            )
+
+        elif (
+            group.charge_sign == CHARGE_NEGATIVE
+            and effective_charge >= 0.0
+        ):
+            messages.append(
+                "Effective charge is inconsistent with a negative group."
+            )
+
+    group.valid = not messages
+
+    existing_messages = list(
+        group.validation_messages
+    )
+
+    existing_messages.extend(
+        message
+        for message in messages
+        if message not in existing_messages
+    )
+
+    group.validation_messages = tuple(
+        existing_messages
+    )
+
+    return group.valid, tuple(messages)
+
+
+def validate_charged_groups(
+    groups: Iterable[PiChargedGroup],
+    *,
+    minimum_charge_magnitude: float = (
+        DEFAULT_MINIMUM_GROUP_CHARGE_MAGNITUDE
+    ),
+    remove_invalid: bool = False,
+) -> List[PiChargedGroup]:
+    """
+    Validate multiple charged groups.
+    """
+
+    validated: List[PiChargedGroup] = []
+
+    for group in groups:
+        valid, _ = validate_charged_group(
+            group,
+            minimum_charge_magnitude=(
+                minimum_charge_magnitude
+            ),
+        )
+
+        if remove_invalid and not valid:
+            continue
+
+        validated.append(group)
+
+    return validated
+
+
+# -----------------------------------------------------------------------------
+# 6.14. Detecção integrada de grupos carregados
+# -----------------------------------------------------------------------------
+
+def detect_charged_groups(
+    molecular_input: Any,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    participant_type: Optional[str] = None,
+    charge_sign: Optional[str] = None,
+    include_known_residue_groups: bool = True,
+    include_generic_carboxylates: bool = True,
+    include_phosphates: bool = True,
+    include_positive_nitrogens: bool = True,
+    include_metals: bool = True,
+    include_explicit_atomic_charges: bool = True,
+    ligand_residue_names: Optional[Collection[str]] = None,
+    receptor_residue_names: Optional[Collection[str]] = None,
+) -> List[PiChargedGroup]:
+    """
+    Detect charged groups in a model, residue or atom collection.
+    """
+
+    analysis_config = (
+        config
+        if config is not None
+        else create_default_pi_config()
+    )
+
+    if not isinstance(
+        analysis_config,
+        PiAnalysisConfig,
+    ):
+        raise TypeError(
+            "config must be a PiAnalysisConfig or None."
+        )
+
+    requested_sign = normalize_charge_sign(
+        charge_sign,
+        default=CHARGE_UNKNOWN,
+    )
+
+    atoms = normalize_atom_collection(
+        molecular_input,
+        include_hydrogens=True,
+        valid_coordinates_only=True,
+    )
+
+    residues = normalize_residue_collection(
+        atoms
+    )
+
+    detected: List[PiChargedGroup] = []
+
+    if include_known_residue_groups:
+        for residue in residues:
+            residue_participant_type = (
+                participant_type
+                or infer_participant_type(
+                    residue,
+                    ligand_residue_names=ligand_residue_names,
+                    receptor_residue_names=receptor_residue_names,
+                )
+            )
+
+            detected.extend(
+                detect_known_residue_charged_groups(
+                    residue,
+                    include_positive=(
+                        requested_sign
+                        in {
+                            CHARGE_POSITIVE,
+                            CHARGE_UNKNOWN,
+                        }
+                    ),
+                    include_negative=(
+                        requested_sign
+                        in {
+                            CHARGE_NEGATIVE,
+                            CHARGE_UNKNOWN,
+                        }
+                    ),
+                    participant_type=(
+                        residue_participant_type
+                    ),
+                    ligand_residue_names=(
+                        ligand_residue_names
+                    ),
+                    receptor_residue_names=(
+                        receptor_residue_names
+                    ),
+                )
+            )
+
+    if (
+        include_generic_carboxylates
+        and requested_sign
+        in {
+            CHARGE_NEGATIVE,
+            CHARGE_UNKNOWN,
+        }
+    ):
+        detected.extend(
+            detect_carboxylate_groups(
+                atoms,
+                participant_type=participant_type,
+            )
+        )
+
+    if (
+        include_phosphates
+        and requested_sign
+        in {
+            CHARGE_NEGATIVE,
+            CHARGE_UNKNOWN,
+        }
+    ):
+        detected.extend(
+            detect_phosphate_groups(
+                atoms,
+                participant_type=participant_type,
+            )
+        )
+
+    if (
+        include_positive_nitrogens
+        and requested_sign
+        in {
+            CHARGE_POSITIVE,
+            CHARGE_UNKNOWN,
+        }
+    ):
+        detected.extend(
+            detect_positive_nitrogen_groups(
+                atoms,
+                participant_type=participant_type,
+            )
+        )
+
+    if (
+        include_metals
+        and requested_sign
+        in {
+            CHARGE_POSITIVE,
+            CHARGE_UNKNOWN,
+        }
+    ):
+        detected.extend(
+            detect_metal_cations(
+                atoms,
+                participant_type=participant_type,
+            )
+        )
+
+    if include_explicit_atomic_charges:
+        detected.extend(
+            detect_explicitly_charged_atom_groups(
+                atoms,
+                charge_sign=(
+                    None
+                    if requested_sign == CHARGE_UNKNOWN
+                    else requested_sign
+                ),
+                participant_type=participant_type,
+                minimum_charge_magnitude=(
+                    analysis_config
+                    .minimum_group_charge_magnitude
+                ),
+            )
+        )
+
+    deduplicated = deduplicate_charged_groups(
+        detected
+    )
+
+    validated = validate_charged_groups(
+        deduplicated,
+        minimum_charge_magnitude=(
+            analysis_config
+            .minimum_group_charge_magnitude
+        ),
+        remove_invalid=True,
+    )
+
+    return validated
+
+
+# -----------------------------------------------------------------------------
+# 6.15. Funções específicas para cátions e ânions
+# -----------------------------------------------------------------------------
+
+def detect_cationic_groups(
+    molecular_input: Any,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    participant_type: Optional[str] = None,
+    ligand_residue_names: Optional[Collection[str]] = None,
+    receptor_residue_names: Optional[Collection[str]] = None,
+) -> List[PiChargedGroup]:
+    """
+    Detect positively charged groups.
+    """
+
+    return detect_charged_groups(
+        molecular_input,
+        config=config,
+        participant_type=participant_type,
+        charge_sign=CHARGE_POSITIVE,
+        ligand_residue_names=ligand_residue_names,
+        receptor_residue_names=receptor_residue_names,
+    )
+
+
+def detect_anionic_groups(
+    molecular_input: Any,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    participant_type: Optional[str] = None,
+    ligand_residue_names: Optional[Collection[str]] = None,
+    receptor_residue_names: Optional[Collection[str]] = None,
+) -> List[PiChargedGroup]:
+    """
+    Detect negatively charged groups.
+    """
+
+    return detect_charged_groups(
+        molecular_input,
+        config=config,
+        participant_type=participant_type,
+        charge_sign=CHARGE_NEGATIVE,
+        ligand_residue_names=ligand_residue_names,
+        receptor_residue_names=receptor_residue_names,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 6.16. Detecção para receptor e ligante
+# -----------------------------------------------------------------------------
+
+def detect_receptor_charged_groups(
+    receptor: Any,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    charge_sign: Optional[str] = None,
+) -> List[PiChargedGroup]:
+    """
+    Detect charged groups associated with a receptor.
+    """
+
+    return detect_charged_groups(
+        receptor,
+        config=config,
+        participant_type=PARTICIPANT_RECEPTOR,
+        charge_sign=charge_sign,
+    )
+
+
+def detect_ligand_charged_groups(
+    ligand: Any,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    charge_sign: Optional[str] = None,
+) -> List[PiChargedGroup]:
+    """
+    Detect charged groups associated with a ligand.
+    """
+
+    return detect_charged_groups(
+        ligand,
+        config=config,
+        participant_type=PARTICIPANT_LIGAND,
+        charge_sign=charge_sign,
+    )
+
+
+def detect_pi_analysis_charged_groups(
+    normalized_input: PiNormalizedInput,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+) -> Tuple[
+    List[PiChargedGroup],
+    List[PiChargedGroup],
+]:
+    """
+    Detect receptor and ligand charged groups.
+    """
+
+    if not isinstance(
+        normalized_input,
+        PiNormalizedInput,
+    ):
+        raise TypeError(
+            "normalized_input must be a PiNormalizedInput."
+        )
+
+    analysis_config = (
+        config
+        if config is not None
+        else create_default_pi_config()
+    )
+
+    receptor_groups = detect_receptor_charged_groups(
+        normalized_input.receptor_atoms,
+        config=analysis_config,
+    )
+
+    ligand_groups = detect_ligand_charged_groups(
+        normalized_input.ligand_atoms,
+        config=analysis_config,
+    )
+
+    return (
+        receptor_groups,
+        ligand_groups,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 6.17. Separação por sinal
+# -----------------------------------------------------------------------------
+
+def split_charged_groups_by_sign(
+    groups: Iterable[PiChargedGroup],
+) -> Tuple[
+    List[PiChargedGroup],
+    List[PiChargedGroup],
+]:
+    """
+    Split charged groups into cationic and anionic collections.
+    """
+
+    cations: List[PiChargedGroup] = []
+    anions: List[PiChargedGroup] = []
+
+    for group in groups:
+        if group.charge_sign == CHARGE_POSITIVE:
+            cations.append(group)
+
+        elif group.charge_sign == CHARGE_NEGATIVE:
+            anions.append(group)
+
+    return cations, anions
+
+
+def filter_charged_groups_by_participant(
+    groups: Iterable[PiChargedGroup],
+    participant_type: str,
+) -> List[PiChargedGroup]:
+    """
+    Filter charged groups by molecular participant type.
+    """
+
+    normalized_type = str(
+        participant_type
+    ).strip().lower()
+
+    return [
+        group
+        for group in groups
+        if group.participant_type == normalized_type
+    ]
+
+
+# -----------------------------------------------------------------------------
+# 6.18. Geometria entre grupos carregados e anéis
+# -----------------------------------------------------------------------------
+
+def calculate_charged_group_ring_geometry(
+    group: PiChargedGroup,
+    ring: PiRing,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    strict: bool = False,
+) -> Optional[PiPointRingGeometry]:
+    """
+    Calculate point-ring geometry for a charged group.
+    """
+
+    if not isinstance(
+        group,
+        PiChargedGroup,
+    ):
+        raise TypeError(
+            "group must be a PiChargedGroup."
+        )
+
+    if group.center is None:
+        if strict:
+            raise PiGeometryError(
+                "Charged group center is unavailable."
+            )
+
+        return None
+
+    direction = (
+        group.direction
+        if group.direction is not None
+        else group.plane_normal
+    )
+
+    return calculate_point_ring_geometry(
+        group.center,
+        ring,
+        direction_vector=direction,
+        config=config,
+        strict=strict,
+    )
+
+
+def charged_group_is_on_ring_face(
+    group: PiChargedGroup,
+    ring: PiRing,
+    *,
+    maximum_radial_offset: float,
+    maximum_plane_distance: float,
+    config: Optional[PiAnalysisConfig] = None,
+) -> bool:
+    """
+    Return whether a charged group lies above or below a ring face.
+    """
+
+    geometry = calculate_charged_group_ring_geometry(
+        group,
+        ring,
+        config=config,
+        strict=False,
+    )
+
+    if geometry is None:
+        return False
+
+    return (
+        geometry.radial_offset
+        <= maximum_radial_offset
+        and geometry.absolute_plane_distance
+        <= maximum_plane_distance
+    )
+
+
+# -----------------------------------------------------------------------------
+# 6.19. Criação de contatos atômicos preliminares
+# -----------------------------------------------------------------------------
+
+def create_charged_group_atomic_contacts(
+    group: PiChargedGroup,
+    ring: PiRing,
+    *,
+    maximum_distance: float,
+) -> Tuple[PiAtomicContact, ...]:
+    """
+    Create atomic contacts between charged-group atoms and ring atoms.
+    """
+
+    maximum_distance_value = (
+        _coerce_non_negative_float(
+            maximum_distance,
+            field_name="maximum_distance",
+        )
+    )
+
+    contacts: List[PiAtomicContact] = []
+
+    source_atoms = (
+        group.charge_atoms
+        if group.charge_atoms
+        else group.atoms
+    )
+
+    for group_atom in source_atoms:
+        group_coordinate = get_atom_coordinate(
+            group_atom
+        )
+
+        if group_coordinate is None:
+            continue
+
+        for ring_atom in ring.atoms:
+            ring_coordinate = get_atom_coordinate(
+                ring_atom
+            )
+
+            if ring_coordinate is None:
+                continue
+
+            distance = distance_between_points(
+                group_coordinate,
+                ring_coordinate,
+            )
+
+            if distance > maximum_distance_value:
+                continue
+
+            contacts.append(
+                PiAtomicContact(
+                    atom_1=create_pi_atom_reference(
+                        group_atom
+                    ),
+                    atom_2=create_pi_atom_reference(
+                        ring_atom
+                    ),
+                    distance=distance,
+                    contact_type=(
+                        CATION_PI
+                        if group.charge_sign
+                        == CHARGE_POSITIVE
+                        else ANION_PI
+                    ),
+                    metadata={
+                        "charged_group_id": (
+                            group.group_id
+                        ),
+                        "ring_id": ring.ring_id,
+                    },
+                )
+            )
+
+    contacts.sort(
+        key=lambda contact: contact.distance
+    )
+
+    return tuple(contacts)
+
+
+# -----------------------------------------------------------------------------
+# 6.20. Resumo de grupos carregados
+# -----------------------------------------------------------------------------
+
+def summarize_charged_groups(
+    groups: Iterable[PiChargedGroup],
+) -> Dict[str, Any]:
+    """
+    Generate a serializable summary of charged groups.
+    """
+
+    group_list = list(groups)
+
+    positive_groups = [
+        group
+        for group in group_list
+        if group.charge_sign == CHARGE_POSITIVE
+    ]
+
+    negative_groups = [
+        group
+        for group in group_list
+        if group.charge_sign == CHARGE_NEGATIVE
+    ]
+
+    effective_charges = [
+        group.effective_charge
+        for group in group_list
+        if group.effective_charge is not None
+    ]
+
+    charge_magnitudes = [
+        abs(charge)
+        for charge in effective_charges
+    ]
+
+    group_type_distribution = Counter(
+        group.group_type
+        for group in group_list
+    )
+
+    participant_distribution = Counter(
+        group.participant_type
+        for group in group_list
+    )
+
+    residue_distribution = Counter(
+        group.residue_name or "UNK"
+        for group in group_list
+    )
+
+    detection_method_distribution = Counter(
+        str(
+            group.metadata.get(
+                "detection_method",
+                "unknown",
+            )
+        )
+        for group in group_list
+    )
+
+    return {
+        "total_groups": len(group_list),
+        "positive_groups": len(positive_groups),
+        "negative_groups": len(negative_groups),
+        "valid_groups": sum(
+            1
+            for group in group_list
+            if group.valid
+        ),
+        "invalid_groups": sum(
+            1
+            for group in group_list
+            if not group.valid
+        ),
+        "group_type_distribution": dict(
+            group_type_distribution
+        ),
+        "participant_distribution": dict(
+            participant_distribution
+        ),
+        "residue_distribution": dict(
+            residue_distribution
+        ),
+        "detection_method_distribution": dict(
+            detection_method_distribution
+        ),
+        "effective_charge": {
+            "minimum": (
+                min(effective_charges)
+                if effective_charges
+                else None
+            ),
+            "mean": (
+                sum(effective_charges)
+                / len(effective_charges)
+                if effective_charges
+                else None
+            ),
+            "maximum": (
+                max(effective_charges)
+                if effective_charges
+                else None
+            ),
+        },
+        "charge_magnitude": {
+            "minimum": (
+                min(charge_magnitudes)
+                if charge_magnitudes
+                else None
+            ),
+            "mean": (
+                sum(charge_magnitudes)
+                / len(charge_magnitudes)
+                if charge_magnitudes
+                else None
+            ),
+            "maximum": (
+                max(charge_magnitudes)
+                if charge_magnitudes
+                else None
+            ),
+        },
+        "group_ids": [
+            group.group_id
+            for group in group_list
+        ],
+    }
+
+
+# -----------------------------------------------------------------------------
+# 6.21. Preparação integrada
+# -----------------------------------------------------------------------------
+
+def prepare_charged_groups(
+    molecular_input: Any,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    participant_type: Optional[str] = None,
+    charge_sign: Optional[str] = None,
+) -> List[PiChargedGroup]:
+    """
+    Run the complete charged-group preparation pipeline.
+    """
+
+    groups = detect_charged_groups(
+        molecular_input,
+        config=config,
+        participant_type=participant_type,
+        charge_sign=charge_sign,
+    )
+
+    groups = deduplicate_charged_groups(
+        groups
+    )
+
+    groups = validate_charged_groups(
+        groups,
+        minimum_charge_magnitude=(
+            (
+                config
+                if config is not None
+                else create_default_pi_config()
+            ).minimum_group_charge_magnitude
+        ),
+        remove_invalid=True,
+    )
+
+    return groups
+
+
+def prepare_pi_analysis_charged_groups(
+    normalized_input: PiNormalizedInput,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+) -> Dict[str, List[PiChargedGroup]]:
+    """
+    Prepare and separate receptor and ligand cations and anions.
+    """
+
+    receptor_groups, ligand_groups = (
+        detect_pi_analysis_charged_groups(
+            normalized_input,
+            config=config,
+        )
+    )
+
+    receptor_cations, receptor_anions = (
+        split_charged_groups_by_sign(
+            receptor_groups
+        )
+    )
+
+    ligand_cations, ligand_anions = (
+        split_charged_groups_by_sign(
+            ligand_groups
+        )
+    )
+
+    return {
+        "receptor_groups": receptor_groups,
+        "ligand_groups": ligand_groups,
+        "receptor_cations": receptor_cations,
+        "receptor_anions": receptor_anions,
+        "ligand_cations": ligand_cations,
+        "ligand_anions": ligand_anions,
+    }
+
+# -----------------------------------------------------------------------------
+# End of section 6. 
+# -----------------------------------------------------------------------------
 
