@@ -29813,6 +29813,2399 @@ def run_salt_bridge_recognition_geometry_tests(
 
 
 
+# =============================================================================
+# 18.3. DETECTION AND CLASSIFICATION TESTS
+# =============================================================================
+
+
+# =============================================================================
+# 18.3.1. DETECTION FUNCTION RESOLUTION
+# =============================================================================
+
+
+def _call_generate_salt_bridge_candidates(
+    cationic_groups: Iterable[
+        ChargedGroup
+    ],
+    anionic_groups: Iterable[
+        ChargedGroup
+    ],
+    config: Optional[
+        SaltBridgeConfig
+    ] = None,
+) -> List[Any]:
+    """
+    Call the available salt-bridge candidate-generation function.
+
+    Parameters
+    ----------
+    cationic_groups
+        Positive charged groups.
+    anionic_groups
+        Negative charged groups.
+    config
+        Optional salt-bridge configuration.
+
+    Returns
+    -------
+    List[Any]
+        Generated candidate pairs.
+    """
+
+    candidate_function_names = (
+        "generate_salt_bridge_candidates",
+        "build_salt_bridge_candidates",
+        "find_salt_bridge_candidates",
+        "enumerate_salt_bridge_candidates",
+        "generate_candidate_pairs",
+    )
+
+    candidate_function = None
+
+    for function_name in (
+        candidate_function_names
+    ):
+        candidate = globals().get(
+            function_name
+        )
+
+        if callable(
+            candidate
+        ):
+            candidate_function = candidate
+            break
+
+    if candidate_function is None:
+        return [
+            (
+                cation,
+                anion,
+            )
+            for cation in cationic_groups
+            for anion in anionic_groups
+        ]
+
+    try:
+        candidates = candidate_function(
+            cationic_groups,
+            anionic_groups,
+            config=config,
+        )
+
+    except TypeError:
+        try:
+            candidates = candidate_function(
+                cationic_groups,
+                anionic_groups,
+                config,
+            )
+
+        except TypeError:
+            candidates = candidate_function(
+                cationic_groups,
+                anionic_groups,
+            )
+
+    return list(
+        candidates
+        or []
+    )
+
+
+def _call_detect_salt_bridge_pair(
+    cation: ChargedGroup,
+    anion: ChargedGroup,
+    config: Optional[
+        SaltBridgeConfig
+    ] = None,
+    *,
+    pose_id: Optional[
+        Union[str, int]
+    ] = None,
+    model_id: Optional[
+        Union[str, int]
+    ] = None,
+) -> Optional[
+    SaltBridgeInteraction
+]:
+    """
+    Call the available single-pair salt-bridge detector.
+
+    Parameters
+    ----------
+    cation
+        Positive charged group.
+    anion
+        Negative charged group.
+    config
+        Optional configuration.
+    pose_id
+        Optional pose identifier.
+    model_id
+        Optional model identifier.
+
+    Returns
+    -------
+    Optional[SaltBridgeInteraction]
+        Detected interaction or ``None``.
+    """
+
+    detection_function = (
+        _resolve_self_test_callable(
+            "detect_salt_bridge_pair",
+            "evaluate_salt_bridge_pair",
+            "detect_salt_bridge_between_groups",
+            "build_salt_bridge_interaction",
+            "analyze_salt_bridge_pair",
+        )
+    )
+
+    keyword_variants = (
+        {
+            "config": config,
+            "pose_id": pose_id,
+            "model_id": model_id,
+        },
+        {
+            "config": config,
+        },
+        {
+            "pose_id": pose_id,
+            "model_id": model_id,
+        },
+        {},
+    )
+
+    last_error = None
+
+    for keyword_arguments in (
+        keyword_variants
+    ):
+        filtered_arguments = {
+            key: value
+            for key, value
+            in keyword_arguments.items()
+            if value is not None
+        }
+
+        try:
+            result = detection_function(
+                cation,
+                anion,
+                **filtered_arguments,
+            )
+
+            if result is None:
+                return None
+
+            if isinstance(
+                result,
+                SaltBridgeInteraction,
+            ):
+                return result
+
+            if isinstance(
+                result,
+                SaltBridgeGeometry,
+            ):
+                if not result.valid:
+                    return None
+
+                return _make_test_interaction(
+                    cation=cation,
+                    anion=anion,
+                    geometry=result,
+                    pose_id=pose_id,
+                    model_id=model_id,
+                )
+
+            return result
+
+        except TypeError as error:
+            last_error = error
+
+    raise SaltBridgeSelfTestError(
+        "Could not call the single-pair detector."
+    ) from last_error
+
+
+def _call_detect_salt_bridges_from_groups(
+    cationic_groups: Iterable[
+        ChargedGroup
+    ],
+    anionic_groups: Iterable[
+        ChargedGroup
+    ],
+    config: Optional[
+        SaltBridgeConfig
+    ] = None,
+    *,
+    pose_id: Optional[
+        Union[str, int]
+    ] = None,
+    model_id: Optional[
+        Union[str, int]
+    ] = None,
+    include_invalid: bool = False,
+) -> List[SaltBridgeInteraction]:
+    """
+    Call the available group-based salt-bridge detection function.
+
+    Parameters
+    ----------
+    cationic_groups
+        Positive charged groups.
+    anionic_groups
+        Negative charged groups.
+    config
+        Optional configuration.
+    pose_id
+        Optional pose identifier.
+    model_id
+        Optional model identifier.
+    include_invalid
+        Whether invalid interactions should be retained.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Detected interactions.
+    """
+
+    function_names = (
+        "detect_salt_bridges_from_groups",
+        "detect_salt_bridges",
+        "find_salt_bridges",
+        "analyze_salt_bridge_groups",
+        "detect_group_salt_bridges",
+    )
+
+    detection_function = None
+
+    for function_name in function_names:
+        candidate = globals().get(
+            function_name
+        )
+
+        if callable(
+            candidate
+        ):
+            detection_function = candidate
+            break
+
+    if detection_function is None:
+        detected_interactions: List[
+            SaltBridgeInteraction
+        ] = []
+
+        for cation in cationic_groups:
+            for anion in anionic_groups:
+                interaction = (
+                    _call_detect_salt_bridge_pair(
+                        cation,
+                        anion,
+                        config,
+                        pose_id=pose_id,
+                        model_id=model_id,
+                    )
+                )
+
+                if interaction is None:
+                    continue
+
+                if (
+                    not include_invalid
+                    and not interaction.geometry.valid
+                ):
+                    continue
+
+                detected_interactions.append(
+                    interaction
+                )
+
+        return detected_interactions
+
+    keyword_variants = (
+        {
+            "config": config,
+            "pose_id": pose_id,
+            "model_id": model_id,
+            "include_invalid": include_invalid,
+        },
+        {
+            "config": config,
+            "pose_id": pose_id,
+            "model_id": model_id,
+        },
+        {
+            "config": config,
+            "include_invalid": include_invalid,
+        },
+        {
+            "config": config,
+        },
+        {},
+    )
+
+    last_error = None
+
+    for keyword_arguments in (
+        keyword_variants
+    ):
+        filtered_arguments = {
+            key: value
+            for key, value
+            in keyword_arguments.items()
+            if value is not None
+        }
+
+        try:
+            result = detection_function(
+                cationic_groups,
+                anionic_groups,
+                **filtered_arguments,
+            )
+
+            if isinstance(
+                result,
+                SaltBridgeResult,
+            ):
+                return list(
+                    result.interactions
+                )
+
+            return list(
+                result
+                or []
+            )
+
+        except TypeError as error:
+            last_error = error
+
+    raise SaltBridgeSelfTestError(
+        "Could not call the group-based detector."
+    ) from last_error
+
+
+def _call_analyze_salt_bridges(
+    source: Any,
+    config: Optional[
+        SaltBridgeConfig
+    ] = None,
+    *,
+    pose_id: Optional[
+        Union[str, int]
+    ] = None,
+    model_id: Optional[
+        Union[str, int]
+    ] = None,
+) -> SaltBridgeResult:
+    """
+    Call the complete single-source salt-bridge analysis pipeline.
+
+    Parameters
+    ----------
+    source
+        Molecular source.
+    config
+        Optional salt-bridge configuration.
+    pose_id
+        Optional pose identifier.
+    model_id
+        Optional model identifier.
+
+    Returns
+    -------
+    SaltBridgeResult
+        Complete analysis result.
+    """
+
+    analysis_function = (
+        _resolve_self_test_callable(
+            "analyze_salt_bridges",
+            "analyze_salt_bridges_with_statistics",
+            "detect_salt_bridges_in_source",
+            "run_salt_bridge_analysis",
+        )
+    )
+
+    keyword_variants = (
+        {
+            "config": config,
+            "pose_id": pose_id,
+            "model_id": model_id,
+        },
+        {
+            "config": config,
+        },
+        {
+            "pose_id": pose_id,
+            "model_id": model_id,
+        },
+        {},
+    )
+
+    last_error = None
+
+    for keyword_arguments in (
+        keyword_variants
+    ):
+        filtered_arguments = {
+            key: value
+            for key, value
+            in keyword_arguments.items()
+            if value is not None
+        }
+
+        try:
+            result = analysis_function(
+                source,
+                **filtered_arguments,
+            )
+
+            if isinstance(
+                result,
+                SaltBridgeResult,
+            ):
+                return result
+
+            if isinstance(
+                result,
+                Iterable,
+            ):
+                interactions = list(
+                    result
+                )
+
+                return _make_test_result(
+                    interactions=interactions,
+                    pose_id=pose_id,
+                    model_id=model_id,
+                )
+
+            raise SaltBridgeSelfTestError(
+                "Complete analysis did not return "
+                "SaltBridgeResult-compatible data."
+            )
+
+        except TypeError as error:
+            last_error = error
+
+    raise SaltBridgeSelfTestError(
+        "Could not call the complete salt-bridge analysis pipeline."
+    ) from last_error
+
+
+# =============================================================================
+# 18.3.2. CLASSIFICATION AND SCORING FUNCTION RESOLUTION
+# =============================================================================
+
+
+def _call_classify_salt_bridge_strength(
+    geometry_or_interaction: Any,
+    config: Optional[
+        SaltBridgeConfig
+    ] = None,
+) -> str:
+    """
+    Call the available salt-bridge strength classifier.
+
+    Parameters
+    ----------
+    geometry_or_interaction
+        SaltBridgeGeometry or SaltBridgeInteraction.
+    config
+        Optional configuration.
+
+    Returns
+    -------
+    str
+        Strength category.
+    """
+
+    classification_function = (
+        _resolve_self_test_callable(
+            "classify_salt_bridge_strength",
+            "classify_salt_bridge",
+            "classify_interaction_strength",
+            "assign_salt_bridge_strength",
+        )
+    )
+
+    try:
+        strength = classification_function(
+            geometry_or_interaction,
+            config=config,
+        )
+
+    except TypeError:
+        try:
+            strength = classification_function(
+                geometry_or_interaction,
+                config,
+            )
+
+        except TypeError:
+            strength = classification_function(
+                geometry_or_interaction
+            )
+
+    if isinstance(
+        strength,
+        Mapping,
+    ):
+        strength = (
+            strength.get(
+                "strength"
+            )
+            or strength.get(
+                "classification"
+            )
+            or strength.get(
+                "label"
+            )
+        )
+
+    normalized_strength = normalize_text(
+        strength,
+        default="",
+        lowercase=True,
+    )
+
+    if not normalized_strength:
+        raise SaltBridgeSelfTestError(
+            "Strength classification returned an empty value."
+        )
+
+    return normalized_strength
+
+
+def _call_score_salt_bridge(
+    interaction_or_geometry: Any,
+    config: Optional[
+        SaltBridgeConfig
+    ] = None,
+    *,
+    cation: Optional[
+        ChargedGroup
+    ] = None,
+    anion: Optional[
+        ChargedGroup
+    ] = None,
+) -> float:
+    """
+    Call the available salt-bridge scoring function.
+
+    Parameters
+    ----------
+    interaction_or_geometry
+        Interaction or geometry to score.
+    config
+        Optional configuration.
+    cation
+        Optional cation group.
+    anion
+        Optional anion group.
+
+    Returns
+    -------
+    float
+        Salt-bridge score.
+    """
+
+    scoring_function = (
+        _resolve_self_test_callable(
+            "score_salt_bridge",
+            "calculate_salt_bridge_score",
+            "score_salt_bridge_interaction",
+            "calculate_interaction_score",
+        )
+    )
+
+    call_variants = [
+        (
+            (
+                interaction_or_geometry,
+            ),
+            {
+                "config": config,
+                "cation": cation,
+                "anion": anion,
+            },
+        ),
+        (
+            (
+                interaction_or_geometry,
+                cation,
+                anion,
+            ),
+            {
+                "config": config,
+            },
+        ),
+        (
+            (
+                interaction_or_geometry,
+            ),
+            {
+                "config": config,
+            },
+        ),
+        (
+            (
+                interaction_or_geometry,
+            ),
+            {},
+        ),
+    ]
+
+    last_error = None
+
+    for positional_arguments, keyword_arguments in (
+        call_variants
+    ):
+        filtered_positional_arguments = tuple(
+            argument
+            for argument in positional_arguments
+            if argument is not None
+        )
+
+        filtered_keyword_arguments = {
+            key: value
+            for key, value
+            in keyword_arguments.items()
+            if value is not None
+        }
+
+        try:
+            score = scoring_function(
+                *filtered_positional_arguments,
+                **filtered_keyword_arguments,
+            )
+
+            if isinstance(
+                score,
+                Mapping,
+            ):
+                score = (
+                    score.get(
+                        "score"
+                    )
+                    or score.get(
+                        "total_score"
+                    )
+                )
+
+            normalized_score = safe_float(
+                score
+            )
+
+            if normalized_score is None:
+                raise SaltBridgeSelfTestError(
+                    "Scoring function returned "
+                    "a non-numeric value."
+                )
+
+            return normalized_score
+
+        except TypeError as error:
+            last_error = error
+
+    raise SaltBridgeSelfTestError(
+        "Could not call the salt-bridge scoring function."
+    ) from last_error
+
+
+# =============================================================================
+# 18.3.3. CANDIDATE-GENERATION TESTS
+# =============================================================================
+
+
+def _test_candidate_generation_cartesian_product() -> None:
+    """
+    Test candidate generation for all cation-anion combinations.
+    """
+
+    cations = [
+        _make_test_cation_group(
+            group_id="cation_1",
+        ),
+        _make_test_cation_group(
+            group_id="cation_2",
+            center=(
+                1.0,
+                0.0,
+                0.0,
+            ),
+        ),
+    ]
+
+    anions = [
+        _make_test_anion_group(
+            group_id="anion_1",
+        ),
+        _make_test_anion_group(
+            group_id="anion_2",
+            center=(
+                4.0,
+                0.0,
+                0.0,
+            ),
+        ),
+        _make_test_anion_group(
+            group_id="anion_3",
+            center=(
+                5.0,
+                0.0,
+                0.0,
+            ),
+        ),
+    ]
+
+    candidates = (
+        _call_generate_salt_bridge_candidates(
+            cations,
+            anions,
+        )
+    )
+
+    _assert_length(
+        candidates,
+        6,
+        (
+            "Two cations and three anions should "
+            "generate six candidate pairs."
+        ),
+    )
+
+
+def _test_candidate_generation_empty_cations() -> None:
+    """
+    Test candidate generation with no cations.
+    """
+
+    candidates = (
+        _call_generate_salt_bridge_candidates(
+            [],
+            [
+                _make_test_anion_group()
+            ],
+        )
+    )
+
+    _assert_empty(
+        candidates
+    )
+
+
+def _test_candidate_generation_empty_anions() -> None:
+    """
+    Test candidate generation with no anions.
+    """
+
+    candidates = (
+        _call_generate_salt_bridge_candidates(
+            [
+                _make_test_cation_group()
+            ],
+            [],
+        )
+    )
+
+    _assert_empty(
+        candidates
+    )
+
+
+def _test_candidate_generation_polarity_order() -> None:
+    """
+    Test that candidate pairs preserve cation-anion ordering.
+    """
+
+    cation = _make_test_cation_group(
+        group_id="ordered_cation"
+    )
+
+    anion = _make_test_anion_group(
+        group_id="ordered_anion"
+    )
+
+    candidates = (
+        _call_generate_salt_bridge_candidates(
+            [
+                cation
+            ],
+            [
+                anion
+            ],
+        )
+    )
+
+    _assert_length(
+        candidates,
+        1,
+    )
+
+    candidate = candidates[0]
+
+    if isinstance(
+        candidate,
+        Mapping,
+    ):
+        candidate_cation = (
+            candidate.get(
+                "cation"
+            )
+            or candidate.get(
+                "positive_group"
+            )
+        )
+
+        candidate_anion = (
+            candidate.get(
+                "anion"
+            )
+            or candidate.get(
+                "negative_group"
+            )
+        )
+
+    else:
+        candidate_cation = candidate[0]
+        candidate_anion = candidate[1]
+
+    _assert_equal(
+        candidate_cation.polarity,
+        "positive",
+    )
+
+    _assert_equal(
+        candidate_anion.polarity,
+        "negative",
+    )
+
+
+# =============================================================================
+# 18.3.4. SINGLE-PAIR DETECTION TESTS
+# =============================================================================
+
+
+def _test_detect_valid_salt_bridge_pair() -> None:
+    """
+    Test detection of a valid close cation-anion pair.
+    """
+
+    cation = _make_test_cation_group(
+        center=(
+            0.0,
+            0.0,
+            0.0,
+        )
+    )
+
+    anion = _make_test_anion_group(
+        center=(
+            3.0,
+            0.0,
+            0.0,
+        )
+    )
+
+    interaction = (
+        _call_detect_salt_bridge_pair(
+            cation,
+            anion,
+            pose_id=1,
+            model_id="model_1",
+        )
+    )
+
+    _assert_is_not_none(
+        interaction,
+        "A valid cation-anion pair should be detected.",
+    )
+
+    _assert_valid_interaction(
+        interaction,
+        expected_valid=True,
+    )
+
+    _assert_equal(
+        interaction.cation.polarity,
+        "positive",
+    )
+
+    _assert_equal(
+        interaction.anion.polarity,
+        "negative",
+    )
+
+
+def _test_reject_distant_salt_bridge_pair() -> None:
+    """
+    Test rejection of a distant cation-anion pair.
+    """
+
+    cation = _make_test_cation_group(
+        center=(
+            0.0,
+            0.0,
+            0.0,
+        )
+    )
+
+    anion = _make_test_anion_group(
+        center=(
+            20.0,
+            0.0,
+            0.0,
+        )
+    )
+
+    interaction = (
+        _call_detect_salt_bridge_pair(
+            cation,
+            anion,
+        )
+    )
+
+    if interaction is None:
+        return
+
+    _assert_false(
+        interaction.geometry.valid,
+        "A 20 Å pair must not be accepted as valid.",
+    )
+
+
+def _test_detect_pair_preserves_identifiers() -> None:
+    """
+    Test preservation of pose and model identifiers.
+    """
+
+    interaction = (
+        _call_detect_salt_bridge_pair(
+            _make_test_cation_group(),
+            _make_test_anion_group(),
+            pose_id=7,
+            model_id="pose_model_7",
+        )
+    )
+
+    _assert_is_not_none(
+        interaction
+    )
+
+    if interaction.pose_id is not None:
+        _assert_equal(
+            interaction.pose_id,
+            7,
+        )
+
+    if interaction.model_id is not None:
+        _assert_equal(
+            interaction.model_id,
+            "pose_model_7",
+        )
+
+
+def _test_detect_pair_builds_unique_identifier() -> None:
+    """
+    Test construction of a non-empty interaction identifier.
+    """
+
+    interaction = (
+        _call_detect_salt_bridge_pair(
+            _make_test_cation_group(
+                group_id="identifier_cation"
+            ),
+            _make_test_anion_group(
+                group_id="identifier_anion"
+            ),
+        )
+    )
+
+    _assert_is_not_none(
+        interaction
+    )
+
+    _assert_true(
+        bool(
+            str(
+                interaction.interaction_id
+            ).strip()
+        ),
+        "Detected interaction must have an identifier.",
+    )
+
+
+# =============================================================================
+# 18.3.5. MULTIPLE-GROUP DETECTION TESTS
+# =============================================================================
+
+
+def _test_detect_multiple_valid_pairs() -> None:
+    """
+    Test detection across multiple charged groups.
+    """
+
+    cations = [
+        _make_test_cation_group(
+            group_id="multi_cation_1",
+            center=(
+                0.0,
+                0.0,
+                0.0,
+            ),
+        ),
+        _make_test_cation_group(
+            group_id="multi_cation_2",
+            center=(
+                0.0,
+                5.0,
+                0.0,
+            ),
+        ),
+    ]
+
+    anions = [
+        _make_test_anion_group(
+            group_id="multi_anion_1",
+            center=(
+                3.0,
+                0.0,
+                0.0,
+            ),
+        ),
+        _make_test_anion_group(
+            group_id="multi_anion_2",
+            center=(
+                3.0,
+                5.0,
+                0.0,
+            ),
+        ),
+    ]
+
+    interactions = (
+        _call_detect_salt_bridges_from_groups(
+            cations,
+            anions,
+        )
+    )
+
+    valid_interactions = [
+        interaction
+        for interaction in interactions
+        if interaction.geometry.valid
+    ]
+
+    _assert_true(
+        len(
+            valid_interactions
+        ) >= 2,
+        (
+            "The two close cation-anion pairs "
+            "should be detected."
+        ),
+    )
+
+
+def _test_detection_excludes_invalid_by_default() -> None:
+    """
+    Test default exclusion of distant invalid candidates.
+    """
+
+    interactions = (
+        _call_detect_salt_bridges_from_groups(
+            [
+                _make_test_cation_group()
+            ],
+            [
+                _make_test_anion_group(
+                    center=(
+                        20.0,
+                        0.0,
+                        0.0,
+                    )
+                )
+            ],
+            include_invalid=False,
+        )
+    )
+
+    _assert_true(
+        all(
+            interaction.geometry.valid
+            for interaction
+            in interactions
+        ),
+        (
+            "Default detection output should not "
+            "contain invalid interactions."
+        ),
+    )
+
+
+def _test_detection_no_duplicate_interactions() -> None:
+    """
+    Test that one group pair does not create duplicate interactions.
+    """
+
+    cation = _make_test_cation_group(
+        group_id="duplicate_test_cation"
+    )
+
+    anion = _make_test_anion_group(
+        group_id="duplicate_test_anion"
+    )
+
+    interactions = (
+        _call_detect_salt_bridges_from_groups(
+            [
+                cation
+            ],
+            [
+                anion
+            ],
+        )
+    )
+
+    interaction_keys = [
+        (
+            interaction.cation.group_id,
+            interaction.anion.group_id,
+            interaction.pose_id,
+            interaction.model_id,
+        )
+        for interaction in interactions
+        if interaction.geometry.valid
+    ]
+
+    _assert_equal(
+        len(
+            interaction_keys
+        ),
+        len(
+            set(
+                interaction_keys
+            )
+        ),
+        "Detection produced duplicate interactions.",
+    )
+
+
+# =============================================================================
+# 18.3.6. STRENGTH CLASSIFICATION TESTS
+# =============================================================================
+
+
+def _test_classify_strong_salt_bridge() -> None:
+    """
+    Test classification of a short strong salt bridge.
+    """
+
+    geometry = _make_test_geometry(
+        center_distance=2.8,
+        minimum_atom_distance=2.5,
+        maximum_atom_distance=3.1,
+        mean_atom_distance=2.8,
+        contact_count=3,
+        valid=True,
+    )
+
+    strength = (
+        _call_classify_salt_bridge_strength(
+            geometry
+        )
+    )
+
+    _assert_equal(
+        strength,
+        STRENGTH_STRONG,
+        (
+            "A short, multi-contact interaction "
+            "should be classified as strong."
+        ),
+    )
+
+
+def _test_classify_moderate_salt_bridge() -> None:
+    """
+    Test classification of an intermediate-distance salt bridge.
+    """
+
+    geometry = _make_test_geometry(
+        center_distance=3.6,
+        minimum_atom_distance=3.2,
+        maximum_atom_distance=4.0,
+        mean_atom_distance=3.6,
+        contact_count=1,
+        valid=True,
+    )
+
+    strength = (
+        _call_classify_salt_bridge_strength(
+            geometry
+        )
+    )
+
+    _assert_contains(
+        {
+            STRENGTH_MODERATE,
+            STRENGTH_WEAK,
+        },
+        strength,
+        (
+            "An intermediate geometry should be "
+            "classified as moderate or weak."
+        ),
+    )
+
+
+def _test_classify_weak_salt_bridge() -> None:
+    """
+    Test classification of a near-cutoff salt bridge.
+    """
+
+    geometry = _make_test_geometry(
+        center_distance=4.5,
+        minimum_atom_distance=4.0,
+        maximum_atom_distance=5.0,
+        mean_atom_distance=4.5,
+        contact_count=1,
+        valid=True,
+    )
+
+    strength = (
+        _call_classify_salt_bridge_strength(
+            geometry
+        )
+    )
+
+    _assert_contains(
+        {
+            STRENGTH_WEAK,
+            STRENGTH_MODERATE,
+        },
+        strength,
+        (
+            "A near-cutoff valid interaction should "
+            "not be classified as strong."
+        ),
+    )
+
+    _assert_not_equal(
+        strength,
+        STRENGTH_STRONG,
+    )
+
+
+def _test_classify_invalid_as_rejected() -> None:
+    """
+    Test classification of invalid geometry.
+    """
+
+    geometry = _make_test_geometry(
+        center_distance=10.0,
+        minimum_atom_distance=9.5,
+        maximum_atom_distance=10.5,
+        mean_atom_distance=10.0,
+        contact_count=0,
+        valid=False,
+        rejection_reason="distance_cutoff",
+    )
+
+    strength = (
+        _call_classify_salt_bridge_strength(
+            geometry
+        )
+    )
+
+    _assert_equal(
+        strength,
+        STRENGTH_REJECTED,
+        "Invalid geometry should be classified as rejected.",
+    )
+
+
+def _test_strength_improves_with_shorter_distance() -> None:
+    """
+    Test monotonic strength behavior with decreasing distance.
+    """
+
+    strong_geometry = _make_test_geometry(
+        center_distance=2.8,
+        minimum_atom_distance=2.5,
+        maximum_atom_distance=3.1,
+        mean_atom_distance=2.8,
+        contact_count=3,
+        valid=True,
+    )
+
+    weaker_geometry = _make_test_geometry(
+        center_distance=4.3,
+        minimum_atom_distance=3.9,
+        maximum_atom_distance=4.7,
+        mean_atom_distance=4.3,
+        contact_count=1,
+        valid=True,
+    )
+
+    strong_class = (
+        _call_classify_salt_bridge_strength(
+            strong_geometry
+        )
+    )
+
+    weaker_class = (
+        _call_classify_salt_bridge_strength(
+            weaker_geometry
+        )
+    )
+
+    strength_rank = {
+        STRENGTH_REJECTED: 0,
+        STRENGTH_WEAK: 1,
+        STRENGTH_MODERATE: 2,
+        STRENGTH_STRONG: 3,
+    }
+
+    _assert_true(
+        strength_rank.get(
+            strong_class,
+            -1,
+        )
+        >= strength_rank.get(
+            weaker_class,
+            -1,
+        ),
+        (
+            "Shorter geometry should not receive "
+            "a weaker classification."
+        ),
+    )
+
+
+# =============================================================================
+# 18.3.7. SCORING TESTS
+# =============================================================================
+
+
+def _test_valid_interaction_has_positive_score() -> None:
+    """
+    Test positive scoring of a valid salt bridge.
+    """
+
+    interaction = _make_test_interaction(
+        geometry=_make_test_geometry(
+            center_distance=3.0,
+            minimum_atom_distance=2.7,
+            maximum_atom_distance=3.3,
+            mean_atom_distance=3.0,
+            contact_count=2,
+            valid=True,
+        ),
+    )
+
+    score = _call_score_salt_bridge(
+        interaction
+    )
+
+    _assert_true(
+        score > 0.0,
+        "A valid salt bridge should have a positive score.",
+    )
+
+
+def _test_invalid_interaction_has_zero_or_minimal_score() -> None:
+    """
+    Test scoring of an invalid salt bridge.
+    """
+
+    interaction = _make_test_interaction(
+        geometry=_make_test_geometry(
+            center_distance=12.0,
+            minimum_atom_distance=11.5,
+            maximum_atom_distance=12.5,
+            mean_atom_distance=12.0,
+            contact_count=0,
+            valid=False,
+            rejection_reason="distance_cutoff",
+        ),
+        strength=STRENGTH_REJECTED,
+        score=0.0,
+    )
+
+    score = _call_score_salt_bridge(
+        interaction
+    )
+
+    _assert_true(
+        score <= 0.0
+        or math.isclose(
+            score,
+            0.0,
+            abs_tol=1e-6,
+        ),
+        "Rejected salt bridges should not receive a positive score.",
+    )
+
+
+def _test_shorter_interaction_scores_higher() -> None:
+    """
+    Test that shorter valid interactions score at least as highly.
+    """
+
+    short_interaction = (
+        _make_test_interaction(
+            interaction_id="short_score_test",
+            geometry=_make_test_geometry(
+                center_distance=2.8,
+                minimum_atom_distance=2.5,
+                maximum_atom_distance=3.1,
+                mean_atom_distance=2.8,
+                contact_count=3,
+                valid=True,
+            ),
+        )
+    )
+
+    long_interaction = (
+        _make_test_interaction(
+            interaction_id="long_score_test",
+            geometry=_make_test_geometry(
+                center_distance=4.4,
+                minimum_atom_distance=4.0,
+                maximum_atom_distance=4.8,
+                mean_atom_distance=4.4,
+                contact_count=1,
+                valid=True,
+            ),
+        )
+    )
+
+    short_score = (
+        _call_score_salt_bridge(
+            short_interaction
+        )
+    )
+
+    long_score = (
+        _call_score_salt_bridge(
+            long_interaction
+        )
+    )
+
+    _assert_true(
+        short_score >= long_score,
+        (
+            "A shorter valid interaction should not "
+            "score below a longer one."
+        ),
+    )
+
+
+def _test_multiple_contacts_do_not_reduce_score() -> None:
+    """
+    Test score behavior with additional atomic contacts.
+    """
+
+    one_contact = _make_test_interaction(
+        interaction_id="one_contact",
+        geometry=_make_test_geometry(
+            center_distance=3.2,
+            minimum_atom_distance=2.9,
+            maximum_atom_distance=3.5,
+            mean_atom_distance=3.2,
+            contact_count=1,
+            valid=True,
+        ),
+    )
+
+    three_contacts = _make_test_interaction(
+        interaction_id="three_contacts",
+        geometry=_make_test_geometry(
+            center_distance=3.2,
+            minimum_atom_distance=2.9,
+            maximum_atom_distance=3.5,
+            mean_atom_distance=3.2,
+            contact_count=3,
+            valid=True,
+        ),
+    )
+
+    one_contact_score = (
+        _call_score_salt_bridge(
+            one_contact
+        )
+    )
+
+    three_contact_score = (
+        _call_score_salt_bridge(
+            three_contacts
+        )
+    )
+
+    _assert_true(
+        three_contact_score
+        >= one_contact_score,
+        (
+            "Additional atomic contacts should not "
+            "reduce the interaction score."
+        ),
+    )
+
+
+def _test_stronger_charge_does_not_reduce_score() -> None:
+    """
+    Test score behavior with increased charge magnitude.
+    """
+
+    weak_cation = _make_test_cation_group(
+        group_id="weak_charge_cation",
+        net_charge=0.5,
+    )
+
+    strong_cation = _make_test_cation_group(
+        group_id="strong_charge_cation",
+        net_charge=1.0,
+    )
+
+    anion = _make_test_anion_group(
+        net_charge=-1.0,
+    )
+
+    geometry = _make_test_geometry(
+        center_distance=3.0,
+        minimum_atom_distance=2.7,
+        maximum_atom_distance=3.3,
+        mean_atom_distance=3.0,
+        contact_count=2,
+        valid=True,
+    )
+
+    weak_interaction = _make_test_interaction(
+        interaction_id="weak_charge",
+        cation=weak_cation,
+        anion=anion,
+        geometry=geometry,
+    )
+
+    strong_interaction = _make_test_interaction(
+        interaction_id="strong_charge",
+        cation=strong_cation,
+        anion=anion,
+        geometry=geometry,
+    )
+
+    weak_score = _call_score_salt_bridge(
+        weak_interaction,
+        cation=weak_cation,
+        anion=anion,
+    )
+
+    strong_score = _call_score_salt_bridge(
+        strong_interaction,
+        cation=strong_cation,
+        anion=anion,
+    )
+
+    _assert_true(
+        strong_score >= weak_score,
+        (
+            "Increasing charge magnitude should not "
+            "reduce the salt-bridge score."
+        ),
+    )
+
+
+def _test_score_is_finite() -> None:
+    """
+    Test that salt-bridge scores are finite.
+    """
+
+    interaction = _make_test_interaction()
+
+    score = _call_score_salt_bridge(
+        interaction
+    )
+
+    _assert_true(
+        math.isfinite(
+            score
+        ),
+        "Salt-bridge score must be finite.",
+    )
+
+
+# =============================================================================
+# 18.3.8. DETECTION-CLASSIFICATION CONSISTENCY TESTS
+# =============================================================================
+
+
+def _test_detected_interaction_strength_matches_classifier() -> None:
+    """
+    Test consistency between detection and standalone classification.
+    """
+
+    interaction = (
+        _call_detect_salt_bridge_pair(
+            _make_test_cation_group(),
+            _make_test_anion_group(),
+        )
+    )
+
+    _assert_is_not_none(
+        interaction
+    )
+
+    classified_strength = (
+        _call_classify_salt_bridge_strength(
+            interaction.geometry
+        )
+    )
+
+    _assert_equal(
+        normalize_text(
+            interaction.strength,
+            default="",
+            lowercase=True,
+        ),
+        classified_strength,
+        (
+            "Detected interaction strength should match "
+            "the standalone classifier."
+        ),
+    )
+
+
+def _test_detected_interaction_score_matches_scorer() -> None:
+    """
+    Test consistency between detection and standalone scoring.
+    """
+
+    interaction = (
+        _call_detect_salt_bridge_pair(
+            _make_test_cation_group(),
+            _make_test_anion_group(),
+        )
+    )
+
+    _assert_is_not_none(
+        interaction
+    )
+
+    calculated_score = (
+        _call_score_salt_bridge(
+            interaction
+        )
+    )
+
+    _assert_almost_equal(
+        interaction.score,
+        calculated_score,
+        tolerance=1e-6,
+        message=(
+            "Detected interaction score should match "
+            "the standalone scoring function."
+        ),
+    )
+
+
+def _test_detected_valid_interaction_not_rejected() -> None:
+    """
+    Test that valid detected interactions are not marked rejected.
+    """
+
+    interaction = (
+        _call_detect_salt_bridge_pair(
+            _make_test_cation_group(),
+            _make_test_anion_group(),
+        )
+    )
+
+    _assert_is_not_none(
+        interaction
+    )
+
+    _assert_true(
+        interaction.geometry.valid
+    )
+
+    _assert_not_equal(
+        normalize_text(
+            interaction.strength,
+            default="",
+            lowercase=True,
+        ),
+        STRENGTH_REJECTED,
+    )
+
+    _assert_true(
+        interaction.score > 0.0
+    )
+
+
+# =============================================================================
+# 18.3.9. COMPLETE PIPELINE TESTS
+# =============================================================================
+
+
+def _test_complete_pipeline_positive_case() -> None:
+    """
+    Test complete recognition-to-detection analysis.
+    """
+
+    structure = _make_test_structure(
+        model_id=1
+    )
+
+    lysine = _make_mock_lysine(
+        number=10,
+        chain_id="A",
+        nz_coordinate=(
+            0.0,
+            0.0,
+            0.0,
+        ),
+        structure=structure,
+    )
+
+    aspartate = (
+        _make_mock_aspartate(
+            number=40,
+            chain_id="B",
+            center=(
+                3.0,
+                0.0,
+                0.0,
+            ),
+            structure=structure,
+        )
+    )
+
+    result = _call_analyze_salt_bridges(
+        [
+            lysine,
+            aspartate,
+        ],
+        pose_id=1,
+        model_id="model_1",
+    )
+
+    _assert_valid_result(
+        result
+    )
+
+    _assert_not_empty(
+        result.cationic_groups,
+        "Pipeline should recognize cationic groups.",
+    )
+
+    _assert_not_empty(
+        result.anionic_groups,
+        "Pipeline should recognize anionic groups.",
+    )
+
+    valid_interactions = [
+        interaction
+        for interaction in result.interactions
+        if interaction.geometry.valid
+    ]
+
+    _assert_not_empty(
+        valid_interactions,
+        (
+            "Pipeline should detect at least one "
+            "valid salt bridge."
+        ),
+    )
+
+
+def _test_complete_pipeline_distant_negative_case() -> None:
+    """
+    Test complete pipeline with charged groups too far apart.
+    """
+
+    lysine = _make_mock_lysine(
+        nz_coordinate=(
+            0.0,
+            0.0,
+            0.0,
+        )
+    )
+
+    aspartate = (
+        _make_mock_aspartate(
+            center=(
+                25.0,
+                0.0,
+                0.0,
+            )
+        )
+    )
+
+    result = _call_analyze_salt_bridges(
+        [
+            lysine,
+            aspartate,
+        ]
+    )
+
+    valid_interactions = [
+        interaction
+        for interaction in result.interactions
+        if interaction.geometry.valid
+    ]
+
+    _assert_empty(
+        valid_interactions,
+        (
+            "Distant charged groups should not produce "
+            "valid salt bridges."
+        ),
+    )
+
+
+def _test_complete_pipeline_neutral_negative_case() -> None:
+    """
+    Test complete pipeline with only neutral residues.
+    """
+
+    neutral_ligand = (
+        _make_mock_neutral_ligand()
+    )
+
+    result = _call_analyze_salt_bridges(
+        [
+            neutral_ligand
+        ]
+    )
+
+    valid_interactions = [
+        interaction
+        for interaction in result.interactions
+        if interaction.geometry.valid
+    ]
+
+    _assert_empty(
+        valid_interactions
+    )
+
+
+def _test_complete_pipeline_mixed_pairs() -> None:
+    """
+    Test complete pipeline with close and distant charge pairs.
+    """
+
+    lysine_close = _make_mock_lysine(
+        number=10,
+        chain_id="A",
+        nz_coordinate=(
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    arginine_far = _make_mock_arginine(
+        number=20,
+        chain_id="A",
+        center=(
+            30.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    aspartate_close = (
+        _make_mock_aspartate(
+            number=40,
+            chain_id="B",
+            center=(
+                3.0,
+                0.0,
+                0.0,
+            ),
+        )
+    )
+
+    result = _call_analyze_salt_bridges(
+        [
+            lysine_close,
+            arginine_far,
+            aspartate_close,
+        ]
+    )
+
+    valid_interactions = [
+        interaction
+        for interaction in result.interactions
+        if interaction.geometry.valid
+    ]
+
+    _assert_not_empty(
+        valid_interactions
+    )
+
+    for interaction in valid_interactions:
+        _assert_true(
+            interaction.geometry.center_distance
+            < 20.0,
+            (
+                "Distant candidate should not appear "
+                "as a valid interaction."
+            ),
+        )
+
+
+def _test_complete_pipeline_result_identifiers() -> None:
+    """
+    Test propagation of pose and model identifiers.
+    """
+
+    result = _call_analyze_salt_bridges(
+        [
+            _make_mock_lysine(),
+            _make_mock_aspartate(),
+        ],
+        pose_id=8,
+        model_id="model_8",
+    )
+
+    if result.pose_id is not None:
+        _assert_equal(
+            result.pose_id,
+            8,
+        )
+
+    if result.model_id is not None:
+        _assert_equal(
+            result.model_id,
+            "model_8",
+        )
+
+    for interaction in result.interactions:
+        if interaction.pose_id is not None:
+            _assert_equal(
+                interaction.pose_id,
+                8,
+            )
+
+        if interaction.model_id is not None:
+            _assert_equal(
+                interaction.model_id,
+                "model_8",
+            )
+
+
+# =============================================================================
+# 18.3.10. RESULT-INVARIANT TESTS
+# =============================================================================
+
+
+def _test_all_detected_interactions_have_valid_polarities() -> None:
+    """
+    Test cation-anion polarity invariants in detection output.
+    """
+
+    result = _call_analyze_salt_bridges(
+        [
+            _make_mock_lysine(),
+            _make_mock_arginine(
+                center=(
+                    0.0,
+                    5.0,
+                    0.0,
+                )
+            ),
+            _make_mock_aspartate(),
+            _make_mock_glutamate(
+                center=(
+                    3.0,
+                    5.0,
+                    0.0,
+                )
+            ),
+        ]
+    )
+
+    for interaction in result.interactions:
+        _assert_equal(
+            interaction.cation.polarity,
+            "positive",
+        )
+
+        _assert_equal(
+            interaction.anion.polarity,
+            "negative",
+        )
+
+        _assert_true(
+            interaction.cation.net_charge
+            > 0.0
+        )
+
+        _assert_true(
+            interaction.anion.net_charge
+            < 0.0
+        )
+
+
+def _test_all_detected_scores_are_finite() -> None:
+    """
+    Test that all detected interaction scores are finite.
+    """
+
+    result = _call_analyze_salt_bridges(
+        [
+            _make_mock_lysine(),
+            _make_mock_aspartate(),
+        ]
+    )
+
+    for interaction in result.interactions:
+        _assert_true(
+            math.isfinite(
+                interaction.score
+            ),
+            (
+                "Detected interaction score "
+                "must be finite."
+            ),
+        )
+
+
+def _test_all_detected_geometries_are_consistent() -> None:
+    """
+    Test geometry invariants in all detected interactions.
+    """
+
+    result = _call_analyze_salt_bridges(
+        [
+            _make_mock_lysine(),
+            _make_mock_arginine(
+                center=(
+                    0.0,
+                    4.0,
+                    0.0,
+                )
+            ),
+            _make_mock_aspartate(),
+            _make_mock_glutamate(
+                center=(
+                    3.0,
+                    4.0,
+                    0.0,
+                )
+            ),
+        ]
+    )
+
+    for interaction in result.interactions:
+        geometry = interaction.geometry
+
+        _assert_true(
+            geometry.minimum_atom_distance
+            <= geometry.mean_atom_distance
+            <= geometry.maximum_atom_distance
+        )
+
+        _assert_true(
+            geometry.center_distance
+            >= 0.0
+        )
+
+        _assert_true(
+            geometry.contact_count
+            >= 0
+        )
+
+
+def _test_valid_interactions_have_positive_scores() -> None:
+    """
+    Test that all valid pipeline interactions have positive scores.
+    """
+
+    result = _call_analyze_salt_bridges(
+        [
+            _make_mock_lysine(),
+            _make_mock_aspartate(),
+        ]
+    )
+
+    for interaction in result.interactions:
+        if not interaction.geometry.valid:
+            continue
+
+        _assert_true(
+            interaction.score > 0.0,
+            (
+                "Valid interactions should have "
+                "positive scores."
+            ),
+        )
+
+
+def _test_rejected_interactions_are_not_strong() -> None:
+    """
+    Test that rejected interactions cannot be strong.
+    """
+
+    rejected_interaction = (
+        _make_test_interaction(
+            geometry=_make_test_geometry(
+                center_distance=15.0,
+                minimum_atom_distance=14.5,
+                maximum_atom_distance=15.5,
+                mean_atom_distance=15.0,
+                contact_count=0,
+                valid=False,
+                rejection_reason=(
+                    "distance_cutoff"
+                ),
+            ),
+            strength=STRENGTH_REJECTED,
+            score=0.0,
+        )
+    )
+
+    strength = (
+        _call_classify_salt_bridge_strength(
+            rejected_interaction.geometry
+        )
+    )
+
+    _assert_not_equal(
+        strength,
+        STRENGTH_STRONG
+    )
+
+    _assert_equal(
+        strength,
+        STRENGTH_REJECTED
+    )
+
+
+# =============================================================================
+# 18.3.11. SECTION TEST REGISTRY
+# =============================================================================
+
+
+def get_salt_bridge_detection_classification_tests(
+) -> List[
+    Tuple[
+        str,
+        Callable[
+            [],
+            Any,
+        ],
+    ]
+]:
+    """
+    Return all Section 18.3 self-tests.
+
+    Returns
+    -------
+    List[Tuple[str, Callable[[], Any]]]
+        Named detection and classification tests.
+    """
+
+    return [
+        (
+            "18.3.candidates.cartesian_product",
+            _test_candidate_generation_cartesian_product,
+        ),
+        (
+            "18.3.candidates.empty_cations",
+            _test_candidate_generation_empty_cations,
+        ),
+        (
+            "18.3.candidates.empty_anions",
+            _test_candidate_generation_empty_anions,
+        ),
+        (
+            "18.3.candidates.polarity_order",
+            _test_candidate_generation_polarity_order,
+        ),
+        (
+            "18.3.detection.valid_pair",
+            _test_detect_valid_salt_bridge_pair,
+        ),
+        (
+            "18.3.detection.distant_pair_rejected",
+            _test_reject_distant_salt_bridge_pair,
+        ),
+        (
+            "18.3.detection.identifiers",
+            _test_detect_pair_preserves_identifiers,
+        ),
+        (
+            "18.3.detection.interaction_id",
+            _test_detect_pair_builds_unique_identifier,
+        ),
+        (
+            "18.3.detection.multiple_valid_pairs",
+            _test_detect_multiple_valid_pairs,
+        ),
+        (
+            "18.3.detection.exclude_invalid_default",
+            _test_detection_excludes_invalid_by_default,
+        ),
+        (
+            "18.3.detection.no_duplicates",
+            _test_detection_no_duplicate_interactions,
+        ),
+        (
+            "18.3.classification.strong",
+            _test_classify_strong_salt_bridge,
+        ),
+        (
+            "18.3.classification.moderate",
+            _test_classify_moderate_salt_bridge,
+        ),
+        (
+            "18.3.classification.weak",
+            _test_classify_weak_salt_bridge,
+        ),
+        (
+            "18.3.classification.rejected",
+            _test_classify_invalid_as_rejected,
+        ),
+        (
+            "18.3.classification.distance_monotonicity",
+            _test_strength_improves_with_shorter_distance,
+        ),
+        (
+            "18.3.scoring.valid_positive",
+            _test_valid_interaction_has_positive_score,
+        ),
+        (
+            "18.3.scoring.invalid_zero",
+            _test_invalid_interaction_has_zero_or_minimal_score,
+        ),
+        (
+            "18.3.scoring.shorter_higher",
+            _test_shorter_interaction_scores_higher,
+        ),
+        (
+            "18.3.scoring.contact_count",
+            _test_multiple_contacts_do_not_reduce_score,
+        ),
+        (
+            "18.3.scoring.charge_magnitude",
+            _test_stronger_charge_does_not_reduce_score,
+        ),
+        (
+            "18.3.scoring.finite",
+            _test_score_is_finite,
+        ),
+        (
+            "18.3.consistency.detected_strength",
+            _test_detected_interaction_strength_matches_classifier,
+        ),
+        (
+            "18.3.consistency.detected_score",
+            _test_detected_interaction_score_matches_scorer,
+        ),
+        (
+            "18.3.consistency.valid_not_rejected",
+            _test_detected_valid_interaction_not_rejected,
+        ),
+        (
+            "18.3.pipeline.positive",
+            _test_complete_pipeline_positive_case,
+        ),
+        (
+            "18.3.pipeline.distant_negative",
+            _test_complete_pipeline_distant_negative_case,
+        ),
+        (
+            "18.3.pipeline.neutral_negative",
+            _test_complete_pipeline_neutral_negative_case,
+        ),
+        (
+            "18.3.pipeline.mixed_pairs",
+            _test_complete_pipeline_mixed_pairs,
+        ),
+        (
+            "18.3.pipeline.identifiers",
+            _test_complete_pipeline_result_identifiers,
+        ),
+        (
+            "18.3.invariants.polarities",
+            _test_all_detected_interactions_have_valid_polarities,
+        ),
+        (
+            "18.3.invariants.finite_scores",
+            _test_all_detected_scores_are_finite,
+        ),
+        (
+            "18.3.invariants.geometry",
+            _test_all_detected_geometries_are_consistent,
+        ),
+        (
+            "18.3.invariants.valid_positive_scores",
+            _test_valid_interactions_have_positive_scores,
+        ),
+        (
+            "18.3.invariants.rejected_not_strong",
+            _test_rejected_interactions_are_not_strong,
+        ),
+    ]
+
+
+# =============================================================================
+# 18.3.12. SECTION RUNNER
+# =============================================================================
+
+
+def run_salt_bridge_detection_classification_tests(
+    *,
+    report: Optional[
+        _SelfTestReport
+    ] = None,
+    raise_on_failure: bool = False,
+    print_report: bool = False,
+) -> _SelfTestReport:
+    """
+    Run all Section 18.3 detection and classification self-tests.
+
+    Parameters
+    ----------
+    report
+        Optional existing self-test report.
+    raise_on_failure
+        Whether the first failure should raise an exception.
+    print_report
+        Whether the updated report should be printed.
+
+    Returns
+    -------
+    _SelfTestReport
+        Updated self-test report.
+    """
+
+    resolved_report = (
+        _run_self_test_group(
+            get_salt_bridge_detection_classification_tests(),
+            report=report,
+            raise_on_failure=(
+                raise_on_failure
+            ),
+        )
+    )
+
+    if print_report:
+        _print_self_test_report(
+            resolved_report
+        )
+
+    return resolved_report
+
+
+
 
 
 
