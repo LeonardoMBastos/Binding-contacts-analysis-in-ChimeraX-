@@ -32206,6 +32206,4233 @@ def run_salt_bridge_detection_classification_tests(
 
 
 
+# =============================================================================
+# 18.4. INTEGRATION AND SERIALIZATION TESTS
+# =============================================================================
+
+
+# =============================================================================
+# 18.4.1. INTEGRATION FUNCTION RESOLUTION
+# =============================================================================
+
+
+def _call_attach_salt_bridge_results(
+    dock_model: Any,
+    result: SaltBridgeResult,
+    *,
+    preserve_existing: bool = False,
+) -> Any:
+    """
+    Call the available DockModel attachment function.
+
+    Parameters
+    ----------
+    dock_model
+        DockModel-like object.
+    result
+        Salt-bridge result.
+    preserve_existing
+        Whether existing interactions should be preserved.
+
+    Returns
+    -------
+    Any
+        Updated DockModel-like object.
+    """
+
+    attachment_function = (
+        _resolve_self_test_callable(
+            "attach_salt_bridge_results",
+            "attach_salt_bridges",
+            "set_salt_bridge_results",
+            "update_dock_model_salt_bridges",
+        )
+    )
+
+    call_variants = (
+        {
+            "preserve_existing": (
+                preserve_existing
+            ),
+        },
+        {
+            "append": preserve_existing,
+        },
+        {},
+    )
+
+    last_error = None
+
+    for keyword_arguments in (
+        call_variants
+    ):
+        try:
+            updated_model = (
+                attachment_function(
+                    dock_model,
+                    result,
+                    **keyword_arguments,
+                )
+            )
+
+            return (
+                updated_model
+                if updated_model is not None
+                else dock_model
+            )
+
+        except TypeError as error:
+            last_error = error
+
+    raise SaltBridgeSelfTestError(
+        "Could not call the DockModel attachment function."
+    ) from last_error
+
+
+def _call_analyze_dock_model_salt_bridges(
+    dock_model: Any,
+    config: Optional[
+        SaltBridgeConfig
+    ] = None,
+    *,
+    preserve_existing: bool = False,
+) -> Any:
+    """
+    Call the available DockModel salt-bridge analysis function.
+
+    Parameters
+    ----------
+    dock_model
+        DockModel-like object.
+    config
+        Optional configuration.
+    preserve_existing
+        Whether existing salt bridges should be preserved.
+
+    Returns
+    -------
+    Any
+        Updated DockModel-like object.
+    """
+
+    analysis_function = (
+        _resolve_self_test_callable(
+            "analyze_dock_model_salt_bridges",
+            "analyze_dock_model_saltbridge",
+            "analyze_salt_bridges_for_dock_model",
+        )
+    )
+
+    call_variants = (
+        {
+            "config": config,
+            "preserve_existing": (
+                preserve_existing
+            ),
+        },
+        {
+            "config": config,
+        },
+        {
+            "preserve_existing": (
+                preserve_existing
+            ),
+        },
+        {},
+    )
+
+    last_error = None
+
+    for keyword_arguments in (
+        call_variants
+    ):
+        filtered_arguments = {
+            key: value
+            for key, value
+            in keyword_arguments.items()
+            if value is not None
+        }
+
+        try:
+            result = analysis_function(
+                dock_model,
+                **filtered_arguments,
+            )
+
+            return (
+                result
+                if result is not None
+                else dock_model
+            )
+
+        except TypeError as error:
+            last_error = error
+
+    raise SaltBridgeSelfTestError(
+        "Could not call DockModel salt-bridge analysis."
+    ) from last_error
+
+
+def _call_analyze_multiple_dock_models_salt_bridges(
+    dock_models: Iterable[Any],
+    config: Optional[
+        SaltBridgeConfig
+    ] = None,
+) -> List[Any]:
+    """
+    Call the available multiple-DockModel analysis function.
+
+    Parameters
+    ----------
+    dock_models
+        DockModel-like objects.
+    config
+        Optional configuration.
+
+    Returns
+    -------
+    List[Any]
+        Updated models.
+    """
+
+    analysis_function = (
+        _resolve_self_test_callable(
+            "analyze_multiple_dock_models_salt_bridges",
+            "analyze_dock_models_salt_bridges",
+            "analyze_multiple_salt_bridge_models",
+        )
+    )
+
+    try:
+        result = analysis_function(
+            dock_models,
+            config=config,
+        )
+
+    except TypeError:
+        try:
+            result = analysis_function(
+                dock_models,
+                config,
+            )
+
+        except TypeError:
+            result = analysis_function(
+                dock_models
+            )
+
+    return list(
+        result
+        or []
+    )
+
+
+# =============================================================================
+# 18.4.2. STATISTICS FUNCTION RESOLUTION
+# =============================================================================
+
+
+def _call_calculate_result_statistics(
+    result: SaltBridgeResult,
+    *,
+    in_place: bool = False,
+) -> Mapping[str, Any]:
+    """
+    Call the available result-statistics function.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+    in_place
+        Whether statistics should be stored in the result.
+
+    Returns
+    -------
+    Mapping[str, Any]
+        Statistics mapping.
+    """
+
+    statistics_function = (
+        _resolve_self_test_callable(
+            "calculate_salt_bridge_result_statistics",
+            "calculate_salt_bridge_statistics",
+            "summarize_salt_bridge_statistics",
+            "build_salt_bridge_statistics",
+        )
+    )
+
+    try:
+        statistics = statistics_function(
+            result,
+            in_place=in_place,
+        )
+
+    except TypeError:
+        try:
+            statistics = statistics_function(
+                result
+            )
+
+        except TypeError:
+            statistics = statistics_function(
+                result.interactions
+            )
+
+    if isinstance(
+        statistics,
+        SaltBridgeResult,
+    ):
+        statistics = (
+            statistics.statistics
+        )
+
+    if statistics is None:
+        statistics = result.statistics
+
+    if not isinstance(
+        statistics,
+        Mapping,
+    ):
+        raise SaltBridgeSelfTestError(
+            "Statistics function did not return a mapping."
+        )
+
+    return statistics
+
+
+def _call_build_compact_summary(
+    result: SaltBridgeResult,
+) -> Mapping[str, Any]:
+    """
+    Call the available compact-summary function.
+    """
+
+    summary_function = (
+        _resolve_self_test_callable(
+            "build_compact_salt_bridge_summary",
+            "build_salt_bridge_compact_summary",
+            "summarize_salt_bridge_result",
+        )
+    )
+
+    summary = summary_function(
+        result
+    )
+
+    if not isinstance(
+        summary,
+        Mapping,
+    ):
+        raise SaltBridgeSelfTestError(
+            "Compact summary must be a mapping."
+        )
+
+    return summary
+
+
+def _call_build_text_summary(
+    result: SaltBridgeResult,
+) -> str:
+    """
+    Call the available text-summary function.
+    """
+
+    summary_function = (
+        _resolve_self_test_callable(
+            "build_salt_bridge_text_summary",
+            "format_salt_bridge_summary",
+            "summarize_salt_bridges_text",
+        )
+    )
+
+    summary = summary_function(
+        result
+    )
+
+    return str(
+        summary
+    )
+
+
+# =============================================================================
+# 18.4.3. MULTIPOSE FUNCTION RESOLUTION
+# =============================================================================
+
+
+def _call_analyze_salt_bridges_multipose(
+    poses: Iterable[Any],
+    config: Optional[
+        SaltBridgeConfig
+    ] = None,
+) -> Mapping[str, Any]:
+    """
+    Call the complete multipose salt-bridge pipeline.
+
+    Parameters
+    ----------
+    poses
+        Pose-like inputs.
+    config
+        Optional configuration.
+
+    Returns
+    -------
+    Mapping[str, Any]
+        Multipose analysis.
+    """
+
+    multipose_function = (
+        _resolve_self_test_callable(
+            "analyze_salt_bridges_multipose",
+            "analyze_multiple_poses_salt_bridges",
+            "run_salt_bridge_multipose_analysis",
+        )
+    )
+
+    try:
+        result = multipose_function(
+            poses,
+            config=config,
+        )
+
+    except TypeError:
+        try:
+            result = multipose_function(
+                poses,
+                config,
+            )
+
+        except TypeError:
+            result = multipose_function(
+                poses
+            )
+
+    if not isinstance(
+        result,
+        Mapping,
+    ):
+        raise SaltBridgeSelfTestError(
+            "Multipose analysis must return a mapping."
+        )
+
+    return result
+
+
+def _call_rank_salt_bridge_poses(
+    results: Iterable[
+        SaltBridgeResult
+    ],
+) -> List[Mapping[str, Any]]:
+    """
+    Call the available pose-ranking function.
+    """
+
+    ranking_function = (
+        _resolve_self_test_callable(
+            "rank_salt_bridge_poses",
+            "rank_poses_by_salt_bridges",
+            "rank_salt_bridge_results",
+        )
+    )
+
+    ranking = ranking_function(
+        results
+    )
+
+    return list(
+        ranking
+        or []
+    )
+
+
+def _call_calculate_persistence(
+    results: Iterable[
+        SaltBridgeResult
+    ],
+) -> List[Mapping[str, Any]]:
+    """
+    Call the available interaction-persistence function.
+    """
+
+    persistence_function = (
+        _resolve_self_test_callable(
+            "calculate_salt_bridge_persistence",
+            "calculate_interaction_persistence",
+            "build_salt_bridge_persistence",
+            "summarize_salt_bridge_persistence",
+        )
+    )
+
+    persistence = persistence_function(
+        results
+    )
+
+    if isinstance(
+        persistence,
+        Mapping,
+    ):
+        persistence = (
+            persistence.get(
+                "persistence"
+            )
+            or persistence.get(
+                "records"
+            )
+            or persistence.get(
+                "interactions"
+            )
+            or []
+        )
+
+    return list(
+        persistence
+        or []
+    )
+
+
+def _call_build_consensus_interactions(
+    results: Iterable[
+        SaltBridgeResult
+    ],
+) -> List[Mapping[str, Any]]:
+    """
+    Call the available multipose consensus function.
+    """
+
+    consensus_function = (
+        _resolve_self_test_callable(
+            "build_consensus_salt_bridge_interactions",
+            "build_salt_bridge_consensus",
+            "calculate_salt_bridge_consensus",
+            "identify_consensus_salt_bridges",
+        )
+    )
+
+    consensus = consensus_function(
+        results
+    )
+
+    if isinstance(
+        consensus,
+        Mapping,
+    ):
+        consensus = (
+            consensus.get(
+                "consensus_interactions"
+            )
+            or consensus.get(
+                "consensus"
+            )
+            or consensus.get(
+                "records"
+            )
+            or []
+        )
+
+    return list(
+        consensus
+        or []
+    )
+
+
+# =============================================================================
+# 18.4.4. DOCKMODEL ATTACHMENT TESTS
+# =============================================================================
+
+
+def _test_attach_result_to_dock_model() -> None:
+    """
+    Test attachment of detected interactions to DockModel.
+    """
+
+    result = _make_test_result()
+
+    dock_model = _MockDockModel(
+        source=[]
+    )
+
+    updated_model = (
+        _call_attach_salt_bridge_results(
+            dock_model,
+            result,
+        )
+    )
+
+    _assert_is_instance(
+        updated_model.saltbridge,
+        list,
+    )
+
+    _assert_length(
+        updated_model.saltbridge,
+        len(
+            result.interactions
+        ),
+    )
+
+    _assert_equal(
+        updated_model.saltbridge,
+        result.interactions,
+    )
+
+
+def _test_attach_result_replaces_existing_by_default() -> None:
+    """
+    Test default replacement of pre-existing salt bridges.
+    """
+
+    previous_interaction = (
+        _make_test_interaction(
+            interaction_id="previous"
+        )
+    )
+
+    new_interaction = (
+        _make_test_interaction(
+            interaction_id="new"
+        )
+    )
+
+    dock_model = _MockDockModel(
+        source=[],
+        saltbridge=[
+            previous_interaction
+        ],
+    )
+
+    result = _make_test_result(
+        interactions=[
+            new_interaction
+        ]
+    )
+
+    updated_model = (
+        _call_attach_salt_bridge_results(
+            dock_model,
+            result,
+            preserve_existing=False,
+        )
+    )
+
+    _assert_length(
+        updated_model.saltbridge,
+        1,
+    )
+
+    _assert_equal(
+        updated_model.saltbridge[0]
+        .interaction_id,
+        "new",
+    )
+
+
+def _test_attach_result_preserves_existing_when_requested() -> None:
+    """
+    Test preservation of pre-existing interactions when supported.
+    """
+
+    previous_interaction = (
+        _make_test_interaction(
+            interaction_id="previous"
+        )
+    )
+
+    new_interaction = (
+        _make_test_interaction(
+            interaction_id="new"
+        )
+    )
+
+    dock_model = _MockDockModel(
+        source=[],
+        saltbridge=[
+            previous_interaction
+        ],
+    )
+
+    result = _make_test_result(
+        interactions=[
+            new_interaction
+        ]
+    )
+
+    updated_model = (
+        _call_attach_salt_bridge_results(
+            dock_model,
+            result,
+            preserve_existing=True,
+        )
+    )
+
+    interaction_ids = {
+        interaction.interaction_id
+        for interaction
+        in updated_model.saltbridge
+    }
+
+    _assert_contains(
+        interaction_ids,
+        "previous",
+    )
+
+    _assert_contains(
+        interaction_ids,
+        "new",
+    )
+
+
+def _test_attachment_does_not_add_dynamic_result_fields() -> None:
+    """
+    Test the simplified DockModel architecture.
+
+    Only the ``saltbridge`` field should be required.
+    """
+
+    dock_model = _MockDockModel(
+        source=[]
+    )
+
+    updated_model = (
+        _call_attach_salt_bridge_results(
+            dock_model,
+            _make_test_result(),
+        )
+    )
+
+    _assert_true(
+        hasattr(
+            updated_model,
+            "saltbridge",
+        )
+    )
+
+    for deprecated_field in (
+        "saltbridge_score",
+        "saltbridge_statistics",
+        "saltbridge_summary",
+        "saltbridge_result",
+    ):
+        _assert_false(
+            hasattr(
+                updated_model,
+                deprecated_field,
+            ),
+            (
+                f"DockModel should not require "
+                f"{deprecated_field!r}."
+            ),
+        )
+
+
+# =============================================================================
+# 18.4.5. DOCKMODEL ANALYSIS TESTS
+# =============================================================================
+
+
+def _test_analyze_dock_model_salt_bridges() -> None:
+    """
+    Test complete analysis and attachment for one DockModel.
+    """
+
+    source = [
+        _make_mock_lysine(),
+        _make_mock_aspartate(),
+    ]
+
+    dock_model = _MockDockModel(
+        source=source,
+        pose_id=1,
+        model_id="model_1",
+    )
+
+    updated_model = (
+        _call_analyze_dock_model_salt_bridges(
+            dock_model
+        )
+    )
+
+    _assert_is_instance(
+        updated_model.saltbridge,
+        list,
+    )
+
+    _assert_not_empty(
+        updated_model.saltbridge,
+        (
+            "DockModel analysis should attach "
+            "at least one interaction."
+        ),
+    )
+
+
+def _test_analyze_multiple_dock_models() -> None:
+    """
+    Test analysis of multiple DockModel instances.
+    """
+
+    models = [
+        _MockDockModel(
+            source=[
+                _make_mock_lysine(
+                    number=10
+                ),
+                _make_mock_aspartate(
+                    number=40
+                ),
+            ],
+            pose_id=1,
+            model_id="model_1",
+        ),
+        _MockDockModel(
+            source=[
+                _make_mock_arginine(
+                    number=20
+                ),
+                _make_mock_glutamate(
+                    number=50
+                ),
+            ],
+            pose_id=2,
+            model_id="model_2",
+        ),
+    ]
+
+    analyzed_models = (
+        _call_analyze_multiple_dock_models_salt_bridges(
+            models
+        )
+    )
+
+    _assert_length(
+        analyzed_models,
+        2,
+    )
+
+    for model in analyzed_models:
+        _assert_is_instance(
+            model.saltbridge,
+            list,
+        )
+
+
+def _test_dock_model_empty_source() -> None:
+    """
+    Test DockModel analysis with no molecular source content.
+    """
+
+    dock_model = _MockDockModel(
+        source=[]
+    )
+
+    updated_model = (
+        _call_analyze_dock_model_salt_bridges(
+            dock_model
+        )
+    )
+
+    _assert_is_instance(
+        updated_model.saltbridge,
+        list,
+    )
+
+    _assert_empty(
+        updated_model.saltbridge
+    )
+
+
+# =============================================================================
+# 18.4.6. STATISTICS TESTS
+# =============================================================================
+
+
+def _make_statistics_test_result(
+) -> SaltBridgeResult:
+    """
+    Create a result containing strong, moderate, and weak interactions.
+    """
+
+    interactions = [
+        _make_test_interaction(
+            interaction_id="statistics_strong",
+            strength=STRENGTH_STRONG,
+            score=1.5,
+            geometry=_make_test_geometry(
+                center_distance=2.8,
+                minimum_atom_distance=2.5,
+                maximum_atom_distance=3.1,
+                mean_atom_distance=2.8,
+                contact_count=3,
+                valid=True,
+            ),
+        ),
+        _make_test_interaction(
+            interaction_id="statistics_moderate",
+            strength=STRENGTH_MODERATE,
+            score=1.0,
+            geometry=_make_test_geometry(
+                center_distance=3.5,
+                minimum_atom_distance=3.1,
+                maximum_atom_distance=3.9,
+                mean_atom_distance=3.5,
+                contact_count=2,
+                valid=True,
+            ),
+        ),
+        _make_test_interaction(
+            interaction_id="statistics_weak",
+            strength=STRENGTH_WEAK,
+            score=0.5,
+            geometry=_make_test_geometry(
+                center_distance=4.2,
+                minimum_atom_distance=3.9,
+                maximum_atom_distance=4.5,
+                mean_atom_distance=4.2,
+                contact_count=1,
+                valid=True,
+            ),
+        ),
+    ]
+
+    return _make_test_result(
+        interactions=interactions
+    )
+
+
+def _test_statistics_interaction_count() -> None:
+    """
+    Test total interaction count.
+    """
+
+    result = (
+        _make_statistics_test_result()
+    )
+
+    statistics = (
+        _call_calculate_result_statistics(
+            result
+        )
+    )
+
+    interaction_count = (
+        statistics.get(
+            "interaction_count"
+        )
+        or statistics.get(
+            "total_interactions"
+        )
+        or statistics.get(
+            "count"
+        )
+    )
+
+    _assert_equal(
+        interaction_count,
+        3,
+    )
+
+
+def _test_statistics_total_score() -> None:
+    """
+    Test total interaction score.
+    """
+
+    result = (
+        _make_statistics_test_result()
+    )
+
+    statistics = (
+        _call_calculate_result_statistics(
+            result
+        )
+    )
+
+    total_score = (
+        statistics.get(
+            "total_score"
+        )
+        or statistics.get(
+            "score_total"
+        )
+    )
+
+    _assert_almost_equal(
+        total_score,
+        3.0,
+    )
+
+
+def _test_statistics_distance_extrema() -> None:
+    """
+    Test minimum and maximum distance statistics.
+    """
+
+    statistics = (
+        _call_calculate_result_statistics(
+            _make_statistics_test_result()
+        )
+    )
+
+    minimum_distance = (
+        statistics.get(
+            "minimum_distance"
+        )
+        or statistics.get(
+            "min_distance"
+        )
+    )
+
+    maximum_distance = (
+        statistics.get(
+            "maximum_distance"
+        )
+        or statistics.get(
+            "max_distance"
+        )
+    )
+
+    _assert_almost_equal(
+        minimum_distance,
+        2.5,
+    )
+
+    _assert_almost_equal(
+        maximum_distance,
+        4.5,
+    )
+
+
+def _test_statistics_strength_distribution() -> None:
+    """
+    Test distribution by interaction strength.
+    """
+
+    statistics = (
+        _call_calculate_result_statistics(
+            _make_statistics_test_result()
+        )
+    )
+
+    strength_counts = (
+        statistics.get(
+            "strength_counts"
+        )
+        or statistics.get(
+            "strength_distribution"
+        )
+        or {}
+    )
+
+    _assert_equal(
+        strength_counts.get(
+            STRENGTH_STRONG,
+            0,
+        ),
+        1,
+    )
+
+    _assert_equal(
+        strength_counts.get(
+            STRENGTH_MODERATE,
+            0,
+        ),
+        1,
+    )
+
+    _assert_equal(
+        strength_counts.get(
+            STRENGTH_WEAK,
+            0,
+        ),
+        1,
+    )
+
+
+def _test_statistics_in_place_update() -> None:
+    """
+    Test storage of calculated statistics in SaltBridgeResult.
+    """
+
+    result = (
+        _make_statistics_test_result()
+    )
+
+    _call_calculate_result_statistics(
+        result,
+        in_place=True,
+    )
+
+    _assert_not_empty(
+        result.statistics,
+        (
+            "In-place statistics calculation "
+            "should update result.statistics."
+        ),
+    )
+
+
+def _test_empty_result_statistics() -> None:
+    """
+    Test statistics for an empty result.
+    """
+
+    result = _make_test_result(
+        interactions=[],
+        cationic_groups=[],
+        anionic_groups=[],
+    )
+
+    statistics = (
+        _call_calculate_result_statistics(
+            result
+        )
+    )
+
+    interaction_count = (
+        statistics.get(
+            "interaction_count",
+            statistics.get(
+                "total_interactions",
+                0,
+            ),
+        )
+    )
+
+    _assert_equal(
+        interaction_count,
+        0,
+    )
+
+
+# =============================================================================
+# 18.4.7. SUMMARY TESTS
+# =============================================================================
+
+
+def _test_compact_summary_structure() -> None:
+    """
+    Test required compact-summary fields.
+    """
+
+    summary = (
+        _call_build_compact_summary(
+            _make_statistics_test_result()
+        )
+    )
+
+    _assert_mapping_contains_keys(
+        summary,
+        (
+            "interaction_count",
+            "total_score",
+        ),
+    )
+
+
+def _test_compact_summary_values() -> None:
+    """
+    Test compact-summary values.
+    """
+
+    summary = (
+        _call_build_compact_summary(
+            _make_statistics_test_result()
+        )
+    )
+
+    _assert_equal(
+        summary[
+            "interaction_count"
+        ],
+        3,
+    )
+
+    _assert_almost_equal(
+        summary[
+            "total_score"
+        ],
+        3.0,
+    )
+
+
+def _test_text_summary_nonempty() -> None:
+    """
+    Test generation of a non-empty text summary.
+    """
+
+    summary = (
+        _call_build_text_summary(
+            _make_statistics_test_result()
+        )
+    )
+
+    _assert_true(
+        bool(
+            summary.strip()
+        ),
+        "Text summary should not be empty.",
+    )
+
+
+def _test_empty_result_text_summary() -> None:
+    """
+    Test text summary generation for an empty result.
+    """
+
+    result = _make_test_result(
+        interactions=[],
+        cationic_groups=[],
+        anionic_groups=[],
+    )
+
+    summary = (
+        _call_build_text_summary(
+            result
+        )
+    )
+
+    _assert_is_instance(
+        summary,
+        str,
+    )
+
+
+# =============================================================================
+# 18.4.8. MULTIPOSE RANKING TESTS
+# =============================================================================
+
+
+def _test_pose_ranking_count() -> None:
+    """
+    Test one ranking record per pose.
+    """
+
+    results = _make_test_pose_results(
+        pose_count=3
+    )
+
+    ranking = (
+        _call_rank_salt_bridge_poses(
+            results
+        )
+    )
+
+    _assert_length(
+        ranking,
+        3,
+    )
+
+
+def _test_pose_ranking_order() -> None:
+    """
+    Test descending ranking-score order.
+    """
+
+    ranking = (
+        _call_rank_salt_bridge_poses(
+            _make_test_pose_results(
+                pose_count=3
+            )
+        )
+    )
+
+    ranking_scores = [
+        safe_float(
+            record.get(
+                "ranking_score",
+                record.get(
+                    "score"
+                ),
+            ),
+            default=0.0,
+        )
+        or 0.0
+        for record in ranking
+    ]
+
+    _assert_equal(
+        ranking_scores,
+        sorted(
+            ranking_scores,
+            reverse=True,
+        ),
+        (
+            "Pose ranking should be ordered "
+            "by decreasing score."
+        ),
+    )
+
+
+def _test_pose_ranking_unique_ranks() -> None:
+    """
+    Test unique sequential pose ranks.
+    """
+
+    ranking = (
+        _call_rank_salt_bridge_poses(
+            _make_test_pose_results(
+                pose_count=3
+            )
+        )
+    )
+
+    ranks = [
+        safe_int(
+            record.get(
+                "rank"
+            )
+        )
+        for record in ranking
+    ]
+
+    _assert_equal(
+        sorted(
+            ranks
+        ),
+        [
+            1,
+            2,
+            3,
+        ],
+    )
+
+
+# =============================================================================
+# 18.4.9. PERSISTENCE AND CONSENSUS TESTS
+# =============================================================================
+
+
+def _make_persistent_pose_results(
+) -> List[SaltBridgeResult]:
+    """
+    Create pose results sharing the same residue-level interaction.
+    """
+
+    results: List[
+        SaltBridgeResult
+    ] = []
+
+    for pose_id in (
+        1,
+        2,
+        3,
+    ):
+        cation_residue = (
+            _make_mock_lysine(
+                number=10,
+                chain_id="A",
+            )
+        )
+
+        anion_residue = (
+            _make_mock_aspartate(
+                number=40,
+                chain_id="B",
+            )
+        )
+
+        cation = (
+            _make_test_cation_group(
+                group_id=(
+                    f"persistent_cation_{pose_id}"
+                ),
+                residue=(
+                    cation_residue
+                ),
+            )
+        )
+
+        anion = (
+            _make_test_anion_group(
+                group_id=(
+                    f"persistent_anion_{pose_id}"
+                ),
+                residue=(
+                    anion_residue
+                ),
+            )
+        )
+
+        interaction = (
+            _make_test_interaction(
+                interaction_id=(
+                    f"persistent_{pose_id}"
+                ),
+                cation=cation,
+                anion=anion,
+                score=1.0,
+                pose_id=pose_id,
+                model_id=(
+                    f"model_{pose_id}"
+                ),
+            )
+        )
+
+        results.append(
+            _make_test_result(
+                interactions=[
+                    interaction
+                ],
+                pose_id=pose_id,
+                model_id=(
+                    f"model_{pose_id}"
+                ),
+            )
+        )
+
+    return results
+
+
+def _test_persistence_records_nonempty() -> None:
+    """
+    Test persistence calculation across repeated poses.
+    """
+
+    persistence = (
+        _call_calculate_persistence(
+            _make_persistent_pose_results()
+        )
+    )
+
+    _assert_not_empty(
+        persistence,
+        (
+            "Repeated residue-level interactions "
+            "should generate persistence records."
+        ),
+    )
+
+
+def _test_persistence_fraction_range() -> None:
+    """
+    Test persistence fractions remain between zero and one.
+    """
+
+    persistence = (
+        _call_calculate_persistence(
+            _make_persistent_pose_results()
+        )
+    )
+
+    for record in persistence:
+        persistence_value = (
+            record.get(
+                "persistence"
+            )
+            or record.get(
+                "persistence_fraction"
+            )
+            or record.get(
+                "frequency"
+            )
+        )
+
+        if persistence_value is None:
+            continue
+
+        _assert_between(
+            persistence_value,
+            0.0,
+            1.0,
+        )
+
+
+def _test_fully_persistent_interaction() -> None:
+    """
+    Test identification of an interaction present in every pose.
+    """
+
+    persistence = (
+        _call_calculate_persistence(
+            _make_persistent_pose_results()
+        )
+    )
+
+    persistence_values = [
+        safe_float(
+            record.get(
+                "persistence",
+                record.get(
+                    "persistence_fraction",
+                    record.get(
+                        "frequency"
+                    ),
+                ),
+            )
+        )
+        for record in persistence
+    ]
+
+    persistence_values = [
+        value
+        for value
+        in persistence_values
+        if value is not None
+    ]
+
+    _assert_true(
+        any(
+            math.isclose(
+                value,
+                1.0,
+                abs_tol=1e-6,
+            )
+            for value
+            in persistence_values
+        ),
+        (
+            "At least one interaction should have "
+            "full persistence."
+        ),
+    )
+
+
+def _test_consensus_records_nonempty() -> None:
+    """
+    Test consensus generation across repeated poses.
+    """
+
+    consensus = (
+        _call_build_consensus_interactions(
+            _make_persistent_pose_results()
+        )
+    )
+
+    _assert_not_empty(
+        consensus
+    )
+
+
+def _test_consensus_is_json_safe() -> None:
+    """
+    Test JSON compatibility of consensus records.
+    """
+
+    consensus = (
+        _call_build_consensus_interactions(
+            _make_persistent_pose_results()
+        )
+    )
+
+    _assert_json_serializable(
+        make_json_safe(
+            consensus
+        )
+    )
+
+
+# =============================================================================
+# 18.4.10. COMPLETE MULTIPOSE PIPELINE TESTS
+# =============================================================================
+
+
+def _test_complete_multipose_analysis() -> None:
+    """
+    Test the complete multipose analysis pipeline.
+    """
+
+    poses = [
+        [
+            _make_mock_lysine(
+                number=10
+            ),
+            _make_mock_aspartate(
+                number=40,
+                center=(
+                    3.0,
+                    0.0,
+                    0.0,
+                ),
+            ),
+        ],
+        [
+            _make_mock_lysine(
+                number=10
+            ),
+            _make_mock_aspartate(
+                number=40,
+                center=(
+                    3.2,
+                    0.0,
+                    0.0,
+                ),
+            ),
+        ],
+    ]
+
+    multipose_result = (
+        _call_analyze_salt_bridges_multipose(
+            poses
+        )
+    )
+
+    _assert_mapping_contains_keys(
+        multipose_result,
+        (
+            "results",
+        ),
+    )
+
+    _assert_length(
+        multipose_result[
+            "results"
+        ],
+        2,
+    )
+
+
+def _test_empty_multipose_analysis() -> None:
+    """
+    Test multipose analysis with no poses.
+    """
+
+    multipose_result = (
+        _call_analyze_salt_bridges_multipose(
+            []
+        )
+    )
+
+    results = (
+        multipose_result.get(
+            "results",
+            [],
+        )
+    )
+
+    _assert_empty(
+        results
+    )
+
+
+def _test_multipose_results_have_pose_ids() -> None:
+    """
+    Test pose identifier assignment in multipose analysis.
+    """
+
+    multipose_result = (
+        _call_analyze_salt_bridges_multipose(
+            [
+                [
+                    _make_mock_lysine(),
+                    _make_mock_aspartate(),
+                ],
+                [
+                    _make_mock_arginine(),
+                    _make_mock_glutamate(),
+                ],
+            ]
+        )
+    )
+
+    results = list(
+        multipose_result.get(
+            "results",
+            [],
+        )
+    )
+
+    _assert_length(
+        results,
+        2,
+    )
+
+    resolved_pose_ids = [
+        result.pose_id
+        for result in results
+    ]
+
+    _assert_true(
+        all(
+            pose_id is not None
+            for pose_id
+            in resolved_pose_ids
+        ),
+        (
+            "Multipose results should receive "
+            "pose identifiers."
+        ),
+    )
+
+
+# =============================================================================
+# 18.4.11. BASIC SERIALIZATION TESTS
+# =============================================================================
+
+
+def _test_charged_atom_serialization() -> None:
+    """
+    Test ChargedAtom dictionary serialization.
+    """
+
+    charged_atom = (
+        _make_test_charged_atom(
+            name="N1",
+            element="N",
+            coordinate=(
+                1.0,
+                2.0,
+                3.0,
+            ),
+            polarity="positive",
+            effective_charge=1.0,
+        )
+    )
+
+    serialized = (
+        charged_atom_to_dict(
+            charged_atom
+        )
+    )
+
+    _assert_mapping_contains_keys(
+        serialized,
+        (
+            "name",
+            "element",
+            "coordinate",
+            "effective_charge",
+            "polarity",
+        ),
+    )
+
+    _assert_json_serializable(
+        serialized
+    )
+
+
+def _test_charged_group_serialization() -> None:
+    """
+    Test ChargedGroup dictionary serialization.
+    """
+
+    serialized = (
+        charged_group_to_dict(
+            _make_test_anion_group()
+        )
+    )
+
+    _assert_mapping_contains_keys(
+        serialized,
+        (
+            "group_id",
+            "group_type",
+            "polarity",
+            "center",
+            "net_charge",
+            "atoms",
+        ),
+    )
+
+    _assert_json_serializable(
+        serialized
+    )
+
+
+def _test_geometry_serialization() -> None:
+    """
+    Test SaltBridgeGeometry dictionary serialization.
+    """
+
+    serialized = (
+        salt_bridge_geometry_to_dict(
+            _make_test_geometry()
+        )
+    )
+
+    _assert_mapping_contains_keys(
+        serialized,
+        (
+            "center_distance",
+            "minimum_atom_distance",
+            "maximum_atom_distance",
+            "mean_atom_distance",
+            "contact_count",
+            "valid",
+        ),
+    )
+
+    _assert_json_serializable(
+        serialized
+    )
+
+
+def _test_interaction_serialization() -> None:
+    """
+    Test SaltBridgeInteraction dictionary serialization.
+    """
+
+    serialized = (
+        salt_bridge_interaction_to_dict(
+            _make_test_interaction()
+        )
+    )
+
+    _assert_mapping_contains_keys(
+        serialized,
+        (
+            "interaction_id",
+            "interaction_type",
+            "strength",
+            "score",
+            "cation",
+            "anion",
+            "geometry",
+        ),
+    )
+
+    _assert_json_serializable(
+        serialized
+    )
+
+
+def _test_compact_interaction_serialization() -> None:
+    """
+    Test compact interaction serialization.
+    """
+
+    serialized = (
+        salt_bridge_interaction_to_dict(
+            _make_test_interaction(),
+            compact=True,
+        )
+    )
+
+    _assert_is_instance(
+        serialized,
+        Mapping,
+    )
+
+    _assert_json_serializable(
+        serialized
+    )
+
+
+def _test_result_serialization() -> None:
+    """
+    Test SaltBridgeResult dictionary serialization.
+    """
+
+    serialized = (
+        salt_bridge_result_to_dict(
+            _make_test_result()
+        )
+    )
+
+    _assert_mapping_contains_keys(
+        serialized,
+        (
+            "schema",
+            "schema_version",
+            "interaction_count",
+            "interactions",
+            "statistics",
+            "metadata",
+        ),
+    )
+
+    _assert_equal(
+        serialized[
+            "schema"
+        ],
+        "dockanalyzer.saltbridge",
+    )
+
+    _assert_json_serializable(
+        serialized
+    )
+
+
+# =============================================================================
+# 18.4.12. STRICT JSON TESTS
+# =============================================================================
+
+
+def _test_result_json_serialization() -> None:
+    """
+    Test serialization of SaltBridgeResult to JSON text.
+    """
+
+    json_document = (
+        serialize_salt_bridge_result(
+            _make_test_result()
+        )
+    )
+
+    _assert_is_instance(
+        json_document,
+        str,
+    )
+
+    parsed_document = json.loads(
+        json_document
+    )
+
+    _assert_is_instance(
+        parsed_document,
+        Mapping,
+    )
+
+
+def _test_result_json_rejects_nonfinite_values() -> None:
+    """
+    Test conversion of non-finite values to JSON null.
+    """
+
+    result = _make_test_result()
+
+    result.metadata[
+        "nan_value"
+    ] = float(
+        "nan"
+    )
+
+    result.metadata[
+        "positive_infinity"
+    ] = float(
+        "inf"
+    )
+
+    result.metadata[
+        "negative_infinity"
+    ] = float(
+        "-inf"
+    )
+
+    json_document = (
+        serialize_salt_bridge_result(
+            result
+        )
+    )
+
+    parsed_document = json.loads(
+        json_document
+    )
+
+    metadata = parsed_document[
+        "metadata"
+    ]
+
+    _assert_is_none(
+        metadata[
+            "nan_value"
+        ]
+    )
+
+    _assert_is_none(
+        metadata[
+            "positive_infinity"
+        ]
+    )
+
+    _assert_is_none(
+        metadata[
+            "negative_infinity"
+        ]
+    )
+
+
+def _test_make_json_safe_nested_data() -> None:
+    """
+    Test recursive conversion of nested values.
+    """
+
+    nested_value = {
+        (
+            "tuple",
+            1,
+        ): {
+            "set": {
+                3,
+                2,
+                1,
+            },
+            "values": [
+                float(
+                    "nan"
+                ),
+                5.0,
+            ],
+        }
+    }
+
+    serialized = make_json_safe(
+        nested_value
+    )
+
+    _assert_json_serializable(
+        serialized
+    )
+
+
+def _test_interactions_json_serialization() -> None:
+    """
+    Test JSON serialization of interaction collections.
+    """
+
+    json_document = (
+        serialize_salt_bridge_interactions(
+            [
+                _make_test_interaction()
+            ]
+        )
+    )
+
+    parsed_document = json.loads(
+        json_document
+    )
+
+    _assert_is_instance(
+        parsed_document,
+        list,
+    )
+
+    _assert_length(
+        parsed_document,
+        1,
+    )
+
+
+# =============================================================================
+# 18.4.13. TABLE-EXPORT TESTS
+# =============================================================================
+
+
+def _test_interaction_rows() -> None:
+    """
+    Test generation of flat interaction rows.
+    """
+
+    rows = (
+        salt_bridge_interactions_to_rows(
+            [
+                _make_test_interaction()
+            ]
+        )
+    )
+
+    _assert_length(
+        rows,
+        1,
+    )
+
+    _assert_is_instance(
+        rows[0],
+        Mapping,
+    )
+
+    _assert_json_serializable(
+        rows
+    )
+
+
+def _test_group_rows() -> None:
+    """
+    Test generation of flat charged-group rows.
+    """
+
+    rows = salt_bridge_groups_to_rows(
+        [
+            _make_test_cation_group(),
+            _make_test_anion_group(),
+        ]
+    )
+
+    _assert_length(
+        rows,
+        2,
+    )
+
+    _assert_mapping_contains_keys(
+        rows[0],
+        (
+            "group_id",
+            "group_type",
+            "polarity",
+            "net_charge",
+            "center_x",
+            "center_y",
+            "center_z",
+        ),
+    )
+
+
+def _test_statistics_rows() -> None:
+    """
+    Test flattening of nested statistics.
+    """
+
+    rows = (
+        salt_bridge_statistics_to_rows(
+            {
+                "interaction_count": 2,
+                "distances": {
+                    "minimum": 2.5,
+                    "maximum": 4.0,
+                },
+            }
+        )
+    )
+
+    metrics = {
+        row[
+            "metric"
+        ]
+        for row in rows
+    }
+
+    _assert_contains(
+        metrics,
+        "interaction_count",
+    )
+
+    _assert_contains(
+        metrics,
+        "distances.minimum",
+    )
+
+    _assert_contains(
+        metrics,
+        "distances.maximum",
+    )
+
+
+def _test_residue_summary_rows() -> None:
+    """
+    Test residue-level summary export.
+    """
+
+    rows = (
+        build_residue_salt_bridge_summary_rows(
+            _make_test_result()
+            .interactions
+        )
+    )
+
+    _assert_not_empty(
+        rows
+    )
+
+    _assert_json_serializable(
+        rows
+    )
+
+
+def _test_pose_summary_rows() -> None:
+    """
+    Test pose-level summary export.
+    """
+
+    rows = (
+        build_pose_salt_bridge_summary_rows(
+            _make_test_pose_results(
+                pose_count=3
+            )
+        )
+    )
+
+    _assert_length(
+        rows,
+        3,
+    )
+
+    _assert_equal(
+        [
+            row[
+                "rank"
+            ]
+            for row in rows
+        ],
+        [
+            1,
+            2,
+            3,
+        ],
+    )
+
+
+# =============================================================================
+# 18.4.14. EXPORT-PAYLOAD TESTS
+# =============================================================================
+
+
+def _test_single_result_export_payload() -> None:
+    """
+    Test complete export payload for one result.
+    """
+
+    payload = (
+        build_salt_bridge_export_payload(
+            _make_statistics_test_result()
+        )
+    )
+
+    _assert_mapping_contains_keys(
+        payload,
+        (
+            "schema",
+            "summary",
+            "text_summary",
+            "result",
+            "interaction_rows",
+            "cationic_group_rows",
+            "anionic_group_rows",
+            "residue_summary_rows",
+            "statistics_rows",
+        ),
+    )
+
+    _assert_json_serializable(
+        payload
+    )
+
+
+def _test_prepare_export_dict() -> None:
+    """
+    Test generic dictionary export routing.
+    """
+
+    exported = prepare_salt_bridge_export(
+        _make_test_result(),
+        export_format="dict",
+    )
+
+    _assert_is_instance(
+        exported,
+        Mapping,
+    )
+
+
+def _test_prepare_export_json() -> None:
+    """
+    Test generic JSON export routing.
+    """
+
+    exported = prepare_salt_bridge_export(
+        _make_test_result(),
+        export_format="json",
+    )
+
+    _assert_is_instance(
+        exported,
+        str,
+    )
+
+    json.loads(
+        exported
+    )
+
+
+def _test_prepare_export_rows() -> None:
+    """
+    Test generic table-row export routing.
+    """
+
+    exported = prepare_salt_bridge_export(
+        _make_test_result(),
+        export_format="rows",
+    )
+
+    _assert_is_instance(
+        exported,
+        list,
+    )
+
+
+def _test_prepare_export_invalid_format() -> None:
+    """
+    Test rejection of unsupported export formats.
+    """
+
+    _assert_raises(
+        SaltBridgeSerializationError,
+        prepare_salt_bridge_export,
+        _make_test_result(),
+        "unsupported_format",
+    )
+
+
+# =============================================================================
+# 18.4.15. MULTIPOSE SERIALIZATION TESTS
+# =============================================================================
+
+
+def _make_test_multipose_mapping(
+) -> Dict[str, Any]:
+    """
+    Create a complete multipose mapping for serialization tests.
+    """
+
+    results = _make_persistent_pose_results()
+
+    ranking = (
+        _call_rank_salt_bridge_poses(
+            results
+        )
+    )
+
+    persistence = (
+        _call_calculate_persistence(
+            results
+        )
+    )
+
+    consensus = (
+        _call_build_consensus_interactions(
+            results
+        )
+    )
+
+    return {
+        "results": results,
+        "pose_ranking": ranking,
+        "persistence": persistence,
+        "consensus_interactions": (
+            consensus
+        ),
+        "statistics": {
+            "pose_count": len(
+                results
+            ),
+        },
+        "compact_summary": {
+            "pose_count": len(
+                results
+            ),
+            "interaction_count": sum(
+                len(
+                    result.interactions
+                )
+                for result in results
+            ),
+        },
+        "text_summary": (
+            "Test multipose salt-bridge analysis."
+        ),
+        "warnings": [],
+        "metadata": {
+            "self_test": True,
+        },
+    }
+
+
+def _test_multipose_dictionary_serialization() -> None:
+    """
+    Test dictionary serialization of multipose results.
+    """
+
+    serialized = (
+        salt_bridge_multipose_to_dict(
+            _make_test_multipose_mapping()
+        )
+    )
+
+    _assert_mapping_contains_keys(
+        serialized,
+        (
+            "schema",
+            "results",
+            "pose_ranking",
+            "persistence",
+            "consensus_interactions",
+            "statistics",
+        ),
+    )
+
+    _assert_json_serializable(
+        serialized
+    )
+
+
+def _test_multipose_json_serialization() -> None:
+    """
+    Test JSON serialization of multipose results.
+    """
+
+    json_document = (
+        serialize_salt_bridge_multipose(
+            _make_test_multipose_mapping()
+        )
+    )
+
+    parsed_document = json.loads(
+        json_document
+    )
+
+    _assert_equal(
+        parsed_document[
+            "schema"
+        ],
+        (
+            "dockanalyzer.saltbridge."
+            "multipose"
+        ),
+    )
+
+
+def _test_multipose_export_payload() -> None:
+    """
+    Test complete multipose export payload.
+    """
+
+    payload = (
+        build_multipose_salt_bridge_export_payload(
+            _make_test_multipose_mapping()
+        )
+    )
+
+    _assert_mapping_contains_keys(
+        payload,
+        (
+            "summary",
+            "pose_summary_rows",
+            "interaction_rows",
+            "persistence_rows",
+            "consensus_rows",
+            "statistics",
+        ),
+    )
+
+    _assert_json_serializable(
+        payload
+    )
+
+
+# =============================================================================
+# 18.4.16. CHIMERAX SPECIFICATION TESTS
+# =============================================================================
+
+
+def _make_chimerax_test_interaction(
+) -> SaltBridgeInteraction:
+    """
+    Create an interaction containing ChimeraX-like model references.
+    """
+
+    structure = _make_test_structure(
+        model_id=1
+    )
+
+    lysine = _make_mock_lysine(
+        number=10,
+        chain_id="A",
+        structure=structure,
+    )
+
+    aspartate = (
+        _make_mock_aspartate(
+            number=40,
+            chain_id="B",
+            structure=structure,
+        )
+    )
+
+    cation = _make_test_cation_group(
+        group_id="chimerax_cation",
+        residue=lysine,
+    )
+
+    anion = _make_test_anion_group(
+        group_id="chimerax_anion",
+        residue=aspartate,
+    )
+
+    return _make_test_interaction(
+        cation=cation,
+        anion=anion,
+    )
+
+
+def _test_atom_chimerax_spec() -> None:
+    """
+    Test generation of a ChimeraX atom specification.
+    """
+
+    residue = _make_mock_lysine(
+        number=10,
+        chain_id="A",
+        structure=_make_test_structure(
+            model_id=1
+        ),
+    )
+
+    atom = residue.atoms[0]
+
+    atom_spec = atom_to_chimerax_spec(
+        atom
+    )
+
+    _assert_is_not_none(
+        atom_spec
+    )
+
+    _assert_contains(
+        atom_spec,
+        "#1",
+    )
+
+    _assert_contains(
+        atom_spec,
+        "/A",
+    )
+
+    _assert_contains(
+        atom_spec,
+        ":10",
+    )
+
+    _assert_contains(
+        atom_spec,
+        "@NZ",
+    )
+
+
+def _test_residue_chimerax_spec() -> None:
+    """
+    Test generation of a ChimeraX residue specification.
+    """
+
+    residue = _make_mock_aspartate(
+        number=40,
+        chain_id="B",
+        structure=_make_test_structure(
+            model_id=2
+        ),
+    )
+
+    residue_spec = (
+        residue_to_chimerax_spec(
+            residue
+        )
+    )
+
+    _assert_equal(
+        residue_spec,
+        "#2/B:40",
+    )
+
+
+def _test_interaction_chimerax_spec() -> None:
+    """
+    Test generation of an interaction selection specification.
+    """
+
+    interaction_spec = (
+        salt_bridge_interaction_to_chimerax_spec(
+            _make_chimerax_test_interaction()
+        )
+    )
+
+    _assert_is_not_none(
+        interaction_spec
+    )
+
+    _assert_contains(
+        interaction_spec,
+        "#1",
+    )
+
+
+def _test_result_selection_command() -> None:
+    """
+    Test ChimeraX selection command generation.
+    """
+
+    result = _make_test_result(
+        interactions=[
+            _make_chimerax_test_interaction()
+        ]
+    )
+
+    command = (
+        build_select_salt_bridge_command(
+            result
+        )
+    )
+
+    _assert_is_not_none(
+        command
+    )
+
+    _assert_true(
+        command.startswith(
+            "select clear; select "
+        )
+    )
+
+
+def _test_pseudobond_command_generation() -> None:
+    """
+    Test ChimeraX pseudobond command generation.
+    """
+
+    command = (
+        build_create_salt_bridge_pseudobond_command(
+            _make_chimerax_test_interaction()
+        )
+    )
+
+    _assert_contains(
+        command,
+        "pbond ",
+    )
+
+    _assert_contains(
+        command,
+        "color ",
+    )
+
+    _assert_contains(
+        command,
+        "radius ",
+    )
+
+    _assert_contains(
+        command,
+        "name ",
+    )
+
+
+def _test_visualization_command_generation() -> None:
+    """
+    Test complete ChimeraX visualization command generation.
+    """
+
+    result = _make_test_result(
+        interactions=[
+            _make_chimerax_test_interaction()
+        ]
+    )
+
+    commands = (
+        build_salt_bridge_visualization_commands(
+            result
+        )
+    )
+
+    _assert_not_empty(
+        commands
+    )
+
+    combined_commands = " ".join(
+        commands
+    )
+
+    _assert_contains(
+        combined_commands,
+        "pbond",
+    )
+
+    _assert_contains(
+        combined_commands,
+        "select",
+    )
+
+
+def _test_chimerax_record_serialization() -> None:
+    """
+    Test ChimeraX-oriented export records.
+    """
+
+    record = (
+        build_chimerax_salt_bridge_record(
+            _make_chimerax_test_interaction()
+        )
+    )
+
+    _assert_mapping_contains_keys(
+        record,
+        (
+            "interaction_id",
+            "positive_atom_spec",
+            "negative_atom_spec",
+            "selection_spec",
+            "pseudobond_group",
+            "color",
+        ),
+    )
+
+    _assert_json_serializable(
+        record
+    )
+
+
+def _test_chimerax_generation_without_runtime() -> None:
+    """
+    Test that command construction does not require ChimeraX imports.
+    """
+
+    result = _make_test_result(
+        interactions=[
+            _make_chimerax_test_interaction()
+        ]
+    )
+
+    commands = (
+        build_salt_bridge_visualization_commands(
+            result
+        )
+    )
+
+    _assert_is_instance(
+        commands,
+        list,
+    )
+
+
+# =============================================================================
+# 18.4.17. SERIALIZATION ROUND-TRIP TESTS
+# =============================================================================
+
+
+def _test_result_json_round_trip_core_fields() -> None:
+    """
+    Test preservation of core fields through JSON serialization.
+    """
+
+    result = _make_test_result(
+        pose_id=5,
+        model_id="model_5",
+    )
+
+    parsed = json.loads(
+        serialize_salt_bridge_result(
+            result
+        )
+    )
+
+    _assert_equal(
+        parsed[
+            "pose_id"
+        ],
+        5,
+    )
+
+    _assert_equal(
+        parsed[
+            "model_id"
+        ],
+        "model_5",
+    )
+
+    _assert_equal(
+        parsed[
+            "interaction_count"
+        ],
+        len(
+            result.interactions
+        ),
+    )
+
+
+def _test_compact_and_full_serialization_counts_match() -> None:
+    """
+    Test consistency between compact and full result serialization.
+    """
+
+    result = _make_test_result()
+
+    full = salt_bridge_result_to_dict(
+        result,
+        compact_interactions=False,
+    )
+
+    compact = salt_bridge_result_to_dict(
+        result,
+        compact_interactions=True,
+        include_groups=False,
+    )
+
+    _assert_equal(
+        full[
+            "interaction_count"
+        ],
+        compact[
+            "interaction_count"
+        ],
+    )
+
+    _assert_equal(
+        len(
+            full[
+                "interactions"
+            ]
+        ),
+        len(
+            compact[
+                "interactions"
+            ]
+        ),
+    )
+
+
+def _test_serialization_does_not_include_raw_atom_objects() -> None:
+    """
+    Test that serialized output does not retain raw mock atoms.
+    """
+
+    serialized = (
+        salt_bridge_result_to_dict(
+            _make_test_result()
+        )
+    )
+
+    def contains_mock_atom(
+        value: Any,
+    ) -> bool:
+        if isinstance(
+            value,
+            _MockAtom,
+        ):
+            return True
+
+        if isinstance(
+            value,
+            Mapping,
+        ):
+            return any(
+                contains_mock_atom(
+                    nested_value
+                )
+                for nested_value
+                in value.values()
+            )
+
+        if isinstance(
+            value,
+            (
+                list,
+                tuple,
+                set,
+            ),
+        ):
+            return any(
+                contains_mock_atom(
+                    nested_value
+                )
+                for nested_value
+                in value
+            )
+
+        return False
+
+    _assert_false(
+        contains_mock_atom(
+            serialized
+        ),
+        (
+            "Serialized result must not contain "
+            "raw molecular objects."
+        ),
+    )
+
+
+# =============================================================================
+# 18.4.18. SECTION TEST REGISTRY
+# =============================================================================
+
+
+def get_salt_bridge_integration_serialization_tests(
+) -> List[
+    Tuple[
+        str,
+        Callable[
+            [],
+            Any,
+        ],
+    ]
+]:
+    """
+    Return all Section 18.4 self-tests.
+
+    Returns
+    -------
+    List[Tuple[str, Callable[[], Any]]]
+        Named integration and serialization tests.
+    """
+
+    return [
+        (
+            "18.4.dockmodel.attach",
+            _test_attach_result_to_dock_model,
+        ),
+        (
+            "18.4.dockmodel.replace_existing",
+            _test_attach_result_replaces_existing_by_default,
+        ),
+        (
+            "18.4.dockmodel.preserve_existing",
+            _test_attach_result_preserves_existing_when_requested,
+        ),
+        (
+            "18.4.dockmodel.simplified_architecture",
+            _test_attachment_does_not_add_dynamic_result_fields,
+        ),
+        (
+            "18.4.dockmodel.analyze_single",
+            _test_analyze_dock_model_salt_bridges,
+        ),
+        (
+            "18.4.dockmodel.analyze_multiple",
+            _test_analyze_multiple_dock_models,
+        ),
+        (
+            "18.4.dockmodel.empty_source",
+            _test_dock_model_empty_source,
+        ),
+        (
+            "18.4.statistics.interaction_count",
+            _test_statistics_interaction_count,
+        ),
+        (
+            "18.4.statistics.total_score",
+            _test_statistics_total_score,
+        ),
+        (
+            "18.4.statistics.distance_extrema",
+            _test_statistics_distance_extrema,
+        ),
+        (
+            "18.4.statistics.strength_distribution",
+            _test_statistics_strength_distribution,
+        ),
+        (
+            "18.4.statistics.in_place",
+            _test_statistics_in_place_update,
+        ),
+        (
+            "18.4.statistics.empty_result",
+            _test_empty_result_statistics,
+        ),
+        (
+            "18.4.summary.compact_structure",
+            _test_compact_summary_structure,
+        ),
+        (
+            "18.4.summary.compact_values",
+            _test_compact_summary_values,
+        ),
+        (
+            "18.4.summary.text_nonempty",
+            _test_text_summary_nonempty,
+        ),
+        (
+            "18.4.summary.empty_result",
+            _test_empty_result_text_summary,
+        ),
+        (
+            "18.4.multipose.ranking_count",
+            _test_pose_ranking_count,
+        ),
+        (
+            "18.4.multipose.ranking_order",
+            _test_pose_ranking_order,
+        ),
+        (
+            "18.4.multipose.unique_ranks",
+            _test_pose_ranking_unique_ranks,
+        ),
+        (
+            "18.4.multipose.persistence_nonempty",
+            _test_persistence_records_nonempty,
+        ),
+        (
+            "18.4.multipose.persistence_range",
+            _test_persistence_fraction_range,
+        ),
+        (
+            "18.4.multipose.full_persistence",
+            _test_fully_persistent_interaction,
+        ),
+        (
+            "18.4.multipose.consensus_nonempty",
+            _test_consensus_records_nonempty,
+        ),
+        (
+            "18.4.multipose.consensus_json",
+            _test_consensus_is_json_safe,
+        ),
+        (
+            "18.4.multipose.complete_pipeline",
+            _test_complete_multipose_analysis,
+        ),
+        (
+            "18.4.multipose.empty",
+            _test_empty_multipose_analysis,
+        ),
+        (
+            "18.4.multipose.pose_ids",
+            _test_multipose_results_have_pose_ids,
+        ),
+        (
+            "18.4.serialization.charged_atom",
+            _test_charged_atom_serialization,
+        ),
+        (
+            "18.4.serialization.charged_group",
+            _test_charged_group_serialization,
+        ),
+        (
+            "18.4.serialization.geometry",
+            _test_geometry_serialization,
+        ),
+        (
+            "18.4.serialization.interaction",
+            _test_interaction_serialization,
+        ),
+        (
+            "18.4.serialization.compact_interaction",
+            _test_compact_interaction_serialization,
+        ),
+        (
+            "18.4.serialization.result",
+            _test_result_serialization,
+        ),
+        (
+            "18.4.json.result",
+            _test_result_json_serialization,
+        ),
+        (
+            "18.4.json.nonfinite_values",
+            _test_result_json_rejects_nonfinite_values,
+        ),
+        (
+            "18.4.json.nested_data",
+            _test_make_json_safe_nested_data,
+        ),
+        (
+            "18.4.json.interactions",
+            _test_interactions_json_serialization,
+        ),
+        (
+            "18.4.tables.interactions",
+            _test_interaction_rows,
+        ),
+        (
+            "18.4.tables.groups",
+            _test_group_rows,
+        ),
+        (
+            "18.4.tables.statistics",
+            _test_statistics_rows,
+        ),
+        (
+            "18.4.tables.residue_summary",
+            _test_residue_summary_rows,
+        ),
+        (
+            "18.4.tables.pose_summary",
+            _test_pose_summary_rows,
+        ),
+        (
+            "18.4.export.single_payload",
+            _test_single_result_export_payload,
+        ),
+        (
+            "18.4.export.dict",
+            _test_prepare_export_dict,
+        ),
+        (
+            "18.4.export.json",
+            _test_prepare_export_json,
+        ),
+        (
+            "18.4.export.rows",
+            _test_prepare_export_rows,
+        ),
+        (
+            "18.4.export.invalid_format",
+            _test_prepare_export_invalid_format,
+        ),
+        (
+            "18.4.multipose_serialization.dict",
+            _test_multipose_dictionary_serialization,
+        ),
+        (
+            "18.4.multipose_serialization.json",
+            _test_multipose_json_serialization,
+        ),
+        (
+            "18.4.multipose_serialization.payload",
+            _test_multipose_export_payload,
+        ),
+        (
+            "18.4.chimerax.atom_spec",
+            _test_atom_chimerax_spec,
+        ),
+        (
+            "18.4.chimerax.residue_spec",
+            _test_residue_chimerax_spec,
+        ),
+        (
+            "18.4.chimerax.interaction_spec",
+            _test_interaction_chimerax_spec,
+        ),
+        (
+            "18.4.chimerax.selection_command",
+            _test_result_selection_command,
+        ),
+        (
+            "18.4.chimerax.pseudobond_command",
+            _test_pseudobond_command_generation,
+        ),
+        (
+            "18.4.chimerax.visualization_commands",
+            _test_visualization_command_generation,
+        ),
+        (
+            "18.4.chimerax.export_record",
+            _test_chimerax_record_serialization,
+        ),
+        (
+            "18.4.chimerax.no_runtime_required",
+            _test_chimerax_generation_without_runtime,
+        ),
+        (
+            "18.4.round_trip.core_fields",
+            _test_result_json_round_trip_core_fields,
+        ),
+        (
+            "18.4.round_trip.compact_full_count",
+            _test_compact_and_full_serialization_counts_match,
+        ),
+        (
+            "18.4.round_trip.no_raw_atoms",
+            _test_serialization_does_not_include_raw_atom_objects,
+        ),
+    ]
+
+
+# =============================================================================
+# 18.4.19. SECTION RUNNER
+# =============================================================================
+
+
+def run_salt_bridge_integration_serialization_tests(
+    *,
+    report: Optional[
+        _SelfTestReport
+    ] = None,
+    raise_on_failure: bool = False,
+    print_report: bool = False,
+) -> _SelfTestReport:
+    """
+    Run all Section 18.4 integration and serialization self-tests.
+
+    Parameters
+    ----------
+    report
+        Optional existing self-test report.
+    raise_on_failure
+        Whether the first failure should raise an exception.
+    print_report
+        Whether the updated report should be printed.
+
+    Returns
+    -------
+    _SelfTestReport
+        Updated self-test report.
+    """
+
+    resolved_report = (
+        _run_self_test_group(
+            get_salt_bridge_integration_serialization_tests(),
+            report=report,
+            raise_on_failure=(
+                raise_on_failure
+            ),
+        )
+    )
+
+    if print_report:
+        _print_self_test_report(
+            resolved_report
+        )
+
+    return resolved_report
+
+
+# =============================================================================
+# 18.5. FINAL SELF-TEST RUNNER
+# =============================================================================
+
+
+# =============================================================================
+# 18.5.1. DATE AND ENVIRONMENT UTILITIES
+# =============================================================================
+
+
+def _self_test_timestamp() -> str:
+    """
+    Return the current UTC timestamp in ISO 8601 format.
+
+    Returns
+    -------
+    str
+        Current UTC timestamp.
+    """
+
+    from datetime import (
+        datetime,
+        timezone,
+    )
+
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
+
+
+def _collect_self_test_environment() -> Dict[str, Any]:
+    """
+    Collect basic runtime information for the self-test report.
+
+    Returns
+    -------
+    Dict[str, Any]
+        JSON-safe runtime metadata.
+    """
+
+    import platform
+    import sys
+
+    return {
+        "python_version": (
+            sys.version.split()[0]
+        ),
+        "python_implementation": (
+            platform.python_implementation()
+        ),
+        "platform": (
+            platform.platform()
+        ),
+        "machine": (
+            platform.machine()
+        ),
+        "processor": (
+            platform.processor()
+        ),
+        "module_name": __name__,
+        "module_version": __version__,
+        "chimerax_available": bool(
+            HAS_CHIMERAX
+        ),
+    }
+
+
+# =============================================================================
+# 18.5.2. SECTION REGISTRY
+# =============================================================================
+
+
+def get_salt_bridge_self_test_sections(
+) -> List[
+    Tuple[
+        str,
+        Callable[
+            ...,
+            _SelfTestReport,
+        ],
+    ]
+]:
+    """
+    Return the ordered salt-bridge self-test sections.
+
+    Returns
+    -------
+    List[Tuple[str, Callable[..., _SelfTestReport]]]
+        Ordered section runner definitions.
+    """
+
+    return [
+        (
+            "18.1.test_infrastructure",
+            run_salt_bridge_test_infrastructure,
+        ),
+        (
+            "18.2.recognition_and_geometry",
+            run_salt_bridge_recognition_geometry_tests,
+        ),
+        (
+            "18.3.detection_and_classification",
+            run_salt_bridge_detection_classification_tests,
+        ),
+        (
+            "18.4.integration_and_serialization",
+            run_salt_bridge_integration_serialization_tests,
+        ),
+    ]
+
+
+def get_salt_bridge_self_test_names(
+) -> List[str]:
+    """
+    Return all registered salt-bridge self-test names.
+
+    Returns
+    -------
+    List[str]
+        Registered test names in execution order.
+    """
+
+    test_names = [
+        "18.1.test_infrastructure_smoke_test"
+    ]
+
+    test_names.extend(
+        test_name
+        for test_name, _
+        in get_salt_bridge_recognition_geometry_tests()
+    )
+
+    test_names.extend(
+        test_name
+        for test_name, _
+        in get_salt_bridge_detection_classification_tests()
+    )
+
+    test_names.extend(
+        test_name
+        for test_name, _
+        in get_salt_bridge_integration_serialization_tests()
+    )
+
+    return test_names
+
+
+# =============================================================================
+# 18.5.3. SECTION 18.1 RUNNER ADAPTER
+# =============================================================================
+
+
+def run_salt_bridge_test_infrastructure(
+    *,
+    report: Optional[
+        _SelfTestReport
+    ] = None,
+    raise_on_failure: bool = False,
+    print_report: bool = False,
+) -> _SelfTestReport:
+    """
+    Run the Section 18.1 infrastructure self-test.
+
+    This adapter gives Section 18.1 the same interface used by the
+    remaining section runners.
+
+    Parameters
+    ----------
+    report
+        Optional existing self-test report.
+    raise_on_failure
+        Whether a failure should immediately raise an exception.
+    print_report
+        Whether the updated report should be printed.
+
+    Returns
+    -------
+    _SelfTestReport
+        Updated self-test report.
+    """
+
+    resolved_report = (
+        report
+        if report is not None
+        else _SelfTestReport()
+    )
+
+    test_record = (
+        run_salt_bridge_test_infrastructure_smoke_test(
+            raise_on_failure=(
+                raise_on_failure
+            )
+        )
+    )
+
+    resolved_report.add_record(
+        test_record
+    )
+
+    if print_report:
+        _print_self_test_report(
+            resolved_report
+        )
+
+    return resolved_report
+
+
+# =============================================================================
+# 18.5.4. REPORT VALIDATION
+# =============================================================================
+
+
+def _validate_self_test_registry() -> None:
+    """
+    Validate the final self-test registry.
+
+    Raises
+    ------
+    SaltBridgeSelfTestError
+        If duplicate or invalid test names are found.
+    """
+
+    test_names = (
+        get_salt_bridge_self_test_names()
+    )
+
+    if not test_names:
+        raise SaltBridgeSelfTestError(
+            "The salt-bridge self-test registry is empty."
+        )
+
+    normalized_names = [
+        str(
+            test_name
+        ).strip()
+        for test_name in test_names
+    ]
+
+    if any(
+        not test_name
+        for test_name in normalized_names
+    ):
+        raise SaltBridgeSelfTestError(
+            "Self-test names must not be empty."
+        )
+
+    duplicate_names = sorted(
+        {
+            test_name
+            for test_name
+            in normalized_names
+            if normalized_names.count(
+                test_name
+            ) > 1
+        }
+    )
+
+    if duplicate_names:
+        raise SaltBridgeSelfTestError(
+            "Duplicate self-test names were found: "
+            + ", ".join(
+                duplicate_names
+            )
+        )
+
+
+def _validate_final_self_test_report(
+    report: _SelfTestReport,
+) -> None:
+    """
+    Validate invariants of a completed self-test report.
+
+    Parameters
+    ----------
+    report
+        Completed self-test report.
+
+    Raises
+    ------
+    SaltBridgeSelfTestError
+        If the report is internally inconsistent.
+    """
+
+    _assert_is_instance(
+        report,
+        _SelfTestReport,
+    )
+
+    _assert_equal(
+        report.test_count,
+        (
+            report.passed_count
+            + report.failed_count
+        ),
+        (
+            "Self-test report counters "
+            "are inconsistent."
+        ),
+    )
+
+    registered_test_count = len(
+        get_salt_bridge_self_test_names()
+    )
+
+    _assert_equal(
+        report.test_count,
+        registered_test_count,
+        (
+            "Executed test count does not match "
+            "the registered test count."
+        ),
+    )
+
+    record_names = [
+        record.name
+        for record in report.records
+    ]
+
+    _assert_equal(
+        len(
+            record_names
+        ),
+        len(
+            set(
+                record_names
+            )
+        ),
+        (
+            "The final self-test report contains "
+            "duplicate records."
+        ),
+    )
+
+    for record in report.records:
+        _assert_true(
+            record.duration_seconds >= 0.0,
+            (
+                "Self-test duration cannot "
+                "be negative."
+            ),
+        )
+
+        if record.passed:
+            _assert_is_none(
+                record.exception_type,
+                (
+                    "Passed tests must not contain "
+                    "an exception type."
+                ),
+            )
+
+        else:
+            _assert_true(
+                bool(
+                    record.message
+                ),
+                (
+                    "Failed tests must contain "
+                    "an explanatory message."
+                ),
+            )
+
+
+# =============================================================================
+# 18.5.5. FINAL REPORT FORMATTING
+# =============================================================================
+
+
+def _format_self_test_section_summary(
+    report: _SelfTestReport,
+) -> List[str]:
+    """
+    Build section-level summary lines.
+
+    Parameters
+    ----------
+    report
+        Completed self-test report.
+
+    Returns
+    -------
+    List[str]
+        Formatted section summary lines.
+    """
+
+    section_prefixes = (
+        (
+            "18.1",
+            "Infrastructure",
+        ),
+        (
+            "18.2",
+            "Recognition and geometry",
+        ),
+        (
+            "18.3",
+            "Detection and classification",
+        ),
+        (
+            "18.4",
+            "Integration and serialization",
+        ),
+    )
+
+    summary_lines: List[str] = []
+
+    for prefix, label in section_prefixes:
+        section_records = [
+            record
+            for record in report.records
+            if record.name.startswith(
+                prefix
+            )
+        ]
+
+        passed_count = sum(
+            1
+            for record in section_records
+            if record.passed
+        )
+
+        failed_count = (
+            len(
+                section_records
+            )
+            - passed_count
+        )
+
+        status = (
+            "PASS"
+            if failed_count == 0
+            and section_records
+            else "FAIL"
+        )
+
+        summary_lines.append(
+            (
+                f"[{status}] {prefix} "
+                f"{label}: "
+                f"{passed_count}/"
+                f"{len(section_records)} passed"
+            )
+        )
+
+    return summary_lines
+
+
+def format_salt_bridge_self_test_report(
+    report: _SelfTestReport,
+    *,
+    include_section_summary: bool = True,
+    include_records: bool = True,
+    include_environment: bool = False,
+) -> str:
+    """
+    Format the final salt-bridge self-test report.
+
+    Parameters
+    ----------
+    report
+        Completed self-test report.
+    include_section_summary
+        Whether section-level results should be included.
+    include_records
+        Whether individual test records should be included.
+    include_environment
+        Whether runtime metadata should be included.
+
+    Returns
+    -------
+    str
+        Formatted report.
+    """
+
+    total_duration = sum(
+        record.duration_seconds
+        for record in report.records
+    )
+
+    status = (
+        "SUCCESS"
+        if report.success
+        else "FAILURE"
+    )
+
+    lines = [
+        "=" * 79,
+        "DockAnalyzer saltbridge.py self-test report",
+        "=" * 79,
+        f"Module: {report.module_name}",
+        (
+            "Version: "
+            f"{report.module_version}"
+        ),
+        (
+            "Started: "
+            f"{report.started_at or 'unknown'}"
+        ),
+        (
+            "Finished: "
+            f"{report.finished_at or 'unknown'}"
+        ),
+        (
+            "Duration: "
+            f"{total_duration:.6f} s"
+        ),
+        (
+            "Registered tests: "
+            f"{report.test_count}"
+        ),
+        (
+            "Passed: "
+            f"{report.passed_count}"
+        ),
+        (
+            "Failed: "
+            f"{report.failed_count}"
+        ),
+        (
+            "Final status: "
+            f"{status}"
+        ),
+    ]
+
+    if include_section_summary:
+        lines.extend(
+            [
+                "",
+                "-" * 79,
+                "Section summary",
+                "-" * 79,
+            ]
+        )
+
+        lines.extend(
+            _format_self_test_section_summary(
+                report
+            )
+        )
+
+    if include_environment:
+        environment = (
+            report.metadata.get(
+                "environment",
+                {},
+            )
+        )
+
+        lines.extend(
+            [
+                "",
+                "-" * 79,
+                "Environment",
+                "-" * 79,
+            ]
+        )
+
+        if isinstance(
+            environment,
+            Mapping,
+        ):
+            for key in sorted(
+                environment
+            ):
+                lines.append(
+                    f"{key}: "
+                    f"{environment[key]}"
+                )
+
+    if include_records:
+        lines.extend(
+            [
+                "",
+                "-" * 79,
+                "Individual tests",
+                "-" * 79,
+            ]
+        )
+
+        lines.extend(
+            _format_self_test_record(
+                record
+            )
+            for record in report.records
+        )
+
+    if not report.success:
+        failed_records = [
+            record
+            for record in report.records
+            if not record.passed
+        ]
+
+        lines.extend(
+            [
+                "",
+                "-" * 79,
+                "Failures",
+                "-" * 79,
+            ]
+        )
+
+        for failed_record in (
+            failed_records
+        ):
+            exception_name = (
+                failed_record.exception_type
+                or "UnknownError"
+            )
+
+            lines.append(
+                (
+                    f"{failed_record.name}: "
+                    f"{exception_name}: "
+                    f"{failed_record.message}"
+                )
+            )
+
+    lines.append(
+        "=" * 79
+    )
+
+    return "\n".join(
+        lines
+    )
+
+
+def print_salt_bridge_self_test_report(
+    report: _SelfTestReport,
+    *,
+    include_section_summary: bool = True,
+    include_records: bool = True,
+    include_environment: bool = False,
+) -> None:
+    """
+    Print the final salt-bridge self-test report.
+
+    Parameters
+    ----------
+    report
+        Completed self-test report.
+    include_section_summary
+        Whether section-level results should be shown.
+    include_records
+        Whether individual test records should be shown.
+    include_environment
+        Whether runtime metadata should be shown.
+    """
+
+    print(
+        format_salt_bridge_self_test_report(
+            report,
+            include_section_summary=(
+                include_section_summary
+            ),
+            include_records=(
+                include_records
+            ),
+            include_environment=(
+                include_environment
+            ),
+        )
+    )
+
+
+# =============================================================================
+# 18.5.6. REPORT SERIALIZATION
+# =============================================================================
+
+
+def salt_bridge_self_test_report_to_dict(
+    report: _SelfTestReport,
+) -> Dict[str, Any]:
+    """
+    Convert the final self-test report into a JSON-safe dictionary.
+
+    Parameters
+    ----------
+    report
+        Completed self-test report.
+
+    Returns
+    -------
+    Dict[str, Any]
+        JSON-safe report mapping.
+    """
+
+    report_dict = report.to_dict()
+
+    report_dict[
+        "schema"
+    ] = (
+        "dockanalyzer.saltbridge."
+        "self_tests"
+    )
+
+    report_dict[
+        "schema_version"
+    ] = "1.0"
+
+    report_dict[
+        "total_duration_seconds"
+    ] = sum(
+        record.duration_seconds
+        for record in report.records
+    )
+
+    report_dict[
+        "registered_test_names"
+    ] = (
+        get_salt_bridge_self_test_names()
+    )
+
+    return make_json_safe(
+        report_dict
+    )
+
+
+def serialize_salt_bridge_self_test_report(
+    report: _SelfTestReport,
+    *,
+    indent: Optional[int] = 2,
+    sort_keys: bool = True,
+) -> str:
+    """
+    Serialize the final self-test report as strict JSON.
+
+    Parameters
+    ----------
+    report
+        Completed self-test report.
+    indent
+        JSON indentation.
+    sort_keys
+        Whether dictionary keys should be sorted.
+
+    Returns
+    -------
+    str
+        JSON document.
+    """
+
+    return json.dumps(
+        salt_bridge_self_test_report_to_dict(
+            report
+        ),
+        indent=indent,
+        sort_keys=sort_keys,
+        allow_nan=False,
+    )
+
+
+# =============================================================================
+# 18.5.7. FINAL TEST EXECUTION
+# =============================================================================
+
+
+def run_self_tests(
+    *,
+    raise_on_failure: bool = False,
+    print_report: bool = True,
+    include_section_summary: bool = True,
+    include_records: bool = True,
+    include_environment: bool = False,
+    validate_registry: bool = True,
+    validate_report: bool = True,
+) -> _SelfTestReport:
+    """
+    Run the complete saltbridge.py self-test suite.
+
+    The runner executes Sections 18.1 through 18.4 in order.
+
+    Parameters
+    ----------
+    raise_on_failure
+        Whether execution should stop at the first failed test.
+    print_report
+        Whether the final report should be printed.
+    include_section_summary
+        Whether the printed report should include section summaries.
+    include_records
+        Whether the printed report should include individual test records.
+    include_environment
+        Whether the printed report should include runtime information.
+    validate_registry
+        Whether the self-test registry should be validated before execution.
+    validate_report
+        Whether the final report should be validated after execution.
+
+    Returns
+    -------
+    _SelfTestReport
+        Completed self-test report.
+
+    Raises
+    ------
+    SaltBridgeSelfTestError
+        If registry validation fails, a test fails while
+        ``raise_on_failure`` is true, or final report validation fails.
+    """
+
+    if validate_registry:
+        _validate_self_test_registry()
+
+    report = _SelfTestReport(
+        module_name="saltbridge",
+        module_version=__version__,
+        records=[],
+        started_at=(
+            _self_test_timestamp()
+        ),
+        finished_at=None,
+        metadata={
+            "environment": (
+                _collect_self_test_environment()
+            ),
+            "section_count": 4,
+            "registered_test_count": len(
+                get_salt_bridge_self_test_names()
+            ),
+            "raise_on_failure": bool(
+                raise_on_failure
+            ),
+        },
+    )
+
+    section_results: Dict[
+        str,
+        Dict[str, Any],
+    ] = {}
+
+    for (
+        section_name,
+        section_runner,
+    ) in get_salt_bridge_self_test_sections():
+        initial_record_count = (
+            report.test_count
+        )
+
+        report = section_runner(
+            report=report,
+            raise_on_failure=(
+                raise_on_failure
+            ),
+            print_report=False,
+        )
+
+        new_records = report.records[
+            initial_record_count:
+        ]
+
+        section_results[
+            section_name
+        ] = {
+            "test_count": len(
+                new_records
+            ),
+            "passed_count": sum(
+                1
+                for record in new_records
+                if record.passed
+            ),
+            "failed_count": sum(
+                1
+                for record in new_records
+                if not record.passed
+            ),
+            "duration_seconds": sum(
+                record.duration_seconds
+                for record in new_records
+            ),
+        }
+
+    report.finished_at = (
+        _self_test_timestamp()
+    )
+
+    report.metadata[
+        "sections"
+    ] = section_results
+
+    report.metadata[
+        "success"
+    ] = report.success
+
+    if validate_report:
+        _validate_final_self_test_report(
+            report
+        )
+
+    if print_report:
+        print_salt_bridge_self_test_report(
+            report,
+            include_section_summary=(
+                include_section_summary
+            ),
+            include_records=(
+                include_records
+            ),
+            include_environment=(
+                include_environment
+            ),
+        )
+
+    if (
+        raise_on_failure
+        and not report.success
+    ):
+        failed_test_names = [
+            record.name
+            for record in report.records
+            if not record.passed
+        ]
+
+        raise SaltBridgeSelfTestError(
+            "Salt-bridge self-tests failed: "
+            + ", ".join(
+                failed_test_names
+            )
+        )
+
+    return report
+
+
+def run_salt_bridge_self_tests(
+    **options: Any,
+) -> _SelfTestReport:
+    """
+    Alias for :func:`run_self_tests`.
+
+    Parameters
+    ----------
+    **options
+        Options forwarded to ``run_self_tests``.
+
+    Returns
+    -------
+    _SelfTestReport
+        Completed self-test report.
+    """
+
+    return run_self_tests(
+        **options
+    )
+
+
+# =============================================================================
+# 18.5.8. COMMAND-LINE ENTRY POINT
+# =============================================================================
+
+
+def _self_test_exit_code(
+    report: _SelfTestReport,
+) -> int:
+    """
+    Return a process exit code for a self-test report.
+
+    Parameters
+    ----------
+    report
+        Completed self-test report.
+
+    Returns
+    -------
+    int
+        Zero for success and one for failure.
+    """
+
+    return (
+        0
+        if report.success
+        else 1
+    )
+
+
+def _run_self_tests_from_command_line() -> int:
+    """
+    Run self-tests from the command line.
+
+    Returns
+    -------
+    int
+        Process exit code.
+    """
+
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="saltbridge.py",
+        description=(
+            "Run DockAnalyzer salt-bridge "
+            "module self-tests."
+        ),
+    )
+
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help=(
+            "Print only the section summary "
+            "and final status."
+        ),
+    )
+
+    parser.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help=(
+            "Stop execution at the first "
+            "failed test."
+        ),
+    )
+
+    parser.add_argument(
+        "--environment",
+        action="store_true",
+        help=(
+            "Include runtime environment "
+            "information in the report."
+        ),
+    )
+
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help=(
+            "Print the final report as JSON."
+        ),
+    )
+
+    arguments = parser.parse_args()
+
+    try:
+        report = run_self_tests(
+            raise_on_failure=(
+                arguments.fail_fast
+            ),
+            print_report=False,
+        )
+
+    except SaltBridgeSelfTestError as error:
+        print(
+            (
+                "Salt-bridge self-test "
+                f"runner error: {error}"
+            )
+        )
+
+        return 1
+
+    if arguments.json_output:
+        print(
+            serialize_salt_bridge_self_test_report(
+                report
+            )
+        )
+
+    else:
+        print_salt_bridge_self_test_report(
+            report,
+            include_section_summary=True,
+            include_records=(
+                not arguments.quiet
+            ),
+            include_environment=(
+                arguments.environment
+            ),
+        )
+
+    return _self_test_exit_code(
+        report
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(
+        _run_self_tests_from_command_line()
+    )
+
+
+
 
 
 
