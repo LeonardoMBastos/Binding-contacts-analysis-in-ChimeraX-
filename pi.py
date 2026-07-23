@@ -22089,3 +22089,11763 @@ def summarize_detected_pi_interactions(
 # -----------------------------------------------------------------------------
 
 
+# =============================================================================
+# 9. AGRUPAMENTO POR RESÍDUO, PARES MOLECULARES E HOTSPOTS
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 9.1. Tipos e constantes
+# -----------------------------------------------------------------------------
+
+PiResidueKey: TypeAlias = Tuple[
+    Optional[str],
+    Optional[str],
+    Optional[str],
+    Optional[Union[int, str]],
+]
+
+PiResiduePairKey: TypeAlias = Tuple[
+    PiResidueKey,
+    PiResidueKey,
+]
+
+
+RESIDUE_ROLE_RECEPTOR: Final[str] = "receptor"
+RESIDUE_ROLE_LIGAND: Final[str] = "ligand"
+RESIDUE_ROLE_UNKNOWN: Final[str] = "unknown"
+
+HOTSPOT_LEVEL_NONE: Final[str] = "none"
+HOTSPOT_LEVEL_LOW: Final[str] = "low"
+HOTSPOT_LEVEL_MODERATE: Final[str] = "moderate"
+HOTSPOT_LEVEL_HIGH: Final[str] = "high"
+HOTSPOT_LEVEL_CRITICAL: Final[str] = "critical"
+
+SUPPORTED_HOTSPOT_LEVELS: Final[FrozenSet[str]] = frozenset(
+    {
+        HOTSPOT_LEVEL_NONE,
+        HOTSPOT_LEVEL_LOW,
+        HOTSPOT_LEVEL_MODERATE,
+        HOTSPOT_LEVEL_HIGH,
+        HOTSPOT_LEVEL_CRITICAL,
+    }
+)
+
+DEFAULT_HOTSPOT_MINIMUM_INTERACTIONS: Final[int] = 2
+DEFAULT_HOTSPOT_MINIMUM_INTERACTION_TYPES: Final[int] = 1
+DEFAULT_HOTSPOT_MINIMUM_ATOMIC_CONTACTS: Final[int] = 1
+
+DEFAULT_HOTSPOT_LOW_SCORE: Final[float] = 1.50
+DEFAULT_HOTSPOT_MODERATE_SCORE: Final[float] = 3.00
+DEFAULT_HOTSPOT_HIGH_SCORE: Final[float] = 5.00
+DEFAULT_HOTSPOT_CRITICAL_SCORE: Final[float] = 8.00
+
+DEFAULT_INTERACTION_COUNT_WEIGHT: Final[float] = 1.00
+DEFAULT_INTERACTION_TYPE_WEIGHT: Final[float] = 0.50
+DEFAULT_ATOMIC_CONTACT_WEIGHT: Final[float] = 0.10
+DEFAULT_GEOMETRY_SCORE_WEIGHT: Final[float] = 0.50
+DEFAULT_STRENGTH_SCORE_WEIGHT: Final[float] = 1.00
+DEFAULT_TOTAL_SCORE_WEIGHT: Final[float] = 1.00
+
+DEFAULT_HOTSPOT_DISTANCE_WEIGHT: Final[float] = 0.25
+DEFAULT_HOTSPOT_INVALID_INTERACTION_PENALTY: Final[float] = 0.50
+
+DEFAULT_RESIDUE_PAIR_DELIMITER: Final[str] = " <-> "
+
+
+# -----------------------------------------------------------------------------
+# 9.2. Configuração de agrupamento e hotspots
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PiGroupingConfig:
+    """
+    Configuration used for residue grouping and hotspot identification.
+    """
+
+    include_invalid_interactions: bool = False
+    include_unknown_residues: bool = True
+    include_ligand_residue_summaries: bool = True
+    include_receptor_residue_summaries: bool = True
+
+    minimum_hotspot_interactions: int = (
+        DEFAULT_HOTSPOT_MINIMUM_INTERACTIONS
+    )
+    minimum_hotspot_interaction_types: int = (
+        DEFAULT_HOTSPOT_MINIMUM_INTERACTION_TYPES
+    )
+    minimum_hotspot_atomic_contacts: int = (
+        DEFAULT_HOTSPOT_MINIMUM_ATOMIC_CONTACTS
+    )
+
+    interaction_count_weight: float = (
+        DEFAULT_INTERACTION_COUNT_WEIGHT
+    )
+    interaction_type_weight: float = (
+        DEFAULT_INTERACTION_TYPE_WEIGHT
+    )
+    atomic_contact_weight: float = (
+        DEFAULT_ATOMIC_CONTACT_WEIGHT
+    )
+    geometry_score_weight: float = (
+        DEFAULT_GEOMETRY_SCORE_WEIGHT
+    )
+    strength_score_weight: float = (
+        DEFAULT_STRENGTH_SCORE_WEIGHT
+    )
+    total_score_weight: float = (
+        DEFAULT_TOTAL_SCORE_WEIGHT
+    )
+    distance_weight: float = (
+        DEFAULT_HOTSPOT_DISTANCE_WEIGHT
+    )
+    invalid_interaction_penalty: float = (
+        DEFAULT_HOTSPOT_INVALID_INTERACTION_PENALTY
+    )
+
+    low_hotspot_score: float = DEFAULT_HOTSPOT_LOW_SCORE
+    moderate_hotspot_score: float = DEFAULT_HOTSPOT_MODERATE_SCORE
+    high_hotspot_score: float = DEFAULT_HOTSPOT_HIGH_SCORE
+    critical_hotspot_score: float = DEFAULT_HOTSPOT_CRITICAL_SCORE
+
+    def __post_init__(self) -> None:
+        integer_fields = (
+            "minimum_hotspot_interactions",
+            "minimum_hotspot_interaction_types",
+            "minimum_hotspot_atomic_contacts",
+        )
+
+        for field_name in integer_fields:
+            value = getattr(self, field_name)
+
+            if isinstance(value, bool):
+                raise TypeError(
+                    f"{field_name} must be an integer."
+                )
+
+            normalized = int(value)
+
+            if normalized < 0:
+                raise ValueError(
+                    f"{field_name} must be non-negative."
+                )
+
+            object.__setattr__(
+                self,
+                field_name,
+                normalized,
+            )
+
+        float_fields = (
+            "interaction_count_weight",
+            "interaction_type_weight",
+            "atomic_contact_weight",
+            "geometry_score_weight",
+            "strength_score_weight",
+            "total_score_weight",
+            "distance_weight",
+            "invalid_interaction_penalty",
+            "low_hotspot_score",
+            "moderate_hotspot_score",
+            "high_hotspot_score",
+            "critical_hotspot_score",
+        )
+
+        for field_name in float_fields:
+            object.__setattr__(
+                self,
+                field_name,
+                _coerce_non_negative_float(
+                    getattr(self, field_name),
+                    field_name=(
+                        f"PiGroupingConfig.{field_name}"
+                    ),
+                ),
+            )
+
+        if not (
+            self.low_hotspot_score
+            <= self.moderate_hotspot_score
+            <= self.high_hotspot_score
+            <= self.critical_hotspot_score
+        ):
+            raise ValueError(
+                "Hotspot score thresholds must be monotonically increasing."
+            )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Convert the configuration to a serializable dictionary.
+        """
+
+        return {
+            field_definition.name: getattr(
+                self,
+                field_definition.name,
+            )
+            for field_definition in fields(self)
+        }
+
+
+def create_default_pi_grouping_config() -> PiGroupingConfig:
+    """
+    Create the default residue-grouping configuration.
+    """
+
+    return PiGroupingConfig()
+
+
+# -----------------------------------------------------------------------------
+# 9.3. Representação normalizada de resíduos
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PiResidueReference:
+    """
+    Immutable normalized representation of a residue participant.
+    """
+
+    model_id: Optional[str]
+    participant_type: str
+    chain_id: Optional[str]
+    residue_name: Optional[str]
+    residue_number: Optional[Union[int, str]]
+
+    residue_id: str
+    display_name: str
+
+    def __post_init__(self) -> None:
+        participant_type = str(
+            self.participant_type
+            or RESIDUE_ROLE_UNKNOWN
+        ).strip().lower()
+
+        if not participant_type:
+            participant_type = RESIDUE_ROLE_UNKNOWN
+
+        object.__setattr__(
+            self,
+            "participant_type",
+            participant_type,
+        )
+
+        residue_id = str(
+            self.residue_id
+            or ""
+        ).strip()
+
+        display_name = str(
+            self.display_name
+            or residue_id
+            or "UNK"
+        ).strip()
+
+        object.__setattr__(
+            self,
+            "residue_id",
+            residue_id or "unknown-residue",
+        )
+
+        object.__setattr__(
+            self,
+            "display_name",
+            display_name,
+        )
+
+    @property
+    def key(self) -> PiResidueKey:
+        """
+        Return the canonical residue key.
+        """
+
+        return (
+            self.model_id,
+            self.participant_type,
+            self.chain_id,
+            self.residue_number,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Convert the reference into a serializable dictionary.
+        """
+
+        return {
+            "model_id": self.model_id,
+            "participant_type": self.participant_type,
+            "chain_id": self.chain_id,
+            "residue_name": self.residue_name,
+            "residue_number": self.residue_number,
+            "residue_id": self.residue_id,
+            "display_name": self.display_name,
+        }
+
+
+# -----------------------------------------------------------------------------
+# 9.4. Representação de pares de resíduos
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiResiduePairSummary:
+    """
+    Aggregated summary for a receptor–ligand residue pair.
+    """
+
+    residue_1: PiResidueReference
+    residue_2: PiResidueReference
+
+    interactions: List[PiInteraction] = field(
+        default_factory=list
+    )
+    interaction_ids: List[str] = field(
+        default_factory=list
+    )
+
+    interaction_type_distribution: Dict[str, int] = field(
+        default_factory=dict
+    )
+    geometry_distribution: Dict[str, int] = field(
+        default_factory=dict
+    )
+    strength_distribution: Dict[str, int] = field(
+        default_factory=dict
+    )
+
+    total_atomic_contacts: int = 0
+    minimum_distance: Optional[float] = None
+    mean_distance: Optional[float] = None
+    maximum_distance: Optional[float] = None
+
+    geometry_score: float = 0.0
+    strength_score: float = 0.0
+    total_score: float = 0.0
+
+    valid_interaction_count: int = 0
+    invalid_interaction_count: int = 0
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    @property
+    def pair_id(self) -> str:
+        """
+        Return a stable identifier for the residue pair.
+        """
+
+        first, second = canonicalize_residue_pair(
+            self.residue_1,
+            self.residue_2,
+        )
+
+        return (
+            f"{first.residue_id}"
+            f"{DEFAULT_RESIDUE_PAIR_DELIMITER}"
+            f"{second.residue_id}"
+        )
+
+    @property
+    def interaction_count(self) -> int:
+        """
+        Return the number of interactions in the pair.
+        """
+
+        return len(self.interactions)
+
+    @property
+    def interaction_type_count(self) -> int:
+        """
+        Return the number of distinct interaction types.
+        """
+
+        return len(
+            self.interaction_type_distribution
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_interactions: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Convert the pair summary into a serializable dictionary.
+        """
+
+        data: Dict[str, Any] = {
+            "pair_id": self.pair_id,
+            "residue_1": self.residue_1.to_dict(),
+            "residue_2": self.residue_2.to_dict(),
+            "interaction_count": self.interaction_count,
+            "interaction_ids": list(
+                self.interaction_ids
+            ),
+            "interaction_type_count": (
+                self.interaction_type_count
+            ),
+            "interaction_type_distribution": dict(
+                self.interaction_type_distribution
+            ),
+            "geometry_distribution": dict(
+                self.geometry_distribution
+            ),
+            "strength_distribution": dict(
+                self.strength_distribution
+            ),
+            "total_atomic_contacts": (
+                self.total_atomic_contacts
+            ),
+            "minimum_distance": self.minimum_distance,
+            "mean_distance": self.mean_distance,
+            "maximum_distance": self.maximum_distance,
+            "geometry_score": self.geometry_score,
+            "strength_score": self.strength_score,
+            "total_score": self.total_score,
+            "valid_interaction_count": (
+                self.valid_interaction_count
+            ),
+            "invalid_interaction_count": (
+                self.invalid_interaction_count
+            ),
+            "metadata": dict(self.metadata),
+        }
+
+        if include_interactions:
+            data["interactions"] = [
+                interaction.to_dict()
+                if hasattr(interaction, "to_dict")
+                else {
+                    "interaction_id": (
+                        interaction.interaction_id
+                    ),
+                    "interaction_type": (
+                        interaction.interaction_type
+                    ),
+                }
+                for interaction in self.interactions
+            ]
+
+        return data
+
+
+# -----------------------------------------------------------------------------
+# 9.5. Representação de hotspots
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiHotspot:
+    """
+    Residue-level π-interaction hotspot.
+    """
+
+    residue: PiResidueReference
+
+    interactions: List[PiInteraction] = field(
+        default_factory=list
+    )
+    interaction_ids: List[str] = field(
+        default_factory=list
+    )
+    partner_residue_ids: List[str] = field(
+        default_factory=list
+    )
+
+    interaction_type_distribution: Dict[str, int] = field(
+        default_factory=dict
+    )
+    geometry_distribution: Dict[str, int] = field(
+        default_factory=dict
+    )
+    strength_distribution: Dict[str, int] = field(
+        default_factory=dict
+    )
+
+    total_atomic_contacts: int = 0
+    valid_interaction_count: int = 0
+    invalid_interaction_count: int = 0
+
+    minimum_distance: Optional[float] = None
+    mean_distance: Optional[float] = None
+    maximum_distance: Optional[float] = None
+
+    geometry_score: float = 0.0
+    strength_score: float = 0.0
+    interaction_score: float = 0.0
+    hotspot_score: float = 0.0
+
+    hotspot_level: str = HOTSPOT_LEVEL_NONE
+    rank: Optional[int] = None
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    def __post_init__(self) -> None:
+        self.hotspot_level = str(
+            self.hotspot_level
+        ).strip().lower()
+
+        if (
+            self.hotspot_level
+            not in SUPPORTED_HOTSPOT_LEVELS
+        ):
+            raise ValueError(
+                f"Unsupported hotspot level: "
+                f"{self.hotspot_level!r}."
+            )
+
+    @property
+    def interaction_count(self) -> int:
+        """
+        Return the number of interactions assigned to the hotspot.
+        """
+
+        return len(self.interactions)
+
+    @property
+    def partner_count(self) -> int:
+        """
+        Return the number of unique partner residues.
+        """
+
+        return len(
+            set(self.partner_residue_ids)
+        )
+
+    @property
+    def interaction_type_count(self) -> int:
+        """
+        Return the number of distinct interaction types.
+        """
+
+        return len(
+            self.interaction_type_distribution
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_interactions: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Convert the hotspot to a serializable dictionary.
+        """
+
+        data: Dict[str, Any] = {
+            "residue": self.residue.to_dict(),
+            "interaction_count": self.interaction_count,
+            "interaction_ids": list(
+                self.interaction_ids
+            ),
+            "partner_count": self.partner_count,
+            "partner_residue_ids": list(
+                self.partner_residue_ids
+            ),
+            "interaction_type_count": (
+                self.interaction_type_count
+            ),
+            "interaction_type_distribution": dict(
+                self.interaction_type_distribution
+            ),
+            "geometry_distribution": dict(
+                self.geometry_distribution
+            ),
+            "strength_distribution": dict(
+                self.strength_distribution
+            ),
+            "total_atomic_contacts": (
+                self.total_atomic_contacts
+            ),
+            "valid_interaction_count": (
+                self.valid_interaction_count
+            ),
+            "invalid_interaction_count": (
+                self.invalid_interaction_count
+            ),
+            "minimum_distance": self.minimum_distance,
+            "mean_distance": self.mean_distance,
+            "maximum_distance": self.maximum_distance,
+            "geometry_score": self.geometry_score,
+            "strength_score": self.strength_score,
+            "interaction_score": self.interaction_score,
+            "hotspot_score": self.hotspot_score,
+            "hotspot_level": self.hotspot_level,
+            "rank": self.rank,
+            "metadata": dict(self.metadata),
+        }
+
+        if include_interactions:
+            data["interactions"] = [
+                interaction.to_dict()
+                if hasattr(interaction, "to_dict")
+                else {
+                    "interaction_id": (
+                        interaction.interaction_id
+                    ),
+                    "interaction_type": (
+                        interaction.interaction_type
+                    ),
+                }
+                for interaction in self.interactions
+            ]
+
+        return data
+
+
+# -----------------------------------------------------------------------------
+# 9.6. Resultado integrado de agrupamento
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiGroupingResult:
+    """
+    Integrated result of residue grouping and hotspot detection.
+    """
+
+    interactions: List[PiInteraction] = field(
+        default_factory=list
+    )
+
+    residue_summaries: List[PiResidueSummary] = field(
+        default_factory=list
+    )
+    receptor_residue_summaries: List[
+        PiResidueSummary
+    ] = field(
+        default_factory=list
+    )
+    ligand_residue_summaries: List[
+        PiResidueSummary
+    ] = field(
+        default_factory=list
+    )
+
+    residue_pairs: List[PiResiduePairSummary] = field(
+        default_factory=list
+    )
+    hotspots: List[PiHotspot] = field(
+        default_factory=list
+    )
+
+    interaction_groups: Dict[
+        str,
+        List[PiInteraction],
+    ] = field(
+        default_factory=dict
+    )
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    @property
+    def total_residues(self) -> int:
+        return len(self.residue_summaries)
+
+    @property
+    def total_residue_pairs(self) -> int:
+        return len(self.residue_pairs)
+
+    @property
+    def total_hotspots(self) -> int:
+        return len(self.hotspots)
+
+    def to_dict(
+        self,
+        *,
+        include_interactions: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Convert the grouping result into a serializable dictionary.
+        """
+
+        return {
+            "total_interactions": len(
+                self.interactions
+            ),
+            "total_residues": self.total_residues,
+            "total_receptor_residues": len(
+                self.receptor_residue_summaries
+            ),
+            "total_ligand_residues": len(
+                self.ligand_residue_summaries
+            ),
+            "total_residue_pairs": (
+                self.total_residue_pairs
+            ),
+            "total_hotspots": self.total_hotspots,
+            "residue_summaries": [
+                residue_summary.to_dict()
+                if hasattr(
+                    residue_summary,
+                    "to_dict",
+                )
+                else dict(
+                    residue_summary.__dict__
+                )
+                for residue_summary
+                in self.residue_summaries
+            ],
+            "residue_pairs": [
+                residue_pair.to_dict(
+                    include_interactions=(
+                        include_interactions
+                    )
+                )
+                for residue_pair in self.residue_pairs
+            ],
+            "hotspots": [
+                hotspot.to_dict(
+                    include_interactions=(
+                        include_interactions
+                    )
+                )
+                for hotspot in self.hotspots
+            ],
+            "interaction_groups": {
+                group_name: [
+                    interaction.interaction_id
+                    for interaction in interactions
+                ]
+                for group_name, interactions
+                in self.interaction_groups.items()
+            },
+            "metadata": dict(self.metadata),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 9.7. Normalização de identificadores de resíduos
+# -----------------------------------------------------------------------------
+
+def normalize_residue_role(
+    value: Any,
+    *,
+    default: str = RESIDUE_ROLE_UNKNOWN,
+) -> str:
+    """
+    Normalize a residue participant role.
+    """
+
+    if value is None:
+        return default
+
+    normalized = str(
+        value
+    ).strip().lower()
+
+    aliases = {
+        "protein": RESIDUE_ROLE_RECEPTOR,
+        "target": RESIDUE_ROLE_RECEPTOR,
+        "receptor": RESIDUE_ROLE_RECEPTOR,
+        "host": RESIDUE_ROLE_RECEPTOR,
+        "ligand": RESIDUE_ROLE_LIGAND,
+        "guest": RESIDUE_ROLE_LIGAND,
+        "compound": RESIDUE_ROLE_LIGAND,
+        "small_molecule": RESIDUE_ROLE_LIGAND,
+        "unknown": RESIDUE_ROLE_UNKNOWN,
+        "none": RESIDUE_ROLE_UNKNOWN,
+    }
+
+    return aliases.get(
+        normalized,
+        normalized or default,
+    )
+
+
+def normalize_residue_number(
+    value: Any,
+) -> Optional[Union[int, str]]:
+    """
+    Normalize a residue number while preserving insertion codes.
+    """
+
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return str(value)
+
+    if isinstance(value, int):
+        return value
+
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+
+        if value.is_integer():
+            return int(value)
+
+        return str(value)
+
+    normalized = str(
+        value
+    ).strip()
+
+    if not normalized:
+        return None
+
+    try:
+        return int(normalized)
+
+    except ValueError:
+        return normalized
+
+
+def build_residue_identifier(
+    *,
+    model_id: Optional[str],
+    participant_type: Optional[str],
+    chain_id: Optional[str],
+    residue_name: Optional[str],
+    residue_number: Optional[Union[int, str]],
+) -> str:
+    """
+    Build a stable residue identifier.
+    """
+
+    participant = normalize_residue_role(
+        participant_type
+    )
+
+    normalized_model = str(
+        model_id or "model"
+    ).strip()
+
+    normalized_chain = str(
+        chain_id or "-"
+    ).strip()
+
+    normalized_name = str(
+        residue_name or "UNK"
+    ).strip().upper()
+
+    normalized_number = (
+        str(residue_number)
+        if residue_number is not None
+        else "?"
+    )
+
+    return (
+        f"{normalized_model}:"
+        f"{participant}:"
+        f"{normalized_chain}:"
+        f"{normalized_name}:"
+        f"{normalized_number}"
+    )
+
+
+def build_residue_display_name(
+    *,
+    participant_type: Optional[str],
+    chain_id: Optional[str],
+    residue_name: Optional[str],
+    residue_number: Optional[Union[int, str]],
+) -> str:
+    """
+    Build a compact human-readable residue label.
+    """
+
+    participant = normalize_residue_role(
+        participant_type
+    )
+
+    normalized_chain = str(
+        chain_id or "-"
+    ).strip()
+
+    normalized_name = str(
+        residue_name or "UNK"
+    ).strip().upper()
+
+    normalized_number = (
+        str(residue_number)
+        if residue_number is not None
+        else "?"
+    )
+
+    return (
+        f"{participant}:"
+        f"{normalized_chain}/"
+        f"{normalized_name}{normalized_number}"
+    )
+
+
+def create_residue_reference(
+    *,
+    model_id: Optional[str],
+    participant_type: Optional[str],
+    chain_id: Optional[str],
+    residue_name: Optional[str],
+    residue_number: Optional[Union[int, str]],
+) -> PiResidueReference:
+    """
+    Create a normalized residue reference.
+    """
+
+    normalized_number = normalize_residue_number(
+        residue_number
+    )
+
+    residue_id = build_residue_identifier(
+        model_id=model_id,
+        participant_type=participant_type,
+        chain_id=chain_id,
+        residue_name=residue_name,
+        residue_number=normalized_number,
+    )
+
+    display_name = build_residue_display_name(
+        participant_type=participant_type,
+        chain_id=chain_id,
+        residue_name=residue_name,
+        residue_number=normalized_number,
+    )
+
+    return PiResidueReference(
+        model_id=(
+            str(model_id)
+            if model_id is not None
+            else None
+        ),
+        participant_type=normalize_residue_role(
+            participant_type
+        ),
+        chain_id=(
+            str(chain_id)
+            if chain_id is not None
+            else None
+        ),
+        residue_name=(
+            str(residue_name).strip().upper()
+            if residue_name is not None
+            else None
+        ),
+        residue_number=normalized_number,
+        residue_id=residue_id,
+        display_name=display_name,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 9.8. Extração de resíduos dos participantes das interações
+# -----------------------------------------------------------------------------
+
+def residue_reference_from_ring(
+    ring: Optional[PiRing],
+) -> Optional[PiResidueReference]:
+    """
+    Create a residue reference from an aromatic ring.
+    """
+
+    if ring is None:
+        return None
+
+    return create_residue_reference(
+        model_id=ring.model_id,
+        participant_type=ring.participant_type,
+        chain_id=ring.chain_id,
+        residue_name=ring.residue_name,
+        residue_number=ring.residue_number,
+    )
+
+
+def residue_reference_from_charged_group(
+    group: Optional[PiChargedGroup],
+) -> Optional[PiResidueReference]:
+    """
+    Create a residue reference from a charged group.
+    """
+
+    if group is None:
+        return None
+
+    return create_residue_reference(
+        model_id=group.model_id,
+        participant_type=group.participant_type,
+        chain_id=group.chain_id,
+        residue_name=group.residue_name,
+        residue_number=group.residue_number,
+    )
+
+
+def residue_reference_from_amide_group(
+    group: Optional[PiAmideGroup],
+) -> Optional[PiResidueReference]:
+    """
+    Create a residue reference from an amide group.
+    """
+
+    if group is None:
+        return None
+
+    return create_residue_reference(
+        model_id=group.model_id,
+        participant_type=group.participant_type,
+        chain_id=group.chain_id,
+        residue_name=group.residue_name,
+        residue_number=group.residue_number,
+    )
+
+
+def get_pi_interaction_residue_references(
+    interaction: PiInteraction,
+) -> Tuple[
+    Optional[PiResidueReference],
+    Optional[PiResidueReference],
+]:
+    """
+    Return the two residue participants of an interaction.
+    """
+
+    if not isinstance(
+        interaction,
+        PiInteraction,
+    ):
+        raise TypeError(
+            "interaction must be a PiInteraction."
+        )
+
+    interaction_type = (
+        _validate_interaction_type(
+            interaction.interaction_type
+        )
+    )
+
+    if interaction_type == PI_PI:
+        return (
+            residue_reference_from_ring(
+                interaction.ring_1
+            ),
+            residue_reference_from_ring(
+                interaction.ring_2
+            ),
+        )
+
+    ring_reference = residue_reference_from_ring(
+        interaction.ring_1
+    )
+
+    if interaction_type in {
+        CATION_PI,
+        ANION_PI,
+    }:
+        other_reference = (
+            residue_reference_from_charged_group(
+                interaction.charged_group
+            )
+        )
+
+    elif interaction_type == AMIDE_PI:
+        other_reference = (
+            residue_reference_from_amide_group(
+                interaction.amide_group
+            )
+        )
+
+    else:
+        other_reference = None
+
+    return (
+        ring_reference,
+        other_reference,
+    )
+
+
+def get_interaction_receptor_ligand_residues(
+    interaction: PiInteraction,
+) -> Tuple[
+    Optional[PiResidueReference],
+    Optional[PiResidueReference],
+]:
+    """
+    Return interaction residues ordered as receptor, ligand.
+    """
+
+    residue_1, residue_2 = (
+        get_pi_interaction_residue_references(
+            interaction
+        )
+    )
+
+    if residue_1 is None or residue_2 is None:
+        return residue_1, residue_2
+
+    if (
+        residue_1.participant_type
+        == RESIDUE_ROLE_RECEPTOR
+        and residue_2.participant_type
+        == RESIDUE_ROLE_LIGAND
+    ):
+        return residue_1, residue_2
+
+    if (
+        residue_2.participant_type
+        == RESIDUE_ROLE_RECEPTOR
+        and residue_1.participant_type
+        == RESIDUE_ROLE_LIGAND
+    ):
+        return residue_2, residue_1
+
+    first, second = canonicalize_residue_pair(
+        residue_1,
+        residue_2,
+    )
+
+    return first, second
+
+
+# -----------------------------------------------------------------------------
+# 9.9. Ordenação canônica de resíduos e pares
+# -----------------------------------------------------------------------------
+
+def residue_reference_sort_key(
+    residue: PiResidueReference,
+) -> Tuple[Any, ...]:
+    """
+    Return a deterministic residue sorting key.
+    """
+
+    role_priority = {
+        RESIDUE_ROLE_RECEPTOR: 0,
+        RESIDUE_ROLE_LIGAND: 1,
+        RESIDUE_ROLE_UNKNOWN: 2,
+    }.get(
+        residue.participant_type,
+        3,
+    )
+
+    residue_number = residue.residue_number
+
+    if isinstance(residue_number, int):
+        number_key: Tuple[int, Any] = (
+            0,
+            residue_number,
+        )
+
+    else:
+        number_key = (
+            1,
+            str(residue_number or ""),
+        )
+
+    return (
+        role_priority,
+        residue.model_id or "",
+        residue.chain_id or "",
+        number_key,
+        residue.residue_name or "",
+        residue.residue_id,
+    )
+
+
+def canonicalize_residue_pair(
+    residue_1: PiResidueReference,
+    residue_2: PiResidueReference,
+) -> Tuple[
+    PiResidueReference,
+    PiResidueReference,
+]:
+    """
+    Return a deterministic ordering for two residue references.
+    """
+
+    if (
+        residue_reference_sort_key(
+            residue_1
+        )
+        <= residue_reference_sort_key(
+            residue_2
+        )
+    ):
+        return residue_1, residue_2
+
+    return residue_2, residue_1
+
+
+def get_residue_pair_key(
+    residue_1: PiResidueReference,
+    residue_2: PiResidueReference,
+) -> PiResiduePairKey:
+    """
+    Return a canonical residue-pair key.
+    """
+
+    first, second = canonicalize_residue_pair(
+        residue_1,
+        residue_2,
+    )
+
+    return (
+        first.key,
+        second.key,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 9.10. Utilitários numéricos de agregação
+# -----------------------------------------------------------------------------
+
+def _safe_interaction_numeric_value(
+    interaction: PiInteraction,
+    attribute_name: str,
+    *,
+    default: float = 0.0,
+) -> float:
+    """
+    Safely read a numeric interaction attribute.
+    """
+
+    value = getattr(
+        interaction,
+        attribute_name,
+        None,
+    )
+
+    normalized = _normalize_optional_numeric(
+        value
+    )
+
+    if normalized is None:
+        return float(default)
+
+    return normalized
+
+
+def _collect_interaction_distances(
+    interactions: Iterable[PiInteraction],
+) -> List[float]:
+    """
+    Collect representative interaction distances.
+    """
+
+    distances: List[float] = []
+
+    for interaction in interactions:
+        distance = (
+            interaction.minimum_atomic_distance
+        )
+
+        if distance is None:
+            distance = (
+                interaction.centroid_distance
+            )
+
+        normalized = _normalize_optional_numeric(
+            distance
+        )
+
+        if normalized is not None:
+            distances.append(normalized)
+
+    return distances
+
+
+def _summarize_numeric_sequence(
+    values: Iterable[Number],
+) -> Dict[str, Optional[float]]:
+    """
+    Summarize a sequence of numeric values.
+    """
+
+    normalized_values = [
+        float(value)
+        for value in values
+        if (
+            not isinstance(value, bool)
+            and isinstance(
+                value,
+                (int, float),
+            )
+            and math.isfinite(float(value))
+        )
+    ]
+
+    if not normalized_values:
+        return {
+            "minimum": None,
+            "mean": None,
+            "maximum": None,
+            "sum": 0.0,
+            "count": 0,
+        }
+
+    return {
+        "minimum": min(normalized_values),
+        "mean": (
+            sum(normalized_values)
+            / len(normalized_values)
+        ),
+        "maximum": max(normalized_values),
+        "sum": sum(normalized_values),
+        "count": len(normalized_values),
+    }
+
+
+def calculate_interaction_score_sum(
+    interactions: Iterable[PiInteraction],
+    attribute_name: str,
+) -> float:
+    """
+    Sum a numeric score attribute over interactions.
+    """
+
+    return float(
+        sum(
+            _safe_interaction_numeric_value(
+                interaction,
+                attribute_name,
+            )
+            for interaction in interactions
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 9.11. Indexação das interações por resíduo
+# -----------------------------------------------------------------------------
+
+def index_pi_interactions_by_residue(
+    interactions: Iterable[PiInteraction],
+    *,
+    include_invalid: bool = False,
+    include_unknown_residues: bool = True,
+) -> Dict[
+    PiResidueKey,
+    Tuple[
+        PiResidueReference,
+        List[PiInteraction],
+    ],
+]:
+    """
+    Index interactions by every residue participant.
+    """
+
+    index: Dict[
+        PiResidueKey,
+        Tuple[
+            PiResidueReference,
+            List[PiInteraction],
+        ],
+    ] = {}
+
+    for interaction in interactions:
+        if (
+            not include_invalid
+            and not interaction.valid
+        ):
+            continue
+
+        residue_references = (
+            get_pi_interaction_residue_references(
+                interaction
+            )
+        )
+
+        seen_keys: Set[
+            PiResidueKey
+        ] = set()
+
+        for residue in residue_references:
+            if residue is None:
+                continue
+
+            if (
+                not include_unknown_residues
+                and residue.participant_type
+                == RESIDUE_ROLE_UNKNOWN
+            ):
+                continue
+
+            if residue.key in seen_keys:
+                continue
+
+            seen_keys.add(
+                residue.key
+            )
+
+            existing = index.get(
+                residue.key
+            )
+
+            if existing is None:
+                index[residue.key] = (
+                    residue,
+                    [interaction],
+                )
+
+            else:
+                existing[1].append(
+                    interaction
+                )
+
+    return index
+
+
+# -----------------------------------------------------------------------------
+# 9.12. Indexação por pares de resíduos
+# -----------------------------------------------------------------------------
+
+def index_pi_interactions_by_residue_pair(
+    interactions: Iterable[PiInteraction],
+    *,
+    include_invalid: bool = False,
+    require_complete_pair: bool = True,
+) -> Dict[
+    PiResiduePairKey,
+    Tuple[
+        PiResidueReference,
+        PiResidueReference,
+        List[PiInteraction],
+    ],
+]:
+    """
+    Index interactions by residue pair.
+    """
+
+    index: Dict[
+        PiResiduePairKey,
+        Tuple[
+            PiResidueReference,
+            PiResidueReference,
+            List[PiInteraction],
+        ],
+    ] = {}
+
+    for interaction in interactions:
+        if (
+            not include_invalid
+            and not interaction.valid
+        ):
+            continue
+
+        residue_1, residue_2 = (
+            get_pi_interaction_residue_references(
+                interaction
+            )
+        )
+
+        if (
+            residue_1 is None
+            or residue_2 is None
+        ):
+            if require_complete_pair:
+                continue
+
+            else:
+                continue
+
+        first, second = canonicalize_residue_pair(
+            residue_1,
+            residue_2,
+        )
+
+        pair_key = get_residue_pair_key(
+            first,
+            second,
+        )
+
+        existing = index.get(
+            pair_key
+        )
+
+        if existing is None:
+            index[pair_key] = (
+                first,
+                second,
+                [interaction],
+            )
+
+        else:
+            existing[2].append(
+                interaction
+            )
+
+    return index
+
+
+# -----------------------------------------------------------------------------
+# 9.13. Determinação do parceiro de um resíduo
+# -----------------------------------------------------------------------------
+
+def get_partner_residue_for_interaction(
+    interaction: PiInteraction,
+    residue: PiResidueReference,
+) -> Optional[PiResidueReference]:
+    """
+    Return the residue opposite to ``residue`` in an interaction.
+    """
+
+    residue_1, residue_2 = (
+        get_pi_interaction_residue_references(
+            interaction
+        )
+    )
+
+    if residue_1 is None or residue_2 is None:
+        return None
+
+    if residue_1.key == residue.key:
+        return residue_2
+
+    if residue_2.key == residue.key:
+        return residue_1
+
+    return None
+
+
+# -----------------------------------------------------------------------------
+# 9.14. Construção de PiResidueSummary
+# -----------------------------------------------------------------------------
+
+def _set_supported_attribute(
+    target: Any,
+    attribute_name: str,
+    value: Any,
+) -> None:
+    """
+    Set an attribute only when supported by the target object.
+
+    This helper keeps the grouping layer compatible with dataclass revisions
+    that may expose a subset of the aggregated fields.
+    """
+
+    if hasattr(
+        target,
+        attribute_name,
+    ):
+        setattr(
+            target,
+            attribute_name,
+            value,
+        )
+
+
+def _create_pi_residue_summary_instance(
+    residue: PiResidueReference,
+    interactions: Sequence[PiInteraction],
+) -> PiResidueSummary:
+    """
+    Instantiate ``PiResidueSummary`` using supported constructor fields.
+    """
+
+    candidate_values: Dict[str, Any] = {
+        "model_id": residue.model_id,
+        "participant_type": (
+            residue.participant_type
+        ),
+        "chain_id": residue.chain_id,
+        "residue_name": residue.residue_name,
+        "residue_number": residue.residue_number,
+        "residue_id": residue.residue_id,
+        "display_name": residue.display_name,
+        "interactions": list(interactions),
+        "interaction_ids": [
+            interaction.interaction_id
+            for interaction in interactions
+        ],
+    }
+
+    try:
+        field_names = {
+            field_definition.name
+            for field_definition in fields(
+                PiResidueSummary
+            )
+        }
+
+    except TypeError:
+        field_names = set(
+            candidate_values
+        )
+
+    constructor_values = {
+        key: value
+        for key, value in candidate_values.items()
+        if key in field_names
+    }
+
+    return PiResidueSummary(
+        **constructor_values
+    )
+
+
+def build_pi_residue_summary(
+    residue: PiResidueReference,
+    interactions: Iterable[PiInteraction],
+) -> PiResidueSummary:
+    """
+    Build a complete residue-level summary.
+    """
+
+    interaction_list = list(
+        interactions
+    )
+
+    interaction_ids = [
+        interaction.interaction_id
+        for interaction in interaction_list
+    ]
+
+    interaction_type_distribution = Counter(
+        interaction.interaction_type
+        for interaction in interaction_list
+    )
+
+    geometry_distribution = Counter(
+        interaction.geometry_class
+        or "unclassified"
+        for interaction in interaction_list
+    )
+
+    strength_distribution = Counter(
+        interaction.strength_class
+        or "unclassified"
+        for interaction in interaction_list
+    )
+
+    partner_residues = [
+        partner
+        for interaction in interaction_list
+        if (
+            partner := get_partner_residue_for_interaction(
+                interaction,
+                residue,
+            )
+        ) is not None
+    ]
+
+    partner_ids = sorted(
+        {
+            partner.residue_id
+            for partner in partner_residues
+        }
+    )
+
+    distances = _collect_interaction_distances(
+        interaction_list
+    )
+
+    distance_summary = (
+        _summarize_numeric_sequence(
+            distances
+        )
+    )
+
+    total_atomic_contacts = sum(
+        len(interaction.atomic_contacts)
+        for interaction in interaction_list
+    )
+
+    geometry_score = (
+        calculate_interaction_score_sum(
+            interaction_list,
+            "geometry_score",
+        )
+    )
+
+    strength_score = (
+        calculate_interaction_score_sum(
+            interaction_list,
+            "strength_score",
+        )
+    )
+
+    total_score = (
+        calculate_interaction_score_sum(
+            interaction_list,
+            "total_score",
+        )
+    )
+
+    summary = (
+        _create_pi_residue_summary_instance(
+            residue,
+            interaction_list,
+        )
+    )
+
+    attributes = {
+        "model_id": residue.model_id,
+        "participant_type": (
+            residue.participant_type
+        ),
+        "chain_id": residue.chain_id,
+        "residue_name": residue.residue_name,
+        "residue_number": residue.residue_number,
+        "residue_id": residue.residue_id,
+        "display_name": residue.display_name,
+        "interactions": interaction_list,
+        "interaction_ids": interaction_ids,
+        "interaction_count": len(
+            interaction_list
+        ),
+        "valid_interaction_count": sum(
+            1
+            for interaction in interaction_list
+            if interaction.valid
+        ),
+        "invalid_interaction_count": sum(
+            1
+            for interaction in interaction_list
+            if not interaction.valid
+        ),
+        "interaction_type_distribution": dict(
+            interaction_type_distribution
+        ),
+        "geometry_distribution": dict(
+            geometry_distribution
+        ),
+        "strength_distribution": dict(
+            strength_distribution
+        ),
+        "partner_residue_ids": partner_ids,
+        "partner_count": len(partner_ids),
+        "total_atomic_contacts": (
+            total_atomic_contacts
+        ),
+        "minimum_distance": (
+            distance_summary["minimum"]
+        ),
+        "mean_distance": (
+            distance_summary["mean"]
+        ),
+        "maximum_distance": (
+            distance_summary["maximum"]
+        ),
+        "geometry_score": geometry_score,
+        "strength_score": strength_score,
+        "total_score": total_score,
+    }
+
+    for attribute_name, value in attributes.items():
+        _set_supported_attribute(
+            summary,
+            attribute_name,
+            value,
+        )
+
+    metadata = getattr(
+        summary,
+        "metadata",
+        None,
+    )
+
+    if isinstance(metadata, MutableMapping):
+        metadata.update(
+            {
+                "residue_reference": (
+                    residue.to_dict()
+                ),
+                "partner_residue_ids": (
+                    partner_ids
+                ),
+                "distance_summary": (
+                    distance_summary
+                ),
+            }
+        )
+
+    return summary
+
+
+def build_pi_residue_summaries(
+    interactions: Iterable[PiInteraction],
+    *,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+) -> List[PiResidueSummary]:
+    """
+    Build residue summaries for all interaction participants.
+    """
+
+    config = (
+        grouping_config
+        if grouping_config is not None
+        else create_default_pi_grouping_config()
+    )
+
+    residue_index = (
+        index_pi_interactions_by_residue(
+            interactions,
+            include_invalid=(
+                config.include_invalid_interactions
+            ),
+            include_unknown_residues=(
+                config.include_unknown_residues
+            ),
+        )
+    )
+
+    summaries = [
+        build_pi_residue_summary(
+            residue,
+            residue_interactions,
+        )
+        for residue, residue_interactions
+        in residue_index.values()
+    ]
+
+    summaries.sort(
+        key=lambda summary: (
+            normalize_residue_role(
+                getattr(
+                    summary,
+                    "participant_type",
+                    None,
+                )
+            ),
+            getattr(
+                summary,
+                "model_id",
+                None,
+            ) or "",
+            getattr(
+                summary,
+                "chain_id",
+                None,
+            ) or "",
+            str(
+                getattr(
+                    summary,
+                    "residue_number",
+                    "",
+                )
+            ),
+            getattr(
+                summary,
+                "residue_name",
+                None,
+            ) or "",
+        )
+    )
+
+    return summaries
+
+
+# -----------------------------------------------------------------------------
+# 9.15. Construção dos resumos de pares
+# -----------------------------------------------------------------------------
+
+def build_pi_residue_pair_summary(
+    residue_1: PiResidueReference,
+    residue_2: PiResidueReference,
+    interactions: Iterable[PiInteraction],
+) -> PiResiduePairSummary:
+    """
+    Build an aggregated summary for one residue pair.
+    """
+
+    interaction_list = list(
+        interactions
+    )
+
+    interaction_type_distribution = Counter(
+        interaction.interaction_type
+        for interaction in interaction_list
+    )
+
+    geometry_distribution = Counter(
+        interaction.geometry_class
+        or "unclassified"
+        for interaction in interaction_list
+    )
+
+    strength_distribution = Counter(
+        interaction.strength_class
+        or "unclassified"
+        for interaction in interaction_list
+    )
+
+    distances = _collect_interaction_distances(
+        interaction_list
+    )
+
+    distance_summary = (
+        _summarize_numeric_sequence(
+            distances
+        )
+    )
+
+    summary = PiResiduePairSummary(
+        residue_1=residue_1,
+        residue_2=residue_2,
+        interactions=interaction_list,
+        interaction_ids=[
+            interaction.interaction_id
+            for interaction in interaction_list
+        ],
+        interaction_type_distribution=dict(
+            interaction_type_distribution
+        ),
+        geometry_distribution=dict(
+            geometry_distribution
+        ),
+        strength_distribution=dict(
+            strength_distribution
+        ),
+        total_atomic_contacts=sum(
+            len(interaction.atomic_contacts)
+            for interaction in interaction_list
+        ),
+        minimum_distance=(
+            distance_summary["minimum"]
+        ),
+        mean_distance=(
+            distance_summary["mean"]
+        ),
+        maximum_distance=(
+            distance_summary["maximum"]
+        ),
+        geometry_score=(
+            calculate_interaction_score_sum(
+                interaction_list,
+                "geometry_score",
+            )
+        ),
+        strength_score=(
+            calculate_interaction_score_sum(
+                interaction_list,
+                "strength_score",
+            )
+        ),
+        total_score=(
+            calculate_interaction_score_sum(
+                interaction_list,
+                "total_score",
+            )
+        ),
+        valid_interaction_count=sum(
+            1
+            for interaction in interaction_list
+            if interaction.valid
+        ),
+        invalid_interaction_count=sum(
+            1
+            for interaction in interaction_list
+            if not interaction.valid
+        ),
+        metadata={
+            "distance_summary": (
+                distance_summary
+            ),
+        },
+    )
+
+    return summary
+
+
+def build_pi_residue_pair_summaries(
+    interactions: Iterable[PiInteraction],
+    *,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+) -> List[PiResiduePairSummary]:
+    """
+    Build summaries for all residue pairs.
+    """
+
+    config = (
+        grouping_config
+        if grouping_config is not None
+        else create_default_pi_grouping_config()
+    )
+
+    pair_index = (
+        index_pi_interactions_by_residue_pair(
+            interactions,
+            include_invalid=(
+                config.include_invalid_interactions
+            ),
+            require_complete_pair=True,
+        )
+    )
+
+    summaries = [
+        build_pi_residue_pair_summary(
+            residue_1,
+            residue_2,
+            pair_interactions,
+        )
+        for (
+            residue_1,
+            residue_2,
+            pair_interactions,
+        ) in pair_index.values()
+    ]
+
+    summaries.sort(
+        key=lambda summary: (
+            -summary.interaction_count,
+            -summary.total_score,
+            summary.pair_id,
+        )
+    )
+
+    return summaries
+
+
+# -----------------------------------------------------------------------------
+# 9.16. Agrupamento por tipo, geometria e força
+# -----------------------------------------------------------------------------
+
+def group_interactions_by_attribute(
+    interactions: Iterable[PiInteraction],
+    attribute_name: str,
+    *,
+    fallback: str = "unclassified",
+) -> Dict[str, List[PiInteraction]]:
+    """
+    Group interactions by an arbitrary string-like attribute.
+    """
+
+    grouped: Dict[
+        str,
+        List[PiInteraction],
+    ] = defaultdict(list)
+
+    for interaction in interactions:
+        value = getattr(
+            interaction,
+            attribute_name,
+            None,
+        )
+
+        key = str(
+            value or fallback
+        ).strip().lower()
+
+        grouped[key].append(
+            interaction
+        )
+
+    return {
+        key: grouped[key]
+        for key in sorted(grouped)
+    }
+
+
+def group_interactions_by_type(
+    interactions: Iterable[PiInteraction],
+) -> Dict[str, List[PiInteraction]]:
+    """
+    Group interactions by interaction type.
+    """
+
+    return group_interactions_by_attribute(
+        interactions,
+        "interaction_type",
+    )
+
+
+def group_interactions_by_geometry(
+    interactions: Iterable[PiInteraction],
+) -> Dict[str, List[PiInteraction]]:
+    """
+    Group interactions by geometric class.
+    """
+
+    return group_interactions_by_attribute(
+        interactions,
+        "geometry_class",
+    )
+
+
+def group_interactions_by_strength(
+    interactions: Iterable[PiInteraction],
+) -> Dict[str, List[PiInteraction]]:
+    """
+    Group interactions by strength class.
+    """
+
+    return group_interactions_by_attribute(
+        interactions,
+        "strength_class",
+    )
+
+
+def group_interactions_by_participant_direction(
+    interactions: Iterable[PiInteraction],
+) -> Dict[str, List[PiInteraction]]:
+    """
+    Group interactions according to the participant carrying the π ring or
+    functional group.
+    """
+
+    grouped: Dict[
+        str,
+        List[PiInteraction],
+    ] = defaultdict(list)
+
+    for interaction in interactions:
+        interaction_type = (
+            interaction.interaction_type
+        )
+
+        if interaction_type == PI_PI:
+            key = "receptor_ring-ligand_ring"
+
+        elif interaction_type in {
+            CATION_PI,
+            ANION_PI,
+        }:
+            group_role = normalize_residue_role(
+                (
+                    interaction.charged_group
+                    .participant_type
+                )
+                if interaction.charged_group
+                is not None
+                else None
+            )
+
+            ring_role = normalize_residue_role(
+                (
+                    interaction.ring_1
+                    .participant_type
+                )
+                if interaction.ring_1
+                is not None
+                else None
+            )
+
+            key = (
+                f"{group_role}_charged_group-"
+                f"{ring_role}_ring"
+            )
+
+        elif interaction_type == AMIDE_PI:
+            amide_role = normalize_residue_role(
+                (
+                    interaction.amide_group
+                    .participant_type
+                )
+                if interaction.amide_group
+                is not None
+                else None
+            )
+
+            ring_role = normalize_residue_role(
+                (
+                    interaction.ring_1
+                    .participant_type
+                )
+                if interaction.ring_1
+                is not None
+                else None
+            )
+
+            key = (
+                f"{amide_role}_amide-"
+                f"{ring_role}_ring"
+            )
+
+        else:
+            key = "unknown"
+
+        grouped[key].append(
+            interaction
+        )
+
+    return {
+        key: grouped[key]
+        for key in sorted(grouped)
+    }
+
+
+# -----------------------------------------------------------------------------
+# 9.17. Cálculo do score de hotspot
+# -----------------------------------------------------------------------------
+
+def calculate_distance_hotspot_component(
+    interactions: Iterable[PiInteraction],
+) -> float:
+    """
+    Calculate a proximity contribution for hotspot scoring.
+
+    Shorter representative distances produce larger contributions.
+    """
+
+    distances = _collect_interaction_distances(
+        interactions
+    )
+
+    if not distances:
+        return 0.0
+
+    return float(
+        sum(
+            1.0 / max(distance, 1.0e-6)
+            for distance in distances
+        )
+    )
+
+
+def calculate_hotspot_score(
+    interactions: Iterable[PiInteraction],
+    *,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+) -> float:
+    """
+    Calculate a residue hotspot score.
+
+    This score is intentionally independent of the definitive interaction
+    scoring model implemented in the following section. When classified
+    interaction scores are already available, they are incorporated.
+    """
+
+    config = (
+        grouping_config
+        if grouping_config is not None
+        else create_default_pi_grouping_config()
+    )
+
+    interaction_list = list(
+        interactions
+    )
+
+    if not interaction_list:
+        return 0.0
+
+    interaction_count = len(
+        interaction_list
+    )
+
+    interaction_type_count = len(
+        {
+            interaction.interaction_type
+            for interaction in interaction_list
+        }
+    )
+
+    atomic_contact_count = sum(
+        len(interaction.atomic_contacts)
+        for interaction in interaction_list
+    )
+
+    geometry_score = (
+        calculate_interaction_score_sum(
+            interaction_list,
+            "geometry_score",
+        )
+    )
+
+    strength_score = (
+        calculate_interaction_score_sum(
+            interaction_list,
+            "strength_score",
+        )
+    )
+
+    total_score = (
+        calculate_interaction_score_sum(
+            interaction_list,
+            "total_score",
+        )
+    )
+
+    distance_component = (
+        calculate_distance_hotspot_component(
+            interaction_list
+        )
+    )
+
+    invalid_count = sum(
+        1
+        for interaction in interaction_list
+        if not interaction.valid
+    )
+
+    score = (
+        interaction_count
+        * config.interaction_count_weight
+        + interaction_type_count
+        * config.interaction_type_weight
+        + atomic_contact_count
+        * config.atomic_contact_weight
+        + geometry_score
+        * config.geometry_score_weight
+        + strength_score
+        * config.strength_score_weight
+        + total_score
+        * config.total_score_weight
+        + distance_component
+        * config.distance_weight
+        - invalid_count
+        * config.invalid_interaction_penalty
+    )
+
+    return max(
+        0.0,
+        float(score),
+    )
+
+
+def classify_hotspot_level(
+    score: Number,
+    *,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+) -> str:
+    """
+    Classify a hotspot score.
+    """
+
+    config = (
+        grouping_config
+        if grouping_config is not None
+        else create_default_pi_grouping_config()
+    )
+
+    normalized_score = (
+        _coerce_non_negative_float(
+            score,
+            field_name="score",
+        )
+    )
+
+    if (
+        normalized_score
+        >= config.critical_hotspot_score
+    ):
+        return HOTSPOT_LEVEL_CRITICAL
+
+    if (
+        normalized_score
+        >= config.high_hotspot_score
+    ):
+        return HOTSPOT_LEVEL_HIGH
+
+    if (
+        normalized_score
+        >= config.moderate_hotspot_score
+    ):
+        return HOTSPOT_LEVEL_MODERATE
+
+    if (
+        normalized_score
+        >= config.low_hotspot_score
+    ):
+        return HOTSPOT_LEVEL_LOW
+
+    return HOTSPOT_LEVEL_NONE
+
+
+def residue_meets_hotspot_requirements(
+    interactions: Iterable[PiInteraction],
+    *,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+) -> bool:
+    """
+    Return whether a residue meets minimum hotspot requirements.
+    """
+
+    config = (
+        grouping_config
+        if grouping_config is not None
+        else create_default_pi_grouping_config()
+    )
+
+    interaction_list = list(
+        interactions
+    )
+
+    interaction_type_count = len(
+        {
+            interaction.interaction_type
+            for interaction in interaction_list
+        }
+    )
+
+    atomic_contact_count = sum(
+        len(interaction.atomic_contacts)
+        for interaction in interaction_list
+    )
+
+    return (
+        len(interaction_list)
+        >= config.minimum_hotspot_interactions
+        and interaction_type_count
+        >= config.minimum_hotspot_interaction_types
+        and atomic_contact_count
+        >= config.minimum_hotspot_atomic_contacts
+    )
+
+
+# -----------------------------------------------------------------------------
+# 9.18. Construção de hotspots
+# -----------------------------------------------------------------------------
+
+def build_pi_hotspot(
+    residue: PiResidueReference,
+    interactions: Iterable[PiInteraction],
+    *,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+) -> PiHotspot:
+    """
+    Build a residue hotspot object.
+    """
+
+    config = (
+        grouping_config
+        if grouping_config is not None
+        else create_default_pi_grouping_config()
+    )
+
+    interaction_list = list(
+        interactions
+    )
+
+    partner_residues = [
+        partner
+        for interaction in interaction_list
+        if (
+            partner := get_partner_residue_for_interaction(
+                interaction,
+                residue,
+            )
+        ) is not None
+    ]
+
+    partner_ids = sorted(
+        {
+            partner.residue_id
+            for partner in partner_residues
+        }
+    )
+
+    type_distribution = Counter(
+        interaction.interaction_type
+        for interaction in interaction_list
+    )
+
+    geometry_distribution = Counter(
+        interaction.geometry_class
+        or "unclassified"
+        for interaction in interaction_list
+    )
+
+    strength_distribution = Counter(
+        interaction.strength_class
+        or "unclassified"
+        for interaction in interaction_list
+    )
+
+    distances = _collect_interaction_distances(
+        interaction_list
+    )
+
+    distance_summary = (
+        _summarize_numeric_sequence(
+            distances
+        )
+    )
+
+    geometry_score = (
+        calculate_interaction_score_sum(
+            interaction_list,
+            "geometry_score",
+        )
+    )
+
+    strength_score = (
+        calculate_interaction_score_sum(
+            interaction_list,
+            "strength_score",
+        )
+    )
+
+    interaction_score = (
+        calculate_interaction_score_sum(
+            interaction_list,
+            "total_score",
+        )
+    )
+
+    hotspot_score = calculate_hotspot_score(
+        interaction_list,
+        grouping_config=config,
+    )
+
+    return PiHotspot(
+        residue=residue,
+        interactions=interaction_list,
+        interaction_ids=[
+            interaction.interaction_id
+            for interaction in interaction_list
+        ],
+        partner_residue_ids=partner_ids,
+        interaction_type_distribution=dict(
+            type_distribution
+        ),
+        geometry_distribution=dict(
+            geometry_distribution
+        ),
+        strength_distribution=dict(
+            strength_distribution
+        ),
+        total_atomic_contacts=sum(
+            len(interaction.atomic_contacts)
+            for interaction in interaction_list
+        ),
+        valid_interaction_count=sum(
+            1
+            for interaction in interaction_list
+            if interaction.valid
+        ),
+        invalid_interaction_count=sum(
+            1
+            for interaction in interaction_list
+            if not interaction.valid
+        ),
+        minimum_distance=(
+            distance_summary["minimum"]
+        ),
+        mean_distance=(
+            distance_summary["mean"]
+        ),
+        maximum_distance=(
+            distance_summary["maximum"]
+        ),
+        geometry_score=geometry_score,
+        strength_score=strength_score,
+        interaction_score=interaction_score,
+        hotspot_score=hotspot_score,
+        hotspot_level=classify_hotspot_level(
+            hotspot_score,
+            grouping_config=config,
+        ),
+        metadata={
+            "meets_minimum_requirements": (
+                residue_meets_hotspot_requirements(
+                    interaction_list,
+                    grouping_config=config,
+                )
+            ),
+            "distance_summary": (
+                distance_summary
+            ),
+            "grouping_config": (
+                config.to_dict()
+            ),
+        },
+    )
+
+
+def identify_pi_hotspots(
+    interactions: Iterable[PiInteraction],
+    *,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+    include_non_hotspots: bool = False,
+    participant_type: Optional[str] = None,
+) -> List[PiHotspot]:
+    """
+    Identify and rank residue-level hotspots.
+    """
+
+    config = (
+        grouping_config
+        if grouping_config is not None
+        else create_default_pi_grouping_config()
+    )
+
+    normalized_participant_type = (
+        normalize_residue_role(
+            participant_type
+        )
+        if participant_type is not None
+        else None
+    )
+
+    residue_index = (
+        index_pi_interactions_by_residue(
+            interactions,
+            include_invalid=(
+                config.include_invalid_interactions
+            ),
+            include_unknown_residues=(
+                config.include_unknown_residues
+            ),
+        )
+    )
+
+    hotspots: List[PiHotspot] = []
+
+    for residue, residue_interactions in (
+        residue_index.values()
+    ):
+        if (
+            normalized_participant_type
+            is not None
+            and residue.participant_type
+            != normalized_participant_type
+        ):
+            continue
+
+        meets_requirements = (
+            residue_meets_hotspot_requirements(
+                residue_interactions,
+                grouping_config=config,
+            )
+        )
+
+        hotspot = build_pi_hotspot(
+            residue,
+            residue_interactions,
+            grouping_config=config,
+        )
+
+        if (
+            not include_non_hotspots
+            and (
+                not meets_requirements
+                or hotspot.hotspot_level
+                == HOTSPOT_LEVEL_NONE
+            )
+        ):
+            continue
+
+        hotspots.append(
+            hotspot
+        )
+
+    hotspots.sort(
+        key=lambda hotspot: (
+            -hotspot.hotspot_score,
+            -hotspot.interaction_count,
+            -hotspot.interaction_type_count,
+            hotspot.residue.residue_id,
+        )
+    )
+
+    for rank, hotspot in enumerate(
+        hotspots,
+        start=1,
+    ):
+        hotspot.rank = rank
+
+    return hotspots
+
+
+# -----------------------------------------------------------------------------
+# 9.19. Hotspots específicos de receptor e ligante
+# -----------------------------------------------------------------------------
+
+def identify_receptor_pi_hotspots(
+    interactions: Iterable[PiInteraction],
+    *,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+    include_non_hotspots: bool = False,
+) -> List[PiHotspot]:
+    """
+    Identify receptor residue hotspots.
+    """
+
+    return identify_pi_hotspots(
+        interactions,
+        grouping_config=grouping_config,
+        include_non_hotspots=include_non_hotspots,
+        participant_type=RESIDUE_ROLE_RECEPTOR,
+    )
+
+
+def identify_ligand_pi_hotspots(
+    interactions: Iterable[PiInteraction],
+    *,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+    include_non_hotspots: bool = False,
+) -> List[PiHotspot]:
+    """
+    Identify ligand residue hotspots.
+    """
+
+    return identify_pi_hotspots(
+        interactions,
+        grouping_config=grouping_config,
+        include_non_hotspots=include_non_hotspots,
+        participant_type=RESIDUE_ROLE_LIGAND,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 9.20. Anotação das interações com agrupamentos
+# -----------------------------------------------------------------------------
+
+def annotate_interactions_with_residue_groups(
+    interactions: Iterable[PiInteraction],
+    residue_summaries: Iterable[PiResidueSummary],
+    residue_pairs: Iterable[PiResiduePairSummary],
+    hotspots: Iterable[PiHotspot],
+) -> List[PiInteraction]:
+    """
+    Attach residue, pair and hotspot identifiers to each interaction.
+    """
+
+    interaction_list = list(
+        interactions
+    )
+
+    residue_summary_index: Dict[
+        PiResidueKey,
+        PiResidueSummary,
+    ] = {}
+
+    for summary in residue_summaries:
+        residue_reference = create_residue_reference(
+            model_id=getattr(
+                summary,
+                "model_id",
+                None,
+            ),
+            participant_type=getattr(
+                summary,
+                "participant_type",
+                None,
+            ),
+            chain_id=getattr(
+                summary,
+                "chain_id",
+                None,
+            ),
+            residue_name=getattr(
+                summary,
+                "residue_name",
+                None,
+            ),
+            residue_number=getattr(
+                summary,
+                "residue_number",
+                None,
+            ),
+        )
+
+        residue_summary_index[
+            residue_reference.key
+        ] = summary
+
+    pair_index: Dict[
+        PiResiduePairKey,
+        PiResiduePairSummary,
+    ] = {
+        get_residue_pair_key(
+            pair.residue_1,
+            pair.residue_2,
+        ): pair
+        for pair in residue_pairs
+    }
+
+    hotspot_index: Dict[
+        PiResidueKey,
+        PiHotspot,
+    ] = {
+        hotspot.residue.key: hotspot
+        for hotspot in hotspots
+    }
+
+    for interaction in interaction_list:
+        residue_1, residue_2 = (
+            get_pi_interaction_residue_references(
+                interaction
+            )
+        )
+
+        residue_ids = [
+            residue.residue_id
+            for residue in (
+                residue_1,
+                residue_2,
+            )
+            if residue is not None
+        ]
+
+        hotspot_ids = [
+            hotspot_index[
+                residue.key
+            ].residue.residue_id
+            for residue in (
+                residue_1,
+                residue_2,
+            )
+            if (
+                residue is not None
+                and residue.key
+                in hotspot_index
+            )
+        ]
+
+        pair_id: Optional[str] = None
+
+        if (
+            residue_1 is not None
+            and residue_2 is not None
+        ):
+            pair = pair_index.get(
+                get_residue_pair_key(
+                    residue_1,
+                    residue_2,
+                )
+            )
+
+            if pair is not None:
+                pair_id = pair.pair_id
+
+        metadata = interaction.metadata
+
+        metadata[
+            "residue_ids"
+        ] = residue_ids
+
+        metadata[
+            "residue_pair_id"
+        ] = pair_id
+
+        metadata[
+            "hotspot_residue_ids"
+        ] = hotspot_ids
+
+        metadata[
+            "contains_hotspot"
+        ] = bool(hotspot_ids)
+
+        metadata[
+            "residue_summary_available"
+        ] = any(
+            residue is not None
+            and residue.key
+            in residue_summary_index
+            for residue in (
+                residue_1,
+                residue_2,
+            )
+        )
+
+    return interaction_list
+
+
+# -----------------------------------------------------------------------------
+# 9.21. Filtragem por resíduo, par ou hotspot
+# -----------------------------------------------------------------------------
+
+def filter_pi_interactions_by_residue(
+    interactions: Iterable[PiInteraction],
+    residue: Union[
+        PiResidueReference,
+        PiResidueSummary,
+        PiHotspot,
+        PiResidueKey,
+        str,
+    ],
+) -> List[PiInteraction]:
+    """
+    Filter interactions involving a selected residue.
+    """
+
+    if isinstance(
+        residue,
+        PiHotspot,
+    ):
+        selected_id = (
+            residue.residue.residue_id
+        )
+        selected_key = (
+            residue.residue.key
+        )
+
+    elif isinstance(
+        residue,
+        PiResidueReference,
+    ):
+        selected_id = residue.residue_id
+        selected_key = residue.key
+
+    elif isinstance(
+        residue,
+        tuple,
+    ):
+        selected_id = None
+        selected_key = residue
+
+    elif isinstance(
+        residue,
+        str,
+    ):
+        selected_id = residue
+        selected_key = None
+
+    else:
+        reference = create_residue_reference(
+            model_id=getattr(
+                residue,
+                "model_id",
+                None,
+            ),
+            participant_type=getattr(
+                residue,
+                "participant_type",
+                None,
+            ),
+            chain_id=getattr(
+                residue,
+                "chain_id",
+                None,
+            ),
+            residue_name=getattr(
+                residue,
+                "residue_name",
+                None,
+            ),
+            residue_number=getattr(
+                residue,
+                "residue_number",
+                None,
+            ),
+        )
+
+        selected_id = reference.residue_id
+        selected_key = reference.key
+
+    selected: List[PiInteraction] = []
+
+    for interaction in interactions:
+        residue_references = (
+            get_pi_interaction_residue_references(
+                interaction
+            )
+        )
+
+        for candidate in residue_references:
+            if candidate is None:
+                continue
+
+            if (
+                selected_key is not None
+                and candidate.key == selected_key
+            ):
+                selected.append(
+                    interaction
+                )
+                break
+
+            if (
+                selected_id is not None
+                and candidate.residue_id
+                == selected_id
+            ):
+                selected.append(
+                    interaction
+                )
+                break
+
+    return selected
+
+
+def filter_pi_interactions_by_residue_pair(
+    interactions: Iterable[PiInteraction],
+    residue_1: PiResidueReference,
+    residue_2: PiResidueReference,
+) -> List[PiInteraction]:
+    """
+    Filter interactions belonging to one residue pair.
+    """
+
+    requested_key = get_residue_pair_key(
+        residue_1,
+        residue_2,
+    )
+
+    selected: List[PiInteraction] = []
+
+    for interaction in interactions:
+        candidate_1, candidate_2 = (
+            get_pi_interaction_residue_references(
+                interaction
+            )
+        )
+
+        if (
+            candidate_1 is None
+            or candidate_2 is None
+        ):
+            continue
+
+        candidate_key = get_residue_pair_key(
+            candidate_1,
+            candidate_2,
+        )
+
+        if candidate_key == requested_key:
+            selected.append(
+                interaction
+            )
+
+    return selected
+
+
+def filter_hotspot_interactions(
+    interactions: Iterable[PiInteraction],
+    hotspots: Iterable[PiHotspot],
+) -> List[PiInteraction]:
+    """
+    Return interactions involving at least one hotspot residue.
+    """
+
+    hotspot_keys = {
+        hotspot.residue.key
+        for hotspot in hotspots
+    }
+
+    selected: List[PiInteraction] = []
+
+    for interaction in interactions:
+        residues = (
+            get_pi_interaction_residue_references(
+                interaction
+            )
+        )
+
+        if any(
+            residue is not None
+            and residue.key in hotspot_keys
+            for residue in residues
+        ):
+            selected.append(
+                interaction
+            )
+
+    return selected
+
+
+# -----------------------------------------------------------------------------
+# 9.22. Validação dos agrupamentos
+# -----------------------------------------------------------------------------
+
+def validate_residue_pair_summary(
+    summary: PiResiduePairSummary,
+) -> Tuple[bool, Tuple[str, ...]]:
+    """
+    Validate a residue-pair summary.
+    """
+
+    if not isinstance(
+        summary,
+        PiResiduePairSummary,
+    ):
+        raise TypeError(
+            "summary must be a PiResiduePairSummary."
+        )
+
+    messages: List[str] = []
+
+    if not summary.interactions:
+        messages.append(
+            "Residue-pair summary contains no interactions."
+        )
+
+    if (
+        len(summary.interaction_ids)
+        != len(summary.interactions)
+    ):
+        messages.append(
+            "Interaction ID count differs from interaction count."
+        )
+
+    if (
+        summary.valid_interaction_count
+        + summary.invalid_interaction_count
+        != len(summary.interactions)
+    ):
+        messages.append(
+            "Valid and invalid interaction counts are inconsistent."
+        )
+
+    if summary.total_atomic_contacts < 0:
+        messages.append(
+            "Atomic-contact count cannot be negative."
+        )
+
+    return (
+        not messages,
+        tuple(messages),
+    )
+
+
+def validate_pi_hotspot(
+    hotspot: PiHotspot,
+) -> Tuple[bool, Tuple[str, ...]]:
+    """
+    Validate a hotspot object.
+    """
+
+    if not isinstance(
+        hotspot,
+        PiHotspot,
+    ):
+        raise TypeError(
+            "hotspot must be a PiHotspot."
+        )
+
+    messages: List[str] = []
+
+    if not hotspot.interactions:
+        messages.append(
+            "Hotspot contains no interactions."
+        )
+
+    if hotspot.hotspot_score < 0.0:
+        messages.append(
+            "Hotspot score cannot be negative."
+        )
+
+    if (
+        hotspot.hotspot_level
+        not in SUPPORTED_HOTSPOT_LEVELS
+    ):
+        messages.append(
+            "Hotspot level is invalid."
+        )
+
+    if (
+        hotspot.valid_interaction_count
+        + hotspot.invalid_interaction_count
+        != len(hotspot.interactions)
+    ):
+        messages.append(
+            "Hotspot interaction counts are inconsistent."
+        )
+
+    if (
+        hotspot.rank is not None
+        and hotspot.rank < 1
+    ):
+        messages.append(
+            "Hotspot rank must be positive."
+        )
+
+    return (
+        not messages,
+        tuple(messages),
+    )
+
+
+def validate_pi_grouping_result(
+    result: PiGroupingResult,
+) -> Tuple[bool, Tuple[str, ...]]:
+    """
+    Validate a complete grouping result.
+    """
+
+    if not isinstance(
+        result,
+        PiGroupingResult,
+    ):
+        raise TypeError(
+            "result must be a PiGroupingResult."
+        )
+
+    messages: List[str] = []
+
+    interaction_ids = [
+        interaction.interaction_id
+        for interaction in result.interactions
+    ]
+
+    if len(
+        interaction_ids
+    ) != len(
+        set(interaction_ids)
+    ):
+        messages.append(
+            "Grouping result contains duplicate interaction IDs."
+        )
+
+    for pair in result.residue_pairs:
+        valid, pair_messages = (
+            validate_residue_pair_summary(
+                pair
+            )
+        )
+
+        if not valid:
+            messages.extend(
+                f"{pair.pair_id}: {message}"
+                for message in pair_messages
+            )
+
+    for hotspot in result.hotspots:
+        valid, hotspot_messages = (
+            validate_pi_hotspot(
+                hotspot
+            )
+        )
+
+        if not valid:
+            messages.extend(
+                (
+                    f"{hotspot.residue.residue_id}: "
+                    f"{message}"
+                )
+                for message in hotspot_messages
+            )
+
+    return (
+        not messages,
+        tuple(messages),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 9.23. Pipeline integrado de agrupamento
+# -----------------------------------------------------------------------------
+
+def group_pi_interactions(
+    interactions: Iterable[PiInteraction],
+    *,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+    annotate_interactions: bool = True,
+    include_non_hotspots: bool = False,
+    validate_result: bool = True,
+) -> PiGroupingResult:
+    """
+    Run the complete grouping and hotspot-identification pipeline.
+    """
+
+    config = (
+        grouping_config
+        if grouping_config is not None
+        else create_default_pi_grouping_config()
+    )
+
+    interaction_list = [
+        interaction
+        for interaction in interactions
+        if (
+            config.include_invalid_interactions
+            or interaction.valid
+        )
+    ]
+
+    interaction_list = (
+        deduplicate_pi_interactions(
+            interaction_list
+        )
+    )
+
+    residue_summaries = (
+        build_pi_residue_summaries(
+            interaction_list,
+            grouping_config=config,
+        )
+    )
+
+    receptor_residue_summaries = [
+        summary
+        for summary in residue_summaries
+        if normalize_residue_role(
+            getattr(
+                summary,
+                "participant_type",
+                None,
+            )
+        ) == RESIDUE_ROLE_RECEPTOR
+    ]
+
+    ligand_residue_summaries = [
+        summary
+        for summary in residue_summaries
+        if normalize_residue_role(
+            getattr(
+                summary,
+                "participant_type",
+                None,
+            )
+        ) == RESIDUE_ROLE_LIGAND
+    ]
+
+    if not config.include_receptor_residue_summaries:
+        receptor_residue_summaries = []
+
+    if not config.include_ligand_residue_summaries:
+        ligand_residue_summaries = []
+
+    residue_pairs = (
+        build_pi_residue_pair_summaries(
+            interaction_list,
+            grouping_config=config,
+        )
+    )
+
+    hotspots = identify_pi_hotspots(
+        interaction_list,
+        grouping_config=config,
+        include_non_hotspots=(
+            include_non_hotspots
+        ),
+    )
+
+    interaction_groups = {
+        "by_type": group_interactions_by_type(
+            interaction_list
+        ),
+        "by_geometry": (
+            group_interactions_by_geometry(
+                interaction_list
+            )
+        ),
+        "by_strength": (
+            group_interactions_by_strength(
+                interaction_list
+            )
+        ),
+        "by_participant_direction": (
+            group_interactions_by_participant_direction(
+                interaction_list
+            )
+        ),
+    }
+
+    flattened_groups: Dict[
+        str,
+        List[PiInteraction],
+    ] = {}
+
+    for category, groups in (
+        interaction_groups.items()
+    ):
+        for group_name, group_interactions in (
+            groups.items()
+        ):
+            flattened_groups[
+                f"{category}:{group_name}"
+            ] = group_interactions
+
+    if annotate_interactions:
+        interaction_list = (
+            annotate_interactions_with_residue_groups(
+                interaction_list,
+                residue_summaries,
+                residue_pairs,
+                hotspots,
+            )
+        )
+
+    result = PiGroupingResult(
+        interactions=interaction_list,
+        residue_summaries=residue_summaries,
+        receptor_residue_summaries=(
+            receptor_residue_summaries
+        ),
+        ligand_residue_summaries=(
+            ligand_residue_summaries
+        ),
+        residue_pairs=residue_pairs,
+        hotspots=hotspots,
+        interaction_groups=flattened_groups,
+        metadata={
+            "grouping_config": config.to_dict(),
+            "total_interactions": len(
+                interaction_list
+            ),
+            "total_residues": len(
+                residue_summaries
+            ),
+            "total_residue_pairs": len(
+                residue_pairs
+            ),
+            "total_hotspots": len(
+                hotspots
+            ),
+        },
+    )
+
+    if validate_result:
+        valid, messages = (
+            validate_pi_grouping_result(
+                result
+            )
+        )
+
+        result.metadata[
+            "valid"
+        ] = valid
+
+        result.metadata[
+            "validation_messages"
+        ] = list(messages)
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 9.24. Atualização de PiAnalysisResult
+# -----------------------------------------------------------------------------
+
+def attach_pi_grouping_to_analysis_result(
+    analysis_result: PiAnalysisResult,
+    grouping_result: PiGroupingResult,
+) -> PiAnalysisResult:
+    """
+    Attach grouping outputs to a ``PiAnalysisResult``.
+    """
+
+    if not isinstance(
+        analysis_result,
+        PiAnalysisResult,
+    ):
+        raise TypeError(
+            "analysis_result must be a PiAnalysisResult."
+        )
+
+    if not isinstance(
+        grouping_result,
+        PiGroupingResult,
+    ):
+        raise TypeError(
+            "grouping_result must be a PiGroupingResult."
+        )
+
+    assignments = {
+        "interactions": (
+            grouping_result.interactions
+        ),
+        "residue_summaries": (
+            grouping_result.residue_summaries
+        ),
+        "receptor_residue_summaries": (
+            grouping_result
+            .receptor_residue_summaries
+        ),
+        "ligand_residue_summaries": (
+            grouping_result
+            .ligand_residue_summaries
+        ),
+        "residue_pairs": (
+            grouping_result.residue_pairs
+        ),
+        "hotspots": grouping_result.hotspots,
+        "interaction_groups": (
+            grouping_result.interaction_groups
+        ),
+    }
+
+    for attribute_name, value in assignments.items():
+        _set_supported_attribute(
+            analysis_result,
+            attribute_name,
+            value,
+        )
+
+    metadata = getattr(
+        analysis_result,
+        "metadata",
+        None,
+    )
+
+    if isinstance(metadata, MutableMapping):
+        metadata[
+            "grouping"
+        ] = dict(
+            grouping_result.metadata
+        )
+
+        metadata[
+            "hotspot_ids"
+        ] = [
+            hotspot.residue.residue_id
+            for hotspot
+            in grouping_result.hotspots
+        ]
+
+        metadata[
+            "residue_pair_ids"
+        ] = [
+            pair.pair_id
+            for pair
+            in grouping_result.residue_pairs
+        ]
+
+    return analysis_result
+
+
+# -----------------------------------------------------------------------------
+# 9.25. Resumo serializável do agrupamento
+# -----------------------------------------------------------------------------
+
+def summarize_pi_grouping(
+    grouping_result: PiGroupingResult,
+) -> Dict[str, Any]:
+    """
+    Generate a compact serializable grouping summary.
+    """
+
+    if not isinstance(
+        grouping_result,
+        PiGroupingResult,
+    ):
+        raise TypeError(
+            "grouping_result must be a PiGroupingResult."
+        )
+
+    hotspot_level_distribution = Counter(
+        hotspot.hotspot_level
+        for hotspot in grouping_result.hotspots
+    )
+
+    receptor_hotspots = [
+        hotspot
+        for hotspot in grouping_result.hotspots
+        if (
+            hotspot.residue.participant_type
+            == RESIDUE_ROLE_RECEPTOR
+        )
+    ]
+
+    ligand_hotspots = [
+        hotspot
+        for hotspot in grouping_result.hotspots
+        if (
+            hotspot.residue.participant_type
+            == RESIDUE_ROLE_LIGAND
+        )
+    ]
+
+    pair_interaction_counts = [
+        pair.interaction_count
+        for pair in grouping_result.residue_pairs
+    ]
+
+    hotspot_scores = [
+        hotspot.hotspot_score
+        for hotspot in grouping_result.hotspots
+    ]
+
+    return {
+        "total_interactions": len(
+            grouping_result.interactions
+        ),
+        "total_residues": len(
+            grouping_result.residue_summaries
+        ),
+        "total_receptor_residues": len(
+            grouping_result
+            .receptor_residue_summaries
+        ),
+        "total_ligand_residues": len(
+            grouping_result
+            .ligand_residue_summaries
+        ),
+        "total_residue_pairs": len(
+            grouping_result.residue_pairs
+        ),
+        "total_hotspots": len(
+            grouping_result.hotspots
+        ),
+        "receptor_hotspots": len(
+            receptor_hotspots
+        ),
+        "ligand_hotspots": len(
+            ligand_hotspots
+        ),
+        "hotspot_level_distribution": dict(
+            hotspot_level_distribution
+        ),
+        "pair_interaction_count": (
+            _summarize_numeric_sequence(
+                pair_interaction_counts
+            )
+        ),
+        "hotspot_score": (
+            _summarize_numeric_sequence(
+                hotspot_scores
+            )
+        ),
+        "top_hotspots": [
+            {
+                "rank": hotspot.rank,
+                "residue_id": (
+                    hotspot.residue.residue_id
+                ),
+                "display_name": (
+                    hotspot.residue.display_name
+                ),
+                "hotspot_score": (
+                    hotspot.hotspot_score
+                ),
+                "hotspot_level": (
+                    hotspot.hotspot_level
+                ),
+                "interaction_count": (
+                    hotspot.interaction_count
+                ),
+                "interaction_type_count": (
+                    hotspot.interaction_type_count
+                ),
+                "partner_count": (
+                    hotspot.partner_count
+                ),
+            }
+            for hotspot
+            in grouping_result.hotspots[:10]
+        ],
+        "top_residue_pairs": [
+            {
+                "pair_id": pair.pair_id,
+                "interaction_count": (
+                    pair.interaction_count
+                ),
+                "interaction_type_count": (
+                    pair.interaction_type_count
+                ),
+                "total_score": (
+                    pair.total_score
+                ),
+                "minimum_distance": (
+                    pair.minimum_distance
+                ),
+            }
+            for pair
+            in grouping_result.residue_pairs[:10]
+        ],
+    }
+
+
+# -----------------------------------------------------------------------------
+# 9.26. Função de conveniência para pipeline completo
+# -----------------------------------------------------------------------------
+
+def detect_and_group_pi_interactions(
+    normalized_input: PiNormalizedInput,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+    annotate_interactions: bool = True,
+    include_non_hotspots: bool = False,
+) -> PiGroupingResult:
+    """
+    Detect and group all receptor–ligand π interactions.
+    """
+
+    interactions = (
+        detect_pi_interactions_from_normalized_input(
+            normalized_input,
+            config=config,
+        )
+    )
+
+    return group_pi_interactions(
+        interactions,
+        grouping_config=grouping_config,
+        annotate_interactions=(
+            annotate_interactions
+        ),
+        include_non_hotspots=(
+            include_non_hotspots
+        ),
+        validate_result=True,
+    )
+
+# -----------------------------------------------------------------------------
+# End of section 9.
+# -----------------------------------------------------------------------------
+
+
+# =============================================================================
+# 10. CLASSIFICAÇÃO GEOMÉTRICA, FORÇA E SCORE
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 10.1. Constantes de classificação
+# -----------------------------------------------------------------------------
+
+GEOMETRY_CLASS_OPTIMAL: Final[str] = "optimal"
+GEOMETRY_CLASS_FAVORABLE: Final[str] = "favorable"
+GEOMETRY_CLASS_ACCEPTABLE: Final[str] = "acceptable"
+GEOMETRY_CLASS_WEAK: Final[str] = "weak"
+GEOMETRY_CLASS_REJECTED: Final[str] = "rejected"
+GEOMETRY_CLASS_UNCLASSIFIED: Final[str] = "unclassified"
+
+
+SUPPORTED_FINAL_GEOMETRY_CLASSES: Final[FrozenSet[str]] = frozenset(
+    {
+        GEOMETRY_CLASS_OPTIMAL,
+        GEOMETRY_CLASS_FAVORABLE,
+        GEOMETRY_CLASS_ACCEPTABLE,
+        GEOMETRY_CLASS_WEAK,
+        GEOMETRY_CLASS_REJECTED,
+        GEOMETRY_CLASS_UNCLASSIFIED,
+    }
+)
+
+
+STRENGTH_CLASS_VERY_STRONG: Final[str] = "very_strong"
+STRENGTH_CLASS_STRONG: Final[str] = "strong"
+STRENGTH_CLASS_MODERATE: Final[str] = "moderate"
+STRENGTH_CLASS_WEAK: Final[str] = "weak"
+STRENGTH_CLASS_VERY_WEAK: Final[str] = "very_weak"
+STRENGTH_CLASS_REJECTED: Final[str] = "rejected"
+STRENGTH_CLASS_UNCLASSIFIED: Final[str] = "unclassified"
+
+
+SUPPORTED_FINAL_STRENGTH_CLASSES: Final[FrozenSet[str]] = frozenset(
+    {
+        STRENGTH_CLASS_VERY_STRONG,
+        STRENGTH_CLASS_STRONG,
+        STRENGTH_CLASS_MODERATE,
+        STRENGTH_CLASS_WEAK,
+        STRENGTH_CLASS_VERY_WEAK,
+        STRENGTH_CLASS_REJECTED,
+        STRENGTH_CLASS_UNCLASSIFIED,
+    }
+)
+
+
+DEFAULT_GEOMETRY_SCORE_MINIMUM: Final[float] = 0.0
+DEFAULT_GEOMETRY_SCORE_MAXIMUM: Final[float] = 1.0
+
+DEFAULT_STRENGTH_SCORE_MINIMUM: Final[float] = 0.0
+DEFAULT_STRENGTH_SCORE_MAXIMUM: Final[float] = 1.0
+
+DEFAULT_INTERACTION_SCORE_MINIMUM: Final[float] = 0.0
+DEFAULT_INTERACTION_SCORE_MAXIMUM: Final[float] = 10.0
+
+
+DEFAULT_VERY_STRONG_THRESHOLD: Final[float] = 0.85
+DEFAULT_STRONG_THRESHOLD: Final[float] = 0.70
+DEFAULT_MODERATE_THRESHOLD: Final[float] = 0.50
+DEFAULT_WEAK_THRESHOLD: Final[float] = 0.30
+DEFAULT_VERY_WEAK_THRESHOLD: Final[float] = 0.10
+
+
+DEFAULT_OPTIMAL_GEOMETRY_THRESHOLD: Final[float] = 0.85
+DEFAULT_FAVORABLE_GEOMETRY_THRESHOLD: Final[float] = 0.70
+DEFAULT_ACCEPTABLE_GEOMETRY_THRESHOLD: Final[float] = 0.50
+DEFAULT_WEAK_GEOMETRY_THRESHOLD: Final[float] = 0.25
+
+
+DEFAULT_DISTANCE_COMPONENT_WEIGHT: Final[float] = 0.35
+DEFAULT_ORIENTATION_COMPONENT_WEIGHT: Final[float] = 0.25
+DEFAULT_OFFSET_COMPONENT_WEIGHT: Final[float] = 0.20
+DEFAULT_PLANARITY_COMPONENT_WEIGHT: Final[float] = 0.10
+DEFAULT_CONTACT_COMPONENT_WEIGHT: Final[float] = 0.10
+
+
+DEFAULT_GEOMETRY_SCORE_WEIGHT: Final[float] = 0.65
+DEFAULT_STRENGTH_SCORE_WEIGHT: Final[float] = 0.35
+
+
+DEFAULT_INVALID_INTERACTION_SCORE: Final[float] = 0.0
+DEFAULT_MISSING_GEOMETRY_PENALTY: Final[float] = 0.20
+DEFAULT_MISSING_DISTANCE_PENALTY: Final[float] = 0.20
+DEFAULT_NO_ATOMIC_CONTACT_PENALTY: Final[float] = 0.10
+DEFAULT_SAME_RESIDUE_PENALTY: Final[float] = 0.40
+DEFAULT_INTRAMOLECULAR_PENALTY: Final[float] = 0.20
+DEFAULT_GEOMETRY_REJECTION_PENALTY: Final[float] = 1.00
+
+
+DEFAULT_CONTACT_REFERENCE_COUNT: Final[int] = 4
+DEFAULT_DISTANCE_DECAY_EXPONENT: Final[float] = 2.0
+DEFAULT_OFFSET_DECAY_EXPONENT: Final[float] = 2.0
+DEFAULT_ANGLE_DECAY_EXPONENT: Final[float] = 2.0
+
+
+DEFAULT_PI_PI_PARALLEL_OPTIMAL_DISTANCE: Final[float] = 4.00
+DEFAULT_PI_PI_T_SHAPED_OPTIMAL_DISTANCE: Final[float] = 5.00
+
+DEFAULT_CATION_PI_OPTIMAL_DISTANCE: Final[float] = 4.50
+DEFAULT_ANION_PI_OPTIMAL_DISTANCE: Final[float] = 4.50
+DEFAULT_AMIDE_PI_OPTIMAL_DISTANCE: Final[float] = 4.50
+
+
+# -----------------------------------------------------------------------------
+# 10.2. Configuração de score
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PiScoringConfig:
+    """
+    Configuration for final geometry classification and interaction scoring.
+    """
+
+    distance_component_weight: float = (
+        DEFAULT_DISTANCE_COMPONENT_WEIGHT
+    )
+    orientation_component_weight: float = (
+        DEFAULT_ORIENTATION_COMPONENT_WEIGHT
+    )
+    offset_component_weight: float = (
+        DEFAULT_OFFSET_COMPONENT_WEIGHT
+    )
+    planarity_component_weight: float = (
+        DEFAULT_PLANARITY_COMPONENT_WEIGHT
+    )
+    contact_component_weight: float = (
+        DEFAULT_CONTACT_COMPONENT_WEIGHT
+    )
+
+    geometry_score_weight: float = (
+        DEFAULT_GEOMETRY_SCORE_WEIGHT
+    )
+    strength_score_weight: float = (
+        DEFAULT_STRENGTH_SCORE_WEIGHT
+    )
+
+    geometry_score_minimum: float = (
+        DEFAULT_GEOMETRY_SCORE_MINIMUM
+    )
+    geometry_score_maximum: float = (
+        DEFAULT_GEOMETRY_SCORE_MAXIMUM
+    )
+
+    strength_score_minimum: float = (
+        DEFAULT_STRENGTH_SCORE_MINIMUM
+    )
+    strength_score_maximum: float = (
+        DEFAULT_STRENGTH_SCORE_MAXIMUM
+    )
+
+    interaction_score_minimum: float = (
+        DEFAULT_INTERACTION_SCORE_MINIMUM
+    )
+    interaction_score_maximum: float = (
+        DEFAULT_INTERACTION_SCORE_MAXIMUM
+    )
+
+    optimal_geometry_threshold: float = (
+        DEFAULT_OPTIMAL_GEOMETRY_THRESHOLD
+    )
+    favorable_geometry_threshold: float = (
+        DEFAULT_FAVORABLE_GEOMETRY_THRESHOLD
+    )
+    acceptable_geometry_threshold: float = (
+        DEFAULT_ACCEPTABLE_GEOMETRY_THRESHOLD
+    )
+    weak_geometry_threshold: float = (
+        DEFAULT_WEAK_GEOMETRY_THRESHOLD
+    )
+
+    very_strong_threshold: float = (
+        DEFAULT_VERY_STRONG_THRESHOLD
+    )
+    strong_threshold: float = (
+        DEFAULT_STRONG_THRESHOLD
+    )
+    moderate_threshold: float = (
+        DEFAULT_MODERATE_THRESHOLD
+    )
+    weak_threshold: float = (
+        DEFAULT_WEAK_THRESHOLD
+    )
+    very_weak_threshold: float = (
+        DEFAULT_VERY_WEAK_THRESHOLD
+    )
+
+    missing_geometry_penalty: float = (
+        DEFAULT_MISSING_GEOMETRY_PENALTY
+    )
+    missing_distance_penalty: float = (
+        DEFAULT_MISSING_DISTANCE_PENALTY
+    )
+    no_atomic_contact_penalty: float = (
+        DEFAULT_NO_ATOMIC_CONTACT_PENALTY
+    )
+    same_residue_penalty: float = (
+        DEFAULT_SAME_RESIDUE_PENALTY
+    )
+    intramolecular_penalty: float = (
+        DEFAULT_INTRAMOLECULAR_PENALTY
+    )
+    geometry_rejection_penalty: float = (
+        DEFAULT_GEOMETRY_REJECTION_PENALTY
+    )
+
+    contact_reference_count: int = (
+        DEFAULT_CONTACT_REFERENCE_COUNT
+    )
+
+    distance_decay_exponent: float = (
+        DEFAULT_DISTANCE_DECAY_EXPONENT
+    )
+    offset_decay_exponent: float = (
+        DEFAULT_OFFSET_DECAY_EXPONENT
+    )
+    angle_decay_exponent: float = (
+        DEFAULT_ANGLE_DECAY_EXPONENT
+    )
+
+    preserve_existing_scores: bool = False
+    reject_invalid_interactions: bool = True
+    clamp_component_scores: bool = True
+    round_digits: Optional[int] = 6
+
+    def __post_init__(self) -> None:
+        non_negative_float_fields = (
+            "distance_component_weight",
+            "orientation_component_weight",
+            "offset_component_weight",
+            "planarity_component_weight",
+            "contact_component_weight",
+            "geometry_score_weight",
+            "strength_score_weight",
+            "geometry_score_minimum",
+            "geometry_score_maximum",
+            "strength_score_minimum",
+            "strength_score_maximum",
+            "interaction_score_minimum",
+            "interaction_score_maximum",
+            "optimal_geometry_threshold",
+            "favorable_geometry_threshold",
+            "acceptable_geometry_threshold",
+            "weak_geometry_threshold",
+            "very_strong_threshold",
+            "strong_threshold",
+            "moderate_threshold",
+            "weak_threshold",
+            "very_weak_threshold",
+            "missing_geometry_penalty",
+            "missing_distance_penalty",
+            "no_atomic_contact_penalty",
+            "same_residue_penalty",
+            "intramolecular_penalty",
+            "geometry_rejection_penalty",
+            "distance_decay_exponent",
+            "offset_decay_exponent",
+            "angle_decay_exponent",
+        )
+
+        for field_name in non_negative_float_fields:
+            object.__setattr__(
+                self,
+                field_name,
+                _coerce_non_negative_float(
+                    getattr(self, field_name),
+                    field_name=(
+                        f"PiScoringConfig.{field_name}"
+                    ),
+                ),
+            )
+
+        contact_reference_count = int(
+            self.contact_reference_count
+        )
+
+        if contact_reference_count < 1:
+            raise ValueError(
+                "contact_reference_count must be at least 1."
+            )
+
+        object.__setattr__(
+            self,
+            "contact_reference_count",
+            contact_reference_count,
+        )
+
+        if (
+            self.geometry_score_minimum
+            > self.geometry_score_maximum
+        ):
+            raise ValueError(
+                "geometry_score_minimum cannot exceed "
+                "geometry_score_maximum."
+            )
+
+        if (
+            self.strength_score_minimum
+            > self.strength_score_maximum
+        ):
+            raise ValueError(
+                "strength_score_minimum cannot exceed "
+                "strength_score_maximum."
+            )
+
+        if (
+            self.interaction_score_minimum
+            > self.interaction_score_maximum
+        ):
+            raise ValueError(
+                "interaction_score_minimum cannot exceed "
+                "interaction_score_maximum."
+            )
+
+        if not (
+            self.optimal_geometry_threshold
+            >= self.favorable_geometry_threshold
+            >= self.acceptable_geometry_threshold
+            >= self.weak_geometry_threshold
+        ):
+            raise ValueError(
+                "Geometry thresholds must be monotonically decreasing."
+            )
+
+        if not (
+            self.very_strong_threshold
+            >= self.strong_threshold
+            >= self.moderate_threshold
+            >= self.weak_threshold
+            >= self.very_weak_threshold
+        ):
+            raise ValueError(
+                "Strength thresholds must be monotonically decreasing."
+            )
+
+        total_geometry_component_weight = (
+            self.distance_component_weight
+            + self.orientation_component_weight
+            + self.offset_component_weight
+            + self.planarity_component_weight
+            + self.contact_component_weight
+        )
+
+        if total_geometry_component_weight <= 0.0:
+            raise ValueError(
+                "At least one geometry-component weight must be positive."
+            )
+
+        total_final_weight = (
+            self.geometry_score_weight
+            + self.strength_score_weight
+        )
+
+        if total_final_weight <= 0.0:
+            raise ValueError(
+                "At least one final score weight must be positive."
+            )
+
+        if self.round_digits is not None:
+            round_digits = int(self.round_digits)
+
+            if round_digits < 0:
+                raise ValueError(
+                    "round_digits must be non-negative or None."
+                )
+
+            object.__setattr__(
+                self,
+                "round_digits",
+                round_digits,
+            )
+
+    @property
+    def geometry_component_weight_sum(self) -> float:
+        return (
+            self.distance_component_weight
+            + self.orientation_component_weight
+            + self.offset_component_weight
+            + self.planarity_component_weight
+            + self.contact_component_weight
+        )
+
+    @property
+    def final_weight_sum(self) -> float:
+        return (
+            self.geometry_score_weight
+            + self.strength_score_weight
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Convert the scoring configuration into a serializable dictionary.
+        """
+
+        return {
+            field_definition.name: getattr(
+                self,
+                field_definition.name,
+            )
+            for field_definition in fields(self)
+        }
+
+
+def create_default_pi_scoring_config() -> PiScoringConfig:
+    """
+    Create the default π-interaction scoring configuration.
+    """
+
+    return PiScoringConfig()
+
+
+# -----------------------------------------------------------------------------
+# 10.3. Resultado interno de classificação
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PiScoreComponents:
+    """
+    Normalized score components for one interaction.
+    """
+
+    distance: float
+    orientation: float
+    offset: float
+    planarity: float
+    contacts: float
+
+    raw_geometry_score: float
+    geometry_score: float
+
+    raw_strength_score: float
+    strength_score: float
+
+    penalty_score: float
+    total_score: float
+
+    geometry_class: str
+    strength_class: str
+
+    penalties: Tuple[str, ...] = ()
+    warnings: Tuple[str, ...] = ()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "distance": self.distance,
+            "orientation": self.orientation,
+            "offset": self.offset,
+            "planarity": self.planarity,
+            "contacts": self.contacts,
+            "raw_geometry_score": (
+                self.raw_geometry_score
+            ),
+            "geometry_score": self.geometry_score,
+            "raw_strength_score": (
+                self.raw_strength_score
+            ),
+            "strength_score": self.strength_score,
+            "penalty_score": self.penalty_score,
+            "total_score": self.total_score,
+            "geometry_class": self.geometry_class,
+            "strength_class": self.strength_class,
+            "penalties": list(self.penalties),
+            "warnings": list(self.warnings),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 10.4. Utilitários matemáticos
+# -----------------------------------------------------------------------------
+
+def clamp_score(
+    value: Number,
+    minimum: float = 0.0,
+    maximum: float = 1.0,
+) -> float:
+    """
+    Clamp a numeric score to a closed interval.
+    """
+
+    normalized_value = float(value)
+
+    if not math.isfinite(normalized_value):
+        return minimum
+
+    return max(
+        minimum,
+        min(
+            maximum,
+            normalized_value,
+        ),
+    )
+
+
+def normalize_score_range(
+    value: Number,
+    source_minimum: float,
+    source_maximum: float,
+    target_minimum: float = 0.0,
+    target_maximum: float = 1.0,
+) -> float:
+    """
+    Normalize a numeric value from one range to another.
+    """
+
+    source_minimum = float(source_minimum)
+    source_maximum = float(source_maximum)
+    target_minimum = float(target_minimum)
+    target_maximum = float(target_maximum)
+
+    if source_maximum <= source_minimum:
+        return target_minimum
+
+    normalized = (
+        (
+            float(value)
+            - source_minimum
+        )
+        / (
+            source_maximum
+            - source_minimum
+        )
+    )
+
+    normalized = clamp_score(
+        normalized,
+        0.0,
+        1.0,
+    )
+
+    return (
+        target_minimum
+        + normalized
+        * (
+            target_maximum
+            - target_minimum
+        )
+    )
+
+
+def inverse_linear_score(
+    value: Optional[Number],
+    *,
+    optimal: float,
+    maximum: float,
+    missing_score: float = 0.0,
+) -> float:
+    """
+    Return 1.0 at or below the optimal value and 0.0 at the maximum.
+    """
+
+    normalized_value = _normalize_optional_numeric(
+        value
+    )
+
+    if normalized_value is None:
+        return clamp_score(missing_score)
+
+    optimal = float(optimal)
+    maximum = float(maximum)
+
+    if maximum <= optimal:
+        return (
+            1.0
+            if normalized_value <= optimal
+            else 0.0
+        )
+
+    if normalized_value <= optimal:
+        return 1.0
+
+    if normalized_value >= maximum:
+        return 0.0
+
+    return clamp_score(
+        1.0
+        - (
+            normalized_value
+            - optimal
+        )
+        / (
+            maximum
+            - optimal
+        )
+    )
+
+
+def exponential_decay_score(
+    value: Optional[Number],
+    *,
+    optimal: float,
+    maximum: float,
+    exponent: float = 2.0,
+    missing_score: float = 0.0,
+) -> float:
+    """
+    Calculate a smooth normalized decay score.
+    """
+
+    normalized_value = _normalize_optional_numeric(
+        value
+    )
+
+    if normalized_value is None:
+        return clamp_score(missing_score)
+
+    if normalized_value <= optimal:
+        return 1.0
+
+    if normalized_value >= maximum:
+        return 0.0
+
+    denominator = max(
+        maximum - optimal,
+        1.0e-12,
+    )
+
+    relative_value = (
+        normalized_value - optimal
+    ) / denominator
+
+    return clamp_score(
+        1.0
+        - relative_value ** max(
+            float(exponent),
+            1.0e-12,
+        )
+    )
+
+
+def window_score(
+    value: Optional[Number],
+    *,
+    center: float,
+    half_width: float,
+    maximum_deviation: float,
+    exponent: float = 2.0,
+    missing_score: float = 0.0,
+) -> float:
+    """
+    Score how close a value lies to a preferred geometric window.
+    """
+
+    normalized_value = _normalize_optional_numeric(
+        value
+    )
+
+    if normalized_value is None:
+        return clamp_score(missing_score)
+
+    deviation = abs(
+        normalized_value - center
+    )
+
+    if deviation <= half_width:
+        return 1.0
+
+    if deviation >= maximum_deviation:
+        return 0.0
+
+    denominator = max(
+        maximum_deviation - half_width,
+        1.0e-12,
+    )
+
+    relative_value = (
+        deviation - half_width
+    ) / denominator
+
+    return clamp_score(
+        1.0
+        - relative_value ** max(
+            float(exponent),
+            1.0e-12,
+        )
+    )
+
+
+def weighted_mean_score(
+    values_and_weights: Iterable[
+        Tuple[Optional[Number], Number]
+    ],
+    *,
+    default: float = 0.0,
+) -> float:
+    """
+    Calculate a weighted mean while ignoring non-positive weights.
+    """
+
+    numerator = 0.0
+    denominator = 0.0
+
+    for value, weight in values_and_weights:
+        normalized_value = _normalize_optional_numeric(
+            value
+        )
+
+        normalized_weight = (
+            _normalize_optional_numeric(
+                weight
+            )
+        )
+
+        if (
+            normalized_value is None
+            or normalized_weight is None
+            or normalized_weight <= 0.0
+        ):
+            continue
+
+        numerator += (
+            normalized_value
+            * normalized_weight
+        )
+
+        denominator += normalized_weight
+
+    if denominator <= 0.0:
+        return float(default)
+
+    return numerator / denominator
+
+
+def round_pi_score(
+    value: float,
+    config: PiScoringConfig,
+) -> float:
+    """
+    Round a score according to the scoring configuration.
+    """
+
+    if config.round_digits is None:
+        return float(value)
+
+    return round(
+        float(value),
+        config.round_digits,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 10.5. Limites específicos por tipo
+# -----------------------------------------------------------------------------
+
+def get_interaction_distance_limits(
+    interaction_type: str,
+    limits: PiDetectionLimits,
+    geometry_class: Optional[str] = None,
+) -> Tuple[float, float]:
+    """
+    Return optimal and maximum distance for an interaction type.
+    """
+
+    normalized_type = _validate_interaction_type(
+        interaction_type
+    )
+
+    normalized_geometry = str(
+        geometry_class or ""
+    ).strip().lower()
+
+    if normalized_type == PI_PI:
+        if normalized_geometry == PI_PI_GEOMETRY_T_SHAPED:
+            optimal = (
+                DEFAULT_PI_PI_T_SHAPED_OPTIMAL_DISTANCE
+            )
+
+        else:
+            optimal = (
+                DEFAULT_PI_PI_PARALLEL_OPTIMAL_DISTANCE
+            )
+
+        maximum = (
+            limits.pi_pi_maximum_centroid_distance
+        )
+
+    elif normalized_type == CATION_PI:
+        optimal = DEFAULT_CATION_PI_OPTIMAL_DISTANCE
+        maximum = (
+            limits.cation_pi_maximum_center_distance
+        )
+
+    elif normalized_type == ANION_PI:
+        optimal = DEFAULT_ANION_PI_OPTIMAL_DISTANCE
+        maximum = (
+            limits.anion_pi_maximum_center_distance
+        )
+
+    elif normalized_type == AMIDE_PI:
+        optimal = DEFAULT_AMIDE_PI_OPTIMAL_DISTANCE
+        maximum = (
+            limits.amide_pi_maximum_center_distance
+        )
+
+    else:
+        optimal = 0.0
+        maximum = 1.0
+
+    return (
+        min(optimal, maximum),
+        maximum,
+    )
+
+
+def get_interaction_offset_limit(
+    interaction_type: str,
+    limits: PiDetectionLimits,
+) -> float:
+    """
+    Return the maximum lateral or radial offset.
+    """
+
+    normalized_type = _validate_interaction_type(
+        interaction_type
+    )
+
+    if normalized_type == PI_PI:
+        return limits.pi_pi_maximum_lateral_offset
+
+    if normalized_type == CATION_PI:
+        return limits.cation_pi_maximum_radial_offset
+
+    if normalized_type == ANION_PI:
+        return limits.anion_pi_maximum_radial_offset
+
+    if normalized_type == AMIDE_PI:
+        return limits.amide_pi_maximum_radial_offset
+
+    return 0.0
+
+
+# -----------------------------------------------------------------------------
+# 10.6. Score de distância
+# -----------------------------------------------------------------------------
+
+def calculate_pi_distance_component(
+    interaction: PiInteraction,
+    *,
+    limits: PiDetectionLimits,
+    scoring_config: PiScoringConfig,
+) -> float:
+    """
+    Calculate the normalized distance component.
+    """
+
+    optimal_distance, maximum_distance = (
+        get_interaction_distance_limits(
+            interaction.interaction_type,
+            limits,
+            interaction.geometry_class,
+        )
+    )
+
+    primary_distance = (
+        interaction.centroid_distance
+    )
+
+    if primary_distance is None:
+        primary_distance = (
+            interaction.minimum_atomic_distance
+        )
+
+    centroid_component = exponential_decay_score(
+        primary_distance,
+        optimal=optimal_distance,
+        maximum=maximum_distance,
+        exponent=(
+            scoring_config.distance_decay_exponent
+        ),
+        missing_score=0.0,
+    )
+
+    minimum_atomic_distance = (
+        interaction.minimum_atomic_distance
+    )
+
+    if minimum_atomic_distance is None:
+        return centroid_component
+
+    if interaction.interaction_type == PI_PI:
+        maximum_atomic_distance = (
+            limits.pi_pi_maximum_atomic_distance
+        )
+
+    elif interaction.interaction_type == CATION_PI:
+        maximum_atomic_distance = (
+            limits.cation_pi_maximum_atomic_distance
+        )
+
+    elif interaction.interaction_type == ANION_PI:
+        maximum_atomic_distance = (
+            limits.anion_pi_maximum_atomic_distance
+        )
+
+    elif interaction.interaction_type == AMIDE_PI:
+        maximum_atomic_distance = (
+            limits.amide_pi_maximum_atomic_distance
+        )
+
+    else:
+        maximum_atomic_distance = maximum_distance
+
+    atomic_component = exponential_decay_score(
+        minimum_atomic_distance,
+        optimal=min(
+            optimal_distance,
+            maximum_atomic_distance,
+        ),
+        maximum=maximum_atomic_distance,
+        exponent=(
+            scoring_config.distance_decay_exponent
+        ),
+        missing_score=0.0,
+    )
+
+    return clamp_score(
+        weighted_mean_score(
+            (
+                (centroid_component, 0.65),
+                (atomic_component, 0.35),
+            )
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 10.7. Score de orientação π–π
+# -----------------------------------------------------------------------------
+
+def calculate_pi_pi_orientation_component(
+    interaction: PiInteraction,
+    *,
+    limits: PiDetectionLimits,
+    scoring_config: PiScoringConfig,
+) -> float:
+    """
+    Calculate the orientation component for a π–π interaction.
+    """
+
+    angle = (
+        interaction.normal_angle
+        if interaction.normal_angle is not None
+        else interaction.plane_angle
+    )
+
+    angle = _normalize_optional_numeric(
+        angle
+    )
+
+    if angle is None:
+        return 0.0
+
+    geometry_class = str(
+        interaction.geometry_class or ""
+    ).strip().lower()
+
+    if geometry_class in {
+        PI_PI_GEOMETRY_PARALLEL,
+        PI_PI_GEOMETRY_OFFSET_PARALLEL,
+    }:
+        return exponential_decay_score(
+            angle,
+            optimal=0.0,
+            maximum=(
+                limits.pi_pi_parallel_maximum_angle
+            ),
+            exponent=(
+                scoring_config.angle_decay_exponent
+            ),
+        )
+
+    if geometry_class == PI_PI_GEOMETRY_T_SHAPED:
+        preferred_angle = (
+            limits.pi_pi_t_shaped_minimum_angle
+            + limits.pi_pi_t_shaped_maximum_angle
+        ) / 2.0
+
+        half_width = (
+            limits.pi_pi_t_shaped_maximum_angle
+            - limits.pi_pi_t_shaped_minimum_angle
+        ) / 2.0
+
+        return window_score(
+            angle,
+            center=preferred_angle,
+            half_width=half_width,
+            maximum_deviation=max(
+                preferred_angle,
+                90.0 - preferred_angle,
+            ),
+            exponent=(
+                scoring_config.angle_decay_exponent
+            ),
+        )
+
+    parallel_score = exponential_decay_score(
+        angle,
+        optimal=0.0,
+        maximum=(
+            limits.pi_pi_parallel_maximum_angle
+        ),
+        exponent=scoring_config.angle_decay_exponent,
+    )
+
+    t_shaped_score = window_score(
+        angle,
+        center=90.0,
+        half_width=max(
+            0.0,
+            90.0
+            - limits.pi_pi_t_shaped_minimum_angle,
+        ),
+        maximum_deviation=90.0,
+        exponent=scoring_config.angle_decay_exponent,
+    )
+
+    return max(
+        parallel_score,
+        t_shaped_score,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 10.8. Score de orientação cation–π e anion–π
+# -----------------------------------------------------------------------------
+
+def calculate_charged_pi_orientation_component(
+    interaction: PiInteraction,
+    *,
+    limits: PiDetectionLimits,
+    scoring_config: PiScoringConfig,
+) -> float:
+    """
+    Calculate the directional component for a charged-group–π interaction.
+    """
+
+    angle = (
+        interaction.normal_angle
+        if interaction.normal_angle is not None
+        else interaction.plane_angle
+    )
+
+    normalized_type = _validate_interaction_type(
+        interaction.interaction_type
+    )
+
+    if normalized_type == CATION_PI:
+        maximum_angle = (
+            limits.cation_pi_maximum_direction_angle
+        )
+
+    elif normalized_type == ANION_PI:
+        maximum_angle = (
+            limits.anion_pi_maximum_direction_angle
+        )
+
+    else:
+        return 0.0
+
+    if angle is None:
+        direction = (
+            interaction.charged_group.direction
+            if interaction.charged_group is not None
+            and hasattr(
+                interaction.charged_group,
+                "direction",
+            )
+            else None
+        )
+
+        if direction is None:
+            return 0.75
+
+        return 0.0
+
+    return exponential_decay_score(
+        angle,
+        optimal=0.0,
+        maximum=maximum_angle,
+        exponent=(
+            scoring_config.angle_decay_exponent
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 10.9. Score de orientação amide–π
+# -----------------------------------------------------------------------------
+
+def calculate_amide_pi_orientation_component(
+    interaction: PiInteraction,
+    *,
+    limits: PiDetectionLimits,
+    scoring_config: PiScoringConfig,
+) -> float:
+    """
+    Calculate the orientation component for an amide–π interaction.
+    """
+
+    angle = (
+        interaction.plane_angle
+        if interaction.plane_angle is not None
+        else interaction.normal_angle
+    )
+
+    angle = _normalize_optional_numeric(
+        angle
+    )
+
+    if angle is None:
+        return 0.0
+
+    geometry_class = str(
+        interaction.geometry_class or ""
+    ).strip().lower()
+
+    if geometry_class == AMIDE_PI_GEOMETRY_PARALLEL:
+        return exponential_decay_score(
+            angle,
+            optimal=0.0,
+            maximum=(
+                limits.amide_pi_parallel_maximum_angle
+            ),
+            exponent=(
+                scoring_config.angle_decay_exponent
+            ),
+        )
+
+    if geometry_class == AMIDE_PI_GEOMETRY_PERPENDICULAR:
+        minimum_angle = (
+            limits.amide_pi_perpendicular_minimum_angle
+        )
+
+        return window_score(
+            angle,
+            center=90.0,
+            half_width=max(
+                0.0,
+                90.0 - minimum_angle,
+            ),
+            maximum_deviation=90.0,
+            exponent=(
+                scoring_config.angle_decay_exponent
+            ),
+        )
+
+    parallel_score = exponential_decay_score(
+        angle,
+        optimal=0.0,
+        maximum=(
+            limits.amide_pi_parallel_maximum_angle
+        ),
+        exponent=scoring_config.angle_decay_exponent,
+    )
+
+    perpendicular_score = window_score(
+        angle,
+        center=90.0,
+        half_width=max(
+            0.0,
+            90.0
+            - limits.amide_pi_perpendicular_minimum_angle,
+        ),
+        maximum_deviation=90.0,
+        exponent=scoring_config.angle_decay_exponent,
+    )
+
+    return max(
+        parallel_score,
+        perpendicular_score,
+    )
+
+
+def calculate_pi_orientation_component(
+    interaction: PiInteraction,
+    *,
+    limits: PiDetectionLimits,
+    scoring_config: PiScoringConfig,
+) -> float:
+    """
+    Dispatch orientation scoring by interaction type.
+    """
+
+    interaction_type = _validate_interaction_type(
+        interaction.interaction_type
+    )
+
+    if interaction_type == PI_PI:
+        return calculate_pi_pi_orientation_component(
+            interaction,
+            limits=limits,
+            scoring_config=scoring_config,
+        )
+
+    if interaction_type in {
+        CATION_PI,
+        ANION_PI,
+    }:
+        return calculate_charged_pi_orientation_component(
+            interaction,
+            limits=limits,
+            scoring_config=scoring_config,
+        )
+
+    if interaction_type == AMIDE_PI:
+        return calculate_amide_pi_orientation_component(
+            interaction,
+            limits=limits,
+            scoring_config=scoring_config,
+        )
+
+    return 0.0
+
+
+# -----------------------------------------------------------------------------
+# 10.10. Score de offset
+# -----------------------------------------------------------------------------
+
+def calculate_pi_offset_component(
+    interaction: PiInteraction,
+    *,
+    limits: PiDetectionLimits,
+    scoring_config: PiScoringConfig,
+) -> float:
+    """
+    Calculate the lateral or radial offset component.
+    """
+
+    offset = (
+        interaction.radial_offset
+        if interaction.radial_offset is not None
+        else interaction.lateral_offset
+    )
+
+    maximum_offset = get_interaction_offset_limit(
+        interaction.interaction_type,
+        limits,
+    )
+
+    if maximum_offset <= 0.0:
+        return 0.0
+
+    preferred_offset = 0.0
+
+    if (
+        interaction.interaction_type == PI_PI
+        and interaction.geometry_class
+        == PI_PI_GEOMETRY_OFFSET_PARALLEL
+    ):
+        preferred_offset = min(
+            1.50,
+            maximum_offset,
+        )
+
+    if preferred_offset <= 0.0:
+        return exponential_decay_score(
+            offset,
+            optimal=0.0,
+            maximum=maximum_offset,
+            exponent=(
+                scoring_config.offset_decay_exponent
+            ),
+        )
+
+    return window_score(
+        offset,
+        center=preferred_offset,
+        half_width=min(
+            0.75,
+            maximum_offset / 4.0,
+        ),
+        maximum_deviation=max(
+            maximum_offset,
+            preferred_offset,
+        ),
+        exponent=(
+            scoring_config.offset_decay_exponent
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 10.11. Score de planaridade
+# -----------------------------------------------------------------------------
+
+def calculate_single_planarity_component(
+    planarity_rmsd: Optional[Number],
+    *,
+    preferred_rmsd: float,
+    maximum_rmsd: float,
+) -> float:
+    """
+    Convert a planarity RMSD into a normalized score.
+    """
+
+    return inverse_linear_score(
+        planarity_rmsd,
+        optimal=preferred_rmsd,
+        maximum=maximum_rmsd,
+        missing_score=0.5,
+    )
+
+
+def calculate_pi_planarity_component(
+    interaction: PiInteraction,
+) -> float:
+    """
+    Calculate the planarity component of an interaction.
+    """
+
+    components: List[float] = []
+
+    ring_1_planarity = (
+        interaction.ring_1_planarity
+    )
+
+    if ring_1_planarity is None:
+        if interaction.ring_1 is not None:
+            ring_1_planarity = (
+                interaction.ring_1.planarity_rmsd
+            )
+
+    components.append(
+        calculate_single_planarity_component(
+            ring_1_planarity,
+            preferred_rmsd=0.10,
+            maximum_rmsd=0.35,
+        )
+    )
+
+    if interaction.interaction_type == PI_PI:
+        ring_2_planarity = (
+            interaction.ring_2_planarity
+        )
+
+        if (
+            ring_2_planarity is None
+            and interaction.ring_2 is not None
+        ):
+            ring_2_planarity = (
+                interaction.ring_2.planarity_rmsd
+            )
+
+        components.append(
+            calculate_single_planarity_component(
+                ring_2_planarity,
+                preferred_rmsd=0.10,
+                maximum_rmsd=0.35,
+            )
+        )
+
+    elif (
+        interaction.interaction_type == AMIDE_PI
+        and interaction.amide_group is not None
+    ):
+        components.append(
+            calculate_single_planarity_component(
+                interaction.amide_group.planarity_rmsd,
+                preferred_rmsd=(
+                    DEFAULT_AMIDE_PLANARITY_RMSD
+                ),
+                maximum_rmsd=(
+                    DEFAULT_MAXIMUM_AMIDE_PLANARITY_RMSD
+                ),
+            )
+        )
+
+    if not components:
+        return 0.0
+
+    return clamp_score(
+        sum(components) / len(components)
+    )
+
+
+# -----------------------------------------------------------------------------
+# 10.12. Score de contatos atômicos
+# -----------------------------------------------------------------------------
+
+def calculate_pi_contact_component(
+    interaction: PiInteraction,
+    *,
+    scoring_config: PiScoringConfig,
+) -> float:
+    """
+    Calculate an atomic-contact component.
+    """
+
+    contacts = tuple(
+        interaction.atomic_contacts or ()
+    )
+
+    if not contacts:
+        return 0.0
+
+    reference_count = max(
+        scoring_config.contact_reference_count,
+        1,
+    )
+
+    count_component = clamp_score(
+        len(contacts) / reference_count
+    )
+
+    valid_distances = [
+        contact.distance
+        for contact in contacts
+        if (
+            contact.distance is not None
+            and math.isfinite(
+                float(contact.distance)
+            )
+        )
+    ]
+
+    if not valid_distances:
+        return count_component
+
+    mean_distance = (
+        sum(valid_distances)
+        / len(valid_distances)
+    )
+
+    distance_component = exponential_decay_score(
+        mean_distance,
+        optimal=3.50,
+        maximum=5.50,
+        exponent=2.0,
+    )
+
+    return clamp_score(
+        weighted_mean_score(
+            (
+                (count_component, 0.55),
+                (distance_component, 0.45),
+            )
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 10.13. Score geométrico bruto
+# -----------------------------------------------------------------------------
+
+def calculate_pi_geometry_score(
+    interaction: PiInteraction,
+    *,
+    limits: Optional[PiDetectionLimits] = None,
+    scoring_config: Optional[PiScoringConfig] = None,
+) -> Tuple[
+    float,
+    Dict[str, float],
+]:
+    """
+    Calculate the normalized geometry score and its components.
+    """
+
+    detection_limits = (
+        limits
+        if limits is not None
+        else PiDetectionLimits()
+    )
+
+    config = (
+        scoring_config
+        if scoring_config is not None
+        else create_default_pi_scoring_config()
+    )
+
+    distance_component = (
+        calculate_pi_distance_component(
+            interaction,
+            limits=detection_limits,
+            scoring_config=config,
+        )
+    )
+
+    orientation_component = (
+        calculate_pi_orientation_component(
+            interaction,
+            limits=detection_limits,
+            scoring_config=config,
+        )
+    )
+
+    offset_component = (
+        calculate_pi_offset_component(
+            interaction,
+            limits=detection_limits,
+            scoring_config=config,
+        )
+    )
+
+    planarity_component = (
+        calculate_pi_planarity_component(
+            interaction
+        )
+    )
+
+    contact_component = (
+        calculate_pi_contact_component(
+            interaction,
+            scoring_config=config,
+        )
+    )
+
+    raw_score = weighted_mean_score(
+        (
+            (
+                distance_component,
+                config.distance_component_weight,
+            ),
+            (
+                orientation_component,
+                config.orientation_component_weight,
+            ),
+            (
+                offset_component,
+                config.offset_component_weight,
+            ),
+            (
+                planarity_component,
+                config.planarity_component_weight,
+            ),
+            (
+                contact_component,
+                config.contact_component_weight,
+            ),
+        )
+    )
+
+    if config.clamp_component_scores:
+        raw_score = clamp_score(
+            raw_score,
+            0.0,
+            1.0,
+        )
+
+    geometry_score = normalize_score_range(
+        raw_score,
+        0.0,
+        1.0,
+        config.geometry_score_minimum,
+        config.geometry_score_maximum,
+    )
+
+    geometry_score = round_pi_score(
+        geometry_score,
+        config,
+    )
+
+    return (
+        geometry_score,
+        {
+            "distance": round_pi_score(
+                distance_component,
+                config,
+            ),
+            "orientation": round_pi_score(
+                orientation_component,
+                config,
+            ),
+            "offset": round_pi_score(
+                offset_component,
+                config,
+            ),
+            "planarity": round_pi_score(
+                planarity_component,
+                config,
+            ),
+            "contacts": round_pi_score(
+                contact_component,
+                config,
+            ),
+            "raw_geometry_score": round_pi_score(
+                raw_score,
+                config,
+            ),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 10.14. Classificação geométrica final
+# -----------------------------------------------------------------------------
+
+def classify_final_geometry(
+    geometry_score: Optional[Number],
+    *,
+    scoring_config: Optional[PiScoringConfig] = None,
+    valid: bool = True,
+) -> str:
+    """
+    Classify a normalized geometry score.
+    """
+
+    config = (
+        scoring_config
+        if scoring_config is not None
+        else create_default_pi_scoring_config()
+    )
+
+    score = _normalize_optional_numeric(
+        geometry_score
+    )
+
+    if score is None:
+        return GEOMETRY_CLASS_UNCLASSIFIED
+
+    if not valid:
+        return GEOMETRY_CLASS_REJECTED
+
+    normalized_score = normalize_score_range(
+        score,
+        config.geometry_score_minimum,
+        config.geometry_score_maximum,
+        0.0,
+        1.0,
+    )
+
+    if (
+        normalized_score
+        >= config.optimal_geometry_threshold
+    ):
+        return GEOMETRY_CLASS_OPTIMAL
+
+    if (
+        normalized_score
+        >= config.favorable_geometry_threshold
+    ):
+        return GEOMETRY_CLASS_FAVORABLE
+
+    if (
+        normalized_score
+        >= config.acceptable_geometry_threshold
+    ):
+        return GEOMETRY_CLASS_ACCEPTABLE
+
+    if (
+        normalized_score
+        >= config.weak_geometry_threshold
+    ):
+        return GEOMETRY_CLASS_WEAK
+
+    return GEOMETRY_CLASS_REJECTED
+
+
+# -----------------------------------------------------------------------------
+# 10.15. Score de força
+# -----------------------------------------------------------------------------
+
+def calculate_charge_magnitude_component(
+    interaction: PiInteraction,
+) -> float:
+    """
+    Calculate charge-based strength contribution.
+    """
+
+    if interaction.interaction_type not in {
+        CATION_PI,
+        ANION_PI,
+    }:
+        return 1.0
+
+    charged_group = interaction.charged_group
+
+    if charged_group is None:
+        return 0.0
+
+    charge = getattr(
+        charged_group,
+        "effective_charge",
+        None,
+    )
+
+    charge = _normalize_optional_numeric(
+        charge
+    )
+
+    if charge is None:
+        charge = getattr(
+            charged_group,
+            "formal_charge",
+            None,
+        )
+
+        charge = _normalize_optional_numeric(
+            charge
+        )
+
+    if charge is None:
+        return 0.5
+
+    return clamp_score(
+        abs(charge),
+        0.0,
+        1.0,
+    )
+
+
+def calculate_geometry_class_prior(
+    geometry_class: Optional[str],
+) -> float:
+    """
+    Return a prior score associated with the preliminary geometry subtype.
+    """
+
+    normalized = str(
+        geometry_class or ""
+    ).strip().lower()
+
+    priors = {
+        PI_PI_GEOMETRY_PARALLEL: 0.95,
+        PI_PI_GEOMETRY_OFFSET_PARALLEL: 1.00,
+        PI_PI_GEOMETRY_T_SHAPED: 0.90,
+        PI_PI_GEOMETRY_INTERMEDIATE: 0.45,
+        AMIDE_PI_GEOMETRY_PARALLEL: 0.95,
+        AMIDE_PI_GEOMETRY_PERPENDICULAR: 0.90,
+        AMIDE_PI_GEOMETRY_INTERMEDIATE: 0.45,
+        "face_centered": 1.00,
+        "offset": 0.80,
+        GEOMETRY_CLASS_OPTIMAL: 1.00,
+        GEOMETRY_CLASS_FAVORABLE: 0.85,
+        GEOMETRY_CLASS_ACCEPTABLE: 0.65,
+        GEOMETRY_CLASS_WEAK: 0.35,
+        GEOMETRY_CLASS_REJECTED: 0.00,
+    }
+
+    return priors.get(
+        normalized,
+        0.75,
+    )
+
+
+def calculate_pi_strength_score(
+    interaction: PiInteraction,
+    *,
+    geometry_score: float,
+    geometry_components: Mapping[str, float],
+    scoring_config: Optional[PiScoringConfig] = None,
+) -> float:
+    """
+    Calculate the normalized interaction-strength score.
+    """
+
+    config = (
+        scoring_config
+        if scoring_config is not None
+        else create_default_pi_scoring_config()
+    )
+
+    normalized_geometry_score = (
+        normalize_score_range(
+            geometry_score,
+            config.geometry_score_minimum,
+            config.geometry_score_maximum,
+            0.0,
+            1.0,
+        )
+    )
+
+    distance_component = float(
+        geometry_components.get(
+            "distance",
+            0.0,
+        )
+    )
+
+    contact_component = float(
+        geometry_components.get(
+            "contacts",
+            0.0,
+        )
+    )
+
+    charge_component = (
+        calculate_charge_magnitude_component(
+            interaction
+        )
+    )
+
+    geometry_prior = (
+        calculate_geometry_class_prior(
+            interaction.geometry_class
+        )
+    )
+
+    if interaction.interaction_type == PI_PI:
+        weighted_components = (
+            (
+                normalized_geometry_score,
+                0.45,
+            ),
+            (
+                distance_component,
+                0.20,
+            ),
+            (
+                contact_component,
+                0.20,
+            ),
+            (
+                geometry_prior,
+                0.15,
+            ),
+        )
+
+    elif interaction.interaction_type in {
+        CATION_PI,
+        ANION_PI,
+    }:
+        weighted_components = (
+            (
+                normalized_geometry_score,
+                0.40,
+            ),
+            (
+                distance_component,
+                0.20,
+            ),
+            (
+                contact_component,
+                0.15,
+            ),
+            (
+                charge_component,
+                0.15,
+            ),
+            (
+                geometry_prior,
+                0.10,
+            ),
+        )
+
+    elif interaction.interaction_type == AMIDE_PI:
+        weighted_components = (
+            (
+                normalized_geometry_score,
+                0.45,
+            ),
+            (
+                distance_component,
+                0.20,
+            ),
+            (
+                contact_component,
+                0.20,
+            ),
+            (
+                geometry_prior,
+                0.15,
+            ),
+        )
+
+    else:
+        weighted_components = (
+            (
+                normalized_geometry_score,
+                1.0,
+            ),
+        )
+
+    raw_strength_score = weighted_mean_score(
+        weighted_components
+    )
+
+    if config.clamp_component_scores:
+        raw_strength_score = clamp_score(
+            raw_strength_score,
+            0.0,
+            1.0,
+        )
+
+    strength_score = normalize_score_range(
+        raw_strength_score,
+        0.0,
+        1.0,
+        config.strength_score_minimum,
+        config.strength_score_maximum,
+    )
+
+    return round_pi_score(
+        strength_score,
+        config,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 10.16. Classificação de força
+# -----------------------------------------------------------------------------
+
+def classify_pi_strength(
+    strength_score: Optional[Number],
+    *,
+    scoring_config: Optional[PiScoringConfig] = None,
+    valid: bool = True,
+) -> str:
+    """
+    Classify the final interaction-strength score.
+    """
+
+    config = (
+        scoring_config
+        if scoring_config is not None
+        else create_default_pi_scoring_config()
+    )
+
+    score = _normalize_optional_numeric(
+        strength_score
+    )
+
+    if score is None:
+        return STRENGTH_CLASS_UNCLASSIFIED
+
+    if not valid:
+        return STRENGTH_CLASS_REJECTED
+
+    normalized_score = normalize_score_range(
+        score,
+        config.strength_score_minimum,
+        config.strength_score_maximum,
+        0.0,
+        1.0,
+    )
+
+    if (
+        normalized_score
+        >= config.very_strong_threshold
+    ):
+        return STRENGTH_CLASS_VERY_STRONG
+
+    if normalized_score >= config.strong_threshold:
+        return STRENGTH_CLASS_STRONG
+
+    if (
+        normalized_score
+        >= config.moderate_threshold
+    ):
+        return STRENGTH_CLASS_MODERATE
+
+    if normalized_score >= config.weak_threshold:
+        return STRENGTH_CLASS_WEAK
+
+    if (
+        normalized_score
+        >= config.very_weak_threshold
+    ):
+        return STRENGTH_CLASS_VERY_WEAK
+
+    return STRENGTH_CLASS_REJECTED
+
+
+# -----------------------------------------------------------------------------
+# 10.17. Penalidades
+# -----------------------------------------------------------------------------
+
+def calculate_pi_interaction_penalties(
+    interaction: PiInteraction,
+    *,
+    geometry_class: str,
+    scoring_config: Optional[PiScoringConfig] = None,
+) -> Tuple[float, Tuple[str, ...]]:
+    """
+    Calculate penalties applied to the final score.
+    """
+
+    config = (
+        scoring_config
+        if scoring_config is not None
+        else create_default_pi_scoring_config()
+    )
+
+    penalty_score = 0.0
+    penalties: List[str] = []
+
+    if (
+        interaction.centroid_distance is None
+        and interaction.minimum_atomic_distance
+        is None
+    ):
+        penalty_score += (
+            config.missing_distance_penalty
+        )
+
+        penalties.append(
+            "missing_distance"
+        )
+
+    if (
+        interaction.normal_angle is None
+        and interaction.plane_angle is None
+    ):
+        penalty_score += (
+            config.missing_geometry_penalty
+        )
+
+        penalties.append(
+            "missing_orientation"
+        )
+
+    if not interaction.atomic_contacts:
+        penalty_score += (
+            config.no_atomic_contact_penalty
+        )
+
+        penalties.append(
+            "no_atomic_contacts"
+        )
+
+    residue_ids = interaction.metadata.get(
+        "residue_ids",
+        (),
+    )
+
+    if (
+        isinstance(residue_ids, Sequence)
+        and not isinstance(
+            residue_ids,
+            (str, bytes),
+        )
+        and len(residue_ids) >= 2
+        and residue_ids[0] == residue_ids[1]
+    ):
+        penalty_score += (
+            config.same_residue_penalty
+        )
+
+        penalties.append(
+            "same_residue"
+        )
+
+    participant_1 = normalize_residue_role(
+        interaction.participant_1_type
+    )
+
+    participant_2 = normalize_residue_role(
+        interaction.participant_2_type
+    )
+
+    if (
+        participant_1 != RESIDUE_ROLE_UNKNOWN
+        and participant_1 == participant_2
+    ):
+        penalty_score += (
+            config.intramolecular_penalty
+        )
+
+        penalties.append(
+            "intramolecular"
+        )
+
+    if geometry_class == GEOMETRY_CLASS_REJECTED:
+        penalty_score += (
+            config.geometry_rejection_penalty
+        )
+
+        penalties.append(
+            "rejected_geometry"
+        )
+
+    if (
+        config.reject_invalid_interactions
+        and not interaction.valid
+    ):
+        penalty_score = max(
+            penalty_score,
+            1.0,
+        )
+
+        penalties.append(
+            "invalid_interaction"
+        )
+
+    return (
+        clamp_score(
+            penalty_score,
+            0.0,
+            1.0,
+        ),
+        tuple(
+            dict.fromkeys(penalties)
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 10.18. Score total
+# -----------------------------------------------------------------------------
+
+def calculate_pi_total_score(
+    geometry_score: float,
+    strength_score: float,
+    penalty_score: float,
+    *,
+    scoring_config: Optional[PiScoringConfig] = None,
+) -> float:
+    """
+    Calculate the final interaction score.
+    """
+
+    config = (
+        scoring_config
+        if scoring_config is not None
+        else create_default_pi_scoring_config()
+    )
+
+    normalized_geometry_score = normalize_score_range(
+        geometry_score,
+        config.geometry_score_minimum,
+        config.geometry_score_maximum,
+        0.0,
+        1.0,
+    )
+
+    normalized_strength_score = normalize_score_range(
+        strength_score,
+        config.strength_score_minimum,
+        config.strength_score_maximum,
+        0.0,
+        1.0,
+    )
+
+    raw_total_score = weighted_mean_score(
+        (
+            (
+                normalized_geometry_score,
+                config.geometry_score_weight,
+            ),
+            (
+                normalized_strength_score,
+                config.strength_score_weight,
+            ),
+        )
+    )
+
+    penalized_score = (
+        raw_total_score
+        * (
+            1.0
+            - clamp_score(
+                penalty_score,
+                0.0,
+                1.0,
+            )
+        )
+    )
+
+    total_score = normalize_score_range(
+        penalized_score,
+        0.0,
+        1.0,
+        config.interaction_score_minimum,
+        config.interaction_score_maximum,
+    )
+
+    return round_pi_score(
+        total_score,
+        config,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 10.19. Classificação completa de uma interação
+# -----------------------------------------------------------------------------
+
+def score_pi_interaction(
+    interaction: PiInteraction,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    limits: Optional[PiDetectionLimits] = None,
+    scoring_config: Optional[PiScoringConfig] = None,
+    update_interaction: bool = True,
+) -> PiScoreComponents:
+    """
+    Calculate geometry, strength and total scores for one interaction.
+    """
+
+    if not isinstance(
+        interaction,
+        PiInteraction,
+    ):
+        raise TypeError(
+            "interaction must be a PiInteraction."
+        )
+
+    detection_limits = (
+        limits
+        if limits is not None
+        else create_pi_detection_limits(
+            config
+        )
+    )
+
+    score_config = (
+        scoring_config
+        if scoring_config is not None
+        else create_default_pi_scoring_config()
+    )
+
+    if (
+        score_config.preserve_existing_scores
+        and interaction.geometry_score is not None
+        and interaction.strength_score is not None
+        and interaction.total_score is not None
+    ):
+        existing_geometry_score = float(
+            interaction.geometry_score
+        )
+
+        existing_strength_score = float(
+            interaction.strength_score
+        )
+
+        existing_total_score = float(
+            interaction.total_score
+        )
+
+        return PiScoreComponents(
+            distance=float(
+                interaction.metadata.get(
+                    "score_components",
+                    {},
+                ).get(
+                    "distance",
+                    0.0,
+                )
+            ),
+            orientation=float(
+                interaction.metadata.get(
+                    "score_components",
+                    {},
+                ).get(
+                    "orientation",
+                    0.0,
+                )
+            ),
+            offset=float(
+                interaction.metadata.get(
+                    "score_components",
+                    {},
+                ).get(
+                    "offset",
+                    0.0,
+                )
+            ),
+            planarity=float(
+                interaction.metadata.get(
+                    "score_components",
+                    {},
+                ).get(
+                    "planarity",
+                    0.0,
+                )
+            ),
+            contacts=float(
+                interaction.metadata.get(
+                    "score_components",
+                    {},
+                ).get(
+                    "contacts",
+                    0.0,
+                )
+            ),
+            raw_geometry_score=float(
+                interaction.metadata.get(
+                    "score_components",
+                    {},
+                ).get(
+                    "raw_geometry_score",
+                    existing_geometry_score,
+                )
+            ),
+            geometry_score=existing_geometry_score,
+            raw_strength_score=float(
+                interaction.metadata.get(
+                    "score_components",
+                    {},
+                ).get(
+                    "raw_strength_score",
+                    existing_strength_score,
+                )
+            ),
+            strength_score=existing_strength_score,
+            penalty_score=float(
+                interaction.metadata.get(
+                    "score_components",
+                    {},
+                ).get(
+                    "penalty_score",
+                    0.0,
+                )
+            ),
+            total_score=existing_total_score,
+            geometry_class=(
+                interaction.geometry_class
+                or GEOMETRY_CLASS_UNCLASSIFIED
+            ),
+            strength_class=(
+                interaction.strength_class
+                or STRENGTH_CLASS_UNCLASSIFIED
+            ),
+            penalties=tuple(
+                interaction.metadata.get(
+                    "penalties",
+                    (),
+                )
+            ),
+        )
+
+    preliminary_geometry_class = (
+        interaction.geometry_class
+    )
+
+    geometry_score, geometry_components = (
+        calculate_pi_geometry_score(
+            interaction,
+            limits=detection_limits,
+            scoring_config=score_config,
+        )
+    )
+
+    final_geometry_class = (
+        classify_final_geometry(
+            geometry_score,
+            scoring_config=score_config,
+            valid=interaction.valid,
+        )
+    )
+
+    strength_score = (
+        calculate_pi_strength_score(
+            interaction,
+            geometry_score=geometry_score,
+            geometry_components=(
+                geometry_components
+            ),
+            scoring_config=score_config,
+        )
+    )
+
+    strength_class = classify_pi_strength(
+        strength_score,
+        scoring_config=score_config,
+        valid=interaction.valid,
+    )
+
+    penalty_score, penalties = (
+        calculate_pi_interaction_penalties(
+            interaction,
+            geometry_class=final_geometry_class,
+            scoring_config=score_config,
+        )
+    )
+
+    total_score = calculate_pi_total_score(
+        geometry_score,
+        strength_score,
+        penalty_score,
+        scoring_config=score_config,
+    )
+
+    raw_strength_score = normalize_score_range(
+        strength_score,
+        score_config.strength_score_minimum,
+        score_config.strength_score_maximum,
+        0.0,
+        1.0,
+    )
+
+    components = PiScoreComponents(
+        distance=geometry_components[
+            "distance"
+        ],
+        orientation=geometry_components[
+            "orientation"
+        ],
+        offset=geometry_components[
+            "offset"
+        ],
+        planarity=geometry_components[
+            "planarity"
+        ],
+        contacts=geometry_components[
+            "contacts"
+        ],
+        raw_geometry_score=geometry_components[
+            "raw_geometry_score"
+        ],
+        geometry_score=geometry_score,
+        raw_strength_score=round_pi_score(
+            raw_strength_score,
+            score_config,
+        ),
+        strength_score=strength_score,
+        penalty_score=round_pi_score(
+            penalty_score,
+            score_config,
+        ),
+        total_score=total_score,
+        geometry_class=final_geometry_class,
+        strength_class=strength_class,
+        penalties=penalties,
+    )
+
+    if update_interaction:
+        interaction.geometry_score = (
+            components.geometry_score
+        )
+
+        interaction.strength_score = (
+            components.strength_score
+        )
+
+        interaction.total_score = (
+            components.total_score
+        )
+
+        interaction.geometry_class = (
+            components.geometry_class
+        )
+
+        interaction.strength_class = (
+            components.strength_class
+        )
+
+        interaction.metadata[
+            "preliminary_geometry_class"
+        ] = preliminary_geometry_class
+
+        interaction.metadata[
+            "score_components"
+        ] = components.to_dict()
+
+        interaction.metadata[
+            "penalties"
+        ] = list(penalties)
+
+        interaction.metadata[
+            "scoring_config"
+        ] = score_config.to_dict()
+
+        interaction.metadata[
+            "detection_limits"
+        ] = detection_limits.to_dict()
+
+        interaction.metadata[
+            "scored"
+        ] = True
+
+        if penalties:
+            for penalty in penalties:
+                warning = (
+                    f"Score penalty applied: "
+                    f"{penalty}."
+                )
+
+                if warning not in interaction.warnings:
+                    interaction.warnings.append(
+                        warning
+                    )
+
+    return components
+
+
+# -----------------------------------------------------------------------------
+# 10.20. Classificação em lote
+# -----------------------------------------------------------------------------
+
+def score_pi_interactions(
+    interactions: Iterable[PiInteraction],
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    limits: Optional[PiDetectionLimits] = None,
+    scoring_config: Optional[PiScoringConfig] = None,
+    include_invalid: bool = True,
+    sort_results: bool = True,
+    update_interactions: bool = True,
+) -> List[PiInteraction]:
+    """
+    Score and classify multiple π interactions.
+    """
+
+    detection_limits = (
+        limits
+        if limits is not None
+        else create_pi_detection_limits(
+            config
+        )
+    )
+
+    score_config = (
+        scoring_config
+        if scoring_config is not None
+        else create_default_pi_scoring_config()
+    )
+
+    scored: List[PiInteraction] = []
+
+    for interaction in interactions:
+        if (
+            not include_invalid
+            and not interaction.valid
+        ):
+            continue
+
+        score_pi_interaction(
+            interaction,
+            config=config,
+            limits=detection_limits,
+            scoring_config=score_config,
+            update_interaction=(
+                update_interactions
+            ),
+        )
+
+        scored.append(interaction)
+
+    scored = deduplicate_pi_interactions(
+        scored
+    )
+
+    if sort_results:
+        scored.sort(
+            key=lambda interaction: (
+                -_safe_interaction_numeric_value(
+                    interaction,
+                    "total_score",
+                    default=0.0,
+                ),
+                -_safe_interaction_numeric_value(
+                    interaction,
+                    "strength_score",
+                    default=0.0,
+                ),
+                -_safe_interaction_numeric_value(
+                    interaction,
+                    "geometry_score",
+                    default=0.0,
+                ),
+                (
+                    interaction.centroid_distance
+                    if interaction.centroid_distance
+                    is not None
+                    else float("inf")
+                ),
+                interaction.interaction_id,
+            )
+        )
+
+    for rank, interaction in enumerate(
+        scored,
+        start=1,
+    ):
+        interaction.interaction_index = rank
+
+        interaction.metadata[
+            "rank"
+        ] = rank
+
+    return scored
+
+
+# -----------------------------------------------------------------------------
+# 10.21. Filtragem por força, geometria e score
+# -----------------------------------------------------------------------------
+
+def filter_pi_interactions_by_geometry_class(
+    interactions: Iterable[PiInteraction],
+    geometry_classes: Union[
+        str,
+        Collection[str],
+    ],
+) -> List[PiInteraction]:
+    """
+    Filter interactions by final geometry class.
+    """
+
+    if isinstance(
+        geometry_classes,
+        str,
+    ):
+        requested = {
+            geometry_classes.strip().lower()
+        }
+
+    else:
+        requested = {
+            str(value).strip().lower()
+            for value in geometry_classes
+        }
+
+    invalid_classes = (
+        requested
+        - SUPPORTED_FINAL_GEOMETRY_CLASSES
+    )
+
+    if invalid_classes:
+        raise ValueError(
+            "Unsupported geometry classes: "
+            f"{sorted(invalid_classes)!r}."
+        )
+
+    return [
+        interaction
+        for interaction in interactions
+        if str(
+            interaction.geometry_class
+            or GEOMETRY_CLASS_UNCLASSIFIED
+        ).strip().lower()
+        in requested
+    ]
+
+
+def filter_pi_interactions_by_strength_class(
+    interactions: Iterable[PiInteraction],
+    strength_classes: Union[
+        str,
+        Collection[str],
+    ],
+) -> List[PiInteraction]:
+    """
+    Filter interactions by final strength class.
+    """
+
+    if isinstance(
+        strength_classes,
+        str,
+    ):
+        requested = {
+            strength_classes.strip().lower()
+        }
+
+    else:
+        requested = {
+            str(value).strip().lower()
+            for value in strength_classes
+        }
+
+    invalid_classes = (
+        requested
+        - SUPPORTED_FINAL_STRENGTH_CLASSES
+    )
+
+    if invalid_classes:
+        raise ValueError(
+            "Unsupported strength classes: "
+            f"{sorted(invalid_classes)!r}."
+        )
+
+    return [
+        interaction
+        for interaction in interactions
+        if str(
+            interaction.strength_class
+            or STRENGTH_CLASS_UNCLASSIFIED
+        ).strip().lower()
+        in requested
+    ]
+
+
+def filter_pi_interactions_by_score(
+    interactions: Iterable[PiInteraction],
+    *,
+    minimum_score: Optional[float] = None,
+    maximum_score: Optional[float] = None,
+    score_attribute: str = "total_score",
+) -> List[PiInteraction]:
+    """
+    Filter interactions using a numeric score interval.
+    """
+
+    minimum = (
+        _normalize_optional_numeric(
+            minimum_score
+        )
+    )
+
+    maximum = (
+        _normalize_optional_numeric(
+            maximum_score
+        )
+    )
+
+    if (
+        minimum is not None
+        and maximum is not None
+        and minimum > maximum
+    ):
+        raise ValueError(
+            "minimum_score cannot exceed maximum_score."
+        )
+
+    selected: List[PiInteraction] = []
+
+    for interaction in interactions:
+        value = _normalize_optional_numeric(
+            getattr(
+                interaction,
+                score_attribute,
+                None,
+            )
+        )
+
+        if value is None:
+            continue
+
+        if (
+            minimum is not None
+            and value < minimum
+        ):
+            continue
+
+        if (
+            maximum is not None
+            and value > maximum
+        ):
+            continue
+
+        selected.append(interaction)
+
+    return selected
+
+
+# -----------------------------------------------------------------------------
+# 10.22. Ranking das interações
+# -----------------------------------------------------------------------------
+
+def rank_pi_interactions(
+    interactions: Iterable[PiInteraction],
+    *,
+    score_attribute: str = "total_score",
+    descending: bool = True,
+    update_metadata: bool = True,
+) -> List[PiInteraction]:
+    """
+    Rank interactions using a selected score attribute.
+    """
+
+    ranked = list(interactions)
+
+    ranked.sort(
+        key=lambda interaction: (
+            _safe_interaction_numeric_value(
+                interaction,
+                score_attribute,
+                default=0.0,
+            ),
+            _safe_interaction_numeric_value(
+                interaction,
+                "geometry_score",
+                default=0.0,
+            ),
+            -(
+                interaction.centroid_distance
+                if interaction.centroid_distance
+                is not None
+                else float("inf")
+            ),
+        ),
+        reverse=descending,
+    )
+
+    for rank, interaction in enumerate(
+        ranked,
+        start=1,
+    ):
+        interaction.interaction_index = rank
+
+        if update_metadata:
+            interaction.metadata[
+                "rank"
+            ] = rank
+
+            interaction.metadata[
+                "ranking_score_attribute"
+            ] = score_attribute
+
+    return ranked
+
+
+# -----------------------------------------------------------------------------
+# 10.23. Reprocessamento dos resumos por resíduo
+# -----------------------------------------------------------------------------
+
+def update_pi_residue_summary_scores(
+    summary: PiResidueSummary,
+) -> PiResidueSummary:
+    """
+    Recalculate the score fields of a residue summary.
+    """
+
+    interactions = list(
+        getattr(
+            summary,
+            "interactions",
+            (),
+        )
+    )
+
+    geometry_score = (
+        calculate_interaction_score_sum(
+            interactions,
+            "geometry_score",
+        )
+    )
+
+    strength_score = (
+        calculate_interaction_score_sum(
+            interactions,
+            "strength_score",
+        )
+    )
+
+    total_score = (
+        calculate_interaction_score_sum(
+            interactions,
+            "total_score",
+        )
+    )
+
+    geometry_distribution = Counter(
+        interaction.geometry_class
+        or GEOMETRY_CLASS_UNCLASSIFIED
+        for interaction in interactions
+    )
+
+    strength_distribution = Counter(
+        interaction.strength_class
+        or STRENGTH_CLASS_UNCLASSIFIED
+        for interaction in interactions
+    )
+
+    _set_supported_attribute(
+        summary,
+        "geometry_score",
+        geometry_score,
+    )
+
+    _set_supported_attribute(
+        summary,
+        "strength_score",
+        strength_score,
+    )
+
+    _set_supported_attribute(
+        summary,
+        "total_score",
+        total_score,
+    )
+
+    _set_supported_attribute(
+        summary,
+        "mean_geometry_score",
+        (
+            geometry_score / len(interactions)
+            if interactions
+            else 0.0
+        ),
+    )
+
+    _set_supported_attribute(
+        summary,
+        "mean_strength_score",
+        (
+            strength_score / len(interactions)
+            if interactions
+            else 0.0
+        ),
+    )
+
+    _set_supported_attribute(
+        summary,
+        "mean_total_score",
+        (
+            total_score / len(interactions)
+            if interactions
+            else 0.0
+        ),
+    )
+
+    _set_supported_attribute(
+        summary,
+        "geometry_distribution",
+        dict(geometry_distribution),
+    )
+
+    _set_supported_attribute(
+        summary,
+        "strength_distribution",
+        dict(strength_distribution),
+    )
+
+    metadata = getattr(
+        summary,
+        "metadata",
+        None,
+    )
+
+    if isinstance(metadata, MutableMapping):
+        metadata[
+            "score_summary"
+        ] = {
+            "geometry_score": geometry_score,
+            "strength_score": strength_score,
+            "total_score": total_score,
+            "mean_geometry_score": (
+                geometry_score / len(interactions)
+                if interactions
+                else 0.0
+            ),
+            "mean_strength_score": (
+                strength_score / len(interactions)
+                if interactions
+                else 0.0
+            ),
+            "mean_total_score": (
+                total_score / len(interactions)
+                if interactions
+                else 0.0
+            ),
+        }
+
+    return summary
+
+
+def update_pi_residue_summaries_scores(
+    summaries: Iterable[PiResidueSummary],
+) -> List[PiResidueSummary]:
+    """
+    Recalculate all residue-summary scores.
+    """
+
+    updated = [
+        update_pi_residue_summary_scores(
+            summary
+        )
+        for summary in summaries
+    ]
+
+    updated.sort(
+        key=lambda summary: (
+            -_normalize_optional_numeric(
+                getattr(
+                    summary,
+                    "total_score",
+                    0.0,
+                )
+            )
+            if _normalize_optional_numeric(
+                getattr(
+                    summary,
+                    "total_score",
+                    0.0,
+                )
+            )
+            is not None
+            else 0.0,
+            str(
+                getattr(
+                    summary,
+                    "residue_id",
+                    "",
+                )
+            ),
+        )
+    )
+
+    return updated
+
+
+# -----------------------------------------------------------------------------
+# 10.24. Reprocessamento de pares de resíduos
+# -----------------------------------------------------------------------------
+
+def update_pi_residue_pair_score(
+    summary: PiResiduePairSummary,
+) -> PiResiduePairSummary:
+    """
+    Recalculate scores and distributions for a residue pair.
+    """
+
+    interactions = list(
+        summary.interactions
+    )
+
+    summary.geometry_score = (
+        calculate_interaction_score_sum(
+            interactions,
+            "geometry_score",
+        )
+    )
+
+    summary.strength_score = (
+        calculate_interaction_score_sum(
+            interactions,
+            "strength_score",
+        )
+    )
+
+    summary.total_score = (
+        calculate_interaction_score_sum(
+            interactions,
+            "total_score",
+        )
+    )
+
+    summary.geometry_distribution = dict(
+        Counter(
+            interaction.geometry_class
+            or GEOMETRY_CLASS_UNCLASSIFIED
+            for interaction in interactions
+        )
+    )
+
+    summary.strength_distribution = dict(
+        Counter(
+            interaction.strength_class
+            or STRENGTH_CLASS_UNCLASSIFIED
+            for interaction in interactions
+        )
+    )
+
+    summary.metadata[
+        "mean_geometry_score"
+    ] = (
+        summary.geometry_score
+        / len(interactions)
+        if interactions
+        else 0.0
+    )
+
+    summary.metadata[
+        "mean_strength_score"
+    ] = (
+        summary.strength_score
+        / len(interactions)
+        if interactions
+        else 0.0
+    )
+
+    summary.metadata[
+        "mean_total_score"
+    ] = (
+        summary.total_score
+        / len(interactions)
+        if interactions
+        else 0.0
+    )
+
+    return summary
+
+
+def update_pi_residue_pair_scores(
+    summaries: Iterable[PiResiduePairSummary],
+) -> List[PiResiduePairSummary]:
+    """
+    Recalculate and rank residue-pair summaries.
+    """
+
+    updated = [
+        update_pi_residue_pair_score(
+            summary
+        )
+        for summary in summaries
+    ]
+
+    updated.sort(
+        key=lambda summary: (
+            -summary.total_score,
+            -summary.strength_score,
+            -summary.interaction_count,
+            summary.pair_id,
+        )
+    )
+
+    for rank, summary in enumerate(
+        updated,
+        start=1,
+    ):
+        summary.metadata[
+            "rank"
+        ] = rank
+
+    return updated
+
+
+# -----------------------------------------------------------------------------
+# 10.25. Reprocessamento de hotspots
+# -----------------------------------------------------------------------------
+
+def update_pi_hotspot_score(
+    hotspot: PiHotspot,
+    *,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+) -> PiHotspot:
+    """
+    Recalculate a hotspot after interaction scoring.
+    """
+
+    config = (
+        grouping_config
+        if grouping_config is not None
+        else create_default_pi_grouping_config()
+    )
+
+    interactions = list(
+        hotspot.interactions
+    )
+
+    hotspot.geometry_score = (
+        calculate_interaction_score_sum(
+            interactions,
+            "geometry_score",
+        )
+    )
+
+    hotspot.strength_score = (
+        calculate_interaction_score_sum(
+            interactions,
+            "strength_score",
+        )
+    )
+
+    hotspot.interaction_score = (
+        calculate_interaction_score_sum(
+            interactions,
+            "total_score",
+        )
+    )
+
+    hotspot.geometry_distribution = dict(
+        Counter(
+            interaction.geometry_class
+            or GEOMETRY_CLASS_UNCLASSIFIED
+            for interaction in interactions
+        )
+    )
+
+    hotspot.strength_distribution = dict(
+        Counter(
+            interaction.strength_class
+            or STRENGTH_CLASS_UNCLASSIFIED
+            for interaction in interactions
+        )
+    )
+
+    hotspot.hotspot_score = (
+        calculate_hotspot_score(
+            interactions,
+            grouping_config=config,
+        )
+    )
+
+    hotspot.hotspot_level = (
+        classify_hotspot_level(
+            hotspot.hotspot_score,
+            grouping_config=config,
+        )
+    )
+
+    hotspot.metadata[
+        "mean_interaction_score"
+    ] = (
+        hotspot.interaction_score
+        / len(interactions)
+        if interactions
+        else 0.0
+    )
+
+    hotspot.metadata[
+        "mean_geometry_score"
+    ] = (
+        hotspot.geometry_score
+        / len(interactions)
+        if interactions
+        else 0.0
+    )
+
+    hotspot.metadata[
+        "mean_strength_score"
+    ] = (
+        hotspot.strength_score
+        / len(interactions)
+        if interactions
+        else 0.0
+    )
+
+    return hotspot
+
+
+def update_pi_hotspot_scores(
+    hotspots: Iterable[PiHotspot],
+    *,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+) -> List[PiHotspot]:
+    """
+    Recalculate and rank all hotspots.
+    """
+
+    updated = [
+        update_pi_hotspot_score(
+            hotspot,
+            grouping_config=grouping_config,
+        )
+        for hotspot in hotspots
+    ]
+
+    updated.sort(
+        key=lambda hotspot: (
+            -hotspot.hotspot_score,
+            -hotspot.interaction_score,
+            -hotspot.interaction_count,
+            hotspot.residue.residue_id,
+        )
+    )
+
+    for rank, hotspot in enumerate(
+        updated,
+        start=1,
+    ):
+        hotspot.rank = rank
+
+    return updated
+
+
+# -----------------------------------------------------------------------------
+# 10.26. Atualização integrada do agrupamento
+# -----------------------------------------------------------------------------
+
+def update_pi_grouping_scores(
+    grouping_result: PiGroupingResult,
+    *,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+) -> PiGroupingResult:
+    """
+    Recalculate all score-dependent grouping outputs.
+    """
+
+    if not isinstance(
+        grouping_result,
+        PiGroupingResult,
+    ):
+        raise TypeError(
+            "grouping_result must be a PiGroupingResult."
+        )
+
+    grouping_result.residue_summaries = (
+        update_pi_residue_summaries_scores(
+            grouping_result.residue_summaries
+        )
+    )
+
+    grouping_result.receptor_residue_summaries = [
+        summary
+        for summary
+        in grouping_result.residue_summaries
+        if normalize_residue_role(
+            getattr(
+                summary,
+                "participant_type",
+                None,
+            )
+        ) == RESIDUE_ROLE_RECEPTOR
+    ]
+
+    grouping_result.ligand_residue_summaries = [
+        summary
+        for summary
+        in grouping_result.residue_summaries
+        if normalize_residue_role(
+            getattr(
+                summary,
+                "participant_type",
+                None,
+            )
+        ) == RESIDUE_ROLE_LIGAND
+    ]
+
+    grouping_result.residue_pairs = (
+        update_pi_residue_pair_scores(
+            grouping_result.residue_pairs
+        )
+    )
+
+    grouping_result.hotspots = (
+        update_pi_hotspot_scores(
+            grouping_result.hotspots,
+            grouping_config=grouping_config,
+        )
+    )
+
+    grouping_result.interaction_groups = {
+        **{
+            (
+                f"by_type:{group_name}"
+            ): group_interactions
+            for group_name, group_interactions
+            in group_interactions_by_type(
+                grouping_result.interactions
+            ).items()
+        },
+        **{
+            (
+                f"by_geometry:{group_name}"
+            ): group_interactions
+            for group_name, group_interactions
+            in group_interactions_by_geometry(
+                grouping_result.interactions
+            ).items()
+        },
+        **{
+            (
+                f"by_strength:{group_name}"
+            ): group_interactions
+            for group_name, group_interactions
+            in group_interactions_by_strength(
+                grouping_result.interactions
+            ).items()
+        },
+    }
+
+    grouping_result.metadata[
+        "scores_updated"
+    ] = True
+
+    grouping_result.metadata[
+        "total_interaction_score"
+    ] = calculate_interaction_score_sum(
+        grouping_result.interactions,
+        "total_score",
+    )
+
+    grouping_result.metadata[
+        "total_geometry_score"
+    ] = calculate_interaction_score_sum(
+        grouping_result.interactions,
+        "geometry_score",
+    )
+
+    grouping_result.metadata[
+        "total_strength_score"
+    ] = calculate_interaction_score_sum(
+        grouping_result.interactions,
+        "strength_score",
+    )
+
+    return grouping_result
+
+
+# -----------------------------------------------------------------------------
+# 10.27. Atualização do PiAnalysisResult
+# -----------------------------------------------------------------------------
+
+def attach_pi_scores_to_analysis_result(
+    analysis_result: PiAnalysisResult,
+    interactions: Iterable[PiInteraction],
+    *,
+    grouping_result: Optional[
+        PiGroupingResult
+    ] = None,
+) -> PiAnalysisResult:
+    """
+    Attach scored interactions and grouping data to the analysis result.
+    """
+
+    if not isinstance(
+        analysis_result,
+        PiAnalysisResult,
+    ):
+        raise TypeError(
+            "analysis_result must be a PiAnalysisResult."
+        )
+
+    interaction_list = list(
+        interactions
+    )
+
+    _set_supported_attribute(
+        analysis_result,
+        "interactions",
+        interaction_list,
+    )
+
+    total_score = (
+        calculate_interaction_score_sum(
+            interaction_list,
+            "total_score",
+        )
+    )
+
+    total_geometry_score = (
+        calculate_interaction_score_sum(
+            interaction_list,
+            "geometry_score",
+        )
+    )
+
+    total_strength_score = (
+        calculate_interaction_score_sum(
+            interaction_list,
+            "strength_score",
+        )
+    )
+
+    assignments = {
+        "score": total_score,
+        "total_score": total_score,
+        "geometry_score": (
+            total_geometry_score
+        ),
+        "strength_score": (
+            total_strength_score
+        ),
+    }
+
+    for attribute_name, value in assignments.items():
+        _set_supported_attribute(
+            analysis_result,
+            attribute_name,
+            value,
+        )
+
+    if grouping_result is not None:
+        attach_pi_grouping_to_analysis_result(
+            analysis_result,
+            grouping_result,
+        )
+
+    metadata = getattr(
+        analysis_result,
+        "metadata",
+        None,
+    )
+
+    if isinstance(metadata, MutableMapping):
+        metadata[
+            "scoring"
+        ] = {
+            "total_score": total_score,
+            "total_geometry_score": (
+                total_geometry_score
+            ),
+            "total_strength_score": (
+                total_strength_score
+            ),
+            "mean_score": (
+                total_score
+                / len(interaction_list)
+                if interaction_list
+                else 0.0
+            ),
+            "scored_interactions": len(
+                interaction_list
+            ),
+            "geometry_distribution": dict(
+                Counter(
+                    interaction.geometry_class
+                    for interaction
+                    in interaction_list
+                )
+            ),
+            "strength_distribution": dict(
+                Counter(
+                    interaction.strength_class
+                    for interaction
+                    in interaction_list
+                )
+            ),
+        }
+
+    return analysis_result
+
+
+# -----------------------------------------------------------------------------
+# 10.28. Pipeline completo de classificação
+# -----------------------------------------------------------------------------
+
+def classify_and_score_pi_interactions(
+    interactions: Iterable[PiInteraction],
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    limits: Optional[PiDetectionLimits] = None,
+    scoring_config: Optional[PiScoringConfig] = None,
+    grouping_result: Optional[
+        PiGroupingResult
+    ] = None,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+    include_invalid: bool = True,
+    update_grouping: bool = True,
+) -> Tuple[
+    List[PiInteraction],
+    Optional[PiGroupingResult],
+]:
+    """
+    Run the complete scoring and classification pipeline.
+    """
+
+    scored_interactions = score_pi_interactions(
+        interactions,
+        config=config,
+        limits=limits,
+        scoring_config=scoring_config,
+        include_invalid=include_invalid,
+        sort_results=True,
+        update_interactions=True,
+    )
+
+    updated_grouping = grouping_result
+
+    if update_grouping:
+        if updated_grouping is None:
+            updated_grouping = group_pi_interactions(
+                scored_interactions,
+                grouping_config=grouping_config,
+                annotate_interactions=True,
+                include_non_hotspots=False,
+                validate_result=True,
+            )
+
+        else:
+            updated_grouping.interactions = (
+                scored_interactions
+            )
+
+            updated_grouping = (
+                update_pi_grouping_scores(
+                    updated_grouping,
+                    grouping_config=(
+                        grouping_config
+                    ),
+                )
+            )
+
+    return (
+        scored_interactions,
+        updated_grouping,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 10.29. Pipeline a partir de PiNormalizedInput
+# -----------------------------------------------------------------------------
+
+def analyze_and_score_pi_interactions(
+    normalized_input: PiNormalizedInput,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    scoring_config: Optional[
+        PiScoringConfig
+    ] = None,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+) -> Tuple[
+    List[PiInteraction],
+    PiGroupingResult,
+]:
+    """
+    Detect, group, classify and score all π interactions.
+    """
+
+    interactions = (
+        detect_pi_interactions_from_normalized_input(
+            normalized_input,
+            config=config,
+        )
+    )
+
+    grouping_result = group_pi_interactions(
+        interactions,
+        grouping_config=grouping_config,
+        annotate_interactions=True,
+        include_non_hotspots=False,
+        validate_result=True,
+    )
+
+    scored_interactions, scored_grouping = (
+        classify_and_score_pi_interactions(
+            interactions,
+            config=config,
+            scoring_config=scoring_config,
+            grouping_result=grouping_result,
+            grouping_config=grouping_config,
+            include_invalid=True,
+            update_grouping=True,
+        )
+    )
+
+    assert scored_grouping is not None
+
+    return (
+        scored_interactions,
+        scored_grouping,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 10.30. Validação dos scores
+# -----------------------------------------------------------------------------
+
+def validate_pi_interaction_scores(
+    interaction: PiInteraction,
+    *,
+    scoring_config: Optional[
+        PiScoringConfig
+    ] = None,
+) -> Tuple[bool, Tuple[str, ...]]:
+    """
+    Validate the final score fields of an interaction.
+    """
+
+    if not isinstance(
+        interaction,
+        PiInteraction,
+    ):
+        raise TypeError(
+            "interaction must be a PiInteraction."
+        )
+
+    config = (
+        scoring_config
+        if scoring_config is not None
+        else create_default_pi_scoring_config()
+    )
+
+    messages: List[str] = []
+
+    geometry_score = _normalize_optional_numeric(
+        interaction.geometry_score
+    )
+
+    strength_score = _normalize_optional_numeric(
+        interaction.strength_score
+    )
+
+    total_score = _normalize_optional_numeric(
+        interaction.total_score
+    )
+
+    if geometry_score is None:
+        messages.append(
+            "Geometry score is unavailable."
+        )
+
+    elif not (
+        config.geometry_score_minimum
+        <= geometry_score
+        <= config.geometry_score_maximum
+    ):
+        messages.append(
+            "Geometry score is outside the configured range."
+        )
+
+    if strength_score is None:
+        messages.append(
+            "Strength score is unavailable."
+        )
+
+    elif not (
+        config.strength_score_minimum
+        <= strength_score
+        <= config.strength_score_maximum
+    ):
+        messages.append(
+            "Strength score is outside the configured range."
+        )
+
+    if total_score is None:
+        messages.append(
+            "Total score is unavailable."
+        )
+
+    elif not (
+        config.interaction_score_minimum
+        <= total_score
+        <= config.interaction_score_maximum
+    ):
+        messages.append(
+            "Total score is outside the configured range."
+        )
+
+    geometry_class = str(
+        interaction.geometry_class
+        or GEOMETRY_CLASS_UNCLASSIFIED
+    ).strip().lower()
+
+    if (
+        geometry_class
+        not in SUPPORTED_FINAL_GEOMETRY_CLASSES
+    ):
+        messages.append(
+            "Final geometry class is invalid."
+        )
+
+    strength_class = str(
+        interaction.strength_class
+        or STRENGTH_CLASS_UNCLASSIFIED
+    ).strip().lower()
+
+    if (
+        strength_class
+        not in SUPPORTED_FINAL_STRENGTH_CLASSES
+    ):
+        messages.append(
+            "Final strength class is invalid."
+        )
+
+    return (
+        not messages,
+        tuple(messages),
+    )
+
+
+def validate_scored_pi_interactions(
+    interactions: Iterable[PiInteraction],
+    *,
+    scoring_config: Optional[
+        PiScoringConfig
+    ] = None,
+    remove_invalid: bool = False,
+) -> List[PiInteraction]:
+    """
+    Validate multiple scored interactions.
+    """
+
+    validated: List[PiInteraction] = []
+
+    for interaction in interactions:
+        valid, messages = (
+            validate_pi_interaction_scores(
+                interaction,
+                scoring_config=scoring_config,
+            )
+        )
+
+        interaction.metadata[
+            "score_validation"
+        ] = {
+            "valid": valid,
+            "messages": list(messages),
+        }
+
+        if not valid:
+            for message in messages:
+                warning = (
+                    f"Score validation: {message}"
+                )
+
+                if warning not in interaction.warnings:
+                    interaction.warnings.append(
+                        warning
+                    )
+
+        if remove_invalid and not valid:
+            continue
+
+        validated.append(interaction)
+
+    return validated
+
+
+# -----------------------------------------------------------------------------
+# 10.31. Resumo de classificação e score
+# -----------------------------------------------------------------------------
+
+def summarize_scored_pi_interactions(
+    interactions: Iterable[PiInteraction],
+) -> Dict[str, Any]:
+    """
+    Generate a serializable summary of classified interactions.
+    """
+
+    interaction_list = list(
+        interactions
+    )
+
+    geometry_scores = [
+        float(interaction.geometry_score)
+        for interaction in interaction_list
+        if interaction.geometry_score
+        is not None
+    ]
+
+    strength_scores = [
+        float(interaction.strength_score)
+        for interaction in interaction_list
+        if interaction.strength_score
+        is not None
+    ]
+
+    total_scores = [
+        float(interaction.total_score)
+        for interaction in interaction_list
+        if interaction.total_score
+        is not None
+    ]
+
+    geometry_distribution = Counter(
+        interaction.geometry_class
+        or GEOMETRY_CLASS_UNCLASSIFIED
+        for interaction in interaction_list
+    )
+
+    strength_distribution = Counter(
+        interaction.strength_class
+        or STRENGTH_CLASS_UNCLASSIFIED
+        for interaction in interaction_list
+    )
+
+    type_distribution = Counter(
+        interaction.interaction_type
+        for interaction in interaction_list
+    )
+
+    score_by_type: Dict[
+        str,
+        Dict[str, Any],
+    ] = {}
+
+    for interaction_type, typed_interactions in (
+        group_interactions_by_type(
+            interaction_list
+        ).items()
+    ):
+        score_by_type[
+            interaction_type
+        ] = {
+            "count": len(
+                typed_interactions
+            ),
+            "geometry_score": (
+                _summarize_numeric_sequence(
+                    [
+                        interaction.geometry_score
+                        for interaction
+                        in typed_interactions
+                        if interaction.geometry_score
+                        is not None
+                    ]
+                )
+            ),
+            "strength_score": (
+                _summarize_numeric_sequence(
+                    [
+                        interaction.strength_score
+                        for interaction
+                        in typed_interactions
+                        if interaction.strength_score
+                        is not None
+                    ]
+                )
+            ),
+            "total_score": (
+                _summarize_numeric_sequence(
+                    [
+                        interaction.total_score
+                        for interaction
+                        in typed_interactions
+                        if interaction.total_score
+                        is not None
+                    ]
+                )
+            ),
+        }
+
+    ranked = rank_pi_interactions(
+        interaction_list,
+        score_attribute="total_score",
+        descending=True,
+        update_metadata=False,
+    )
+
+    return {
+        "total_interactions": len(
+            interaction_list
+        ),
+        "valid_interactions": sum(
+            1
+            for interaction in interaction_list
+            if interaction.valid
+        ),
+        "invalid_interactions": sum(
+            1
+            for interaction in interaction_list
+            if not interaction.valid
+        ),
+        "type_distribution": dict(
+            type_distribution
+        ),
+        "geometry_distribution": dict(
+            geometry_distribution
+        ),
+        "strength_distribution": dict(
+            strength_distribution
+        ),
+        "geometry_score": (
+            _summarize_numeric_sequence(
+                geometry_scores
+            )
+        ),
+        "strength_score": (
+            _summarize_numeric_sequence(
+                strength_scores
+            )
+        ),
+        "total_score": (
+            _summarize_numeric_sequence(
+                total_scores
+            )
+        ),
+        "score_by_type": score_by_type,
+        "top_interactions": [
+            {
+                "rank": index,
+                "interaction_id": (
+                    interaction.interaction_id
+                ),
+                "interaction_type": (
+                    interaction.interaction_type
+                ),
+                "geometry_class": (
+                    interaction.geometry_class
+                ),
+                "strength_class": (
+                    interaction.strength_class
+                ),
+                "geometry_score": (
+                    interaction.geometry_score
+                ),
+                "strength_score": (
+                    interaction.strength_score
+                ),
+                "total_score": (
+                    interaction.total_score
+                ),
+                "centroid_distance": (
+                    interaction.centroid_distance
+                ),
+                "minimum_atomic_distance": (
+                    interaction
+                    .minimum_atomic_distance
+                ),
+            }
+            for index, interaction in enumerate(
+                ranked[:10],
+                start=1,
+            )
+        ],
+        "penalty_distribution": dict(
+            Counter(
+                penalty
+                for interaction in interaction_list
+                for penalty in interaction.metadata.get(
+                    "penalties",
+                    (),
+                )
+            )
+        ),
+    }
+
+
+# -----------------------------------------------------------------------------
+# End of section 10.
+# -----------------------------------------------------------------------------
+
+
+# =============================================================================
+# 11. ESTATÍSTICAS, RESUMOS GLOBAIS E COMPARAÇÃO MULTIPOSE
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 11.1. Constantes e aliases
+# -----------------------------------------------------------------------------
+
+PI_STATISTICS_SCHEMA_VERSION: Final[str] = "1.0"
+
+PI_SCORE_AGGREGATION_SUM: Final[str] = "sum"
+PI_SCORE_AGGREGATION_MEAN: Final[str] = "mean"
+PI_SCORE_AGGREGATION_MAXIMUM: Final[str] = "maximum"
+PI_SCORE_AGGREGATION_MEDIAN: Final[str] = "median"
+
+SUPPORTED_PI_SCORE_AGGREGATIONS: Final[FrozenSet[str]] = frozenset(
+    {
+        PI_SCORE_AGGREGATION_SUM,
+        PI_SCORE_AGGREGATION_MEAN,
+        PI_SCORE_AGGREGATION_MAXIMUM,
+        PI_SCORE_AGGREGATION_MEDIAN,
+    }
+)
+
+PI_POSE_RANKING_TOTAL_SCORE: Final[str] = "total_score"
+PI_POSE_RANKING_MEAN_SCORE: Final[str] = "mean_score"
+PI_POSE_RANKING_INTERACTION_COUNT: Final[str] = "interaction_count"
+PI_POSE_RANKING_HOTSPOT_SCORE: Final[str] = "hotspot_score"
+PI_POSE_RANKING_COMPOSITE: Final[str] = "composite_score"
+
+SUPPORTED_PI_POSE_RANKING_METHODS: Final[FrozenSet[str]] = frozenset(
+    {
+        PI_POSE_RANKING_TOTAL_SCORE,
+        PI_POSE_RANKING_MEAN_SCORE,
+        PI_POSE_RANKING_INTERACTION_COUNT,
+        PI_POSE_RANKING_HOTSPOT_SCORE,
+        PI_POSE_RANKING_COMPOSITE,
+    }
+)
+
+DEFAULT_PI_TOP_N_INTERACTIONS: Final[int] = 10
+DEFAULT_PI_TOP_N_RESIDUES: Final[int] = 10
+DEFAULT_PI_TOP_N_HOTSPOTS: Final[int] = 10
+DEFAULT_PI_TOP_N_PAIRS: Final[int] = 10
+
+DEFAULT_PI_POSE_INTERACTION_WEIGHT: Final[float] = 0.15
+DEFAULT_PI_POSE_TOTAL_SCORE_WEIGHT: Final[float] = 0.40
+DEFAULT_PI_POSE_MEAN_SCORE_WEIGHT: Final[float] = 0.20
+DEFAULT_PI_POSE_HOTSPOT_WEIGHT: Final[float] = 0.15
+DEFAULT_PI_POSE_DIVERSITY_WEIGHT: Final[float] = 0.10
+
+
+# -----------------------------------------------------------------------------
+# 11.2. Configuração estatística
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PiStatisticsConfig:
+    """
+    Configuration for global statistics, summaries and multipose comparison.
+    """
+
+    include_invalid_interactions: bool = False
+    include_atomic_contacts: bool = True
+    include_residue_summaries: bool = True
+    include_residue_pairs: bool = True
+    include_hotspots: bool = True
+    include_score_components: bool = True
+    include_pose_consensus: bool = True
+
+    top_n_interactions: int = DEFAULT_PI_TOP_N_INTERACTIONS
+    top_n_residues: int = DEFAULT_PI_TOP_N_RESIDUES
+    top_n_hotspots: int = DEFAULT_PI_TOP_N_HOTSPOTS
+    top_n_pairs: int = DEFAULT_PI_TOP_N_PAIRS
+
+    score_aggregation: str = PI_SCORE_AGGREGATION_SUM
+    pose_ranking_method: str = PI_POSE_RANKING_COMPOSITE
+
+    pose_interaction_weight: float = (
+        DEFAULT_PI_POSE_INTERACTION_WEIGHT
+    )
+    pose_total_score_weight: float = (
+        DEFAULT_PI_POSE_TOTAL_SCORE_WEIGHT
+    )
+    pose_mean_score_weight: float = (
+        DEFAULT_PI_POSE_MEAN_SCORE_WEIGHT
+    )
+    pose_hotspot_weight: float = (
+        DEFAULT_PI_POSE_HOTSPOT_WEIGHT
+    )
+    pose_diversity_weight: float = (
+        DEFAULT_PI_POSE_DIVERSITY_WEIGHT
+    )
+
+    round_digits: Optional[int] = 6
+
+    def __post_init__(self) -> None:
+        integer_fields = (
+            "top_n_interactions",
+            "top_n_residues",
+            "top_n_hotspots",
+            "top_n_pairs",
+        )
+
+        for field_name in integer_fields:
+            value = getattr(self, field_name)
+
+            if isinstance(value, bool):
+                raise TypeError(
+                    f"{field_name} must be an integer."
+                )
+
+            normalized = int(value)
+
+            if normalized < 0:
+                raise ValueError(
+                    f"{field_name} must be non-negative."
+                )
+
+            object.__setattr__(
+                self,
+                field_name,
+                normalized,
+            )
+
+        score_aggregation = str(
+            self.score_aggregation
+        ).strip().lower()
+
+        if (
+            score_aggregation
+            not in SUPPORTED_PI_SCORE_AGGREGATIONS
+        ):
+            raise ValueError(
+                "Unsupported score aggregation: "
+                f"{score_aggregation!r}."
+            )
+
+        object.__setattr__(
+            self,
+            "score_aggregation",
+            score_aggregation,
+        )
+
+        pose_ranking_method = str(
+            self.pose_ranking_method
+        ).strip().lower()
+
+        if (
+            pose_ranking_method
+            not in SUPPORTED_PI_POSE_RANKING_METHODS
+        ):
+            raise ValueError(
+                "Unsupported pose ranking method: "
+                f"{pose_ranking_method!r}."
+            )
+
+        object.__setattr__(
+            self,
+            "pose_ranking_method",
+            pose_ranking_method,
+        )
+
+        weight_fields = (
+            "pose_interaction_weight",
+            "pose_total_score_weight",
+            "pose_mean_score_weight",
+            "pose_hotspot_weight",
+            "pose_diversity_weight",
+        )
+
+        for field_name in weight_fields:
+            object.__setattr__(
+                self,
+                field_name,
+                _coerce_non_negative_float(
+                    getattr(self, field_name),
+                    field_name=(
+                        f"PiStatisticsConfig.{field_name}"
+                    ),
+                ),
+            )
+
+        total_weight = sum(
+            getattr(self, field_name)
+            for field_name in weight_fields
+        )
+
+        if total_weight <= 0.0:
+            raise ValueError(
+                "At least one pose-ranking weight must be positive."
+            )
+
+        if self.round_digits is not None:
+            round_digits = int(self.round_digits)
+
+            if round_digits < 0:
+                raise ValueError(
+                    "round_digits must be non-negative or None."
+                )
+
+            object.__setattr__(
+                self,
+                "round_digits",
+                round_digits,
+            )
+
+    @property
+    def pose_weight_sum(self) -> float:
+        return (
+            self.pose_interaction_weight
+            + self.pose_total_score_weight
+            + self.pose_mean_score_weight
+            + self.pose_hotspot_weight
+            + self.pose_diversity_weight
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            field_definition.name: getattr(
+                self,
+                field_definition.name,
+            )
+            for field_definition in fields(self)
+        }
+
+
+def create_default_pi_statistics_config() -> PiStatisticsConfig:
+    """
+    Create the default statistics configuration.
+    """
+
+    return PiStatisticsConfig()
+
+
+# -----------------------------------------------------------------------------
+# 11.3. Resumo numérico
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PiNumericSummary:
+    """
+    Descriptive statistics for a numeric sequence.
+    """
+
+    count: int
+    minimum: Optional[float]
+    maximum: Optional[float]
+    mean: Optional[float]
+    median: Optional[float]
+    standard_deviation: Optional[float]
+    variance: Optional[float]
+    total: float
+    first_quartile: Optional[float]
+    third_quartile: Optional[float]
+    interquartile_range: Optional[float]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "count": self.count,
+            "minimum": self.minimum,
+            "maximum": self.maximum,
+            "mean": self.mean,
+            "median": self.median,
+            "standard_deviation": self.standard_deviation,
+            "variance": self.variance,
+            "total": self.total,
+            "first_quartile": self.first_quartile,
+            "third_quartile": self.third_quartile,
+            "interquartile_range": self.interquartile_range,
+        }
+
+
+def calculate_percentile(
+    values: Sequence[float],
+    percentile: float,
+) -> Optional[float]:
+    """
+    Calculate a percentile using linear interpolation.
+    """
+
+    if not values:
+        return None
+
+    percentile = clamp_score(
+        percentile,
+        0.0,
+        100.0,
+    )
+
+    sorted_values = sorted(
+        float(value)
+        for value in values
+    )
+
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+
+    position = (
+        percentile / 100.0
+    ) * (
+        len(sorted_values) - 1
+    )
+
+    lower_index = int(
+        math.floor(position)
+    )
+
+    upper_index = int(
+        math.ceil(position)
+    )
+
+    if lower_index == upper_index:
+        return sorted_values[lower_index]
+
+    fraction = position - lower_index
+
+    return (
+        sorted_values[lower_index]
+        + fraction
+        * (
+            sorted_values[upper_index]
+            - sorted_values[lower_index]
+        )
+    )
+
+
+def calculate_pi_numeric_summary(
+    values: Iterable[Optional[Number]],
+    *,
+    round_digits: Optional[int] = None,
+) -> PiNumericSummary:
+    """
+    Calculate descriptive statistics for finite numeric values.
+    """
+
+    normalized_values = [
+        float(value)
+        for value in values
+        if (
+            value is not None
+            and not isinstance(value, bool)
+            and isinstance(
+                value,
+                (int, float),
+            )
+            and math.isfinite(float(value))
+        )
+    ]
+
+    if not normalized_values:
+        return PiNumericSummary(
+            count=0,
+            minimum=None,
+            maximum=None,
+            mean=None,
+            median=None,
+            standard_deviation=None,
+            variance=None,
+            total=0.0,
+            first_quartile=None,
+            third_quartile=None,
+            interquartile_range=None,
+        )
+
+    value_count = len(
+        normalized_values
+    )
+
+    total = sum(
+        normalized_values
+    )
+
+    mean = total / value_count
+
+    sorted_values = sorted(
+        normalized_values
+    )
+
+    if value_count % 2 == 0:
+        middle = value_count // 2
+
+        median = (
+            sorted_values[middle - 1]
+            + sorted_values[middle]
+        ) / 2.0
+
+    else:
+        median = sorted_values[
+            value_count // 2
+        ]
+
+    if value_count > 1:
+        variance = sum(
+            (
+                value - mean
+            ) ** 2
+            for value in normalized_values
+        ) / (
+            value_count - 1
+        )
+
+        standard_deviation = math.sqrt(
+            variance
+        )
+
+    else:
+        variance = 0.0
+        standard_deviation = 0.0
+
+    first_quartile = calculate_percentile(
+        sorted_values,
+        25.0,
+    )
+
+    third_quartile = calculate_percentile(
+        sorted_values,
+        75.0,
+    )
+
+    interquartile_range = (
+        third_quartile - first_quartile
+        if (
+            first_quartile is not None
+            and third_quartile is not None
+        )
+        else None
+    )
+
+    def maybe_round(
+        value: Optional[float],
+    ) -> Optional[float]:
+        if (
+            value is None
+            or round_digits is None
+        ):
+            return value
+
+        return round(
+            value,
+            round_digits,
+        )
+
+    return PiNumericSummary(
+        count=value_count,
+        minimum=maybe_round(
+            min(normalized_values)
+        ),
+        maximum=maybe_round(
+            max(normalized_values)
+        ),
+        mean=maybe_round(mean),
+        median=maybe_round(median),
+        standard_deviation=maybe_round(
+            standard_deviation
+        ),
+        variance=maybe_round(variance),
+        total=maybe_round(total) or 0.0,
+        first_quartile=maybe_round(
+            first_quartile
+        ),
+        third_quartile=maybe_round(
+            third_quartile
+        ),
+        interquartile_range=maybe_round(
+            interquartile_range
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 11.4. Estatísticas por pose
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiPoseStatistics:
+    """
+    Aggregated statistics for one docking pose.
+    """
+
+    pose_id: str
+    pose_index: Optional[int] = None
+
+    total_interactions: int = 0
+    valid_interactions: int = 0
+    invalid_interactions: int = 0
+
+    total_atomic_contacts: int = 0
+    total_residues: int = 0
+    receptor_residue_count: int = 0
+    ligand_residue_count: int = 0
+    residue_pair_count: int = 0
+    hotspot_count: int = 0
+
+    interaction_type_distribution: Dict[str, int] = field(
+        default_factory=dict
+    )
+    geometry_distribution: Dict[str, int] = field(
+        default_factory=dict
+    )
+    strength_distribution: Dict[str, int] = field(
+        default_factory=dict
+    )
+    hotspot_level_distribution: Dict[str, int] = field(
+        default_factory=dict
+    )
+
+    distance_statistics: Optional[PiNumericSummary] = None
+    atomic_distance_statistics: Optional[PiNumericSummary] = None
+    centroid_distance_statistics: Optional[PiNumericSummary] = None
+
+    geometry_score_statistics: Optional[PiNumericSummary] = None
+    strength_score_statistics: Optional[PiNumericSummary] = None
+    total_score_statistics: Optional[PiNumericSummary] = None
+    hotspot_score_statistics: Optional[PiNumericSummary] = None
+
+    total_geometry_score: float = 0.0
+    total_strength_score: float = 0.0
+    total_score: float = 0.0
+    mean_score: float = 0.0
+    maximum_hotspot_score: float = 0.0
+
+    interaction_type_diversity: int = 0
+    geometry_diversity: int = 0
+    strength_diversity: int = 0
+
+    composite_score: float = 0.0
+    rank: Optional[int] = None
+
+    top_interactions: List[Dict[str, Any]] = field(
+        default_factory=list
+    )
+    top_residues: List[Dict[str, Any]] = field(
+        default_factory=list
+    )
+    top_hotspots: List[Dict[str, Any]] = field(
+        default_factory=list
+    )
+    top_residue_pairs: List[Dict[str, Any]] = field(
+        default_factory=list
+    )
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "pose_id": self.pose_id,
+            "pose_index": self.pose_index,
+            "total_interactions": self.total_interactions,
+            "valid_interactions": self.valid_interactions,
+            "invalid_interactions": self.invalid_interactions,
+            "total_atomic_contacts": self.total_atomic_contacts,
+            "total_residues": self.total_residues,
+            "receptor_residue_count": self.receptor_residue_count,
+            "ligand_residue_count": self.ligand_residue_count,
+            "residue_pair_count": self.residue_pair_count,
+            "hotspot_count": self.hotspot_count,
+            "interaction_type_distribution": dict(
+                self.interaction_type_distribution
+            ),
+            "geometry_distribution": dict(
+                self.geometry_distribution
+            ),
+            "strength_distribution": dict(
+                self.strength_distribution
+            ),
+            "hotspot_level_distribution": dict(
+                self.hotspot_level_distribution
+            ),
+            "distance_statistics": (
+                self.distance_statistics.to_dict()
+                if self.distance_statistics is not None
+                else None
+            ),
+            "atomic_distance_statistics": (
+                self.atomic_distance_statistics.to_dict()
+                if self.atomic_distance_statistics is not None
+                else None
+            ),
+            "centroid_distance_statistics": (
+                self.centroid_distance_statistics.to_dict()
+                if self.centroid_distance_statistics is not None
+                else None
+            ),
+            "geometry_score_statistics": (
+                self.geometry_score_statistics.to_dict()
+                if self.geometry_score_statistics is not None
+                else None
+            ),
+            "strength_score_statistics": (
+                self.strength_score_statistics.to_dict()
+                if self.strength_score_statistics is not None
+                else None
+            ),
+            "total_score_statistics": (
+                self.total_score_statistics.to_dict()
+                if self.total_score_statistics is not None
+                else None
+            ),
+            "hotspot_score_statistics": (
+                self.hotspot_score_statistics.to_dict()
+                if self.hotspot_score_statistics is not None
+                else None
+            ),
+            "total_geometry_score": self.total_geometry_score,
+            "total_strength_score": self.total_strength_score,
+            "total_score": self.total_score,
+            "mean_score": self.mean_score,
+            "maximum_hotspot_score": self.maximum_hotspot_score,
+            "interaction_type_diversity": (
+                self.interaction_type_diversity
+            ),
+            "geometry_diversity": self.geometry_diversity,
+            "strength_diversity": self.strength_diversity,
+            "composite_score": self.composite_score,
+            "rank": self.rank,
+            "top_interactions": list(self.top_interactions),
+            "top_residues": list(self.top_residues),
+            "top_hotspots": list(self.top_hotspots),
+            "top_residue_pairs": list(
+                self.top_residue_pairs
+            ),
+            "metadata": dict(self.metadata),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 11.5. Resultado estatístico global
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiGlobalStatistics:
+    """
+    Complete statistical result for one analysis or multiple poses.
+    """
+
+    schema_version: str = PI_STATISTICS_SCHEMA_VERSION
+
+    total_poses: int = 1
+    total_interactions: int = 0
+    valid_interactions: int = 0
+    invalid_interactions: int = 0
+    total_atomic_contacts: int = 0
+
+    unique_residue_count: int = 0
+    unique_receptor_residue_count: int = 0
+    unique_ligand_residue_count: int = 0
+    unique_residue_pair_count: int = 0
+    hotspot_count: int = 0
+
+    interaction_type_distribution: Dict[str, int] = field(
+        default_factory=dict
+    )
+    geometry_distribution: Dict[str, int] = field(
+        default_factory=dict
+    )
+    strength_distribution: Dict[str, int] = field(
+        default_factory=dict
+    )
+    hotspot_level_distribution: Dict[str, int] = field(
+        default_factory=dict
+    )
+
+    distance_statistics: Optional[PiNumericSummary] = None
+    atomic_distance_statistics: Optional[PiNumericSummary] = None
+    centroid_distance_statistics: Optional[PiNumericSummary] = None
+    atomic_contact_count_statistics: Optional[
+        PiNumericSummary
+    ] = None
+
+    geometry_score_statistics: Optional[PiNumericSummary] = None
+    strength_score_statistics: Optional[PiNumericSummary] = None
+    total_score_statistics: Optional[PiNumericSummary] = None
+    hotspot_score_statistics: Optional[PiNumericSummary] = None
+
+    total_geometry_score: float = 0.0
+    total_strength_score: float = 0.0
+    total_score: float = 0.0
+    mean_score: float = 0.0
+    median_score: float = 0.0
+
+    top_interactions: List[Dict[str, Any]] = field(
+        default_factory=list
+    )
+    top_residues: List[Dict[str, Any]] = field(
+        default_factory=list
+    )
+    top_hotspots: List[Dict[str, Any]] = field(
+        default_factory=list
+    )
+    top_residue_pairs: List[Dict[str, Any]] = field(
+        default_factory=list
+    )
+
+    pose_statistics: List[PiPoseStatistics] = field(
+        default_factory=list
+    )
+
+    best_pose_id: Optional[str] = None
+    best_pose_index: Optional[int] = None
+    best_pose_score: Optional[float] = None
+
+    consensus_residues: List[Dict[str, Any]] = field(
+        default_factory=list
+    )
+    consensus_residue_pairs: List[Dict[str, Any]] = field(
+        default_factory=list
+    )
+    consensus_interaction_types: List[Dict[str, Any]] = field(
+        default_factory=list
+    )
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "total_poses": self.total_poses,
+            "total_interactions": self.total_interactions,
+            "valid_interactions": self.valid_interactions,
+            "invalid_interactions": self.invalid_interactions,
+            "total_atomic_contacts": self.total_atomic_contacts,
+            "unique_residue_count": self.unique_residue_count,
+            "unique_receptor_residue_count": (
+                self.unique_receptor_residue_count
+            ),
+            "unique_ligand_residue_count": (
+                self.unique_ligand_residue_count
+            ),
+            "unique_residue_pair_count": (
+                self.unique_residue_pair_count
+            ),
+            "hotspot_count": self.hotspot_count,
+            "interaction_type_distribution": dict(
+                self.interaction_type_distribution
+            ),
+            "geometry_distribution": dict(
+                self.geometry_distribution
+            ),
+            "strength_distribution": dict(
+                self.strength_distribution
+            ),
+            "hotspot_level_distribution": dict(
+                self.hotspot_level_distribution
+            ),
+            "distance_statistics": (
+                self.distance_statistics.to_dict()
+                if self.distance_statistics is not None
+                else None
+            ),
+            "atomic_distance_statistics": (
+                self.atomic_distance_statistics.to_dict()
+                if self.atomic_distance_statistics is not None
+                else None
+            ),
+            "centroid_distance_statistics": (
+                self.centroid_distance_statistics.to_dict()
+                if self.centroid_distance_statistics is not None
+                else None
+            ),
+            "atomic_contact_count_statistics": (
+                self.atomic_contact_count_statistics.to_dict()
+                if self.atomic_contact_count_statistics is not None
+                else None
+            ),
+            "geometry_score_statistics": (
+                self.geometry_score_statistics.to_dict()
+                if self.geometry_score_statistics is not None
+                else None
+            ),
+            "strength_score_statistics": (
+                self.strength_score_statistics.to_dict()
+                if self.strength_score_statistics is not None
+                else None
+            ),
+            "total_score_statistics": (
+                self.total_score_statistics.to_dict()
+                if self.total_score_statistics is not None
+                else None
+            ),
+            "hotspot_score_statistics": (
+                self.hotspot_score_statistics.to_dict()
+                if self.hotspot_score_statistics is not None
+                else None
+            ),
+            "total_geometry_score": self.total_geometry_score,
+            "total_strength_score": self.total_strength_score,
+            "total_score": self.total_score,
+            "mean_score": self.mean_score,
+            "median_score": self.median_score,
+            "top_interactions": list(self.top_interactions),
+            "top_residues": list(self.top_residues),
+            "top_hotspots": list(self.top_hotspots),
+            "top_residue_pairs": list(
+                self.top_residue_pairs
+            ),
+            "pose_statistics": [
+                pose_statistics.to_dict()
+                for pose_statistics in self.pose_statistics
+            ],
+            "best_pose_id": self.best_pose_id,
+            "best_pose_index": self.best_pose_index,
+            "best_pose_score": self.best_pose_score,
+            "consensus_residues": list(
+                self.consensus_residues
+            ),
+            "consensus_residue_pairs": list(
+                self.consensus_residue_pairs
+            ),
+            "consensus_interaction_types": list(
+                self.consensus_interaction_types
+            ),
+            "metadata": dict(self.metadata),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 11.6. Extração segura de coleções
+# -----------------------------------------------------------------------------
+
+def get_pi_analysis_interactions(
+    analysis: Union[
+        PiAnalysisResult,
+        PiGroupingResult,
+        Iterable[PiInteraction],
+    ],
+) -> List[PiInteraction]:
+    """
+    Extract interactions from any supported result object.
+    """
+
+    if isinstance(
+        analysis,
+        PiAnalysisResult,
+    ):
+        return list(
+            getattr(
+                analysis,
+                "interactions",
+                (),
+            )
+            or ()
+        )
+
+    if isinstance(
+        analysis,
+        PiGroupingResult,
+    ):
+        return list(
+            analysis.interactions
+        )
+
+    return list(analysis)
+
+
+def get_pi_grouping_result(
+    analysis: Union[
+        PiAnalysisResult,
+        PiGroupingResult,
+        Iterable[PiInteraction],
+    ],
+    *,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+) -> PiGroupingResult:
+    """
+    Return or construct the grouping result associated with an analysis.
+    """
+
+    if isinstance(
+        analysis,
+        PiGroupingResult,
+    ):
+        return analysis
+
+    if isinstance(
+        analysis,
+        PiAnalysisResult,
+    ):
+        interactions = get_pi_analysis_interactions(
+            analysis
+        )
+
+        existing_residue_summaries = getattr(
+            analysis,
+            "residue_summaries",
+            None,
+        )
+
+        existing_pairs = getattr(
+            analysis,
+            "residue_pairs",
+            None,
+        )
+
+        existing_hotspots = getattr(
+            analysis,
+            "hotspots",
+            None,
+        )
+
+        if (
+            existing_residue_summaries is not None
+            and existing_pairs is not None
+            and existing_hotspots is not None
+        ):
+            return PiGroupingResult(
+                interactions=interactions,
+                residue_summaries=list(
+                    existing_residue_summaries
+                ),
+                receptor_residue_summaries=list(
+                    getattr(
+                        analysis,
+                        "receptor_residue_summaries",
+                        (),
+                    )
+                    or ()
+                ),
+                ligand_residue_summaries=list(
+                    getattr(
+                        analysis,
+                        "ligand_residue_summaries",
+                        (),
+                    )
+                    or ()
+                ),
+                residue_pairs=list(
+                    existing_pairs
+                ),
+                hotspots=list(
+                    existing_hotspots
+                ),
+                interaction_groups=dict(
+                    getattr(
+                        analysis,
+                        "interaction_groups",
+                        {},
+                    )
+                    or {}
+                ),
+                metadata={
+                    "source": "PiAnalysisResult",
+                },
+            )
+
+        return group_pi_interactions(
+            interactions,
+            grouping_config=grouping_config,
+            annotate_interactions=True,
+            include_non_hotspots=False,
+            validate_result=True,
+        )
+
+    return group_pi_interactions(
+        list(analysis),
+        grouping_config=grouping_config,
+        annotate_interactions=True,
+        include_non_hotspots=False,
+        validate_result=True,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 11.7. Filtros estatísticos
+# -----------------------------------------------------------------------------
+
+def filter_interactions_for_statistics(
+    interactions: Iterable[PiInteraction],
+    *,
+    statistics_config: Optional[
+        PiStatisticsConfig
+    ] = None,
+) -> List[PiInteraction]:
+    """
+    Filter interactions according to the statistical configuration.
+    """
+
+    config = (
+        statistics_config
+        if statistics_config is not None
+        else create_default_pi_statistics_config()
+    )
+
+    return [
+        interaction
+        for interaction in interactions
+        if (
+            config.include_invalid_interactions
+            or interaction.valid
+        )
+    ]
+
+
+def get_representative_pi_distance(
+    interaction: PiInteraction,
+) -> Optional[float]:
+    """
+    Return the preferred representative distance for an interaction.
+    """
+
+    distance = _normalize_optional_numeric(
+        interaction.minimum_atomic_distance
+    )
+
+    if distance is not None:
+        return distance
+
+    return _normalize_optional_numeric(
+        interaction.centroid_distance
+    )
+
+
+# -----------------------------------------------------------------------------
+# 11.8. Agregação de scores
+# -----------------------------------------------------------------------------
+
+def aggregate_pi_scores(
+    values: Iterable[Optional[Number]],
+    *,
+    method: str = PI_SCORE_AGGREGATION_SUM,
+) -> float:
+    """
+    Aggregate finite scores using the requested method.
+    """
+
+    normalized_method = str(
+        method
+    ).strip().lower()
+
+    if (
+        normalized_method
+        not in SUPPORTED_PI_SCORE_AGGREGATIONS
+    ):
+        raise ValueError(
+            f"Unsupported score aggregation: {method!r}."
+        )
+
+    normalized_values = [
+        float(value)
+        for value in values
+        if (
+            value is not None
+            and not isinstance(value, bool)
+            and isinstance(
+                value,
+                (int, float),
+            )
+            and math.isfinite(float(value))
+        )
+    ]
+
+    if not normalized_values:
+        return 0.0
+
+    if normalized_method == PI_SCORE_AGGREGATION_SUM:
+        return sum(normalized_values)
+
+    if normalized_method == PI_SCORE_AGGREGATION_MEAN:
+        return (
+            sum(normalized_values)
+            / len(normalized_values)
+        )
+
+    if normalized_method == PI_SCORE_AGGREGATION_MAXIMUM:
+        return max(normalized_values)
+
+    sorted_values = sorted(
+        normalized_values
+    )
+
+    value_count = len(sorted_values)
+
+    if value_count % 2 == 0:
+        middle = value_count // 2
+
+        return (
+            sorted_values[middle - 1]
+            + sorted_values[middle]
+        ) / 2.0
+
+    return sorted_values[
+        value_count // 2
+    ]
+
+
+# -----------------------------------------------------------------------------
+# 11.9. Resumo de uma interação
+# -----------------------------------------------------------------------------
+
+def summarize_pi_interaction_record(
+    interaction: PiInteraction,
+    *,
+    rank: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Generate a compact serializable interaction record.
+    """
+
+    residue_1, residue_2 = (
+        get_pi_interaction_residue_references(
+            interaction
+        )
+    )
+
+    return {
+        "rank": rank,
+        "interaction_id": interaction.interaction_id,
+        "interaction_type": interaction.interaction_type,
+        "geometry_class": interaction.geometry_class,
+        "strength_class": interaction.strength_class,
+        "geometry_score": interaction.geometry_score,
+        "strength_score": interaction.strength_score,
+        "total_score": interaction.total_score,
+        "centroid_distance": (
+            interaction.centroid_distance
+        ),
+        "minimum_atomic_distance": (
+            interaction.minimum_atomic_distance
+        ),
+        "atomic_contact_count": len(
+            interaction.atomic_contacts
+        ),
+        "valid": interaction.valid,
+        "residue_1": (
+            residue_1.to_dict()
+            if residue_1 is not None
+            else None
+        ),
+        "residue_2": (
+            residue_2.to_dict()
+            if residue_2 is not None
+            else None
+        ),
+        "penalties": list(
+            interaction.metadata.get(
+                "penalties",
+                (),
+            )
+        ),
+    }
+
+
+# -----------------------------------------------------------------------------
+# 11.10. Resumo de resíduos
+# -----------------------------------------------------------------------------
+
+def summarize_pi_residue_record(
+    summary: PiResidueSummary,
+    *,
+    rank: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Generate a compact residue-summary record.
+    """
+
+    interactions = list(
+        getattr(
+            summary,
+            "interactions",
+            (),
+        )
+        or ()
+    )
+
+    total_score = _normalize_optional_numeric(
+        getattr(
+            summary,
+            "total_score",
+            None,
+        )
+    )
+
+    if total_score is None:
+        total_score = (
+            calculate_interaction_score_sum(
+                interactions,
+                "total_score",
+            )
+        )
+
+    return {
+        "rank": rank,
+        "residue_id": getattr(
+            summary,
+            "residue_id",
+            None,
+        ),
+        "display_name": getattr(
+            summary,
+            "display_name",
+            None,
+        ),
+        "participant_type": getattr(
+            summary,
+            "participant_type",
+            None,
+        ),
+        "chain_id": getattr(
+            summary,
+            "chain_id",
+            None,
+        ),
+        "residue_name": getattr(
+            summary,
+            "residue_name",
+            None,
+        ),
+        "residue_number": getattr(
+            summary,
+            "residue_number",
+            None,
+        ),
+        "interaction_count": len(
+            interactions
+        ),
+        "interaction_type_count": len(
+            {
+                interaction.interaction_type
+                for interaction in interactions
+            }
+        ),
+        "atomic_contact_count": sum(
+            len(interaction.atomic_contacts)
+            for interaction in interactions
+        ),
+        "total_score": total_score,
+        "mean_score": (
+            total_score / len(interactions)
+            if interactions
+            else 0.0
+        ),
+        "interaction_type_distribution": dict(
+            Counter(
+                interaction.interaction_type
+                for interaction in interactions
+            )
+        ),
+    }
+
+
+# -----------------------------------------------------------------------------
+# 11.11. Resumo de pares e hotspots
+# -----------------------------------------------------------------------------
+
+def summarize_pi_residue_pair_record(
+    pair: PiResiduePairSummary,
+    *,
+    rank: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Generate a compact residue-pair record.
+    """
+
+    return {
+        "rank": rank,
+        "pair_id": pair.pair_id,
+        "residue_1": pair.residue_1.to_dict(),
+        "residue_2": pair.residue_2.to_dict(),
+        "interaction_count": pair.interaction_count,
+        "interaction_type_count": (
+            pair.interaction_type_count
+        ),
+        "total_atomic_contacts": (
+            pair.total_atomic_contacts
+        ),
+        "minimum_distance": pair.minimum_distance,
+        "mean_distance": pair.mean_distance,
+        "maximum_distance": pair.maximum_distance,
+        "geometry_score": pair.geometry_score,
+        "strength_score": pair.strength_score,
+        "total_score": pair.total_score,
+        "interaction_type_distribution": dict(
+            pair.interaction_type_distribution
+        ),
+    }
+
+
+def summarize_pi_hotspot_record(
+    hotspot: PiHotspot,
+) -> Dict[str, Any]:
+    """
+    Generate a compact hotspot record.
+    """
+
+    return {
+        "rank": hotspot.rank,
+        "residue": hotspot.residue.to_dict(),
+        "interaction_count": hotspot.interaction_count,
+        "interaction_type_count": (
+            hotspot.interaction_type_count
+        ),
+        "partner_count": hotspot.partner_count,
+        "total_atomic_contacts": (
+            hotspot.total_atomic_contacts
+        ),
+        "hotspot_score": hotspot.hotspot_score,
+        "hotspot_level": hotspot.hotspot_level,
+        "interaction_score": (
+            hotspot.interaction_score
+        ),
+        "geometry_score": hotspot.geometry_score,
+        "strength_score": hotspot.strength_score,
+        "minimum_distance": hotspot.minimum_distance,
+        "mean_distance": hotspot.mean_distance,
+        "maximum_distance": hotspot.maximum_distance,
+        "interaction_type_distribution": dict(
+            hotspot.interaction_type_distribution
+        ),
+    }
+
+
+# -----------------------------------------------------------------------------
+# 11.12. Criação de PiStatistics compatível
+# -----------------------------------------------------------------------------
+
+def _create_pi_statistics_instance(
+    statistics_values: Mapping[str, Any],
+) -> PiStatistics:
+    """
+    Instantiate the canonical PiStatistics dataclass using supported fields.
+    """
+
+    try:
+        supported_fields = {
+            field_definition.name
+            for field_definition in fields(
+                PiStatistics
+            )
+        }
+
+    except TypeError:
+        supported_fields = set(
+            statistics_values
+        )
+
+    constructor_values = {
+        key: value
+        for key, value in statistics_values.items()
+        if key in supported_fields
+    }
+
+    return PiStatistics(
+        **constructor_values
+    )
+
+
+def build_canonical_pi_statistics(
+    interactions: Iterable[PiInteraction],
+    *,
+    grouping_result: Optional[
+        PiGroupingResult
+    ] = None,
+    statistics_config: Optional[
+        PiStatisticsConfig
+    ] = None,
+) -> PiStatistics:
+    """
+    Populate the canonical PiStatistics dataclass from scored interactions.
+    """
+
+    config = (
+        statistics_config
+        if statistics_config is not None
+        else create_default_pi_statistics_config()
+    )
+
+    interaction_list = filter_interactions_for_statistics(
+        interactions,
+        statistics_config=config,
+    )
+
+    grouping = (
+        grouping_result
+        if grouping_result is not None
+        else group_pi_interactions(
+            interaction_list,
+            annotate_interactions=True,
+            validate_result=True,
+        )
+    )
+
+    representative_distances = [
+        distance
+        for interaction in interaction_list
+        if (
+            distance := get_representative_pi_distance(
+                interaction
+            )
+        ) is not None
+    ]
+
+    total_score = aggregate_pi_scores(
+        (
+            interaction.total_score
+            for interaction in interaction_list
+        ),
+        method=config.score_aggregation,
+    )
+
+    values: Dict[str, Any] = {
+        "total_interactions": len(
+            interaction_list
+        ),
+        "total_atomic_contacts": sum(
+            len(interaction.atomic_contacts)
+            for interaction in interaction_list
+        ),
+        "residue_count": len(
+            grouping.residue_summaries
+        ),
+        "residues_involved": [
+            getattr(
+                summary,
+                "residue_id",
+                None,
+            )
+            for summary
+            in grouping.residue_summaries
+        ],
+        "minimum_distance": (
+            min(representative_distances)
+            if representative_distances
+            else None
+        ),
+        "mean_distance": (
+            sum(representative_distances)
+            / len(representative_distances)
+            if representative_distances
+            else None
+        ),
+        "maximum_distance": (
+            max(representative_distances)
+            if representative_distances
+            else None
+        ),
+        "interaction_type_distribution": dict(
+            Counter(
+                interaction.interaction_type
+                for interaction
+                in interaction_list
+            )
+        ),
+        "geometry_distribution": dict(
+            Counter(
+                interaction.geometry_class
+                or GEOMETRY_CLASS_UNCLASSIFIED
+                for interaction
+                in interaction_list
+            )
+        ),
+        "strength_distribution": dict(
+            Counter(
+                interaction.strength_class
+                or STRENGTH_CLASS_UNCLASSIFIED
+                for interaction
+                in interaction_list
+            )
+        ),
+        "hotspot_count": len(
+            grouping.hotspots
+        ),
+        "hotspots": list(
+            grouping.hotspots
+        ),
+        "total_score": total_score,
+        "geometry_score": aggregate_pi_scores(
+            (
+                interaction.geometry_score
+                for interaction
+                in interaction_list
+            ),
+            method=config.score_aggregation,
+        ),
+        "strength_score": aggregate_pi_scores(
+            (
+                interaction.strength_score
+                for interaction
+                in interaction_list
+            ),
+            method=config.score_aggregation,
+        ),
+    }
+
+    statistics = _create_pi_statistics_instance(
+        values
+    )
+
+    for attribute_name, value in values.items():
+        _set_supported_attribute(
+            statistics,
+            attribute_name,
+            value,
+        )
+
+    metadata = getattr(
+        statistics,
+        "metadata",
+        None,
+    )
+
+    if isinstance(metadata, MutableMapping):
+        metadata.update(
+            {
+                "schema_version": (
+                    PI_STATISTICS_SCHEMA_VERSION
+                ),
+                "statistics_config": (
+                    config.to_dict()
+                ),
+            }
+        )
+
+    return statistics
+
+
+# -----------------------------------------------------------------------------
+# 11.13. Estatísticas de uma pose
+# -----------------------------------------------------------------------------
+
+def calculate_pi_pose_statistics(
+    analysis: Union[
+        PiAnalysisResult,
+        PiGroupingResult,
+        Iterable[PiInteraction],
+    ],
+    *,
+    pose_id: Optional[str] = None,
+    pose_index: Optional[int] = None,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+    statistics_config: Optional[
+        PiStatisticsConfig
+    ] = None,
+) -> PiPoseStatistics:
+    """
+    Calculate complete statistics for one pose.
+    """
+
+    config = (
+        statistics_config
+        if statistics_config is not None
+        else create_default_pi_statistics_config()
+    )
+
+    grouping = get_pi_grouping_result(
+        analysis,
+        grouping_config=grouping_config,
+    )
+
+    interactions = filter_interactions_for_statistics(
+        grouping.interactions,
+        statistics_config=config,
+    )
+
+    resolved_pose_id = str(
+        pose_id
+        or getattr(
+            analysis,
+            "pose_id",
+            None,
+        )
+        or getattr(
+            analysis,
+            "analysis_id",
+            None,
+        )
+        or (
+            f"pose_{pose_index}"
+            if pose_index is not None
+            else "pose"
+        )
+    )
+
+    representative_distances = [
+        distance
+        for interaction in interactions
+        if (
+            distance := get_representative_pi_distance(
+                interaction
+            )
+        ) is not None
+    ]
+
+    atomic_distances = [
+        interaction.minimum_atomic_distance
+        for interaction in interactions
+        if interaction.minimum_atomic_distance
+        is not None
+    ]
+
+    centroid_distances = [
+        interaction.centroid_distance
+        for interaction in interactions
+        if interaction.centroid_distance
+        is not None
+    ]
+
+    geometry_scores = [
+        interaction.geometry_score
+        for interaction in interactions
+        if interaction.geometry_score is not None
+    ]
+
+    strength_scores = [
+        interaction.strength_score
+        for interaction in interactions
+        if interaction.strength_score is not None
+    ]
+
+    total_scores = [
+        interaction.total_score
+        for interaction in interactions
+        if interaction.total_score is not None
+    ]
+
+    hotspot_scores = [
+        hotspot.hotspot_score
+        for hotspot in grouping.hotspots
+    ]
+
+    total_geometry_score = aggregate_pi_scores(
+        geometry_scores,
+        method=config.score_aggregation,
+    )
+
+    total_strength_score = aggregate_pi_scores(
+        strength_scores,
+        method=config.score_aggregation,
+    )
+
+    total_score = aggregate_pi_scores(
+        total_scores,
+        method=config.score_aggregation,
+    )
+
+    mean_score = (
+        sum(total_scores) / len(total_scores)
+        if total_scores
+        else 0.0
+    )
+
+    interaction_type_distribution = dict(
+        Counter(
+            interaction.interaction_type
+            for interaction in interactions
+        )
+    )
+
+    geometry_distribution = dict(
+        Counter(
+            interaction.geometry_class
+            or GEOMETRY_CLASS_UNCLASSIFIED
+            for interaction in interactions
+        )
+    )
+
+    strength_distribution = dict(
+        Counter(
+            interaction.strength_class
+            or STRENGTH_CLASS_UNCLASSIFIED
+            for interaction in interactions
+        )
+    )
+
+    hotspot_level_distribution = dict(
+        Counter(
+            hotspot.hotspot_level
+            for hotspot in grouping.hotspots
+        )
+    )
+
+    ranked_interactions = rank_pi_interactions(
+        interactions,
+        score_attribute="total_score",
+        descending=True,
+        update_metadata=False,
+    )
+
+    ranked_residues = sorted(
+        grouping.residue_summaries,
+        key=lambda summary: (
+            -(
+                _normalize_optional_numeric(
+                    getattr(
+                        summary,
+                        "total_score",
+                        None,
+                    )
+                )
+                or calculate_interaction_score_sum(
+                    getattr(
+                        summary,
+                        "interactions",
+                        (),
+                    ),
+                    "total_score",
+                )
+            ),
+            str(
+                getattr(
+                    summary,
+                    "residue_id",
+                    "",
+                )
+            ),
+        ),
+    )
+
+    ranked_pairs = sorted(
+        grouping.residue_pairs,
+        key=lambda pair: (
+            -pair.total_score,
+            -pair.interaction_count,
+            pair.pair_id,
+        ),
+    )
+
+    ranked_hotspots = sorted(
+        grouping.hotspots,
+        key=lambda hotspot: (
+            -hotspot.hotspot_score,
+            -hotspot.interaction_score,
+            hotspot.residue.residue_id,
+        ),
+    )
+
+    return PiPoseStatistics(
+        pose_id=resolved_pose_id,
+        pose_index=pose_index,
+        total_interactions=len(interactions),
+        valid_interactions=sum(
+            1
+            for interaction in interactions
+            if interaction.valid
+        ),
+        invalid_interactions=sum(
+            1
+            for interaction in interactions
+            if not interaction.valid
+        ),
+        total_atomic_contacts=sum(
+            len(interaction.atomic_contacts)
+            for interaction in interactions
+        ),
+        total_residues=len(
+            grouping.residue_summaries
+        ),
+        receptor_residue_count=len(
+            grouping.receptor_residue_summaries
+        ),
+        ligand_residue_count=len(
+            grouping.ligand_residue_summaries
+        ),
+        residue_pair_count=len(
+            grouping.residue_pairs
+        ),
+        hotspot_count=len(
+            grouping.hotspots
+        ),
+        interaction_type_distribution=(
+            interaction_type_distribution
+        ),
+        geometry_distribution=(
+            geometry_distribution
+        ),
+        strength_distribution=(
+            strength_distribution
+        ),
+        hotspot_level_distribution=(
+            hotspot_level_distribution
+        ),
+        distance_statistics=(
+            calculate_pi_numeric_summary(
+                representative_distances,
+                round_digits=config.round_digits,
+            )
+        ),
+        atomic_distance_statistics=(
+            calculate_pi_numeric_summary(
+                atomic_distances,
+                round_digits=config.round_digits,
+            )
+        ),
+        centroid_distance_statistics=(
+            calculate_pi_numeric_summary(
+                centroid_distances,
+                round_digits=config.round_digits,
+            )
+        ),
+        geometry_score_statistics=(
+            calculate_pi_numeric_summary(
+                geometry_scores,
+                round_digits=config.round_digits,
+            )
+        ),
+        strength_score_statistics=(
+            calculate_pi_numeric_summary(
+                strength_scores,
+                round_digits=config.round_digits,
+            )
+        ),
+        total_score_statistics=(
+            calculate_pi_numeric_summary(
+                total_scores,
+                round_digits=config.round_digits,
+            )
+        ),
+        hotspot_score_statistics=(
+            calculate_pi_numeric_summary(
+                hotspot_scores,
+                round_digits=config.round_digits,
+            )
+        ),
+        total_geometry_score=total_geometry_score,
+        total_strength_score=total_strength_score,
+        total_score=total_score,
+        mean_score=mean_score,
+        maximum_hotspot_score=(
+            max(hotspot_scores)
+            if hotspot_scores
+            else 0.0
+        ),
+        interaction_type_diversity=len(
+            interaction_type_distribution
+        ),
+        geometry_diversity=len(
+            geometry_distribution
+        ),
+        strength_diversity=len(
+            strength_distribution
+        ),
+        top_interactions=[
+            summarize_pi_interaction_record(
+                interaction,
+                rank=rank,
+            )
+            for rank, interaction in enumerate(
+                ranked_interactions[
+                    :config.top_n_interactions
+                ],
+                start=1,
+            )
+        ],
+        top_residues=[
+            summarize_pi_residue_record(
+                summary,
+                rank=rank,
+            )
+            for rank, summary in enumerate(
+                ranked_residues[
+                    :config.top_n_residues
+                ],
+                start=1,
+            )
+        ],
+        top_hotspots=[
+            summarize_pi_hotspot_record(
+                hotspot
+            )
+            for hotspot in ranked_hotspots[
+                :config.top_n_hotspots
+            ]
+        ],
+        top_residue_pairs=[
+            summarize_pi_residue_pair_record(
+                pair,
+                rank=rank,
+            )
+            for rank, pair in enumerate(
+                ranked_pairs[
+                    :config.top_n_pairs
+                ],
+                start=1,
+            )
+        ],
+        metadata={
+            "statistics_config": (
+                config.to_dict()
+            ),
+            "source_type": type(
+                analysis
+            ).__name__,
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 11.14. Normalização de métricas multipose
+# -----------------------------------------------------------------------------
+
+def normalize_pose_metric_values(
+    values: Mapping[str, float],
+) -> Dict[str, float]:
+    """
+    Min-max normalize pose metrics.
+    """
+
+    if not values:
+        return {}
+
+    finite_values = {
+        key: float(value)
+        for key, value in values.items()
+        if math.isfinite(float(value))
+    }
+
+    if not finite_values:
+        return {
+            key: 0.0
+            for key in values
+        }
+
+    minimum = min(
+        finite_values.values()
+    )
+
+    maximum = max(
+        finite_values.values()
+    )
+
+    if math.isclose(
+        minimum,
+        maximum,
+        abs_tol=1.0e-12,
+    ):
+        return {
+            key: (
+                1.0
+                if key in finite_values
+                else 0.0
+            )
+            for key in values
+        }
+
+    return {
+        key: (
+            (
+                finite_values[key] - minimum
+            )
+            / (
+                maximum - minimum
+            )
+            if key in finite_values
+            else 0.0
+        )
+        for key in values
+    }
+
+
+# -----------------------------------------------------------------------------
+# 11.15. Score composto e ranking de poses
+# -----------------------------------------------------------------------------
+
+def calculate_pi_pose_composite_scores(
+    pose_statistics: Iterable[PiPoseStatistics],
+    *,
+    statistics_config: Optional[
+        PiStatisticsConfig
+    ] = None,
+) -> List[PiPoseStatistics]:
+    """
+    Calculate normalized composite scores for multiple poses.
+    """
+
+    config = (
+        statistics_config
+        if statistics_config is not None
+        else create_default_pi_statistics_config()
+    )
+
+    pose_list = list(
+        pose_statistics
+    )
+
+    interaction_metrics = normalize_pose_metric_values(
+        {
+            pose.pose_id: float(
+                pose.total_interactions
+            )
+            for pose in pose_list
+        }
+    )
+
+    total_score_metrics = normalize_pose_metric_values(
+        {
+            pose.pose_id: pose.total_score
+            for pose in pose_list
+        }
+    )
+
+    mean_score_metrics = normalize_pose_metric_values(
+        {
+            pose.pose_id: pose.mean_score
+            for pose in pose_list
+        }
+    )
+
+    hotspot_metrics = normalize_pose_metric_values(
+        {
+            pose.pose_id: (
+                pose.maximum_hotspot_score
+            )
+            for pose in pose_list
+        }
+    )
+
+    diversity_metrics = normalize_pose_metric_values(
+        {
+            pose.pose_id: float(
+                pose.interaction_type_diversity
+                + pose.geometry_diversity
+            )
+            for pose in pose_list
+        }
+    )
+
+    weight_sum = config.pose_weight_sum
+
+    for pose in pose_list:
+        composite_score = (
+            interaction_metrics.get(
+                pose.pose_id,
+                0.0,
+            )
+            * config.pose_interaction_weight
+            + total_score_metrics.get(
+                pose.pose_id,
+                0.0,
+            )
+            * config.pose_total_score_weight
+            + mean_score_metrics.get(
+                pose.pose_id,
+                0.0,
+            )
+            * config.pose_mean_score_weight
+            + hotspot_metrics.get(
+                pose.pose_id,
+                0.0,
+            )
+            * config.pose_hotspot_weight
+            + diversity_metrics.get(
+                pose.pose_id,
+                0.0,
+            )
+            * config.pose_diversity_weight
+        ) / weight_sum
+
+        pose.composite_score = (
+            round(
+                composite_score,
+                config.round_digits,
+            )
+            if config.round_digits is not None
+            else composite_score
+        )
+
+        pose.metadata[
+            "normalized_pose_metrics"
+        ] = {
+            "interaction_count": (
+                interaction_metrics.get(
+                    pose.pose_id,
+                    0.0,
+                )
+            ),
+            "total_score": (
+                total_score_metrics.get(
+                    pose.pose_id,
+                    0.0,
+                )
+            ),
+            "mean_score": (
+                mean_score_metrics.get(
+                    pose.pose_id,
+                    0.0,
+                )
+            ),
+            "hotspot_score": (
+                hotspot_metrics.get(
+                    pose.pose_id,
+                    0.0,
+                )
+            ),
+            "diversity": (
+                diversity_metrics.get(
+                    pose.pose_id,
+                    0.0,
+                )
+            ),
+        }
+
+    return pose_list
+
+
+def get_pi_pose_ranking_value(
+    pose: PiPoseStatistics,
+    method: str,
+) -> float:
+    """
+    Return the ranking value for a pose.
+    """
+
+    normalized_method = str(
+        method
+    ).strip().lower()
+
+    if normalized_method == PI_POSE_RANKING_TOTAL_SCORE:
+        return pose.total_score
+
+    if normalized_method == PI_POSE_RANKING_MEAN_SCORE:
+        return pose.mean_score
+
+    if (
+        normalized_method
+        == PI_POSE_RANKING_INTERACTION_COUNT
+    ):
+        return float(
+            pose.total_interactions
+        )
+
+    if (
+        normalized_method
+        == PI_POSE_RANKING_HOTSPOT_SCORE
+    ):
+        return pose.maximum_hotspot_score
+
+    if normalized_method == PI_POSE_RANKING_COMPOSITE:
+        return pose.composite_score
+
+    raise ValueError(
+        f"Unsupported pose ranking method: {method!r}."
+    )
+
+
+def rank_pi_pose_statistics(
+    pose_statistics: Iterable[PiPoseStatistics],
+    *,
+    statistics_config: Optional[
+        PiStatisticsConfig
+    ] = None,
+) -> List[PiPoseStatistics]:
+    """
+    Rank pose-statistics objects.
+    """
+
+    config = (
+        statistics_config
+        if statistics_config is not None
+        else create_default_pi_statistics_config()
+    )
+
+    pose_list = calculate_pi_pose_composite_scores(
+        pose_statistics,
+        statistics_config=config,
+    )
+
+    pose_list.sort(
+        key=lambda pose: (
+            -get_pi_pose_ranking_value(
+                pose,
+                config.pose_ranking_method,
+            ),
+            -pose.total_score,
+            -pose.mean_score,
+            -pose.total_interactions,
+            pose.pose_index
+            if pose.pose_index is not None
+            else float("inf"),
+            pose.pose_id,
+        )
+    )
+
+    for rank, pose in enumerate(
+        pose_list,
+        start=1,
+    ):
+        pose.rank = rank
+
+        pose.metadata[
+            "ranking_method"
+        ] = config.pose_ranking_method
+
+        pose.metadata[
+            "ranking_value"
+        ] = get_pi_pose_ranking_value(
+            pose,
+            config.pose_ranking_method,
+        )
+
+    return pose_list
+
+
+# -----------------------------------------------------------------------------
+# 11.16. Consenso multipose por resíduo
+# -----------------------------------------------------------------------------
+
+def calculate_pi_residue_consensus(
+    grouping_results: Sequence[PiGroupingResult],
+) -> List[Dict[str, Any]]:
+    """
+    Calculate residue occurrence and score consensus across poses.
+    """
+
+    pose_count = len(
+        grouping_results
+    )
+
+    if pose_count == 0:
+        return []
+
+    residue_data: Dict[
+        str,
+        Dict[str, Any],
+    ] = {}
+
+    for pose_index, grouping in enumerate(
+        grouping_results,
+        start=1,
+    ):
+        observed_in_pose: Set[str] = set()
+
+        for summary in grouping.residue_summaries:
+            residue_id = str(
+                getattr(
+                    summary,
+                    "residue_id",
+                    "",
+                )
+            )
+
+            if not residue_id:
+                continue
+
+            interactions = list(
+                getattr(
+                    summary,
+                    "interactions",
+                    (),
+                )
+                or ()
+            )
+
+            entry = residue_data.setdefault(
+                residue_id,
+                {
+                    "residue_id": residue_id,
+                    "display_name": getattr(
+                        summary,
+                        "display_name",
+                        None,
+                    ),
+                    "participant_type": getattr(
+                        summary,
+                        "participant_type",
+                        None,
+                    ),
+                    "chain_id": getattr(
+                        summary,
+                        "chain_id",
+                        None,
+                    ),
+                    "residue_name": getattr(
+                        summary,
+                        "residue_name",
+                        None,
+                    ),
+                    "residue_number": getattr(
+                        summary,
+                        "residue_number",
+                        None,
+                    ),
+                    "pose_indices": [],
+                    "interaction_count": 0,
+                    "total_score": 0.0,
+                    "interaction_types": Counter(),
+                },
+            )
+
+            entry[
+                "interaction_count"
+            ] += len(interactions)
+
+            entry[
+                "total_score"
+            ] += calculate_interaction_score_sum(
+                interactions,
+                "total_score",
+            )
+
+            entry[
+                "interaction_types"
+            ].update(
+                interaction.interaction_type
+                for interaction in interactions
+            )
+
+            if residue_id not in observed_in_pose:
+                entry[
+                    "pose_indices"
+                ].append(pose_index)
+
+                observed_in_pose.add(
+                    residue_id
+                )
+
+    consensus_records: List[
+        Dict[str, Any]
+    ] = []
+
+    for entry in residue_data.values():
+        occurrence_count = len(
+            entry["pose_indices"]
+        )
+
+        occurrence_fraction = (
+            occurrence_count / pose_count
+        )
+
+        consensus_records.append(
+            {
+                "residue_id": entry["residue_id"],
+                "display_name": entry["display_name"],
+                "participant_type": (
+                    entry["participant_type"]
+                ),
+                "chain_id": entry["chain_id"],
+                "residue_name": (
+                    entry["residue_name"]
+                ),
+                "residue_number": (
+                    entry["residue_number"]
+                ),
+                "pose_count": occurrence_count,
+                "pose_fraction": occurrence_fraction,
+                "pose_indices": list(
+                    entry["pose_indices"]
+                ),
+                "interaction_count": (
+                    entry["interaction_count"]
+                ),
+                "mean_interactions_per_pose": (
+                    entry["interaction_count"]
+                    / occurrence_count
+                    if occurrence_count
+                    else 0.0
+                ),
+                "total_score": entry["total_score"],
+                "mean_score_per_observed_pose": (
+                    entry["total_score"]
+                    / occurrence_count
+                    if occurrence_count
+                    else 0.0
+                ),
+                "interaction_type_distribution": dict(
+                    entry["interaction_types"]
+                ),
+            }
+        )
+
+    consensus_records.sort(
+        key=lambda record: (
+            -record["pose_fraction"],
+            -record["total_score"],
+            -record["interaction_count"],
+            record["residue_id"],
+        )
+    )
+
+    for rank, record in enumerate(
+        consensus_records,
+        start=1,
+    ):
+        record["rank"] = rank
+
+    return consensus_records
+
+
+# -----------------------------------------------------------------------------
+# 11.17. Consenso multipose por par de resíduos
+# -----------------------------------------------------------------------------
+
+def calculate_pi_residue_pair_consensus(
+    grouping_results: Sequence[PiGroupingResult],
+) -> List[Dict[str, Any]]:
+    """
+    Calculate residue-pair consensus across poses.
+    """
+
+    pose_count = len(
+        grouping_results
+    )
+
+    if pose_count == 0:
+        return []
+
+    pair_data: Dict[
+        str,
+        Dict[str, Any],
+    ] = {}
+
+    for pose_index, grouping in enumerate(
+        grouping_results,
+        start=1,
+    ):
+        observed_pairs: Set[str] = set()
+
+        for pair in grouping.residue_pairs:
+            entry = pair_data.setdefault(
+                pair.pair_id,
+                {
+                    "pair_id": pair.pair_id,
+                    "residue_1": (
+                        pair.residue_1.to_dict()
+                    ),
+                    "residue_2": (
+                        pair.residue_2.to_dict()
+                    ),
+                    "pose_indices": [],
+                    "interaction_count": 0,
+                    "total_score": 0.0,
+                    "interaction_types": Counter(),
+                },
+            )
+
+            entry[
+                "interaction_count"
+            ] += pair.interaction_count
+
+            entry[
+                "total_score"
+            ] += pair.total_score
+
+            entry[
+                "interaction_types"
+            ].update(
+                pair.interaction_type_distribution
+            )
+
+            if pair.pair_id not in observed_pairs:
+                entry[
+                    "pose_indices"
+                ].append(pose_index)
+
+                observed_pairs.add(
+                    pair.pair_id
+                )
+
+    records: List[
+        Dict[str, Any]
+    ] = []
+
+    for entry in pair_data.values():
+        occurrence_count = len(
+            entry["pose_indices"]
+        )
+
+        records.append(
+            {
+                "pair_id": entry["pair_id"],
+                "residue_1": entry["residue_1"],
+                "residue_2": entry["residue_2"],
+                "pose_count": occurrence_count,
+                "pose_fraction": (
+                    occurrence_count / pose_count
+                ),
+                "pose_indices": list(
+                    entry["pose_indices"]
+                ),
+                "interaction_count": (
+                    entry["interaction_count"]
+                ),
+                "total_score": entry["total_score"],
+                "mean_score_per_observed_pose": (
+                    entry["total_score"]
+                    / occurrence_count
+                    if occurrence_count
+                    else 0.0
+                ),
+                "interaction_type_distribution": dict(
+                    entry["interaction_types"]
+                ),
+            }
+        )
+
+    records.sort(
+        key=lambda record: (
+            -record["pose_fraction"],
+            -record["total_score"],
+            -record["interaction_count"],
+            record["pair_id"],
+        )
+    )
+
+    for rank, record in enumerate(
+        records,
+        start=1,
+    ):
+        record["rank"] = rank
+
+    return records
+
+
+# -----------------------------------------------------------------------------
+# 11.18. Consenso multipose por tipo de interação
+# -----------------------------------------------------------------------------
+
+def calculate_pi_interaction_type_consensus(
+    pose_statistics: Sequence[PiPoseStatistics],
+) -> List[Dict[str, Any]]:
+    """
+    Calculate interaction-type occurrence across poses.
+    """
+
+    pose_count = len(
+        pose_statistics
+    )
+
+    if pose_count == 0:
+        return []
+
+    interaction_types = sorted(
+        {
+            interaction_type
+            for pose in pose_statistics
+            for interaction_type
+            in pose.interaction_type_distribution
+        }
+    )
+
+    records: List[
+        Dict[str, Any]
+    ] = []
+
+    for interaction_type in interaction_types:
+        counts = [
+            pose.interaction_type_distribution.get(
+                interaction_type,
+                0,
+            )
+            for pose in pose_statistics
+        ]
+
+        observed_pose_count = sum(
+            1
+            for count in counts
+            if count > 0
+        )
+
+        records.append(
+            {
+                "interaction_type": interaction_type,
+                "pose_count": observed_pose_count,
+                "pose_fraction": (
+                    observed_pose_count / pose_count
+                ),
+                "total_count": sum(counts),
+                "mean_count_per_pose": (
+                    sum(counts) / pose_count
+                ),
+                "minimum_count": min(counts),
+                "maximum_count": max(counts),
+                "count_statistics": (
+                    calculate_pi_numeric_summary(
+                        counts
+                    ).to_dict()
+                ),
+            }
+        )
+
+    records.sort(
+        key=lambda record: (
+            -record["pose_fraction"],
+            -record["total_count"],
+            record["interaction_type"],
+        )
+    )
+
+    for rank, record in enumerate(
+        records,
+        start=1,
+    ):
+        record["rank"] = rank
+
+    return records
+
+
+# -----------------------------------------------------------------------------
+# 11.19. Estatísticas globais de uma análise
+# -----------------------------------------------------------------------------
+
+def calculate_pi_global_statistics(
+    analysis: Union[
+        PiAnalysisResult,
+        PiGroupingResult,
+        Iterable[PiInteraction],
+    ],
+    *,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+    statistics_config: Optional[
+        PiStatisticsConfig
+    ] = None,
+) -> PiGlobalStatistics:
+    """
+    Calculate global statistics for one analysis.
+    """
+
+    config = (
+        statistics_config
+        if statistics_config is not None
+        else create_default_pi_statistics_config()
+    )
+
+    grouping = get_pi_grouping_result(
+        analysis,
+        grouping_config=grouping_config,
+    )
+
+    pose_statistics = calculate_pi_pose_statistics(
+        grouping,
+        pose_id=str(
+            getattr(
+                analysis,
+                "pose_id",
+                None,
+            )
+            or "pose"
+        ),
+        pose_index=getattr(
+            analysis,
+            "pose_index",
+            None,
+        ),
+        grouping_config=grouping_config,
+        statistics_config=config,
+    )
+
+    interactions = filter_interactions_for_statistics(
+        grouping.interactions,
+        statistics_config=config,
+    )
+
+    representative_distances = [
+        distance
+        for interaction in interactions
+        if (
+            distance := get_representative_pi_distance(
+                interaction
+            )
+        ) is not None
+    ]
+
+    atomic_distances = [
+        interaction.minimum_atomic_distance
+        for interaction in interactions
+        if interaction.minimum_atomic_distance
+        is not None
+    ]
+
+    centroid_distances = [
+        interaction.centroid_distance
+        for interaction in interactions
+        if interaction.centroid_distance
+        is not None
+    ]
+
+    atomic_contact_counts = [
+        len(interaction.atomic_contacts)
+        for interaction in interactions
+    ]
+
+    geometry_scores = [
+        interaction.geometry_score
+        for interaction in interactions
+        if interaction.geometry_score is not None
+    ]
+
+    strength_scores = [
+        interaction.strength_score
+        for interaction in interactions
+        if interaction.strength_score is not None
+    ]
+
+    total_scores = [
+        interaction.total_score
+        for interaction in interactions
+        if interaction.total_score is not None
+    ]
+
+    hotspot_scores = [
+        hotspot.hotspot_score
+        for hotspot in grouping.hotspots
+    ]
+
+    total_score_summary = (
+        calculate_pi_numeric_summary(
+            total_scores,
+            round_digits=config.round_digits,
+        )
+    )
+
+    result = PiGlobalStatistics(
+        total_poses=1,
+        total_interactions=len(interactions),
+        valid_interactions=sum(
+            1
+            for interaction in interactions
+            if interaction.valid
+        ),
+        invalid_interactions=sum(
+            1
+            for interaction in interactions
+            if not interaction.valid
+        ),
+        total_atomic_contacts=sum(
+            atomic_contact_counts
+        ),
+        unique_residue_count=len(
+            grouping.residue_summaries
+        ),
+        unique_receptor_residue_count=len(
+            grouping.receptor_residue_summaries
+        ),
+        unique_ligand_residue_count=len(
+            grouping.ligand_residue_summaries
+        ),
+        unique_residue_pair_count=len(
+            grouping.residue_pairs
+        ),
+        hotspot_count=len(
+            grouping.hotspots
+        ),
+        interaction_type_distribution=dict(
+            Counter(
+                interaction.interaction_type
+                for interaction in interactions
+            )
+        ),
+        geometry_distribution=dict(
+            Counter(
+                interaction.geometry_class
+                or GEOMETRY_CLASS_UNCLASSIFIED
+                for interaction in interactions
+            )
+        ),
+        strength_distribution=dict(
+            Counter(
+                interaction.strength_class
+                or STRENGTH_CLASS_UNCLASSIFIED
+                for interaction in interactions
+            )
+        ),
+        hotspot_level_distribution=dict(
+            Counter(
+                hotspot.hotspot_level
+                for hotspot in grouping.hotspots
+            )
+        ),
+        distance_statistics=(
+            calculate_pi_numeric_summary(
+                representative_distances,
+                round_digits=config.round_digits,
+            )
+        ),
+        atomic_distance_statistics=(
+            calculate_pi_numeric_summary(
+                atomic_distances,
+                round_digits=config.round_digits,
+            )
+        ),
+        centroid_distance_statistics=(
+            calculate_pi_numeric_summary(
+                centroid_distances,
+                round_digits=config.round_digits,
+            )
+        ),
+        atomic_contact_count_statistics=(
+            calculate_pi_numeric_summary(
+                atomic_contact_counts,
+                round_digits=config.round_digits,
+            )
+        ),
+        geometry_score_statistics=(
+            calculate_pi_numeric_summary(
+                geometry_scores,
+                round_digits=config.round_digits,
+            )
+        ),
+        strength_score_statistics=(
+            calculate_pi_numeric_summary(
+                strength_scores,
+                round_digits=config.round_digits,
+            )
+        ),
+        total_score_statistics=(
+            total_score_summary
+        ),
+        hotspot_score_statistics=(
+            calculate_pi_numeric_summary(
+                hotspot_scores,
+                round_digits=config.round_digits,
+            )
+        ),
+        total_geometry_score=aggregate_pi_scores(
+            geometry_scores,
+            method=config.score_aggregation,
+        ),
+        total_strength_score=aggregate_pi_scores(
+            strength_scores,
+            method=config.score_aggregation,
+        ),
+        total_score=aggregate_pi_scores(
+            total_scores,
+            method=config.score_aggregation,
+        ),
+        mean_score=(
+            total_score_summary.mean
+            or 0.0
+        ),
+        median_score=(
+            total_score_summary.median
+            or 0.0
+        ),
+        top_interactions=pose_statistics.top_interactions,
+        top_residues=pose_statistics.top_residues,
+        top_hotspots=pose_statistics.top_hotspots,
+        top_residue_pairs=(
+            pose_statistics.top_residue_pairs
+        ),
+        pose_statistics=[
+            pose_statistics
+        ],
+        best_pose_id=pose_statistics.pose_id,
+        best_pose_index=pose_statistics.pose_index,
+        best_pose_score=pose_statistics.total_score,
+        metadata={
+            "statistics_config": (
+                config.to_dict()
+            ),
+            "source_type": type(
+                analysis
+            ).__name__,
+        },
+    )
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 11.20. Estatísticas multipose
+# -----------------------------------------------------------------------------
+
+def calculate_multiple_pi_pose_statistics(
+    analyses: Iterable[
+        Union[
+            PiAnalysisResult,
+            PiGroupingResult,
+            Iterable[PiInteraction],
+        ]
+    ],
+    *,
+    pose_ids: Optional[Sequence[str]] = None,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+    statistics_config: Optional[
+        PiStatisticsConfig
+    ] = None,
+) -> PiGlobalStatistics:
+    """
+    Calculate statistics and consensus for multiple poses.
+    """
+
+    config = (
+        statistics_config
+        if statistics_config is not None
+        else create_default_pi_statistics_config()
+    )
+
+    analysis_list = list(
+        analyses
+    )
+
+    grouping_results: List[
+        PiGroupingResult
+    ] = []
+
+    pose_statistics: List[
+        PiPoseStatistics
+    ] = []
+
+    for index, analysis in enumerate(
+        analysis_list,
+        start=1,
+    ):
+        grouping = get_pi_grouping_result(
+            analysis,
+            grouping_config=grouping_config,
+        )
+
+        grouping_results.append(
+            grouping
+        )
+
+        resolved_pose_id = (
+            pose_ids[index - 1]
+            if (
+                pose_ids is not None
+                and index - 1 < len(pose_ids)
+            )
+            else str(
+                getattr(
+                    analysis,
+                    "pose_id",
+                    None,
+                )
+                or f"pose_{index}"
+            )
+        )
+
+        pose_statistics.append(
+            calculate_pi_pose_statistics(
+                grouping,
+                pose_id=resolved_pose_id,
+                pose_index=index,
+                grouping_config=grouping_config,
+                statistics_config=config,
+            )
+        )
+
+    ranked_poses = rank_pi_pose_statistics(
+        pose_statistics,
+        statistics_config=config,
+    )
+
+    all_interactions = [
+        interaction
+        for grouping in grouping_results
+        for interaction in filter_interactions_for_statistics(
+            grouping.interactions,
+            statistics_config=config,
+        )
+    ]
+
+    all_hotspots = [
+        hotspot
+        for grouping in grouping_results
+        for hotspot in grouping.hotspots
+    ]
+
+    all_pairs = [
+        pair
+        for grouping in grouping_results
+        for pair in grouping.residue_pairs
+    ]
+
+    representative_distances = [
+        distance
+        for interaction in all_interactions
+        if (
+            distance := get_representative_pi_distance(
+                interaction
+            )
+        ) is not None
+    ]
+
+    atomic_distances = [
+        interaction.minimum_atomic_distance
+        for interaction in all_interactions
+        if interaction.minimum_atomic_distance
+        is not None
+    ]
+
+    centroid_distances = [
+        interaction.centroid_distance
+        for interaction in all_interactions
+        if interaction.centroid_distance
+        is not None
+    ]
+
+    atomic_contact_counts = [
+        len(interaction.atomic_contacts)
+        for interaction in all_interactions
+    ]
+
+    geometry_scores = [
+        interaction.geometry_score
+        for interaction in all_interactions
+        if interaction.geometry_score is not None
+    ]
+
+    strength_scores = [
+        interaction.strength_score
+        for interaction in all_interactions
+        if interaction.strength_score is not None
+    ]
+
+    total_scores = [
+        interaction.total_score
+        for interaction in all_interactions
+        if interaction.total_score is not None
+    ]
+
+    hotspot_scores = [
+        hotspot.hotspot_score
+        for hotspot in all_hotspots
+    ]
+
+    residue_keys = {
+        reference.key
+        for interaction in all_interactions
+        for reference
+        in get_pi_interaction_residue_references(
+            interaction
+        )
+        if reference is not None
+    }
+
+    receptor_residue_keys = {
+        reference.key
+        for interaction in all_interactions
+        for reference
+        in get_pi_interaction_residue_references(
+            interaction
+        )
+        if (
+            reference is not None
+            and reference.participant_type
+            == RESIDUE_ROLE_RECEPTOR
+        )
+    }
+
+    ligand_residue_keys = {
+        reference.key
+        for interaction in all_interactions
+        for reference
+        in get_pi_interaction_residue_references(
+            interaction
+        )
+        if (
+            reference is not None
+            and reference.participant_type
+            == RESIDUE_ROLE_LIGAND
+        )
+    }
+
+    pair_ids = {
+        pair.pair_id
+        for pair in all_pairs
+    }
+
+    total_score_summary = (
+        calculate_pi_numeric_summary(
+            total_scores,
+            round_digits=config.round_digits,
+        )
+    )
+
+    ranked_all_interactions = (
+        rank_pi_interactions(
+            all_interactions,
+            score_attribute="total_score",
+            descending=True,
+            update_metadata=False,
+        )
+    )
+
+    residue_consensus = (
+        calculate_pi_residue_consensus(
+            grouping_results
+        )
+        if config.include_pose_consensus
+        else []
+    )
+
+    pair_consensus = (
+        calculate_pi_residue_pair_consensus(
+            grouping_results
+        )
+        if config.include_pose_consensus
+        else []
+    )
+
+    interaction_type_consensus = (
+        calculate_pi_interaction_type_consensus(
+            ranked_poses
+        )
+        if config.include_pose_consensus
+        else []
+    )
+
+    best_pose = (
+        ranked_poses[0]
+        if ranked_poses
+        else None
+    )
+
+    return PiGlobalStatistics(
+        total_poses=len(
+            analysis_list
+        ),
+        total_interactions=len(
+            all_interactions
+        ),
+        valid_interactions=sum(
+            1
+            for interaction in all_interactions
+            if interaction.valid
+        ),
+        invalid_interactions=sum(
+            1
+            for interaction in all_interactions
+            if not interaction.valid
+        ),
+        total_atomic_contacts=sum(
+            atomic_contact_counts
+        ),
+        unique_residue_count=len(
+            residue_keys
+        ),
+        unique_receptor_residue_count=len(
+            receptor_residue_keys
+        ),
+        unique_ligand_residue_count=len(
+            ligand_residue_keys
+        ),
+        unique_residue_pair_count=len(
+            pair_ids
+        ),
+        hotspot_count=len(
+            all_hotspots
+        ),
+        interaction_type_distribution=dict(
+            Counter(
+                interaction.interaction_type
+                for interaction in all_interactions
+            )
+        ),
+        geometry_distribution=dict(
+            Counter(
+                interaction.geometry_class
+                or GEOMETRY_CLASS_UNCLASSIFIED
+                for interaction in all_interactions
+            )
+        ),
+        strength_distribution=dict(
+            Counter(
+                interaction.strength_class
+                or STRENGTH_CLASS_UNCLASSIFIED
+                for interaction in all_interactions
+            )
+        ),
+        hotspot_level_distribution=dict(
+            Counter(
+                hotspot.hotspot_level
+                for hotspot in all_hotspots
+            )
+        ),
+        distance_statistics=(
+            calculate_pi_numeric_summary(
+                representative_distances,
+                round_digits=config.round_digits,
+            )
+        ),
+        atomic_distance_statistics=(
+            calculate_pi_numeric_summary(
+                atomic_distances,
+                round_digits=config.round_digits,
+            )
+        ),
+        centroid_distance_statistics=(
+            calculate_pi_numeric_summary(
+                centroid_distances,
+                round_digits=config.round_digits,
+            )
+        ),
+        atomic_contact_count_statistics=(
+            calculate_pi_numeric_summary(
+                atomic_contact_counts,
+                round_digits=config.round_digits,
+            )
+        ),
+        geometry_score_statistics=(
+            calculate_pi_numeric_summary(
+                geometry_scores,
+                round_digits=config.round_digits,
+            )
+        ),
+        strength_score_statistics=(
+            calculate_pi_numeric_summary(
+                strength_scores,
+                round_digits=config.round_digits,
+            )
+        ),
+        total_score_statistics=(
+            total_score_summary
+        ),
+        hotspot_score_statistics=(
+            calculate_pi_numeric_summary(
+                hotspot_scores,
+                round_digits=config.round_digits,
+            )
+        ),
+        total_geometry_score=aggregate_pi_scores(
+            geometry_scores,
+            method=config.score_aggregation,
+        ),
+        total_strength_score=aggregate_pi_scores(
+            strength_scores,
+            method=config.score_aggregation,
+        ),
+        total_score=aggregate_pi_scores(
+            total_scores,
+            method=config.score_aggregation,
+        ),
+        mean_score=(
+            total_score_summary.mean
+            or 0.0
+        ),
+        median_score=(
+            total_score_summary.median
+            or 0.0
+        ),
+        top_interactions=[
+            summarize_pi_interaction_record(
+                interaction,
+                rank=rank,
+            )
+            for rank, interaction in enumerate(
+                ranked_all_interactions[
+                    :config.top_n_interactions
+                ],
+                start=1,
+            )
+        ],
+        top_residues=(
+            residue_consensus[
+                :config.top_n_residues
+            ]
+        ),
+        top_hotspots=[
+            summarize_pi_hotspot_record(
+                hotspot
+            )
+            for hotspot in sorted(
+                all_hotspots,
+                key=lambda hotspot: (
+                    -hotspot.hotspot_score,
+                    hotspot.residue.residue_id,
+                ),
+            )[
+                :config.top_n_hotspots
+            ]
+        ],
+        top_residue_pairs=(
+            pair_consensus[
+                :config.top_n_pairs
+            ]
+        ),
+        pose_statistics=ranked_poses,
+        best_pose_id=(
+            best_pose.pose_id
+            if best_pose is not None
+            else None
+        ),
+        best_pose_index=(
+            best_pose.pose_index
+            if best_pose is not None
+            else None
+        ),
+        best_pose_score=(
+            get_pi_pose_ranking_value(
+                best_pose,
+                config.pose_ranking_method,
+            )
+            if best_pose is not None
+            else None
+        ),
+        consensus_residues=residue_consensus,
+        consensus_residue_pairs=pair_consensus,
+        consensus_interaction_types=(
+            interaction_type_consensus
+        ),
+        metadata={
+            "statistics_config": (
+                config.to_dict()
+            ),
+            "pose_ranking_method": (
+                config.pose_ranking_method
+            ),
+            "pose_ids": [
+                pose.pose_id
+                for pose in ranked_poses
+            ],
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 11.21. Comparação entre poses
+# -----------------------------------------------------------------------------
+
+def compare_pi_poses(
+    pose_statistics: Sequence[PiPoseStatistics],
+) -> Dict[str, Any]:
+    """
+    Compare pose-level metrics and return pairwise differences.
+    """
+
+    comparisons: List[
+        Dict[str, Any]
+    ] = []
+
+    for first_index, first_pose in enumerate(
+        pose_statistics
+    ):
+        for second_pose in pose_statistics[
+            first_index + 1:
+        ]:
+            comparisons.append(
+                {
+                    "pose_1": first_pose.pose_id,
+                    "pose_2": second_pose.pose_id,
+                    "interaction_count_difference": (
+                        first_pose.total_interactions
+                        - second_pose.total_interactions
+                    ),
+                    "total_score_difference": (
+                        first_pose.total_score
+                        - second_pose.total_score
+                    ),
+                    "mean_score_difference": (
+                        first_pose.mean_score
+                        - second_pose.mean_score
+                    ),
+                    "hotspot_score_difference": (
+                        first_pose.maximum_hotspot_score
+                        - second_pose.maximum_hotspot_score
+                    ),
+                    "composite_score_difference": (
+                        first_pose.composite_score
+                        - second_pose.composite_score
+                    ),
+                    "shared_interaction_types": sorted(
+                        set(
+                            first_pose
+                            .interaction_type_distribution
+                        ).intersection(
+                            second_pose
+                            .interaction_type_distribution
+                        )
+                    ),
+                    "unique_to_pose_1": sorted(
+                        set(
+                            first_pose
+                            .interaction_type_distribution
+                        ).difference(
+                            second_pose
+                            .interaction_type_distribution
+                        )
+                    ),
+                    "unique_to_pose_2": sorted(
+                        set(
+                            second_pose
+                            .interaction_type_distribution
+                        ).difference(
+                            first_pose
+                            .interaction_type_distribution
+                        )
+                    ),
+                }
+            )
+
+    return {
+        "pose_count": len(
+            pose_statistics
+        ),
+        "comparison_count": len(
+            comparisons
+        ),
+        "comparisons": comparisons,
+    }
+
+
+# -----------------------------------------------------------------------------
+# 11.22. Atualização do PiAnalysisResult
+# -----------------------------------------------------------------------------
+
+def attach_pi_statistics_to_analysis_result(
+    analysis_result: PiAnalysisResult,
+    global_statistics: PiGlobalStatistics,
+    *,
+    canonical_statistics: Optional[
+        PiStatistics
+    ] = None,
+) -> PiAnalysisResult:
+    """
+    Attach statistical outputs to PiAnalysisResult.
+    """
+
+    if not isinstance(
+        analysis_result,
+        PiAnalysisResult,
+    ):
+        raise TypeError(
+            "analysis_result must be a PiAnalysisResult."
+        )
+
+    if not isinstance(
+        global_statistics,
+        PiGlobalStatistics,
+    ):
+        raise TypeError(
+            "global_statistics must be a PiGlobalStatistics."
+        )
+
+    if canonical_statistics is None:
+        canonical_statistics = (
+            build_canonical_pi_statistics(
+                get_pi_analysis_interactions(
+                    analysis_result
+                )
+            )
+        )
+
+    assignments = {
+        "statistics": canonical_statistics,
+        "global_statistics": (
+            global_statistics
+        ),
+        "score": global_statistics.total_score,
+        "total_score": (
+            global_statistics.total_score
+        ),
+        "geometry_score": (
+            global_statistics
+            .total_geometry_score
+        ),
+        "strength_score": (
+            global_statistics
+            .total_strength_score
+        ),
+    }
+
+    for attribute_name, value in assignments.items():
+        _set_supported_attribute(
+            analysis_result,
+            attribute_name,
+            value,
+        )
+
+    metadata = getattr(
+        analysis_result,
+        "metadata",
+        None,
+    )
+
+    if isinstance(metadata, MutableMapping):
+        metadata[
+            "statistics"
+        ] = global_statistics.to_dict()
+
+        metadata[
+            "statistics_schema_version"
+        ] = PI_STATISTICS_SCHEMA_VERSION
+
+    return analysis_result
+
+
+# -----------------------------------------------------------------------------
+# 11.23. Atualização de PiMultiPoseResult
+# -----------------------------------------------------------------------------
+
+def attach_pi_statistics_to_multi_pose_result(
+    multi_pose_result: PiMultiPoseResult,
+    global_statistics: PiGlobalStatistics,
+) -> PiMultiPoseResult:
+    """
+    Attach multipose statistics and ranking to PiMultiPoseResult.
+    """
+
+    if not isinstance(
+        multi_pose_result,
+        PiMultiPoseResult,
+    ):
+        raise TypeError(
+            "multi_pose_result must be a PiMultiPoseResult."
+        )
+
+    if not isinstance(
+        global_statistics,
+        PiGlobalStatistics,
+    ):
+        raise TypeError(
+            "global_statistics must be a PiGlobalStatistics."
+        )
+
+    assignments = {
+        "statistics": global_statistics,
+        "global_statistics": (
+            global_statistics
+        ),
+        "best_pose_id": (
+            global_statistics.best_pose_id
+        ),
+        "best_pose_index": (
+            global_statistics.best_pose_index
+        ),
+        "best_pose_score": (
+            global_statistics.best_pose_score
+        ),
+        "pose_statistics": (
+            global_statistics.pose_statistics
+        ),
+        "total_score": (
+            global_statistics.total_score
+        ),
+    }
+
+    for attribute_name, value in assignments.items():
+        _set_supported_attribute(
+            multi_pose_result,
+            attribute_name,
+            value,
+        )
+
+    metadata = getattr(
+        multi_pose_result,
+        "metadata",
+        None,
+    )
+
+    if isinstance(metadata, MutableMapping):
+        metadata[
+            "statistics"
+        ] = global_statistics.to_dict()
+
+        metadata[
+            "pose_ranking"
+        ] = [
+            {
+                "rank": pose.rank,
+                "pose_id": pose.pose_id,
+                "pose_index": pose.pose_index,
+                "total_score": pose.total_score,
+                "mean_score": pose.mean_score,
+                "composite_score": (
+                    pose.composite_score
+                ),
+            }
+            for pose
+            in global_statistics.pose_statistics
+        ]
+
+    return multi_pose_result
+
+
+# -----------------------------------------------------------------------------
+# 11.24. Resumo textual
+# -----------------------------------------------------------------------------
+
+def format_pi_statistics_summary(
+    statistics: PiGlobalStatistics,
+    *,
+    include_top_interactions: bool = True,
+    include_top_hotspots: bool = True,
+    include_pose_ranking: bool = True,
+) -> str:
+    """
+    Format a concise human-readable statistical report.
+    """
+
+    if not isinstance(
+        statistics,
+        PiGlobalStatistics,
+    ):
+        raise TypeError(
+            "statistics must be a PiGlobalStatistics."
+        )
+
+    lines: List[str] = [
+        "π-interaction analysis summary",
+        "=" * 32,
+        f"Poses: {statistics.total_poses}",
+        (
+            "Interactions: "
+            f"{statistics.total_interactions} "
+            f"(valid={statistics.valid_interactions}, "
+            f"invalid={statistics.invalid_interactions})"
+        ),
+        (
+            "Atomic contacts: "
+            f"{statistics.total_atomic_contacts}"
+        ),
+        (
+            "Unique residues: "
+            f"{statistics.unique_residue_count} "
+            f"(receptor="
+            f"{statistics.unique_receptor_residue_count}, "
+            f"ligand="
+            f"{statistics.unique_ligand_residue_count})"
+        ),
+        (
+            "Residue pairs: "
+            f"{statistics.unique_residue_pair_count}"
+        ),
+        (
+            "Hotspots: "
+            f"{statistics.hotspot_count}"
+        ),
+        (
+            "Total score: "
+            f"{statistics.total_score:.4f}"
+        ),
+        (
+            "Mean interaction score: "
+            f"{statistics.mean_score:.4f}"
+        ),
+        (
+            "Median interaction score: "
+            f"{statistics.median_score:.4f}"
+        ),
+    ]
+
+    if statistics.distance_statistics is not None:
+        distance = statistics.distance_statistics
+
+        lines.append(
+            (
+                "Distance: "
+                f"mean={distance.mean}, "
+                f"min={distance.minimum}, "
+                f"max={distance.maximum}"
+            )
+        )
+
+    lines.extend(
+        [
+            "",
+            "Interaction types:",
+        ]
+    )
+
+    for interaction_type, count in sorted(
+        statistics
+        .interaction_type_distribution
+        .items(),
+        key=lambda item: (
+            -item[1],
+            item[0],
+        ),
+    ):
+        lines.append(
+            f"  - {interaction_type}: {count}"
+        )
+
+    lines.extend(
+        [
+            "",
+            "Strength classes:",
+        ]
+    )
+
+    for strength_class, count in sorted(
+        statistics
+        .strength_distribution
+        .items(),
+        key=lambda item: (
+            -item[1],
+            item[0],
+        ),
+    ):
+        lines.append(
+            f"  - {strength_class}: {count}"
+        )
+
+    if (
+        include_top_interactions
+        and statistics.top_interactions
+    ):
+        lines.extend(
+            [
+                "",
+                "Top interactions:",
+            ]
+        )
+
+        for record in statistics.top_interactions:
+            lines.append(
+                (
+                    f"  {record.get('rank', '-')}. "
+                    f"{record.get('interaction_type')} "
+                    f"[{record.get('interaction_id')}] "
+                    f"score={record.get('total_score')}"
+                )
+            )
+
+    if (
+        include_top_hotspots
+        and statistics.top_hotspots
+    ):
+        lines.extend(
+            [
+                "",
+                "Top hotspots:",
+            ]
+        )
+
+        for record in statistics.top_hotspots:
+            residue = record.get(
+                "residue",
+                {},
+            )
+
+            lines.append(
+                (
+                    f"  {record.get('rank', '-')}. "
+                    f"{residue.get('display_name')} "
+                    f"score="
+                    f"{record.get('hotspot_score')} "
+                    f"level="
+                    f"{record.get('hotspot_level')}"
+                )
+            )
+
+    if (
+        include_pose_ranking
+        and statistics.total_poses > 1
+    ):
+        lines.extend(
+            [
+                "",
+                "Pose ranking:",
+            ]
+        )
+
+        for pose in statistics.pose_statistics:
+            lines.append(
+                (
+                    f"  {pose.rank}. "
+                    f"{pose.pose_id} "
+                    f"composite="
+                    f"{pose.composite_score:.4f} "
+                    f"total="
+                    f"{pose.total_score:.4f}"
+                )
+            )
+
+    return "\n".join(lines)
+
+
+# -----------------------------------------------------------------------------
+# 11.25. Resumo serializável compacto
+# -----------------------------------------------------------------------------
+
+def summarize_pi_statistics(
+    statistics: PiGlobalStatistics,
+) -> Dict[str, Any]:
+    """
+    Generate a compact statistics dictionary.
+    """
+
+    return {
+        "schema_version": statistics.schema_version,
+        "total_poses": statistics.total_poses,
+        "total_interactions": (
+            statistics.total_interactions
+        ),
+        "valid_interactions": (
+            statistics.valid_interactions
+        ),
+        "invalid_interactions": (
+            statistics.invalid_interactions
+        ),
+        "total_atomic_contacts": (
+            statistics.total_atomic_contacts
+        ),
+        "unique_residue_count": (
+            statistics.unique_residue_count
+        ),
+        "unique_receptor_residue_count": (
+            statistics
+            .unique_receptor_residue_count
+        ),
+        "unique_ligand_residue_count": (
+            statistics
+            .unique_ligand_residue_count
+        ),
+        "unique_residue_pair_count": (
+            statistics.unique_residue_pair_count
+        ),
+        "hotspot_count": statistics.hotspot_count,
+        "interaction_type_distribution": dict(
+            statistics
+            .interaction_type_distribution
+        ),
+        "geometry_distribution": dict(
+            statistics.geometry_distribution
+        ),
+        "strength_distribution": dict(
+            statistics.strength_distribution
+        ),
+        "total_score": statistics.total_score,
+        "mean_score": statistics.mean_score,
+        "median_score": statistics.median_score,
+        "best_pose_id": statistics.best_pose_id,
+        "best_pose_index": (
+            statistics.best_pose_index
+        ),
+        "best_pose_score": (
+            statistics.best_pose_score
+        ),
+        "top_interactions": list(
+            statistics.top_interactions
+        ),
+        "top_residues": list(
+            statistics.top_residues
+        ),
+        "top_hotspots": list(
+            statistics.top_hotspots
+        ),
+        "top_residue_pairs": list(
+            statistics.top_residue_pairs
+        ),
+    }
+
+
+# -----------------------------------------------------------------------------
+# 11.26. Validação estatística
+# -----------------------------------------------------------------------------
+
+def validate_pi_global_statistics(
+    statistics: PiGlobalStatistics,
+) -> Tuple[bool, Tuple[str, ...]]:
+    """
+    Validate global statistical consistency.
+    """
+
+    if not isinstance(
+        statistics,
+        PiGlobalStatistics,
+    ):
+        raise TypeError(
+            "statistics must be a PiGlobalStatistics."
+        )
+
+    messages: List[str] = []
+
+    non_negative_integer_fields = (
+        "total_poses",
+        "total_interactions",
+        "valid_interactions",
+        "invalid_interactions",
+        "total_atomic_contacts",
+        "unique_residue_count",
+        "unique_receptor_residue_count",
+        "unique_ligand_residue_count",
+        "unique_residue_pair_count",
+        "hotspot_count",
+    )
+
+    for field_name in non_negative_integer_fields:
+        value = getattr(
+            statistics,
+            field_name,
+        )
+
+        if value < 0:
+            messages.append(
+                f"{field_name} cannot be negative."
+            )
+
+    if (
+        statistics.valid_interactions
+        + statistics.invalid_interactions
+        != statistics.total_interactions
+    ):
+        messages.append(
+            "Valid and invalid interaction counts "
+            "do not equal the total interaction count."
+        )
+
+    if (
+        sum(
+            statistics
+            .interaction_type_distribution
+            .values()
+        )
+        != statistics.total_interactions
+    ):
+        messages.append(
+            "Interaction-type distribution is inconsistent "
+            "with total interactions."
+        )
+
+    if statistics.total_poses < 1:
+        messages.append(
+            "At least one pose is required."
+        )
+
+    pose_ids = [
+        pose.pose_id
+        for pose in statistics.pose_statistics
+    ]
+
+    if len(pose_ids) != len(set(pose_ids)):
+        messages.append(
+            "Pose statistics contain duplicate pose IDs."
+        )
+
+    ranks = [
+        pose.rank
+        for pose in statistics.pose_statistics
+        if pose.rank is not None
+    ]
+
+    if (
+        ranks
+        and sorted(ranks)
+        != list(
+            range(
+                1,
+                len(ranks) + 1,
+            )
+        )
+    ):
+        messages.append(
+            "Pose ranks are not contiguous."
+        )
+
+    return (
+        not messages,
+        tuple(messages),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 11.27. Pipeline integrado para uma pose
+# -----------------------------------------------------------------------------
+
+def calculate_and_attach_pi_statistics(
+    analysis_result: PiAnalysisResult,
+    *,
+    grouping_result: Optional[
+        PiGroupingResult
+    ] = None,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+    statistics_config: Optional[
+        PiStatisticsConfig
+    ] = None,
+) -> PiGlobalStatistics:
+    """
+    Calculate and attach all statistics for one analysis result.
+    """
+
+    if not isinstance(
+        analysis_result,
+        PiAnalysisResult,
+    ):
+        raise TypeError(
+            "analysis_result must be a PiAnalysisResult."
+        )
+
+    grouping = (
+        grouping_result
+        if grouping_result is not None
+        else get_pi_grouping_result(
+            analysis_result,
+            grouping_config=grouping_config,
+        )
+    )
+
+    global_statistics = (
+        calculate_pi_global_statistics(
+            grouping,
+            grouping_config=grouping_config,
+            statistics_config=statistics_config,
+        )
+    )
+
+    canonical_statistics = (
+        build_canonical_pi_statistics(
+            grouping.interactions,
+            grouping_result=grouping,
+            statistics_config=statistics_config,
+        )
+    )
+
+    attach_pi_statistics_to_analysis_result(
+        analysis_result,
+        global_statistics,
+        canonical_statistics=canonical_statistics,
+    )
+
+    valid, messages = (
+        validate_pi_global_statistics(
+            global_statistics
+        )
+    )
+
+    global_statistics.metadata[
+        "valid"
+    ] = valid
+
+    global_statistics.metadata[
+        "validation_messages"
+    ] = list(messages)
+
+    return global_statistics
+
+
+# -----------------------------------------------------------------------------
+# 11.28. Pipeline integrado multipose
+# -----------------------------------------------------------------------------
+
+def calculate_and_attach_multiple_pi_statistics(
+    multi_pose_result: PiMultiPoseResult,
+    *,
+    analyses: Optional[
+        Sequence[PiAnalysisResult]
+    ] = None,
+    grouping_config: Optional[
+        PiGroupingConfig
+    ] = None,
+    statistics_config: Optional[
+        PiStatisticsConfig
+    ] = None,
+) -> PiGlobalStatistics:
+    """
+    Calculate and attach statistics for a PiMultiPoseResult.
+    """
+
+    if not isinstance(
+        multi_pose_result,
+        PiMultiPoseResult,
+    ):
+        raise TypeError(
+            "multi_pose_result must be a PiMultiPoseResult."
+        )
+
+    if analyses is None:
+        analyses = list(
+            getattr(
+                multi_pose_result,
+                "results",
+                None,
+            )
+            or getattr(
+                multi_pose_result,
+                "pose_results",
+                None,
+            )
+            or getattr(
+                multi_pose_result,
+                "analyses",
+                None,
+            )
+            or ()
+        )
+
+    global_statistics = (
+        calculate_multiple_pi_pose_statistics(
+            analyses,
+            grouping_config=grouping_config,
+            statistics_config=statistics_config,
+        )
+    )
+
+    attach_pi_statistics_to_multi_pose_result(
+        multi_pose_result,
+        global_statistics,
+    )
+
+    valid, messages = (
+        validate_pi_global_statistics(
+            global_statistics
+        )
+    )
+
+    global_statistics.metadata[
+        "valid"
+    ] = valid
+
+    global_statistics.metadata[
+        "validation_messages"
+    ] = list(messages)
+
+    global_statistics.metadata[
+        "pose_comparison"
+    ] = compare_pi_poses(
+        global_statistics.pose_statistics
+    )
+
+    return global_statistics
+
+# -----------------------------------------------------------------------------
+# End of section 11.
+# -----------------------------------------------------------------------------
