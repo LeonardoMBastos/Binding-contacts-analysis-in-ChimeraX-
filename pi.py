@@ -16059,3 +16059,3110 @@ def prepare_pi_analysis_charged_groups(
 # End of section 6. 
 # -----------------------------------------------------------------------------
 
+
+# =============================================================================
+# 7. DETECÇÃO E GEOMETRIA DE GRUPOS AMIDA
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 7.1. Tipos e constantes auxiliares
+# -----------------------------------------------------------------------------
+
+AmideGroupAtomTuple: TypeAlias = Tuple[Any, ...]
+
+
+AMIDE_GROUP_PEPTIDE: Final[str] = "peptide_amide"
+AMIDE_GROUP_PRIMARY: Final[str] = "primary_amide"
+AMIDE_GROUP_SECONDARY: Final[str] = "secondary_amide"
+AMIDE_GROUP_TERTIARY: Final[str] = "tertiary_amide"
+AMIDE_GROUP_CYCLIC: Final[str] = "cyclic_amide"
+AMIDE_GROUP_UREA: Final[str] = "urea"
+AMIDE_GROUP_CARBAMATE: Final[str] = "carbamate"
+AMIDE_GROUP_IMIDE: Final[str] = "imide"
+AMIDE_GROUP_LACTAM: Final[str] = "lactam"
+AMIDE_GROUP_GENERIC: Final[str] = "generic_amide"
+
+
+SUPPORTED_AMIDE_GROUP_TYPES: Final[FrozenSet[str]] = frozenset(
+    {
+        AMIDE_GROUP_PEPTIDE,
+        AMIDE_GROUP_PRIMARY,
+        AMIDE_GROUP_SECONDARY,
+        AMIDE_GROUP_TERTIARY,
+        AMIDE_GROUP_CYCLIC,
+        AMIDE_GROUP_UREA,
+        AMIDE_GROUP_CARBAMATE,
+        AMIDE_GROUP_IMIDE,
+        AMIDE_GROUP_LACTAM,
+        AMIDE_GROUP_GENERIC,
+    }
+)
+
+
+DEFAULT_AMIDE_CARBONYL_BOND_MINIMUM: Final[float] = 1.60
+DEFAULT_AMIDE_CARBONYL_BOND_MAXIMUM: Final[float] = 2.20
+
+DEFAULT_AMIDE_CN_BOND_MINIMUM: Final[float] = 0.80
+DEFAULT_AMIDE_CN_BOND_MAXIMUM: Final[float] = 1.60
+
+DEFAULT_AMIDE_PLANARITY_RMSD: Final[float] = 0.20
+DEFAULT_MAXIMUM_AMIDE_PLANARITY_RMSD: Final[float] = 0.35
+DEFAULT_MAXIMUM_AMIDE_ATOM_DEVIATION: Final[float] = 0.50
+
+DEFAULT_AMIDE_CARBONYL_DISTANCE_MINIMUM: Final[float] = 1.15
+DEFAULT_AMIDE_CARBONYL_DISTANCE_MAXIMUM: Final[float] = 1.40
+
+DEFAULT_AMIDE_CN_DISTANCE_MINIMUM: Final[float] = 1.25
+DEFAULT_AMIDE_CN_DISTANCE_MAXIMUM: Final[float] = 1.55
+
+DEFAULT_AMIDE_NEIGHBOR_DISTANCE_MAXIMUM: Final[float] = 1.90
+
+DEFAULT_MINIMUM_AMIDE_ATOM_COUNT: Final[int] = 3
+
+DEFAULT_AMIDE_NORMAL_ORIENTATION_TOLERANCE: Final[float] = 1.0e-8
+
+
+PROTEIN_BACKBONE_AMIDE_ATOM_NAMES: Final[Tuple[str, ...]] = (
+    "C",
+    "O",
+    "N",
+)
+
+
+PROTEIN_SIDECHAIN_AMIDE_DEFINITIONS: Final[
+    Mapping[str, Tuple[Mapping[str, Any], ...]]
+] = {
+    "ASN": (
+        {
+            "group_type": AMIDE_GROUP_PRIMARY,
+            "carbonyl_carbon": "CG",
+            "carbonyl_oxygen": "OD1",
+            "amide_nitrogen": "ND2",
+            "support_atom_names": ("CB",),
+        },
+    ),
+    "GLN": (
+        {
+            "group_type": AMIDE_GROUP_PRIMARY,
+            "carbonyl_carbon": "CD",
+            "carbonyl_oxygen": "OE1",
+            "amide_nitrogen": "NE2",
+            "support_atom_names": ("CG",),
+        },
+    ),
+}
+
+
+COMMON_AMIDE_ATOM_TYPE_PATTERNS: Final[Tuple[str, ...]] = (
+    "AM",
+    "NPL",
+    "NPL3",
+    "N.AM",
+    "N_AM",
+    "NAM",
+    "C.AM",
+    "C_AM",
+)
+
+
+# -----------------------------------------------------------------------------
+# 7.2. Normalização do tipo de amida
+# -----------------------------------------------------------------------------
+
+def normalize_amide_group_type(
+    value: Any,
+    *,
+    default: str = AMIDE_GROUP_GENERIC,
+) -> str:
+    """
+    Normalize an amide-group type.
+    """
+
+    if value is None:
+        return default
+
+    normalized = str(value).strip().lower()
+
+    aliases = {
+        "peptide": AMIDE_GROUP_PEPTIDE,
+        "peptide_amide": AMIDE_GROUP_PEPTIDE,
+        "backbone": AMIDE_GROUP_PEPTIDE,
+        "backbone_amide": AMIDE_GROUP_PEPTIDE,
+        "primary": AMIDE_GROUP_PRIMARY,
+        "primary_amide": AMIDE_GROUP_PRIMARY,
+        "secondary": AMIDE_GROUP_SECONDARY,
+        "secondary_amide": AMIDE_GROUP_SECONDARY,
+        "tertiary": AMIDE_GROUP_TERTIARY,
+        "tertiary_amide": AMIDE_GROUP_TERTIARY,
+        "cyclic": AMIDE_GROUP_CYCLIC,
+        "cyclic_amide": AMIDE_GROUP_CYCLIC,
+        "lactam": AMIDE_GROUP_LACTAM,
+        "urea": AMIDE_GROUP_UREA,
+        "carbamate": AMIDE_GROUP_CARBAMATE,
+        "imide": AMIDE_GROUP_IMIDE,
+        "generic": AMIDE_GROUP_GENERIC,
+        "amide": AMIDE_GROUP_GENERIC,
+    }
+
+    normalized = aliases.get(
+        normalized,
+        normalized,
+    )
+
+    if normalized not in SUPPORTED_AMIDE_GROUP_TYPES:
+        return default
+
+    return normalized
+
+
+# -----------------------------------------------------------------------------
+# 7.3. Reconhecimento de ligações carbonila
+# -----------------------------------------------------------------------------
+
+def is_carbonyl_carbon(
+    atom: Any,
+    *,
+    allow_distance_inference: bool = True,
+) -> bool:
+    """
+    Return whether an atom behaves as a carbonyl carbon.
+    """
+
+    if get_atom_element(atom) != "C":
+        return False
+
+    bonded_oxygens = tuple(
+        neighbor
+        for neighbor in get_bonded_atoms(
+            atom,
+            include_hydrogens=False,
+        )
+        if get_atom_element(neighbor) == "O"
+    )
+
+    if not bonded_oxygens:
+        return False
+
+    for oxygen in bonded_oxygens:
+        bond_order = get_bond_order(
+            atom,
+            oxygen,
+        )
+
+        if (
+            bond_order is not None
+            and DEFAULT_AMIDE_CARBONYL_BOND_MINIMUM
+            <= bond_order
+            <= DEFAULT_AMIDE_CARBONYL_BOND_MAXIMUM
+        ):
+            return True
+
+        if is_aromatic_bond(atom, oxygen):
+            return True
+
+        if not allow_distance_inference:
+            continue
+
+        carbon_coordinate = get_atom_coordinate(atom)
+        oxygen_coordinate = get_atom_coordinate(oxygen)
+
+        if (
+            carbon_coordinate is None
+            or oxygen_coordinate is None
+        ):
+            continue
+
+        distance = distance_between_points(
+            carbon_coordinate,
+            oxygen_coordinate,
+        )
+
+        if (
+            DEFAULT_AMIDE_CARBONYL_DISTANCE_MINIMUM
+            <= distance
+            <= DEFAULT_AMIDE_CARBONYL_DISTANCE_MAXIMUM
+        ):
+            return True
+
+    return False
+
+
+def get_carbonyl_oxygens(
+    carbon: Any,
+    *,
+    allow_distance_inference: bool = True,
+) -> Tuple[Any, ...]:
+    """
+    Return oxygen atoms behaving as carbonyl oxygens.
+    """
+
+    if get_atom_element(carbon) != "C":
+        return ()
+
+    carbon_coordinate = get_atom_coordinate(carbon)
+
+    oxygens: List[Any] = []
+
+    for neighbor in get_bonded_atoms(
+        carbon,
+        include_hydrogens=False,
+    ):
+        if get_atom_element(neighbor) != "O":
+            continue
+
+        bond_order = get_bond_order(
+            carbon,
+            neighbor,
+        )
+
+        accepted = (
+            bond_order is not None
+            and DEFAULT_AMIDE_CARBONYL_BOND_MINIMUM
+            <= bond_order
+            <= DEFAULT_AMIDE_CARBONYL_BOND_MAXIMUM
+        )
+
+        if is_aromatic_bond(carbon, neighbor):
+            accepted = True
+
+        if (
+            not accepted
+            and allow_distance_inference
+            and carbon_coordinate is not None
+        ):
+            oxygen_coordinate = get_atom_coordinate(neighbor)
+
+            if oxygen_coordinate is not None:
+                distance = distance_between_points(
+                    carbon_coordinate,
+                    oxygen_coordinate,
+                )
+
+                accepted = (
+                    DEFAULT_AMIDE_CARBONYL_DISTANCE_MINIMUM
+                    <= distance
+                    <= DEFAULT_AMIDE_CARBONYL_DISTANCE_MAXIMUM
+                )
+
+        if accepted:
+            oxygens.append(neighbor)
+
+    return tuple(oxygens)
+
+
+# -----------------------------------------------------------------------------
+# 7.4. Reconhecimento de nitrogênio amídico
+# -----------------------------------------------------------------------------
+
+def nitrogen_has_amide_atom_type(
+    nitrogen: Any,
+) -> bool:
+    """
+    Return whether an atom-type label indicates an amide nitrogen.
+    """
+
+    if get_atom_element(nitrogen) != "N":
+        return False
+
+    atom_type = get_atom_type(nitrogen)
+
+    if atom_type is None:
+        return False
+
+    normalized = str(atom_type).strip().upper()
+
+    return any(
+        pattern in normalized
+        for pattern in COMMON_AMIDE_ATOM_TYPE_PATTERNS
+    )
+
+
+def is_amide_carbon_nitrogen_bond(
+    carbon: Any,
+    nitrogen: Any,
+    *,
+    allow_distance_inference: bool = True,
+) -> bool:
+    """
+    Return whether a carbon–nitrogen bond is compatible with an amide.
+    """
+
+    if get_atom_element(carbon) != "C":
+        return False
+
+    if get_atom_element(nitrogen) != "N":
+        return False
+
+    if not atoms_are_bonded(
+        carbon,
+        nitrogen,
+    ):
+        return False
+
+    bond_order = get_bond_order(
+        carbon,
+        nitrogen,
+    )
+
+    if bond_order is not None:
+        if (
+            DEFAULT_AMIDE_CN_BOND_MINIMUM
+            <= bond_order
+            <= DEFAULT_AMIDE_CN_BOND_MAXIMUM
+        ):
+            return True
+
+    if nitrogen_has_amide_atom_type(nitrogen):
+        return True
+
+    if not allow_distance_inference:
+        return False
+
+    carbon_coordinate = get_atom_coordinate(carbon)
+    nitrogen_coordinate = get_atom_coordinate(nitrogen)
+
+    if (
+        carbon_coordinate is None
+        or nitrogen_coordinate is None
+    ):
+        return False
+
+    distance = distance_between_points(
+        carbon_coordinate,
+        nitrogen_coordinate,
+    )
+
+    return (
+        DEFAULT_AMIDE_CN_DISTANCE_MINIMUM
+        <= distance
+        <= DEFAULT_AMIDE_CN_DISTANCE_MAXIMUM
+    )
+
+
+def get_amide_nitrogens_for_carbonyl(
+    carbonyl_carbon: Any,
+    *,
+    allow_distance_inference: bool = True,
+) -> Tuple[Any, ...]:
+    """
+    Return nitrogen atoms bound to a carbonyl carbon in an amide-like pattern.
+    """
+
+    if not is_carbonyl_carbon(
+        carbonyl_carbon,
+        allow_distance_inference=allow_distance_inference,
+    ):
+        return ()
+
+    nitrogens = tuple(
+        neighbor
+        for neighbor in get_bonded_atoms(
+            carbonyl_carbon,
+            include_hydrogens=False,
+        )
+        if (
+            get_atom_element(neighbor) == "N"
+            and is_amide_carbon_nitrogen_bond(
+                carbonyl_carbon,
+                neighbor,
+                allow_distance_inference=allow_distance_inference,
+            )
+        )
+    )
+
+    return nitrogens
+
+
+# -----------------------------------------------------------------------------
+# 7.5. Classificação estrutural de grupos amida
+# -----------------------------------------------------------------------------
+
+def count_nitrogen_non_hydrogen_substituents(
+    nitrogen: Any,
+    *,
+    exclude_atoms: Optional[Collection[Any]] = None,
+) -> int:
+    """
+    Count heavy-atom substituents attached to an amide nitrogen.
+    """
+
+    excluded_ids = {
+        id(atom)
+        for atom in (
+            exclude_atoms or ()
+        )
+    }
+
+    return sum(
+        1
+        for neighbor in get_bonded_atoms(
+            nitrogen,
+            include_hydrogens=False,
+        )
+        if id(neighbor) not in excluded_ids
+    )
+
+
+def detect_amide_hydrogen_count(
+    nitrogen: Any,
+) -> int:
+    """
+    Count explicit hydrogens bound to an amide nitrogen.
+    """
+
+    return sum(
+        1
+        for neighbor in get_bonded_atoms(
+            nitrogen,
+            include_hydrogens=True,
+        )
+        if is_hydrogen_atom(neighbor)
+    )
+
+
+def carbonyl_carbon_has_second_heteroatom(
+    carbonyl_carbon: Any,
+    *,
+    excluded_atoms: Optional[Collection[Any]] = None,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Detect additional nitrogen or oxygen substitution at a carbonyl carbon.
+    """
+
+    excluded_ids = {
+        id(atom)
+        for atom in (
+            excluded_atoms or ()
+        )
+    }
+
+    heteroatoms = tuple(
+        neighbor
+        for neighbor in get_bonded_atoms(
+            carbonyl_carbon,
+            include_hydrogens=False,
+        )
+        if (
+            id(neighbor) not in excluded_ids
+            and get_atom_element(neighbor)
+            in {
+                "N",
+                "O",
+                "S",
+            }
+        )
+    )
+
+    if not heteroatoms:
+        return False, None
+
+    elements = {
+        get_atom_element(atom)
+        for atom in heteroatoms
+    }
+
+    if "N" in elements:
+        return True, "nitrogen"
+
+    if "O" in elements:
+        return True, "oxygen"
+
+    if "S" in elements:
+        return True, "sulfur"
+
+    return True, "other"
+
+
+def infer_amide_group_type(
+    carbonyl_carbon: Any,
+    carbonyl_oxygen: Any,
+    amide_nitrogen: Any,
+    *,
+    residue: Optional[Any] = None,
+    is_peptide: bool = False,
+    is_cyclic: bool = False,
+) -> str:
+    """
+    Infer the most likely amide-group class.
+    """
+
+    if is_peptide:
+        return AMIDE_GROUP_PEPTIDE
+
+    if is_cyclic:
+        return AMIDE_GROUP_LACTAM
+
+    has_second_heteroatom, heteroatom_type = (
+        carbonyl_carbon_has_second_heteroatom(
+            carbonyl_carbon,
+            excluded_atoms=(
+                carbonyl_oxygen,
+                amide_nitrogen,
+            ),
+        )
+    )
+
+    if has_second_heteroatom:
+        if heteroatom_type == "nitrogen":
+            return AMIDE_GROUP_UREA
+
+        if heteroatom_type == "oxygen":
+            return AMIDE_GROUP_CARBAMATE
+
+    substituent_count = count_nitrogen_non_hydrogen_substituents(
+        amide_nitrogen,
+        exclude_atoms=(carbonyl_carbon,),
+    )
+
+    hydrogen_count = detect_amide_hydrogen_count(
+        amide_nitrogen
+    )
+
+    if hydrogen_count >= 2:
+        return AMIDE_GROUP_PRIMARY
+
+    if hydrogen_count == 1:
+        return AMIDE_GROUP_SECONDARY
+
+    if substituent_count >= 2:
+        return AMIDE_GROUP_TERTIARY
+
+    if substituent_count == 1:
+        return AMIDE_GROUP_SECONDARY
+
+    return AMIDE_GROUP_PRIMARY
+
+
+# -----------------------------------------------------------------------------
+# 7.6. Identificação de ligação peptídica
+# -----------------------------------------------------------------------------
+
+def residues_are_sequential(
+    residue_1: Any,
+    residue_2: Any,
+) -> bool:
+    """
+    Return whether two residues appear sequential in the same chain.
+    """
+
+    chain_1 = get_residue_chain_id(residue_1)
+    chain_2 = get_residue_chain_id(residue_2)
+
+    if chain_1 != chain_2:
+        return False
+
+    number_1 = get_residue_number(residue_1)
+    number_2 = get_residue_number(residue_2)
+
+    if (
+        not isinstance(number_1, int)
+        or not isinstance(number_2, int)
+    ):
+        return True
+
+    return abs(number_1 - number_2) == 1
+
+
+def is_protein_peptide_amide(
+    carbonyl_carbon: Any,
+    carbonyl_oxygen: Any,
+    amide_nitrogen: Any,
+) -> bool:
+    """
+    Return whether atoms form a protein backbone peptide bond.
+    """
+
+    carbon_name = get_atom_name(
+        carbonyl_carbon
+    ).upper()
+
+    oxygen_name = get_atom_name(
+        carbonyl_oxygen
+    ).upper()
+
+    nitrogen_name = get_atom_name(
+        amide_nitrogen
+    ).upper()
+
+    if (
+        carbon_name != "C"
+        or oxygen_name != "O"
+        or nitrogen_name != "N"
+    ):
+        return False
+
+    carbon_residue = get_atom_residue(
+        carbonyl_carbon
+    )
+
+    nitrogen_residue = get_atom_residue(
+        amide_nitrogen
+    )
+
+    if (
+        carbon_residue is None
+        or nitrogen_residue is None
+    ):
+        return False
+
+    if not (
+        is_standard_amino_acid_residue(
+            carbon_residue
+        )
+        and is_standard_amino_acid_residue(
+            nitrogen_residue
+        )
+    ):
+        return False
+
+    return (
+        carbon_residue is nitrogen_residue
+        or residues_are_sequential(
+            carbon_residue,
+            nitrogen_residue,
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 7.7. Detecção de ciclos contendo amida
+# -----------------------------------------------------------------------------
+
+def atoms_belong_to_same_cycle(
+    atom_1: Any,
+    atom_2: Any,
+    molecular_atoms: Iterable[Any],
+    *,
+    minimum_size: int = 4,
+    maximum_size: int = 12,
+) -> bool:
+    """
+    Return whether two atoms occur in at least one common molecular cycle.
+    """
+
+    cycles = find_simple_cycles(
+        molecular_atoms,
+        minimum_size=minimum_size,
+        maximum_size=maximum_size,
+        heavy_atoms_only=True,
+    )
+
+    atom_1_id = id(atom_1)
+    atom_2_id = id(atom_2)
+
+    return any(
+        atom_1_id in {
+            id(atom)
+            for atom in cycle
+        }
+        and atom_2_id in {
+            id(atom)
+            for atom in cycle
+        }
+        for cycle in cycles
+    )
+
+
+# -----------------------------------------------------------------------------
+# 7.8. Seleção de átomos de suporte
+# -----------------------------------------------------------------------------
+
+def get_amide_support_atoms(
+    carbonyl_carbon: Any,
+    carbonyl_oxygen: Any,
+    amide_nitrogen: Any,
+    *,
+    include_nitrogen_substituents: bool = True,
+    include_carbonyl_substituents: bool = True,
+) -> Tuple[Any, ...]:
+    """
+    Return atoms attached to the amide core that define its orientation.
+    """
+
+    excluded_ids = {
+        id(carbonyl_carbon),
+        id(carbonyl_oxygen),
+        id(amide_nitrogen),
+    }
+
+    support_atoms: List[Any] = []
+
+    if include_carbonyl_substituents:
+        support_atoms.extend(
+            neighbor
+            for neighbor in get_bonded_atoms(
+                carbonyl_carbon,
+                include_hydrogens=False,
+            )
+            if id(neighbor) not in excluded_ids
+        )
+
+    if include_nitrogen_substituents:
+        support_atoms.extend(
+            neighbor
+            for neighbor in get_bonded_atoms(
+                amide_nitrogen,
+                include_hydrogens=False,
+            )
+            if id(neighbor) not in excluded_ids
+        )
+
+    return deduplicate_atoms(
+        support_atoms
+    )
+
+
+def get_complete_amide_geometry_atoms(
+    carbonyl_carbon: Any,
+    carbonyl_oxygen: Any,
+    amide_nitrogen: Any,
+    *,
+    support_atoms: Optional[Iterable[Any]] = None,
+) -> Tuple[Any, ...]:
+    """
+    Return the atom set used for amide-plane fitting.
+    """
+
+    atoms = [
+        carbonyl_carbon,
+        carbonyl_oxygen,
+        amide_nitrogen,
+    ]
+
+    atoms.extend(
+        support_atoms or ()
+    )
+
+    return tuple(
+        atom
+        for atom in deduplicate_atoms(atoms)
+        if (
+            is_heavy_atom(atom)
+            and atom_has_valid_coordinate(atom)
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 7.9. Centro geométrico do grupo amida
+# -----------------------------------------------------------------------------
+
+def calculate_amide_group_center(
+    carbonyl_carbon: Any,
+    carbonyl_oxygen: Any,
+    amide_nitrogen: Any,
+    *,
+    method: str = "core_centroid",
+) -> Coordinate3D:
+    """
+    Calculate the chemically relevant center of an amide group.
+    """
+
+    normalized_method = str(
+        method
+    ).strip().lower()
+
+    carbon_coordinate = require_atom_coordinate(
+        carbonyl_carbon
+    )
+
+    oxygen_coordinate = require_atom_coordinate(
+        carbonyl_oxygen
+    )
+
+    nitrogen_coordinate = require_atom_coordinate(
+        amide_nitrogen
+    )
+
+    if normalized_method == "carbonyl_carbon":
+        return carbon_coordinate
+
+    if normalized_method == "carbonyl_midpoint":
+        return midpoint(
+            carbon_coordinate,
+            oxygen_coordinate,
+        )
+
+    if normalized_method == "cn_midpoint":
+        return midpoint(
+            carbon_coordinate,
+            nitrogen_coordinate,
+        )
+
+    if normalized_method == "core_centroid":
+        return calculate_centroid(
+            (
+                carbon_coordinate,
+                oxygen_coordinate,
+                nitrogen_coordinate,
+            )
+        )
+
+    raise ValueError(
+        "method must be 'carbonyl_carbon', "
+        "'carbonyl_midpoint', 'cn_midpoint' or "
+        "'core_centroid'."
+    )
+
+
+# -----------------------------------------------------------------------------
+# 7.10. Vetores direcionais do grupo amida
+# -----------------------------------------------------------------------------
+
+def calculate_carbonyl_direction(
+    carbonyl_carbon: Any,
+    carbonyl_oxygen: Any,
+) -> Vector3D:
+    """
+    Return the unit vector from carbonyl carbon toward oxygen.
+    """
+
+    carbon_coordinate = require_atom_coordinate(
+        carbonyl_carbon
+    )
+
+    oxygen_coordinate = require_atom_coordinate(
+        carbonyl_oxygen
+    )
+
+    direction = normalize_vector(
+        subtract_vectors(
+            oxygen_coordinate,
+            carbon_coordinate,
+        ),
+        strict=True,
+    )
+
+    assert direction is not None
+
+    return direction
+
+
+def calculate_amide_cn_direction(
+    carbonyl_carbon: Any,
+    amide_nitrogen: Any,
+) -> Vector3D:
+    """
+    Return the unit vector from carbonyl carbon toward amide nitrogen.
+    """
+
+    carbon_coordinate = require_atom_coordinate(
+        carbonyl_carbon
+    )
+
+    nitrogen_coordinate = require_atom_coordinate(
+        amide_nitrogen
+    )
+
+    direction = normalize_vector(
+        subtract_vectors(
+            nitrogen_coordinate,
+            carbon_coordinate,
+        ),
+        strict=True,
+    )
+
+    assert direction is not None
+
+    return direction
+
+
+def calculate_amide_bisector_direction(
+    carbonyl_carbon: Any,
+    carbonyl_oxygen: Any,
+    amide_nitrogen: Any,
+) -> Optional[Vector3D]:
+    """
+    Calculate the in-plane bisector between C=O and C–N directions.
+    """
+
+    carbonyl_direction = calculate_carbonyl_direction(
+        carbonyl_carbon,
+        carbonyl_oxygen,
+    )
+
+    cn_direction = calculate_amide_cn_direction(
+        carbonyl_carbon,
+        amide_nitrogen,
+    )
+
+    bisector = add_vectors(
+        carbonyl_direction,
+        cn_direction,
+    )
+
+    return normalize_vector(
+        bisector
+    )
+
+
+# -----------------------------------------------------------------------------
+# 7.11. Ajuste do plano da amida
+# -----------------------------------------------------------------------------
+
+def fit_amide_plane(
+    carbonyl_carbon: Any,
+    carbonyl_oxygen: Any,
+    amide_nitrogen: Any,
+    *,
+    support_atoms: Optional[Iterable[Any]] = None,
+    prefer_numpy: bool = True,
+    strict: bool = False,
+) -> Optional[PiPlaneGeometry]:
+    """
+    Fit a plane to an amide group.
+    """
+
+    geometry_atoms = get_complete_amide_geometry_atoms(
+        carbonyl_carbon,
+        carbonyl_oxygen,
+        amide_nitrogen,
+        support_atoms=support_atoms,
+    )
+
+    if len(geometry_atoms) < 3:
+        if strict:
+            raise PiGeometryError(
+                "At least three valid atoms are required "
+                "to fit an amide plane."
+            )
+
+        return None
+
+    return fit_plane_to_atoms(
+        geometry_atoms,
+        skip_invalid=False,
+        prefer_numpy=prefer_numpy,
+        strict=strict,
+    )
+
+
+def orient_amide_normal(
+    normal: Sequence[Number],
+    carbonyl_carbon: Any,
+    carbonyl_oxygen: Any,
+    amide_nitrogen: Any,
+) -> Vector3D:
+    """
+    Orient an amide normal deterministically using its core geometry.
+    """
+
+    normalized_normal = normalize_vector(
+        normal,
+        strict=True,
+    )
+
+    assert normalized_normal is not None
+
+    carbonyl_direction = (
+        calculate_carbonyl_direction(
+            carbonyl_carbon,
+            carbonyl_oxygen,
+        )
+    )
+
+    cn_direction = calculate_amide_cn_direction(
+        carbonyl_carbon,
+        amide_nitrogen,
+    )
+
+    local_cross = normalize_vector(
+        cross_product(
+            carbonyl_direction,
+            cn_direction,
+        )
+    )
+
+    if local_cross is None:
+        return orient_normal_deterministically(
+            normalized_normal
+        )
+
+    return align_normal_to_reference(
+        normalized_normal,
+        local_cross,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 7.12. Planaridade da amida
+# -----------------------------------------------------------------------------
+
+def calculate_amide_planarity_score(
+    planarity_rmsd: Optional[Number],
+    *,
+    maximum_rmsd: float = (
+        DEFAULT_MAXIMUM_AMIDE_PLANARITY_RMSD
+    ),
+) -> float:
+    """
+    Convert amide planarity RMSD into a normalized score.
+    """
+
+    rmsd = _normalize_optional_numeric(
+        planarity_rmsd
+    )
+
+    if rmsd is None:
+        return 0.0
+
+    maximum = _coerce_non_negative_float(
+        maximum_rmsd,
+        field_name="maximum_rmsd",
+    )
+
+    if maximum <= 0.0:
+        return 1.0 if rmsd <= 0.0 else 0.0
+
+    return max(
+        0.0,
+        min(
+            1.0,
+            1.0 - rmsd / maximum,
+        ),
+    )
+
+
+def classify_amide_planarity(
+    planarity_rmsd: Optional[Number],
+    *,
+    preferred_rmsd: float = DEFAULT_AMIDE_PLANARITY_RMSD,
+    maximum_rmsd: float = (
+        DEFAULT_MAXIMUM_AMIDE_PLANARITY_RMSD
+    ),
+) -> str:
+    """
+    Classify amide planarity.
+    """
+
+    rmsd = _normalize_optional_numeric(
+        planarity_rmsd
+    )
+
+    if rmsd is None:
+        return GEOMETRY_REJECTED
+
+    if rmsd <= preferred_rmsd:
+        return GEOMETRY_OPTIMAL
+
+    if rmsd <= maximum_rmsd:
+        return GEOMETRY_FAVORABLE
+
+    return GEOMETRY_REJECTED
+
+
+# -----------------------------------------------------------------------------
+# 7.13. Construção de PiAmideGroup
+# -----------------------------------------------------------------------------
+
+def create_pi_amide_group(
+    carbonyl_carbon: Any,
+    carbonyl_oxygen: Any,
+    amide_nitrogen: Any,
+    *,
+    group_index: Optional[int] = None,
+    group_type: Optional[str] = None,
+    participant_type: Optional[str] = None,
+    support_atoms: Optional[Iterable[Any]] = None,
+    is_peptide: bool = False,
+    is_cyclic: bool = False,
+    prefer_numpy: bool = True,
+    ligand_residue_names: Optional[Collection[str]] = None,
+    receptor_residue_names: Optional[Collection[str]] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+    strict: bool = False,
+) -> Optional[PiAmideGroup]:
+    """
+    Create a complete ``PiAmideGroup`` from an amide core.
+    """
+
+    try:
+        if get_atom_element(
+            carbonyl_carbon
+        ) != "C":
+            raise ValueError(
+                "carbonyl_carbon must be carbon."
+            )
+
+        if get_atom_element(
+            carbonyl_oxygen
+        ) != "O":
+            raise ValueError(
+                "carbonyl_oxygen must be oxygen."
+            )
+
+        if get_atom_element(
+            amide_nitrogen
+        ) != "N":
+            raise ValueError(
+                "amide_nitrogen must be nitrogen."
+            )
+
+        if not atoms_are_bonded(
+            carbonyl_carbon,
+            carbonyl_oxygen,
+        ):
+            raise ValueError(
+                "Carbonyl carbon and oxygen are not bonded."
+            )
+
+        if not atoms_are_bonded(
+            carbonyl_carbon,
+            amide_nitrogen,
+        ):
+            raise ValueError(
+                "Carbonyl carbon and amide nitrogen are not bonded."
+            )
+
+        normalized_support_atoms = (
+            tuple(support_atoms)
+            if support_atoms is not None
+            else get_amide_support_atoms(
+                carbonyl_carbon,
+                carbonyl_oxygen,
+                amide_nitrogen,
+            )
+        )
+
+        normalized_support_atoms = tuple(
+            atom
+            for atom in deduplicate_atoms(
+                normalized_support_atoms
+            )
+            if atom_has_valid_coordinate(atom)
+        )
+
+        core_atoms = (
+            carbonyl_carbon,
+            carbonyl_oxygen,
+            amide_nitrogen,
+        )
+
+        group_atoms = get_complete_amide_geometry_atoms(
+            carbonyl_carbon,
+            carbonyl_oxygen,
+            amide_nitrogen,
+            support_atoms=normalized_support_atoms,
+        )
+
+        plane = fit_amide_plane(
+            carbonyl_carbon,
+            carbonyl_oxygen,
+            amide_nitrogen,
+            support_atoms=normalized_support_atoms,
+            prefer_numpy=prefer_numpy,
+            strict=True,
+        )
+
+        assert plane is not None
+
+        oriented_normal = orient_amide_normal(
+            plane.normal,
+            carbonyl_carbon,
+            carbonyl_oxygen,
+            amide_nitrogen,
+        )
+
+        center = calculate_amide_group_center(
+            carbonyl_carbon,
+            carbonyl_oxygen,
+            amide_nitrogen,
+            method="core_centroid",
+        )
+
+        carbonyl_direction = (
+            calculate_carbonyl_direction(
+                carbonyl_carbon,
+                carbonyl_oxygen,
+            )
+        )
+
+        cn_direction = calculate_amide_cn_direction(
+            carbonyl_carbon,
+            amide_nitrogen,
+        )
+
+        bisector_direction = (
+            calculate_amide_bisector_direction(
+                carbonyl_carbon,
+                carbonyl_oxygen,
+                amide_nitrogen,
+            )
+        )
+
+        carbonyl_residue = get_atom_residue(
+            carbonyl_carbon
+        )
+
+        nitrogen_residue = get_atom_residue(
+            amide_nitrogen
+        )
+
+        residue = (
+            carbonyl_residue
+            if carbonyl_residue is not None
+            else nitrogen_residue
+        )
+
+        model = get_atom_model(
+            carbonyl_carbon
+        )
+
+        normalized_participant_type = (
+            participant_type
+            or infer_participant_type(
+                residue or carbonyl_carbon,
+                ligand_residue_names=(
+                    ligand_residue_names
+                ),
+                receptor_residue_names=(
+                    receptor_residue_names
+                ),
+            )
+        )
+
+        inferred_group_type = (
+            normalize_amide_group_type(
+                group_type
+            )
+            if group_type is not None
+            else infer_amide_group_type(
+                carbonyl_carbon,
+                carbonyl_oxygen,
+                amide_nitrogen,
+                residue=residue,
+                is_peptide=is_peptide,
+                is_cyclic=is_cyclic,
+            )
+        )
+
+        carbonyl_bond_order = get_bond_order(
+            carbonyl_carbon,
+            carbonyl_oxygen,
+        )
+
+        cn_bond_order = get_bond_order(
+            carbonyl_carbon,
+            amide_nitrogen,
+        )
+
+        carbonyl_distance = distance_between_points(
+            require_atom_coordinate(
+                carbonyl_carbon
+            ),
+            require_atom_coordinate(
+                carbonyl_oxygen
+            ),
+        )
+
+        cn_distance = distance_between_points(
+            require_atom_coordinate(
+                carbonyl_carbon
+            ),
+            require_atom_coordinate(
+                amide_nitrogen
+            ),
+        )
+
+        group_metadata = _copy_mapping(
+            metadata
+        )
+
+        group_metadata.update(
+            {
+                "plane_fit_method": plane.method,
+                "plane_eigenvalues": list(
+                    plane.eigenvalues
+                ),
+                "signed_plane_deviations": list(
+                    plane.signed_deviations
+                ),
+                "carbonyl_bond_order": (
+                    carbonyl_bond_order
+                ),
+                "cn_bond_order": cn_bond_order,
+                "carbonyl_distance": (
+                    carbonyl_distance
+                ),
+                "cn_distance": cn_distance,
+                "carbonyl_direction": list(
+                    carbonyl_direction
+                ),
+                "cn_direction": list(
+                    cn_direction
+                ),
+                "bisector_direction": (
+                    list(bisector_direction)
+                    if bisector_direction is not None
+                    else None
+                ),
+                "is_peptide": bool(is_peptide),
+                "is_cyclic": bool(is_cyclic),
+            }
+        )
+
+        group = PiAmideGroup(
+            atoms=group_atoms,
+            atom_references=create_pi_atom_references(
+                group_atoms,
+                skip_invalid=False,
+            ),
+            core_atoms=core_atoms,
+            support_atoms=normalized_support_atoms,
+            carbonyl_carbon=carbonyl_carbon,
+            carbonyl_oxygen=carbonyl_oxygen,
+            amide_nitrogen=amide_nitrogen,
+            group_index=group_index,
+            group_type=inferred_group_type,
+            center=center,
+            normal=oriented_normal,
+            direction=carbonyl_direction,
+            carbonyl_direction=carbonyl_direction,
+            cn_direction=cn_direction,
+            planarity_rmsd=plane.planarity_rmsd,
+            maximum_plane_deviation=(
+                plane.maximum_deviation
+            ),
+            carbonyl_bond_order=carbonyl_bond_order,
+            cn_bond_order=cn_bond_order,
+            carbonyl_distance=carbonyl_distance,
+            cn_distance=cn_distance,
+            residue_name=get_residue_name(
+                residue or carbonyl_carbon
+            ),
+            residue_number=get_residue_number(
+                residue or carbonyl_carbon
+            ),
+            chain_id=get_residue_chain_id(
+                residue or carbonyl_carbon
+            ),
+            model_id=get_model_identifier(model),
+            participant_type=normalized_participant_type,
+            is_peptide=is_peptide,
+            is_cyclic=is_cyclic,
+            valid=True,
+            metadata=group_metadata,
+        )
+
+        if not group.group_id:
+            group.group_id = group.build_group_id()
+
+        return group
+
+    except (
+        PiGeometryError,
+        PiAtomAccessError,
+        PiCoordinateError,
+        TypeError,
+        ValueError,
+        ArithmeticError,
+    ):
+        if strict:
+            raise
+
+        return None
+
+
+# -----------------------------------------------------------------------------
+# 7.14. Detecção por definição conhecida de resíduos
+# -----------------------------------------------------------------------------
+
+def detect_sidechain_amide_groups(
+    residue: Any,
+    *,
+    participant_type: Optional[str] = None,
+    prefer_numpy: bool = True,
+    ligand_residue_names: Optional[Collection[str]] = None,
+    receptor_residue_names: Optional[Collection[str]] = None,
+) -> List[PiAmideGroup]:
+    """
+    Detect side-chain amides in standard amino acids.
+    """
+
+    residue_name = get_residue_name(
+        residue
+    )
+
+    definitions = (
+        PROTEIN_SIDECHAIN_AMIDE_DEFINITIONS.get(
+            residue_name,
+            (),
+        )
+    )
+
+    if not definitions:
+        return []
+
+    atom_map = map_atoms_by_name(
+        residue
+    )
+
+    groups: List[PiAmideGroup] = []
+
+    for definition in definitions:
+        carbon = atom_map.get(
+            str(
+                definition[
+                    "carbonyl_carbon"
+                ]
+            ).upper()
+        )
+
+        oxygen = atom_map.get(
+            str(
+                definition[
+                    "carbonyl_oxygen"
+                ]
+            ).upper()
+        )
+
+        nitrogen = atom_map.get(
+            str(
+                definition[
+                    "amide_nitrogen"
+                ]
+            ).upper()
+        )
+
+        if (
+            carbon is None
+            or oxygen is None
+            or nitrogen is None
+        ):
+            continue
+
+        support_atoms = tuple(
+            atom_map[name.upper()]
+            for name in definition.get(
+                "support_atom_names",
+                (),
+            )
+            if name.upper() in atom_map
+        )
+
+        group = create_pi_amide_group(
+            carbon,
+            oxygen,
+            nitrogen,
+            group_index=len(groups) + 1,
+            group_type=definition.get(
+                "group_type",
+                AMIDE_GROUP_PRIMARY,
+            ),
+            participant_type=participant_type,
+            support_atoms=support_atoms,
+            is_peptide=False,
+            is_cyclic=False,
+            prefer_numpy=prefer_numpy,
+            ligand_residue_names=(
+                ligand_residue_names
+            ),
+            receptor_residue_names=(
+                receptor_residue_names
+            ),
+            metadata={
+                "detection_method": (
+                    "known_sidechain_definition"
+                ),
+                "residue_definition": dict(
+                    definition
+                ),
+            },
+        )
+
+        if group is not None:
+            groups.append(group)
+
+    return groups
+
+
+# -----------------------------------------------------------------------------
+# 7.15. Detecção de ligações peptídicas
+# -----------------------------------------------------------------------------
+
+def detect_peptide_amide_groups(
+    molecular_input: Any,
+    *,
+    participant_type: Optional[str] = None,
+    prefer_numpy: bool = True,
+    include_proline: bool = True,
+) -> List[PiAmideGroup]:
+    """
+    Detect backbone peptide bonds in a protein structure.
+    """
+
+    atoms = normalize_atom_collection(
+        molecular_input,
+        include_hydrogens=True,
+        valid_coordinates_only=True,
+    )
+
+    atom_ids = {
+        id(atom)
+        for atom in atoms
+    }
+
+    groups: List[PiAmideGroup] = []
+
+    for carbon in atoms:
+        if get_atom_name(carbon).upper() != "C":
+            continue
+
+        carbon_residue = get_atom_residue(
+            carbon
+        )
+
+        if (
+            carbon_residue is None
+            or not is_standard_amino_acid_residue(
+                carbon_residue
+            )
+        ):
+            continue
+
+        oxygen_candidates = tuple(
+            neighbor
+            for neighbor in get_bonded_atoms(
+                carbon,
+                include_hydrogens=False,
+            )
+            if (
+                id(neighbor) in atom_ids
+                and get_atom_name(
+                    neighbor
+                ).upper() == "O"
+            )
+        )
+
+        if not oxygen_candidates:
+            continue
+
+        nitrogen_candidates = tuple(
+            neighbor
+            for neighbor in get_bonded_atoms(
+                carbon,
+                include_hydrogens=False,
+            )
+            if (
+                id(neighbor) in atom_ids
+                and get_atom_name(
+                    neighbor
+                ).upper() == "N"
+            )
+        )
+
+        for oxygen in oxygen_candidates:
+            for nitrogen in nitrogen_candidates:
+                nitrogen_residue = get_atom_residue(
+                    nitrogen
+                )
+
+                if nitrogen_residue is None:
+                    continue
+
+                if (
+                    not include_proline
+                    and get_residue_name(
+                        nitrogen_residue
+                    ) == "PRO"
+                ):
+                    continue
+
+                if not is_protein_peptide_amide(
+                    carbon,
+                    oxygen,
+                    nitrogen,
+                ):
+                    continue
+
+                support_atoms = (
+                    get_amide_support_atoms(
+                        carbon,
+                        oxygen,
+                        nitrogen,
+                    )
+                )
+
+                group = create_pi_amide_group(
+                    carbon,
+                    oxygen,
+                    nitrogen,
+                    group_index=len(groups) + 1,
+                    group_type=AMIDE_GROUP_PEPTIDE,
+                    participant_type=(
+                        participant_type
+                        or PARTICIPANT_RECEPTOR
+                    ),
+                    support_atoms=support_atoms,
+                    is_peptide=True,
+                    prefer_numpy=prefer_numpy,
+                    metadata={
+                        "detection_method": (
+                            "protein_backbone_connectivity"
+                        ),
+                        "carbonyl_residue": (
+                            get_residue_identifier(
+                                carbon_residue
+                            )
+                        ),
+                        "nitrogen_residue": (
+                            get_residue_identifier(
+                                nitrogen_residue
+                            )
+                        ),
+                    },
+                )
+
+                if group is not None:
+                    groups.append(group)
+
+    return groups
+
+
+# -----------------------------------------------------------------------------
+# 7.16. Detecção genérica por conectividade
+# -----------------------------------------------------------------------------
+
+def detect_generic_amide_groups(
+    molecular_input: Any,
+    *,
+    participant_type: Optional[str] = None,
+    allow_distance_inference: bool = True,
+    prefer_numpy: bool = True,
+    detect_cyclic_amides: bool = True,
+    ligand_residue_names: Optional[Collection[str]] = None,
+    receptor_residue_names: Optional[Collection[str]] = None,
+) -> List[PiAmideGroup]:
+    """
+    Detect amide groups using generic carbonyl–nitrogen connectivity.
+    """
+
+    atoms = normalize_atom_collection(
+        molecular_input,
+        include_hydrogens=True,
+        valid_coordinates_only=True,
+    )
+
+    atom_ids = {
+        id(atom)
+        for atom in atoms
+    }
+
+    groups: List[PiAmideGroup] = []
+
+    for carbon in atoms:
+        if not is_carbonyl_carbon(
+            carbon,
+            allow_distance_inference=(
+                allow_distance_inference
+            ),
+        ):
+            continue
+
+        oxygens = tuple(
+            oxygen
+            for oxygen in get_carbonyl_oxygens(
+                carbon,
+                allow_distance_inference=(
+                    allow_distance_inference
+                ),
+            )
+            if id(oxygen) in atom_ids
+        )
+
+        nitrogens = tuple(
+            nitrogen
+            for nitrogen in get_amide_nitrogens_for_carbonyl(
+                carbon,
+                allow_distance_inference=(
+                    allow_distance_inference
+                ),
+            )
+            if id(nitrogen) in atom_ids
+        )
+
+        if not oxygens or not nitrogens:
+            continue
+
+        for oxygen in oxygens:
+            for nitrogen in nitrogens:
+                peptide = is_protein_peptide_amide(
+                    carbon,
+                    oxygen,
+                    nitrogen,
+                )
+
+                cyclic = False
+
+                if detect_cyclic_amides:
+                    cyclic = atoms_belong_to_same_cycle(
+                        carbon,
+                        nitrogen,
+                        atoms,
+                    )
+
+                support_atoms = get_amide_support_atoms(
+                    carbon,
+                    oxygen,
+                    nitrogen,
+                )
+
+                group = create_pi_amide_group(
+                    carbon,
+                    oxygen,
+                    nitrogen,
+                    group_index=len(groups) + 1,
+                    participant_type=participant_type,
+                    support_atoms=support_atoms,
+                    is_peptide=peptide,
+                    is_cyclic=cyclic,
+                    prefer_numpy=prefer_numpy,
+                    ligand_residue_names=(
+                        ligand_residue_names
+                    ),
+                    receptor_residue_names=(
+                        receptor_residue_names
+                    ),
+                    metadata={
+                        "detection_method": (
+                            "generic_amide_connectivity"
+                        ),
+                        "distance_inference_enabled": (
+                            allow_distance_inference
+                        ),
+                    },
+                )
+
+                if group is not None:
+                    groups.append(group)
+
+    return groups
+
+
+# -----------------------------------------------------------------------------
+# 7.17. Identidade e deduplicação de grupos amida
+# -----------------------------------------------------------------------------
+
+def get_amide_group_identity_key(
+    group: PiAmideGroup,
+) -> Tuple[Any, ...]:
+    """
+    Return a stable identity key for a ``PiAmideGroup``.
+    """
+
+    if not isinstance(
+        group,
+        PiAmideGroup,
+    ):
+        raise TypeError(
+            "group must be a PiAmideGroup."
+        )
+
+    return (
+        group.model_id,
+        id(group.carbonyl_carbon),
+        id(group.carbonyl_oxygen),
+        id(group.amide_nitrogen),
+    )
+
+
+def _amide_group_priority(
+    group: PiAmideGroup,
+) -> Tuple[int, float, int]:
+    """
+    Return a priority tuple for amide-group deduplication.
+    """
+
+    detection_method = str(
+        group.metadata.get(
+            "detection_method",
+            "",
+        )
+    )
+
+    method_priority = {
+        "known_sidechain_definition": 5,
+        "protein_backbone_connectivity": 5,
+        "generic_amide_connectivity": 3,
+    }.get(
+        detection_method,
+        1,
+    )
+
+    planarity_score = (
+        calculate_amide_planarity_score(
+            group.planarity_rmsd
+        )
+    )
+
+    return (
+        method_priority,
+        planarity_score,
+        len(group.atoms),
+    )
+
+
+def amide_groups_overlap(
+    group_1: PiAmideGroup,
+    group_2: PiAmideGroup,
+) -> bool:
+    """
+    Return whether two amide groups describe the same amide core.
+    """
+
+    core_ids_1 = {
+        id(group_1.carbonyl_carbon),
+        id(group_1.carbonyl_oxygen),
+        id(group_1.amide_nitrogen),
+    }
+
+    core_ids_2 = {
+        id(group_2.carbonyl_carbon),
+        id(group_2.carbonyl_oxygen),
+        id(group_2.amide_nitrogen),
+    }
+
+    return len(
+        core_ids_1 & core_ids_2
+    ) >= 2
+
+
+def deduplicate_amide_groups(
+    groups: Iterable[PiAmideGroup],
+) -> List[PiAmideGroup]:
+    """
+    Remove duplicate or overlapping amide groups.
+    """
+
+    group_list = list(groups)
+
+    group_list.sort(
+        key=_amide_group_priority,
+        reverse=True,
+    )
+
+    unique: List[PiAmideGroup] = []
+
+    for candidate in group_list:
+        duplicate_index: Optional[int] = None
+
+        for index, existing in enumerate(unique):
+            if (
+                get_amide_group_identity_key(
+                    candidate
+                )
+                == get_amide_group_identity_key(
+                    existing
+                )
+            ) or amide_groups_overlap(
+                candidate,
+                existing,
+            ):
+                duplicate_index = index
+                break
+
+        if duplicate_index is None:
+            unique.append(candidate)
+            continue
+
+        existing = unique[
+            duplicate_index
+        ]
+
+        if (
+            _amide_group_priority(candidate)
+            > _amide_group_priority(existing)
+        ):
+            unique[
+                duplicate_index
+            ] = candidate
+
+    unique.sort(
+        key=lambda group: (
+            group.model_id or "",
+            group.chain_id or "",
+            str(
+                group.residue_number or ""
+            ),
+            group.residue_name or "",
+            get_atom_name(
+                group.carbonyl_carbon
+            ),
+            get_atom_name(
+                group.amide_nitrogen
+            ),
+        )
+    )
+
+    for group_index, group in enumerate(
+        unique,
+        start=1,
+    ):
+        group.group_index = group_index
+
+        if not group.group_id:
+            group.group_id = (
+                group.build_group_id()
+            )
+
+    return unique
+
+
+# -----------------------------------------------------------------------------
+# 7.18. Validação estrutural de grupos amida
+# -----------------------------------------------------------------------------
+
+def validate_amide_group(
+    group: PiAmideGroup,
+    *,
+    maximum_planarity_rmsd: float = (
+        DEFAULT_MAXIMUM_AMIDE_PLANARITY_RMSD
+    ),
+    maximum_atom_deviation: float = (
+        DEFAULT_MAXIMUM_AMIDE_ATOM_DEVIATION
+    ),
+    require_complete_geometry: bool = True,
+) -> Tuple[bool, Tuple[str, ...]]:
+    """
+    Validate the structure and geometry of an amide group.
+    """
+
+    if not isinstance(
+        group,
+        PiAmideGroup,
+    ):
+        raise TypeError(
+            "group must be a PiAmideGroup."
+        )
+
+    messages: List[str] = []
+
+    if len(group.core_atoms) < 3:
+        messages.append(
+            "Amide group must contain three core atoms."
+        )
+
+    if get_atom_element(
+        group.carbonyl_carbon
+    ) != "C":
+        messages.append(
+            "Carbonyl carbon is invalid."
+        )
+
+    if get_atom_element(
+        group.carbonyl_oxygen
+    ) != "O":
+        messages.append(
+            "Carbonyl oxygen is invalid."
+        )
+
+    if get_atom_element(
+        group.amide_nitrogen
+    ) != "N":
+        messages.append(
+            "Amide nitrogen is invalid."
+        )
+
+    if not atoms_are_bonded(
+        group.carbonyl_carbon,
+        group.carbonyl_oxygen,
+    ):
+        messages.append(
+            "Carbonyl carbon and oxygen are not bonded."
+        )
+
+    if not atoms_are_bonded(
+        group.carbonyl_carbon,
+        group.amide_nitrogen,
+    ):
+        messages.append(
+            "Carbonyl carbon and nitrogen are not bonded."
+        )
+
+    if require_complete_geometry:
+        if group.center is None:
+            messages.append(
+                "Amide center is unavailable."
+            )
+
+        if group.normal is None:
+            messages.append(
+                "Amide plane normal is unavailable."
+            )
+
+        elif normalize_vector(
+            group.normal
+        ) is None:
+            messages.append(
+                "Amide plane normal is degenerate."
+            )
+
+        if group.direction is None:
+            messages.append(
+                "Amide carbonyl direction is unavailable."
+            )
+
+    if group.planarity_rmsd is None:
+        messages.append(
+            "Amide planarity RMSD is unavailable."
+        )
+
+    elif (
+        group.planarity_rmsd
+        > maximum_planarity_rmsd
+    ):
+        messages.append(
+            "Amide planarity RMSD exceeds the maximum threshold."
+        )
+
+    if (
+        group.maximum_plane_deviation
+        is None
+    ):
+        messages.append(
+            "Maximum amide-plane deviation is unavailable."
+        )
+
+    elif (
+        group.maximum_plane_deviation
+        > maximum_atom_deviation
+    ):
+        messages.append(
+            "Maximum amide-plane deviation exceeds the threshold."
+        )
+
+    if group.carbonyl_distance is not None:
+        if not (
+            DEFAULT_AMIDE_CARBONYL_DISTANCE_MINIMUM
+            <= group.carbonyl_distance
+            <= DEFAULT_AMIDE_CARBONYL_DISTANCE_MAXIMUM
+        ):
+            messages.append(
+                "Carbonyl bond distance is outside the expected range."
+            )
+
+    if group.cn_distance is not None:
+        if not (
+            DEFAULT_AMIDE_CN_DISTANCE_MINIMUM
+            <= group.cn_distance
+            <= DEFAULT_AMIDE_CN_DISTANCE_MAXIMUM
+        ):
+            messages.append(
+                "Amide C–N distance is outside the expected range."
+            )
+
+    group.valid = not messages
+
+    existing_messages = list(
+        group.validation_messages
+    )
+
+    existing_messages.extend(
+        message
+        for message in messages
+        if message not in existing_messages
+    )
+
+    group.validation_messages = tuple(
+        existing_messages
+    )
+
+    return (
+        group.valid,
+        tuple(messages),
+    )
+
+
+def validate_amide_groups(
+    groups: Iterable[PiAmideGroup],
+    *,
+    maximum_planarity_rmsd: float = (
+        DEFAULT_MAXIMUM_AMIDE_PLANARITY_RMSD
+    ),
+    maximum_atom_deviation: float = (
+        DEFAULT_MAXIMUM_AMIDE_ATOM_DEVIATION
+    ),
+    remove_invalid: bool = False,
+) -> List[PiAmideGroup]:
+    """
+    Validate multiple amide groups.
+    """
+
+    validated: List[PiAmideGroup] = []
+
+    for group in groups:
+        valid, _ = validate_amide_group(
+            group,
+            maximum_planarity_rmsd=(
+                maximum_planarity_rmsd
+            ),
+            maximum_atom_deviation=(
+                maximum_atom_deviation
+            ),
+        )
+
+        if remove_invalid and not valid:
+            continue
+
+        validated.append(group)
+
+    return validated
+
+
+# -----------------------------------------------------------------------------
+# 7.19. Detecção integrada
+# -----------------------------------------------------------------------------
+
+def detect_amide_groups(
+    molecular_input: Any,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    participant_type: Optional[str] = None,
+    include_peptide_amides: bool = True,
+    include_sidechain_amides: bool = True,
+    include_generic_amides: bool = True,
+    include_cyclic_amides: bool = True,
+    prefer_numpy: bool = True,
+    ligand_residue_names: Optional[Collection[str]] = None,
+    receptor_residue_names: Optional[Collection[str]] = None,
+) -> List[PiAmideGroup]:
+    """
+    Detect amide groups in a model, residue or atom collection.
+    """
+
+    analysis_config = (
+        config
+        if config is not None
+        else create_default_pi_config()
+    )
+
+    if not isinstance(
+        analysis_config,
+        PiAnalysisConfig,
+    ):
+        raise TypeError(
+            "config must be a PiAnalysisConfig or None."
+        )
+
+    atoms = normalize_atom_collection(
+        molecular_input,
+        include_hydrogens=True,
+        valid_coordinates_only=True,
+    )
+
+    residues = normalize_residue_collection(
+        atoms
+    )
+
+    detected: List[PiAmideGroup] = []
+
+    if include_peptide_amides:
+        detected.extend(
+            detect_peptide_amide_groups(
+                atoms,
+                participant_type=participant_type,
+                prefer_numpy=prefer_numpy,
+            )
+        )
+
+    if include_sidechain_amides:
+        for residue in residues:
+            residue_participant_type = (
+                participant_type
+                or infer_participant_type(
+                    residue,
+                    ligand_residue_names=(
+                        ligand_residue_names
+                    ),
+                    receptor_residue_names=(
+                        receptor_residue_names
+                    ),
+                )
+            )
+
+            detected.extend(
+                detect_sidechain_amide_groups(
+                    residue,
+                    participant_type=(
+                        residue_participant_type
+                    ),
+                    prefer_numpy=prefer_numpy,
+                    ligand_residue_names=(
+                        ligand_residue_names
+                    ),
+                    receptor_residue_names=(
+                        receptor_residue_names
+                    ),
+                )
+            )
+
+    if include_generic_amides:
+        detected.extend(
+            detect_generic_amide_groups(
+                atoms,
+                participant_type=participant_type,
+                prefer_numpy=prefer_numpy,
+                detect_cyclic_amides=(
+                    include_cyclic_amides
+                ),
+                ligand_residue_names=(
+                    ligand_residue_names
+                ),
+                receptor_residue_names=(
+                    receptor_residue_names
+                ),
+            )
+        )
+
+    deduplicated = deduplicate_amide_groups(
+        detected
+    )
+
+    maximum_planarity_rmsd = getattr(
+        analysis_config,
+        "maximum_amide_planarity_rmsd",
+        DEFAULT_MAXIMUM_AMIDE_PLANARITY_RMSD,
+    )
+
+    maximum_atom_deviation = getattr(
+        analysis_config,
+        "maximum_amide_atom_deviation",
+        DEFAULT_MAXIMUM_AMIDE_ATOM_DEVIATION,
+    )
+
+    return validate_amide_groups(
+        deduplicated,
+        maximum_planarity_rmsd=(
+            maximum_planarity_rmsd
+        ),
+        maximum_atom_deviation=(
+            maximum_atom_deviation
+        ),
+        remove_invalid=True,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 7.20. Detecção específica para receptor e ligante
+# -----------------------------------------------------------------------------
+
+def detect_receptor_amide_groups(
+    receptor: Any,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    include_peptide_amides: bool = True,
+) -> List[PiAmideGroup]:
+    """
+    Detect amide groups associated with a receptor.
+    """
+
+    return detect_amide_groups(
+        receptor,
+        config=config,
+        participant_type=PARTICIPANT_RECEPTOR,
+        include_peptide_amides=(
+            include_peptide_amides
+        ),
+    )
+
+
+def detect_ligand_amide_groups(
+    ligand: Any,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+) -> List[PiAmideGroup]:
+    """
+    Detect amide groups associated with a ligand.
+    """
+
+    return detect_amide_groups(
+        ligand,
+        config=config,
+        participant_type=PARTICIPANT_LIGAND,
+        include_peptide_amides=False,
+    )
+
+
+def detect_pi_analysis_amide_groups(
+    normalized_input: PiNormalizedInput,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+) -> Tuple[
+    List[PiAmideGroup],
+    List[PiAmideGroup],
+]:
+    """
+    Detect receptor and ligand amide groups.
+    """
+
+    if not isinstance(
+        normalized_input,
+        PiNormalizedInput,
+    ):
+        raise TypeError(
+            "normalized_input must be a PiNormalizedInput."
+        )
+
+    receptor_groups = (
+        detect_receptor_amide_groups(
+            normalized_input.receptor_atoms,
+            config=config,
+        )
+    )
+
+    ligand_groups = (
+        detect_ligand_amide_groups(
+            normalized_input.ligand_atoms,
+            config=config,
+        )
+    )
+
+    return (
+        receptor_groups,
+        ligand_groups,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 7.21. Geometria entre grupo amida e anel aromático
+# -----------------------------------------------------------------------------
+
+def calculate_amide_group_ring_geometry(
+    group: PiAmideGroup,
+    ring: PiRing,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    strict: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """
+    Calculate complete geometry between an amide group and an aromatic ring.
+    """
+
+    if not isinstance(
+        group,
+        PiAmideGroup,
+    ):
+        raise TypeError(
+            "group must be a PiAmideGroup."
+        )
+
+    if not isinstance(
+        ring,
+        PiRing,
+    ):
+        raise TypeError(
+            "ring must be a PiRing."
+        )
+
+    try:
+        if (
+            group.center is None
+            or group.normal is None
+        ):
+            raise PiGeometryError(
+                "Amide group geometry is incomplete."
+            )
+
+        ensure_pi_ring_geometry(
+            ring,
+            config=config,
+            strict=True,
+        )
+
+        point_geometry = calculate_point_ring_geometry(
+            group.center,
+            ring,
+            direction_vector=group.direction,
+            config=config,
+            strict=True,
+        )
+
+        assert point_geometry is not None
+        assert ring.normal is not None
+
+        plane_angle = angle_between_planes(
+            group.normal,
+            ring.normal,
+            strict=True,
+        )
+
+        assert plane_angle is not None
+
+        carbonyl_angle: Optional[float] = None
+
+        if group.carbonyl_direction is not None:
+            carbonyl_angle = (
+                acute_angle_between_vectors(
+                    group.carbonyl_direction,
+                    ring.normal,
+                    strict=False,
+                )
+            )
+
+        cn_angle: Optional[float] = None
+
+        if group.cn_direction is not None:
+            cn_angle = (
+                acute_angle_between_vectors(
+                    group.cn_direction,
+                    ring.normal,
+                    strict=False,
+                )
+            )
+
+        minimum_atomic_distance = (
+            calculate_minimum_atomic_distance(
+                group.core_atoms,
+                ring.atoms,
+                skip_invalid=False,
+            )
+        )
+
+        maximum_atomic_distance = (
+            calculate_maximum_atomic_distance(
+                group.core_atoms,
+                ring.atoms,
+                skip_invalid=False,
+            )
+        )
+
+        closest_pair = find_closest_atom_pair(
+            group.core_atoms,
+            ring.atoms,
+            skip_invalid=False,
+        )
+
+        closest_contact: Optional[
+            Dict[str, Any]
+        ] = None
+
+        if closest_pair is not None:
+            atom_1, atom_2, distance = (
+                closest_pair
+            )
+
+            closest_contact = {
+                "amide_atom": (
+                    get_atom_identifier(
+                        atom_1
+                    )
+                ),
+                "ring_atom": (
+                    get_atom_identifier(
+                        atom_2
+                    )
+                ),
+                "distance": distance,
+            }
+
+        return {
+            "centroid_distance": (
+                point_geometry.center_distance
+            ),
+            "plane_height": (
+                point_geometry.absolute_plane_distance
+            ),
+            "signed_plane_height": (
+                point_geometry.signed_plane_distance
+            ),
+            "radial_offset": (
+                point_geometry.radial_offset
+            ),
+            "plane_angle": plane_angle,
+            "carbonyl_angle": carbonyl_angle,
+            "cn_angle": cn_angle,
+            "minimum_atomic_distance": (
+                minimum_atomic_distance
+            ),
+            "maximum_atomic_distance": (
+                maximum_atomic_distance
+            ),
+            "closest_atomic_contact": (
+                closest_contact
+            ),
+            "amide_planarity_rmsd": (
+                group.planarity_rmsd
+            ),
+            "ring_planarity_rmsd": (
+                ring.planarity_rmsd
+            ),
+            "valid": True,
+            "warnings": list(
+                point_geometry.warnings
+            ),
+        }
+
+    except (
+        PiGeometryError,
+        PiAtomAccessError,
+        PiCoordinateError,
+        TypeError,
+        ValueError,
+        ArithmeticError,
+    ):
+        if strict:
+            raise
+
+        return None
+
+
+# -----------------------------------------------------------------------------
+# 7.22. Criação de contatos atômicos amide–π
+# -----------------------------------------------------------------------------
+
+def create_amide_ring_atomic_contacts(
+    group: PiAmideGroup,
+    ring: PiRing,
+    *,
+    maximum_distance: float,
+) -> Tuple[PiAtomicContact, ...]:
+    """
+    Create atomic contacts between an amide core and an aromatic ring.
+    """
+
+    maximum_distance_value = (
+        _coerce_non_negative_float(
+            maximum_distance,
+            field_name="maximum_distance",
+        )
+    )
+
+    contacts: List[PiAtomicContact] = []
+
+    for amide_atom in group.core_atoms:
+        amide_coordinate = get_atom_coordinate(
+            amide_atom
+        )
+
+        if amide_coordinate is None:
+            continue
+
+        for ring_atom in ring.atoms:
+            ring_coordinate = get_atom_coordinate(
+                ring_atom
+            )
+
+            if ring_coordinate is None:
+                continue
+
+            distance = distance_between_points(
+                amide_coordinate,
+                ring_coordinate,
+            )
+
+            if distance > maximum_distance_value:
+                continue
+
+            contacts.append(
+                PiAtomicContact(
+                    atom_1=create_pi_atom_reference(
+                        amide_atom
+                    ),
+                    atom_2=create_pi_atom_reference(
+                        ring_atom
+                    ),
+                    distance=distance,
+                    contact_type=AMIDE_PI,
+                    metadata={
+                        "amide_group_id": (
+                            group.group_id
+                        ),
+                        "ring_id": ring.ring_id,
+                        "amide_atom_role": (
+                            "carbonyl_carbon"
+                            if amide_atom
+                            is group.carbonyl_carbon
+                            else (
+                                "carbonyl_oxygen"
+                                if amide_atom
+                                is group.carbonyl_oxygen
+                                else "amide_nitrogen"
+                            )
+                        ),
+                    },
+                )
+            )
+
+    contacts.sort(
+        key=lambda contact: (
+            contact.distance,
+            contact.atom_1.atom_name,
+            contact.atom_2.atom_name,
+        )
+    )
+
+    return tuple(contacts)
+
+
+# -----------------------------------------------------------------------------
+# 7.23. Atualização de PiInteraction
+# -----------------------------------------------------------------------------
+
+def attach_amide_ring_geometry_to_interaction(
+    interaction: PiInteraction,
+    geometry: Mapping[str, Any],
+) -> PiInteraction:
+    """
+    Attach amide–ring geometry to a ``PiInteraction``.
+    """
+
+    if not isinstance(
+        interaction,
+        PiInteraction,
+    ):
+        raise TypeError(
+            "interaction must be a PiInteraction."
+        )
+
+    interaction.centroid_distance = (
+        _normalize_optional_numeric(
+            geometry.get(
+                "centroid_distance"
+            )
+        )
+    )
+
+    interaction.plane_height = (
+        _normalize_optional_numeric(
+            geometry.get(
+                "plane_height"
+            )
+        )
+    )
+
+    interaction.radial_offset = (
+        _normalize_optional_numeric(
+            geometry.get(
+                "radial_offset"
+            )
+        )
+    )
+
+    interaction.lateral_offset = (
+        interaction.radial_offset
+    )
+
+    interaction.plane_angle = (
+        _normalize_optional_numeric(
+            geometry.get(
+                "plane_angle"
+            )
+        )
+    )
+
+    interaction.normal_angle = (
+        interaction.plane_angle
+    )
+
+    interaction.minimum_atomic_distance = (
+        _normalize_optional_numeric(
+            geometry.get(
+                "minimum_atomic_distance"
+            )
+        )
+    )
+
+    interaction.maximum_atomic_distance = (
+        _normalize_optional_numeric(
+            geometry.get(
+                "maximum_atomic_distance"
+            )
+        )
+    )
+
+    interaction.ring_1_planarity = (
+        _normalize_optional_numeric(
+            geometry.get(
+                "ring_planarity_rmsd"
+            )
+        )
+    )
+
+    interaction.metadata[
+        "amide_ring_geometry"
+    ] = dict(geometry)
+
+    for warning in geometry.get(
+        "warnings",
+        (),
+    ):
+        if warning not in interaction.warnings:
+            interaction.warnings.append(
+                str(warning)
+            )
+
+    return interaction
+
+
+# -----------------------------------------------------------------------------
+# 7.24. Filtragem preliminar por proximidade
+# -----------------------------------------------------------------------------
+
+def filter_amide_ring_candidates(
+    amide_groups: Iterable[PiAmideGroup],
+    rings: Iterable[PiRing],
+    *,
+    maximum_centroid_distance: float,
+    maximum_minimum_atomic_distance: Optional[float] = None,
+    config: Optional[PiAnalysisConfig] = None,
+) -> List[
+    Tuple[
+        PiAmideGroup,
+        PiRing,
+        Dict[str, Any],
+    ]
+]:
+    """
+    Return geometrically plausible amide–ring candidate pairs.
+    """
+
+    centroid_limit = _coerce_non_negative_float(
+        maximum_centroid_distance,
+        field_name="maximum_centroid_distance",
+    )
+
+    atomic_limit = (
+        _coerce_non_negative_float(
+            maximum_minimum_atomic_distance,
+            field_name=(
+                "maximum_minimum_atomic_distance"
+            ),
+        )
+        if maximum_minimum_atomic_distance
+        is not None
+        else None
+    )
+
+    candidates: List[
+        Tuple[
+            PiAmideGroup,
+            PiRing,
+            Dict[str, Any],
+        ]
+    ] = []
+
+    for group in amide_groups:
+        if not group.valid:
+            continue
+
+        for ring in rings:
+            if not ring.valid:
+                continue
+
+            geometry = (
+                calculate_amide_group_ring_geometry(
+                    group,
+                    ring,
+                    config=config,
+                    strict=False,
+                )
+            )
+
+            if geometry is None:
+                continue
+
+            centroid_distance = (
+                geometry[
+                    "centroid_distance"
+                ]
+            )
+
+            if (
+                centroid_distance
+                > centroid_limit
+            ):
+                continue
+
+            minimum_distance = (
+                geometry.get(
+                    "minimum_atomic_distance"
+                )
+            )
+
+            if (
+                atomic_limit is not None
+                and minimum_distance is not None
+                and minimum_distance
+                > atomic_limit
+            ):
+                continue
+
+            candidates.append(
+                (
+                    group,
+                    ring,
+                    geometry,
+                )
+            )
+
+    candidates.sort(
+        key=lambda item: (
+            item[2][
+                "centroid_distance"
+            ],
+            (
+                item[2].get(
+                    "minimum_atomic_distance"
+                )
+                if item[2].get(
+                    "minimum_atomic_distance"
+                )
+                is not None
+                else float("inf")
+            ),
+        )
+    )
+
+    return candidates
+
+
+# -----------------------------------------------------------------------------
+# 7.25. Preparação integrada
+# -----------------------------------------------------------------------------
+
+def prepare_amide_groups(
+    molecular_input: Any,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    participant_type: Optional[str] = None,
+    include_peptide_amides: bool = True,
+) -> List[PiAmideGroup]:
+    """
+    Run the complete amide-group preparation pipeline.
+    """
+
+    groups = detect_amide_groups(
+        molecular_input,
+        config=config,
+        participant_type=participant_type,
+        include_peptide_amides=(
+            include_peptide_amides
+        ),
+    )
+
+    groups = deduplicate_amide_groups(
+        groups
+    )
+
+    analysis_config = (
+        config
+        if config is not None
+        else create_default_pi_config()
+    )
+
+    maximum_planarity_rmsd = getattr(
+        analysis_config,
+        "maximum_amide_planarity_rmsd",
+        DEFAULT_MAXIMUM_AMIDE_PLANARITY_RMSD,
+    )
+
+    maximum_atom_deviation = getattr(
+        analysis_config,
+        "maximum_amide_atom_deviation",
+        DEFAULT_MAXIMUM_AMIDE_ATOM_DEVIATION,
+    )
+
+    return validate_amide_groups(
+        groups,
+        maximum_planarity_rmsd=(
+            maximum_planarity_rmsd
+        ),
+        maximum_atom_deviation=(
+            maximum_atom_deviation
+        ),
+        remove_invalid=True,
+    )
+
+
+def prepare_pi_analysis_amide_groups(
+    normalized_input: PiNormalizedInput,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+) -> Dict[str, List[PiAmideGroup]]:
+    """
+    Prepare receptor and ligand amide groups.
+    """
+
+    receptor_groups, ligand_groups = (
+        detect_pi_analysis_amide_groups(
+            normalized_input,
+            config=config,
+        )
+    )
+
+    return {
+        "receptor_amide_groups": (
+            receptor_groups
+        ),
+        "ligand_amide_groups": (
+            ligand_groups
+        ),
+        "all_amide_groups": (
+            receptor_groups
+            + ligand_groups
+        ),
+    }
+
+
+# -----------------------------------------------------------------------------
+# 7.26. Resumo de grupos amida
+# -----------------------------------------------------------------------------
+
+def summarize_amide_groups(
+    groups: Iterable[PiAmideGroup],
+) -> Dict[str, Any]:
+    """
+    Generate a serializable summary of detected amide groups.
+    """
+
+    group_list = list(groups)
+
+    valid_groups = [
+        group
+        for group in group_list
+        if group.valid
+    ]
+
+    planarity_values = [
+        group.planarity_rmsd
+        for group in group_list
+        if group.planarity_rmsd is not None
+    ]
+
+    maximum_deviations = [
+        group.maximum_plane_deviation
+        for group in group_list
+        if (
+            group.maximum_plane_deviation
+            is not None
+        )
+    ]
+
+    carbonyl_distances = [
+        group.carbonyl_distance
+        for group in group_list
+        if group.carbonyl_distance is not None
+    ]
+
+    cn_distances = [
+        group.cn_distance
+        for group in group_list
+        if group.cn_distance is not None
+    ]
+
+    def summarize_numeric_values(
+        values: Sequence[float],
+    ) -> Dict[str, Optional[float]]:
+        if not values:
+            return {
+                "minimum": None,
+                "mean": None,
+                "maximum": None,
+            }
+
+        return {
+            "minimum": min(values),
+            "mean": (
+                sum(values)
+                / len(values)
+            ),
+            "maximum": max(values),
+        }
+
+    group_type_distribution = Counter(
+        group.group_type
+        for group in group_list
+    )
+
+    participant_distribution = Counter(
+        group.participant_type
+        for group in group_list
+    )
+
+    residue_distribution = Counter(
+        group.residue_name or "UNK"
+        for group in group_list
+    )
+
+    detection_method_distribution = Counter(
+        str(
+            group.metadata.get(
+                "detection_method",
+                "unknown",
+            )
+        )
+        for group in group_list
+    )
+
+    planarity_distribution = Counter(
+        classify_amide_planarity(
+            group.planarity_rmsd
+        )
+        for group in group_list
+    )
+
+    return {
+        "total_groups": len(group_list),
+        "valid_groups": len(valid_groups),
+        "invalid_groups": (
+            len(group_list)
+            - len(valid_groups)
+        ),
+        "peptide_amides": sum(
+            1
+            for group in group_list
+            if group.is_peptide
+        ),
+        "cyclic_amides": sum(
+            1
+            for group in group_list
+            if group.is_cyclic
+        ),
+        "group_type_distribution": dict(
+            group_type_distribution
+        ),
+        "participant_distribution": dict(
+            participant_distribution
+        ),
+        "residue_distribution": dict(
+            residue_distribution
+        ),
+        "detection_method_distribution": dict(
+            detection_method_distribution
+        ),
+        "planarity_distribution": dict(
+            planarity_distribution
+        ),
+        "planarity_rmsd": (
+            summarize_numeric_values(
+                planarity_values
+            )
+        ),
+        "maximum_plane_deviation": (
+            summarize_numeric_values(
+                maximum_deviations
+            )
+        ),
+        "carbonyl_distance": (
+            summarize_numeric_values(
+                carbonyl_distances
+            )
+        ),
+        "cn_distance": (
+            summarize_numeric_values(
+                cn_distances
+            )
+        ),
+        "group_ids": [
+            group.group_id
+            for group in group_list
+        ],
+    }
+
+
+# -----------------------------------------------------------------------------
+# End of section 7.
+# -----------------------------------------------------------------------------
+
+
+
