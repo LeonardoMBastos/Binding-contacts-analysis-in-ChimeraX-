@@ -43840,4 +43840,10371 @@ def summarize_dock_model_pi_integration(
     }
 
 
+# =============================================================================
+# 16. SERIALIZAÇÃO E EXPORTAÇÃO
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 16.1. Imports adicionais
+# -----------------------------------------------------------------------------
+
+import csv
+import json
+from pathlib import Path
+
+
+# -----------------------------------------------------------------------------
+# 16.2. Constantes
+# -----------------------------------------------------------------------------
+
+PI_SERIALIZATION_SCHEMA_VERSION: Final[str] = "1.0"
+
+PI_SERIALIZATION_FORMAT_DICT: Final[str] = "dict"
+PI_SERIALIZATION_FORMAT_JSON: Final[str] = "json"
+PI_SERIALIZATION_FORMAT_TABLE: Final[str] = "table"
+PI_SERIALIZATION_FORMAT_CSV: Final[str] = "csv"
+
+SUPPORTED_PI_SERIALIZATION_FORMATS: Final[FrozenSet[str]] = frozenset(
+    {
+        PI_SERIALIZATION_FORMAT_DICT,
+        PI_SERIALIZATION_FORMAT_JSON,
+        PI_SERIALIZATION_FORMAT_TABLE,
+        PI_SERIALIZATION_FORMAT_CSV,
+    }
+)
+
+PI_TABLE_LEVEL_INTERACTION: Final[str] = "interaction"
+PI_TABLE_LEVEL_RESIDUE: Final[str] = "residue"
+PI_TABLE_LEVEL_POSE: Final[str] = "pose"
+PI_TABLE_LEVEL_RING: Final[str] = "ring"
+PI_TABLE_LEVEL_TYPE: Final[str] = "type"
+PI_TABLE_LEVEL_HOTSPOT: Final[str] = "hotspot"
+
+SUPPORTED_PI_TABLE_LEVELS: Final[FrozenSet[str]] = frozenset(
+    {
+        PI_TABLE_LEVEL_INTERACTION,
+        PI_TABLE_LEVEL_RESIDUE,
+        PI_TABLE_LEVEL_POSE,
+        PI_TABLE_LEVEL_RING,
+        PI_TABLE_LEVEL_TYPE,
+        PI_TABLE_LEVEL_HOTSPOT,
+    }
+)
+
+PI_SERIALIZATION_RECURSION_MARKER: Final[str] = "<recursive-reference>"
+PI_SERIALIZATION_UNSUPPORTED_MARKER: Final[str] = "<unsupported-object>"
+
+
+# -----------------------------------------------------------------------------
+# 16.3. Exceções
+# -----------------------------------------------------------------------------
+
+class PiSerializationError(RuntimeError):
+    """
+    Base exception for π-result serialization and export.
+    """
+
+
+class PiSerializationValidationError(PiSerializationError):
+    """
+    Raised when serialization configuration is invalid.
+    """
+
+
+class PiExportError(PiSerializationError):
+    """
+    Raised when a serialized result cannot be exported.
+    """
+
+
+# -----------------------------------------------------------------------------
+# 16.4. Configuração
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiSerializationConfig:
+    """
+    Configuration for safe serialization and export.
+    """
+
+    include_interactions: bool = True
+    include_atomic_contacts: bool = True
+    include_score_components: bool = True
+    include_metadata: bool = True
+    include_intermediate_results: bool = False
+
+    include_raw_objects: bool = False
+    include_empty_values: bool = True
+    include_private_attributes: bool = False
+
+    convert_vectors_to_lists: bool = True
+    convert_sets_to_lists: bool = True
+    sort_mapping_keys: bool = False
+
+    maximum_depth: int = 20
+    numeric_precision: Optional[int] = 6
+
+    json_indent: Optional[int] = 2
+    json_sort_keys: bool = False
+    json_ensure_ascii: bool = False
+    json_allow_nan: bool = False
+
+    table_flatten_nested_values: bool = True
+    table_nested_value_separator: str = "; "
+    table_sequence_separator: str = "; "
+
+    csv_delimiter: str = ","
+    csv_encoding: str = "utf-8"
+    csv_line_terminator: str = "\n"
+
+    def __post_init__(self) -> None:
+        try:
+            self.maximum_depth = int(
+                self.maximum_depth
+            )
+
+        except (TypeError, ValueError) as exc:
+            raise PiSerializationValidationError(
+                "maximum_depth must be an integer."
+            ) from exc
+
+        if self.maximum_depth < 1:
+            raise PiSerializationValidationError(
+                "maximum_depth must be at least 1."
+            )
+
+        if self.numeric_precision is not None:
+            try:
+                self.numeric_precision = int(
+                    self.numeric_precision
+                )
+
+            except (TypeError, ValueError) as exc:
+                raise PiSerializationValidationError(
+                    "numeric_precision must be an integer or None."
+                ) from exc
+
+            if self.numeric_precision < 0:
+                raise PiSerializationValidationError(
+                    "numeric_precision cannot be negative."
+                )
+
+        if self.json_indent is not None:
+            try:
+                self.json_indent = int(
+                    self.json_indent
+                )
+
+            except (TypeError, ValueError) as exc:
+                raise PiSerializationValidationError(
+                    "json_indent must be an integer or None."
+                ) from exc
+
+            if self.json_indent < 0:
+                raise PiSerializationValidationError(
+                    "json_indent cannot be negative."
+                )
+
+        if not isinstance(
+            self.csv_delimiter,
+            str,
+        ) or len(self.csv_delimiter) != 1:
+            raise PiSerializationValidationError(
+                "csv_delimiter must contain exactly one character."
+            )
+
+
+def create_default_pi_serialization_config() -> PiSerializationConfig:
+    """
+    Return the canonical serialization configuration.
+    """
+
+    return PiSerializationConfig()
+
+
+# -----------------------------------------------------------------------------
+# 16.5. Acesso seguro
+# -----------------------------------------------------------------------------
+
+def _pi_serialization_get(
+    object_: Any,
+    names: Sequence[str],
+    default: Any = None,
+) -> Any:
+    if object_ is None:
+        return default
+
+    for name in names:
+        if isinstance(object_, Mapping):
+            value = object_.get(
+                name
+            )
+
+        else:
+            value = getattr(
+                object_,
+                name,
+                None,
+            )
+
+        if value is not None:
+            return value
+
+    return default
+
+
+def _pi_serialization_float(
+    value: Any,
+    default: Optional[float] = None,
+) -> Optional[float]:
+    if value is None:
+        return default
+
+    try:
+        normalized_value = float(
+            value
+        )
+
+    except (TypeError, ValueError):
+        return default
+
+    if not math.isfinite(
+        normalized_value
+    ):
+        return default
+
+    return normalized_value
+
+
+def _pi_serialization_identifier(
+    object_: Any,
+    fallback: str,
+) -> str:
+    value = _pi_serialization_get(
+        object_,
+        (
+            "interaction_id",
+            "group_id",
+            "hotspot_id",
+            "ring_id",
+            "system_id",
+            "aromatic_system_id",
+            "amide_id",
+            "atom_id",
+            "id",
+            "identifier",
+        ),
+        fallback,
+    )
+
+    return str(
+        value
+    )
+
+
+def _pi_serialization_interaction_type(
+    interaction: Any,
+) -> str:
+    value = _pi_serialization_get(
+        interaction,
+        (
+            "interaction_type",
+            "type",
+            "category",
+        ),
+        "unknown",
+    )
+
+    normalized = str(
+        value
+    ).strip().lower()
+
+    aliases = {
+        "pi_pi": "pi-pi",
+        "pi–pi": "pi-pi",
+        "π–π": "pi-pi",
+        "cation_pi": "cation-pi",
+        "cation–π": "cation-pi",
+        "anion_pi": "anion-pi",
+        "anion–π": "anion-pi",
+        "amide_pi": "amide-pi",
+        "amide–π": "amide-pi",
+    }
+
+    return aliases.get(
+        normalized,
+        normalized,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 16.6. Conversão de vetores e valores científicos
+# -----------------------------------------------------------------------------
+
+def _pi_serialization_is_numpy_scalar(
+    value: Any,
+) -> bool:
+    module_name = type(
+        value
+    ).__module__
+
+    return module_name.startswith(
+        "numpy"
+    ) and hasattr(
+        value,
+        "item",
+    )
+
+
+def _pi_serialization_is_array_like(
+    value: Any,
+) -> bool:
+    if value is None:
+        return False
+
+    if isinstance(
+        value,
+        (
+            str,
+            bytes,
+            bytearray,
+            Mapping,
+            list,
+            tuple,
+            set,
+            frozenset,
+        ),
+    ):
+        return False
+
+    if hasattr(
+        value,
+        "tolist",
+    ):
+        return True
+
+    module_name = type(
+        value
+    ).__module__
+
+    return module_name.startswith(
+        (
+            "numpy",
+            "torch",
+            "jax",
+        )
+    )
+
+
+def _pi_serialization_convert_array(
+    value: Any,
+) -> Any:
+    tolist = getattr(
+        value,
+        "tolist",
+        None,
+    )
+
+    if callable(
+        tolist
+    ):
+        try:
+            return tolist()
+
+        except Exception:
+            pass
+
+    try:
+        return list(
+            value
+        )
+
+    except TypeError:
+        return value
+
+
+def _pi_serialization_round_float(
+    value: float,
+    *,
+    precision: Optional[int],
+) -> float:
+    if precision is None:
+        return float(
+            value
+        )
+
+    return round(
+        float(value),
+        precision,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 16.7. Conversão recursiva segura
+# -----------------------------------------------------------------------------
+
+def make_pi_value_serializable(
+    value: Any,
+    *,
+    config: Optional[PiSerializationConfig] = None,
+    _visited: Optional[Set[int]] = None,
+    _depth: int = 0,
+) -> Any:
+    """
+    Recursively convert a value into JSON-compatible Python objects.
+
+    Supported conversions include:
+
+    - dataclasses to dictionaries;
+    - mappings to dictionaries;
+    - tuples and sets to lists;
+    - NumPy arrays and vectors to lists;
+    - NumPy scalars to native Python scalars;
+    - objects exposing ``to_dict()``;
+    - regular objects exposing ``__dict__``;
+    - Path objects to strings;
+    - enums to their values.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    if _visited is None:
+        _visited = set()
+
+    if _depth > config.maximum_depth:
+        return "<maximum-depth-reached>"
+
+    if value is None:
+        return None
+
+    if isinstance(
+        value,
+        bool,
+    ):
+        return value
+
+    if isinstance(
+        value,
+        int,
+    ):
+        return value
+
+    if isinstance(
+        value,
+        float,
+    ):
+        if not math.isfinite(
+            value
+        ):
+            if config.json_allow_nan:
+                return value
+
+            return None
+
+        return _pi_serialization_round_float(
+            value,
+            precision=config.numeric_precision,
+        )
+
+    if isinstance(
+        value,
+        str,
+    ):
+        return value
+
+    if isinstance(
+        value,
+        (
+            bytes,
+            bytearray,
+        ),
+    ):
+        try:
+            return value.decode(
+                "utf-8"
+            )
+
+        except UnicodeDecodeError:
+            return value.hex()
+
+    if isinstance(
+        value,
+        Path,
+    ):
+        return str(
+            value
+        )
+
+    if isinstance(
+        value,
+        Enum,
+    ):
+        return make_pi_value_serializable(
+            value.value,
+            config=config,
+            _visited=_visited,
+            _depth=_depth + 1,
+        )
+
+    if _pi_serialization_is_numpy_scalar(
+        value
+    ):
+        try:
+            native_value = value.item()
+
+        except Exception:
+            native_value = repr(
+                value
+            )
+
+        return make_pi_value_serializable(
+            native_value,
+            config=config,
+            _visited=_visited,
+            _depth=_depth + 1,
+        )
+
+    object_id = id(
+        value
+    )
+
+    if object_id in _visited:
+        return PI_SERIALIZATION_RECURSION_MARKER
+
+    if _pi_serialization_is_array_like(
+        value
+    ):
+        converted_array = (
+            _pi_serialization_convert_array(
+                value
+            )
+        )
+
+        return make_pi_value_serializable(
+            converted_array,
+            config=config,
+            _visited=_visited,
+            _depth=_depth + 1,
+        )
+
+    if isinstance(
+        value,
+        Mapping,
+    ):
+        _visited.add(
+            object_id
+        )
+
+        items = value.items()
+
+        if config.sort_mapping_keys:
+            items = sorted(
+                items,
+                key=lambda item: str(
+                    item[0]
+                ),
+            )
+
+        result: Dict[str, Any] = {}
+
+        for key, item in items:
+            serialized_item = make_pi_value_serializable(
+                item,
+                config=config,
+                _visited=_visited,
+                _depth=_depth + 1,
+            )
+
+            if (
+                serialized_item is None
+                and not config.include_empty_values
+            ):
+                continue
+
+            result[
+                str(key)
+            ] = serialized_item
+
+        return result
+
+    if isinstance(
+        value,
+        (
+            list,
+            tuple,
+            set,
+            frozenset,
+        ),
+    ):
+        _visited.add(
+            object_id
+        )
+
+        serialized_items = [
+            make_pi_value_serializable(
+                item,
+                config=config,
+                _visited=_visited,
+                _depth=_depth + 1,
+            )
+            for item in value
+        ]
+
+        if not config.include_empty_values:
+            serialized_items = [
+                item
+                for item in serialized_items
+                if item is not None
+            ]
+
+        return serialized_items
+
+    if is_dataclass(
+        value
+    ):
+        _visited.add(
+            object_id
+        )
+
+        result: Dict[str, Any] = {}
+
+        for field_definition in fields(
+            value
+        ):
+            field_name = field_definition.name
+
+            if (
+                field_name.startswith("_")
+                and not config.include_private_attributes
+            ):
+                continue
+
+            if (
+                field_name == "interaction"
+                and not config.include_raw_objects
+            ):
+                continue
+
+            if (
+                field_name == "interactions"
+                and not config.include_interactions
+            ):
+                continue
+
+            if (
+                field_name == "atomic_contacts"
+                and not config.include_atomic_contacts
+            ):
+                continue
+
+            if (
+                field_name == "score_components"
+                and not config.include_score_components
+            ):
+                continue
+
+            if (
+                field_name == "metadata"
+                and not config.include_metadata
+            ):
+                continue
+
+            if (
+                field_name == "intermediate_results"
+                and not config.include_intermediate_results
+            ):
+                continue
+
+            field_value = getattr(
+                value,
+                field_name,
+            )
+
+            serialized_value = make_pi_value_serializable(
+                field_value,
+                config=config,
+                _visited=_visited,
+                _depth=_depth + 1,
+            )
+
+            if (
+                serialized_value is None
+                and not config.include_empty_values
+            ):
+                continue
+
+            result[
+                field_name
+            ] = serialized_value
+
+        return result
+
+    to_dict = getattr(
+        value,
+        "to_dict",
+        None,
+    )
+
+    if callable(
+        to_dict
+    ):
+        try:
+            converted = to_dict()
+
+        except TypeError:
+            try:
+                converted = to_dict(
+                    include_interactions=(
+                        config.include_interactions
+                    )
+                )
+
+            except Exception:
+                converted = None
+
+        except Exception:
+            converted = None
+
+        if converted is not None:
+            _visited.add(
+                object_id
+            )
+
+            return make_pi_value_serializable(
+                converted,
+                config=config,
+                _visited=_visited,
+                _depth=_depth + 1,
+            )
+
+    if hasattr(
+        value,
+        "__dict__",
+    ):
+        _visited.add(
+            object_id
+        )
+
+        object_mapping = {
+            key: item
+            for key, item in vars(
+                value
+            ).items()
+            if (
+                config.include_private_attributes
+                or not str(key).startswith("_")
+            )
+        }
+
+        return make_pi_value_serializable(
+            object_mapping,
+            config=config,
+            _visited=_visited,
+            _depth=_depth + 1,
+        )
+
+    return repr(
+        value
+    )
+
+
+# -----------------------------------------------------------------------------
+# 16.8. Serialização de átomos e contatos
+# -----------------------------------------------------------------------------
+
+def pi_atom_to_dict(
+    atom: Any,
+    *,
+    config: Optional[PiSerializationConfig] = None,
+) -> Dict[str, Any]:
+    """
+    Convert an atom-like object into a compact dictionary.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    coordinate = _pi_serialization_get(
+        atom,
+        (
+            "coordinate",
+            "coordinates",
+            "coord",
+            "position",
+            "xyz",
+        ),
+    )
+
+    result = {
+        "atom_id": _pi_serialization_identifier(
+            atom,
+            str(id(atom)),
+        ),
+        "name": _pi_serialization_get(
+            atom,
+            (
+                "name",
+                "atom_name",
+            ),
+        ),
+        "element": _pi_serialization_get(
+            atom,
+            (
+                "element",
+                "symbol",
+            ),
+        ),
+        "index": _pi_serialization_get(
+            atom,
+            (
+                "index",
+                "atom_index",
+                "serial",
+            ),
+        ),
+        "residue_name": _pi_serialization_get(
+            atom,
+            (
+                "residue_name",
+                "resname",
+            ),
+        ),
+        "residue_number": _pi_serialization_get(
+            atom,
+            (
+                "residue_number",
+                "resid",
+                "residue_index",
+            ),
+        ),
+        "chain_id": _pi_serialization_get(
+            atom,
+            (
+                "chain_id",
+                "chain",
+            ),
+        ),
+        "formal_charge": _pi_serialization_get(
+            atom,
+            (
+                "formal_charge",
+                "charge",
+            ),
+        ),
+        "partial_charge": _pi_serialization_get(
+            atom,
+            ("partial_charge",),
+        ),
+        "coordinates": make_pi_value_serializable(
+            coordinate,
+            config=config,
+        ),
+    }
+
+    return {
+        key: value
+        for key, value in result.items()
+        if (
+            config.include_empty_values
+            or value is not None
+        )
+    }
+
+
+def pi_atomic_contact_to_dict(
+    contact: Any,
+    *,
+    config: Optional[PiSerializationConfig] = None,
+) -> Dict[str, Any]:
+    """
+    Convert an atomic-contact object into a dictionary.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    atom_1 = _pi_serialization_get(
+        contact,
+        ("atom_1",),
+    )
+
+    atom_2 = _pi_serialization_get(
+        contact,
+        ("atom_2",),
+    )
+
+    result = {
+        "atom_1": (
+            None
+            if atom_1 is None
+            else pi_atom_to_dict(
+                atom_1,
+                config=config,
+            )
+        ),
+        "atom_2": (
+            None
+            if atom_2 is None
+            else pi_atom_to_dict(
+                atom_2,
+                config=config,
+            )
+        ),
+        "distance": _pi_serialization_float(
+            _pi_serialization_get(
+                contact,
+                ("distance",),
+            )
+        ),
+        "contact_type": _pi_serialization_get(
+            contact,
+            (
+                "contact_type",
+                "type",
+            ),
+        ),
+        "metadata": (
+            make_pi_value_serializable(
+                _pi_serialization_get(
+                    contact,
+                    ("metadata",),
+                    {},
+                ),
+                config=config,
+            )
+            if config.include_metadata
+            else None
+        ),
+    }
+
+    return {
+        key: value
+        for key, value in result.items()
+        if (
+            config.include_empty_values
+            or value is not None
+        )
+    }
+
+
+# -----------------------------------------------------------------------------
+# 16.9. Serialização dos participantes
+# -----------------------------------------------------------------------------
+
+def pi_participant_to_dict(
+    participant: Any,
+    *,
+    config: Optional[PiSerializationConfig] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Convert a ring, charged group or amide group into a compact dictionary.
+    """
+
+    if participant is None:
+        return None
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    atoms = _pi_serialization_get(
+        participant,
+        ("atoms",),
+        (),
+    )
+
+    centroid = _pi_serialization_get(
+        participant,
+        (
+            "centroid",
+            "center",
+            "geometric_center",
+            "charge_center",
+        ),
+    )
+
+    normal = _pi_serialization_get(
+        participant,
+        (
+            "normal",
+            "plane_normal",
+            "normal_vector",
+        ),
+    )
+
+    result = {
+        "participant_id": _pi_serialization_identifier(
+            participant,
+            str(id(participant)),
+        ),
+        "participant_type": _pi_serialization_get(
+            participant,
+            (
+                "participant_type",
+                "source_type",
+                "molecule_type",
+                "role",
+                "group_type",
+                "chemical_type",
+            ),
+        ),
+        "residue_id": _pi_serialization_get(
+            participant,
+            (
+                "residue_id",
+                "residue_key",
+            ),
+        ),
+        "residue_name": _pi_serialization_get(
+            participant,
+            (
+                "residue_name",
+                "resname",
+            ),
+        ),
+        "residue_number": _pi_serialization_get(
+            participant,
+            (
+                "residue_number",
+                "resid",
+                "residue_index",
+            ),
+        ),
+        "chain_id": _pi_serialization_get(
+            participant,
+            (
+                "chain_id",
+                "chain",
+            ),
+        ),
+        "pose_id": _pi_serialization_get(
+            participant,
+            (
+                "pose_id",
+                "pose",
+                "model_id",
+                "state_id",
+            ),
+        ),
+        "centroid": make_pi_value_serializable(
+            centroid,
+            config=config,
+        ),
+        "normal": make_pi_value_serializable(
+            normal,
+            config=config,
+        ),
+        "planarity": _pi_serialization_get(
+            participant,
+            (
+                "planarity",
+                "planarity_rmsd",
+            ),
+        ),
+        "effective_charge": _pi_serialization_get(
+            participant,
+            (
+                "effective_charge",
+                "charge",
+            ),
+        ),
+        "atom_count": (
+            len(atoms)
+            if atoms is not None
+            else 0
+        ),
+        "atoms": (
+            [
+                pi_atom_to_dict(
+                    atom,
+                    config=config,
+                )
+                for atom in atoms
+            ]
+            if (
+                config.include_raw_objects
+                and atoms is not None
+            )
+            else None
+        ),
+        "metadata": (
+            make_pi_value_serializable(
+                _pi_serialization_get(
+                    participant,
+                    ("metadata",),
+                    {},
+                ),
+                config=config,
+            )
+            if config.include_metadata
+            else None
+        ),
+    }
+
+    return {
+        key: value
+        for key, value in result.items()
+        if (
+            config.include_empty_values
+            or value is not None
+        )
+    }
+
+
+# -----------------------------------------------------------------------------
+# 16.10. Serialização de uma interação
+# -----------------------------------------------------------------------------
+
+def pi_interaction_to_dict(
+    interaction: Any,
+    *,
+    config: Optional[PiSerializationConfig] = None,
+) -> Dict[str, Any]:
+    """
+    Convert one π interaction into a stable dictionary schema.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    interaction_type = _pi_serialization_interaction_type(
+        interaction
+    )
+
+    if "_pi_statistics_participants" in globals():
+        try:
+            participant_1, participant_2 = (
+                _pi_statistics_participants(
+                    interaction
+                )
+            )
+
+        except Exception:
+            participant_1 = _pi_serialization_get(
+                interaction,
+                (
+                    "ring_1",
+                    "aromatic_system",
+                    "ring",
+                ),
+            )
+
+            participant_2 = _pi_serialization_get(
+                interaction,
+                (
+                    "ring_2",
+                    "charged_group",
+                    "cation_group",
+                    "anion_group",
+                    "amide_group",
+                ),
+            )
+
+    else:
+        participant_1 = _pi_serialization_get(
+            interaction,
+            (
+                "ring_1",
+                "aromatic_system",
+                "ring",
+            ),
+        )
+
+        participant_2 = _pi_serialization_get(
+            interaction,
+            (
+                "ring_2",
+                "charged_group",
+                "cation_group",
+                "anion_group",
+                "amide_group",
+            ),
+        )
+
+    atomic_contacts = _pi_serialization_get(
+        interaction,
+        (
+            "atomic_contacts",
+            "contacts",
+        ),
+        (),
+    )
+
+    score_components = _pi_serialization_get(
+        interaction,
+        ("score_components",),
+    )
+
+    metadata = _pi_serialization_get(
+        interaction,
+        ("metadata",),
+        {},
+    )
+
+    result = {
+        "interaction_id": _pi_serialization_identifier(
+            interaction,
+            str(id(interaction)),
+        ),
+        "interaction_type": interaction_type,
+        "geometry_subtype": _pi_serialization_get(
+            interaction,
+            (
+                "geometry_subtype",
+                "geometry",
+                "subtype",
+            ),
+            "unclassified",
+        ),
+        "geometry_class": _pi_serialization_get(
+            interaction,
+            (
+                "global_geometry_class",
+                "geometry_quality",
+            ),
+            "unclassified",
+        ),
+        "strength_class": _pi_serialization_get(
+            interaction,
+            (
+                "strength_class",
+                "strength",
+            ),
+            "weak",
+        ),
+        "valid": _pi_serialization_get(
+            interaction,
+            ("valid",),
+            True,
+        ),
+        "borderline": _pi_serialization_get(
+            interaction,
+            ("borderline",),
+            False,
+        ),
+        "pose_id": _pi_serialization_get(
+            interaction,
+            (
+                "pose_id",
+                "pose",
+                "model_id",
+                "state_id",
+            ),
+        ),
+        "rank": _pi_serialization_get(
+            interaction,
+            ("rank",),
+        ),
+        "score": _pi_serialization_float(
+            _pi_serialization_get(
+                interaction,
+                (
+                    "normalized_score",
+                    "score",
+                ),
+            )
+        ),
+        "raw_score": _pi_serialization_float(
+            _pi_serialization_get(
+                interaction,
+                ("raw_score",),
+            )
+        ),
+        "geometry_confidence": _pi_serialization_float(
+            _pi_serialization_get(
+                interaction,
+                (
+                    "geometry_confidence",
+                    "confidence",
+                ),
+            )
+        ),
+        "centroid_distance": _pi_serialization_float(
+            _pi_serialization_get(
+                interaction,
+                ("centroid_distance",),
+            )
+        ),
+        "minimum_atomic_distance": _pi_serialization_float(
+            _pi_serialization_get(
+                interaction,
+                ("minimum_atomic_distance",),
+            )
+        ),
+        "plane_angle": _pi_serialization_float(
+            _pi_serialization_get(
+                interaction,
+                (
+                    "plane_angle",
+                    "normal_angle",
+                ),
+            )
+        ),
+        "orientation_angle": _pi_serialization_float(
+            _pi_serialization_get(
+                interaction,
+                ("orientation_angle",),
+            )
+        ),
+        "radial_offset": _pi_serialization_float(
+            _pi_serialization_get(
+                interaction,
+                ("radial_offset",),
+            )
+        ),
+        "lateral_offset": _pi_serialization_float(
+            _pi_serialization_get(
+                interaction,
+                ("lateral_offset",),
+            )
+        ),
+        "height": _pi_serialization_float(
+            _pi_serialization_get(
+                interaction,
+                (
+                    "height",
+                    "absolute_height",
+                    "signed_height",
+                ),
+            )
+        ),
+        "effective_charge": _pi_serialization_float(
+            _pi_serialization_get(
+                interaction,
+                ("effective_charge",),
+            )
+        ),
+        "charge_source": _pi_serialization_get(
+            interaction,
+            ("charge_source",),
+        ),
+        "participant_1": pi_participant_to_dict(
+            participant_1,
+            config=config,
+        ),
+        "participant_2": pi_participant_to_dict(
+            participant_2,
+            config=config,
+        ),
+        "atomic_contact_count": (
+            len(atomic_contacts)
+            if atomic_contacts is not None
+            else 0
+        ),
+        "atomic_contacts": (
+            [
+                pi_atomic_contact_to_dict(
+                    contact,
+                    config=config,
+                )
+                for contact in atomic_contacts
+            ]
+            if (
+                config.include_atomic_contacts
+                and atomic_contacts is not None
+            )
+            else None
+        ),
+        "score_components": (
+            make_pi_value_serializable(
+                score_components,
+                config=config,
+            )
+            if config.include_score_components
+            else None
+        ),
+        "penalties": make_pi_value_serializable(
+            _pi_serialization_get(
+                interaction,
+                ("penalties",),
+                {},
+            ),
+            config=config,
+        ),
+        "warnings": make_pi_value_serializable(
+            _pi_serialization_get(
+                interaction,
+                ("warnings",),
+                (),
+            ),
+            config=config,
+        ),
+        "metadata": (
+            make_pi_value_serializable(
+                metadata,
+                config=config,
+            )
+            if config.include_metadata
+            else None
+        ),
+    }
+
+    return {
+        key: make_pi_value_serializable(
+            value,
+            config=config,
+        )
+        for key, value in result.items()
+        if (
+            config.include_empty_values
+            or value is not None
+        )
+    }
+
+
+# -----------------------------------------------------------------------------
+# 16.11. Serialização do resultado completo
+# -----------------------------------------------------------------------------
+
+def pi_result_to_dict(
+    result: Any,
+    *,
+    config: Optional[PiSerializationConfig] = None,
+) -> Dict[str, Any]:
+    """
+    Convert a π-analysis, grouping, statistics or integration result to dict.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    if isinstance(
+        result,
+        PiAnalysisResult,
+    ):
+        interactions = (
+            [
+                pi_interaction_to_dict(
+                    interaction,
+                    config=config,
+                )
+                for interaction in result.interactions
+            ]
+            if config.include_interactions
+            else None
+        )
+
+        serialized = {
+            "schema": "pi-analysis-result",
+            "schema_version": (
+                PI_SERIALIZATION_SCHEMA_VERSION
+            ),
+            "analysis_id": result.analysis_id,
+            "analysis_mode": result.analysis_mode,
+            "pose_id": result.pose_id,
+            "success": result.success,
+            "completed_stage": result.completed_stage,
+            "total_interactions": result.total_interactions,
+            "total_score": result.total_score,
+            "normalized_score": result.normalized_score,
+            "recognized_features": (
+                result.recognized_features.to_dict(
+                    include_objects=False
+                )
+            ),
+            "detected_interactions": (
+                result.detected_interactions.to_dict(
+                    include_objects=False
+                )
+            ),
+            "interactions": interactions,
+            "consolidation": make_pi_value_serializable(
+                result.consolidated_result,
+                config=config,
+            ),
+            "grouping": make_pi_value_serializable(
+                result.grouping_result,
+                config=config,
+            ),
+            "statistics": make_pi_value_serializable(
+                result.statistics_report,
+                config=config,
+            ),
+            "warnings": list(
+                result.warnings
+            ),
+            "errors": list(
+                result.errors
+            ),
+            "metadata": (
+                make_pi_value_serializable(
+                    result.metadata,
+                    config=config,
+                )
+                if config.include_metadata
+                else None
+            ),
+            "intermediate_results": (
+                make_pi_value_serializable(
+                    result.intermediate_results,
+                    config=config,
+                )
+                if config.include_intermediate_results
+                else None
+            ),
+        }
+
+    elif isinstance(
+        result,
+        PiMultiplePoseAnalysisResult,
+    ):
+        serialized = {
+            "schema": "pi-multipose-analysis-result",
+            "schema_version": (
+                PI_SERIALIZATION_SCHEMA_VERSION
+            ),
+            "analysis_id": result.analysis_id,
+            "analysis_mode": "multipose",
+            "success": result.success,
+            "partial_success": result.partial_success,
+            "pose_count": result.pose_count,
+            "successful_pose_count": (
+                result.successful_pose_count
+            ),
+            "failed_pose_count": result.failed_pose_count,
+            "best_pose_id": result.best_pose_id,
+            "total_interactions": result.total_interactions,
+            "pose_results": [
+                pi_result_to_dict(
+                    pose_result,
+                    config=config,
+                )
+                for pose_result in result.pose_results
+            ],
+            "interactions": (
+                [
+                    pi_interaction_to_dict(
+                        interaction,
+                        config=config,
+                    )
+                    for interaction in result.interactions
+                ]
+                if config.include_interactions
+                else None
+            ),
+            "grouping": make_pi_value_serializable(
+                result.grouping_result,
+                config=config,
+            ),
+            "statistics": make_pi_value_serializable(
+                result.statistics_report,
+                config=config,
+            ),
+            "warnings": list(
+                result.warnings
+            ),
+            "errors": list(
+                result.errors
+            ),
+            "metadata": (
+                make_pi_value_serializable(
+                    result.metadata,
+                    config=config,
+                )
+                if config.include_metadata
+                else None
+            ),
+        }
+
+    elif isinstance(
+        result,
+        DockModelPiIntegrationResult,
+    ):
+        serialized = {
+            "schema": "dock-model-pi-integration-result",
+            "schema_version": (
+                PI_SERIALIZATION_SCHEMA_VERSION
+            ),
+            "success": result.success,
+            "pi_attribute": result.pi_attribute,
+            "previous_interaction_count": (
+                result.previous_interaction_count
+            ),
+            "new_interaction_count": (
+                result.new_interaction_count
+            ),
+            "attached_interaction_count": (
+                result.attached_interaction_count
+            ),
+            "previous_score": make_pi_value_serializable(
+                result.previous_score,
+                config=config,
+            ),
+            "updated_score": make_pi_value_serializable(
+                result.updated_score,
+                config=config,
+            ),
+            "previous_statistics": (
+                make_pi_value_serializable(
+                    result.previous_statistics,
+                    config=config,
+                )
+            ),
+            "updated_statistics": (
+                make_pi_value_serializable(
+                    result.updated_statistics,
+                    config=config,
+                )
+            ),
+            "preserved_previous_results": (
+                result.preserved_previous_results
+            ),
+            "analysis_result": pi_result_to_dict(
+                result.analysis_result,
+                config=config,
+            ),
+            "warnings": list(
+                result.warnings
+            ),
+            "metadata": (
+                make_pi_value_serializable(
+                    result.metadata,
+                    config=config,
+                )
+                if config.include_metadata
+                else None
+            ),
+        }
+
+    elif isinstance(
+        result,
+        DockModelPiMultipleIntegrationResult,
+    ):
+        serialized = {
+            "schema": "dock-model-pi-multiple-integration-result",
+            "schema_version": (
+                PI_SERIALIZATION_SCHEMA_VERSION
+            ),
+            "success": result.success,
+            "model_count": result.model_count,
+            "successful_model_count": (
+                result.successful_model_count
+            ),
+            "failed_model_count": result.failed_model_count,
+            "best_model_index": result.best_model_index,
+            "best_pose_id": result.best_pose_id,
+            "model_results": [
+                pi_result_to_dict(
+                    model_result,
+                    config=config,
+                )
+                for model_result in result.model_results
+            ],
+            "multipose_result": (
+                None
+                if result.multipose_result is None
+                else pi_result_to_dict(
+                    result.multipose_result,
+                    config=config,
+                )
+            ),
+            "warnings": list(
+                result.warnings
+            ),
+            "errors": list(
+                result.errors
+            ),
+            "metadata": (
+                make_pi_value_serializable(
+                    result.metadata,
+                    config=config,
+                )
+                if config.include_metadata
+                else None
+            ),
+        }
+
+    elif isinstance(
+        result,
+        PiStatisticsReport,
+    ):
+        serialized = result.to_dict(
+            include_interactions=False
+        )
+
+        serialized["schema"] = "pi-statistics-report"
+        serialized["schema_version"] = (
+            PI_SERIALIZATION_SCHEMA_VERSION
+        )
+
+    elif isinstance(
+        result,
+        PiGroupingResult,
+    ):
+        serialized = result.to_dict()
+
+        serialized["schema"] = "pi-grouping-result"
+        serialized["schema_version"] = (
+            PI_SERIALIZATION_SCHEMA_VERSION
+        )
+
+    elif isinstance(
+        result,
+        PiConsolidationResult,
+    ):
+        serialized = result.to_dict()
+
+        serialized["schema"] = "pi-consolidation-result"
+        serialized["schema_version"] = (
+            PI_SERIALIZATION_SCHEMA_VERSION
+        )
+
+    elif isinstance(
+        result,
+        PiInteractionGroup,
+    ):
+        serialized = result.to_dict()
+
+    elif isinstance(
+        result,
+        PiHotspot,
+    ):
+        serialized = result.to_dict()
+
+    elif _pi_serialization_interaction_type(
+        result
+    ) != "unknown":
+        serialized = pi_interaction_to_dict(
+            result,
+            config=config,
+        )
+
+    else:
+        converted = make_pi_value_serializable(
+            result,
+            config=config,
+        )
+
+        if isinstance(
+            converted,
+            Mapping,
+        ):
+            serialized = dict(
+                converted
+            )
+
+        else:
+            serialized = {
+                "value": converted,
+            }
+
+    final_result = make_pi_value_serializable(
+        serialized,
+        config=config,
+    )
+
+    if not isinstance(
+        final_result,
+        Mapping,
+    ):
+        raise PiSerializationError(
+            "Serialized π result did not produce a dictionary."
+        )
+
+    return dict(
+        final_result
+    )
+
+
+# -----------------------------------------------------------------------------
+# 16.12. Serialização para JSON
+# -----------------------------------------------------------------------------
+
+def serialize_pi_results(
+    result: Any,
+    *,
+    config: Optional[PiSerializationConfig] = None,
+) -> str:
+    """
+    Serialize π results into a JSON string.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    serialized_dict = pi_result_to_dict(
+        result,
+        config=config,
+    )
+
+    try:
+        return json.dumps(
+            serialized_dict,
+            indent=config.json_indent,
+            sort_keys=config.json_sort_keys,
+            ensure_ascii=config.json_ensure_ascii,
+            allow_nan=config.json_allow_nan,
+        )
+
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+    ) as exc:
+        raise PiSerializationError(
+            f"Could not serialize π results to JSON: {exc}"
+        ) from exc
+
+
+def save_pi_results_json(
+    result: Any,
+    output_path: Union[str, Path],
+    *,
+    config: Optional[PiSerializationConfig] = None,
+) -> Path:
+    """
+    Serialize π results and save them to a JSON file.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    path = Path(
+        output_path
+    )
+
+    if path.suffix.lower() != ".json":
+        path = path.with_suffix(
+            ".json"
+        )
+
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    serialized = serialize_pi_results(
+        result,
+        config=config,
+    )
+
+    try:
+        path.write_text(
+            serialized,
+            encoding=config.csv_encoding,
+        )
+
+    except OSError as exc:
+        raise PiExportError(
+            f"Could not write π JSON file {path!s}: {exc}"
+        ) from exc
+
+    return path
+
+
+# -----------------------------------------------------------------------------
+# 16.13. Extração das interações
+# -----------------------------------------------------------------------------
+
+def extract_pi_interactions(
+    result: Any,
+) -> List[Any]:
+    """
+    Extract the active interaction list from any supported result object.
+    """
+
+    if result is None:
+        return []
+
+    if isinstance(
+        result,
+        PiAnalysisResult,
+    ):
+        return list(
+            result.interactions
+        )
+
+    if isinstance(
+        result,
+        PiMultiplePoseAnalysisResult,
+    ):
+        return list(
+            result.interactions
+        )
+
+    if isinstance(
+        result,
+        DockModelPiIntegrationResult,
+    ):
+        return list(
+            result.analysis_result.interactions
+        )
+
+    if isinstance(
+        result,
+        DockModelPiMultipleIntegrationResult,
+    ):
+        if result.multipose_result is not None:
+            return list(
+                result.multipose_result.interactions
+            )
+
+        return [
+            interaction
+            for model_result in result.model_results
+            for interaction in (
+                model_result.analysis_result.interactions
+            )
+        ]
+
+    interactions = _pi_serialization_get(
+        result,
+        ("interactions",),
+    )
+
+    if interactions is not None:
+        try:
+            return list(
+                interactions
+            )
+
+        except TypeError:
+            return [
+                interactions
+            ]
+
+    if isinstance(
+        result,
+        Iterable,
+    ) and not isinstance(
+        result,
+        (
+            str,
+            bytes,
+            Mapping,
+        ),
+    ):
+        return list(
+            result
+        )
+
+    return []
+
+
+# -----------------------------------------------------------------------------
+# 16.14. Helpers tabulares
+# -----------------------------------------------------------------------------
+
+def _pi_table_join(
+    value: Any,
+    *,
+    config: PiSerializationConfig,
+) -> Any:
+    if value is None:
+        return None
+
+    if isinstance(
+        value,
+        Mapping,
+    ):
+        if not config.table_flatten_nested_values:
+            return json.dumps(
+                make_pi_value_serializable(
+                    value,
+                    config=config,
+                ),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+
+        return config.table_nested_value_separator.join(
+            f"{key}={_pi_table_join(item, config=config)}"
+            for key, item in value.items()
+        )
+
+    if isinstance(
+        value,
+        (
+            list,
+            tuple,
+            set,
+            frozenset,
+        ),
+    ):
+        return config.table_sequence_separator.join(
+            str(
+                _pi_table_join(
+                    item,
+                    config=config,
+                )
+            )
+            for item in value
+        )
+
+    return value
+
+
+def _pi_table_participant_summary(
+    participant: Any,
+) -> Dict[str, Any]:
+    if participant is None:
+        return {
+            "id": None,
+            "role": None,
+            "residue_id": None,
+            "chain_id": None,
+        }
+
+    residue_id = _pi_serialization_get(
+        participant,
+        (
+            "residue_id",
+            "residue_key",
+        ),
+    )
+
+    if (
+        residue_id is None
+        and "_pi_statistics_residue_id" in globals()
+    ):
+        try:
+            residue_id = _pi_statistics_residue_id(
+                participant
+            )
+
+        except Exception:
+            residue_id = None
+
+    return {
+        "id": _pi_serialization_identifier(
+            participant,
+            str(id(participant)),
+        ),
+        "role": _pi_serialization_get(
+            participant,
+            (
+                "participant_type",
+                "source_type",
+                "molecule_type",
+                "role",
+                "group_type",
+            ),
+        ),
+        "residue_id": residue_id,
+        "chain_id": _pi_serialization_get(
+            participant,
+            (
+                "chain_id",
+                "chain",
+            ),
+        ),
+    }
+
+
+# -----------------------------------------------------------------------------
+# 16.15. Tabela de interações
+# -----------------------------------------------------------------------------
+
+def pi_interactions_to_table(
+    interactions: Iterable[Any],
+    *,
+    config: Optional[PiSerializationConfig] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Convert interactions into one flat record per physical interaction.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    records: List[
+        Dict[str, Any]
+    ] = []
+
+    for interaction in interactions:
+        if "_pi_statistics_participants" in globals():
+            try:
+                participant_1, participant_2 = (
+                    _pi_statistics_participants(
+                        interaction
+                    )
+                )
+
+            except Exception:
+                participant_1 = None
+                participant_2 = None
+
+        else:
+            participant_1 = _pi_serialization_get(
+                interaction,
+                (
+                    "ring_1",
+                    "aromatic_system",
+                    "ring",
+                ),
+            )
+
+            participant_2 = _pi_serialization_get(
+                interaction,
+                (
+                    "ring_2",
+                    "charged_group",
+                    "cation_group",
+                    "anion_group",
+                    "amide_group",
+                ),
+            )
+
+        participant_1_summary = (
+            _pi_table_participant_summary(
+                participant_1
+            )
+        )
+
+        participant_2_summary = (
+            _pi_table_participant_summary(
+                participant_2
+            )
+        )
+
+        contacts = _pi_serialization_get(
+            interaction,
+            (
+                "atomic_contacts",
+                "contacts",
+            ),
+            (),
+        )
+
+        penalties = _pi_serialization_get(
+            interaction,
+            ("penalties",),
+            {},
+        )
+
+        record = {
+            "interaction_id": (
+                _pi_serialization_identifier(
+                    interaction,
+                    str(id(interaction)),
+                )
+            ),
+            "pose_id": _pi_serialization_get(
+                interaction,
+                (
+                    "pose_id",
+                    "pose",
+                    "model_id",
+                    "state_id",
+                ),
+            ),
+            "interaction_type": (
+                _pi_serialization_interaction_type(
+                    interaction
+                )
+            ),
+            "geometry_subtype": (
+                _pi_serialization_get(
+                    interaction,
+                    (
+                        "geometry_subtype",
+                        "geometry",
+                        "subtype",
+                    ),
+                    "unclassified",
+                )
+            ),
+            "geometry_class": (
+                _pi_serialization_get(
+                    interaction,
+                    (
+                        "global_geometry_class",
+                        "geometry_quality",
+                    ),
+                    "unclassified",
+                )
+            ),
+            "strength_class": (
+                _pi_serialization_get(
+                    interaction,
+                    (
+                        "strength_class",
+                        "strength",
+                    ),
+                    "weak",
+                )
+            ),
+            "rank": _pi_serialization_get(
+                interaction,
+                ("rank",),
+            ),
+            "score": _pi_serialization_float(
+                _pi_serialization_get(
+                    interaction,
+                    (
+                        "normalized_score",
+                        "score",
+                    ),
+                )
+            ),
+            "raw_score": _pi_serialization_float(
+                _pi_serialization_get(
+                    interaction,
+                    ("raw_score",),
+                )
+            ),
+            "confidence": _pi_serialization_float(
+                _pi_serialization_get(
+                    interaction,
+                    (
+                        "geometry_confidence",
+                        "confidence",
+                    ),
+                )
+            ),
+            "centroid_distance": (
+                _pi_serialization_float(
+                    _pi_serialization_get(
+                        interaction,
+                        ("centroid_distance",),
+                    )
+                )
+            ),
+            "minimum_atomic_distance": (
+                _pi_serialization_float(
+                    _pi_serialization_get(
+                        interaction,
+                        ("minimum_atomic_distance",),
+                    )
+                )
+            ),
+            "plane_angle": _pi_serialization_float(
+                _pi_serialization_get(
+                    interaction,
+                    (
+                        "plane_angle",
+                        "normal_angle",
+                    ),
+                )
+            ),
+            "orientation_angle": (
+                _pi_serialization_float(
+                    _pi_serialization_get(
+                        interaction,
+                        ("orientation_angle",),
+                    )
+                )
+            ),
+            "radial_offset": _pi_serialization_float(
+                _pi_serialization_get(
+                    interaction,
+                    ("radial_offset",),
+                )
+            ),
+            "lateral_offset": _pi_serialization_float(
+                _pi_serialization_get(
+                    interaction,
+                    ("lateral_offset",),
+                )
+            ),
+            "effective_charge": (
+                _pi_serialization_float(
+                    _pi_serialization_get(
+                        interaction,
+                        ("effective_charge",),
+                    )
+                )
+            ),
+            "participant_1_id": (
+                participant_1_summary["id"]
+            ),
+            "participant_1_role": (
+                participant_1_summary["role"]
+            ),
+            "participant_1_residue": (
+                participant_1_summary["residue_id"]
+            ),
+            "participant_1_chain": (
+                participant_1_summary["chain_id"]
+            ),
+            "participant_2_id": (
+                participant_2_summary["id"]
+            ),
+            "participant_2_role": (
+                participant_2_summary["role"]
+            ),
+            "participant_2_residue": (
+                participant_2_summary["residue_id"]
+            ),
+            "participant_2_chain": (
+                participant_2_summary["chain_id"]
+            ),
+            "atomic_contact_count": (
+                len(contacts)
+                if contacts is not None
+                else 0
+            ),
+            "penalty_total": (
+                sum(
+                    float(value)
+                    for value in penalties.values()
+                    if _pi_serialization_float(
+                        value
+                    )
+                    is not None
+                )
+                if isinstance(
+                    penalties,
+                    Mapping,
+                )
+                else None
+            ),
+            "penalties": _pi_table_join(
+                make_pi_value_serializable(
+                    penalties,
+                    config=config,
+                ),
+                config=config,
+            ),
+        }
+
+        records.append(
+            {
+                key: _pi_table_join(
+                    make_pi_value_serializable(
+                        value,
+                        config=config,
+                    ),
+                    config=config,
+                )
+                for key, value in record.items()
+                if (
+                    config.include_empty_values
+                    or value is not None
+                )
+            }
+        )
+
+    return records
+
+
+# -----------------------------------------------------------------------------
+# 16.16. Resumo por resíduo
+# -----------------------------------------------------------------------------
+
+def pi_residue_summary_table(
+    result_or_interactions: Any,
+    *,
+    config: Optional[PiSerializationConfig] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Produce one summary row per involved residue.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    interactions = extract_pi_interactions(
+        result_or_interactions
+    )
+
+    if "calculate_pi_statistics_by_residue" in globals():
+        try:
+            summaries = calculate_pi_statistics_by_residue(
+                interactions,
+                precision=(
+                    config.numeric_precision
+                    if config.numeric_precision is not None
+                    else 6
+                ),
+            )
+
+        except Exception:
+            summaries = {}
+
+    else:
+        summaries = {}
+
+    records: List[
+        Dict[str, Any]
+    ] = []
+
+    for residue_id, summary in summaries.items():
+        chain_id = (
+            residue_id.split(
+                ":",
+                1,
+            )[0]
+            if ":" in residue_id
+            else None
+        )
+
+        best = summary.get(
+            "best_interaction"
+        )
+
+        record = {
+            "residue_id": residue_id,
+            "chain_id": chain_id,
+            "interaction_count": summary.get(
+                "interaction_count",
+                0,
+            ),
+            "atomic_contact_count": summary.get(
+                "atomic_contact_count",
+                0,
+            ),
+            "total_score": summary.get(
+                "total_score",
+                0.0,
+            ),
+            "mean_score": summary.get(
+                "mean_score",
+                0.0,
+            ),
+            "maximum_score": summary.get(
+                "maximum_score",
+                0.0,
+            ),
+            "minimum_score": summary.get(
+                "minimum_score",
+                0.0,
+            ),
+            "interaction_types": _pi_table_join(
+                summary.get(
+                    "type_distribution",
+                    {},
+                ),
+                config=config,
+            ),
+            "geometric_subtypes": _pi_table_join(
+                summary.get(
+                    "subtype_distribution",
+                    {},
+                ),
+                config=config,
+            ),
+            "strength_distribution": _pi_table_join(
+                summary.get(
+                    "strength_distribution",
+                    {},
+                ),
+                config=config,
+            ),
+            "mean_centroid_distance": (
+                summary.get(
+                    "centroid_distance",
+                    {},
+                ).get(
+                    "mean"
+                )
+            ),
+            "minimum_centroid_distance": (
+                summary.get(
+                    "centroid_distance",
+                    {},
+                ).get(
+                    "minimum"
+                )
+            ),
+            "maximum_centroid_distance": (
+                summary.get(
+                    "centroid_distance",
+                    {},
+                ).get(
+                    "maximum"
+                )
+            ),
+            "best_interaction_id": (
+                None
+                if not isinstance(
+                    best,
+                    Mapping,
+                )
+                else best.get(
+                    "interaction_id"
+                )
+            ),
+            "best_interaction_type": (
+                None
+                if not isinstance(
+                    best,
+                    Mapping,
+                )
+                else best.get(
+                    "interaction_type"
+                )
+            ),
+            "best_interaction_score": (
+                None
+                if not isinstance(
+                    best,
+                    Mapping,
+                )
+                else best.get(
+                    "score"
+                )
+            ),
+        }
+
+        records.append(
+            record
+        )
+
+    return records
+
+
+# -----------------------------------------------------------------------------
+# 16.17. Resumo por pose
+# -----------------------------------------------------------------------------
+
+def pi_pose_summary_table(
+    result_or_interactions: Any,
+    *,
+    config: Optional[PiSerializationConfig] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Produce one summary row per docking pose.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    interactions = extract_pi_interactions(
+        result_or_interactions
+    )
+
+    if "calculate_pi_statistics_by_pose" in globals():
+        try:
+            summaries = calculate_pi_statistics_by_pose(
+                interactions,
+                precision=(
+                    config.numeric_precision
+                    if config.numeric_precision is not None
+                    else 6
+                ),
+            )
+
+        except Exception:
+            summaries = {}
+
+    else:
+        summaries = {}
+
+    records: List[
+        Dict[str, Any]
+    ] = []
+
+    for pose_id, summary in summaries.items():
+        best = summary.get(
+            "best_interaction"
+        )
+
+        record = {
+            "pose_id": pose_id,
+            "interaction_count": summary.get(
+                "interaction_count",
+                0,
+            ),
+            "atomic_contact_count": summary.get(
+                "atomic_contact_count",
+                0,
+            ),
+            "total_score": summary.get(
+                "total_score",
+                0.0,
+            ),
+            "mean_score": summary.get(
+                "mean_score",
+                0.0,
+            ),
+            "maximum_score": summary.get(
+                "maximum_score",
+                0.0,
+            ),
+            "minimum_score": summary.get(
+                "minimum_score",
+                0.0,
+            ),
+            "interaction_types": _pi_table_join(
+                summary.get(
+                    "type_distribution",
+                    {},
+                ),
+                config=config,
+            ),
+            "geometric_subtypes": _pi_table_join(
+                summary.get(
+                    "subtype_distribution",
+                    {},
+                ),
+                config=config,
+            ),
+            "strength_distribution": _pi_table_join(
+                summary.get(
+                    "strength_distribution",
+                    {},
+                ),
+                config=config,
+            ),
+            "mean_centroid_distance": (
+                summary.get(
+                    "centroid_distance",
+                    {},
+                ).get(
+                    "mean"
+                )
+            ),
+            "minimum_centroid_distance": (
+                summary.get(
+                    "centroid_distance",
+                    {},
+                ).get(
+                    "minimum"
+                )
+            ),
+            "maximum_centroid_distance": (
+                summary.get(
+                    "centroid_distance",
+                    {},
+                ).get(
+                    "maximum"
+                )
+            ),
+            "best_interaction_id": (
+                None
+                if not isinstance(
+                    best,
+                    Mapping,
+                )
+                else best.get(
+                    "interaction_id"
+                )
+            ),
+            "best_interaction_type": (
+                None
+                if not isinstance(
+                    best,
+                    Mapping,
+                )
+                else best.get(
+                    "interaction_type"
+                )
+            ),
+            "best_interaction_score": (
+                None
+                if not isinstance(
+                    best,
+                    Mapping,
+                )
+                else best.get(
+                    "score"
+                )
+            ),
+        }
+
+        records.append(
+            record
+        )
+
+    return records
+
+
+# -----------------------------------------------------------------------------
+# 16.18. Resumo por tipo e anel
+# -----------------------------------------------------------------------------
+
+def pi_type_summary_table(
+    result_or_interactions: Any,
+    *,
+    config: Optional[PiSerializationConfig] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Produce one summary row per interaction type.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    interactions = extract_pi_interactions(
+        result_or_interactions
+    )
+
+    if "calculate_pi_statistics_by_type" in globals():
+        summaries = calculate_pi_statistics_by_type(
+            interactions,
+            precision=(
+                config.numeric_precision
+                if config.numeric_precision is not None
+                else 6
+            ),
+        )
+
+    else:
+        summaries = {}
+
+    return [
+        {
+            "interaction_type": interaction_type,
+            **{
+                key: _pi_table_join(
+                    value,
+                    config=config,
+                )
+                for key, value in summary.items()
+            },
+        }
+        for interaction_type, summary in summaries.items()
+    ]
+
+
+def pi_ring_summary_table(
+    result_or_interactions: Any,
+    *,
+    config: Optional[PiSerializationConfig] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Produce one summary row per aromatic system.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    interactions = extract_pi_interactions(
+        result_or_interactions
+    )
+
+    if "calculate_pi_statistics_by_ring" in globals():
+        summaries = calculate_pi_statistics_by_ring(
+            interactions,
+            precision=(
+                config.numeric_precision
+                if config.numeric_precision is not None
+                else 6
+            ),
+        )
+
+    else:
+        summaries = {}
+
+    return [
+        {
+            "ring_id": ring_id,
+            **{
+                key: _pi_table_join(
+                    value,
+                    config=config,
+                )
+                for key, value in summary.items()
+            },
+        }
+        for ring_id, summary in summaries.items()
+    ]
+
+
+# -----------------------------------------------------------------------------
+# 16.19. Tabela de hotspots
+# -----------------------------------------------------------------------------
+
+def pi_hotspot_summary_table(
+    result: Any,
+    *,
+    config: Optional[PiSerializationConfig] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Convert hotspot results into flat records.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    hotspots = _pi_serialization_get(
+        result,
+        ("hotspots",),
+    )
+
+    if hotspots is None:
+        statistics_report = _pi_serialization_get(
+            result,
+            ("statistics_report",),
+        )
+
+        hotspots = _pi_serialization_get(
+            statistics_report,
+            ("hotspots",),
+            (),
+        )
+
+    records: List[
+        Dict[str, Any]
+    ] = []
+
+    for hotspot in hotspots or ():
+        record = {
+            "hotspot_id": _pi_serialization_get(
+                hotspot,
+                ("hotspot_id",),
+            ),
+            "hotspot_key": _pi_serialization_get(
+                hotspot,
+                ("hotspot_key",),
+            ),
+            "hotspot_level": _pi_serialization_get(
+                hotspot,
+                ("hotspot_level",),
+            ),
+            "residue_id": _pi_serialization_get(
+                hotspot,
+                ("residue_id",),
+            ),
+            "chain_id": _pi_serialization_get(
+                hotspot,
+                ("chain_id",),
+            ),
+            "interaction_count": _pi_serialization_get(
+                hotspot,
+                ("interaction_count",),
+                0,
+            ),
+            "total_score": _pi_serialization_get(
+                hotspot,
+                ("total_score",),
+                0.0,
+            ),
+            "mean_score": _pi_serialization_get(
+                hotspot,
+                ("mean_score",),
+                0.0,
+            ),
+            "maximum_score": _pi_serialization_get(
+                hotspot,
+                ("maximum_score",),
+                0.0,
+            ),
+            "strong_count": _pi_serialization_get(
+                hotspot,
+                ("strong_count",),
+                0,
+            ),
+            "moderate_count": _pi_serialization_get(
+                hotspot,
+                ("moderate_count",),
+                0,
+            ),
+            "weak_count": _pi_serialization_get(
+                hotspot,
+                ("weak_count",),
+                0,
+            ),
+            "interaction_types": _pi_table_join(
+                _pi_serialization_get(
+                    hotspot,
+                    ("interaction_types",),
+                    (),
+                ),
+                config=config,
+            ),
+            "geometric_subtypes": _pi_table_join(
+                _pi_serialization_get(
+                    hotspot,
+                    ("geometric_subtypes",),
+                    (),
+                ),
+                config=config,
+            ),
+            "pose_ids": _pi_table_join(
+                _pi_serialization_get(
+                    hotspot,
+                    ("pose_ids",),
+                    (),
+                ),
+                config=config,
+            ),
+            "ring_ids": _pi_table_join(
+                _pi_serialization_get(
+                    hotspot,
+                    ("ring_ids",),
+                    (),
+                ),
+                config=config,
+            ),
+        }
+
+        records.append(
+            record
+        )
+
+    return records
+
+
+# -----------------------------------------------------------------------------
+# 16.20. API tabular genérica
+# -----------------------------------------------------------------------------
+
+def pi_results_to_table(
+    result: Any,
+    *,
+    level: str = PI_TABLE_LEVEL_INTERACTION,
+    config: Optional[PiSerializationConfig] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Convert π results into a selected tabular representation.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    level = str(
+        level
+    ).strip().lower()
+
+    if level not in SUPPORTED_PI_TABLE_LEVELS:
+        raise PiSerializationValidationError(
+            f"Unsupported π table level: {level!r}."
+        )
+
+    if level == PI_TABLE_LEVEL_INTERACTION:
+        return pi_interactions_to_table(
+            extract_pi_interactions(
+                result
+            ),
+            config=config,
+        )
+
+    if level == PI_TABLE_LEVEL_RESIDUE:
+        return pi_residue_summary_table(
+            result,
+            config=config,
+        )
+
+    if level == PI_TABLE_LEVEL_POSE:
+        return pi_pose_summary_table(
+            result,
+            config=config,
+        )
+
+    if level == PI_TABLE_LEVEL_RING:
+        return pi_ring_summary_table(
+            result,
+            config=config,
+        )
+
+    if level == PI_TABLE_LEVEL_TYPE:
+        return pi_type_summary_table(
+            result,
+            config=config,
+        )
+
+    return pi_hotspot_summary_table(
+        result,
+        config=config,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 16.21. Exportação CSV
+# -----------------------------------------------------------------------------
+
+def save_pi_table_csv(
+    records: Iterable[Mapping[str, Any]],
+    output_path: Union[str, Path],
+    *,
+    config: Optional[PiSerializationConfig] = None,
+) -> Path:
+    """
+    Save a collection of flat mappings as CSV.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    record_list = [
+        dict(record)
+        for record in records
+    ]
+
+    path = Path(
+        output_path
+    )
+
+    if path.suffix.lower() != ".csv":
+        path = path.with_suffix(
+            ".csv"
+        )
+
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    field_names: List[str] = []
+
+    for record in record_list:
+        for key in record:
+            if key not in field_names:
+                field_names.append(
+                    key
+                )
+
+    try:
+        with path.open(
+            "w",
+            encoding=config.csv_encoding,
+            newline="",
+        ) as file_handle:
+            writer = csv.DictWriter(
+                file_handle,
+                fieldnames=field_names,
+                delimiter=config.csv_delimiter,
+                lineterminator=(
+                    config.csv_line_terminator
+                ),
+                extrasaction="ignore",
+            )
+
+            writer.writeheader()
+
+            for record in record_list:
+                writer.writerow(
+                    {
+                        key: _pi_table_join(
+                            make_pi_value_serializable(
+                                value,
+                                config=config,
+                            ),
+                            config=config,
+                        )
+                        for key, value in record.items()
+                    }
+                )
+
+    except OSError as exc:
+        raise PiExportError(
+            f"Could not write π CSV file {path!s}: {exc}"
+        ) from exc
+
+    return path
+
+
+def export_pi_results_csv(
+    result: Any,
+    output_path: Union[str, Path],
+    *,
+    level: str = PI_TABLE_LEVEL_INTERACTION,
+    config: Optional[PiSerializationConfig] = None,
+) -> Path:
+    """
+    Convert π results to a table and export them as CSV.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    records = pi_results_to_table(
+        result,
+        level=level,
+        config=config,
+    )
+
+    return save_pi_table_csv(
+        records,
+        output_path,
+        config=config,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 16.22. Pacote de exportação
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiExportBundle:
+    """
+    Collection of serializable π-analysis representations.
+    """
+
+    result: Dict[str, Any]
+
+    interaction_table: List[Dict[str, Any]]
+    residue_table: List[Dict[str, Any]]
+    pose_table: List[Dict[str, Any]]
+    ring_table: List[Dict[str, Any]]
+    type_table: List[Dict[str, Any]]
+    hotspot_table: List[Dict[str, Any]]
+
+    general_report: Dict[str, Any]
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "result": self.result,
+            "tables": {
+                "interactions": self.interaction_table,
+                "residues": self.residue_table,
+                "poses": self.pose_table,
+                "rings": self.ring_table,
+                "types": self.type_table,
+                "hotspots": self.hotspot_table,
+            },
+            "general_report": self.general_report,
+            "metadata": dict(
+                self.metadata
+            ),
+        }
+
+
+def create_pi_export_bundle(
+    result: Any,
+    *,
+    config: Optional[PiSerializationConfig] = None,
+) -> PiExportBundle:
+    """
+    Create all principal export representations at once.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    serialized_result = pi_result_to_dict(
+        result,
+        config=config,
+    )
+
+    general_report = create_pi_general_report_section(
+        result,
+        config=config,
+    )
+
+    return PiExportBundle(
+        result=serialized_result,
+        interaction_table=pi_results_to_table(
+            result,
+            level=PI_TABLE_LEVEL_INTERACTION,
+            config=config,
+        ),
+        residue_table=pi_results_to_table(
+            result,
+            level=PI_TABLE_LEVEL_RESIDUE,
+            config=config,
+        ),
+        pose_table=pi_results_to_table(
+            result,
+            level=PI_TABLE_LEVEL_POSE,
+            config=config,
+        ),
+        ring_table=pi_results_to_table(
+            result,
+            level=PI_TABLE_LEVEL_RING,
+            config=config,
+        ),
+        type_table=pi_results_to_table(
+            result,
+            level=PI_TABLE_LEVEL_TYPE,
+            config=config,
+        ),
+        hotspot_table=pi_results_to_table(
+            result,
+            level=PI_TABLE_LEVEL_HOTSPOT,
+            config=config,
+        ),
+        general_report=general_report,
+        metadata={
+            "schema": "pi-export-bundle",
+            "schema_version": (
+                PI_SERIALIZATION_SCHEMA_VERSION
+            ),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 16.23. Integração com relatórios gerais
+# -----------------------------------------------------------------------------
+
+def _pi_serialization_resolve_statistics_report(
+    result: Any,
+) -> Optional[Any]:
+    if isinstance(
+        result,
+        PiStatisticsReport,
+    ):
+        return result
+
+    if isinstance(
+        result,
+        PiAnalysisResult,
+    ):
+        return result.statistics_report
+
+    if isinstance(
+        result,
+        PiMultiplePoseAnalysisResult,
+    ):
+        return result.statistics_report
+
+    if isinstance(
+        result,
+        DockModelPiIntegrationResult,
+    ):
+        return result.analysis_result.statistics_report
+
+    if isinstance(
+        result,
+        DockModelPiMultipleIntegrationResult,
+    ):
+        if result.multipose_result is not None:
+            return result.multipose_result.statistics_report
+
+    return _pi_serialization_get(
+        result,
+        (
+            "statistics_report",
+            "pi_statistics",
+            "statistics",
+        ),
+    )
+
+
+def create_pi_general_report_section(
+    result: Any,
+    *,
+    config: Optional[PiSerializationConfig] = None,
+) -> Dict[str, Any]:
+    """
+    Create a compact π section suitable for a general interaction report.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    statistics_report = (
+        _pi_serialization_resolve_statistics_report(
+            result
+        )
+    )
+
+    interactions = extract_pi_interactions(
+        result
+    )
+
+    if statistics_report is not None:
+        total_interactions = _pi_serialization_get(
+            statistics_report,
+            ("total_interactions",),
+            len(interactions),
+        )
+
+        total_score = _pi_serialization_get(
+            statistics_report,
+            ("total_score",),
+            0.0,
+        )
+
+        normalized_score = _pi_serialization_get(
+            statistics_report,
+            ("normalized_total_score",),
+            0.0,
+        )
+
+        total_by_type = _pi_serialization_get(
+            statistics_report,
+            ("total_by_type",),
+            {},
+        )
+
+        strength_distribution = (
+            _pi_serialization_get(
+                statistics_report,
+                ("strength_distribution",),
+                {},
+            )
+        )
+
+        best_interaction = _pi_serialization_get(
+            statistics_report,
+            ("best_interaction",),
+        )
+
+        predominant_interaction = (
+            _pi_serialization_get(
+                statistics_report,
+                ("predominant_interaction",),
+            )
+        )
+
+        distance_statistics = (
+            _pi_serialization_get(
+                statistics_report,
+                ("centroid_distance_statistics",),
+            )
+        )
+
+        hotspots = _pi_serialization_get(
+            statistics_report,
+            ("hotspots",),
+            (),
+        )
+
+    else:
+        total_interactions = len(
+            interactions
+        )
+
+        scores = [
+            _pi_serialization_float(
+                _pi_serialization_get(
+                    interaction,
+                    (
+                        "normalized_score",
+                        "score",
+                    ),
+                ),
+                0.0,
+            )
+            or 0.0
+            for interaction in interactions
+        ]
+
+        total_score = sum(
+            scores
+        )
+
+        normalized_score = (
+            total_score / len(scores)
+            if scores
+            else 0.0
+        )
+
+        total_by_type: Dict[str, int] = defaultdict(
+            int
+        )
+
+        strength_distribution: Dict[str, int] = defaultdict(
+            int
+        )
+
+        for interaction in interactions:
+            total_by_type[
+                _pi_serialization_interaction_type(
+                    interaction
+                )
+            ] += 1
+
+            strength_distribution[
+                str(
+                    _pi_serialization_get(
+                        interaction,
+                        (
+                            "strength_class",
+                            "strength",
+                        ),
+                        "weak",
+                    )
+                )
+            ] += 1
+
+        best_interaction = (
+            max(
+                interactions,
+                key=lambda interaction: (
+                    _pi_serialization_float(
+                        _pi_serialization_get(
+                            interaction,
+                            (
+                                "normalized_score",
+                                "score",
+                            ),
+                        ),
+                        0.0,
+                    )
+                    or 0.0
+                ),
+            )
+            if interactions
+            else None
+        )
+
+        predominant_interaction = None
+        distance_statistics = None
+        hotspots = ()
+
+    best_interaction_dict = (
+        None
+        if best_interaction is None
+        else (
+            best_interaction.to_dict()
+            if hasattr(
+                best_interaction,
+                "to_dict",
+            )
+            else pi_interaction_to_dict(
+                best_interaction,
+                config=replace(
+                    config,
+                    include_atomic_contacts=False,
+                    include_score_components=False,
+                    include_metadata=False,
+                ),
+            )
+        )
+    )
+
+    predominant_dict = (
+        None
+        if predominant_interaction is None
+        else make_pi_value_serializable(
+            predominant_interaction,
+            config=config,
+        )
+    )
+
+    distance_dict = (
+        None
+        if distance_statistics is None
+        else make_pi_value_serializable(
+            distance_statistics,
+            config=config,
+        )
+    )
+
+    return {
+        "module": "pi",
+        "title": "π interactions",
+        "schema_version": (
+            PI_SERIALIZATION_SCHEMA_VERSION
+        ),
+        "total_interactions": total_interactions,
+        "total_atomic_contacts": sum(
+            len(
+                _pi_serialization_get(
+                    interaction,
+                    (
+                        "atomic_contacts",
+                        "contacts",
+                    ),
+                    (),
+                )
+            )
+            for interaction in interactions
+        ),
+        "total_by_type": make_pi_value_serializable(
+            total_by_type,
+            config=config,
+        ),
+        "strength_distribution": (
+            make_pi_value_serializable(
+                strength_distribution,
+                config=config,
+            )
+        ),
+        "total_score": total_score,
+        "normalized_score": normalized_score,
+        "distance_statistics": distance_dict,
+        "best_interaction": best_interaction_dict,
+        "predominant_interaction": predominant_dict,
+        "hotspot_count": len(
+            hotspots or ()
+        ),
+        "hotspots": (
+            [
+                make_pi_value_serializable(
+                    hotspot,
+                    config=config,
+                )
+                for hotspot in hotspots
+            ]
+            if config.include_interactions
+            else None
+        ),
+    }
+
+
+def attach_pi_to_general_report(
+    general_report: MutableMapping[str, Any],
+    pi_result: Any,
+    *,
+    section_key: str = "pi",
+    config: Optional[PiSerializationConfig] = None,
+    preserve_existing: bool = True,
+) -> MutableMapping[str, Any]:
+    """
+    Insert the π section into a general DockAnalyzer report.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    section_key = str(
+        section_key
+    ).strip()
+
+    if not section_key:
+        raise PiSerializationValidationError(
+            "section_key cannot be empty."
+        )
+
+    if (
+        preserve_existing
+        and section_key in general_report
+    ):
+        previous_sections = general_report.setdefault(
+            "_previous_sections",
+            {},
+        )
+
+        if isinstance(
+            previous_sections,
+            MutableMapping,
+        ):
+            previous_sections[
+                section_key
+            ] = general_report[
+                section_key
+            ]
+
+    general_report[
+        section_key
+    ] = create_pi_general_report_section(
+        pi_result,
+        config=config,
+    )
+
+    return general_report
+
+
+# -----------------------------------------------------------------------------
+# 16.24. Exportação completa para diretório
+# -----------------------------------------------------------------------------
+
+def export_pi_results_bundle(
+    result: Any,
+    output_directory: Union[str, Path],
+    *,
+    basename: str = "pi_results",
+    config: Optional[PiSerializationConfig] = None,
+) -> Dict[str, Path]:
+    """
+    Export JSON and all principal CSV tables to one directory.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    output_directory = Path(
+        output_directory
+    )
+
+    output_directory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    basename = str(
+        basename
+    ).strip() or "pi_results"
+
+    bundle = create_pi_export_bundle(
+        result,
+        config=config,
+    )
+
+    exported_paths: Dict[
+        str,
+        Path,
+    ] = {}
+
+    exported_paths["json"] = save_pi_results_json(
+        bundle.to_dict(),
+        output_directory
+        / f"{basename}.json",
+        config=config,
+    )
+
+    table_map = {
+        "interactions": bundle.interaction_table,
+        "residues": bundle.residue_table,
+        "poses": bundle.pose_table,
+        "rings": bundle.ring_table,
+        "types": bundle.type_table,
+        "hotspots": bundle.hotspot_table,
+    }
+
+    for table_name, records in table_map.items():
+        exported_paths[
+            table_name
+        ] = save_pi_table_csv(
+            records,
+            output_directory
+            / f"{basename}_{table_name}.csv",
+            config=config,
+        )
+
+    return exported_paths
+
+
+# -----------------------------------------------------------------------------
+# 16.25. Validação de serialização
+# -----------------------------------------------------------------------------
+
+def validate_pi_serialization(
+    value: Any,
+    *,
+    config: Optional[PiSerializationConfig] = None,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Verify that a value can be converted and encoded as strict JSON.
+    """
+
+    if config is None:
+        config = create_default_pi_serialization_config()
+
+    try:
+        serialized = make_pi_value_serializable(
+            value,
+            config=config,
+        )
+
+        json.dumps(
+            serialized,
+            ensure_ascii=config.json_ensure_ascii,
+            allow_nan=False,
+        )
+
+    except Exception as exc:
+        return (
+            False,
+            str(exc),
+        )
+
+    return (
+        True,
+        None,
+    )
+
+
+# =============================================================================
+# 17. COMPATIBILIDADE COM CHIMERAX
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 17.1. Imports adicionais
+# -----------------------------------------------------------------------------
+
+import re
+
+
+# -----------------------------------------------------------------------------
+# 17.2. Constantes
+# -----------------------------------------------------------------------------
+
+CHIMERAX_PI_SCHEMA_VERSION: Final[str] = "1.0"
+
+CHIMERAX_PI_GROUP_PI_PI: Final[str] = "DockAnalyzer π–π"
+CHIMERAX_PI_GROUP_CATION_PI: Final[str] = "DockAnalyzer cation–π"
+CHIMERAX_PI_GROUP_ANION_PI: Final[str] = "DockAnalyzer anion–π"
+CHIMERAX_PI_GROUP_AMIDE_PI: Final[str] = "DockAnalyzer amide–π"
+CHIMERAX_PI_GROUP_GENERIC: Final[str] = "DockAnalyzer π interactions"
+
+CHIMERAX_PI_PSEUDOBOND_GROUPS: Final[Mapping[str, str]] = {
+    "pi-pi": CHIMERAX_PI_GROUP_PI_PI,
+    "cation-pi": CHIMERAX_PI_GROUP_CATION_PI,
+    "anion-pi": CHIMERAX_PI_GROUP_ANION_PI,
+    "amide-pi": CHIMERAX_PI_GROUP_AMIDE_PI,
+}
+
+CHIMERAX_PI_DEFAULT_COLORS: Final[Mapping[str, str]] = {
+    "pi-pi": "purple",
+    "cation-pi": "dodgerblue",
+    "anion-pi": "red",
+    "amide-pi": "orange",
+    "unknown": "gray",
+}
+
+CHIMERAX_PI_DEFAULT_RADIUS: Final[float] = 0.15
+
+CHIMERAX_PI_MARKER_MODEL_NAME: Final[str] = (
+    "DockAnalyzer π interaction centers"
+)
+
+CHIMERAX_PI_SELECTION_NAME: Final[str] = "dockanalyzer_pi"
+
+CHIMERAX_PI_SPEC_UNKNOWN: Final[str] = "<unknown>"
+
+
+# -----------------------------------------------------------------------------
+# 17.3. Exceções
+# -----------------------------------------------------------------------------
+
+class ChimeraXPiError(RuntimeError):
+    """
+    Base exception for ChimeraX π-interaction integration.
+    """
+
+
+class ChimeraXPiUnavailableError(ChimeraXPiError):
+    """
+    Raised when an operation requires ChimeraX but it is unavailable.
+    """
+
+
+class ChimeraXPiSpecificationError(ChimeraXPiError):
+    """
+    Raised when a valid ChimeraX atom specification cannot be generated.
+    """
+
+
+class ChimeraXPiPseudobondError(ChimeraXPiError):
+    """
+    Raised when pseudobond creation fails.
+    """
+
+
+# -----------------------------------------------------------------------------
+# 17.4. Configuração
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class ChimeraXPiConfig:
+    """
+    Optional ChimeraX visualization configuration.
+    """
+
+    enabled: bool = True
+
+    model_id: Optional[str] = None
+    ligand_model_id: Optional[str] = None
+    protein_model_id: Optional[str] = None
+
+    use_existing_atom_specs: bool = True
+    include_model_in_specs: bool = True
+    include_chain_in_specs: bool = True
+    include_residue_name_in_specs: bool = False
+
+    select_protein_residues_only: bool = True
+    include_ligand_in_selection: bool = False
+
+    create_centroid_markers: bool = True
+    create_group_markers: bool = True
+    use_representative_atom_fallback: bool = True
+
+    marker_model_name: str = CHIMERAX_PI_MARKER_MODEL_NAME
+    marker_radius: float = 0.30
+
+    pseudobond_radius: float = CHIMERAX_PI_DEFAULT_RADIUS
+    pseudobond_group_prefix: str = "DockAnalyzer"
+
+    color_by_interaction_type: bool = True
+    color_by_strength: bool = False
+
+    interaction_colors: Dict[str, str] = field(
+        default_factory=lambda: dict(
+            CHIMERAX_PI_DEFAULT_COLORS
+        )
+    )
+
+    strength_colors: Dict[str, str] = field(
+        default_factory=lambda: {
+            "strong": "magenta",
+            "moderate": "gold",
+            "weak": "gray",
+        }
+    )
+
+    show_residues: bool = True
+    show_ligand: bool = True
+    hide_noninteracting_residues: bool = False
+    display_style: str = "stick"
+
+    command_runner: Optional[Callable[[Any, str], Any]] = None
+
+    centroid_marker_factory: Optional[
+        Callable[[Any, Sequence[float], str, Dict[str, Any]], Any]
+    ] = None
+
+    group_marker_factory: Optional[
+        Callable[[Any, Sequence[float], str, Dict[str, Any]], Any]
+    ] = None
+
+    strict: bool = False
+
+    def __post_init__(self) -> None:
+        try:
+            self.marker_radius = float(
+                self.marker_radius
+            )
+            self.pseudobond_radius = float(
+                self.pseudobond_radius
+            )
+
+        except (TypeError, ValueError) as exc:
+            raise ChimeraXPiSpecificationError(
+                "Marker and pseudobond radii must be numeric."
+            ) from exc
+
+        if self.marker_radius <= 0.0:
+            raise ChimeraXPiSpecificationError(
+                "marker_radius must be positive."
+            )
+
+        if self.pseudobond_radius <= 0.0:
+            raise ChimeraXPiSpecificationError(
+                "pseudobond_radius must be positive."
+            )
+
+        self.display_style = str(
+            self.display_style
+        ).strip().lower()
+
+        if self.display_style not in {
+            "stick",
+            "ball",
+            "sphere",
+            "wire",
+        }:
+            raise ChimeraXPiSpecificationError(
+                "display_style must be stick, ball, sphere or wire."
+            )
+
+        callback_names = (
+            "command_runner",
+            "centroid_marker_factory",
+            "group_marker_factory",
+        )
+
+        for callback_name in callback_names:
+            callback = getattr(
+                self,
+                callback_name,
+            )
+
+            if callback is not None and not callable(callback):
+                raise ChimeraXPiSpecificationError(
+                    f"{callback_name} must be callable or None."
+                )
+
+
+def create_default_chimerax_pi_config() -> ChimeraXPiConfig:
+    return ChimeraXPiConfig()
+
+
+# -----------------------------------------------------------------------------
+# 17.5. Modelos de saída
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class ChimeraXPiPseudobondSpecification:
+    """
+    Backend-independent pseudobond description.
+    """
+
+    interaction_id: str
+    interaction_type: str
+    group_name: str
+
+    start_coordinate: Optional[Tuple[float, float, float]]
+    end_coordinate: Optional[Tuple[float, float, float]]
+
+    start_atom_spec: Optional[str]
+    end_atom_spec: Optional[str]
+
+    color: str
+    radius: float
+
+    label: Optional[str] = None
+
+    interaction: Optional[Any] = None
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "interaction_id": self.interaction_id,
+            "interaction_type": self.interaction_type,
+            "group_name": self.group_name,
+            "start_coordinate": (
+                None
+                if self.start_coordinate is None
+                else list(self.start_coordinate)
+            ),
+            "end_coordinate": (
+                None
+                if self.end_coordinate is None
+                else list(self.end_coordinate)
+            ),
+            "start_atom_spec": self.start_atom_spec,
+            "end_atom_spec": self.end_atom_spec,
+            "color": self.color,
+            "radius": self.radius,
+            "label": self.label,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(slots=True)
+class ChimeraXPiCommandSet:
+    """
+    Collection of ChimeraX commands generated without executing them.
+    """
+
+    selection_specs: List[str]
+    residue_specs: List[str]
+    atom_specs: List[str]
+
+    selection_command: Optional[str]
+    visualization_commands: List[str]
+    pseudobond_commands: List[str]
+    cleanup_commands: List[str]
+
+    pseudobond_specifications: List[
+        ChimeraXPiPseudobondSpecification
+    ]
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    @property
+    def all_commands(self) -> List[str]:
+        commands: List[str] = []
+
+        if self.selection_command:
+            commands.append(
+                self.selection_command
+            )
+
+        commands.extend(
+            self.visualization_commands
+        )
+        commands.extend(
+            self.pseudobond_commands
+        )
+
+        return commands
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "selection_specs": list(
+                self.selection_specs
+            ),
+            "residue_specs": list(
+                self.residue_specs
+            ),
+            "atom_specs": list(
+                self.atom_specs
+            ),
+            "selection_command": self.selection_command,
+            "visualization_commands": list(
+                self.visualization_commands
+            ),
+            "pseudobond_commands": list(
+                self.pseudobond_commands
+            ),
+            "cleanup_commands": list(
+                self.cleanup_commands
+            ),
+            "pseudobond_specifications": [
+                specification.to_dict()
+                for specification in self.pseudobond_specifications
+            ],
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(slots=True)
+class ChimeraXPiVisualizationResult:
+    """
+    Result of executing an optional ChimeraX visualization.
+    """
+
+    command_set: ChimeraXPiCommandSet
+
+    executed_commands: List[str]
+    pseudobonds: List[Any]
+    marker_atoms: List[Any]
+
+    success: bool
+
+    warnings: List[str] = field(
+        default_factory=list
+    )
+    errors: List[str] = field(
+        default_factory=list
+    )
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+
+# -----------------------------------------------------------------------------
+# 17.6. Helpers de acesso
+# -----------------------------------------------------------------------------
+
+def _chimerax_pi_get(
+    object_: Any,
+    names: Sequence[str],
+    default: Any = None,
+) -> Any:
+    if object_ is None:
+        return default
+
+    for name in names:
+        if isinstance(object_, Mapping):
+            value = object_.get(
+                name
+            )
+        else:
+            value = getattr(
+                object_,
+                name,
+                None,
+            )
+
+        if value is not None:
+            return value
+
+    return default
+
+
+def _chimerax_pi_as_coordinate(
+    value: Any,
+) -> Optional[Tuple[float, float, float]]:
+    if value is None:
+        return None
+
+    if hasattr(value, "tolist"):
+        try:
+            value = value.tolist()
+        except Exception:
+            pass
+
+    try:
+        values = list(
+            value
+        )
+    except TypeError:
+        return None
+
+    if len(values) < 3:
+        return None
+
+    try:
+        coordinate = (
+            float(values[0]),
+            float(values[1]),
+            float(values[2]),
+        )
+    except (TypeError, ValueError):
+        return None
+
+    if not all(
+        math.isfinite(component)
+        for component in coordinate
+    ):
+        return None
+
+    return coordinate
+
+
+def _chimerax_pi_identifier(
+    object_: Any,
+    fallback: str,
+) -> str:
+    return str(
+        _chimerax_pi_get(
+            object_,
+            (
+                "interaction_id",
+                "ring_id",
+                "system_id",
+                "group_id",
+                "atom_id",
+                "id",
+                "identifier",
+            ),
+            fallback,
+        )
+    )
+
+
+def _chimerax_pi_interaction_type(
+    interaction: Any,
+) -> str:
+    value = str(
+        _chimerax_pi_get(
+            interaction,
+            (
+                "interaction_type",
+                "type",
+            ),
+            "unknown",
+        )
+    ).strip().lower()
+
+    aliases = {
+        "pi_pi": "pi-pi",
+        "π–π": "pi-pi",
+        "pi–pi": "pi-pi",
+        "cation_pi": "cation-pi",
+        "cation–π": "cation-pi",
+        "anion_pi": "anion-pi",
+        "anion–π": "anion-pi",
+        "amide_pi": "amide-pi",
+        "amide–π": "amide-pi",
+    }
+
+    return aliases.get(
+        value,
+        value,
+    )
+
+
+def _chimerax_pi_extract_interactions(
+    result_or_interactions: Any,
+) -> List[Any]:
+    if "extract_pi_interactions" in globals():
+        try:
+            return extract_pi_interactions(
+                result_or_interactions
+            )
+        except Exception:
+            pass
+
+    interactions = _chimerax_pi_get(
+        result_or_interactions,
+        ("interactions",),
+    )
+
+    if interactions is not None:
+        return list(
+            interactions
+        )
+
+    if isinstance(
+        result_or_interactions,
+        Iterable,
+    ) and not isinstance(
+        result_or_interactions,
+        (
+            str,
+            bytes,
+            Mapping,
+        ),
+    ):
+        return list(
+            result_or_interactions
+        )
+
+    return []
+
+
+# -----------------------------------------------------------------------------
+# 17.7. Detecção opcional do ambiente ChimeraX
+# -----------------------------------------------------------------------------
+
+def is_chimerax_available() -> bool:
+    """
+    Return whether ChimeraX Python modules are importable.
+    """
+
+    try:
+        import chimerax  # type: ignore  # noqa: F401
+    except ImportError:
+        return False
+
+    return True
+
+
+def require_chimerax() -> None:
+    """
+    Raise an explicit error when ChimeraX is unavailable.
+    """
+
+    if not is_chimerax_available():
+        raise ChimeraXPiUnavailableError(
+            "ChimeraX Python modules are unavailable. "
+            "Command generation remains usable outside ChimeraX."
+        )
+
+
+# -----------------------------------------------------------------------------
+# 17.8. Sanitização de especificações
+# -----------------------------------------------------------------------------
+
+def _chimerax_pi_clean_token(
+    value: Any,
+) -> Optional[str]:
+    if value is None:
+        return None
+
+    token = str(
+        value
+    ).strip()
+
+    if not token:
+        return None
+
+    return re.sub(
+        r"[\s,;]+",
+        "_",
+        token,
+    )
+
+
+def _chimerax_pi_normalize_model_id(
+    model_id: Any,
+) -> Optional[str]:
+    token = _chimerax_pi_clean_token(
+        model_id
+    )
+
+    if token is None:
+        return None
+
+    if token.startswith("#"):
+        return token
+
+    return f"#{token}"
+
+
+# -----------------------------------------------------------------------------
+# 17.9. Especificações atômicas
+# -----------------------------------------------------------------------------
+
+def chimerax_atom_spec(
+    atom: Any,
+    *,
+    model_id: Optional[Any] = None,
+    config: Optional[ChimeraXPiConfig] = None,
+) -> str:
+    """
+    Generate a ChimeraX atom specification.
+
+    Typical output:
+        #1/A:123@CZ
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    if config.use_existing_atom_specs:
+        existing_spec = _chimerax_pi_get(
+            atom,
+            (
+                "atomspec",
+                "atom_spec",
+                "spec",
+            ),
+        )
+
+        if existing_spec:
+            return str(
+                existing_spec
+            )
+
+    resolved_model_id = (
+        model_id
+        or _chimerax_pi_get(
+            atom,
+            (
+                "model_id",
+                "structure_id",
+            ),
+        )
+        or config.model_id
+    )
+
+    chain_id = _chimerax_pi_clean_token(
+        _chimerax_pi_get(
+            atom,
+            (
+                "chain_id",
+                "chain",
+            ),
+        )
+    )
+
+    residue_number = _chimerax_pi_clean_token(
+        _chimerax_pi_get(
+            atom,
+            (
+                "residue_number",
+                "resid",
+                "residue_index",
+                "number",
+            ),
+        )
+    )
+
+    residue_name = _chimerax_pi_clean_token(
+        _chimerax_pi_get(
+            atom,
+            (
+                "residue_name",
+                "resname",
+            ),
+        )
+    )
+
+    atom_name = _chimerax_pi_clean_token(
+        _chimerax_pi_get(
+            atom,
+            (
+                "name",
+                "atom_name",
+            ),
+        )
+    )
+
+    atom_serial = _chimerax_pi_clean_token(
+        _chimerax_pi_get(
+            atom,
+            (
+                "serial",
+                "serial_number",
+                "index",
+                "atom_index",
+            ),
+        )
+    )
+
+    specification = ""
+
+    if config.include_model_in_specs:
+        normalized_model_id = _chimerax_pi_normalize_model_id(
+            resolved_model_id
+        )
+
+        if normalized_model_id:
+            specification += normalized_model_id
+
+    if chain_id and config.include_chain_in_specs:
+        specification += f"/{chain_id}"
+
+    if residue_number:
+        specification += f":{residue_number}"
+
+        if (
+            residue_name
+            and config.include_residue_name_in_specs
+        ):
+            specification += f".{residue_name}"
+
+    if atom_name:
+        specification += f"@{atom_name}"
+
+    elif atom_serial:
+        specification += f"@@serial_number={atom_serial}"
+
+    if not specification:
+        raise ChimeraXPiSpecificationError(
+            "Could not generate an atom specification."
+        )
+
+    return specification
+
+
+def chimerax_residue_spec(
+    residue_or_participant: Any,
+    *,
+    model_id: Optional[Any] = None,
+    config: Optional[ChimeraXPiConfig] = None,
+) -> str:
+    """
+    Generate a ChimeraX residue specification.
+
+    Typical output:
+        #1/A:123
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    if config.use_existing_atom_specs:
+        existing_spec = _chimerax_pi_get(
+            residue_or_participant,
+            (
+                "residue_spec",
+                "residue_atomspec",
+            ),
+        )
+
+        if existing_spec:
+            return str(
+                existing_spec
+            )
+
+    resolved_model_id = (
+        model_id
+        or _chimerax_pi_get(
+            residue_or_participant,
+            (
+                "model_id",
+                "structure_id",
+            ),
+        )
+        or config.model_id
+    )
+
+    chain_id = _chimerax_pi_clean_token(
+        _chimerax_pi_get(
+            residue_or_participant,
+            (
+                "chain_id",
+                "chain",
+            ),
+        )
+    )
+
+    residue_number = _chimerax_pi_clean_token(
+        _chimerax_pi_get(
+            residue_or_participant,
+            (
+                "residue_number",
+                "resid",
+                "residue_index",
+                "number",
+            ),
+        )
+    )
+
+    residue_name = _chimerax_pi_clean_token(
+        _chimerax_pi_get(
+            residue_or_participant,
+            (
+                "residue_name",
+                "resname",
+            ),
+        )
+    )
+
+    specification = ""
+
+    if config.include_model_in_specs:
+        normalized_model_id = _chimerax_pi_normalize_model_id(
+            resolved_model_id
+        )
+
+        if normalized_model_id:
+            specification += normalized_model_id
+
+    if chain_id and config.include_chain_in_specs:
+        specification += f"/{chain_id}"
+
+    if residue_number:
+        specification += f":{residue_number}"
+
+        if (
+            residue_name
+            and config.include_residue_name_in_specs
+        ):
+            specification += f".{residue_name}"
+
+    if not specification:
+        raise ChimeraXPiSpecificationError(
+            "Could not generate a residue specification."
+        )
+
+    return specification
+
+
+# -----------------------------------------------------------------------------
+# 17.10. Participantes de uma interação
+# -----------------------------------------------------------------------------
+
+def _chimerax_pi_participants(
+    interaction: Any,
+) -> Tuple[Any, Any]:
+    if "_pi_statistics_participants" in globals():
+        try:
+            return _pi_statistics_participants(
+                interaction
+            )
+        except Exception:
+            pass
+
+    interaction_type = _chimerax_pi_interaction_type(
+        interaction
+    )
+
+    if interaction_type == "pi-pi":
+        return (
+            _chimerax_pi_get(
+                interaction,
+                (
+                    "ring_1",
+                    "aromatic_system_1",
+                ),
+            ),
+            _chimerax_pi_get(
+                interaction,
+                (
+                    "ring_2",
+                    "aromatic_system_2",
+                ),
+            ),
+        )
+
+    ring = _chimerax_pi_get(
+        interaction,
+        (
+            "ring",
+            "ring_1",
+            "aromatic_system",
+        ),
+    )
+
+    if interaction_type == "cation-pi":
+        second = _chimerax_pi_get(
+            interaction,
+            (
+                "cation_group",
+                "charged_group",
+            ),
+        )
+
+    elif interaction_type == "anion-pi":
+        second = _chimerax_pi_get(
+            interaction,
+            (
+                "anion_group",
+                "charged_group",
+            ),
+        )
+
+    elif interaction_type == "amide-pi":
+        second = _chimerax_pi_get(
+            interaction,
+            ("amide_group",),
+        )
+
+    else:
+        second = _chimerax_pi_get(
+            interaction,
+            (
+                "participant_2",
+                "group",
+            ),
+        )
+
+    return (
+        ring,
+        second,
+    )
+
+
+def _chimerax_pi_participant_role(
+    participant: Any,
+) -> str:
+    role = str(
+        _chimerax_pi_get(
+            participant,
+            (
+                "participant_type",
+                "source_type",
+                "molecule_type",
+                "role",
+            ),
+            "unknown",
+        )
+    ).strip().lower()
+
+    protein_aliases = {
+        "protein",
+        "receptor",
+        "target",
+        "macromolecule",
+        "protein-ring",
+        "protein_ring",
+    }
+
+    ligand_aliases = {
+        "ligand",
+        "compound",
+        "drug",
+        "small-molecule",
+        "small_molecule",
+        "ligand-ring",
+        "ligand_ring",
+    }
+
+    if role in protein_aliases:
+        return "protein"
+
+    if role in ligand_aliases:
+        return "ligand"
+
+    residue_name = str(
+        _chimerax_pi_get(
+            participant,
+            (
+                "residue_name",
+                "resname",
+            ),
+            "",
+        )
+    ).upper()
+
+    if residue_name in {
+        "ALA", "ARG", "ASN", "ASP", "CYS",
+        "GLN", "GLU", "GLY", "HIS", "ILE",
+        "LEU", "LYS", "MET", "PHE", "PRO",
+        "SER", "THR", "TRP", "TYR", "VAL",
+        "HID", "HIE", "HIP",
+    }:
+        return "protein"
+
+    return role
+
+
+# -----------------------------------------------------------------------------
+# 17.11. Coordenadas e átomos representativos
+# -----------------------------------------------------------------------------
+
+def _chimerax_pi_participant_coordinate(
+    participant: Any,
+) -> Optional[Tuple[float, float, float]]:
+    coordinate = _chimerax_pi_get(
+        participant,
+        (
+            "centroid",
+            "center",
+            "geometric_center",
+            "charge_center",
+            "amide_center",
+        ),
+    )
+
+    normalized = _chimerax_pi_as_coordinate(
+        coordinate
+    )
+
+    if normalized is not None:
+        return normalized
+
+    atoms = _chimerax_pi_get(
+        participant,
+        ("atoms",),
+        (),
+    )
+
+    atom_coordinates = [
+        coordinate
+        for atom in atoms or ()
+        if (
+            coordinate := _chimerax_pi_as_coordinate(
+                _chimerax_pi_get(
+                    atom,
+                    (
+                        "coord",
+                        "coordinate",
+                        "coordinates",
+                        "scene_coord",
+                        "position",
+                    ),
+                )
+            )
+        )
+        is not None
+    ]
+
+    if not atom_coordinates:
+        return None
+
+    count = len(
+        atom_coordinates
+    )
+
+    return (
+        sum(value[0] for value in atom_coordinates) / count,
+        sum(value[1] for value in atom_coordinates) / count,
+        sum(value[2] for value in atom_coordinates) / count,
+    )
+
+
+def _chimerax_pi_representative_atom(
+    participant: Any,
+) -> Optional[Any]:
+    explicit_atom = _chimerax_pi_get(
+        participant,
+        (
+            "representative_atom",
+            "central_atom",
+            "anchor_atom",
+        ),
+    )
+
+    if explicit_atom is not None:
+        return explicit_atom
+
+    atoms = list(
+        _chimerax_pi_get(
+            participant,
+            ("atoms",),
+            (),
+        )
+        or ()
+    )
+
+    if not atoms:
+        return None
+
+    centroid = _chimerax_pi_participant_coordinate(
+        participant
+    )
+
+    if centroid is None:
+        return atoms[0]
+
+    def squared_distance(
+        atom: Any,
+    ) -> float:
+        coordinate = _chimerax_pi_as_coordinate(
+            _chimerax_pi_get(
+                atom,
+                (
+                    "coord",
+                    "coordinate",
+                    "coordinates",
+                    "scene_coord",
+                ),
+            )
+        )
+
+        if coordinate is None:
+            return math.inf
+
+        return sum(
+            (
+                coordinate[index]
+                - centroid[index]
+            ) ** 2
+            for index in range(3)
+        )
+
+    return min(
+        atoms,
+        key=squared_distance,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 17.12. Specs de resíduos envolvidos
+# -----------------------------------------------------------------------------
+
+def get_pi_residue_specs(
+    result_or_interactions: Any,
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+) -> List[str]:
+    """
+    Return unique ChimeraX residue specs involved in π interactions.
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    specifications: Set[str] = set()
+
+    for interaction in _chimerax_pi_extract_interactions(
+        result_or_interactions
+    ):
+        participant_1, participant_2 = (
+            _chimerax_pi_participants(
+                interaction
+            )
+        )
+
+        for participant in (
+            participant_1,
+            participant_2,
+        ):
+            if participant is None:
+                continue
+
+            role = _chimerax_pi_participant_role(
+                participant
+            )
+
+            if (
+                config.select_protein_residues_only
+                and role != "protein"
+            ):
+                continue
+
+            model_id = (
+                config.protein_model_id
+                if role == "protein"
+                else config.ligand_model_id
+            )
+
+            try:
+                specification = chimerax_residue_spec(
+                    participant,
+                    model_id=model_id,
+                    config=config,
+                )
+            except ChimeraXPiSpecificationError:
+                if config.strict:
+                    raise
+                continue
+
+            specifications.add(
+                specification
+            )
+
+    return sorted(
+        specifications
+    )
+
+
+def get_pi_atom_specs(
+    result_or_interactions: Any,
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+) -> List[str]:
+    """
+    Return unique representative atom specs.
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    specifications: Set[str] = set()
+
+    for interaction in _chimerax_pi_extract_interactions(
+        result_or_interactions
+    ):
+        participant_1, participant_2 = (
+            _chimerax_pi_participants(
+                interaction
+            )
+        )
+
+        for participant in (
+            participant_1,
+            participant_2,
+        ):
+            atom = _chimerax_pi_representative_atom(
+                participant
+            )
+
+            if atom is None:
+                continue
+
+            role = _chimerax_pi_participant_role(
+                participant
+            )
+
+            model_id = (
+                config.protein_model_id
+                if role == "protein"
+                else config.ligand_model_id
+            )
+
+            try:
+                specification = chimerax_atom_spec(
+                    atom,
+                    model_id=model_id,
+                    config=config,
+                )
+            except ChimeraXPiSpecificationError:
+                if config.strict:
+                    raise
+                continue
+
+            specifications.add(
+                specification
+            )
+
+    return sorted(
+        specifications
+    )
+
+
+# -----------------------------------------------------------------------------
+# 17.13. Seleção de resíduos
+# -----------------------------------------------------------------------------
+
+def create_pi_selection_command(
+    result_or_interactions: Any,
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+    add_to_selection: bool = False,
+) -> Optional[str]:
+    """
+    Generate a ChimeraX command selecting involved residues.
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    residue_specs = get_pi_residue_specs(
+        result_or_interactions,
+        config=config,
+    )
+
+    specifications = list(
+        residue_specs
+    )
+
+    if config.include_ligand_in_selection:
+        interactions = _chimerax_pi_extract_interactions(
+            result_or_interactions
+        )
+
+        for interaction in interactions:
+            for participant in _chimerax_pi_participants(
+                interaction
+            ):
+                if (
+                    participant is None
+                    or _chimerax_pi_participant_role(
+                        participant
+                    )
+                    != "ligand"
+                ):
+                    continue
+
+                try:
+                    specification = chimerax_residue_spec(
+                        participant,
+                        model_id=config.ligand_model_id,
+                        config=config,
+                    )
+                except ChimeraXPiSpecificationError:
+                    continue
+
+                specifications.append(
+                    specification
+                )
+
+    specifications = sorted(
+        set(specifications)
+    )
+
+    if not specifications:
+        return None
+
+    selection_expression = " ".join(
+        specifications
+    )
+
+    if add_to_selection:
+        return f"select add {selection_expression}"
+
+    return f"select {selection_expression}"
+
+
+def select_pi_residues(
+    session: Any,
+    result_or_interactions: Any,
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+    add_to_selection: bool = False,
+) -> Optional[str]:
+    """
+    Execute the residue-selection command in ChimeraX.
+    """
+
+    command = create_pi_selection_command(
+        result_or_interactions,
+        config=config,
+        add_to_selection=add_to_selection,
+    )
+
+    if command is None:
+        return None
+
+    run_chimerax_pi_command(
+        session,
+        command,
+        config=config,
+    )
+
+    return command
+
+
+# -----------------------------------------------------------------------------
+# 17.14. Nomes e cores dos pseudobonds
+# -----------------------------------------------------------------------------
+
+def get_pi_pseudobond_group_name(
+    interaction: Any,
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+) -> str:
+    """
+    Return a stable pseudobond-group name by interaction type.
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    interaction_type = _chimerax_pi_interaction_type(
+        interaction
+    )
+
+    suffixes = {
+        "pi-pi": "π–π",
+        "cation-pi": "cation–π",
+        "anion-pi": "anion–π",
+        "amide-pi": "amide–π",
+    }
+
+    suffix = suffixes.get(
+        interaction_type,
+        "π interactions",
+    )
+
+    return (
+        f"{config.pseudobond_group_prefix} "
+        f"{suffix}"
+    )
+
+
+def get_pi_interaction_color(
+    interaction: Any,
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+) -> str:
+    """
+    Resolve visualization color.
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    if config.color_by_strength:
+        strength = str(
+            _chimerax_pi_get(
+                interaction,
+                (
+                    "strength_class",
+                    "strength",
+                ),
+                "weak",
+            )
+        ).lower()
+
+        if strength in config.strength_colors:
+            return config.strength_colors[
+                strength
+            ]
+
+    interaction_type = _chimerax_pi_interaction_type(
+        interaction
+    )
+
+    return config.interaction_colors.get(
+        interaction_type,
+        config.interaction_colors.get(
+            "unknown",
+            "gray",
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 17.15. Especificações de pseudobonds
+# -----------------------------------------------------------------------------
+
+def create_pi_pseudobond_specification(
+    interaction: Any,
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+) -> ChimeraXPiPseudobondSpecification:
+    """
+    Build a backend-independent centroid-to-participant specification.
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    participant_1, participant_2 = (
+        _chimerax_pi_participants(
+            interaction
+        )
+    )
+
+    start_coordinate = _chimerax_pi_participant_coordinate(
+        participant_1
+    )
+
+    end_coordinate = _chimerax_pi_participant_coordinate(
+        participant_2
+    )
+
+    start_atom_spec: Optional[str] = None
+    end_atom_spec: Optional[str] = None
+
+    if config.use_representative_atom_fallback:
+        start_atom = _chimerax_pi_representative_atom(
+            participant_1
+        )
+
+        end_atom = _chimerax_pi_representative_atom(
+            participant_2
+        )
+
+        if start_atom is not None:
+            role = _chimerax_pi_participant_role(
+                participant_1
+            )
+
+            try:
+                start_atom_spec = chimerax_atom_spec(
+                    start_atom,
+                    model_id=(
+                        config.protein_model_id
+                        if role == "protein"
+                        else config.ligand_model_id
+                    ),
+                    config=config,
+                )
+            except ChimeraXPiSpecificationError:
+                start_atom_spec = None
+
+        if end_atom is not None:
+            role = _chimerax_pi_participant_role(
+                participant_2
+            )
+
+            try:
+                end_atom_spec = chimerax_atom_spec(
+                    end_atom,
+                    model_id=(
+                        config.protein_model_id
+                        if role == "protein"
+                        else config.ligand_model_id
+                    ),
+                    config=config,
+                )
+            except ChimeraXPiSpecificationError:
+                end_atom_spec = None
+
+    interaction_id = _chimerax_pi_identifier(
+        interaction,
+        str(id(interaction)),
+    )
+
+    interaction_type = _chimerax_pi_interaction_type(
+        interaction
+    )
+
+    score = _chimerax_pi_get(
+        interaction,
+        (
+            "normalized_score",
+            "score",
+        ),
+    )
+
+    label = (
+        f"{interaction_type} "
+        f"{float(score):.1f}"
+        if score is not None
+        else interaction_type
+    )
+
+    return ChimeraXPiPseudobondSpecification(
+        interaction_id=interaction_id,
+        interaction_type=interaction_type,
+        group_name=get_pi_pseudobond_group_name(
+            interaction,
+            config=config,
+        ),
+        start_coordinate=start_coordinate,
+        end_coordinate=end_coordinate,
+        start_atom_spec=start_atom_spec,
+        end_atom_spec=end_atom_spec,
+        color=get_pi_interaction_color(
+            interaction,
+            config=config,
+        ),
+        radius=config.pseudobond_radius,
+        label=label,
+        interaction=interaction,
+        metadata={
+            "participant_1_id": (
+                _chimerax_pi_identifier(
+                    participant_1,
+                    "participant-1",
+                )
+                if participant_1 is not None
+                else None
+            ),
+            "participant_2_id": (
+                _chimerax_pi_identifier(
+                    participant_2,
+                    "participant-2",
+                )
+                if participant_2 is not None
+                else None
+            ),
+        },
+    )
+
+
+def create_pi_pseudobond_specifications(
+    result_or_interactions: Any,
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+) -> List[ChimeraXPiPseudobondSpecification]:
+    """
+    Build specifications for every consolidated interaction.
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    specifications: List[
+        ChimeraXPiPseudobondSpecification
+    ] = []
+
+    for interaction in _chimerax_pi_extract_interactions(
+        result_or_interactions
+    ):
+        specification = create_pi_pseudobond_specification(
+            interaction,
+            config=config,
+        )
+
+        if (
+            specification.start_coordinate is None
+            and specification.start_atom_spec is None
+        ):
+            if config.strict:
+                raise ChimeraXPiPseudobondError(
+                    f"No start endpoint for "
+                    f"{specification.interaction_id!r}."
+                )
+            continue
+
+        if (
+            specification.end_coordinate is None
+            and specification.end_atom_spec is None
+        ):
+            if config.strict:
+                raise ChimeraXPiPseudobondError(
+                    f"No end endpoint for "
+                    f"{specification.interaction_id!r}."
+                )
+            continue
+
+        specifications.append(
+            specification
+        )
+
+    return specifications
+
+
+# -----------------------------------------------------------------------------
+# 17.16. Comandos de visualização
+# -----------------------------------------------------------------------------
+
+def create_pi_visualization_commands(
+    result_or_interactions: Any,
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+) -> List[str]:
+    """
+    Generate ChimeraX display commands without executing them.
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    residue_specs = get_pi_residue_specs(
+        result_or_interactions,
+        config=config,
+    )
+
+    commands: List[str] = []
+
+    if (
+        config.hide_noninteracting_residues
+        and config.protein_model_id
+    ):
+        model_spec = _chimerax_pi_normalize_model_id(
+            config.protein_model_id
+        )
+
+        if model_spec:
+            commands.append(
+                f"hide {model_spec} atoms"
+            )
+
+    if residue_specs and config.show_residues:
+        residue_expression = " ".join(
+            residue_specs
+        )
+
+        commands.append(
+            f"show {residue_expression} atoms"
+        )
+
+        commands.append(
+            f"style {residue_expression} "
+            f"{config.display_style}"
+        )
+
+    if (
+        config.show_ligand
+        and config.ligand_model_id
+    ):
+        ligand_spec = _chimerax_pi_normalize_model_id(
+            config.ligand_model_id
+        )
+
+        if ligand_spec:
+            commands.append(
+                f"show {ligand_spec} atoms"
+            )
+            commands.append(
+                f"style {ligand_spec} {config.display_style}"
+            )
+
+    return commands
+
+
+def _chimerax_pi_coordinate_text(
+    coordinate: Sequence[float],
+) -> str:
+    return ",".join(
+        f"{float(value):.5f}"
+        for value in coordinate[:3]
+    )
+
+
+def create_pi_pseudobond_commands(
+    result_or_interactions: Any,
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+) -> List[str]:
+    """
+    Generate fallback ChimeraX commands.
+
+    When centroid marker callbacks are unavailable, representative atom specs
+    are used. True centroid pseudobonds should be created through
+    ``create_chimerax_pi_pseudobonds()`` with marker factories.
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    commands: List[str] = []
+
+    for specification in create_pi_pseudobond_specifications(
+        result_or_interactions,
+        config=config,
+    ):
+        if (
+            specification.start_atom_spec
+            and specification.end_atom_spec
+        ):
+            commands.append(
+                "distance "
+                f"{specification.start_atom_spec} "
+                f"{specification.end_atom_spec} "
+                f"color {specification.color} "
+                f"radius {specification.radius:.3f}"
+            )
+
+    return commands
+
+
+def create_chimerax_pi_commands(
+    result_or_interactions: Any,
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+) -> ChimeraXPiCommandSet:
+    """
+    Generate a complete non-executed ChimeraX command bundle.
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    interactions = _chimerax_pi_extract_interactions(
+        result_or_interactions
+    )
+
+    residue_specs = get_pi_residue_specs(
+        interactions,
+        config=config,
+    )
+
+    atom_specs = get_pi_atom_specs(
+        interactions,
+        config=config,
+    )
+
+    selection_command = create_pi_selection_command(
+        interactions,
+        config=config,
+    )
+
+    pseudobond_specifications = (
+        create_pi_pseudobond_specifications(
+            interactions,
+            config=config,
+        )
+    )
+
+    group_names = sorted(
+        {
+            specification.group_name
+            for specification in pseudobond_specifications
+        }
+    )
+
+    cleanup_commands = [
+        f'close "{group_name}"'
+        for group_name in group_names
+    ]
+
+    return ChimeraXPiCommandSet(
+        selection_specs=list(
+            residue_specs
+        ),
+        residue_specs=list(
+            residue_specs
+        ),
+        atom_specs=list(
+            atom_specs
+        ),
+        selection_command=selection_command,
+        visualization_commands=(
+            create_pi_visualization_commands(
+                interactions,
+                config=config,
+            )
+        ),
+        pseudobond_commands=(
+            create_pi_pseudobond_commands(
+                interactions,
+                config=config,
+            )
+        ),
+        cleanup_commands=cleanup_commands,
+        pseudobond_specifications=(
+            pseudobond_specifications
+        ),
+        metadata={
+            "schema": "chimerax-pi-command-set",
+            "schema_version": CHIMERAX_PI_SCHEMA_VERSION,
+            "interaction_count": len(
+                interactions
+            ),
+            "pseudobond_count": len(
+                pseudobond_specifications
+            ),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 17.17. Execução de comandos
+# -----------------------------------------------------------------------------
+
+def run_chimerax_pi_command(
+    session: Any,
+    command: str,
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+) -> Any:
+    """
+    Execute one ChimeraX command using a custom runner or ChimeraX core.
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    if config.command_runner is not None:
+        return config.command_runner(
+            session,
+            command,
+        )
+
+    require_chimerax()
+
+    try:
+        from chimerax.core.commands import run  # type: ignore
+    except ImportError as exc:
+        raise ChimeraXPiUnavailableError(
+            "Could not import chimerax.core.commands.run."
+        ) from exc
+
+    return run(
+        session,
+        command,
+    )
+
+
+def run_chimerax_pi_commands(
+    session: Any,
+    commands: Iterable[str],
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+    continue_on_error: bool = True,
+) -> Tuple[List[str], List[str]]:
+    """
+    Execute multiple commands and return executed commands and errors.
+    """
+
+    executed: List[str] = []
+    errors: List[str] = []
+
+    for command in commands:
+        try:
+            run_chimerax_pi_command(
+                session,
+                command,
+                config=config,
+            )
+            executed.append(
+                command
+            )
+
+        except Exception as exc:
+            errors.append(
+                f"{command}: {exc}"
+            )
+
+            if not continue_on_error:
+                raise
+
+    return (
+        executed,
+        errors,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 17.18. Criação real de marcadores e pseudobonds
+# -----------------------------------------------------------------------------
+
+def _create_chimerax_pi_endpoint(
+    session: Any,
+    coordinate: Optional[Sequence[float]],
+    atom_spec: Optional[str],
+    *,
+    endpoint_name: str,
+    metadata: Dict[str, Any],
+    marker_factory: Optional[
+        Callable[[Any, Sequence[float], str, Dict[str, Any]], Any]
+    ],
+    config: ChimeraXPiConfig,
+) -> Optional[Any]:
+    """
+    Create or resolve a pseudobond endpoint.
+
+    True centroid endpoints require a marker factory. When no factory is
+    supplied, the caller may resolve representative atoms from atom specs.
+    """
+
+    if (
+        coordinate is not None
+        and marker_factory is not None
+    ):
+        return marker_factory(
+            session,
+            coordinate,
+            endpoint_name,
+            metadata,
+        )
+
+    if atom_spec is not None:
+        return _resolve_chimerax_atom_from_spec(
+            session,
+            atom_spec,
+        )
+
+    return None
+
+
+def _resolve_chimerax_atom_from_spec(
+    session: Any,
+    atom_spec: str,
+) -> Optional[Any]:
+    """
+    Resolve the first ChimeraX atom matching an atom specification.
+    """
+
+    require_chimerax()
+
+    try:
+        from chimerax.atomic import Atoms  # type: ignore  # noqa: F401
+        from chimerax.core.commands import atomspec  # type: ignore
+    except ImportError:
+        return None
+
+    try:
+        evaluation = atomspec(
+            session,
+            atom_spec,
+        )
+
+        atoms = getattr(
+            evaluation,
+            "atoms",
+            None,
+        )
+
+        if atoms is None or len(atoms) == 0:
+            return None
+
+        return atoms[0]
+
+    except Exception:
+        return None
+
+
+def _get_chimerax_pseudobond_group(
+    session: Any,
+    group_name: str,
+) -> Any:
+    """
+    Resolve or create a ChimeraX pseudobond group.
+    """
+
+    manager = getattr(
+        session,
+        "pb_manager",
+        None,
+    )
+
+    if manager is None:
+        raise ChimeraXPiPseudobondError(
+            "The ChimeraX session has no pseudobond manager."
+        )
+
+    getter = getattr(
+        manager,
+        "get_group",
+        None,
+    )
+
+    if not callable(getter):
+        raise ChimeraXPiPseudobondError(
+            "The pseudobond manager does not expose get_group()."
+        )
+
+    try:
+        return getter(
+            group_name,
+            create=True,
+        )
+
+    except TypeError:
+        group = getter(
+            group_name
+        )
+
+        if group is None:
+            raise ChimeraXPiPseudobondError(
+                f"Could not create pseudobond group {group_name!r}."
+            )
+
+        return group
+
+
+def create_chimerax_pi_pseudobonds(
+    session: Any,
+    result_or_interactions: Any,
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+) -> Tuple[List[Any], List[Any], List[str]]:
+    """
+    Create pseudobonds in an active ChimeraX session.
+
+    Centroid pseudobonds are produced when marker factories return ChimeraX
+    atom-like marker endpoints. Otherwise representative atoms are used.
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    specifications = create_pi_pseudobond_specifications(
+        result_or_interactions,
+        config=config,
+    )
+
+    pseudobonds: List[Any] = []
+    markers: List[Any] = []
+    warnings: List[str] = []
+
+    for specification in specifications:
+        start_endpoint = _create_chimerax_pi_endpoint(
+            session,
+            specification.start_coordinate,
+            specification.start_atom_spec,
+            endpoint_name=(
+                f"{specification.interaction_id}-ring"
+            ),
+            metadata={
+                **specification.metadata,
+                "endpoint": "start",
+            },
+            marker_factory=(
+                config.centroid_marker_factory
+                if config.create_centroid_markers
+                else None
+            ),
+            config=config,
+        )
+
+        end_endpoint = _create_chimerax_pi_endpoint(
+            session,
+            specification.end_coordinate,
+            specification.end_atom_spec,
+            endpoint_name=(
+                f"{specification.interaction_id}-partner"
+            ),
+            metadata={
+                **specification.metadata,
+                "endpoint": "end",
+            },
+            marker_factory=(
+                config.group_marker_factory
+                if config.create_group_markers
+                else None
+            ),
+            config=config,
+        )
+
+        if start_endpoint is None or end_endpoint is None:
+            warning = (
+                f"Could not resolve both pseudobond endpoints for "
+                f"{specification.interaction_id!r}."
+            )
+
+            if config.strict:
+                raise ChimeraXPiPseudobondError(
+                    warning
+                )
+
+            warnings.append(
+                warning
+            )
+            continue
+
+        if (
+            specification.start_coordinate is not None
+            and config.centroid_marker_factory is not None
+        ):
+            markers.append(
+                start_endpoint
+            )
+
+        if (
+            specification.end_coordinate is not None
+            and config.group_marker_factory is not None
+        ):
+            markers.append(
+                end_endpoint
+            )
+
+        group = _get_chimerax_pseudobond_group(
+            session,
+            specification.group_name,
+        )
+
+        creator = getattr(
+            group,
+            "new_pseudobond",
+            None,
+        )
+
+        if not callable(creator):
+            raise ChimeraXPiPseudobondError(
+                f"Pseudobond group {specification.group_name!r} "
+                "does not expose new_pseudobond()."
+            )
+
+        pseudobond = creator(
+            start_endpoint,
+            end_endpoint,
+        )
+
+        try:
+            pseudobond.radius = specification.radius
+        except Exception:
+            pass
+
+        pseudobonds.append(
+            pseudobond
+        )
+
+    return (
+        pseudobonds,
+        markers,
+        warnings,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 17.19. Pipeline público de visualização
+# -----------------------------------------------------------------------------
+
+def visualize_pi_interactions_chimerax(
+    session: Any,
+    result_or_interactions: Any,
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+    execute_commands: bool = True,
+    create_pseudobonds: bool = True,
+    continue_on_error: bool = True,
+) -> ChimeraXPiVisualizationResult:
+    """
+    Generate and optionally execute the complete ChimeraX visualization.
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    command_set = create_chimerax_pi_commands(
+        result_or_interactions,
+        config=config,
+    )
+
+    executed_commands: List[str] = []
+    pseudobonds: List[Any] = []
+    marker_atoms: List[Any] = []
+    warnings: List[str] = []
+    errors: List[str] = []
+
+    if execute_commands:
+        commands = []
+
+        if command_set.selection_command:
+            commands.append(
+                command_set.selection_command
+            )
+
+        commands.extend(
+            command_set.visualization_commands
+        )
+
+        executed, command_errors = (
+            run_chimerax_pi_commands(
+                session,
+                commands,
+                config=config,
+                continue_on_error=continue_on_error,
+            )
+        )
+
+        executed_commands.extend(
+            executed
+        )
+        errors.extend(
+            command_errors
+        )
+
+    if create_pseudobonds:
+        try:
+            (
+                pseudobonds,
+                marker_atoms,
+                pseudobond_warnings,
+            ) = create_chimerax_pi_pseudobonds(
+                session,
+                result_or_interactions,
+                config=config,
+            )
+
+            warnings.extend(
+                pseudobond_warnings
+            )
+
+        except Exception as exc:
+            errors.append(
+                str(exc)
+            )
+
+            if not continue_on_error:
+                raise
+
+    return ChimeraXPiVisualizationResult(
+        command_set=command_set,
+        executed_commands=executed_commands,
+        pseudobonds=pseudobonds,
+        marker_atoms=marker_atoms,
+        success=not errors,
+        warnings=warnings,
+        errors=errors,
+        metadata={
+            "schema": "chimerax-pi-visualization-result",
+            "schema_version": CHIMERAX_PI_SCHEMA_VERSION,
+            "executed_command_count": len(
+                executed_commands
+            ),
+            "pseudobond_count": len(
+                pseudobonds
+            ),
+            "marker_count": len(
+                marker_atoms
+            ),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 17.20. Limpeza
+# -----------------------------------------------------------------------------
+
+def clear_chimerax_pi_visualization(
+    session: Any,
+    result_or_interactions: Any,
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+    clear_selection: bool = False,
+) -> List[str]:
+    """
+    Remove generated pseudobond groups and optionally clear selection.
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    specifications = create_pi_pseudobond_specifications(
+        result_or_interactions,
+        config=config,
+    )
+
+    group_names = sorted(
+        {
+            specification.group_name
+            for specification in specifications
+        }
+    )
+
+    commands = [
+        f'close "{group_name}"'
+        for group_name in group_names
+    ]
+
+    if clear_selection:
+        commands.append(
+            "select clear"
+        )
+
+    executed, errors = run_chimerax_pi_commands(
+        session,
+        commands,
+        config=config,
+        continue_on_error=True,
+    )
+
+    if errors and config.strict:
+        raise ChimeraXPiError(
+            "; ".join(errors)
+        )
+
+    return executed
+
+
+# -----------------------------------------------------------------------------
+# 17.21. Exportação de script ChimeraX
+# -----------------------------------------------------------------------------
+
+def export_chimerax_pi_script(
+    result_or_interactions: Any,
+    output_path: Union[str, Path],
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+    include_cleanup: bool = False,
+) -> Path:
+    """
+    Export generated ChimeraX commands as a .cxc script.
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    command_set = create_chimerax_pi_commands(
+        result_or_interactions,
+        config=config,
+    )
+
+    commands = list(
+        command_set.all_commands
+    )
+
+    if include_cleanup:
+        commands.extend(
+            command_set.cleanup_commands
+        )
+
+    path = Path(
+        output_path
+    )
+
+    if path.suffix.lower() != ".cxc":
+        path = path.with_suffix(
+            ".cxc"
+        )
+
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    try:
+        path.write_text(
+            "\n".join(commands) + "\n",
+            encoding="utf-8",
+        )
+
+    except OSError as exc:
+        raise ChimeraXPiError(
+            f"Could not export ChimeraX script: {exc}"
+        ) from exc
+
+    return path
+
+
+# -----------------------------------------------------------------------------
+# 17.22. Resumo da integração
+# -----------------------------------------------------------------------------
+
+def summarize_chimerax_pi_compatibility(
+    result_or_interactions: Any,
+    *,
+    config: Optional[ChimeraXPiConfig] = None,
+) -> Dict[str, Any]:
+    """
+    Return a compact compatibility and visualization summary.
+    """
+
+    if config is None:
+        config = create_default_chimerax_pi_config()
+
+    command_set = create_chimerax_pi_commands(
+        result_or_interactions,
+        config=config,
+    )
+
+    type_distribution: Dict[str, int] = defaultdict(
+        int
+    )
+
+    for specification in (
+        command_set.pseudobond_specifications
+    ):
+        type_distribution[
+            specification.interaction_type
+        ] += 1
+
+    centroid_ready = sum(
+        1
+        for specification in (
+            command_set.pseudobond_specifications
+        )
+        if (
+            specification.start_coordinate is not None
+            and specification.end_coordinate is not None
+        )
+    )
+
+    representative_atom_ready = sum(
+        1
+        for specification in (
+            command_set.pseudobond_specifications
+        )
+        if (
+            specification.start_atom_spec is not None
+            and specification.end_atom_spec is not None
+        )
+    )
+
+    return {
+        "chimerax_available": is_chimerax_available(),
+        "residue_spec_count": len(
+            command_set.residue_specs
+        ),
+        "atom_spec_count": len(
+            command_set.atom_specs
+        ),
+        "pseudobond_specification_count": len(
+            command_set.pseudobond_specifications
+        ),
+        "centroid_ready_count": centroid_ready,
+        "representative_atom_ready_count": (
+            representative_atom_ready
+        ),
+        "interaction_type_distribution": dict(
+            sorted(
+                type_distribution.items()
+            )
+        ),
+        "command_count": len(
+            command_set.all_commands
+        ),
+        "true_centroid_markers_configured": (
+            config.centroid_marker_factory is not None
+        ),
+        "true_group_markers_configured": (
+            config.group_marker_factory is not None
+        ),
+    }
+
+# =============================================================================
+# 18. SELF-TESTS
+# =============================================================================
+# 18.1. INFRAESTRUTURA DOS TESTES
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 18.1.1. Imports adicionais
+# -----------------------------------------------------------------------------
+
+import contextlib
+import io
+import traceback
+
+
+# -----------------------------------------------------------------------------
+# 18.1.2. Constantes
+# -----------------------------------------------------------------------------
+
+PI_SELF_TEST_SCHEMA_VERSION: Final[str] = "1.0"
+
+PI_SELF_TEST_DEFAULT_ABSOLUTE_TOLERANCE: Final[float] = 1.0e-6
+PI_SELF_TEST_DEFAULT_RELATIVE_TOLERANCE: Final[float] = 1.0e-6
+PI_SELF_TEST_DEFAULT_ANGLE_TOLERANCE: Final[float] = 1.0e-5
+
+PI_SELF_TEST_BENZENE_RADIUS: Final[float] = 1.40
+PI_SELF_TEST_DEFAULT_BOND_LENGTH: Final[float] = 1.40
+
+PI_SELF_TEST_STATUS_PENDING: Final[str] = "pending"
+PI_SELF_TEST_STATUS_PASSED: Final[str] = "passed"
+PI_SELF_TEST_STATUS_FAILED: Final[str] = "failed"
+PI_SELF_TEST_STATUS_SKIPPED: Final[str] = "skipped"
+
+PI_SELF_TEST_SUPPORTED_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        PI_SELF_TEST_STATUS_PENDING,
+        PI_SELF_TEST_STATUS_PASSED,
+        PI_SELF_TEST_STATUS_FAILED,
+        PI_SELF_TEST_STATUS_SKIPPED,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 18.1.3. Exceções
+# -----------------------------------------------------------------------------
+
+class PiSelfTestError(AssertionError):
+    """
+    Base exception for DockAnalyzer π self-tests.
+    """
+
+
+class PiSelfTestAssertionError(PiSelfTestError):
+    """
+    Raised when a self-test assertion fails.
+    """
+
+
+class PiSelfTestFixtureError(PiSelfTestError):
+    """
+    Raised when a test fixture cannot be constructed.
+    """
+
+
+class PiSelfTestSkipped(PiSelfTestError):
+    """
+    Raised internally to mark a self-test as skipped.
+    """
+
+
+# -----------------------------------------------------------------------------
+# 18.1.4. Modelo de átomo simulado
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class MockPiAtom:
+    """
+    Minimal atom model used by the π-interaction self-tests.
+
+    The attribute aliases intentionally cover the access patterns used by
+    Sections 3–17.
+    """
+
+    index: int
+    name: str
+    element: str
+
+    coordinate: Tuple[float, float, float]
+
+    residue_name: str = "LIG"
+    residue_number: int = 1
+    chain_id: str = "L"
+
+    formal_charge: float = 0.0
+    partial_charge: float = 0.0
+
+    aromatic: bool = False
+    atom_type: Optional[str] = None
+
+    model_id: Optional[str] = "1"
+    pose_id: Optional[str] = None
+
+    bonds: List[Any] = field(
+        default_factory=list
+    )
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    @property
+    def coord(self) -> Tuple[float, float, float]:
+        return self.coordinate
+
+    @coord.setter
+    def coord(
+        self,
+        value: Sequence[float],
+    ) -> None:
+        self.coordinate = _pi_test_vector3(
+            value
+        )
+
+    @property
+    def coordinates(
+        self,
+    ) -> Tuple[float, float, float]:
+        return self.coordinate
+
+    @coordinates.setter
+    def coordinates(
+        self,
+        value: Sequence[float],
+    ) -> None:
+        self.coordinate = _pi_test_vector3(
+            value
+        )
+
+    @property
+    def position(
+        self,
+    ) -> Tuple[float, float, float]:
+        return self.coordinate
+
+    @property
+    def xyz(
+        self,
+    ) -> Tuple[float, float, float]:
+        return self.coordinate
+
+    @property
+    def residue_id(self) -> str:
+        return (
+            f"{self.chain_id}:"
+            f"{self.residue_name}:"
+            f"{self.residue_number}"
+        )
+
+    @property
+    def atomspec(self) -> str:
+        model_prefix = (
+            ""
+            if self.model_id is None
+            else (
+                self.model_id
+                if str(self.model_id).startswith("#")
+                else f"#{self.model_id}"
+            )
+        )
+
+        return (
+            f"{model_prefix}/"
+            f"{self.chain_id}:"
+            f"{self.residue_number}@"
+            f"{self.name}"
+        )
+
+    def distance_to(
+        self,
+        other: Any,
+    ) -> float:
+        other_coordinate = _pi_test_coordinate(
+            other
+        )
+
+        return _pi_test_distance(
+            self.coordinate,
+            other_coordinate,
+        )
+
+    def copy(
+        self,
+        **updates: Any,
+    ) -> "MockPiAtom":
+        return replace(
+            self,
+            **updates,
+        )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.5. Modelo de resíduo simulado
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class MockPiResidue:
+    """
+    Minimal residue model with atom storage and lookup helpers.
+    """
+
+    residue_name: str
+    residue_number: int
+    chain_id: str
+
+    atoms: List[MockPiAtom] = field(
+        default_factory=list
+    )
+
+    model_id: Optional[str] = "1"
+    pose_id: Optional[str] = None
+
+    molecule_type: str = "protein"
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    @property
+    def name(self) -> str:
+        return self.residue_name
+
+    @property
+    def number(self) -> int:
+        return self.residue_number
+
+    @property
+    def chain(self) -> str:
+        return self.chain_id
+
+    @property
+    def residue_id(self) -> str:
+        return (
+            f"{self.chain_id}:"
+            f"{self.residue_name}:"
+            f"{self.residue_number}"
+        )
+
+    @property
+    def identifier(self) -> str:
+        return self.residue_id
+
+    @property
+    def atomspec(self) -> str:
+        model_prefix = (
+            ""
+            if self.model_id is None
+            else (
+                self.model_id
+                if str(self.model_id).startswith("#")
+                else f"#{self.model_id}"
+            )
+        )
+
+        return (
+            f"{model_prefix}/"
+            f"{self.chain_id}:"
+            f"{self.residue_number}"
+        )
+
+    def add_atom(
+        self,
+        atom: MockPiAtom,
+    ) -> MockPiAtom:
+        atom.residue_name = self.residue_name
+        atom.residue_number = self.residue_number
+        atom.chain_id = self.chain_id
+        atom.model_id = self.model_id
+        atom.pose_id = self.pose_id
+
+        self.atoms.append(
+            atom
+        )
+
+        return atom
+
+    def get_atom(
+        self,
+        name: str,
+    ) -> Optional[MockPiAtom]:
+        target = str(
+            name
+        ).strip().upper()
+
+        for atom in self.atoms:
+            if atom.name.upper() == target:
+                return atom
+
+        return None
+
+    def require_atom(
+        self,
+        name: str,
+    ) -> MockPiAtom:
+        atom = self.get_atom(
+            name
+        )
+
+        if atom is None:
+            raise PiSelfTestFixtureError(
+                f"Residue {self.residue_id!r} has no atom {name!r}."
+            )
+
+        return atom
+
+    def copy(
+        self,
+        *,
+        deep: bool = True,
+        **updates: Any,
+    ) -> "MockPiResidue":
+        copied_atoms = (
+            [
+                atom.copy(
+                    bonds=list(atom.bonds),
+                    metadata=dict(atom.metadata),
+                )
+                for atom in self.atoms
+            ]
+            if deep
+            else list(self.atoms)
+        )
+
+        return replace(
+            self,
+            atoms=copied_atoms,
+            metadata=dict(self.metadata),
+            **updates,
+        )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.6. Estrutura molecular simulada
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class MockPiStructure:
+    """
+    Generic molecular structure accepted by the public API self-tests.
+    """
+
+    structure_id: str = "mock-structure"
+    model_id: str = "1"
+    pose_id: Optional[str] = None
+
+    residues: List[MockPiResidue] = field(
+        default_factory=list
+    )
+
+    aromatic_systems: List[Any] = field(
+        default_factory=list
+    )
+
+    positive_groups: List[Any] = field(
+        default_factory=list
+    )
+
+    negative_groups: List[Any] = field(
+        default_factory=list
+    )
+
+    amide_groups: List[Any] = field(
+        default_factory=list
+    )
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    @property
+    def atoms(self) -> List[MockPiAtom]:
+        return [
+            atom
+            for residue in self.residues
+            for atom in residue.atoms
+        ]
+
+    @property
+    def id(self) -> str:
+        return self.structure_id
+
+    def add_residue(
+        self,
+        residue: MockPiResidue,
+    ) -> MockPiResidue:
+        residue.model_id = self.model_id
+
+        if residue.pose_id is None:
+            residue.pose_id = self.pose_id
+
+        for atom in residue.atoms:
+            atom.model_id = self.model_id
+
+            if atom.pose_id is None:
+                atom.pose_id = self.pose_id
+
+        self.residues.append(
+            residue
+        )
+
+        return residue
+
+    def copy(
+        self,
+        *,
+        deep: bool = True,
+        **updates: Any,
+    ) -> "MockPiStructure":
+        copied_residues = (
+            [
+                residue.copy(
+                    deep=True
+                )
+                for residue in self.residues
+            ]
+            if deep
+            else list(self.residues)
+        )
+
+        return replace(
+            self,
+            residues=copied_residues,
+            aromatic_systems=list(
+                self.aromatic_systems
+            ),
+            positive_groups=list(
+                self.positive_groups
+            ),
+            negative_groups=list(
+                self.negative_groups
+            ),
+            amide_groups=list(
+                self.amide_groups
+            ),
+            metadata=dict(self.metadata),
+            **updates,
+        )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.7. Sistema aromático simulado
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class MockPiAromaticSystem:
+    """
+    Aromatic ring or fused aromatic system used by geometry tests.
+    """
+
+    ring_id: str
+    atoms: List[MockPiAtom]
+
+    centroid: Tuple[float, float, float]
+    normal: Tuple[float, float, float]
+
+    planarity: float = 0.0
+
+    residue_name: str = "PHE"
+    residue_number: int = 1
+    chain_id: str = "A"
+
+    participant_type: str = "protein"
+    aromatic: bool = True
+
+    model_id: Optional[str] = "1"
+    pose_id: Optional[str] = None
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    @property
+    def system_id(self) -> str:
+        return self.ring_id
+
+    @property
+    def aromatic_system_id(self) -> str:
+        return self.ring_id
+
+    @property
+    def identifier(self) -> str:
+        return self.ring_id
+
+    @property
+    def center(self) -> Tuple[float, float, float]:
+        return self.centroid
+
+    @property
+    def geometric_center(
+        self,
+    ) -> Tuple[float, float, float]:
+        return self.centroid
+
+    @property
+    def plane_normal(
+        self,
+    ) -> Tuple[float, float, float]:
+        return self.normal
+
+    @property
+    def planarity_rmsd(self) -> float:
+        return self.planarity
+
+    @property
+    def residue_id(self) -> str:
+        return (
+            f"{self.chain_id}:"
+            f"{self.residue_name}:"
+            f"{self.residue_number}"
+        )
+
+    @property
+    def molecule_type(self) -> str:
+        return self.participant_type
+
+    @property
+    def atomspec(self) -> str:
+        model_prefix = (
+            ""
+            if self.model_id is None
+            else (
+                self.model_id
+                if str(self.model_id).startswith("#")
+                else f"#{self.model_id}"
+            )
+        )
+
+        return (
+            f"{model_prefix}/"
+            f"{self.chain_id}:"
+            f"{self.residue_number}"
+        )
+
+    def copy(
+        self,
+        *,
+        deep: bool = True,
+        **updates: Any,
+    ) -> "MockPiAromaticSystem":
+        atoms = (
+            [
+                atom.copy(
+                    bonds=list(atom.bonds),
+                    metadata=dict(atom.metadata),
+                )
+                for atom in self.atoms
+            ]
+            if deep
+            else list(self.atoms)
+        )
+
+        return replace(
+            self,
+            atoms=atoms,
+            metadata=dict(self.metadata),
+            **updates,
+        )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.8. Grupo carregado simulado
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class MockPiChargedGroup:
+    """
+    Positive or negative group used by cation–π and anion–π tests.
+    """
+
+    group_id: str
+    atoms: List[MockPiAtom]
+
+    center: Tuple[float, float, float]
+    effective_charge: float
+
+    group_type: str
+
+    residue_name: str = "LIG"
+    residue_number: int = 1
+    chain_id: str = "L"
+
+    participant_type: str = "ligand"
+
+    charge_source: str = "formal"
+    inferred_charge: bool = False
+
+    model_id: Optional[str] = "1"
+    pose_id: Optional[str] = None
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    @property
+    def identifier(self) -> str:
+        return self.group_id
+
+    @property
+    def charge_center(
+        self,
+    ) -> Tuple[float, float, float]:
+        return self.center
+
+    @property
+    def geometric_center(
+        self,
+    ) -> Tuple[float, float, float]:
+        return self.center
+
+    @property
+    def charge(self) -> float:
+        return self.effective_charge
+
+    @property
+    def residue_id(self) -> str:
+        return (
+            f"{self.chain_id}:"
+            f"{self.residue_name}:"
+            f"{self.residue_number}"
+        )
+
+    @property
+    def molecule_type(self) -> str:
+        return self.participant_type
+
+    def copy(
+        self,
+        *,
+        deep: bool = True,
+        **updates: Any,
+    ) -> "MockPiChargedGroup":
+        atoms = (
+            [
+                atom.copy(
+                    bonds=list(atom.bonds),
+                    metadata=dict(atom.metadata),
+                )
+                for atom in self.atoms
+            ]
+            if deep
+            else list(self.atoms)
+        )
+
+        return replace(
+            self,
+            atoms=atoms,
+            metadata=dict(self.metadata),
+            **updates,
+        )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.9. Grupo amida simulado
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class MockPiAmideGroup:
+    """
+    Planar amide group used by amide–π tests.
+    """
+
+    amide_id: str
+
+    carbon_atom: MockPiAtom
+    oxygen_atom: MockPiAtom
+    nitrogen_atom: MockPiAtom
+
+    center: Tuple[float, float, float]
+    normal: Tuple[float, float, float]
+
+    planarity: float = 0.0
+
+    residue_name: str = "ASN"
+    residue_number: int = 1
+    chain_id: str = "A"
+
+    participant_type: str = "protein"
+
+    model_id: Optional[str] = "1"
+    pose_id: Optional[str] = None
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    @property
+    def atoms(self) -> List[MockPiAtom]:
+        return [
+            self.carbon_atom,
+            self.oxygen_atom,
+            self.nitrogen_atom,
+        ]
+
+    @property
+    def identifier(self) -> str:
+        return self.amide_id
+
+    @property
+    def amide_center(
+        self,
+    ) -> Tuple[float, float, float]:
+        return self.center
+
+    @property
+    def plane_normal(
+        self,
+    ) -> Tuple[float, float, float]:
+        return self.normal
+
+    @property
+    def planarity_rmsd(self) -> float:
+        return self.planarity
+
+    @property
+    def carbonyl_vector(
+        self,
+    ) -> Tuple[float, float, float]:
+        return _pi_test_vector_subtract(
+            self.oxygen_atom.coordinate,
+            self.carbon_atom.coordinate,
+        )
+
+    @property
+    def residue_id(self) -> str:
+        return (
+            f"{self.chain_id}:"
+            f"{self.residue_name}:"
+            f"{self.residue_number}"
+        )
+
+    @property
+    def molecule_type(self) -> str:
+        return self.participant_type
+
+    def copy(
+        self,
+        *,
+        deep: bool = True,
+        **updates: Any,
+    ) -> "MockPiAmideGroup":
+        if deep:
+            carbon_atom = self.carbon_atom.copy(
+                bonds=list(self.carbon_atom.bonds),
+                metadata=dict(self.carbon_atom.metadata),
+            )
+            oxygen_atom = self.oxygen_atom.copy(
+                bonds=list(self.oxygen_atom.bonds),
+                metadata=dict(self.oxygen_atom.metadata),
+            )
+            nitrogen_atom = self.nitrogen_atom.copy(
+                bonds=list(self.nitrogen_atom.bonds),
+                metadata=dict(self.nitrogen_atom.metadata),
+            )
+
+        else:
+            carbon_atom = self.carbon_atom
+            oxygen_atom = self.oxygen_atom
+            nitrogen_atom = self.nitrogen_atom
+
+        return replace(
+            self,
+            carbon_atom=carbon_atom,
+            oxygen_atom=oxygen_atom,
+            nitrogen_atom=nitrogen_atom,
+            metadata=dict(self.metadata),
+            **updates,
+        )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.10. DockModel simulado
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class MockPiDockModel:
+    """
+    Minimal DockModel compatible with Section 15 tests.
+    """
+
+    structure: Any
+
+    pose_id: Optional[str] = "pose-1"
+
+    pi: List[Any] = field(
+        default_factory=list
+    )
+
+    hydrophobic: List[Any] = field(
+        default_factory=list
+    )
+
+    hydrogen_bonds: List[Any] = field(
+        default_factory=list
+    )
+
+    salt_bridges: List[Any] = field(
+        default_factory=list
+    )
+
+    statistics: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    score: Any = field(
+        default_factory=dict
+    )
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.11. Resultado de teste
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiSelfTestCaseResult:
+    """
+    Result of one isolated self-test.
+    """
+
+    name: str
+    section: str
+
+    status: str
+
+    duration_seconds: float = 0.0
+
+    message: Optional[str] = None
+    traceback_text: Optional[str] = None
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    def __post_init__(self) -> None:
+        if self.status not in PI_SELF_TEST_SUPPORTED_STATUSES:
+            raise PiSelfTestFixtureError(
+                f"Unsupported self-test status: {self.status!r}."
+            )
+
+    @property
+    def passed(self) -> bool:
+        return self.status == PI_SELF_TEST_STATUS_PASSED
+
+    @property
+    def failed(self) -> bool:
+        return self.status == PI_SELF_TEST_STATUS_FAILED
+
+    @property
+    def skipped(self) -> bool:
+        return self.status == PI_SELF_TEST_STATUS_SKIPPED
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "section": self.section,
+            "status": self.status,
+            "duration_seconds": self.duration_seconds,
+            "message": self.message,
+            "traceback": self.traceback_text,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(slots=True)
+class PiSelfTestReport:
+    """
+    Aggregated self-test report shared by Sections 18.2–18.5.
+    """
+
+    results: List[PiSelfTestCaseResult] = field(
+        default_factory=list
+    )
+
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    @property
+    def total(self) -> int:
+        return len(
+            self.results
+        )
+
+    @property
+    def passed(self) -> int:
+        return sum(
+            result.passed
+            for result in self.results
+        )
+
+    @property
+    def failed(self) -> int:
+        return sum(
+            result.failed
+            for result in self.results
+        )
+
+    @property
+    def skipped(self) -> int:
+        return sum(
+            result.skipped
+            for result in self.results
+        )
+
+    @property
+    def success(self) -> bool:
+        return (
+            self.failed == 0
+            and self.total > 0
+        )
+
+    def add(
+        self,
+        result: PiSelfTestCaseResult,
+    ) -> PiSelfTestCaseResult:
+        self.results.append(
+            result
+        )
+
+        return result
+
+    def extend(
+        self,
+        results: Iterable[PiSelfTestCaseResult],
+    ) -> None:
+        self.results.extend(
+            results
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "schema": "pi-self-test-report",
+            "schema_version": PI_SELF_TEST_SCHEMA_VERSION,
+            "total": self.total,
+            "passed": self.passed,
+            "failed": self.failed,
+            "skipped": self.skipped,
+            "success": self.success,
+            "results": [
+                result.to_dict()
+                for result in self.results
+            ],
+            "metadata": dict(self.metadata),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 18.1.12. Operações vetoriais básicas
+# -----------------------------------------------------------------------------
+
+def _pi_test_vector3(
+    value: Sequence[Any],
+) -> Tuple[float, float, float]:
+    """
+    Normalize a three-dimensional vector.
+    """
+
+    try:
+        values = list(
+            value
+        )
+    except TypeError as exc:
+        raise PiSelfTestFixtureError(
+            f"Expected a 3D vector, received {value!r}."
+        ) from exc
+
+    if len(values) != 3:
+        raise PiSelfTestFixtureError(
+            f"Expected exactly three vector components, got {len(values)}."
+        )
+
+    try:
+        vector = (
+            float(values[0]),
+            float(values[1]),
+            float(values[2]),
+        )
+    except (TypeError, ValueError) as exc:
+        raise PiSelfTestFixtureError(
+            f"Invalid vector components: {values!r}."
+        ) from exc
+
+    if not all(
+        math.isfinite(component)
+        for component in vector
+    ):
+        raise PiSelfTestFixtureError(
+            f"Vector contains non-finite components: {vector!r}."
+        )
+
+    return vector
+
+
+def _pi_test_coordinate(
+    object_or_coordinate: Any,
+) -> Tuple[float, float, float]:
+    """
+    Extract coordinates from an object or sequence.
+    """
+
+    if object_or_coordinate is None:
+        raise PiSelfTestFixtureError(
+            "Coordinate source cannot be None."
+        )
+
+    for attribute_name in (
+        "coordinate",
+        "coordinates",
+        "coord",
+        "position",
+        "xyz",
+        "centroid",
+        "center",
+    ):
+        value = getattr(
+            object_or_coordinate,
+            attribute_name,
+            None,
+        )
+
+        if value is not None:
+            return _pi_test_vector3(
+                value
+            )
+
+    if isinstance(
+        object_or_coordinate,
+        Mapping,
+    ):
+        for key in (
+            "coordinate",
+            "coordinates",
+            "coord",
+            "position",
+            "xyz",
+            "centroid",
+            "center",
+        ):
+            if object_or_coordinate.get(key) is not None:
+                return _pi_test_vector3(
+                    object_or_coordinate[key]
+                )
+
+    return _pi_test_vector3(
+        object_or_coordinate
+    )
+
+
+def _pi_test_vector_add(
+    vector_1: Sequence[float],
+    vector_2: Sequence[float],
+) -> Tuple[float, float, float]:
+    first = _pi_test_vector3(
+        vector_1
+    )
+    second = _pi_test_vector3(
+        vector_2
+    )
+
+    return (
+        first[0] + second[0],
+        first[1] + second[1],
+        first[2] + second[2],
+    )
+
+
+def _pi_test_vector_subtract(
+    vector_1: Sequence[float],
+    vector_2: Sequence[float],
+) -> Tuple[float, float, float]:
+    first = _pi_test_vector3(
+        vector_1
+    )
+    second = _pi_test_vector3(
+        vector_2
+    )
+
+    return (
+        first[0] - second[0],
+        first[1] - second[1],
+        first[2] - second[2],
+    )
+
+
+def _pi_test_vector_scale(
+    vector: Sequence[float],
+    scalar: float,
+) -> Tuple[float, float, float]:
+    normalized = _pi_test_vector3(
+        vector
+    )
+
+    scalar = float(
+        scalar
+    )
+
+    return (
+        normalized[0] * scalar,
+        normalized[1] * scalar,
+        normalized[2] * scalar,
+    )
+
+
+def _pi_test_dot(
+    vector_1: Sequence[float],
+    vector_2: Sequence[float],
+) -> float:
+    first = _pi_test_vector3(
+        vector_1
+    )
+    second = _pi_test_vector3(
+        vector_2
+    )
+
+    return (
+        first[0] * second[0]
+        + first[1] * second[1]
+        + first[2] * second[2]
+    )
+
+
+def _pi_test_cross(
+    vector_1: Sequence[float],
+    vector_2: Sequence[float],
+) -> Tuple[float, float, float]:
+    first = _pi_test_vector3(
+        vector_1
+    )
+    second = _pi_test_vector3(
+        vector_2
+    )
+
+    return (
+        first[1] * second[2] - first[2] * second[1],
+        first[2] * second[0] - first[0] * second[2],
+        first[0] * second[1] - first[1] * second[0],
+    )
+
+
+def _pi_test_norm(
+    vector: Sequence[float],
+) -> float:
+    normalized = _pi_test_vector3(
+        vector
+    )
+
+    return math.sqrt(
+        _pi_test_dot(
+            normalized,
+            normalized,
+        )
+    )
+
+
+def _pi_test_normalize(
+    vector: Sequence[float],
+) -> Tuple[float, float, float]:
+    normalized = _pi_test_vector3(
+        vector
+    )
+
+    magnitude = _pi_test_norm(
+        normalized
+    )
+
+    if magnitude <= PI_SELF_TEST_DEFAULT_ABSOLUTE_TOLERANCE:
+        raise PiSelfTestFixtureError(
+            "Cannot normalize a zero-length vector."
+        )
+
+    return _pi_test_vector_scale(
+        normalized,
+        1.0 / magnitude,
+    )
+
+
+def _pi_test_distance(
+    point_1: Sequence[float],
+    point_2: Sequence[float],
+) -> float:
+    return _pi_test_norm(
+        _pi_test_vector_subtract(
+            point_1,
+            point_2,
+        )
+    )
+
+
+def _pi_test_angle_degrees(
+    vector_1: Sequence[float],
+    vector_2: Sequence[float],
+    *,
+    unsigned: bool = True,
+) -> float:
+    first = _pi_test_normalize(
+        vector_1
+    )
+    second = _pi_test_normalize(
+        vector_2
+    )
+
+    cosine = max(
+        -1.0,
+        min(
+            1.0,
+            _pi_test_dot(
+                first,
+                second,
+            ),
+        ),
+    )
+
+    angle = math.degrees(
+        math.acos(
+            cosine
+        )
+    )
+
+    if unsigned:
+        return min(
+            angle,
+            180.0 - angle,
+        )
+
+    return angle
+
+
+def _pi_test_centroid(
+    coordinates: Iterable[Sequence[float]],
+) -> Tuple[float, float, float]:
+    coordinate_list = [
+        _pi_test_vector3(
+            coordinate
+        )
+        for coordinate in coordinates
+    ]
+
+    if not coordinate_list:
+        raise PiSelfTestFixtureError(
+            "Cannot calculate the centroid of an empty coordinate collection."
+        )
+
+    count = len(
+        coordinate_list
+    )
+
+    return (
+        sum(point[0] for point in coordinate_list) / count,
+        sum(point[1] for point in coordinate_list) / count,
+        sum(point[2] for point in coordinate_list) / count,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.13. Bases ortonormais e orientação
+# -----------------------------------------------------------------------------
+
+def create_pi_test_orthonormal_basis(
+    normal: Sequence[float],
+    *,
+    reference: Optional[Sequence[float]] = None,
+) -> Tuple[
+    Tuple[float, float, float],
+    Tuple[float, float, float],
+    Tuple[float, float, float],
+]:
+    """
+    Return two in-plane vectors and one normalized plane normal.
+    """
+
+    normal_vector = _pi_test_normalize(
+        normal
+    )
+
+    if reference is None:
+        reference_vector = (
+            (1.0, 0.0, 0.0)
+            if abs(normal_vector[0]) < 0.9
+            else (0.0, 1.0, 0.0)
+        )
+
+    else:
+        reference_vector = _pi_test_normalize(
+            reference
+        )
+
+    first_axis = _pi_test_cross(
+        normal_vector,
+        reference_vector,
+    )
+
+    if _pi_test_norm(
+        first_axis
+    ) <= PI_SELF_TEST_DEFAULT_ABSOLUTE_TOLERANCE:
+        reference_vector = (
+            0.0,
+            0.0,
+            1.0,
+        )
+
+        first_axis = _pi_test_cross(
+            normal_vector,
+            reference_vector,
+        )
+
+    first_axis = _pi_test_normalize(
+        first_axis
+    )
+
+    second_axis = _pi_test_normalize(
+        _pi_test_cross(
+            normal_vector,
+            first_axis,
+        )
+    )
+
+    return (
+        first_axis,
+        second_axis,
+        normal_vector,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.14. Construção de átomos simulados
+# -----------------------------------------------------------------------------
+
+def create_mock_pi_atom(
+    index: int,
+    name: str,
+    element: str,
+    coordinate: Sequence[float],
+    *,
+    residue_name: str = "LIG",
+    residue_number: int = 1,
+    chain_id: str = "L",
+    formal_charge: float = 0.0,
+    partial_charge: float = 0.0,
+    aromatic: bool = False,
+    atom_type: Optional[str] = None,
+    model_id: Optional[str] = "1",
+    pose_id: Optional[str] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> MockPiAtom:
+    """
+    Create one deterministic mock atom.
+    """
+
+    return MockPiAtom(
+        index=int(index),
+        name=str(name),
+        element=str(element).upper(),
+        coordinate=_pi_test_vector3(
+            coordinate
+        ),
+        residue_name=str(
+            residue_name
+        ).upper(),
+        residue_number=int(
+            residue_number
+        ),
+        chain_id=str(
+            chain_id
+        ),
+        formal_charge=float(
+            formal_charge
+        ),
+        partial_charge=float(
+            partial_charge
+        ),
+        aromatic=bool(
+            aromatic
+        ),
+        atom_type=atom_type,
+        model_id=(
+            None
+            if model_id is None
+            else str(model_id)
+        ),
+        pose_id=(
+            None
+            if pose_id is None
+            else str(pose_id)
+        ),
+        metadata=dict(
+            metadata or {}
+        ),
+    )
+
+
+def create_mock_pi_residue(
+    residue_name: str,
+    residue_number: int,
+    chain_id: str,
+    *,
+    atoms: Optional[Iterable[MockPiAtom]] = None,
+    model_id: Optional[str] = "1",
+    pose_id: Optional[str] = None,
+    molecule_type: str = "protein",
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> MockPiResidue:
+    """
+    Create a residue and synchronize all atom identifiers.
+    """
+
+    residue = MockPiResidue(
+        residue_name=str(
+            residue_name
+        ).upper(),
+        residue_number=int(
+            residue_number
+        ),
+        chain_id=str(
+            chain_id
+        ),
+        model_id=(
+            None
+            if model_id is None
+            else str(model_id)
+        ),
+        pose_id=(
+            None
+            if pose_id is None
+            else str(pose_id)
+        ),
+        molecule_type=str(
+            molecule_type
+        ),
+        metadata=dict(
+            metadata or {}
+        ),
+    )
+
+    for atom in atoms or ():
+        residue.add_atom(
+            atom
+        )
+
+    return residue
+
+
+# -----------------------------------------------------------------------------
+# 18.1.15. Construção de anel ideal
+# -----------------------------------------------------------------------------
+
+def create_ideal_aromatic_ring_coordinates(
+    *,
+    atom_count: int = 6,
+    radius: float = PI_SELF_TEST_BENZENE_RADIUS,
+    center: Sequence[float] = (0.0, 0.0, 0.0),
+    normal: Sequence[float] = (0.0, 0.0, 1.0),
+    phase_degrees: float = 0.0,
+) -> List[Tuple[float, float, float]]:
+    """
+    Construct a regular planar polygon representing an ideal aromatic ring.
+    """
+
+    atom_count = int(
+        atom_count
+    )
+
+    if atom_count < 3:
+        raise PiSelfTestFixtureError(
+            "An aromatic ring requires at least three atoms."
+        )
+
+    radius = float(
+        radius
+    )
+
+    if radius <= 0.0:
+        raise PiSelfTestFixtureError(
+            "Ring radius must be positive."
+        )
+
+    center_vector = _pi_test_vector3(
+        center
+    )
+
+    axis_1, axis_2, _ = create_pi_test_orthonormal_basis(
+        normal
+    )
+
+    phase_radians = math.radians(
+        float(phase_degrees)
+    )
+
+    coordinates: List[
+        Tuple[float, float, float]
+    ] = []
+
+    for atom_index in range(
+        atom_count
+    ):
+        angle = (
+            2.0
+            * math.pi
+            * atom_index
+            / atom_count
+            + phase_radians
+        )
+
+        radial_vector = _pi_test_vector_add(
+            _pi_test_vector_scale(
+                axis_1,
+                radius * math.cos(angle),
+            ),
+            _pi_test_vector_scale(
+                axis_2,
+                radius * math.sin(angle),
+            ),
+        )
+
+        coordinates.append(
+            _pi_test_vector_add(
+                center_vector,
+                radial_vector,
+            )
+        )
+
+    return coordinates
+
+
+def create_mock_aromatic_ring(
+    *,
+    ring_id: str = "ring-1",
+    atom_count: int = 6,
+    radius: float = PI_SELF_TEST_BENZENE_RADIUS,
+    center: Sequence[float] = (0.0, 0.0, 0.0),
+    normal: Sequence[float] = (0.0, 0.0, 1.0),
+    phase_degrees: float = 0.0,
+    residue_name: str = "PHE",
+    residue_number: int = 100,
+    chain_id: str = "A",
+    participant_type: str = "protein",
+    model_id: Optional[str] = "1",
+    pose_id: Optional[str] = None,
+    atom_name_prefix: str = "C",
+    element: str = "C",
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> MockPiAromaticSystem:
+    """
+    Build an ideal regular aromatic ring.
+    """
+
+    coordinates = create_ideal_aromatic_ring_coordinates(
+        atom_count=atom_count,
+        radius=radius,
+        center=center,
+        normal=normal,
+        phase_degrees=phase_degrees,
+    )
+
+    atoms: List[
+        MockPiAtom
+    ] = []
+
+    for index, coordinate in enumerate(
+        coordinates,
+        start=1,
+    ):
+        atom = create_mock_pi_atom(
+            index=index,
+            name=f"{atom_name_prefix}{index}",
+            element=element,
+            coordinate=coordinate,
+            residue_name=residue_name,
+            residue_number=residue_number,
+            chain_id=chain_id,
+            aromatic=True,
+            atom_type="aromatic",
+            model_id=model_id,
+            pose_id=pose_id,
+        )
+
+        atoms.append(
+            atom
+        )
+
+    for index, atom in enumerate(
+        atoms
+    ):
+        previous_atom = atoms[
+            index - 1
+        ]
+        next_atom = atoms[
+            (index + 1) % len(atoms)
+        ]
+
+        atom.bonds = [
+            previous_atom,
+            next_atom,
+        ]
+
+    normalized_normal = _pi_test_normalize(
+        normal
+    )
+
+    return MockPiAromaticSystem(
+        ring_id=str(
+            ring_id
+        ),
+        atoms=atoms,
+        centroid=_pi_test_centroid(
+            coordinates
+        ),
+        normal=normalized_normal,
+        planarity=0.0,
+        residue_name=str(
+            residue_name
+        ).upper(),
+        residue_number=int(
+            residue_number
+        ),
+        chain_id=str(
+            chain_id
+        ),
+        participant_type=str(
+            participant_type
+        ),
+        model_id=(
+            None
+            if model_id is None
+            else str(model_id)
+        ),
+        pose_id=(
+            None
+            if pose_id is None
+            else str(pose_id)
+        ),
+        metadata=dict(
+            metadata or {}
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.16. Anéis em geometrias de teste
+# -----------------------------------------------------------------------------
+
+def create_parallel_pi_ring_pair(
+    *,
+    separation: float = 3.8,
+    lateral_offset: float = 0.0,
+    rotation_degrees: float = 0.0,
+    first_center: Sequence[float] = (0.0, 0.0, 0.0),
+    normal: Sequence[float] = (0.0, 0.0, 1.0),
+    first_ring_id: str = "protein-ring",
+    second_ring_id: str = "ligand-ring",
+) -> Tuple[
+    MockPiAromaticSystem,
+    MockPiAromaticSystem,
+]:
+    """
+    Construct a parallel π–π pair with controlled separation and offset.
+    """
+
+    axis_1, _, normal_vector = create_pi_test_orthonormal_basis(
+        normal
+    )
+
+    first_center_vector = _pi_test_vector3(
+        first_center
+    )
+
+    second_center = _pi_test_vector_add(
+        first_center_vector,
+        _pi_test_vector_add(
+            _pi_test_vector_scale(
+                normal_vector,
+                float(separation),
+            ),
+            _pi_test_vector_scale(
+                axis_1,
+                float(lateral_offset),
+            ),
+        ),
+    )
+
+    first_ring = create_mock_aromatic_ring(
+        ring_id=first_ring_id,
+        center=first_center_vector,
+        normal=normal_vector,
+        phase_degrees=0.0,
+        residue_name="PHE",
+        residue_number=100,
+        chain_id="A",
+        participant_type="protein",
+    )
+
+    second_ring = create_mock_aromatic_ring(
+        ring_id=second_ring_id,
+        center=second_center,
+        normal=normal_vector,
+        phase_degrees=rotation_degrees,
+        residue_name="LIG",
+        residue_number=1,
+        chain_id="L",
+        participant_type="ligand",
+    )
+
+    return (
+        first_ring,
+        second_ring,
+    )
+
+
+def create_t_shaped_pi_ring_pair(
+    *,
+    separation: float = 5.0,
+    lateral_offset: float = 0.0,
+) -> Tuple[
+    MockPiAromaticSystem,
+    MockPiAromaticSystem,
+]:
+    """
+    Construct an idealized T-shaped π–π arrangement.
+    """
+
+    first_ring = create_mock_aromatic_ring(
+        ring_id="protein-ring",
+        center=(0.0, 0.0, 0.0),
+        normal=(0.0, 0.0, 1.0),
+        residue_name="PHE",
+        residue_number=100,
+        chain_id="A",
+        participant_type="protein",
+    )
+
+    second_ring = create_mock_aromatic_ring(
+        ring_id="ligand-ring",
+        center=(
+            float(lateral_offset),
+            0.0,
+            float(separation),
+        ),
+        normal=(1.0, 0.0, 0.0),
+        residue_name="LIG",
+        residue_number=1,
+        chain_id="L",
+        participant_type="ligand",
+    )
+
+    return (
+        first_ring,
+        second_ring,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.17. Grupos carregados simulados
+# -----------------------------------------------------------------------------
+
+def create_mock_charged_group(
+    *,
+    group_id: str,
+    center: Sequence[float],
+    effective_charge: float,
+    group_type: str,
+    atom_count: int = 1,
+    residue_name: str = "LIG",
+    residue_number: int = 1,
+    chain_id: str = "L",
+    participant_type: str = "ligand",
+    model_id: Optional[str] = "1",
+    pose_id: Optional[str] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> MockPiChargedGroup:
+    """
+    Create a compact charged group centered at a controlled position.
+    """
+
+    normalized_center = _pi_test_vector3(
+        center
+    )
+
+    atom_count = max(
+        1,
+        int(atom_count),
+    )
+
+    atoms: List[
+        MockPiAtom
+    ] = []
+
+    for index in range(
+        atom_count
+    ):
+        offset = (
+            0.0
+            if atom_count == 1
+            else (
+                index
+                - (
+                    atom_count - 1
+                )
+                / 2.0
+            )
+            * 0.20
+        )
+
+        coordinate = _pi_test_vector_add(
+            normalized_center,
+            (
+                offset,
+                0.0,
+                0.0,
+            ),
+        )
+
+        atom = create_mock_pi_atom(
+            index=index + 1,
+            name=f"N{index + 1}",
+            element="N" if effective_charge > 0 else "O",
+            coordinate=coordinate,
+            residue_name=residue_name,
+            residue_number=residue_number,
+            chain_id=chain_id,
+            formal_charge=(
+                effective_charge
+                if atom_count == 1
+                else effective_charge / atom_count
+            ),
+            partial_charge=(
+                effective_charge
+                if atom_count == 1
+                else effective_charge / atom_count
+            ),
+            model_id=model_id,
+            pose_id=pose_id,
+        )
+
+        atoms.append(
+            atom
+        )
+
+    return MockPiChargedGroup(
+        group_id=str(
+            group_id
+        ),
+        atoms=atoms,
+        center=normalized_center,
+        effective_charge=float(
+            effective_charge
+        ),
+        group_type=str(
+            group_type
+        ),
+        residue_name=str(
+            residue_name
+        ).upper(),
+        residue_number=int(
+            residue_number
+        ),
+        chain_id=str(
+            chain_id
+        ),
+        participant_type=str(
+            participant_type
+        ),
+        model_id=(
+            None
+            if model_id is None
+            else str(model_id)
+        ),
+        pose_id=(
+            None
+            if pose_id is None
+            else str(pose_id)
+        ),
+        metadata=dict(
+            metadata or {}
+        ),
+    )
+
+
+def create_mock_cation_above_ring(
+    ring: MockPiAromaticSystem,
+    *,
+    height: float = 3.5,
+    radial_offset: float = 0.0,
+    effective_charge: float = 1.0,
+    group_id: str = "cation-1",
+) -> MockPiChargedGroup:
+    """
+    Place a positive group above an aromatic-ring face.
+    """
+
+    axis_1, _, normal = create_pi_test_orthonormal_basis(
+        ring.normal
+    )
+
+    center = _pi_test_vector_add(
+        ring.centroid,
+        _pi_test_vector_add(
+            _pi_test_vector_scale(
+                normal,
+                height,
+            ),
+            _pi_test_vector_scale(
+                axis_1,
+                radial_offset,
+            ),
+        ),
+    )
+
+    return create_mock_charged_group(
+        group_id=group_id,
+        center=center,
+        effective_charge=effective_charge,
+        group_type="cation",
+    )
+
+
+def create_mock_anion_above_ring(
+    ring: MockPiAromaticSystem,
+    *,
+    height: float = 3.5,
+    radial_offset: float = 0.0,
+    effective_charge: float = -1.0,
+    group_id: str = "anion-1",
+) -> MockPiChargedGroup:
+    """
+    Place a negative group above an aromatic-ring face.
+    """
+
+    axis_1, _, normal = create_pi_test_orthonormal_basis(
+        ring.normal
+    )
+
+    center = _pi_test_vector_add(
+        ring.centroid,
+        _pi_test_vector_add(
+            _pi_test_vector_scale(
+                normal,
+                height,
+            ),
+            _pi_test_vector_scale(
+                axis_1,
+                radial_offset,
+            ),
+        ),
+    )
+
+    return create_mock_charged_group(
+        group_id=group_id,
+        center=center,
+        effective_charge=effective_charge,
+        group_type="anion",
+        atom_count=2,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.18. Construção de amida ideal
+# -----------------------------------------------------------------------------
+
+def create_mock_amide_group(
+    *,
+    amide_id: str = "amide-1",
+    center: Sequence[float] = (0.0, 0.0, 0.0),
+    normal: Sequence[float] = (0.0, 0.0, 1.0),
+    carbonyl_direction: Sequence[float] = (1.0, 0.0, 0.0),
+    carbonyl_length: float = 1.23,
+    nitrogen_distance: float = 1.33,
+    residue_name: str = "ASN",
+    residue_number: int = 150,
+    chain_id: str = "A",
+    participant_type: str = "protein",
+    model_id: Optional[str] = "1",
+    pose_id: Optional[str] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> MockPiAmideGroup:
+    """
+    Construct a planar C(=O)-N amide group.
+    """
+
+    center_vector = _pi_test_vector3(
+        center
+    )
+
+    normal_vector = _pi_test_normalize(
+        normal
+    )
+
+    carbonyl_vector = _pi_test_normalize(
+        carbonyl_direction
+    )
+
+    if abs(
+        _pi_test_dot(
+            normal_vector,
+            carbonyl_vector,
+        )
+    ) > 1.0e-4:
+        projection = _pi_test_vector_subtract(
+            carbonyl_vector,
+            _pi_test_vector_scale(
+                normal_vector,
+                _pi_test_dot(
+                    carbonyl_vector,
+                    normal_vector,
+                ),
+            ),
+        )
+
+        carbonyl_vector = _pi_test_normalize(
+            projection
+        )
+
+    nitrogen_direction = _pi_test_normalize(
+        _pi_test_cross(
+            normal_vector,
+            carbonyl_vector,
+        )
+    )
+
+    carbon_coordinate = center_vector
+
+    oxygen_coordinate = _pi_test_vector_add(
+        carbon_coordinate,
+        _pi_test_vector_scale(
+            carbonyl_vector,
+            carbonyl_length,
+        ),
+    )
+
+    nitrogen_coordinate = _pi_test_vector_add(
+        carbon_coordinate,
+        _pi_test_vector_scale(
+            nitrogen_direction,
+            nitrogen_distance,
+        ),
+    )
+
+    carbon_atom = create_mock_pi_atom(
+        1,
+        "C",
+        "C",
+        carbon_coordinate,
+        residue_name=residue_name,
+        residue_number=residue_number,
+        chain_id=chain_id,
+        partial_charge=0.5,
+        model_id=model_id,
+        pose_id=pose_id,
+    )
+
+    oxygen_atom = create_mock_pi_atom(
+        2,
+        "O",
+        "O",
+        oxygen_coordinate,
+        residue_name=residue_name,
+        residue_number=residue_number,
+        chain_id=chain_id,
+        partial_charge=-0.5,
+        model_id=model_id,
+        pose_id=pose_id,
+    )
+
+    nitrogen_atom = create_mock_pi_atom(
+        3,
+        "N",
+        "N",
+        nitrogen_coordinate,
+        residue_name=residue_name,
+        residue_number=residue_number,
+        chain_id=chain_id,
+        partial_charge=0.0,
+        model_id=model_id,
+        pose_id=pose_id,
+    )
+
+    carbon_atom.bonds = [
+        oxygen_atom,
+        nitrogen_atom,
+    ]
+    oxygen_atom.bonds = [
+        carbon_atom
+    ]
+    nitrogen_atom.bonds = [
+        carbon_atom
+    ]
+
+    return MockPiAmideGroup(
+        amide_id=str(
+            amide_id
+        ),
+        carbon_atom=carbon_atom,
+        oxygen_atom=oxygen_atom,
+        nitrogen_atom=nitrogen_atom,
+        center=center_vector,
+        normal=normal_vector,
+        planarity=0.0,
+        residue_name=str(
+            residue_name
+        ).upper(),
+        residue_number=int(
+            residue_number
+        ),
+        chain_id=str(
+            chain_id
+        ),
+        participant_type=str(
+            participant_type
+        ),
+        model_id=(
+            None
+            if model_id is None
+            else str(model_id)
+        ),
+        pose_id=(
+            None
+            if pose_id is None
+            else str(pose_id)
+        ),
+        metadata=dict(
+            metadata or {}
+        ),
+    )
+
+
+def create_mock_amide_above_ring(
+    ring: MockPiAromaticSystem,
+    *,
+    height: float = 3.5,
+    radial_offset: float = 0.0,
+    parallel: bool = True,
+    amide_id: str = "amide-1",
+) -> MockPiAmideGroup:
+    """
+    Place an amide group in a controlled ring-relative geometry.
+    """
+
+    axis_1, axis_2, ring_normal = (
+        create_pi_test_orthonormal_basis(
+            ring.normal
+        )
+    )
+
+    center = _pi_test_vector_add(
+        ring.centroid,
+        _pi_test_vector_add(
+            _pi_test_vector_scale(
+                ring_normal,
+                height,
+            ),
+            _pi_test_vector_scale(
+                axis_1,
+                radial_offset,
+            ),
+        ),
+    )
+
+    amide_normal = (
+        ring_normal
+        if parallel
+        else axis_1
+    )
+
+    return create_mock_amide_group(
+        amide_id=amide_id,
+        center=center,
+        normal=amide_normal,
+        carbonyl_direction=axis_2,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.19. Matrizes de rotação
+# -----------------------------------------------------------------------------
+
+def create_pi_test_rotation_matrix(
+    axis: Sequence[float],
+    angle_degrees: float,
+) -> Tuple[
+    Tuple[float, float, float],
+    Tuple[float, float, float],
+    Tuple[float, float, float],
+]:
+    """
+    Construct a 3×3 rotation matrix using Rodrigues' formula.
+    """
+
+    x, y, z = _pi_test_normalize(
+        axis
+    )
+
+    angle_radians = math.radians(
+        float(angle_degrees)
+    )
+
+    cosine = math.cos(
+        angle_radians
+    )
+    sine = math.sin(
+        angle_radians
+    )
+    one_minus_cosine = 1.0 - cosine
+
+    return (
+        (
+            cosine + x * x * one_minus_cosine,
+            x * y * one_minus_cosine - z * sine,
+            x * z * one_minus_cosine + y * sine,
+        ),
+        (
+            y * x * one_minus_cosine + z * sine,
+            cosine + y * y * one_minus_cosine,
+            y * z * one_minus_cosine - x * sine,
+        ),
+        (
+            z * x * one_minus_cosine - y * sine,
+            z * y * one_minus_cosine + x * sine,
+            cosine + z * z * one_minus_cosine,
+        ),
+    )
+
+
+def apply_pi_test_rotation(
+    coordinate: Sequence[float],
+    rotation_matrix: Sequence[Sequence[float]],
+    *,
+    origin: Sequence[float] = (0.0, 0.0, 0.0),
+) -> Tuple[float, float, float]:
+    """
+    Rotate a coordinate around an arbitrary origin.
+    """
+
+    coordinate_vector = _pi_test_vector3(
+        coordinate
+    )
+    origin_vector = _pi_test_vector3(
+        origin
+    )
+
+    matrix = [
+        _pi_test_vector3(
+            row
+        )
+        for row in rotation_matrix
+    ]
+
+    if len(matrix) != 3:
+        raise PiSelfTestFixtureError(
+            "Rotation matrix must have exactly three rows."
+        )
+
+    relative = _pi_test_vector_subtract(
+        coordinate_vector,
+        origin_vector,
+    )
+
+    rotated_relative = (
+        _pi_test_dot(matrix[0], relative),
+        _pi_test_dot(matrix[1], relative),
+        _pi_test_dot(matrix[2], relative),
+    )
+
+    return _pi_test_vector_add(
+        origin_vector,
+        rotated_relative,
+    )
+
+
+def rotate_pi_test_vector(
+    vector: Sequence[float],
+    rotation_matrix: Sequence[Sequence[float]],
+) -> Tuple[float, float, float]:
+    """
+    Rotate a direction vector without translation.
+    """
+
+    return apply_pi_test_rotation(
+        vector,
+        rotation_matrix,
+        origin=(0.0, 0.0, 0.0),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.20. Transformação rígida
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PiTestRigidTransform:
+    """
+    Immutable rigid transformation used by geometry fixtures.
+    """
+
+    rotation_matrix: Tuple[
+        Tuple[float, float, float],
+        Tuple[float, float, float],
+        Tuple[float, float, float],
+    ] = (
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+    )
+
+    translation: Tuple[float, float, float] = (
+        0.0,
+        0.0,
+        0.0,
+    )
+
+    origin: Tuple[float, float, float] = (
+        0.0,
+        0.0,
+        0.0,
+    )
+
+    def apply_coordinate(
+        self,
+        coordinate: Sequence[float],
+    ) -> Tuple[float, float, float]:
+        rotated = apply_pi_test_rotation(
+            coordinate,
+            self.rotation_matrix,
+            origin=self.origin,
+        )
+
+        return _pi_test_vector_add(
+            rotated,
+            self.translation,
+        )
+
+    def apply_vector(
+        self,
+        vector: Sequence[float],
+    ) -> Tuple[float, float, float]:
+        return rotate_pi_test_vector(
+            vector,
+            self.rotation_matrix,
+        )
+
+
+def create_pi_test_rigid_transform(
+    *,
+    axis: Sequence[float] = (0.0, 0.0, 1.0),
+    angle_degrees: float = 0.0,
+    translation: Sequence[float] = (0.0, 0.0, 0.0),
+    origin: Sequence[float] = (0.0, 0.0, 0.0),
+) -> PiTestRigidTransform:
+    """
+    Construct a rigid transformation.
+    """
+
+    return PiTestRigidTransform(
+        rotation_matrix=create_pi_test_rotation_matrix(
+            axis,
+            angle_degrees,
+        ),
+        translation=_pi_test_vector3(
+            translation
+        ),
+        origin=_pi_test_vector3(
+            origin
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.21. Transformações de fixtures
+# -----------------------------------------------------------------------------
+
+def transform_mock_pi_atom(
+    atom: MockPiAtom,
+    transform: PiTestRigidTransform,
+    *,
+    in_place: bool = False,
+) -> MockPiAtom:
+    """
+    Apply a rigid transform to an atom.
+    """
+
+    transformed = (
+        atom
+        if in_place
+        else atom.copy(
+            bonds=list(atom.bonds),
+            metadata=dict(atom.metadata),
+        )
+    )
+
+    transformed.coordinate = transform.apply_coordinate(
+        atom.coordinate
+    )
+
+    return transformed
+
+
+def transform_mock_aromatic_ring(
+    ring: MockPiAromaticSystem,
+    transform: PiTestRigidTransform,
+    *,
+    in_place: bool = False,
+) -> MockPiAromaticSystem:
+    """
+    Apply a rigid transform to all ring atoms, centroid and normal.
+    """
+
+    transformed = (
+        ring
+        if in_place
+        else ring.copy(
+            deep=True
+        )
+    )
+
+    for atom in transformed.atoms:
+        atom.coordinate = transform.apply_coordinate(
+            atom.coordinate
+        )
+
+    transformed.centroid = transform.apply_coordinate(
+        ring.centroid
+    )
+
+    transformed.normal = _pi_test_normalize(
+        transform.apply_vector(
+            ring.normal
+        )
+    )
+
+    return transformed
+
+
+def transform_mock_charged_group(
+    group: MockPiChargedGroup,
+    transform: PiTestRigidTransform,
+    *,
+    in_place: bool = False,
+) -> MockPiChargedGroup:
+    """
+    Apply a rigid transform to a charged group.
+    """
+
+    transformed = (
+        group
+        if in_place
+        else group.copy(
+            deep=True
+        )
+    )
+
+    for atom in transformed.atoms:
+        atom.coordinate = transform.apply_coordinate(
+            atom.coordinate
+        )
+
+    transformed.center = transform.apply_coordinate(
+        group.center
+    )
+
+    return transformed
+
+
+def transform_mock_amide_group(
+    group: MockPiAmideGroup,
+    transform: PiTestRigidTransform,
+    *,
+    in_place: bool = False,
+) -> MockPiAmideGroup:
+    """
+    Apply a rigid transform to an amide group.
+    """
+
+    transformed = (
+        group
+        if in_place
+        else group.copy(
+            deep=True
+        )
+    )
+
+    for atom in transformed.atoms:
+        atom.coordinate = transform.apply_coordinate(
+            atom.coordinate
+        )
+
+    transformed.center = transform.apply_coordinate(
+        group.center
+    )
+
+    transformed.normal = _pi_test_normalize(
+        transform.apply_vector(
+            group.normal
+        )
+    )
+
+    return transformed
+
+
+def translate_mock_aromatic_ring(
+    ring: MockPiAromaticSystem,
+    translation: Sequence[float],
+    *,
+    in_place: bool = False,
+) -> MockPiAromaticSystem:
+    return transform_mock_aromatic_ring(
+        ring,
+        create_pi_test_rigid_transform(
+            translation=translation
+        ),
+        in_place=in_place,
+    )
+
+
+def rotate_mock_aromatic_ring(
+    ring: MockPiAromaticSystem,
+    *,
+    axis: Sequence[float],
+    angle_degrees: float,
+    origin: Optional[Sequence[float]] = None,
+    in_place: bool = False,
+) -> MockPiAromaticSystem:
+    return transform_mock_aromatic_ring(
+        ring,
+        create_pi_test_rigid_transform(
+            axis=axis,
+            angle_degrees=angle_degrees,
+            origin=(
+                ring.centroid
+                if origin is None
+                else origin
+            ),
+        ),
+        in_place=in_place,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.22. Perturbações controladas
+# -----------------------------------------------------------------------------
+
+def perturb_mock_ring_out_of_plane(
+    ring: MockPiAromaticSystem,
+    *,
+    amplitude: float,
+    atom_indices: Optional[Iterable[int]] = None,
+    in_place: bool = False,
+) -> MockPiAromaticSystem:
+    """
+    Introduce deterministic out-of-plane deviations.
+    """
+
+    transformed = (
+        ring
+        if in_place
+        else ring.copy(
+            deep=True
+        )
+    )
+
+    selected_indices = (
+        set(
+            int(index)
+            for index in atom_indices
+        )
+        if atom_indices is not None
+        else set(
+            range(
+                len(transformed.atoms)
+            )
+        )
+    )
+
+    normal = _pi_test_normalize(
+        transformed.normal
+    )
+
+    amplitude = float(
+        amplitude
+    )
+
+    for index, atom in enumerate(
+        transformed.atoms
+    ):
+        if index not in selected_indices:
+            continue
+
+        sign = (
+            1.0
+            if index % 2 == 0
+            else -1.0
+        )
+
+        atom.coordinate = _pi_test_vector_add(
+            atom.coordinate,
+            _pi_test_vector_scale(
+                normal,
+                sign * amplitude,
+            ),
+        )
+
+    transformed.centroid = _pi_test_centroid(
+        atom.coordinate
+        for atom in transformed.atoms
+    )
+
+    transformed.planarity = abs(
+        amplitude
+    )
+
+    return transformed
+
+
+# -----------------------------------------------------------------------------
+# 18.1.23. Estruturas compostas
+# -----------------------------------------------------------------------------
+
+def create_mock_pi_test_structure(
+    *,
+    pose_id: Optional[str] = "pose-1",
+    include_protein_ring: bool = True,
+    include_ligand_ring: bool = True,
+    include_cation: bool = True,
+    include_anion: bool = True,
+    include_amide: bool = True,
+) -> MockPiStructure:
+    """
+    Build a compact structure containing all Section 8–10 feature classes.
+    """
+
+    structure = MockPiStructure(
+        structure_id="pi-self-test-structure",
+        model_id="1",
+        pose_id=pose_id,
+    )
+
+    protein_ring: Optional[
+        MockPiAromaticSystem
+    ] = None
+
+    if include_protein_ring:
+        protein_ring = create_mock_aromatic_ring(
+            ring_id="protein-ring",
+            center=(0.0, 0.0, 0.0),
+            normal=(0.0, 0.0, 1.0),
+            residue_name="PHE",
+            residue_number=100,
+            chain_id="A",
+            participant_type="protein",
+            model_id="1",
+            pose_id=pose_id,
+        )
+
+        structure.aromatic_systems.append(
+            protein_ring
+        )
+
+        structure.add_residue(
+            create_mock_pi_residue(
+                "PHE",
+                100,
+                "A",
+                atoms=protein_ring.atoms,
+                model_id="1",
+                pose_id=pose_id,
+                molecule_type="protein",
+            )
+        )
+
+    if include_ligand_ring:
+        ligand_ring = create_mock_aromatic_ring(
+            ring_id="ligand-ring",
+            center=(0.0, 0.0, 3.8),
+            normal=(0.0, 0.0, 1.0),
+            residue_name="LIG",
+            residue_number=1,
+            chain_id="L",
+            participant_type="ligand",
+            model_id="1",
+            pose_id=pose_id,
+        )
+
+        structure.aromatic_systems.append(
+            ligand_ring
+        )
+
+        structure.add_residue(
+            create_mock_pi_residue(
+                "LIG",
+                1,
+                "L",
+                atoms=ligand_ring.atoms,
+                model_id="1",
+                pose_id=pose_id,
+                molecule_type="ligand",
+            )
+        )
+
+    reference_ring = (
+        protein_ring
+        if protein_ring is not None
+        else (
+            structure.aromatic_systems[0]
+            if structure.aromatic_systems
+            else create_mock_aromatic_ring()
+        )
+    )
+
+    if include_cation:
+        structure.positive_groups.append(
+            create_mock_cation_above_ring(
+                reference_ring,
+                height=3.4,
+                group_id="cation-1",
+            )
+        )
+
+    if include_anion:
+        structure.negative_groups.append(
+            create_mock_anion_above_ring(
+                reference_ring,
+                height=3.6,
+                group_id="anion-1",
+            )
+        )
+
+    if include_amide:
+        structure.amide_groups.append(
+            create_mock_amide_above_ring(
+                reference_ring,
+                height=3.5,
+                amide_id="amide-1",
+            )
+        )
+
+    return structure
+
+
+def create_mock_pi_pose_series(
+    *,
+    pose_count: int = 3,
+    base_separation: float = 3.6,
+    separation_step: float = 0.4,
+) -> Dict[str, MockPiStructure]:
+    """
+    Construct deterministic mock poses with progressively altered geometry.
+    """
+
+    pose_count = int(
+        pose_count
+    )
+
+    if pose_count < 1:
+        raise PiSelfTestFixtureError(
+            "pose_count must be at least 1."
+        )
+
+    poses: Dict[
+        str,
+        MockPiStructure
+    ] = {}
+
+    for pose_index in range(
+        1,
+        pose_count + 1,
+    ):
+        pose_id = f"pose-{pose_index}"
+
+        structure = create_mock_pi_test_structure(
+            pose_id=pose_id,
+            include_ligand_ring=False,
+            include_cation=False,
+            include_anion=False,
+            include_amide=False,
+        )
+
+        ligand_ring = create_mock_aromatic_ring(
+            ring_id="ligand-ring",
+            center=(
+                0.15 * (pose_index - 1),
+                0.0,
+                base_separation
+                + separation_step
+                * (pose_index - 1),
+            ),
+            normal=(0.0, 0.0, 1.0),
+            residue_name="LIG",
+            residue_number=1,
+            chain_id="L",
+            participant_type="ligand",
+            model_id="1",
+            pose_id=pose_id,
+        )
+
+        structure.aromatic_systems.append(
+            ligand_ring
+        )
+
+        structure.add_residue(
+            create_mock_pi_residue(
+                "LIG",
+                1,
+                "L",
+                atoms=ligand_ring.atoms,
+                model_id="1",
+                pose_id=pose_id,
+                molecule_type="ligand",
+            )
+        )
+
+        poses[
+            pose_id
+        ] = structure
+
+    return poses
+
+
+# -----------------------------------------------------------------------------
+# 18.1.24. Asserções gerais
+# -----------------------------------------------------------------------------
+
+def assert_pi_true(
+    condition: Any,
+    message: str = "Expected condition to be true.",
+) -> None:
+    if not condition:
+        raise PiSelfTestAssertionError(
+            message
+        )
+
+
+def assert_pi_false(
+    condition: Any,
+    message: str = "Expected condition to be false.",
+) -> None:
+    if condition:
+        raise PiSelfTestAssertionError(
+            message
+        )
+
+
+def assert_pi_equal(
+    actual: Any,
+    expected: Any,
+    message: Optional[str] = None,
+) -> None:
+    if actual != expected:
+        raise PiSelfTestAssertionError(
+            message
+            or (
+                f"Expected {expected!r}, "
+                f"received {actual!r}."
+            )
+        )
+
+
+def assert_pi_not_equal(
+    actual: Any,
+    unexpected: Any,
+    message: Optional[str] = None,
+) -> None:
+    if actual == unexpected:
+        raise PiSelfTestAssertionError(
+            message
+            or (
+                f"Did not expect {unexpected!r}."
+            )
+        )
+
+
+def assert_pi_is_none(
+    value: Any,
+    message: str = "Expected value to be None.",
+) -> None:
+    if value is not None:
+        raise PiSelfTestAssertionError(
+            f"{message} Received {value!r}."
+        )
+
+
+def assert_pi_is_not_none(
+    value: Any,
+    message: str = "Expected a non-None value.",
+) -> None:
+    if value is None:
+        raise PiSelfTestAssertionError(
+            message
+        )
+
+
+def assert_pi_is_instance(
+    value: Any,
+    expected_type: Union[
+        Type[Any],
+        Tuple[Type[Any], ...],
+    ],
+    message: Optional[str] = None,
+) -> None:
+    if not isinstance(
+        value,
+        expected_type,
+    ):
+        raise PiSelfTestAssertionError(
+            message
+            or (
+                f"Expected instance of {expected_type!r}, "
+                f"received {type(value)!r}."
+            )
+        )
+
+
+def assert_pi_length(
+    value: Any,
+    expected_length: int,
+    message: Optional[str] = None,
+) -> None:
+    try:
+        actual_length = len(
+            value
+        )
+
+    except TypeError as exc:
+        raise PiSelfTestAssertionError(
+            f"Object has no length: {value!r}."
+        ) from exc
+
+    if actual_length != expected_length:
+        raise PiSelfTestAssertionError(
+            message
+            or (
+                f"Expected length {expected_length}, "
+                f"received {actual_length}."
+            )
+        )
+
+
+def assert_pi_in(
+    member: Any,
+    container: Any,
+    message: Optional[str] = None,
+) -> None:
+    if member not in container:
+        raise PiSelfTestAssertionError(
+            message
+            or (
+                f"Expected {member!r} to be present "
+                f"in {container!r}."
+            )
+        )
+
+
+def assert_pi_not_in(
+    member: Any,
+    container: Any,
+    message: Optional[str] = None,
+) -> None:
+    if member in container:
+        raise PiSelfTestAssertionError(
+            message
+            or (
+                f"Expected {member!r} not to be present "
+                f"in {container!r}."
+            )
+        )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.25. Asserções numéricas
+# -----------------------------------------------------------------------------
+
+def assert_pi_close(
+    actual: Any,
+    expected: Any,
+    *,
+    absolute_tolerance: float = (
+        PI_SELF_TEST_DEFAULT_ABSOLUTE_TOLERANCE
+    ),
+    relative_tolerance: float = (
+        PI_SELF_TEST_DEFAULT_RELATIVE_TOLERANCE
+    ),
+    message: Optional[str] = None,
+) -> None:
+    """
+    Assert numeric equality using absolute and relative tolerances.
+    """
+
+    try:
+        actual_value = float(
+            actual
+        )
+        expected_value = float(
+            expected
+        )
+
+    except (TypeError, ValueError) as exc:
+        raise PiSelfTestAssertionError(
+            f"Values are not numeric: "
+            f"{actual!r}, {expected!r}."
+        ) from exc
+
+    if not math.isclose(
+        actual_value,
+        expected_value,
+        abs_tol=float(
+            absolute_tolerance
+        ),
+        rel_tol=float(
+            relative_tolerance
+        ),
+    ):
+        difference = abs(
+            actual_value - expected_value
+        )
+
+        raise PiSelfTestAssertionError(
+            message
+            or (
+                f"Expected {expected_value!r}, "
+                f"received {actual_value!r}; "
+                f"difference={difference!r}."
+            )
+        )
+
+
+def assert_pi_less(
+    actual: Any,
+    limit: Any,
+    message: Optional[str] = None,
+) -> None:
+    if not actual < limit:
+        raise PiSelfTestAssertionError(
+            message
+            or (
+                f"Expected {actual!r} < {limit!r}."
+            )
+        )
+
+
+def assert_pi_less_equal(
+    actual: Any,
+    limit: Any,
+    message: Optional[str] = None,
+) -> None:
+    if not actual <= limit:
+        raise PiSelfTestAssertionError(
+            message
+            or (
+                f"Expected {actual!r} <= {limit!r}."
+            )
+        )
+
+
+def assert_pi_greater(
+    actual: Any,
+    limit: Any,
+    message: Optional[str] = None,
+) -> None:
+    if not actual > limit:
+        raise PiSelfTestAssertionError(
+            message
+            or (
+                f"Expected {actual!r} > {limit!r}."
+            )
+        )
+
+
+def assert_pi_greater_equal(
+    actual: Any,
+    limit: Any,
+    message: Optional[str] = None,
+) -> None:
+    if not actual >= limit:
+        raise PiSelfTestAssertionError(
+            message
+            or (
+                f"Expected {actual!r} >= {limit!r}."
+            )
+        )
+
+
+def assert_pi_between(
+    actual: Any,
+    minimum: Any,
+    maximum: Any,
+    *,
+    inclusive: bool = True,
+    message: Optional[str] = None,
+) -> None:
+    if inclusive:
+        valid = (
+            minimum
+            <= actual
+            <= maximum
+        )
+    else:
+        valid = (
+            minimum
+            < actual
+            < maximum
+        )
+
+    if not valid:
+        operator_text = (
+            "≤"
+            if inclusive
+            else "<"
+        )
+
+        raise PiSelfTestAssertionError(
+            message
+            or (
+                f"Expected {minimum!r} "
+                f"{operator_text} {actual!r} "
+                f"{operator_text} {maximum!r}."
+            )
+        )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.26. Asserções vetoriais e geométricas
+# -----------------------------------------------------------------------------
+
+def assert_pi_vector_close(
+    actual: Sequence[float],
+    expected: Sequence[float],
+    *,
+    absolute_tolerance: float = (
+        PI_SELF_TEST_DEFAULT_ABSOLUTE_TOLERANCE
+    ),
+    relative_tolerance: float = (
+        PI_SELF_TEST_DEFAULT_RELATIVE_TOLERANCE
+    ),
+    message: Optional[str] = None,
+) -> None:
+    actual_vector = _pi_test_vector3(
+        actual
+    )
+    expected_vector = _pi_test_vector3(
+        expected
+    )
+
+    for index, (
+        actual_component,
+        expected_component,
+    ) in enumerate(
+        zip(
+            actual_vector,
+            expected_vector,
+        )
+    ):
+        try:
+            assert_pi_close(
+                actual_component,
+                expected_component,
+                absolute_tolerance=absolute_tolerance,
+                relative_tolerance=relative_tolerance,
+            )
+
+        except PiSelfTestAssertionError as exc:
+            raise PiSelfTestAssertionError(
+                message
+                or (
+                    f"Vector mismatch at component {index}: "
+                    f"expected {expected_vector!r}, "
+                    f"received {actual_vector!r}."
+                )
+            ) from exc
+
+
+def assert_pi_unit_vector(
+    vector: Sequence[float],
+    *,
+    tolerance: float = 1.0e-6,
+    message: Optional[str] = None,
+) -> None:
+    magnitude = _pi_test_norm(
+        vector
+    )
+
+    assert_pi_close(
+        magnitude,
+        1.0,
+        absolute_tolerance=tolerance,
+        relative_tolerance=tolerance,
+        message=(
+            message
+            or (
+                f"Expected a unit vector, "
+                f"received magnitude {magnitude!r}."
+            )
+        ),
+    )
+
+
+def assert_pi_orthogonal(
+    vector_1: Sequence[float],
+    vector_2: Sequence[float],
+    *,
+    tolerance: float = 1.0e-6,
+    message: Optional[str] = None,
+) -> None:
+    dot_product = _pi_test_dot(
+        vector_1,
+        vector_2,
+    )
+
+    assert_pi_close(
+        dot_product,
+        0.0,
+        absolute_tolerance=tolerance,
+        relative_tolerance=0.0,
+        message=(
+            message
+            or (
+                f"Expected orthogonal vectors; "
+                f"dot product={dot_product!r}."
+            )
+        ),
+    )
+
+
+def assert_pi_parallel(
+    vector_1: Sequence[float],
+    vector_2: Sequence[float],
+    *,
+    angle_tolerance: float = (
+        PI_SELF_TEST_DEFAULT_ANGLE_TOLERANCE
+    ),
+    message: Optional[str] = None,
+) -> None:
+    angle = _pi_test_angle_degrees(
+        vector_1,
+        vector_2,
+        unsigned=True,
+    )
+
+    assert_pi_less_equal(
+        angle,
+        angle_tolerance,
+        message=(
+            message
+            or (
+                f"Expected parallel vectors; "
+                f"unsigned angle={angle:.8f}°."
+            )
+        ),
+    )
+
+
+def assert_pi_angle_close(
+    vector_1: Sequence[float],
+    vector_2: Sequence[float],
+    expected_angle: float,
+    *,
+    tolerance: float = 1.0e-5,
+    unsigned: bool = True,
+    message: Optional[str] = None,
+) -> None:
+    angle = _pi_test_angle_degrees(
+        vector_1,
+        vector_2,
+        unsigned=unsigned,
+    )
+
+    assert_pi_close(
+        angle,
+        expected_angle,
+        absolute_tolerance=tolerance,
+        relative_tolerance=0.0,
+        message=(
+            message
+            or (
+                f"Expected angle {expected_angle:.8f}°, "
+                f"received {angle:.8f}°."
+            )
+        ),
+    )
+
+
+def assert_pi_centroid_close(
+    objects_or_coordinates: Iterable[Any],
+    expected_centroid: Sequence[float],
+    *,
+    tolerance: float = 1.0e-6,
+) -> None:
+    coordinates = [
+        _pi_test_coordinate(
+            value
+        )
+        for value in objects_or_coordinates
+    ]
+
+    calculated = _pi_test_centroid(
+        coordinates
+    )
+
+    assert_pi_vector_close(
+        calculated,
+        expected_centroid,
+        absolute_tolerance=tolerance,
+        relative_tolerance=tolerance,
+    )
+
+
+def assert_pi_planar(
+    coordinates: Iterable[Sequence[float]],
+    *,
+    normal: Sequence[float] = (0.0, 0.0, 1.0),
+    point_on_plane: Optional[Sequence[float]] = None,
+    tolerance: float = 1.0e-6,
+) -> None:
+    coordinate_list = [
+        _pi_test_vector3(
+            coordinate
+        )
+        for coordinate in coordinates
+    ]
+
+    if not coordinate_list:
+        raise PiSelfTestAssertionError(
+            "Cannot test planarity of an empty collection."
+        )
+
+    normalized_normal = _pi_test_normalize(
+        normal
+    )
+
+    reference_point = (
+        _pi_test_vector3(
+            point_on_plane
+        )
+        if point_on_plane is not None
+        else _pi_test_centroid(
+            coordinate_list
+        )
+    )
+
+    distances = [
+        abs(
+            _pi_test_dot(
+                _pi_test_vector_subtract(
+                    coordinate,
+                    reference_point,
+                ),
+                normalized_normal,
+            )
+        )
+        for coordinate in coordinate_list
+    ]
+
+    maximum_distance = max(
+        distances
+    )
+
+    if maximum_distance > tolerance:
+        raise PiSelfTestAssertionError(
+            "Expected planar coordinates; "
+            f"maximum plane deviation={maximum_distance:.8f}."
+        )
+
+
+def assert_pi_regular_ring(
+    ring: MockPiAromaticSystem,
+    *,
+    expected_radius: Optional[float] = None,
+    tolerance: float = 1.0e-6,
+) -> None:
+    """
+    Assert centroid, radius, planarity and edge-length regularity.
+    """
+
+    assert_pi_greater_equal(
+        len(ring.atoms),
+        3,
+    )
+
+    assert_pi_centroid_close(
+        ring.atoms,
+        ring.centroid,
+        tolerance=tolerance,
+    )
+
+    assert_pi_planar(
+        [
+            atom.coordinate
+            for atom in ring.atoms
+        ],
+        normal=ring.normal,
+        point_on_plane=ring.centroid,
+        tolerance=tolerance,
+    )
+
+    radii = [
+        _pi_test_distance(
+            atom.coordinate,
+            ring.centroid,
+        )
+        for atom in ring.atoms
+    ]
+
+    mean_radius = sum(
+        radii
+    ) / len(radii)
+
+    for radius in radii:
+        assert_pi_close(
+            radius,
+            mean_radius,
+            absolute_tolerance=tolerance,
+            relative_tolerance=tolerance,
+        )
+
+    if expected_radius is not None:
+        assert_pi_close(
+            mean_radius,
+            expected_radius,
+            absolute_tolerance=tolerance,
+            relative_tolerance=tolerance,
+        )
+
+    edge_lengths = [
+        _pi_test_distance(
+            ring.atoms[index].coordinate,
+            ring.atoms[
+                (index + 1)
+                % len(ring.atoms)
+            ].coordinate,
+        )
+        for index in range(
+            len(ring.atoms)
+        )
+    ]
+
+    mean_edge_length = sum(
+        edge_lengths
+    ) / len(edge_lengths)
+
+    for edge_length in edge_lengths:
+        assert_pi_close(
+            edge_length,
+            mean_edge_length,
+            absolute_tolerance=tolerance,
+            relative_tolerance=tolerance,
+        )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.27. Asserções de coleções e interações
+# -----------------------------------------------------------------------------
+
+def assert_pi_collection_types(
+    collection: Iterable[Any],
+    expected_type: Type[Any],
+) -> None:
+    for index, item in enumerate(
+        collection
+    ):
+        if not isinstance(
+            item,
+            expected_type,
+        ):
+            raise PiSelfTestAssertionError(
+                f"Item {index} is {type(item)!r}; "
+                f"expected {expected_type!r}."
+            )
+
+
+def assert_pi_unique(
+    values: Iterable[Any],
+    *,
+    key: Optional[Callable[[Any], Hashable]] = None,
+) -> None:
+    seen: Set[
+        Hashable
+    ] = set()
+
+    for value in values:
+        signature = (
+            key(value)
+            if key is not None
+            else value
+        )
+
+        if signature in seen:
+            raise PiSelfTestAssertionError(
+                f"Duplicate value found: {signature!r}."
+            )
+
+        seen.add(
+            signature
+        )
+
+
+def assert_pi_interaction_type(
+    interaction: Any,
+    expected_type: str,
+) -> None:
+    actual_type = str(
+        _pi_test_get_value(
+            interaction,
+            (
+                "interaction_type",
+                "type",
+            ),
+            "unknown",
+        )
+    ).strip().lower()
+
+    expected_type = str(
+        expected_type
+    ).strip().lower()
+
+    aliases = {
+        "pi_pi": "pi-pi",
+        "π–π": "pi-pi",
+        "cation_pi": "cation-pi",
+        "anion_pi": "anion-pi",
+        "amide_pi": "amide-pi",
+    }
+
+    actual_type = aliases.get(
+        actual_type,
+        actual_type,
+    )
+
+    expected_type = aliases.get(
+        expected_type,
+        expected_type,
+    )
+
+    assert_pi_equal(
+        actual_type,
+        expected_type,
+    )
+
+
+def assert_pi_interaction_accepted(
+    interaction_or_evaluation: Any,
+) -> None:
+    accepted = bool(
+        _pi_test_get_value(
+            interaction_or_evaluation,
+            (
+                "accepted",
+                "valid",
+            ),
+            False,
+        )
+    )
+
+    assert_pi_true(
+        accepted,
+        "Expected interaction or evaluation to be accepted.",
+    )
+
+
+def assert_pi_interaction_rejected(
+    interaction_or_evaluation: Any,
+) -> None:
+    accepted = bool(
+        _pi_test_get_value(
+            interaction_or_evaluation,
+            (
+                "accepted",
+                "valid",
+            ),
+            False,
+        )
+    )
+
+    assert_pi_false(
+        accepted,
+        "Expected interaction or evaluation to be rejected.",
+    )
+
+
+def assert_pi_score_range(
+    interaction_or_score: Any,
+    *,
+    minimum: float = 0.0,
+    maximum: float = 100.0,
+) -> None:
+    if isinstance(
+        interaction_or_score,
+        (
+            int,
+            float,
+        ),
+    ):
+        score = float(
+            interaction_or_score
+        )
+
+    else:
+        score = _pi_test_get_value(
+            interaction_or_score,
+            (
+                "normalized_score",
+                "score",
+            ),
+        )
+
+        if score is None:
+            raise PiSelfTestAssertionError(
+                "Interaction has no score."
+            )
+
+        score = float(
+            score
+        )
+
+    assert_pi_between(
+        score,
+        minimum,
+        maximum,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.28. Asserções de exceções
+# -----------------------------------------------------------------------------
+
+@contextlib.contextmanager
+def assert_pi_raises(
+    expected_exception: Union[
+        Type[BaseException],
+        Tuple[Type[BaseException], ...],
+    ],
+    *,
+    message_contains: Optional[str] = None,
+) -> Iterator[BaseException]:
+    """
+    Assert that the context raises a selected exception.
+    """
+
+    captured_exception: Optional[
+        BaseException
+    ] = None
+
+    try:
+        yield captured_exception
+
+    except expected_exception as exc:
+        captured_exception = exc
+
+        if (
+            message_contains is not None
+            and message_contains not in str(exc)
+        ):
+            raise PiSelfTestAssertionError(
+                f"Exception message does not contain "
+                f"{message_contains!r}: {exc!s}"
+            ) from exc
+
+    except BaseException as exc:
+        raise PiSelfTestAssertionError(
+            f"Expected {expected_exception!r}, "
+            f"received {type(exc)!r}: {exc!s}"
+        ) from exc
+
+    else:
+        raise PiSelfTestAssertionError(
+            f"Expected {expected_exception!r} to be raised."
+        )
+
+
+def call_and_assert_pi_raises(
+    function: Callable[..., Any],
+    expected_exception: Union[
+        Type[BaseException],
+        Tuple[Type[BaseException], ...],
+    ],
+    *args: Any,
+    message_contains: Optional[str] = None,
+    **kwargs: Any,
+) -> BaseException:
+    """
+    Functional equivalent of ``assert_pi_raises``.
+    """
+
+    try:
+        function(
+            *args,
+            **kwargs,
+        )
+
+    except expected_exception as exc:
+        if (
+            message_contains is not None
+            and message_contains not in str(exc)
+        ):
+            raise PiSelfTestAssertionError(
+                f"Exception message does not contain "
+                f"{message_contains!r}: {exc!s}"
+            ) from exc
+
+        return exc
+
+    except BaseException as exc:
+        raise PiSelfTestAssertionError(
+            f"Expected {expected_exception!r}, "
+            f"received {type(exc)!r}: {exc!s}"
+        ) from exc
+
+    raise PiSelfTestAssertionError(
+        f"Expected {expected_exception!r} to be raised."
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.29. Helpers genéricos
+# -----------------------------------------------------------------------------
+
+def _pi_test_get_value(
+    object_: Any,
+    names: Sequence[str],
+    default: Any = None,
+) -> Any:
+    if object_ is None:
+        return default
+
+    for name in names:
+        if isinstance(
+            object_,
+            Mapping,
+        ):
+            value = object_.get(
+                name
+            )
+        else:
+            value = getattr(
+                object_,
+                name,
+                None,
+            )
+
+        if value is not None:
+            return value
+
+    return default
+
+
+def skip_pi_self_test(
+    reason: str,
+) -> None:
+    raise PiSelfTestSkipped(
+        reason
+    )
+
+
+def assert_pi_json_serializable(
+    value: Any,
+) -> None:
+    """
+    Assert strict JSON compatibility.
+    """
+
+    try:
+        json.dumps(
+            value,
+            allow_nan=False,
+        )
+
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+    ) as exc:
+        raise PiSelfTestAssertionError(
+            f"Value is not strictly JSON serializable: {exc}"
+        ) from exc
+
+
+# -----------------------------------------------------------------------------
+# 18.1.30. Captura de saída
+# -----------------------------------------------------------------------------
+
+@contextlib.contextmanager
+def capture_pi_test_output(
+) -> Iterator[
+    Tuple[io.StringIO, io.StringIO]
+]:
+    """
+    Capture stdout and stderr during a self-test.
+    """
+
+    standard_output = io.StringIO()
+    standard_error = io.StringIO()
+
+    with (
+        contextlib.redirect_stdout(
+            standard_output
+        ),
+        contextlib.redirect_stderr(
+            standard_error
+        ),
+    ):
+        yield (
+            standard_output,
+            standard_error,
+        )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.31. Executor de caso individual
+# -----------------------------------------------------------------------------
+
+def run_pi_self_test_case(
+    name: str,
+    function: Callable[[], Any],
+    *,
+    section: str,
+    raise_on_failure: bool = False,
+    capture_output: bool = True,
+) -> PiSelfTestCaseResult:
+    """
+    Execute one test function and normalize its result.
+    """
+
+    start_time = time.perf_counter()
+
+    standard_output = io.StringIO()
+    standard_error = io.StringIO()
+
+    try:
+        context = (
+            contextlib.ExitStack()
+        )
+
+        with context:
+            if capture_output:
+                context.enter_context(
+                    contextlib.redirect_stdout(
+                        standard_output
+                    )
+                )
+                context.enter_context(
+                    contextlib.redirect_stderr(
+                        standard_error
+                    )
+                )
+
+            return_value = function()
+
+    except PiSelfTestSkipped as exc:
+        duration = (
+            time.perf_counter()
+            - start_time
+        )
+
+        return PiSelfTestCaseResult(
+            name=name,
+            section=section,
+            status=PI_SELF_TEST_STATUS_SKIPPED,
+            duration_seconds=duration,
+            message=str(exc),
+            metadata={
+                "stdout": standard_output.getvalue(),
+                "stderr": standard_error.getvalue(),
+            },
+        )
+
+    except BaseException as exc:
+        duration = (
+            time.perf_counter()
+            - start_time
+        )
+
+        result = PiSelfTestCaseResult(
+            name=name,
+            section=section,
+            status=PI_SELF_TEST_STATUS_FAILED,
+            duration_seconds=duration,
+            message=str(exc),
+            traceback_text="".join(
+                traceback.format_exception(
+                    type(exc),
+                    exc,
+                    exc.__traceback__,
+                )
+            ),
+            metadata={
+                "exception_type": type(exc).__name__,
+                "stdout": standard_output.getvalue(),
+                "stderr": standard_error.getvalue(),
+            },
+        )
+
+        if raise_on_failure:
+            raise
+
+        return result
+
+    duration = (
+        time.perf_counter()
+        - start_time
+    )
+
+    return PiSelfTestCaseResult(
+        name=name,
+        section=section,
+        status=PI_SELF_TEST_STATUS_PASSED,
+        duration_seconds=duration,
+        message=(
+            None
+            if return_value is None
+            else str(return_value)
+        ),
+        metadata={
+            "stdout": standard_output.getvalue(),
+            "stderr": standard_error.getvalue(),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.32. Registro de testes
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class PiSelfTestCase:
+    """
+    Registered self-test case.
+    """
+
+    name: str
+    function: Callable[[], Any]
+    section: str
+
+    enabled: bool = True
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+
+_PI_SELF_TEST_REGISTRY: List[
+    PiSelfTestCase
+] = []
+
+
+def register_pi_self_test(
+    name: Optional[str] = None,
+    *,
+    section: str = "18",
+    enabled: bool = True,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> Callable[
+    [Callable[[], Any]],
+    Callable[[], Any],
+]:
+    """
+    Decorator used by Sections 18.2–18.5.
+    """
+
+    def decorator(
+        function: Callable[[], Any],
+    ) -> Callable[[], Any]:
+        case = PiSelfTestCase(
+            name=(
+                str(name)
+                if name is not None
+                else function.__name__
+            ),
+            function=function,
+            section=str(
+                section
+            ),
+            enabled=bool(
+                enabled
+            ),
+            metadata=dict(
+                metadata or {}
+            ),
+        )
+
+        _PI_SELF_TEST_REGISTRY.append(
+            case
+        )
+
+        return function
+
+    return decorator
+
+
+def get_registered_pi_self_tests(
+    *,
+    section: Optional[str] = None,
+    enabled_only: bool = True,
+) -> List[PiSelfTestCase]:
+    """
+    Return registered tests with optional section filtering.
+    """
+
+    cases = list(
+        _PI_SELF_TEST_REGISTRY
+    )
+
+    if section is not None:
+        section = str(
+            section
+        )
+
+        cases = [
+            case
+            for case in cases
+            if case.section == section
+            or case.section.startswith(
+                f"{section}."
+            )
+        ]
+
+    if enabled_only:
+        cases = [
+            case
+            for case in cases
+            if case.enabled
+        ]
+
+    return cases
+
+
+def clear_pi_self_test_registry() -> None:
+    """
+    Clear the self-test registry.
+
+    Mainly useful during interactive development and repeated module reloads.
+    """
+
+    _PI_SELF_TEST_REGISTRY.clear()
+
+
+# -----------------------------------------------------------------------------
+# 18.1.33. Executor de grupos
+# -----------------------------------------------------------------------------
+
+def run_registered_pi_self_tests(
+    *,
+    section: Optional[str] = None,
+    raise_on_failure: bool = False,
+    capture_output: bool = True,
+) -> PiSelfTestReport:
+    """
+    Execute all currently registered π self-tests.
+    """
+
+    report = PiSelfTestReport(
+        metadata={
+            "schema_version": PI_SELF_TEST_SCHEMA_VERSION,
+            "requested_section": section,
+        }
+    )
+
+    for case in get_registered_pi_self_tests(
+        section=section,
+        enabled_only=False,
+    ):
+        if not case.enabled:
+            report.add(
+                PiSelfTestCaseResult(
+                    name=case.name,
+                    section=case.section,
+                    status=PI_SELF_TEST_STATUS_SKIPPED,
+                    message="Test case is disabled.",
+                    metadata=dict(
+                        case.metadata
+                    ),
+                )
+            )
+
+            continue
+
+        result = run_pi_self_test_case(
+            case.name,
+            case.function,
+            section=case.section,
+            raise_on_failure=raise_on_failure,
+            capture_output=capture_output,
+        )
+
+        result.metadata.update(
+            case.metadata
+        )
+
+        report.add(
+            result
+        )
+
+    return report
+
+
+# -----------------------------------------------------------------------------
+# 18.1.34. Formatação do relatório
+# -----------------------------------------------------------------------------
+
+def format_pi_self_test_report(
+    report: PiSelfTestReport,
+    *,
+    include_passed: bool = True,
+    include_tracebacks: bool = False,
+) -> str:
+    """
+    Format a compact self-test report.
+    """
+
+    lines = [
+        "DockAnalyzer π self-tests",
+        (
+            f"Total: {report.total} | "
+            f"Passed: {report.passed} | "
+            f"Failed: {report.failed} | "
+            f"Skipped: {report.skipped}"
+        ),
+    ]
+
+    for result in report.results:
+        if (
+            result.passed
+            and not include_passed
+        ):
+            continue
+
+        status_symbol = {
+            PI_SELF_TEST_STATUS_PASSED: "[PASS]",
+            PI_SELF_TEST_STATUS_FAILED: "[FAIL]",
+            PI_SELF_TEST_STATUS_SKIPPED: "[SKIP]",
+            PI_SELF_TEST_STATUS_PENDING: "[....]",
+        }[
+            result.status
+        ]
+
+        line = (
+            f"{status_symbol} "
+            f"{result.section} "
+            f"{result.name} "
+            f"({result.duration_seconds:.4f}s)"
+        )
+
+        if result.message:
+            line += (
+                f" — {result.message}"
+            )
+
+        lines.append(
+            line
+        )
+
+        if (
+            include_tracebacks
+            and result.traceback_text
+        ):
+            lines.append(
+                result.traceback_text.rstrip()
+            )
+
+    return "\n".join(
+        lines
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.1.35. Validação interna da infraestrutura
+# -----------------------------------------------------------------------------
+
+def validate_pi_self_test_infrastructure() -> None:
+    """
+    Run lightweight assertions validating the Section 18.1 fixtures.
+    """
+
+    ring = create_mock_aromatic_ring()
+
+    assert_pi_length(
+        ring.atoms,
+        6,
+    )
+
+    assert_pi_regular_ring(
+        ring,
+        expected_radius=PI_SELF_TEST_BENZENE_RADIUS,
+    )
+
+    assert_pi_unit_vector(
+        ring.normal
+    )
+
+    cation = create_mock_cation_above_ring(
+        ring,
+        height=3.5,
+    )
+
+    assert_pi_close(
+        _pi_test_distance(
+            cation.center,
+            ring.centroid,
+        ),
+        3.5,
+    )
+
+    anion = create_mock_anion_above_ring(
+        ring,
+        height=4.0,
+    )
+
+    assert_pi_equal(
+        anion.group_type,
+        "anion",
+    )
+
+    assert_pi_less(
+        anion.effective_charge,
+        0.0,
+    )
+
+    amide = create_mock_amide_above_ring(
+        ring,
+        height=3.5,
+    )
+
+    assert_pi_unit_vector(
+        amide.normal
+    )
+
+    assert_pi_parallel(
+        amide.normal,
+        ring.normal,
+    )
+
+    rotation = create_pi_test_rigid_transform(
+        axis=(0.0, 1.0, 0.0),
+        angle_degrees=90.0,
+        translation=(1.0, 2.0, 3.0),
+    )
+
+    transformed_ring = transform_mock_aromatic_ring(
+        ring,
+        rotation,
+    )
+
+    assert_pi_vector_close(
+        transformed_ring.centroid,
+        (1.0, 2.0, 3.0),
+    )
+
+    assert_pi_unit_vector(
+        transformed_ring.normal
+    )
+
+    assert_pi_regular_ring(
+        transformed_ring,
+        expected_radius=PI_SELF_TEST_BENZENE_RADIUS,
+    )
+
+validate_pi_self_test_infrastructure()
+
 
