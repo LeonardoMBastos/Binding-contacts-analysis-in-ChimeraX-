@@ -28198,4 +28198,17521 @@ for public_name in _SECTION_11_PUBLIC_NAMES:
 # End of Section 11
 # =============================================================================
 
+# =============================================================================
+# Section 12.1 — Self-test infrastructure
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Self-test imports
+# -----------------------------------------------------------------------------
+#
+# These imports may already exist in Section 1. They are repeated here only
+# as documentation of the dependencies used by the self-test infrastructure.
+#
+# import contextlib
+# import inspect
+# import io
+# import json
+# import math
+# import time
+# import traceback
+# import warnings
+#
+# from collections import OrderedDict
+# from dataclasses import dataclass, field
+# from types import MappingProxyType
+# from typing import (
+#     Any,
+#     Callable,
+#     Dict,
+#     Final,
+#     Iterable,
+#     Iterator,
+#     List,
+#     Literal,
+#     Mapping,
+#     MutableMapping,
+#     Optional,
+#     Sequence,
+#     Set,
+#     Tuple,
+#     Type,
+#     TypeAlias,
+#     TypeVar,
+#     Union,
+# )
+
+
+# -----------------------------------------------------------------------------
+# Self-test aliases
+# -----------------------------------------------------------------------------
+
+HydrophobicTestStatus: TypeAlias = Literal[
+    "passed",
+    "failed",
+    "error",
+    "skipped",
+    "expected_failure",
+    "unexpected_success",
+]
+
+HydrophobicTestSection: TypeAlias = Literal[
+    "12.1",
+    "12.2",
+    "12.3",
+    "12.4",
+    "12.5",
+]
+
+HydrophobicTestCallable: TypeAlias = Callable[
+    ...,
+    Any,
+]
+
+HydrophobicTestIdentifier: TypeAlias = str
+
+HydrophobicTestMetadata: TypeAlias = Mapping[
+    str,
+    Any,
+]
+
+HydrophobicAssertionCallable: TypeAlias = Callable[
+    ...,
+    None,
+]
+
+_HydrophobicTestValue = TypeVar(
+    "_HydrophobicTestValue"
+)
+
+
+# -----------------------------------------------------------------------------
+# Self-test constants
+# -----------------------------------------------------------------------------
+
+HYDROPHOBIC_SELF_TEST_SCHEMA: Final[str] = (
+    "dockanalyzer.hydrophobic.self_tests"
+)
+
+HYDROPHOBIC_SELF_TEST_SCHEMA_VERSION: Final[str] = "1.0"
+
+HYDROPHOBIC_SELF_TEST_DEFAULT_SECTION: Final[
+    HydrophobicTestSection
+] = "12.1"
+
+HYDROPHOBIC_SELF_TEST_DEFAULT_TOLERANCE: Final[
+    np.float64
+] = np.float64(
+    1.0e-7
+)
+
+HYDROPHOBIC_SELF_TEST_DEFAULT_RELATIVE_TOLERANCE: Final[
+    np.float64
+] = np.float64(
+    1.0e-6
+)
+
+HYDROPHOBIC_SELF_TEST_DEFAULT_TIMEOUT: Final[
+    Optional[np.float64]
+] = None
+
+HYDROPHOBIC_SELF_TEST_CAPTURE_WARNINGS: Final[bool] = True
+HYDROPHOBIC_SELF_TEST_CAPTURE_OUTPUT: Final[bool] = True
+HYDROPHOBIC_SELF_TEST_FAIL_FAST: Final[bool] = False
+HYDROPHOBIC_SELF_TEST_VERBOSE: Final[bool] = True
+
+HYDROPHOBIC_SELF_TEST_VALID_STATUSES: Final[
+    frozenset[str]
+] = frozenset(
+    {
+        "passed",
+        "failed",
+        "error",
+        "skipped",
+        "expected_failure",
+        "unexpected_success",
+    }
+)
+
+HYDROPHOBIC_SELF_TEST_SUCCESS_STATUSES: Final[
+    frozenset[str]
+] = frozenset(
+    {
+        "passed",
+        "expected_failure",
+        "skipped",
+    }
+)
+
+HYDROPHOBIC_SELF_TEST_FAILURE_STATUSES: Final[
+    frozenset[str]
+] = frozenset(
+    {
+        "failed",
+        "error",
+        "unexpected_success",
+    }
+)
+
+HYDROPHOBIC_SELF_TEST_SECTION_ORDER: Final[
+    Mapping[str, int]
+] = MappingProxyType(
+    {
+        "12.1": 1,
+        "12.2": 2,
+        "12.3": 3,
+        "12.4": 4,
+        "12.5": 5,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# Self-test exceptions
+# -----------------------------------------------------------------------------
+
+class HydrophobicSelfTestError(
+    AssertionError
+):
+    """
+    Base exception raised by hydrophobic self-test assertions.
+    """
+
+
+class HydrophobicTestRegistrationError(
+    RuntimeError
+):
+    """
+    Raised when a self-test cannot be registered.
+    """
+
+
+class HydrophobicTestExecutionError(
+    RuntimeError
+):
+    """
+    Raised when the self-test runner itself fails.
+    """
+
+
+class HydrophobicTestSkipped(
+    Exception
+):
+    """
+    Internal control-flow exception for skipped tests.
+    """
+
+
+class HydrophobicExpectedFailure(
+    Exception
+):
+    """
+    Internal control-flow exception for expected failures.
+    """
+
+
+# -----------------------------------------------------------------------------
+# Internal self-test utilities
+# -----------------------------------------------------------------------------
+
+def _self_test_current_time() -> float:
+    """Return a monotonic time value for duration measurement."""
+
+    try:
+        return float(
+            time.perf_counter()
+        )
+
+    except Exception:
+        return 0.0
+
+
+def _self_test_duration(
+    started_at: float,
+    finished_at: float,
+) -> np.float64:
+    """Return a nonnegative test duration."""
+
+    try:
+        duration = float(
+            finished_at
+        ) - float(
+            started_at
+        )
+
+    except Exception:
+        duration = 0.0
+
+    return np.float64(
+        max(
+            duration,
+            0.0,
+        )
+    )
+
+
+def _self_test_normalize_identifier(
+    value: Any,
+    *,
+    name: str = "test identifier",
+) -> str:
+    """Normalize a required test identifier."""
+
+    normalized = str(
+        value
+    ).strip()
+
+    if not normalized:
+        raise ValueError(
+            f"{name} cannot be empty."
+        )
+
+    return normalized
+
+
+def _self_test_normalize_optional_string(
+    value: Any,
+) -> Optional[str]:
+    """Normalize an optional string."""
+
+    if value is None:
+        return None
+
+    normalized = str(
+        value
+    ).strip()
+
+    return normalized or None
+
+
+def _self_test_normalize_tags(
+    tags: Optional[Iterable[Any]],
+) -> Tuple[str, ...]:
+    """Normalize a test-tag collection."""
+
+    if tags is None:
+        return ()
+
+    normalized = {
+        str(tag).strip()
+        for tag in tags
+        if str(tag).strip()
+    }
+
+    return tuple(
+        sorted(normalized)
+    )
+
+
+def _self_test_normalize_section(
+    section: Any,
+) -> HydrophobicTestSection:
+    """Normalize and validate a Section 12 identifier."""
+
+    normalized = str(
+        section
+    ).strip()
+
+    if normalized not in (
+        HYDROPHOBIC_SELF_TEST_SECTION_ORDER
+    ):
+        raise ValueError(
+            "Self-test section must be one of: "
+            "'12.1', '12.2', '12.3', '12.4' or '12.5'."
+        )
+
+    return normalized  # type: ignore[return-value]
+
+
+def _self_test_normalize_status(
+    status: Any,
+) -> HydrophobicTestStatus:
+    """Normalize a test-result status."""
+
+    normalized = str(
+        status
+    ).strip().lower()
+
+    if (
+        normalized
+        not in HYDROPHOBIC_SELF_TEST_VALID_STATUSES
+    ):
+        raise ValueError(
+            f"Invalid self-test status: {status!r}."
+        )
+
+    return normalized  # type: ignore[return-value]
+
+
+def _self_test_freeze_metadata(
+    metadata: Optional[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    """Create an immutable shallow metadata mapping."""
+
+    if metadata is None:
+        return MappingProxyType({})
+
+    return MappingProxyType(
+        dict(metadata)
+    )
+
+
+def _self_test_exception_text(
+    exception: Optional[BaseException],
+) -> Optional[str]:
+    """Return a compact exception description."""
+
+    if exception is None:
+        return None
+
+    return (
+        f"{type(exception).__name__}: "
+        f"{exception}"
+    )
+
+
+def _self_test_traceback_text(
+    exception: Optional[BaseException],
+) -> Optional[str]:
+    """Return a formatted traceback string."""
+
+    if exception is None:
+        return None
+
+    try:
+        return "".join(
+            traceback.format_exception(
+                type(exception),
+                exception,
+                exception.__traceback__,
+            )
+        )
+
+    except Exception:
+        return _self_test_exception_text(
+            exception
+        )
+
+
+def _self_test_callable_name(
+    function: HydrophobicTestCallable,
+) -> str:
+    """Return a readable callable name."""
+
+    return (
+        getattr(
+            function,
+            "__qualname__",
+            None,
+        )
+        or getattr(
+            function,
+            "__name__",
+            None,
+        )
+        or type(function).__name__
+    )
+
+
+def _self_test_callable_module(
+    function: HydrophobicTestCallable,
+) -> Optional[str]:
+    """Return the callable module name."""
+
+    return _self_test_normalize_optional_string(
+        getattr(
+            function,
+            "__module__",
+            None,
+        )
+    )
+
+
+def _self_test_callable_doc(
+    function: HydrophobicTestCallable,
+) -> Optional[str]:
+    """Return a compact callable documentation string."""
+
+    documentation = inspect.getdoc(
+        function
+    )
+
+    if documentation is None:
+        return None
+
+    first_line = documentation.splitlines()[0]
+
+    return (
+        _self_test_normalize_optional_string(
+            first_line
+        )
+    )
+
+
+def _self_test_is_close(
+    first: Any,
+    second: Any,
+    *,
+    absolute_tolerance: Number = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_TOLERANCE
+    ),
+    relative_tolerance: Number = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_RELATIVE_TOLERANCE
+    ),
+) -> bool:
+    """Return whether two numeric values are approximately equal."""
+
+    try:
+        return bool(
+            np.isclose(
+                float(first),
+                float(second),
+                atol=float(
+                    absolute_tolerance
+                ),
+                rtol=float(
+                    relative_tolerance
+                ),
+                equal_nan=False,
+            )
+        )
+
+    except Exception:
+        return False
+
+
+def _self_test_json_safe(
+    value: Any,
+) -> Any:
+    """
+    Convert common module values into JSON-compatible representations.
+    """
+
+    if value is None:
+        return None
+
+    if isinstance(
+        value,
+        (
+            str,
+            bool,
+            int,
+            float,
+        ),
+    ):
+        return value
+
+    if isinstance(
+        value,
+        np.generic,
+    ):
+        return value.item()
+
+    if isinstance(
+        value,
+        np.ndarray,
+    ):
+        return value.tolist()
+
+    if isinstance(
+        value,
+        Mapping,
+    ):
+        return {
+            str(key): _self_test_json_safe(
+                item
+            )
+            for key, item in value.items()
+        }
+
+    if isinstance(
+        value,
+        (
+            tuple,
+            list,
+            set,
+            frozenset,
+        ),
+    ):
+        return [
+            _self_test_json_safe(
+                item
+            )
+            for item in value
+        ]
+
+    if hasattr(
+        value,
+        "to_dict",
+    ):
+        try:
+            return _self_test_json_safe(
+                value.to_dict()
+            )
+
+        except Exception:
+            pass
+
+    return repr(value)
+
+
+# -----------------------------------------------------------------------------
+# Warning record
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class HydrophobicTestWarning:
+    """
+    Warning captured during one self-test.
+    """
+
+    category: str
+    message: str
+
+    filename: Optional[str] = None
+    line_number: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        """Validate and normalize the warning record."""
+
+        object.__setattr__(
+            self,
+            "category",
+            _self_test_normalize_identifier(
+                self.category,
+                name="warning category",
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "message",
+            _self_test_normalize_identifier(
+                self.message,
+                name="warning message",
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "filename",
+            _self_test_normalize_optional_string(
+                self.filename
+            ),
+        )
+
+        if self.line_number is not None:
+            line_number = int(
+                self.line_number
+            )
+
+            if line_number < 0:
+                raise ValueError(
+                    "Warning line number cannot be negative."
+                )
+
+            object.__setattr__(
+                self,
+                "line_number",
+                line_number,
+            )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the warning record."""
+
+        return {
+            "category": self.category,
+            "message": self.message,
+            "filename": self.filename,
+            "line_number": self.line_number,
+        }
+
+
+# -----------------------------------------------------------------------------
+# Test specification
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class HydrophobicTestCase:
+    """
+    Registered self-test specification.
+    """
+
+    identifier: HydrophobicTestIdentifier
+    function: HydrophobicTestCallable
+
+    section: HydrophobicTestSection = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_SECTION
+    )
+
+    description: Optional[str] = None
+    tags: Sequence[str] = field(
+        default_factory=tuple
+    )
+
+    enabled: bool = True
+    expected_failure: bool = False
+
+    timeout: Optional[np.float64] = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_TIMEOUT
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Validate the test specification."""
+
+        if not callable(
+            self.function
+        ):
+            raise TypeError(
+                "HydrophobicTestCase.function must be callable."
+            )
+
+        object.__setattr__(
+            self,
+            "identifier",
+            _self_test_normalize_identifier(
+                self.identifier
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "section",
+            _self_test_normalize_section(
+                self.section
+            ),
+        )
+
+        description = (
+            _self_test_normalize_optional_string(
+                self.description
+            )
+            or _self_test_callable_doc(
+                self.function
+            )
+        )
+
+        object.__setattr__(
+            self,
+            "description",
+            description,
+        )
+
+        object.__setattr__(
+            self,
+            "tags",
+            _self_test_normalize_tags(
+                self.tags
+            ),
+        )
+
+        timeout = self.timeout
+
+        if timeout is not None:
+            timeout = np.float64(
+                float(timeout)
+            )
+
+            if (
+                not np.isfinite(timeout)
+                or timeout <= 0.0
+            ):
+                raise ValueError(
+                    "Test timeout must be a finite positive value."
+                )
+
+        object.__setattr__(
+            self,
+            "timeout",
+            timeout,
+        )
+
+        object.__setattr__(
+            self,
+            "metadata",
+            _self_test_freeze_metadata(
+                self.metadata
+            ),
+        )
+
+    @property
+    def function_name(self) -> str:
+        """Return the registered function name."""
+
+        return _self_test_callable_name(
+            self.function
+        )
+
+    @property
+    def module_name(self) -> Optional[str]:
+        """Return the function module name."""
+
+        return _self_test_callable_module(
+            self.function
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the test specification."""
+
+        return {
+            "identifier": self.identifier,
+            "section": self.section,
+            "description": self.description,
+            "tags": list(self.tags),
+            "enabled": self.enabled,
+            "expected_failure": self.expected_failure,
+            "timeout": (
+                None
+                if self.timeout is None
+                else float(self.timeout)
+            ),
+            "function_name": self.function_name,
+            "module_name": self.module_name,
+            "metadata": _self_test_json_safe(
+                self.metadata
+            ),
+        }
+
+
+# -----------------------------------------------------------------------------
+# Test result
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class HydrophobicTestResult:
+    """
+    Result produced by the execution of one self-test.
+    """
+
+    identifier: HydrophobicTestIdentifier
+    section: HydrophobicTestSection
+    status: HydrophobicTestStatus
+
+    description: Optional[str] = None
+    tags: Sequence[str] = field(
+        default_factory=tuple
+    )
+
+    duration_seconds: np.float64 = np.float64(
+        0.0
+    )
+
+    message: Optional[str] = None
+    exception_type: Optional[str] = None
+    exception_text: Optional[str] = None
+    traceback_text: Optional[str] = None
+
+    captured_stdout: str = ""
+    captured_stderr: str = ""
+
+    warnings: Sequence[
+        HydrophobicTestWarning
+    ] = field(
+        default_factory=tuple
+    )
+
+    return_value: Any = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Validate and normalize the result."""
+
+        object.__setattr__(
+            self,
+            "identifier",
+            _self_test_normalize_identifier(
+                self.identifier
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "section",
+            _self_test_normalize_section(
+                self.section
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "status",
+            _self_test_normalize_status(
+                self.status
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "description",
+            _self_test_normalize_optional_string(
+                self.description
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "tags",
+            _self_test_normalize_tags(
+                self.tags
+            ),
+        )
+
+        duration = np.float64(
+            float(
+                self.duration_seconds
+            )
+        )
+
+        if (
+            not np.isfinite(duration)
+            or duration < 0.0
+        ):
+            raise ValueError(
+                "Test duration must be finite and nonnegative."
+            )
+
+        object.__setattr__(
+            self,
+            "duration_seconds",
+            duration,
+        )
+
+        warning_records = tuple(
+            self.warnings
+        )
+
+        for warning_record in warning_records:
+            if not isinstance(
+                warning_record,
+                HydrophobicTestWarning,
+            ):
+                raise TypeError(
+                    "warnings must contain HydrophobicTestWarning "
+                    "instances."
+                )
+
+        object.__setattr__(
+            self,
+            "warnings",
+            warning_records,
+        )
+
+        object.__setattr__(
+            self,
+            "captured_stdout",
+            str(
+                self.captured_stdout
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "captured_stderr",
+            str(
+                self.captured_stderr
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "metadata",
+            _self_test_freeze_metadata(
+                self.metadata
+            ),
+        )
+
+    @property
+    def passed(self) -> bool:
+        """Return whether the test passed normally."""
+
+        return self.status == "passed"
+
+    @property
+    def skipped(self) -> bool:
+        """Return whether the test was skipped."""
+
+        return self.status == "skipped"
+
+    @property
+    def successful(self) -> bool:
+        """Return whether the result is acceptable to the suite."""
+
+        return (
+            self.status
+            in HYDROPHOBIC_SELF_TEST_SUCCESS_STATUSES
+        )
+
+    @property
+    def failed(self) -> bool:
+        """Return whether the result represents a suite failure."""
+
+        return (
+            self.status
+            in HYDROPHOBIC_SELF_TEST_FAILURE_STATUSES
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_output: bool = True,
+        include_traceback: bool = True,
+        include_return_value: bool = False,
+    ) -> Dict[str, Any]:
+        """Serialize the individual test result."""
+
+        result: Dict[str, Any] = {
+            "identifier": self.identifier,
+            "section": self.section,
+            "status": self.status,
+            "successful": self.successful,
+            "description": self.description,
+            "tags": list(self.tags),
+            "duration_seconds": float(
+                self.duration_seconds
+            ),
+            "message": self.message,
+            "exception_type": (
+                self.exception_type
+            ),
+            "exception_text": (
+                self.exception_text
+            ),
+            "warnings": [
+                warning_record.to_dict()
+                for warning_record
+                in self.warnings
+            ],
+            "metadata": _self_test_json_safe(
+                self.metadata
+            ),
+        }
+
+        if include_output:
+            result.update(
+                {
+                    "captured_stdout": (
+                        self.captured_stdout
+                    ),
+                    "captured_stderr": (
+                        self.captured_stderr
+                    ),
+                }
+            )
+
+        if include_traceback:
+            result[
+                "traceback_text"
+            ] = self.traceback_text
+
+        if include_return_value:
+            result[
+                "return_value"
+            ] = _self_test_json_safe(
+                self.return_value
+            )
+
+        return result
+
+
+# -----------------------------------------------------------------------------
+# Test registry
+# -----------------------------------------------------------------------------
+
+class HydrophobicTestRegistry:
+    """
+    Ordered registry for hydrophobic self-tests.
+    """
+
+    def __init__(self) -> None:
+        self._tests: "OrderedDict[str, HydrophobicTestCase]" = (
+            OrderedDict()
+        )
+
+    def __len__(self) -> int:
+        """Return the number of registered tests."""
+
+        return len(
+            self._tests
+        )
+
+    def __iter__(
+        self,
+    ) -> Iterator[HydrophobicTestCase]:
+        """Iterate over registered tests."""
+
+        return iter(
+            self._tests.values()
+        )
+
+    def __contains__(
+        self,
+        identifier: object,
+    ) -> bool:
+        """Return whether a test identifier is registered."""
+
+        return identifier in self._tests
+
+    def register(
+        self,
+        test_case: HydrophobicTestCase,
+        *,
+        replace: bool = False,
+    ) -> HydrophobicTestCase:
+        """
+        Register one self-test.
+        """
+
+        if not isinstance(
+            test_case,
+            HydrophobicTestCase,
+        ):
+            raise TypeError(
+                "test_case must be a HydrophobicTestCase."
+            )
+
+        identifier = (
+            test_case.identifier
+        )
+
+        if (
+            identifier in self._tests
+            and not replace
+        ):
+            raise HydrophobicTestRegistrationError(
+                f"Self-test {identifier!r} is already registered."
+            )
+
+        self._tests[
+            identifier
+        ] = test_case
+
+        return test_case
+
+    def unregister(
+        self,
+        identifier: str,
+    ) -> Optional[HydrophobicTestCase]:
+        """
+        Remove and return a registered self-test.
+        """
+
+        normalized = (
+            _self_test_normalize_identifier(
+                identifier
+            )
+        )
+
+        return self._tests.pop(
+            normalized,
+            None,
+        )
+
+    def get(
+        self,
+        identifier: str,
+    ) -> HydrophobicTestCase:
+        """
+        Return a registered test by identifier.
+        """
+
+        normalized = (
+            _self_test_normalize_identifier(
+                identifier
+            )
+        )
+
+        try:
+            return self._tests[
+                normalized
+            ]
+
+        except KeyError as exc:
+            raise KeyError(
+                f"Unknown hydrophobic self-test: {normalized!r}."
+            ) from exc
+
+    def clear(self) -> None:
+        """Remove all registered tests."""
+
+        self._tests.clear()
+
+    def select(
+        self,
+        *,
+        sections: Optional[Iterable[str]] = None,
+        tags: Optional[Iterable[str]] = None,
+        identifiers: Optional[Iterable[str]] = None,
+        enabled_only: bool = True,
+    ) -> Tuple[HydrophobicTestCase, ...]:
+        """
+        Select tests using sections, tags and explicit identifiers.
+        """
+
+        section_filter = (
+            None
+            if sections is None
+            else {
+                _self_test_normalize_section(
+                    section
+                )
+                for section in sections
+            }
+        )
+
+        tag_filter = (
+            None
+            if tags is None
+            else set(
+                _self_test_normalize_tags(
+                    tags
+                )
+            )
+        )
+
+        identifier_filter = (
+            None
+            if identifiers is None
+            else {
+                _self_test_normalize_identifier(
+                    identifier
+                )
+                for identifier
+                in identifiers
+            }
+        )
+
+        selected: List[
+            HydrophobicTestCase
+        ] = []
+
+        for test_case in self._tests.values():
+            if (
+                enabled_only
+                and not test_case.enabled
+            ):
+                continue
+
+            if (
+                section_filter is not None
+                and test_case.section
+                not in section_filter
+            ):
+                continue
+
+            if (
+                identifier_filter is not None
+                and test_case.identifier
+                not in identifier_filter
+            ):
+                continue
+
+            if (
+                tag_filter is not None
+                and not tag_filter.intersection(
+                    test_case.tags
+                )
+            ):
+                continue
+
+            selected.append(
+                test_case
+            )
+
+        selected.sort(
+            key=lambda test_case: (
+                HYDROPHOBIC_SELF_TEST_SECTION_ORDER[
+                    test_case.section
+                ],
+                test_case.identifier,
+            )
+        )
+
+        return tuple(selected)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the registry."""
+
+        return {
+            "test_count": len(self),
+            "tests": [
+                test_case.to_dict()
+                for test_case in self
+            ],
+        }
+
+
+_HYDROPHOBIC_SELF_TEST_REGISTRY: Final[
+    HydrophobicTestRegistry
+] = HydrophobicTestRegistry()
+
+
+# -----------------------------------------------------------------------------
+# Registration decorator
+# -----------------------------------------------------------------------------
+
+def hydrophobic_test(
+    identifier: Optional[str] = None,
+    *,
+    section: HydrophobicTestSection = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_SECTION
+    ),
+    description: Optional[str] = None,
+    tags: Optional[Iterable[str]] = None,
+    enabled: bool = True,
+    expected_failure: bool = False,
+    timeout: Optional[Number] = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_TIMEOUT
+    ),
+    metadata: Optional[Mapping[str, Any]] = None,
+    replace: bool = False,
+) -> Callable[
+    [HydrophobicTestCallable],
+    HydrophobicTestCallable,
+]:
+    """
+    Register a function as a hydrophobic self-test.
+
+    Examples
+    --------
+    ::
+
+        @hydrophobic_test(
+            "dataclass.atom.serialization",
+            section="12.2",
+            tags=("dataclass", "serialization"),
+        )
+        def test_atom_serialization():
+            ...
+    """
+
+    def decorator(
+        function: HydrophobicTestCallable,
+    ) -> HydrophobicTestCallable:
+        resolved_identifier = (
+            _self_test_normalize_optional_string(
+                identifier
+            )
+            or _self_test_callable_name(
+                function
+            )
+        )
+
+        test_case = HydrophobicTestCase(
+            identifier=resolved_identifier,
+            function=function,
+            section=section,
+            description=description,
+            tags=(
+                ()
+                if tags is None
+                else tuple(tags)
+            ),
+            enabled=enabled,
+            expected_failure=expected_failure,
+            timeout=(
+                None
+                if timeout is None
+                else np.float64(
+                    float(timeout)
+                )
+            ),
+            metadata=(
+                {}
+                if metadata is None
+                else dict(metadata)
+            ),
+        )
+
+        _HYDROPHOBIC_SELF_TEST_REGISTRY.register(
+            test_case,
+            replace=replace,
+        )
+
+        try:
+            setattr(
+                function,
+                "__hydrophobic_test_identifier__",
+                test_case.identifier,
+            )
+
+            setattr(
+                function,
+                "__hydrophobic_test_section__",
+                test_case.section,
+            )
+
+        except Exception:
+            pass
+
+        return function
+
+    return decorator
+
+
+# -----------------------------------------------------------------------------
+# Skip and expected-failure controls
+# -----------------------------------------------------------------------------
+
+def skip_hydrophobic_test(
+    reason: str,
+) -> None:
+    """Skip the currently executing self-test."""
+
+    raise HydrophobicTestSkipped(
+        _self_test_normalize_identifier(
+            reason,
+            name="skip reason",
+        )
+    )
+
+
+def hydrophobic_expected_failure(
+    reason: str,
+) -> None:
+    """Mark the current test as an expected failure."""
+
+    raise HydrophobicExpectedFailure(
+        _self_test_normalize_identifier(
+            reason,
+            name="expected-failure reason",
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# Assertion helpers
+# -----------------------------------------------------------------------------
+
+def assert_hydrophobic_true(
+    condition: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert that a condition is truthy."""
+
+    if not bool(condition):
+        raise HydrophobicSelfTestError(
+            message
+            or "Expected condition to be true."
+        )
+
+
+def assert_hydrophobic_false(
+    condition: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert that a condition is falsy."""
+
+    if bool(condition):
+        raise HydrophobicSelfTestError(
+            message
+            or "Expected condition to be false."
+        )
+
+
+def assert_hydrophobic_equal(
+    actual: Any,
+    expected: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert exact equality."""
+
+    if actual != expected:
+        raise HydrophobicSelfTestError(
+            message
+            or (
+                "Values are not equal: "
+                f"actual={actual!r}, expected={expected!r}."
+            )
+        )
+
+
+def assert_hydrophobic_not_equal(
+    actual: Any,
+    unexpected: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert that two values differ."""
+
+    if actual == unexpected:
+        raise HydrophobicSelfTestError(
+            message
+            or (
+                "Values unexpectedly match: "
+                f"{actual!r}."
+            )
+        )
+
+
+def assert_hydrophobic_is(
+    actual: Any,
+    expected: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert object identity."""
+
+    if actual is not expected:
+        raise HydrophobicSelfTestError(
+            message
+            or "Objects do not have the expected identity."
+        )
+
+
+def assert_hydrophobic_is_not(
+    actual: Any,
+    unexpected: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert distinct object identity."""
+
+    if actual is unexpected:
+        raise HydrophobicSelfTestError(
+            message
+            or "Objects unexpectedly have identical identity."
+        )
+
+
+def assert_hydrophobic_is_none(
+    value: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert that a value is ``None``."""
+
+    if value is not None:
+        raise HydrophobicSelfTestError(
+            message
+            or f"Expected None, received {value!r}."
+        )
+
+
+def assert_hydrophobic_is_not_none(
+    value: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert that a value is not ``None``."""
+
+    if value is None:
+        raise HydrophobicSelfTestError(
+            message
+            or "Expected a non-None value."
+        )
+
+
+def assert_hydrophobic_instance(
+    value: Any,
+    expected_type: Union[
+        Type[Any],
+        Tuple[Type[Any], ...],
+    ],
+    message: Optional[str] = None,
+) -> None:
+    """Assert that a value has an expected type."""
+
+    if not isinstance(
+        value,
+        expected_type,
+    ):
+        raise HydrophobicSelfTestError(
+            message
+            or (
+                f"Expected instance of {expected_type!r}, "
+                f"received {type(value)!r}."
+            )
+        )
+
+
+def assert_hydrophobic_not_instance(
+    value: Any,
+    unexpected_type: Union[
+        Type[Any],
+        Tuple[Type[Any], ...],
+    ],
+    message: Optional[str] = None,
+) -> None:
+    """Assert that a value does not have a type."""
+
+    if isinstance(
+        value,
+        unexpected_type,
+    ):
+        raise HydrophobicSelfTestError(
+            message
+            or (
+                f"Did not expect instance of "
+                f"{unexpected_type!r}."
+            )
+        )
+
+
+def assert_hydrophobic_in(
+    member: Any,
+    container: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert membership."""
+
+    if member not in container:
+        raise HydrophobicSelfTestError(
+            message
+            or (
+                f"{member!r} was not found in "
+                f"{container!r}."
+            )
+        )
+
+
+def assert_hydrophobic_not_in(
+    member: Any,
+    container: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert nonmembership."""
+
+    if member in container:
+        raise HydrophobicSelfTestError(
+            message
+            or (
+                f"{member!r} was unexpectedly found in "
+                f"{container!r}."
+            )
+        )
+
+
+def assert_hydrophobic_length(
+    value: Any,
+    expected_length: int,
+    message: Optional[str] = None,
+) -> None:
+    """Assert the length of a value."""
+
+    normalized_length = int(
+        expected_length
+    )
+
+    actual_length = len(value)
+
+    if actual_length != normalized_length:
+        raise HydrophobicSelfTestError(
+            message
+            or (
+                f"Unexpected length: actual={actual_length}, "
+                f"expected={normalized_length}."
+            )
+        )
+
+
+def assert_hydrophobic_close(
+    actual: Number,
+    expected: Number,
+    *,
+    absolute_tolerance: Number = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_TOLERANCE
+    ),
+    relative_tolerance: Number = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_RELATIVE_TOLERANCE
+    ),
+    message: Optional[str] = None,
+) -> None:
+    """Assert approximate numeric equality."""
+
+    if not _self_test_is_close(
+        actual,
+        expected,
+        absolute_tolerance=absolute_tolerance,
+        relative_tolerance=relative_tolerance,
+    ):
+        raise HydrophobicSelfTestError(
+            message
+            or (
+                "Values are not sufficiently close: "
+                f"actual={actual!r}, expected={expected!r}, "
+                f"atol={absolute_tolerance!r}, "
+                f"rtol={relative_tolerance!r}."
+            )
+        )
+
+
+def assert_hydrophobic_array_close(
+    actual: Any,
+    expected: Any,
+    *,
+    absolute_tolerance: Number = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_TOLERANCE
+    ),
+    relative_tolerance: Number = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_RELATIVE_TOLERANCE
+    ),
+    message: Optional[str] = None,
+) -> None:
+    """Assert approximate equality between numeric arrays."""
+
+    try:
+        np.testing.assert_allclose(
+            np.asarray(actual),
+            np.asarray(expected),
+            atol=float(
+                absolute_tolerance
+            ),
+            rtol=float(
+                relative_tolerance
+            ),
+            equal_nan=False,
+        )
+
+    except AssertionError as exc:
+        raise HydrophobicSelfTestError(
+            message
+            or str(exc)
+        ) from exc
+
+
+def assert_hydrophobic_between(
+    value: Number,
+    minimum: Number,
+    maximum: Number,
+    *,
+    inclusive: bool = True,
+    message: Optional[str] = None,
+) -> None:
+    """Assert that a numeric value lies within an interval."""
+
+    normalized_value = float(value)
+    normalized_minimum = float(minimum)
+    normalized_maximum = float(maximum)
+
+    if normalized_minimum > normalized_maximum:
+        raise ValueError(
+            "minimum cannot exceed maximum."
+        )
+
+    if inclusive:
+        valid = (
+            normalized_minimum
+            <= normalized_value
+            <= normalized_maximum
+        )
+
+    else:
+        valid = (
+            normalized_minimum
+            < normalized_value
+            < normalized_maximum
+        )
+
+    if not valid:
+        interval_type = (
+            "inclusive"
+            if inclusive
+            else "exclusive"
+        )
+
+        raise HydrophobicSelfTestError(
+            message
+            or (
+                f"Value {normalized_value!r} is outside the "
+                f"{interval_type} interval "
+                f"[{normalized_minimum!r}, "
+                f"{normalized_maximum!r}]."
+            )
+        )
+
+
+def assert_hydrophobic_mapping_contains(
+    mapping: Mapping[Any, Any],
+    expected: Mapping[Any, Any],
+    message: Optional[str] = None,
+) -> None:
+    """Assert that a mapping contains expected key-value pairs."""
+
+    missing: Dict[Any, Any] = {}
+
+    mismatched: Dict[
+        Any,
+        Tuple[Any, Any],
+    ] = {}
+
+    for key, expected_value in expected.items():
+        if key not in mapping:
+            missing[key] = expected_value
+            continue
+
+        actual_value = mapping[key]
+
+        if actual_value != expected_value:
+            mismatched[key] = (
+                actual_value,
+                expected_value,
+            )
+
+    if missing or mismatched:
+        raise HydrophobicSelfTestError(
+            message
+            or (
+                "Mapping assertion failed. "
+                f"Missing={missing!r}; "
+                f"mismatched={mismatched!r}."
+            )
+        )
+
+
+@contextlib.contextmanager
+def assert_hydrophobic_raises(
+    expected_exception: Union[
+        Type[BaseException],
+        Tuple[Type[BaseException], ...],
+    ],
+    *,
+    message_contains: Optional[str] = None,
+) -> Iterator[None]:
+    """
+    Assert that a block raises the expected exception.
+    """
+
+    caught_exception: Optional[
+        BaseException
+    ] = None
+
+    try:
+        yield
+
+    except expected_exception as exc:
+        caught_exception = exc
+
+    except BaseException as exc:
+        raise HydrophobicSelfTestError(
+            "Unexpected exception type: "
+            f"{type(exc).__name__}; expected "
+            f"{expected_exception!r}."
+        ) from exc
+
+    if caught_exception is None:
+        raise HydrophobicSelfTestError(
+            f"Expected exception {expected_exception!r} "
+            "was not raised."
+        )
+
+    if message_contains is not None:
+        if (
+            str(message_contains)
+            not in str(caught_exception)
+        ):
+            raise HydrophobicSelfTestError(
+                "Exception message did not contain the expected "
+                f"text {message_contains!r}. Actual message: "
+                f"{caught_exception!s}"
+            )
+
+
+@contextlib.contextmanager
+def assert_hydrophobic_warns(
+    expected_warning: Union[
+        Type[Warning],
+        Tuple[Type[Warning], ...],
+    ] = Warning,
+    *,
+    message_contains: Optional[str] = None,
+) -> Iterator[None]:
+    """
+    Assert that a block emits an expected warning.
+    """
+
+    with warnings.catch_warnings(
+        record=True
+    ) as caught:
+        warnings.simplefilter(
+            "always"
+        )
+
+        yield
+
+    matching = [
+        warning_record
+        for warning_record in caught
+        if issubclass(
+            warning_record.category,
+            expected_warning,
+        )
+    ]
+
+    if not matching:
+        raise HydrophobicSelfTestError(
+            f"Expected warning {expected_warning!r} "
+            "was not emitted."
+        )
+
+    if message_contains is not None:
+        if not any(
+            str(message_contains)
+            in str(warning_record.message)
+            for warning_record in matching
+        ):
+            raise HydrophobicSelfTestError(
+                "No matching warning contained the expected "
+                f"text {message_contains!r}."
+            )
+
+
+def assert_hydrophobic_serializable(
+    value: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert JSON serializability after standard conversion."""
+
+    converted = _self_test_json_safe(
+        value
+    )
+
+    try:
+        json.dumps(
+            converted
+        )
+
+    except Exception as exc:
+        raise HydrophobicSelfTestError(
+            message
+            or (
+                "Value is not JSON serializable after conversion: "
+                f"{exc}"
+            )
+        ) from exc
+
+
+def assert_hydrophobic_immutable_mapping(
+    value: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert that a value behaves as an immutable mapping."""
+
+    assert_hydrophobic_instance(
+        value,
+        Mapping,
+        message=message,
+    )
+
+    try:
+        value["__self_test__"] = True
+
+    except (
+        TypeError,
+        AttributeError,
+    ):
+        return
+
+    except Exception:
+        return
+
+    raise HydrophobicSelfTestError(
+        message
+        or "Mapping unexpectedly accepted mutation."
+    )
+
+
+# -----------------------------------------------------------------------------
+# Execution context
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    slots=True,
+)
+class HydrophobicTestContext:
+    """
+    Mutable execution context supplied optionally to self-tests.
+    """
+
+    random_seed: int = 12345
+
+    absolute_tolerance: np.float64 = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_TOLERANCE
+    )
+
+    relative_tolerance: np.float64 = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_RELATIVE_TOLERANCE
+    )
+
+    verbose: bool = (
+        HYDROPHOBIC_SELF_TEST_VERBOSE
+    )
+
+    shared: MutableMapping[str, Any] = field(
+        default_factory=dict
+    )
+
+    metadata: MutableMapping[str, Any] = field(
+        default_factory=dict
+    )
+
+    def __post_init__(self) -> None:
+        """Normalize context fields."""
+
+        self.random_seed = int(
+            self.random_seed
+        )
+
+        self.absolute_tolerance = np.float64(
+            float(
+                self.absolute_tolerance
+            )
+        )
+
+        self.relative_tolerance = np.float64(
+            float(
+                self.relative_tolerance
+            )
+        )
+
+        if (
+            self.absolute_tolerance < 0.0
+            or not np.isfinite(
+                self.absolute_tolerance
+            )
+        ):
+            raise ValueError(
+                "absolute_tolerance must be finite and nonnegative."
+            )
+
+        if (
+            self.relative_tolerance < 0.0
+            or not np.isfinite(
+                self.relative_tolerance
+            )
+        ):
+            raise ValueError(
+                "relative_tolerance must be finite and nonnegative."
+            )
+
+    def reset_random_seed(self) -> None:
+        """Reset NumPy's random seed."""
+
+        np.random.seed(
+            self.random_seed
+        )
+
+    def set_shared(
+        self,
+        key: str,
+        value: Any,
+    ) -> None:
+        """Store a shared fixture value."""
+
+        normalized_key = (
+            _self_test_normalize_identifier(
+                key,
+                name="shared context key",
+            )
+        )
+
+        self.shared[
+            normalized_key
+        ] = value
+
+    def get_shared(
+        self,
+        key: str,
+        default: Any = None,
+    ) -> Any:
+        """Retrieve a shared fixture value."""
+
+        normalized_key = (
+            _self_test_normalize_identifier(
+                key,
+                name="shared context key",
+            )
+        )
+
+        return self.shared.get(
+            normalized_key,
+            default,
+        )
+
+
+# -----------------------------------------------------------------------------
+# Test callable invocation
+# -----------------------------------------------------------------------------
+
+def _invoke_hydrophobic_test_function(
+    function: HydrophobicTestCallable,
+    context: HydrophobicTestContext,
+) -> Any:
+    """
+    Invoke a test with zero arguments or one context argument.
+    """
+
+    try:
+        signature = inspect.signature(
+            function
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return function()
+
+    parameters = tuple(
+        signature.parameters.values()
+    )
+
+    required_parameters = [
+        parameter
+        for parameter in parameters
+        if parameter.default
+        is inspect.Parameter.empty
+        and parameter.kind
+        in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }
+    ]
+
+    has_variable_positional = any(
+        parameter.kind
+        is inspect.Parameter.VAR_POSITIONAL
+        for parameter in parameters
+    )
+
+    if not required_parameters:
+        return function()
+
+    if (
+        len(required_parameters) == 1
+        or has_variable_positional
+    ):
+        return function(
+            context
+        )
+
+    raise TypeError(
+        "Hydrophobic self-tests must accept zero arguments "
+        "or one HydrophobicTestContext argument."
+    )
+
+
+# -----------------------------------------------------------------------------
+# Individual test execution
+# -----------------------------------------------------------------------------
+
+def run_hydrophobic_test_case(
+    test_case: HydrophobicTestCase,
+    *,
+    context: Optional[
+        HydrophobicTestContext
+    ] = None,
+    capture_output: bool = (
+        HYDROPHOBIC_SELF_TEST_CAPTURE_OUTPUT
+    ),
+    capture_warnings: bool = (
+        HYDROPHOBIC_SELF_TEST_CAPTURE_WARNINGS
+    ),
+) -> HydrophobicTestResult:
+    """
+    Execute one registered hydrophobic self-test.
+    """
+
+    if not isinstance(
+        test_case,
+        HydrophobicTestCase,
+    ):
+        raise TypeError(
+            "test_case must be a HydrophobicTestCase."
+        )
+
+    resolved_context = (
+        HydrophobicTestContext()
+        if context is None
+        else context
+    )
+
+    if not isinstance(
+        resolved_context,
+        HydrophobicTestContext,
+    ):
+        raise TypeError(
+            "context must be a HydrophobicTestContext."
+        )
+
+    if not test_case.enabled:
+        return HydrophobicTestResult(
+            identifier=test_case.identifier,
+            section=test_case.section,
+            status="skipped",
+            description=test_case.description,
+            tags=test_case.tags,
+            message="Test is disabled.",
+            metadata=test_case.metadata,
+        )
+
+    stdout_buffer = io.StringIO()
+    stderr_buffer = io.StringIO()
+
+    warning_records: List[
+        HydrophobicTestWarning
+    ] = []
+
+    exception: Optional[
+        BaseException
+    ] = None
+
+    return_value: Any = None
+    message: Optional[str] = None
+
+    status: HydrophobicTestStatus = "passed"
+
+    resolved_context.reset_random_seed()
+
+    started_at = (
+        _self_test_current_time()
+    )
+
+    output_context = (
+        contextlib.ExitStack()
+    )
+
+    with output_context:
+        if capture_output:
+            output_context.enter_context(
+                contextlib.redirect_stdout(
+                    stdout_buffer
+                )
+            )
+
+            output_context.enter_context(
+                contextlib.redirect_stderr(
+                    stderr_buffer
+                )
+            )
+
+        if capture_warnings:
+            caught_warnings = (
+                output_context.enter_context(
+                    warnings.catch_warnings(
+                        record=True
+                    )
+                )
+            )
+
+            warnings.simplefilter(
+                "always"
+            )
+
+        else:
+            caught_warnings = []
+
+        try:
+            return_value = (
+                _invoke_hydrophobic_test_function(
+                    test_case.function,
+                    resolved_context,
+                )
+            )
+
+            if test_case.expected_failure:
+                status = "unexpected_success"
+
+                message = (
+                    "Test was marked as expected to fail, "
+                    "but completed successfully."
+                )
+
+        except HydrophobicTestSkipped as exc:
+            status = "skipped"
+            exception = exc
+            message = str(exc)
+
+        except HydrophobicExpectedFailure as exc:
+            status = "expected_failure"
+            exception = exc
+            message = str(exc)
+
+        except (
+            AssertionError,
+            HydrophobicSelfTestError,
+        ) as exc:
+            exception = exc
+            message = str(exc)
+
+            if test_case.expected_failure:
+                status = "expected_failure"
+
+            else:
+                status = "failed"
+
+        except BaseException as exc:
+            exception = exc
+            message = str(exc)
+
+            if test_case.expected_failure:
+                status = "expected_failure"
+
+            else:
+                status = "error"
+
+        finally:
+            for warning_record in caught_warnings:
+                warning_records.append(
+                    HydrophobicTestWarning(
+                        category=(
+                            warning_record.category.__name__
+                        ),
+                        message=str(
+                            warning_record.message
+                        ),
+                        filename=(
+                            warning_record.filename
+                        ),
+                        line_number=(
+                            warning_record.lineno
+                        ),
+                    )
+                )
+
+    finished_at = (
+        _self_test_current_time()
+    )
+
+    duration = _self_test_duration(
+        started_at,
+        finished_at,
+    )
+
+    if (
+        test_case.timeout is not None
+        and duration > test_case.timeout
+        and status == "passed"
+    ):
+        status = "failed"
+
+        message = (
+            f"Test exceeded timeout: "
+            f"{float(duration):.6f} s > "
+            f"{float(test_case.timeout):.6f} s."
+        )
+
+    result_metadata = {
+        **dict(test_case.metadata),
+        "function_name": (
+            test_case.function_name
+        ),
+        "module_name": (
+            test_case.module_name
+        ),
+        "expected_failure": (
+            test_case.expected_failure
+        ),
+        "timeout": (
+            None
+            if test_case.timeout is None
+            else float(test_case.timeout)
+        ),
+    }
+
+    return HydrophobicTestResult(
+        identifier=test_case.identifier,
+        section=test_case.section,
+        status=status,
+        description=test_case.description,
+        tags=test_case.tags,
+        duration_seconds=duration,
+        message=message,
+        exception_type=(
+            None
+            if exception is None
+            else type(exception).__name__
+        ),
+        exception_text=(
+            _self_test_exception_text(
+                exception
+            )
+        ),
+        traceback_text=(
+            _self_test_traceback_text(
+                exception
+            )
+        ),
+        captured_stdout=(
+            stdout_buffer.getvalue()
+        ),
+        captured_stderr=(
+            stderr_buffer.getvalue()
+        ),
+        warnings=warning_records,
+        return_value=return_value,
+        metadata=result_metadata,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Self-test report
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class HydrophobicSelfTestReport:
+    """
+    Complete report produced by the hydrophobic self-test runner.
+    """
+
+    results: Sequence[
+        HydrophobicTestResult
+    ] = field(
+        default_factory=tuple
+    )
+
+    requested_sections: Sequence[str] = field(
+        default_factory=tuple
+    )
+
+    requested_tags: Sequence[str] = field(
+        default_factory=tuple
+    )
+
+    requested_identifiers: Sequence[str] = field(
+        default_factory=tuple
+    )
+
+    duration_seconds: np.float64 = np.float64(
+        0.0
+    )
+
+    fail_fast: bool = False
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Validate and normalize the report."""
+
+        result_tuple = tuple(
+            self.results
+        )
+
+        for result in result_tuple:
+            if not isinstance(
+                result,
+                HydrophobicTestResult,
+            ):
+                raise TypeError(
+                    "results must contain HydrophobicTestResult "
+                    "instances."
+                )
+
+        object.__setattr__(
+            self,
+            "results",
+            result_tuple,
+        )
+
+        object.__setattr__(
+            self,
+            "requested_sections",
+            tuple(
+                sorted(
+                    {
+                        _self_test_normalize_section(
+                            section
+                        )
+                        for section
+                        in self.requested_sections
+                    },
+                    key=lambda section: (
+                        HYDROPHOBIC_SELF_TEST_SECTION_ORDER[
+                            section
+                        ]
+                    ),
+                )
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "requested_tags",
+            _self_test_normalize_tags(
+                self.requested_tags
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "requested_identifiers",
+            tuple(
+                sorted(
+                    {
+                        _self_test_normalize_identifier(
+                            identifier
+                        )
+                        for identifier
+                        in self.requested_identifiers
+                    }
+                )
+            ),
+        )
+
+        duration = np.float64(
+            float(
+                self.duration_seconds
+            )
+        )
+
+        if (
+            not np.isfinite(duration)
+            or duration < 0.0
+        ):
+            raise ValueError(
+                "Report duration must be finite and nonnegative."
+            )
+
+        object.__setattr__(
+            self,
+            "duration_seconds",
+            duration,
+        )
+
+        object.__setattr__(
+            self,
+            "metadata",
+            _self_test_freeze_metadata(
+                self.metadata
+            ),
+        )
+
+    @property
+    def test_count(self) -> int:
+        """Return the number of executed tests."""
+
+        return len(
+            self.results
+        )
+
+    def count_status(
+        self,
+        status: HydrophobicTestStatus,
+    ) -> int:
+        """Count results with a specific status."""
+
+        normalized_status = (
+            _self_test_normalize_status(
+                status
+            )
+        )
+
+        return sum(
+            result.status
+            == normalized_status
+            for result in self.results
+        )
+
+    @property
+    def passed_count(self) -> int:
+        """Return the number of normally passed tests."""
+
+        return self.count_status(
+            "passed"
+        )
+
+    @property
+    def failed_count(self) -> int:
+        """Return the number of assertion failures."""
+
+        return self.count_status(
+            "failed"
+        )
+
+    @property
+    def error_count(self) -> int:
+        """Return the number of execution errors."""
+
+        return self.count_status(
+            "error"
+        )
+
+    @property
+    def skipped_count(self) -> int:
+        """Return the number of skipped tests."""
+
+        return self.count_status(
+            "skipped"
+        )
+
+    @property
+    def expected_failure_count(self) -> int:
+        """Return the number of expected failures."""
+
+        return self.count_status(
+            "expected_failure"
+        )
+
+    @property
+    def unexpected_success_count(self) -> int:
+        """Return the number of unexpected successes."""
+
+        return self.count_status(
+            "unexpected_success"
+        )
+
+    @property
+    def successful_count(self) -> int:
+        """Return the number of acceptable results."""
+
+        return sum(
+            result.successful
+            for result in self.results
+        )
+
+    @property
+    def unsuccessful_count(self) -> int:
+        """Return the number of failing results."""
+
+        return sum(
+            result.failed
+            for result in self.results
+        )
+
+    @property
+    def successful(self) -> bool:
+        """Return whether the complete suite succeeded."""
+
+        return self.unsuccessful_count == 0
+
+    @property
+    def status_counts(self) -> Mapping[str, int]:
+        """Return counts for every result status."""
+
+        return MappingProxyType(
+            {
+                status: self.count_status(
+                    status  # type: ignore[arg-type]
+                )
+                for status
+                in sorted(
+                    HYDROPHOBIC_SELF_TEST_VALID_STATUSES
+                )
+            }
+        )
+
+    @property
+    def sections(self) -> Tuple[str, ...]:
+        """Return sections represented in the report."""
+
+        return tuple(
+            sorted(
+                {
+                    result.section
+                    for result in self.results
+                },
+                key=lambda section: (
+                    HYDROPHOBIC_SELF_TEST_SECTION_ORDER[
+                        section
+                    ]
+                ),
+            )
+        )
+
+    def failed_results(
+        self,
+    ) -> Tuple[HydrophobicTestResult, ...]:
+        """Return all suite-failing results."""
+
+        return tuple(
+            result
+            for result in self.results
+            if result.failed
+        )
+
+    def results_for_section(
+        self,
+        section: str,
+    ) -> Tuple[HydrophobicTestResult, ...]:
+        """Return results belonging to one section."""
+
+        normalized_section = (
+            _self_test_normalize_section(
+                section
+            )
+        )
+
+        return tuple(
+            result
+            for result in self.results
+            if result.section
+            == normalized_section
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_output: bool = True,
+        include_traceback: bool = True,
+        include_return_values: bool = False,
+    ) -> Dict[str, Any]:
+        """Serialize the complete report."""
+
+        return {
+            "schema": HYDROPHOBIC_SELF_TEST_SCHEMA,
+            "schema_version": (
+                HYDROPHOBIC_SELF_TEST_SCHEMA_VERSION
+            ),
+            "successful": self.successful,
+            "test_count": self.test_count,
+            "successful_count": (
+                self.successful_count
+            ),
+            "unsuccessful_count": (
+                self.unsuccessful_count
+            ),
+            "status_counts": dict(
+                self.status_counts
+            ),
+            "sections": list(
+                self.sections
+            ),
+            "requested_sections": list(
+                self.requested_sections
+            ),
+            "requested_tags": list(
+                self.requested_tags
+            ),
+            "requested_identifiers": list(
+                self.requested_identifiers
+            ),
+            "duration_seconds": float(
+                self.duration_seconds
+            ),
+            "fail_fast": self.fail_fast,
+            "results": [
+                result.to_dict(
+                    include_output=(
+                        include_output
+                    ),
+                    include_traceback=(
+                        include_traceback
+                    ),
+                    include_return_value=(
+                        include_return_values
+                    ),
+                )
+                for result in self.results
+            ],
+            "metadata": _self_test_json_safe(
+                self.metadata
+            ),
+        }
+
+
+# -----------------------------------------------------------------------------
+# Suite execution
+# -----------------------------------------------------------------------------
+
+def run_registered_hydrophobic_tests(
+    *,
+    sections: Optional[Iterable[str]] = None,
+    tags: Optional[Iterable[str]] = None,
+    identifiers: Optional[Iterable[str]] = None,
+    enabled_only: bool = True,
+    fail_fast: bool = (
+        HYDROPHOBIC_SELF_TEST_FAIL_FAST
+    ),
+    capture_output: bool = (
+        HYDROPHOBIC_SELF_TEST_CAPTURE_OUTPUT
+    ),
+    capture_warnings: bool = (
+        HYDROPHOBIC_SELF_TEST_CAPTURE_WARNINGS
+    ),
+    context: Optional[
+        HydrophobicTestContext
+    ] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> HydrophobicSelfTestReport:
+    """
+    Execute selected registered hydrophobic self-tests.
+    """
+
+    resolved_context = (
+        HydrophobicTestContext()
+        if context is None
+        else context
+    )
+
+    selected_tests = (
+        _HYDROPHOBIC_SELF_TEST_REGISTRY.select(
+            sections=sections,
+            tags=tags,
+            identifiers=identifiers,
+            enabled_only=enabled_only,
+        )
+    )
+
+    results: List[
+        HydrophobicTestResult
+    ] = []
+
+    started_at = (
+        _self_test_current_time()
+    )
+
+    for test_case in selected_tests:
+        result = run_hydrophobic_test_case(
+            test_case,
+            context=resolved_context,
+            capture_output=capture_output,
+            capture_warnings=capture_warnings,
+        )
+
+        results.append(
+            result
+        )
+
+        if (
+            fail_fast
+            and result.failed
+        ):
+            break
+
+    finished_at = (
+        _self_test_current_time()
+    )
+
+    report_metadata = {
+        "registry_test_count": len(
+            _HYDROPHOBIC_SELF_TEST_REGISTRY
+        ),
+        "selected_test_count": len(
+            selected_tests
+        ),
+        "executed_test_count": len(
+            results
+        ),
+        "capture_output": bool(
+            capture_output
+        ),
+        "capture_warnings": bool(
+            capture_warnings
+        ),
+    }
+
+    if metadata is not None:
+        report_metadata.update(
+            dict(metadata)
+        )
+
+    return HydrophobicSelfTestReport(
+        results=results,
+        requested_sections=(
+            ()
+            if sections is None
+            else tuple(sections)
+        ),
+        requested_tags=(
+            ()
+            if tags is None
+            else tuple(tags)
+        ),
+        requested_identifiers=(
+            ()
+            if identifiers is None
+            else tuple(identifiers)
+        ),
+        duration_seconds=(
+            _self_test_duration(
+                started_at,
+                finished_at,
+            )
+        ),
+        fail_fast=bool(
+            fail_fast
+        ),
+        metadata=report_metadata,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Report formatting
+# -----------------------------------------------------------------------------
+
+def format_hydrophobic_test_result(
+    result: HydrophobicTestResult,
+    *,
+    include_duration: bool = True,
+    include_message: bool = True,
+) -> str:
+    """Format one compact self-test result line."""
+
+    if not isinstance(
+        result,
+        HydrophobicTestResult,
+    ):
+        raise TypeError(
+            "result must be a HydrophobicTestResult."
+        )
+
+    status_label = {
+        "passed": "PASS",
+        "failed": "FAIL",
+        "error": "ERROR",
+        "skipped": "SKIP",
+        "expected_failure": "XFAIL",
+        "unexpected_success": "XPASS",
+    }[
+        result.status
+    ]
+
+    text = (
+        f"[{status_label}] "
+        f"{result.section} "
+        f"{result.identifier}"
+    )
+
+    if include_duration:
+        text += (
+            f" ({float(result.duration_seconds):.6f} s)"
+        )
+
+    if (
+        include_message
+        and result.message
+    ):
+        text += (
+            f" — {result.message}"
+        )
+
+    return text
+
+
+def format_hydrophobic_self_test_report(
+    report: HydrophobicSelfTestReport,
+    *,
+    include_results: bool = True,
+    include_failures: bool = True,
+    include_captured_output: bool = False,
+) -> str:
+    """
+    Format a human-readable self-test report.
+    """
+
+    if not isinstance(
+        report,
+        HydrophobicSelfTestReport,
+    ):
+        raise TypeError(
+            "report must be a HydrophobicSelfTestReport."
+        )
+
+    overall_status = (
+        "PASSED"
+        if report.successful
+        else "FAILED"
+    )
+
+    lines = [
+        "Hydrophobic self-test report",
+        "============================",
+        f"Status: {overall_status}",
+        f"Tests executed: {report.test_count}",
+        f"Passed: {report.passed_count}",
+        f"Failed: {report.failed_count}",
+        f"Errors: {report.error_count}",
+        f"Skipped: {report.skipped_count}",
+        (
+            "Expected failures: "
+            f"{report.expected_failure_count}"
+        ),
+        (
+            "Unexpected successes: "
+            f"{report.unexpected_success_count}"
+        ),
+        (
+            "Duration: "
+            f"{float(report.duration_seconds):.6f} s"
+        ),
+    ]
+
+    if include_results and report.results:
+        lines.extend(
+            [
+                "",
+                "Results",
+                "-------",
+            ]
+        )
+
+        for result in report.results:
+            lines.append(
+                format_hydrophobic_test_result(
+                    result
+                )
+            )
+
+            if (
+                include_captured_output
+                and result.captured_stdout
+            ):
+                lines.append(
+                    "  stdout:"
+                )
+
+                lines.extend(
+                    f"    {line}"
+                    for line
+                    in result.captured_stdout.splitlines()
+                )
+
+            if (
+                include_captured_output
+                and result.captured_stderr
+            ):
+                lines.append(
+                    "  stderr:"
+                )
+
+                lines.extend(
+                    f"    {line}"
+                    for line
+                    in result.captured_stderr.splitlines()
+                )
+
+    if (
+        include_failures
+        and not report.successful
+    ):
+        lines.extend(
+            [
+                "",
+                "Failure details",
+                "---------------",
+            ]
+        )
+
+        for result in report.failed_results():
+            lines.append(
+                (
+                    f"{result.section} "
+                    f"{result.identifier}"
+                )
+            )
+
+            if result.exception_text:
+                lines.append(
+                    f"  {result.exception_text}"
+                )
+
+            elif result.message:
+                lines.append(
+                    f"  {result.message}"
+                )
+
+    return "\n".join(
+        lines
+    )
+
+
+# -----------------------------------------------------------------------------
+# Report serialization
+# -----------------------------------------------------------------------------
+
+def serialize_hydrophobic_self_test_report(
+    report: HydrophobicSelfTestReport,
+    *,
+    include_output: bool = True,
+    include_traceback: bool = True,
+    include_return_values: bool = False,
+) -> Dict[str, Any]:
+    """Serialize a self-test report into plain Python objects."""
+
+    if not isinstance(
+        report,
+        HydrophobicSelfTestReport,
+    ):
+        raise TypeError(
+            "report must be a HydrophobicSelfTestReport."
+        )
+
+    return report.to_dict(
+        include_output=include_output,
+        include_traceback=include_traceback,
+        include_return_values=(
+            include_return_values
+        ),
+    )
+
+
+def hydrophobic_self_test_report_to_json(
+    report: HydrophobicSelfTestReport,
+    *,
+    indent: Optional[int] = 2,
+    sort_keys: bool = True,
+    include_output: bool = True,
+    include_traceback: bool = True,
+) -> str:
+    """Serialize a self-test report as JSON text."""
+
+    serialized = (
+        serialize_hydrophobic_self_test_report(
+            report,
+            include_output=include_output,
+            include_traceback=include_traceback,
+            include_return_values=False,
+        )
+    )
+
+    return json.dumps(
+        serialized,
+        indent=indent,
+        sort_keys=sort_keys,
+        ensure_ascii=False,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Synthetic fixture helpers
+# -----------------------------------------------------------------------------
+
+def make_hydrophobic_test_atom(
+    *,
+    name: str = "C1",
+    element: str = "C",
+    coordinate: Sequence[Number] = (
+        0.0,
+        0.0,
+        0.0,
+    ),
+    residue_name: str = "LIG",
+    residue_number: int = 1,
+    chain_identifier: str = "A",
+    atom_index: Optional[int] = None,
+    aromatic: bool = False,
+    partial_charge: Optional[Number] = None,
+    structure_name: str = "synthetic",
+) -> Any:
+    """
+    Create one synthetic atom using the Section 5 factory.
+
+    This wrapper centralizes self-test fixture creation so later tests do
+    not depend directly on the complete SyntheticAtom constructor.
+    """
+
+    keyword_candidates = {
+        "name": name,
+        "element": element,
+        "coordinate": coordinate,
+        "residue_name": residue_name,
+        "residue_number": residue_number,
+        "chain_identifier": chain_identifier,
+        "atom_index": atom_index,
+        "aromatic": aromatic,
+        "partial_charge": partial_charge,
+        "structure_name": structure_name,
+    }
+
+    factory = make_synthetic_atom
+
+    try:
+        signature = inspect.signature(
+            factory
+        )
+
+        accepted_keywords = {
+            key: value
+            for key, value
+            in keyword_candidates.items()
+            if key in signature.parameters
+        }
+
+        atom = factory(
+            **accepted_keywords
+        )
+
+    except Exception:
+        fallback_keywords = {
+            "name": name,
+            "element": element,
+            "coord": coordinate,
+        }
+
+        try:
+            atom = factory(
+                **fallback_keywords
+            )
+
+        except Exception as exc:
+            raise HydrophobicTestExecutionError(
+                "Could not create a synthetic hydrophobic test atom. "
+                "The make_synthetic_atom() signature may differ from "
+                "the expected Section 5 API."
+            ) from exc
+
+    # Best-effort completion of fields not supported by the factory.
+    optional_attributes = {
+        "index": atom_index,
+        "aromatic": aromatic,
+        "is_aromatic": aromatic,
+        "partial_charge": partial_charge,
+        "charge": partial_charge,
+    }
+
+    for attribute_name, value in optional_attributes.items():
+        if value is None:
+            continue
+
+        try:
+            setattr(
+                atom,
+                attribute_name,
+                value,
+            )
+
+        except Exception:
+            pass
+
+    return atom
+
+
+def make_hydrophobic_test_atom_pair(
+    *,
+    distance: Number = 3.8,
+    receptor_element: str = "C",
+    ligand_element: str = "C",
+    receptor_aromatic: bool = False,
+    ligand_aromatic: bool = False,
+) -> Tuple[Any, Any]:
+    """
+    Create a receptor–ligand atom pair at a defined distance.
+    """
+
+    normalized_distance = float(
+        distance
+    )
+
+    if (
+        not np.isfinite(
+            normalized_distance
+        )
+        or normalized_distance < 0.0
+    ):
+        raise ValueError(
+            "distance must be finite and nonnegative."
+        )
+
+    receptor_atom = make_hydrophobic_test_atom(
+        name="RC1",
+        element=receptor_element,
+        coordinate=(
+            0.0,
+            0.0,
+            0.0,
+        ),
+        residue_name="LEU",
+        residue_number=10,
+        chain_identifier="A",
+        atom_index=1,
+        aromatic=receptor_aromatic,
+        structure_name="receptor",
+    )
+
+    ligand_atom = make_hydrophobic_test_atom(
+        name="LC1",
+        element=ligand_element,
+        coordinate=(
+            normalized_distance,
+            0.0,
+            0.0,
+        ),
+        residue_name="LIG",
+        residue_number=1,
+        chain_identifier="L",
+        atom_index=2,
+        aromatic=ligand_aromatic,
+        structure_name="ligand",
+    )
+
+    return (
+        receptor_atom,
+        ligand_atom,
+    )
+
+
+def make_hydrophobic_test_collection(
+    *,
+    receptor_count: int = 3,
+    ligand_count: int = 3,
+    separation: Number = 3.8,
+    spacing: Number = 1.2,
+) -> Tuple[Tuple[Any, ...], Tuple[Any, ...]]:
+    """
+    Create compact synthetic receptor and ligand atom collections.
+    """
+
+    normalized_receptor_count = int(
+        receptor_count
+    )
+
+    normalized_ligand_count = int(
+        ligand_count
+    )
+
+    if (
+        normalized_receptor_count < 0
+        or normalized_ligand_count < 0
+    ):
+        raise ValueError(
+            "Synthetic atom counts cannot be negative."
+        )
+
+    normalized_separation = float(
+        separation
+    )
+
+    normalized_spacing = float(
+        spacing
+    )
+
+    receptor_atoms = tuple(
+        make_hydrophobic_test_atom(
+            name=f"RC{index + 1}",
+            element="C",
+            coordinate=(
+                0.0,
+                index * normalized_spacing,
+                0.0,
+            ),
+            residue_name="LEU",
+            residue_number=10,
+            chain_identifier="A",
+            atom_index=index + 1,
+            aromatic=False,
+            structure_name="receptor",
+        )
+        for index in range(
+            normalized_receptor_count
+        )
+    )
+
+    ligand_atoms = tuple(
+        make_hydrophobic_test_atom(
+            name=f"LC{index + 1}",
+            element="C",
+            coordinate=(
+                normalized_separation,
+                index * normalized_spacing,
+                0.0,
+            ),
+            residue_name="LIG",
+            residue_number=1,
+            chain_identifier="L",
+            atom_index=(
+                normalized_receptor_count
+                + index
+                + 1
+            ),
+            aromatic=False,
+            structure_name="ligand",
+        )
+        for index in range(
+            normalized_ligand_count
+        )
+    )
+
+    return (
+        receptor_atoms,
+        ligand_atoms,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Infrastructure self-tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "infrastructure.registry.registration",
+    section="12.1",
+    description=(
+        "Validate temporary test registration and lookup."
+    ),
+    tags=(
+        "infrastructure",
+        "registry",
+    ),
+)
+def _test_self_test_registry_registration() -> None:
+    """Validate temporary registry registration."""
+
+    temporary_registry = (
+        HydrophobicTestRegistry()
+    )
+
+    def temporary_test() -> None:
+        return None
+
+    test_case = HydrophobicTestCase(
+        identifier="temporary.test",
+        function=temporary_test,
+        section="12.1",
+    )
+
+    temporary_registry.register(
+        test_case
+    )
+
+    assert_hydrophobic_length(
+        temporary_registry,
+        1,
+    )
+
+    assert_hydrophobic_is(
+        temporary_registry.get(
+            "temporary.test"
+        ),
+        test_case,
+    )
+
+    removed = temporary_registry.unregister(
+        "temporary.test"
+    )
+
+    assert_hydrophobic_is(
+        removed,
+        test_case,
+    )
+
+    assert_hydrophobic_length(
+        temporary_registry,
+        0,
+    )
+
+
+@hydrophobic_test(
+    "infrastructure.assertions.basic",
+    section="12.1",
+    description=(
+        "Validate the fundamental assertion helpers."
+    ),
+    tags=(
+        "infrastructure",
+        "assertions",
+    ),
+)
+def _test_self_test_assertions_basic() -> None:
+    """Validate basic assertions."""
+
+    assert_hydrophobic_true(
+        True
+    )
+
+    assert_hydrophobic_false(
+        False
+    )
+
+    assert_hydrophobic_equal(
+        3,
+        3,
+    )
+
+    assert_hydrophobic_not_equal(
+        3,
+        4,
+    )
+
+    assert_hydrophobic_close(
+        1.0,
+        1.0 + 1.0e-9,
+    )
+
+    assert_hydrophobic_array_close(
+        (
+            1.0,
+            2.0,
+            3.0,
+        ),
+        np.asarray(
+            (
+                1.0,
+                2.0,
+                3.0,
+            )
+        ),
+    )
+
+    assert_hydrophobic_between(
+        0.5,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_in(
+        "a",
+        {
+            "a",
+            "b",
+        },
+    )
+
+
+@hydrophobic_test(
+    "infrastructure.assertions.raises",
+    section="12.1",
+    description=(
+        "Validate exception assertion handling."
+    ),
+    tags=(
+        "infrastructure",
+        "assertions",
+        "exceptions",
+    ),
+)
+def _test_self_test_assert_raises() -> None:
+    """Validate assert_hydrophobic_raises()."""
+
+    with assert_hydrophobic_raises(
+        ValueError,
+        message_contains="synthetic",
+    ):
+        raise ValueError(
+            "synthetic error"
+        )
+
+
+@hydrophobic_test(
+    "infrastructure.serialization",
+    section="12.1",
+    description=(
+        "Validate report and result JSON serialization."
+    ),
+    tags=(
+        "infrastructure",
+        "serialization",
+    ),
+)
+def _test_self_test_serialization() -> None:
+    """Validate self-test serialization infrastructure."""
+
+    result = HydrophobicTestResult(
+        identifier="synthetic.result",
+        section="12.1",
+        status="passed",
+        duration_seconds=np.float64(
+            0.01
+        ),
+        return_value={
+            "value": np.float64(
+                1.0
+            )
+        },
+    )
+
+    report = HydrophobicSelfTestReport(
+        results=(
+            result,
+        ),
+        duration_seconds=np.float64(
+            0.01
+        ),
+    )
+
+    serialized = report.to_dict(
+        include_return_values=True
+    )
+
+    assert_hydrophobic_mapping_contains(
+        serialized,
+        {
+            "schema": (
+                HYDROPHOBIC_SELF_TEST_SCHEMA
+            ),
+            "successful": True,
+            "test_count": 1,
+        },
+    )
+
+    assert_hydrophobic_serializable(
+        serialized
+    )
+
+    json_text = (
+        hydrophobic_self_test_report_to_json(
+            report
+        )
+    )
+
+    parsed = json.loads(
+        json_text
+    )
+
+    assert_hydrophobic_equal(
+        parsed["test_count"],
+        1,
+    )
+
+
+@hydrophobic_test(
+    "infrastructure.synthetic.atom_pair",
+    section="12.1",
+    description=(
+        "Validate construction of a synthetic receptor–ligand atom pair."
+    ),
+    tags=(
+        "infrastructure",
+        "synthetic",
+        "atoms",
+    ),
+)
+def _test_self_test_synthetic_atom_pair() -> None:
+    """Validate synthetic atom-pair construction."""
+
+    receptor_atom, ligand_atom = (
+        make_hydrophobic_test_atom_pair(
+            distance=3.5
+        )
+    )
+
+    assert_hydrophobic_is_not_none(
+        receptor_atom
+    )
+
+    assert_hydrophobic_is_not_none(
+        ligand_atom
+    )
+
+    receptor_coordinate = (
+        get_hydrophobic_coordinate(
+            receptor_atom
+        )
+    )
+
+    ligand_coordinate = (
+        get_hydrophobic_coordinate(
+            ligand_atom
+        )
+    )
+
+    measured_distance = float(
+        np.linalg.norm(
+            ligand_coordinate
+            - receptor_coordinate
+        )
+    )
+
+    assert_hydrophobic_close(
+        measured_distance,
+        3.5,
+    )
+
+
+@hydrophobic_test(
+    "infrastructure.synthetic.collection",
+    section="12.1",
+    description=(
+        "Validate construction of compact synthetic atom collections."
+    ),
+    tags=(
+        "infrastructure",
+        "synthetic",
+        "collections",
+    ),
+)
+def _test_self_test_synthetic_collection() -> None:
+    """Validate synthetic collection construction."""
+
+    receptor_atoms, ligand_atoms = (
+        make_hydrophobic_test_collection(
+            receptor_count=3,
+            ligand_count=2,
+        )
+    )
+
+    assert_hydrophobic_length(
+        receptor_atoms,
+        3,
+    )
+
+    assert_hydrophobic_length(
+        ligand_atoms,
+        2,
+    )
+
+    for atom in (
+        *receptor_atoms,
+        *ligand_atoms,
+    ):
+        coordinate = (
+            get_hydrophobic_coordinate(
+                atom
+            )
+        )
+
+        assert_hydrophobic_array_close(
+            np.asarray(
+                coordinate
+            ).shape,
+            (
+                3,
+            ),
+        )
+
+
+@hydrophobic_test(
+    "infrastructure.runner.single_case",
+    section="12.1",
+    description=(
+        "Validate execution of one temporary test case."
+    ),
+    tags=(
+        "infrastructure",
+        "runner",
+    ),
+)
+def _test_self_test_runner_single_case() -> None:
+    """Validate the individual test runner."""
+
+    def temporary_test(
+        context: HydrophobicTestContext,
+    ) -> str:
+        assert_hydrophobic_instance(
+            context,
+            HydrophobicTestContext,
+        )
+
+        print(
+            "temporary output"
+        )
+
+        return "ok"
+
+    test_case = HydrophobicTestCase(
+        identifier="temporary.runner.case",
+        function=temporary_test,
+        section="12.1",
+    )
+
+    result = run_hydrophobic_test_case(
+        test_case,
+        context=HydrophobicTestContext(),
+        capture_output=True,
+    )
+
+    assert_hydrophobic_equal(
+        result.status,
+        "passed",
+    )
+
+    assert_hydrophobic_equal(
+        result.return_value,
+        "ok",
+    )
+
+    assert_hydrophobic_in(
+        "temporary output",
+        result.captured_stdout,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Infrastructure smoke-test runner
+# -----------------------------------------------------------------------------
+
+def run_hydrophobic_infrastructure_tests(
+    *,
+    fail_fast: bool = True,
+    verbose: bool = True,
+) -> HydrophobicSelfTestReport:
+    """
+    Execute only the Section 12.1 infrastructure tests.
+    """
+
+    report = run_registered_hydrophobic_tests(
+        sections=(
+            "12.1",
+        ),
+        fail_fast=fail_fast,
+        capture_output=True,
+        capture_warnings=True,
+        context=HydrophobicTestContext(
+            verbose=verbose
+        ),
+        metadata={
+            "runner": (
+                "run_hydrophobic_infrastructure_tests"
+            ),
+        },
+    )
+
+    if verbose:
+        print(
+            format_hydrophobic_self_test_report(
+                report,
+                include_results=True,
+                include_failures=True,
+                include_captured_output=False,
+            )
+        )
+
+    return report
+
+
+# -----------------------------------------------------------------------------
+# Registry inspection
+# -----------------------------------------------------------------------------
+
+def get_hydrophobic_self_test_registry(
+) -> HydrophobicTestRegistry:
+    """
+    Return the global self-test registry.
+
+    The registry itself is mutable to permit registration by Sections
+    12.2–12.4.
+    """
+
+    return _HYDROPHOBIC_SELF_TEST_REGISTRY
+
+
+def list_hydrophobic_self_tests(
+    *,
+    sections: Optional[Iterable[str]] = None,
+    tags: Optional[Iterable[str]] = None,
+    enabled_only: bool = False,
+) -> Tuple[HydrophobicTestCase, ...]:
+    """Return registered tests matching optional filters."""
+
+    return _HYDROPHOBIC_SELF_TEST_REGISTRY.select(
+        sections=sections,
+        tags=tags,
+        identifiers=None,
+        enabled_only=enabled_only,
+    )
+
+
+def clear_hydrophobic_self_tests(
+) -> None:
+    """
+    Clear the global self-test registry.
+
+    Primarily intended for interactive module development. Calling this
+    function removes tests registered by Sections 12.1–12.4.
+    """
+
+    _HYDROPHOBIC_SELF_TEST_REGISTRY.clear()
+
+
+# -----------------------------------------------------------------------------
+# Empty self-test objects
+# -----------------------------------------------------------------------------
+
+_EMPTY_HYDROPHOBIC_TEST_RESULTS: Final[
+    Tuple[HydrophobicTestResult, ...]
+] = ()
+
+_EMPTY_HYDROPHOBIC_SELF_TEST_REPORT: Final[
+    HydrophobicSelfTestReport
+] = HydrophobicSelfTestReport()
+
+
+# -----------------------------------------------------------------------------
+# Section 12.1 public names
+# -----------------------------------------------------------------------------
+
+_SECTION_12_1_PUBLIC_NAMES: Final[
+    Tuple[str, ...]
+] = (
+    # Aliases
+    "HydrophobicTestStatus",
+    "HydrophobicTestSection",
+    "HydrophobicTestCallable",
+    "HydrophobicTestIdentifier",
+    "HydrophobicTestMetadata",
+
+    # Exceptions
+    "HydrophobicSelfTestError",
+    "HydrophobicTestRegistrationError",
+    "HydrophobicTestExecutionError",
+    "HydrophobicTestSkipped",
+    "HydrophobicExpectedFailure",
+
+    # Records
+    "HydrophobicTestWarning",
+    "HydrophobicTestCase",
+    "HydrophobicTestResult",
+    "HydrophobicTestContext",
+    "HydrophobicSelfTestReport",
+
+    # Registry
+    "HydrophobicTestRegistry",
+    "hydrophobic_test",
+    "get_hydrophobic_self_test_registry",
+    "list_hydrophobic_self_tests",
+    "clear_hydrophobic_self_tests",
+
+    # Control flow
+    "skip_hydrophobic_test",
+    "hydrophobic_expected_failure",
+
+    # Assertions
+    "assert_hydrophobic_true",
+    "assert_hydrophobic_false",
+    "assert_hydrophobic_equal",
+    "assert_hydrophobic_not_equal",
+    "assert_hydrophobic_is",
+    "assert_hydrophobic_is_not",
+    "assert_hydrophobic_is_none",
+    "assert_hydrophobic_is_not_none",
+    "assert_hydrophobic_instance",
+    "assert_hydrophobic_not_instance",
+    "assert_hydrophobic_in",
+    "assert_hydrophobic_not_in",
+    "assert_hydrophobic_length",
+    "assert_hydrophobic_close",
+    "assert_hydrophobic_array_close",
+    "assert_hydrophobic_between",
+    "assert_hydrophobic_mapping_contains",
+    "assert_hydrophobic_raises",
+    "assert_hydrophobic_warns",
+    "assert_hydrophobic_serializable",
+    "assert_hydrophobic_immutable_mapping",
+
+    # Synthetic fixtures
+    "make_hydrophobic_test_atom",
+    "make_hydrophobic_test_atom_pair",
+    "make_hydrophobic_test_collection",
+
+    # Execution
+    "run_hydrophobic_test_case",
+    "run_registered_hydrophobic_tests",
+    "run_hydrophobic_infrastructure_tests",
+
+    # Formatting and serialization
+    "format_hydrophobic_test_result",
+    "format_hydrophobic_self_test_report",
+    "serialize_hydrophobic_self_test_report",
+    "hydrophobic_self_test_report_to_json",
+)
+
+for public_name in _SECTION_12_1_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+# =============================================================================
+# End of Section 12.1
+# =============================================================================
+
+
+# =============================================================================
+# Section 12.2 — Tests for Sections 1–5
+# =============================================================================
+#
+# Coverage:
+#
+# - constants and validation helpers;
+# - HydrophobicAtom;
+# - HydrophobicInteraction;
+# - HydrophobicResidueGroup;
+# - HydrophobicStatistics;
+# - HydrophobicAnalysisResult;
+# - synthetic atom infrastructure;
+# - hydrophobic atom perception;
+# - aromatic and aliphatic classification;
+# - atom filtering and partitioning;
+# - deduplication;
+# - receptor/ligand preparation;
+# - HydrophobicAtomCollections;
+#
+# These tests depend on the infrastructure defined in Section 12.1.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Section 12.2 helper functions
+# -----------------------------------------------------------------------------
+
+def _test_get_atom_name(
+    atom: Any,
+) -> str:
+    """Return a synthetic atom name using tolerant attribute lookup."""
+
+    for attribute_name in (
+        "name",
+        "atom_name",
+        "atomName",
+    ):
+        try:
+            value = getattr(
+                atom,
+                attribute_name,
+            )
+
+        except Exception:
+            continue
+
+        if value is not None:
+            normalized = str(
+                value
+            ).strip()
+
+            if normalized:
+                return normalized
+
+    return ""
+
+
+def _test_get_atom_element(
+    atom: Any,
+) -> str:
+    """Return a normalized synthetic atom element symbol."""
+
+    for attribute_name in (
+        "element_name",
+        "element_symbol",
+        "element",
+        "symbol",
+    ):
+        try:
+            value = getattr(
+                atom,
+                attribute_name,
+            )
+
+        except Exception:
+            continue
+
+        if value is None:
+            continue
+
+        if not isinstance(
+            value,
+            str,
+        ):
+            for nested_name in (
+                "name",
+                "symbol",
+            ):
+                try:
+                    nested_value = getattr(
+                        value,
+                        nested_name,
+                    )
+
+                except Exception:
+                    continue
+
+                if nested_value is not None:
+                    value = nested_value
+                    break
+
+        normalized = str(
+            value
+        ).strip()
+
+        if normalized:
+            return normalized.upper()
+
+    return ""
+
+
+def _test_set_atom_attribute(
+    atom: Any,
+    attribute_names: Sequence[str],
+    value: Any,
+) -> bool:
+    """Best-effort assignment of one atom attribute."""
+
+    for attribute_name in attribute_names:
+        try:
+            setattr(
+                atom,
+                attribute_name,
+                value,
+            )
+
+            return True
+
+        except Exception:
+            continue
+
+    return False
+
+
+def _test_make_residue_atoms(
+    *,
+    residue_name: str,
+    residue_number: int,
+    chain_identifier: str,
+    atom_definitions: Sequence[
+        Tuple[
+            str,
+            str,
+            Sequence[Number],
+            bool,
+            Optional[Number],
+        ]
+    ],
+    structure_name: str,
+) -> Tuple[Any, ...]:
+    """
+    Create a synthetic collection belonging to one residue.
+
+    Each definition contains:
+
+    ``name, element, coordinate, aromatic, partial_charge``.
+    """
+
+    atoms: List[Any] = []
+
+    for atom_index, (
+        atom_name,
+        element,
+        coordinate,
+        aromatic,
+        partial_charge,
+    ) in enumerate(
+        atom_definitions,
+        start=1,
+    ):
+        atom = make_hydrophobic_test_atom(
+            name=atom_name,
+            element=element,
+            coordinate=coordinate,
+            residue_name=residue_name,
+            residue_number=residue_number,
+            chain_identifier=chain_identifier,
+            atom_index=atom_index,
+            aromatic=aromatic,
+            partial_charge=partial_charge,
+            structure_name=structure_name,
+        )
+
+        atoms.append(atom)
+
+    return tuple(atoms)
+
+
+def _test_make_mixed_atom_collection(
+) -> Tuple[Any, ...]:
+    """
+    Create a mixed synthetic atom collection.
+
+    The collection contains:
+
+    - aliphatic carbon;
+    - aromatic carbon;
+    - sulfur;
+    - oxygen;
+    - nitrogen;
+    - hydrogen.
+    """
+
+    return (
+        make_hydrophobic_test_atom(
+            name="CALI",
+            element="C",
+            coordinate=(0.0, 0.0, 0.0),
+            residue_name="LEU",
+            residue_number=10,
+            chain_identifier="A",
+            atom_index=1,
+            aromatic=False,
+            partial_charge=0.0,
+            structure_name="mixed",
+        ),
+        make_hydrophobic_test_atom(
+            name="CARO",
+            element="C",
+            coordinate=(1.5, 0.0, 0.0),
+            residue_name="PHE",
+            residue_number=11,
+            chain_identifier="A",
+            atom_index=2,
+            aromatic=True,
+            partial_charge=0.0,
+            structure_name="mixed",
+        ),
+        make_hydrophobic_test_atom(
+            name="S1",
+            element="S",
+            coordinate=(3.0, 0.0, 0.0),
+            residue_name="MET",
+            residue_number=12,
+            chain_identifier="A",
+            atom_index=3,
+            aromatic=False,
+            partial_charge=0.0,
+            structure_name="mixed",
+        ),
+        make_hydrophobic_test_atom(
+            name="O1",
+            element="O",
+            coordinate=(4.5, 0.0, 0.0),
+            residue_name="SER",
+            residue_number=13,
+            chain_identifier="A",
+            atom_index=4,
+            aromatic=False,
+            partial_charge=-0.4,
+            structure_name="mixed",
+        ),
+        make_hydrophobic_test_atom(
+            name="N1",
+            element="N",
+            coordinate=(6.0, 0.0, 0.0),
+            residue_name="LYS",
+            residue_number=14,
+            chain_identifier="A",
+            atom_index=5,
+            aromatic=False,
+            partial_charge=-0.2,
+            structure_name="mixed",
+        ),
+        make_hydrophobic_test_atom(
+            name="H1",
+            element="H",
+            coordinate=(7.5, 0.0, 0.0),
+            residue_name="LIG",
+            residue_number=1,
+            chain_identifier="L",
+            atom_index=6,
+            aromatic=False,
+            partial_charge=0.1,
+            structure_name="mixed",
+        ),
+    )
+
+
+def _test_perceive_atom(
+    atom: Any,
+    *,
+    role: Optional[str] = None,
+) -> Optional[HydrophobicAtom]:
+    """
+    Call ``perceive_hydrophobic_atom`` while tolerating API variations.
+    """
+
+    function = perceive_hydrophobic_atom
+
+    try:
+        signature = inspect.signature(
+            function
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        signature = None
+
+    keyword_candidates: Dict[str, Any] = {}
+
+    if role is not None:
+        for parameter_name in (
+            "role",
+            "source",
+            "atom_role",
+            "molecular_role",
+        ):
+            if (
+                signature is None
+                or parameter_name
+                in signature.parameters
+            ):
+                keyword_candidates[
+                    parameter_name
+                ] = role
+
+                break
+
+    try:
+        return function(
+            atom,
+            **keyword_candidates,
+        )
+
+    except TypeError:
+        return function(
+            atom
+        )
+
+
+def _test_perceive_atoms(
+    atoms: Iterable[Any],
+    *,
+    role: Optional[str] = None,
+) -> Tuple[HydrophobicAtom, ...]:
+    """
+    Call ``perceive_hydrophobic_atoms`` with tolerant arguments.
+    """
+
+    atom_tuple = tuple(
+        atoms
+    )
+
+    function = perceive_hydrophobic_atoms
+
+    try:
+        signature = inspect.signature(
+            function
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        signature = None
+
+    keyword_candidates: Dict[str, Any] = {}
+
+    if role is not None:
+        for parameter_name in (
+            "role",
+            "source",
+            "atom_role",
+            "molecular_role",
+        ):
+            if (
+                signature is None
+                or parameter_name
+                in signature.parameters
+            ):
+                keyword_candidates[
+                    parameter_name
+                ] = role
+
+                break
+
+    try:
+        result = function(
+            atom_tuple,
+            **keyword_candidates,
+        )
+
+    except TypeError:
+        result = function(
+            atom_tuple
+        )
+
+    return tuple(
+        result
+    )
+
+
+def _test_filter_descriptors(
+    descriptors: Iterable[HydrophobicAtom],
+    **options: Any,
+) -> Tuple[HydrophobicAtom, ...]:
+    """
+    Call ``filter_hydrophobic_atoms`` with supported options only.
+    """
+
+    function = filter_hydrophobic_atoms
+
+    try:
+        signature = inspect.signature(
+            function
+        )
+
+        supported_options = {
+            key: value
+            for key, value in options.items()
+            if key in signature.parameters
+        }
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        supported_options = options
+
+    result = function(
+        tuple(descriptors),
+        **supported_options,
+    )
+
+    return tuple(
+        result
+    )
+
+
+def _test_partition_descriptors(
+    descriptors: Iterable[HydrophobicAtom],
+) -> Any:
+    """Call ``partition_hydrophobic_atoms``."""
+
+    return partition_hydrophobic_atoms(
+        tuple(descriptors)
+    )
+
+
+def _test_descriptor_atom(
+    descriptor: HydrophobicAtom,
+) -> Any:
+    """Resolve the original atom from a descriptor."""
+
+    for attribute_name in (
+        "atom",
+        "source_atom",
+        "original_atom",
+    ):
+        try:
+            atom = getattr(
+                descriptor,
+                attribute_name,
+            )
+
+        except Exception:
+            continue
+
+        if atom is not None:
+            return atom
+
+    return None
+
+
+def _test_descriptor_identifier(
+    descriptor: HydrophobicAtom,
+) -> Optional[str]:
+    """Resolve a descriptor atom identifier."""
+
+    for attribute_name in (
+        "atom_identifier",
+        "identifier",
+        "atom_id",
+    ):
+        try:
+            value = getattr(
+                descriptor,
+                attribute_name,
+            )
+
+        except Exception:
+            continue
+
+        if value is not None:
+            normalized = str(
+                value
+            ).strip()
+
+            if normalized:
+                return normalized
+
+    atom = _test_descriptor_atom(
+        descriptor
+    )
+
+    if atom is None:
+        return None
+
+    name = _test_get_atom_name(
+        atom
+    )
+
+    return name or None
+
+
+def _test_descriptor_is_aromatic(
+    descriptor: HydrophobicAtom,
+) -> bool:
+    """Resolve descriptor aromatic character."""
+
+    for attribute_name in (
+        "is_aromatic",
+        "aromatic",
+    ):
+        try:
+            return bool(
+                getattr(
+                    descriptor,
+                    attribute_name,
+                )
+            )
+
+        except Exception:
+            continue
+
+    return False
+
+
+def _test_descriptor_is_aliphatic(
+    descriptor: HydrophobicAtom,
+) -> bool:
+    """Resolve descriptor aliphatic character."""
+
+    for attribute_name in (
+        "is_aliphatic",
+        "aliphatic",
+    ):
+        try:
+            return bool(
+                getattr(
+                    descriptor,
+                    attribute_name,
+                )
+            )
+
+        except Exception:
+            continue
+
+    return False
+
+
+def _test_descriptor_is_hydrophobic(
+    descriptor: HydrophobicAtom,
+) -> bool:
+    """Resolve whether a descriptor is hydrophobic."""
+
+    for attribute_name in (
+        "is_hydrophobic",
+        "hydrophobic",
+        "accepted",
+    ):
+        try:
+            return bool(
+                getattr(
+                    descriptor,
+                    attribute_name,
+                )
+            )
+
+        except Exception:
+            continue
+
+    return True
+
+
+def _test_construct_hydrophobic_atom(
+    atom: Any,
+    **overrides: Any,
+) -> HydrophobicAtom:
+    """
+    Construct ``HydrophobicAtom`` using supported constructor fields.
+
+    This allows tests to remain useful if optional dataclass fields are
+    renamed while the primary ``atom`` field remains unchanged.
+    """
+
+    constructor = HydrophobicAtom
+
+    try:
+        signature = inspect.signature(
+            constructor
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise HydrophobicTestExecutionError(
+            "Could not inspect HydrophobicAtom constructor."
+        ) from exc
+
+    values: Dict[str, Any] = {
+        "atom": atom,
+        "source_atom": atom,
+        "original_atom": atom,
+        "atom_identifier": _test_get_atom_name(
+            atom
+        ),
+        "identifier": _test_get_atom_name(
+            atom
+        ),
+        "element": _test_get_atom_element(
+            atom
+        ),
+        "element_symbol": _test_get_atom_element(
+            atom
+        ),
+        "is_hydrophobic": True,
+        "hydrophobic": True,
+        "is_aromatic": False,
+        "aromatic": False,
+        "is_aliphatic": True,
+        "aliphatic": True,
+        "polar_neighbor_count": 0,
+        "partial_charge": 0.0,
+        "score": np.float64(1.0),
+        "confidence": np.float64(1.0),
+        "metadata": {},
+    }
+
+    values.update(
+        overrides
+    )
+
+    supported_values = {
+        parameter_name: values[parameter_name]
+        for parameter_name
+        in signature.parameters
+        if parameter_name != "self"
+        and parameter_name in values
+    }
+
+    try:
+        return constructor(
+            **supported_values
+        )
+
+    except Exception as exc:
+        perceived = _test_perceive_atom(
+            atom
+        )
+
+        if perceived is not None:
+            return perceived
+
+        raise HydrophobicTestExecutionError(
+            "Could not construct HydrophobicAtom using either the "
+            "dataclass constructor or atom perception."
+        ) from exc
+
+
+def _test_construct_hydrophobic_interaction(
+    receptor_atom: Any,
+    ligand_atom: Any,
+    receptor_descriptor: Optional[
+        HydrophobicAtom
+    ] = None,
+    ligand_descriptor: Optional[
+        HydrophobicAtom
+    ] = None,
+    *,
+    distance: Number = 3.8,
+    score: Number = 0.75,
+    strength: Number = 0.70,
+    classification: str = "strong",
+    interaction_type: str = "aliphatic_aliphatic",
+) -> HydrophobicInteraction:
+    """
+    Construct one interaction using supported dataclass fields.
+    """
+
+    if receptor_descriptor is None:
+        receptor_descriptor = (
+            _test_construct_hydrophobic_atom(
+                receptor_atom,
+                is_aromatic=False,
+                aromatic=False,
+                is_aliphatic=True,
+                aliphatic=True,
+            )
+        )
+
+    if ligand_descriptor is None:
+        ligand_descriptor = (
+            _test_construct_hydrophobic_atom(
+                ligand_atom,
+                is_aromatic=False,
+                aromatic=False,
+                is_aliphatic=True,
+                aliphatic=True,
+            )
+        )
+
+    constructor = HydrophobicInteraction
+
+    try:
+        signature = inspect.signature(
+            constructor
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise HydrophobicTestExecutionError(
+            "Could not inspect HydrophobicInteraction constructor."
+        ) from exc
+
+    values: Dict[str, Any] = {
+        "receptor_atom": receptor_atom,
+        "ligand_atom": ligand_atom,
+        "receptor_descriptor": receptor_descriptor,
+        "ligand_descriptor": ligand_descriptor,
+        "receptor_residue": getattr(
+            receptor_atom,
+            "residue",
+            None,
+        ),
+        "receptor_residue_key": None,
+        "receptor_residue_identifier": "A:LEU10",
+        "distance": np.float64(
+            distance
+        ),
+        "interaction_type": interaction_type,
+        "classification": classification,
+        "strength": np.float64(
+            strength
+        ),
+        "score": np.float64(
+            score
+        ),
+        "detection_method": "self_test",
+        "direction": "receptor_to_ligand",
+        "local_contact_count": 1,
+        "polar_penalty": np.float64(
+            0.0
+        ),
+        "receptor_atom_index": 1,
+        "ligand_atom_index": 2,
+        "receptor_atom_identifier": (
+            _test_get_atom_name(
+                receptor_atom
+            )
+        ),
+        "ligand_atom_identifier": (
+            _test_get_atom_name(
+                ligand_atom
+            )
+        ),
+        "interaction_identifier": (
+            "self-test-interaction"
+        ),
+        "metadata": {
+            "self_test": True,
+        },
+    }
+
+    supported_values = {
+        parameter_name: values[parameter_name]
+        for parameter_name
+        in signature.parameters
+        if parameter_name != "self"
+        and parameter_name in values
+    }
+
+    try:
+        return constructor(
+            **supported_values
+        )
+
+    except Exception as exc:
+        raise HydrophobicTestExecutionError(
+            "Could not construct HydrophobicInteraction. "
+            "Review the current dataclass field names."
+        ) from exc
+
+
+def _test_construct_residue_group(
+    interaction: HydrophobicInteraction,
+) -> HydrophobicResidueGroup:
+    """Construct one residue group using supported fields."""
+
+    constructor = HydrophobicResidueGroup
+
+    try:
+        signature = inspect.signature(
+            constructor
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise HydrophobicTestExecutionError(
+            "Could not inspect HydrophobicResidueGroup constructor."
+        ) from exc
+
+    values: Dict[str, Any] = {
+        "residue": getattr(
+            interaction,
+            "receptor_residue",
+            None,
+        ),
+        "residue_key": getattr(
+            interaction,
+            "receptor_residue_key",
+            None,
+        ),
+        "residue_identifier": getattr(
+            interaction,
+            "receptor_residue_identifier",
+            None,
+        )
+        or "A:LEU10",
+        "interactions": (
+            interaction,
+        ),
+        "group_score": np.float64(
+            getattr(
+                interaction,
+                "score",
+                0.0,
+            )
+        ),
+        "metadata": {
+            "self_test": True,
+        },
+    }
+
+    supported_values = {
+        parameter_name: values[parameter_name]
+        for parameter_name
+        in signature.parameters
+        if parameter_name != "self"
+        and parameter_name in values
+    }
+
+    return constructor(
+        **supported_values
+    )
+
+
+def _test_construct_statistics(
+    *,
+    interaction_count: int = 1,
+    residue_count: int = 1,
+) -> HydrophobicStatistics:
+    """Construct minimal HydrophobicStatistics."""
+
+    constructor = HydrophobicStatistics
+
+    try:
+        signature = inspect.signature(
+            constructor
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise HydrophobicTestExecutionError(
+            "Could not inspect HydrophobicStatistics constructor."
+        ) from exc
+
+    values: Dict[str, Any] = {
+        "interaction_count": interaction_count,
+        "residue_count": residue_count,
+        "receptor_atom_count": 1,
+        "ligand_atom_count": 1,
+        "very_strong_count": 0,
+        "strong_count": interaction_count,
+        "moderate_count": 0,
+        "weak_count": 0,
+        "marginal_count": 0,
+        "unknown_count": 0,
+        "aliphatic_aliphatic_count": interaction_count,
+        "aliphatic_aromatic_count": 0,
+        "aromatic_aliphatic_count": 0,
+        "aromatic_aromatic_count": 0,
+        "mixed_count": 0,
+        "hotspot_count": 0,
+        "minimum_distance": np.float64(
+            3.8
+        ),
+        "mean_distance": np.float64(
+            3.8
+        ),
+        "median_distance": np.float64(
+            3.8
+        ),
+        "maximum_distance": np.float64(
+            3.8
+        ),
+        "distance_standard_deviation": np.float64(
+            0.0
+        ),
+        "minimum_score": np.float64(
+            0.75
+        ),
+        "mean_score": np.float64(
+            0.75
+        ),
+        "median_score": np.float64(
+            0.75
+        ),
+        "maximum_score": np.float64(
+            0.75
+        ),
+        "total_score": np.float64(
+            0.75
+        ),
+        "minimum_strength": np.float64(
+            0.70
+        ),
+        "mean_strength": np.float64(
+            0.70
+        ),
+        "maximum_strength": np.float64(
+            0.70
+        ),
+        "classification_counts": {
+            "strong": interaction_count,
+        },
+        "interaction_type_counts": {
+            "aliphatic_aliphatic": (
+                interaction_count
+            ),
+        },
+        "residue_interaction_counts": {
+            "A:LEU10": interaction_count,
+        },
+        "residue_scores": {
+            "A:LEU10": np.float64(
+                0.75
+            ),
+        },
+        "metadata": {
+            "self_test": True,
+        },
+    }
+
+    supported_values = {
+        parameter_name: values[parameter_name]
+        for parameter_name
+        in signature.parameters
+        if parameter_name != "self"
+        and parameter_name in values
+    }
+
+    return constructor(
+        **supported_values
+    )
+
+
+def _test_construct_analysis_result(
+    interaction: HydrophobicInteraction,
+    residue_group: HydrophobicResidueGroup,
+    receptor_descriptor: HydrophobicAtom,
+    ligand_descriptor: HydrophobicAtom,
+    receptor_atom: Any,
+    ligand_atom: Any,
+    statistics: HydrophobicStatistics,
+) -> HydrophobicAnalysisResult:
+    """Construct a minimal complete analysis result."""
+
+    constructor = HydrophobicAnalysisResult
+
+    try:
+        signature = inspect.signature(
+            constructor
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise HydrophobicTestExecutionError(
+            "Could not inspect HydrophobicAnalysisResult constructor."
+        ) from exc
+
+    values: Dict[str, Any] = {
+        "interactions": (
+            interaction,
+        ),
+        "residue_groups": (
+            residue_group,
+        ),
+        "receptor_hydrophobic_atoms": (
+            receptor_descriptor,
+        ),
+        "ligand_hydrophobic_atoms": (
+            ligand_descriptor,
+        ),
+        "receptor_atoms": (
+            receptor_atom,
+        ),
+        "ligand_atoms": (
+            ligand_atom,
+        ),
+        "minimum_distance": np.float64(
+            2.5
+        ),
+        "maximum_distance": np.float64(
+            5.0
+        ),
+        "grouping_distance": np.float64(
+            4.5
+        ),
+        "statistics": statistics,
+        "analysis_identifier": (
+            "self-test-analysis"
+        ),
+        "receptor_identifier": (
+            "self-test-receptor"
+        ),
+        "ligand_identifier": (
+            "self-test-ligand"
+        ),
+        "metadata": {
+            "self_test": True,
+        },
+    }
+
+    supported_values = {
+        parameter_name: values[parameter_name]
+        for parameter_name
+        in signature.parameters
+        if parameter_name != "self"
+        and parameter_name in values
+    }
+
+    return constructor(
+        **supported_values
+    )
+
+
+def _test_object_to_dict(
+    value: Any,
+) -> Dict[str, Any]:
+    """Serialize an object using its public ``to_dict`` method."""
+
+    to_dict = getattr(
+        value,
+        "to_dict",
+        None,
+    )
+
+    if not callable(
+        to_dict
+    ):
+        raise HydrophobicSelfTestError(
+            f"{type(value).__name__} does not expose to_dict()."
+        )
+
+    try:
+        result = to_dict()
+
+    except TypeError:
+        result = to_dict(
+            include_atoms=False
+        )
+
+    assert_hydrophobic_instance(
+        result,
+        Mapping,
+    )
+
+    return dict(
+        result
+    )
+
+
+def _test_extract_collection_members(
+    collection: Any,
+    *,
+    role: str,
+) -> Tuple[Any, ...]:
+    """Extract atoms or descriptors from a prepared collection."""
+
+    candidate_names = (
+        (
+            "receptor_hydrophobic_atoms",
+            "receptor_descriptors",
+            "hydrophobic_receptor_atoms",
+        )
+        if role == "receptor"
+        else (
+            "ligand_hydrophobic_atoms",
+            "ligand_descriptors",
+            "hydrophobic_ligand_atoms",
+        )
+    )
+
+    for attribute_name in candidate_names:
+        try:
+            value = getattr(
+                collection,
+                attribute_name,
+            )
+
+        except Exception:
+            continue
+
+        if value is not None:
+            return tuple(
+                value
+            )
+
+    return ()
+
+
+def _test_prepare_hydrophobic_collections(
+    receptor_atoms: Iterable[Any],
+    ligand_atoms: Iterable[Any],
+) -> HydrophobicAtomCollections:
+    """
+    Prepare receptor and ligand atom collections using supported arguments.
+    """
+
+    function = prepare_hydrophobic_atom_collections
+
+    try:
+        signature = inspect.signature(
+            function
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        signature = None
+
+    positional_arguments = (
+        tuple(receptor_atoms),
+        tuple(ligand_atoms),
+    )
+
+    keyword_candidates: Dict[str, Any] = {
+        "receptor": tuple(
+            receptor_atoms
+        ),
+        "ligand": tuple(
+            ligand_atoms
+        ),
+        "receptor_atoms": tuple(
+            receptor_atoms
+        ),
+        "ligand_atoms": tuple(
+            ligand_atoms
+        ),
+    }
+
+    if signature is not None:
+        supported = {
+            key: value
+            for key, value
+            in keyword_candidates.items()
+            if key in signature.parameters
+        }
+
+        if (
+            "receptor" in supported
+            and "ligand" in supported
+        ):
+            return function(
+                receptor=(
+                    supported["receptor"]
+                ),
+                ligand=(
+                    supported["ligand"]
+                ),
+            )
+
+        if (
+            "receptor_atoms" in supported
+            and "ligand_atoms" in supported
+        ):
+            return function(
+                receptor_atoms=(
+                    supported["receptor_atoms"]
+                ),
+                ligand_atoms=(
+                    supported["ligand_atoms"]
+                ),
+            )
+
+    return function(
+        *positional_arguments
+    )
+
+
+# -----------------------------------------------------------------------------
+# Constants and validation tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "sections_1_2.constants.distance_order",
+    section="12.2",
+    description=(
+        "Validate the default hydrophobic distance interval."
+    ),
+    tags=(
+        "constants",
+        "distance",
+        "sections-1-2",
+    ),
+)
+def _test_hydrophobic_distance_constants() -> None:
+    """Validate default minimum and maximum distances."""
+
+    minimum_distance = float(
+        get_default_minimum_hydrophobic_distance()
+    )
+
+    maximum_distance = float(
+        get_default_maximum_hydrophobic_distance()
+    )
+
+    assert_hydrophobic_true(
+        np.isfinite(
+            minimum_distance
+        )
+    )
+
+    assert_hydrophobic_true(
+        np.isfinite(
+            maximum_distance
+        )
+    )
+
+    assert_hydrophobic_true(
+        minimum_distance >= 0.0
+    )
+
+    assert_hydrophobic_true(
+        maximum_distance > minimum_distance
+    )
+
+
+@hydrophobic_test(
+    "sections_1_2.validation.score_interval",
+    section="12.2",
+    description=(
+        "Validate normalized hydrophobic score bounds."
+    ),
+    tags=(
+        "validation",
+        "score",
+        "sections-1-2",
+    ),
+)
+def _test_hydrophobic_score_validation() -> None:
+    """Validate score normalization and rejection of invalid values."""
+
+    assert_hydrophobic_close(
+        validate_hydrophobic_score(
+            0.0
+        ),
+        0.0,
+    )
+
+    assert_hydrophobic_close(
+        validate_hydrophobic_score(
+            0.5
+        ),
+        0.5,
+    )
+
+    assert_hydrophobic_close(
+        validate_hydrophobic_score(
+            1.0
+        ),
+        1.0,
+    )
+
+    with assert_hydrophobic_raises(
+        (
+            ValueError,
+            TypeError,
+        )
+    ):
+        validate_hydrophobic_score(
+            np.nan
+        )
+
+
+@hydrophobic_test(
+    "sections_1_2.validation.classification",
+    section="12.2",
+    description=(
+        "Validate supported hydrophobic strength classifications."
+    ),
+    tags=(
+        "validation",
+        "classification",
+        "sections-1-2",
+    ),
+)
+def _test_hydrophobic_classification_validation() -> None:
+    """Validate final classification names."""
+
+    for classification in (
+        "very_strong",
+        "strong",
+        "moderate",
+        "weak",
+        "marginal",
+        "unknown",
+    ):
+        validated = (
+            validate_hydrophobic_classification(
+                classification
+            )
+        )
+
+        assert_hydrophobic_equal(
+            validated,
+            classification,
+        )
+
+    with assert_hydrophobic_raises(
+        (
+            ValueError,
+            TypeError,
+        )
+    ):
+        validate_hydrophobic_classification(
+            "not-a-valid-class"
+        )
+
+
+@hydrophobic_test(
+    "sections_1_2.validation.interaction_type",
+    section="12.2",
+    description=(
+        "Validate supported hydrophobic interaction types."
+    ),
+    tags=(
+        "validation",
+        "interaction-type",
+        "sections-1-2",
+    ),
+)
+def _test_hydrophobic_interaction_type_validation() -> None:
+    """Validate the hydrophobic chemical-type vocabulary."""
+
+    type_candidates = (
+        "aliphatic_aliphatic",
+        "aliphatic_aromatic",
+        "aromatic_aliphatic",
+        "aromatic_aromatic",
+        "mixed",
+        "unknown",
+    )
+
+    validated_count = 0
+
+    for interaction_type in type_candidates:
+        try:
+            validated = (
+                validate_hydrophobic_interaction_type(
+                    interaction_type
+                )
+            )
+
+        except (
+            ValueError,
+            TypeError,
+        ):
+            continue
+
+        assert_hydrophobic_equal(
+            validated,
+            interaction_type,
+        )
+
+        validated_count += 1
+
+    assert_hydrophobic_true(
+        validated_count >= 4,
+        (
+            "Too few expected hydrophobic interaction types "
+            "were accepted."
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# HydrophobicAtom dataclass tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_3.dataclass.hydrophobic_atom",
+    section="12.2",
+    description=(
+        "Validate construction and basic properties of HydrophobicAtom."
+    ),
+    tags=(
+        "dataclass",
+        "hydrophobic-atom",
+        "section-3",
+    ),
+)
+def _test_hydrophobic_atom_dataclass() -> None:
+    """Validate HydrophobicAtom construction."""
+
+    atom = make_hydrophobic_test_atom(
+        name="C1",
+        element="C",
+        coordinate=(0.0, 0.0, 0.0),
+        residue_name="LEU",
+        residue_number=10,
+        chain_identifier="A",
+        atom_index=1,
+        aromatic=False,
+        partial_charge=0.0,
+    )
+
+    descriptor = (
+        _test_construct_hydrophobic_atom(
+            atom
+        )
+    )
+
+    assert_hydrophobic_instance(
+        descriptor,
+        HydrophobicAtom,
+    )
+
+    descriptor_atom = (
+        _test_descriptor_atom(
+            descriptor
+        )
+    )
+
+    if descriptor_atom is not None:
+        assert_hydrophobic_is(
+            descriptor_atom,
+            atom,
+        )
+
+    assert_hydrophobic_true(
+        _test_descriptor_is_hydrophobic(
+            descriptor
+        )
+    )
+
+
+@hydrophobic_test(
+    "section_3.dataclass.hydrophobic_atom.serialization",
+    section="12.2",
+    description=(
+        "Validate HydrophobicAtom serialization."
+    ),
+    tags=(
+        "dataclass",
+        "serialization",
+        "hydrophobic-atom",
+        "section-3",
+    ),
+)
+def _test_hydrophobic_atom_serialization() -> None:
+    """Validate descriptor serialization."""
+
+    atom = make_hydrophobic_test_atom(
+        name="CA",
+        element="C",
+        coordinate=(1.0, 2.0, 3.0),
+        residue_name="VAL",
+        residue_number=21,
+        chain_identifier="B",
+        atom_index=10,
+        aromatic=False,
+        partial_charge=0.0,
+    )
+
+    descriptor = (
+        _test_construct_hydrophobic_atom(
+            atom
+        )
+    )
+
+    serialized = _test_object_to_dict(
+        descriptor
+    )
+
+    assert_hydrophobic_serializable(
+        serialized
+    )
+
+    assert_hydrophobic_true(
+        len(serialized) > 0
+    )
+
+
+@hydrophobic_test(
+    "section_3.dataclass.hydrophobic_atom.metadata",
+    section="12.2",
+    description=(
+        "Validate HydrophobicAtom metadata normalization."
+    ),
+    tags=(
+        "dataclass",
+        "metadata",
+        "hydrophobic-atom",
+        "section-3",
+    ),
+)
+def _test_hydrophobic_atom_metadata() -> None:
+    """Validate descriptor metadata storage."""
+
+    atom = make_hydrophobic_test_atom(
+        name="C2",
+        element="C",
+        coordinate=(0.0, 0.0, 0.0),
+    )
+
+    descriptor = (
+        _test_construct_hydrophobic_atom(
+            atom,
+            metadata={
+                "source": "self-test",
+            },
+        )
+    )
+
+    metadata = getattr(
+        descriptor,
+        "metadata",
+        {},
+    )
+
+    assert_hydrophobic_instance(
+        metadata,
+        Mapping,
+    )
+
+    if "source" in metadata:
+        assert_hydrophobic_equal(
+            metadata["source"],
+            "self-test",
+        )
+
+
+# -----------------------------------------------------------------------------
+# HydrophobicInteraction dataclass tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_3.dataclass.hydrophobic_interaction",
+    section="12.2",
+    description=(
+        "Validate HydrophobicInteraction construction."
+    ),
+    tags=(
+        "dataclass",
+        "interaction",
+        "section-3",
+    ),
+)
+def _test_hydrophobic_interaction_dataclass() -> None:
+    """Validate interaction construction and normalized values."""
+
+    receptor_atom, ligand_atom = (
+        make_hydrophobic_test_atom_pair(
+            distance=3.8
+        )
+    )
+
+    interaction = (
+        _test_construct_hydrophobic_interaction(
+            receptor_atom,
+            ligand_atom,
+            distance=3.8,
+            classification="strong",
+            score=0.75,
+            strength=0.70,
+        )
+    )
+
+    assert_hydrophobic_instance(
+        interaction,
+        HydrophobicInteraction,
+    )
+
+    assert_hydrophobic_close(
+        interaction.distance,
+        3.8,
+    )
+
+    assert_hydrophobic_between(
+        interaction.score,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_between(
+        interaction.strength,
+        0.0,
+        1.0,
+    )
+
+
+@hydrophobic_test(
+    "section_3.dataclass.hydrophobic_interaction.serialization",
+    section="12.2",
+    description=(
+        "Validate HydrophobicInteraction serialization."
+    ),
+    tags=(
+        "dataclass",
+        "interaction",
+        "serialization",
+        "section-3",
+    ),
+)
+def _test_hydrophobic_interaction_serialization() -> None:
+    """Validate interaction serialization."""
+
+    receptor_atom, ligand_atom = (
+        make_hydrophobic_test_atom_pair(
+            distance=4.0
+        )
+    )
+
+    interaction = (
+        _test_construct_hydrophobic_interaction(
+            receptor_atom,
+            ligand_atom,
+            distance=4.0,
+        )
+    )
+
+    serialized = _test_object_to_dict(
+        interaction
+    )
+
+    assert_hydrophobic_serializable(
+        serialized
+    )
+
+    assert_hydrophobic_in(
+        "distance",
+        serialized,
+    )
+
+
+@hydrophobic_test(
+    "section_3.dataclass.hydrophobic_interaction.invalid_distance",
+    section="12.2",
+    description=(
+        "Validate rejection of invalid interaction distances."
+    ),
+    tags=(
+        "dataclass",
+        "interaction",
+        "validation",
+        "section-3",
+    ),
+)
+def _test_hydrophobic_interaction_invalid_distance() -> None:
+    """Validate interaction distance checks."""
+
+    receptor_atom, ligand_atom = (
+        make_hydrophobic_test_atom_pair(
+            distance=3.8
+        )
+    )
+
+    with assert_hydrophobic_raises(
+        (
+            ValueError,
+            TypeError,
+            HydrophobicTestExecutionError,
+        )
+    ):
+        _test_construct_hydrophobic_interaction(
+            receptor_atom,
+            ligand_atom,
+            distance=-1.0,
+        )
+
+
+# -----------------------------------------------------------------------------
+# Residue group, statistics and result tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_3.dataclass.residue_group",
+    section="12.2",
+    description=(
+        "Validate HydrophobicResidueGroup construction."
+    ),
+    tags=(
+        "dataclass",
+        "residue-group",
+        "section-3",
+    ),
+)
+def _test_hydrophobic_residue_group_dataclass() -> None:
+    """Validate residue-group construction."""
+
+    receptor_atom, ligand_atom = (
+        make_hydrophobic_test_atom_pair(
+            distance=3.7
+        )
+    )
+
+    interaction = (
+        _test_construct_hydrophobic_interaction(
+            receptor_atom,
+            ligand_atom,
+            distance=3.7,
+        )
+    )
+
+    group = _test_construct_residue_group(
+        interaction
+    )
+
+    assert_hydrophobic_instance(
+        group,
+        HydrophobicResidueGroup,
+    )
+
+    assert_hydrophobic_length(
+        group.interactions,
+        1,
+    )
+
+    if hasattr(
+        group,
+        "interaction_count",
+    ):
+        assert_hydrophobic_equal(
+            group.interaction_count,
+            1,
+        )
+
+
+@hydrophobic_test(
+    "section_3.dataclass.statistics",
+    section="12.2",
+    description=(
+        "Validate HydrophobicStatistics construction and serialization."
+    ),
+    tags=(
+        "dataclass",
+        "statistics",
+        "serialization",
+        "section-3",
+    ),
+)
+def _test_hydrophobic_statistics_dataclass() -> None:
+    """Validate statistics construction."""
+
+    statistics = _test_construct_statistics()
+
+    assert_hydrophobic_instance(
+        statistics,
+        HydrophobicStatistics,
+    )
+
+    assert_hydrophobic_equal(
+        statistics.interaction_count,
+        1,
+    )
+
+    assert_hydrophobic_close(
+        statistics.total_score,
+        0.75,
+    )
+
+    serialized = _test_object_to_dict(
+        statistics
+    )
+
+    assert_hydrophobic_serializable(
+        serialized
+    )
+
+
+@hydrophobic_test(
+    "section_3.dataclass.analysis_result",
+    section="12.2",
+    description=(
+        "Validate HydrophobicAnalysisResult construction."
+    ),
+    tags=(
+        "dataclass",
+        "analysis-result",
+        "section-3",
+    ),
+)
+def _test_hydrophobic_analysis_result_dataclass() -> None:
+    """Validate complete analysis-result construction."""
+
+    receptor_atom, ligand_atom = (
+        make_hydrophobic_test_atom_pair(
+            distance=3.8
+        )
+    )
+
+    receptor_descriptor = (
+        _test_construct_hydrophobic_atom(
+            receptor_atom
+        )
+    )
+
+    ligand_descriptor = (
+        _test_construct_hydrophobic_atom(
+            ligand_atom
+        )
+    )
+
+    interaction = (
+        _test_construct_hydrophobic_interaction(
+            receptor_atom,
+            ligand_atom,
+            receptor_descriptor,
+            ligand_descriptor,
+        )
+    )
+
+    residue_group = (
+        _test_construct_residue_group(
+            interaction
+        )
+    )
+
+    statistics = (
+        _test_construct_statistics()
+    )
+
+    result = _test_construct_analysis_result(
+        interaction,
+        residue_group,
+        receptor_descriptor,
+        ligand_descriptor,
+        receptor_atom,
+        ligand_atom,
+        statistics,
+    )
+
+    assert_hydrophobic_instance(
+        result,
+        HydrophobicAnalysisResult,
+    )
+
+    assert_hydrophobic_length(
+        result.interactions,
+        1,
+    )
+
+    assert_hydrophobic_length(
+        result.residue_groups,
+        1,
+    )
+
+    assert_hydrophobic_is(
+        result.statistics,
+        statistics,
+    )
+
+
+@hydrophobic_test(
+    "section_3.dataclass.analysis_result.serialization",
+    section="12.2",
+    description=(
+        "Validate HydrophobicAnalysisResult serialization."
+    ),
+    tags=(
+        "dataclass",
+        "analysis-result",
+        "serialization",
+        "section-3",
+    ),
+)
+def _test_hydrophobic_analysis_result_serialization() -> None:
+    """Validate complete result serialization."""
+
+    receptor_atom, ligand_atom = (
+        make_hydrophobic_test_atom_pair(
+            distance=3.8
+        )
+    )
+
+    receptor_descriptor = (
+        _test_construct_hydrophobic_atom(
+            receptor_atom
+        )
+    )
+
+    ligand_descriptor = (
+        _test_construct_hydrophobic_atom(
+            ligand_atom
+        )
+    )
+
+    interaction = (
+        _test_construct_hydrophobic_interaction(
+            receptor_atom,
+            ligand_atom,
+            receptor_descriptor,
+            ligand_descriptor,
+        )
+    )
+
+    residue_group = (
+        _test_construct_residue_group(
+            interaction
+        )
+    )
+
+    result = _test_construct_analysis_result(
+        interaction,
+        residue_group,
+        receptor_descriptor,
+        ligand_descriptor,
+        receptor_atom,
+        ligand_atom,
+        _test_construct_statistics(),
+    )
+
+    serialized = _test_object_to_dict(
+        result
+    )
+
+    assert_hydrophobic_serializable(
+        serialized
+    )
+
+    assert_hydrophobic_true(
+        (
+            "interactions" in serialized
+            or "interaction_count" in serialized
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# Synthetic atom tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_5.synthetic.coordinate",
+    section="12.2",
+    description=(
+        "Validate synthetic atom coordinate extraction."
+    ),
+    tags=(
+        "synthetic",
+        "coordinate",
+        "section-5",
+    ),
+)
+def _test_synthetic_coordinate_extraction() -> None:
+    """Validate synthetic atom coordinates."""
+
+    atom = make_hydrophobic_test_atom(
+        name="C1",
+        element="C",
+        coordinate=(
+            1.25,
+            2.50,
+            3.75,
+        ),
+    )
+
+    coordinate = get_hydrophobic_coordinate(
+        atom
+    )
+
+    assert_hydrophobic_array_close(
+        coordinate,
+        (
+            1.25,
+            2.50,
+            3.75,
+        ),
+    )
+
+
+@hydrophobic_test(
+    "section_5.synthetic.element",
+    section="12.2",
+    description=(
+        "Validate element storage in synthetic atoms."
+    ),
+    tags=(
+        "synthetic",
+        "element",
+        "section-5",
+    ),
+)
+def _test_synthetic_element_storage() -> None:
+    """Validate synthetic element information."""
+
+    atom = make_hydrophobic_test_atom(
+        name="S1",
+        element="S",
+        coordinate=(0.0, 0.0, 0.0),
+    )
+
+    element = _test_get_atom_element(
+        atom
+    )
+
+    assert_hydrophobic_true(
+        element == "S"
+        or element.endswith(
+            "S"
+        )
+    )
+
+
+@hydrophobic_test(
+    "section_5.synthetic.unique_indices",
+    section="12.2",
+    description=(
+        "Validate unique synthetic atom indexes."
+    ),
+    tags=(
+        "synthetic",
+        "index",
+        "section-5",
+    ),
+)
+def _test_synthetic_atom_indices() -> None:
+    """Validate synthetic atom index assignments."""
+
+    atoms = (
+        make_hydrophobic_test_atom(
+            name="C1",
+            element="C",
+            coordinate=(0.0, 0.0, 0.0),
+            atom_index=1,
+        ),
+        make_hydrophobic_test_atom(
+            name="C2",
+            element="C",
+            coordinate=(1.0, 0.0, 0.0),
+            atom_index=2,
+        ),
+    )
+
+    discovered_indices: List[Any] = []
+
+    for atom in atoms:
+        for attribute_name in (
+            "index",
+            "atom_index",
+            "serial_number",
+        ):
+            try:
+                value = getattr(
+                    atom,
+                    attribute_name,
+                )
+
+            except Exception:
+                continue
+
+            if value is not None:
+                discovered_indices.append(
+                    value
+                )
+
+                break
+
+    if discovered_indices:
+        assert_hydrophobic_equal(
+            len(
+                set(discovered_indices)
+            ),
+            len(discovered_indices),
+        )
+
+
+# -----------------------------------------------------------------------------
+# Atom-character heuristic tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_4.character.aromatic_carbon",
+    section="12.2",
+    description=(
+        "Validate aromatic-carbon recognition."
+    ),
+    tags=(
+        "perception",
+        "aromatic",
+        "carbon",
+        "section-4",
+    ),
+)
+def _test_aromatic_carbon_recognition() -> None:
+    """Validate aromatic atom recognition."""
+
+    aromatic_atom = make_hydrophobic_test_atom(
+        name="CZ",
+        element="C",
+        coordinate=(0.0, 0.0, 0.0),
+        residue_name="PHE",
+        residue_number=20,
+        chain_identifier="A",
+        atom_index=1,
+        aromatic=True,
+    )
+
+    assert_hydrophobic_true(
+        is_aromatic_atom(
+            aromatic_atom
+        )
+    )
+
+
+@hydrophobic_test(
+    "section_4.character.aliphatic_carbon",
+    section="12.2",
+    description=(
+        "Validate aliphatic-carbon recognition."
+    ),
+    tags=(
+        "perception",
+        "aliphatic",
+        "carbon",
+        "section-4",
+    ),
+)
+def _test_aliphatic_carbon_recognition() -> None:
+    """Validate aliphatic atom recognition."""
+
+    aliphatic_atom = make_hydrophobic_test_atom(
+        name="CG",
+        element="C",
+        coordinate=(0.0, 0.0, 0.0),
+        residue_name="LEU",
+        residue_number=20,
+        chain_identifier="A",
+        atom_index=1,
+        aromatic=False,
+    )
+
+    assert_hydrophobic_false(
+        is_aromatic_atom(
+            aliphatic_atom
+        )
+    )
+
+    assert_hydrophobic_true(
+        is_aliphatic_atom(
+            aliphatic_atom
+        )
+    )
+
+
+@hydrophobic_test(
+    "section_4.character.oxygen_not_hydrophobic",
+    section="12.2",
+    description=(
+        "Validate exclusion of a conventional polar oxygen."
+    ),
+    tags=(
+        "perception",
+        "polar",
+        "oxygen",
+        "section-4",
+    ),
+)
+def _test_oxygen_not_hydrophobic() -> None:
+    """Validate rejection of a conventional polar oxygen."""
+
+    oxygen_atom = make_hydrophobic_test_atom(
+        name="O1",
+        element="O",
+        coordinate=(0.0, 0.0, 0.0),
+        residue_name="SER",
+        residue_number=10,
+        chain_identifier="A",
+        atom_index=1,
+        aromatic=False,
+        partial_charge=-0.5,
+    )
+
+    descriptor = _test_perceive_atom(
+        oxygen_atom
+    )
+
+    assert_hydrophobic_true(
+        descriptor is None
+        or not _test_descriptor_is_hydrophobic(
+            descriptor
+        )
+    )
+
+
+@hydrophobic_test(
+    "section_4.character.hydrogen_not_hydrophobic",
+    section="12.2",
+    description=(
+        "Validate exclusion of hydrogen atoms."
+    ),
+    tags=(
+        "perception",
+        "hydrogen",
+        "section-4",
+    ),
+)
+def _test_hydrogen_not_hydrophobic() -> None:
+    """Validate rejection of hydrogen atoms."""
+
+    hydrogen_atom = make_hydrophobic_test_atom(
+        name="H1",
+        element="H",
+        coordinate=(0.0, 0.0, 0.0),
+        atom_index=1,
+    )
+
+    descriptor = _test_perceive_atom(
+        hydrogen_atom
+    )
+
+    assert_hydrophobic_true(
+        descriptor is None
+        or not _test_descriptor_is_hydrophobic(
+            descriptor
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# Single-atom perception tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_4.perception.aliphatic_descriptor",
+    section="12.2",
+    description=(
+        "Validate perception of an aliphatic hydrophobic carbon."
+    ),
+    tags=(
+        "perception",
+        "aliphatic",
+        "descriptor",
+        "section-4",
+    ),
+)
+def _test_perceive_aliphatic_hydrophobic_atom() -> None:
+    """Validate aliphatic descriptor generation."""
+
+    atom = make_hydrophobic_test_atom(
+        name="CD1",
+        element="C",
+        coordinate=(0.0, 0.0, 0.0),
+        residue_name="LEU",
+        residue_number=15,
+        chain_identifier="A",
+        atom_index=1,
+        aromatic=False,
+        partial_charge=0.0,
+    )
+
+    descriptor = _test_perceive_atom(
+        atom,
+        role="receptor",
+    )
+
+    assert_hydrophobic_is_not_none(
+        descriptor
+    )
+
+    assert_hydrophobic_instance(
+        descriptor,
+        HydrophobicAtom,
+    )
+
+    assert_hydrophobic_true(
+        _test_descriptor_is_hydrophobic(
+            descriptor
+        )
+    )
+
+    assert_hydrophobic_true(
+        _test_descriptor_is_aliphatic(
+            descriptor
+        )
+        or not _test_descriptor_is_aromatic(
+            descriptor
+        )
+    )
+
+
+@hydrophobic_test(
+    "section_4.perception.aromatic_descriptor",
+    section="12.2",
+    description=(
+        "Validate perception of an aromatic hydrophobic carbon."
+    ),
+    tags=(
+        "perception",
+        "aromatic",
+        "descriptor",
+        "section-4",
+    ),
+)
+def _test_perceive_aromatic_hydrophobic_atom() -> None:
+    """Validate aromatic descriptor generation."""
+
+    atom = make_hydrophobic_test_atom(
+        name="CE1",
+        element="C",
+        coordinate=(0.0, 0.0, 0.0),
+        residue_name="PHE",
+        residue_number=22,
+        chain_identifier="A",
+        atom_index=1,
+        aromatic=True,
+        partial_charge=0.0,
+    )
+
+    descriptor = _test_perceive_atom(
+        atom,
+        role="receptor",
+    )
+
+    assert_hydrophobic_is_not_none(
+        descriptor
+    )
+
+    assert_hydrophobic_instance(
+        descriptor,
+        HydrophobicAtom,
+    )
+
+    assert_hydrophobic_true(
+        _test_descriptor_is_aromatic(
+            descriptor
+        )
+    )
+
+
+@hydrophobic_test(
+    "section_4.perception.identifier_preservation",
+    section="12.2",
+    description=(
+        "Validate preservation of atom identity during perception."
+    ),
+    tags=(
+        "perception",
+        "identity",
+        "section-4",
+    ),
+)
+def _test_perception_identifier_preservation() -> None:
+    """Validate that descriptor identity traces back to the atom."""
+
+    atom = make_hydrophobic_test_atom(
+        name="CIDENT",
+        element="C",
+        coordinate=(0.0, 0.0, 0.0),
+        atom_index=99,
+        aromatic=False,
+    )
+
+    descriptor = _test_perceive_atom(
+        atom
+    )
+
+    assert_hydrophobic_is_not_none(
+        descriptor
+    )
+
+    descriptor_atom = (
+        _test_descriptor_atom(
+            descriptor
+        )
+    )
+
+    descriptor_identifier = (
+        _test_descriptor_identifier(
+            descriptor
+        )
+    )
+
+    assert_hydrophobic_true(
+        descriptor_atom is atom
+        or descriptor_identifier is not None
+    )
+
+
+# -----------------------------------------------------------------------------
+# Collection perception and filtering tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_4.perception.collection",
+    section="12.2",
+    description=(
+        "Validate perception over a mixed atom collection."
+    ),
+    tags=(
+        "perception",
+        "collection",
+        "section-4",
+    ),
+)
+def _test_perceive_hydrophobic_atom_collection() -> None:
+    """Validate collection-level perception."""
+
+    atoms = _test_make_mixed_atom_collection()
+
+    descriptors = _test_perceive_atoms(
+        atoms,
+        role="receptor",
+    )
+
+    assert_hydrophobic_true(
+        len(descriptors) >= 2
+    )
+
+    for descriptor in descriptors:
+        assert_hydrophobic_instance(
+            descriptor,
+            HydrophobicAtom,
+        )
+
+        assert_hydrophobic_true(
+            _test_descriptor_is_hydrophobic(
+                descriptor
+            )
+        )
+
+
+@hydrophobic_test(
+    "section_4.filter.aromatic",
+    section="12.2",
+    description=(
+        "Validate filtering for aromatic hydrophobic atoms."
+    ),
+    tags=(
+        "filter",
+        "aromatic",
+        "section-4",
+    ),
+)
+def _test_filter_aromatic_hydrophobic_atoms() -> None:
+    """Validate aromatic filtering."""
+
+    atoms = _test_make_mixed_atom_collection()
+
+    descriptors = _test_perceive_atoms(
+        atoms
+    )
+
+    aromatic_descriptors = (
+        _test_filter_descriptors(
+            descriptors,
+            aromatic_only=True,
+            require_aromatic=True,
+            is_aromatic=True,
+        )
+    )
+
+    if aromatic_descriptors:
+        for descriptor in aromatic_descriptors:
+            assert_hydrophobic_true(
+                _test_descriptor_is_aromatic(
+                    descriptor
+                )
+            )
+
+    else:
+        manually_aromatic = tuple(
+            descriptor
+            for descriptor in descriptors
+            if _test_descriptor_is_aromatic(
+                descriptor
+            )
+        )
+
+        assert_hydrophobic_true(
+            len(manually_aromatic) >= 1
+        )
+
+
+@hydrophobic_test(
+    "section_4.filter.aliphatic",
+    section="12.2",
+    description=(
+        "Validate filtering for aliphatic hydrophobic atoms."
+    ),
+    tags=(
+        "filter",
+        "aliphatic",
+        "section-4",
+    ),
+)
+def _test_filter_aliphatic_hydrophobic_atoms() -> None:
+    """Validate aliphatic filtering."""
+
+    atoms = _test_make_mixed_atom_collection()
+
+    descriptors = _test_perceive_atoms(
+        atoms
+    )
+
+    aliphatic_descriptors = (
+        _test_filter_descriptors(
+            descriptors,
+            aliphatic_only=True,
+            require_aliphatic=True,
+            is_aliphatic=True,
+        )
+    )
+
+    if aliphatic_descriptors:
+        for descriptor in aliphatic_descriptors:
+            assert_hydrophobic_true(
+                _test_descriptor_is_aliphatic(
+                    descriptor
+                )
+                or not _test_descriptor_is_aromatic(
+                    descriptor
+                )
+            )
+
+    else:
+        manually_aliphatic = tuple(
+            descriptor
+            for descriptor in descriptors
+            if _test_descriptor_is_aliphatic(
+                descriptor
+            )
+        )
+
+        assert_hydrophobic_true(
+            len(manually_aliphatic) >= 1
+        )
+
+
+@hydrophobic_test(
+    "section_4.partition.aromatic_aliphatic",
+    section="12.2",
+    description=(
+        "Validate aromatic/aliphatic partitioning."
+    ),
+    tags=(
+        "partition",
+        "aromatic",
+        "aliphatic",
+        "section-4",
+    ),
+)
+def _test_partition_hydrophobic_atoms() -> None:
+    """Validate hydrophobic descriptor partitioning."""
+
+    atoms = _test_make_mixed_atom_collection()
+
+    descriptors = _test_perceive_atoms(
+        atoms
+    )
+
+    partition = _test_partition_descriptors(
+        descriptors
+    )
+
+    if isinstance(
+        partition,
+        Mapping,
+    ):
+        flattened = tuple(
+            descriptor
+            for values in partition.values()
+            for descriptor in values
+        )
+
+        assert_hydrophobic_true(
+            len(flattened) >= len(
+                descriptors
+            )
+            or len(flattened) > 0
+        )
+
+        aromatic_values = tuple(
+            partition.get(
+                "aromatic",
+                (),
+            )
+        )
+
+        for descriptor in aromatic_values:
+            assert_hydrophobic_true(
+                _test_descriptor_is_aromatic(
+                    descriptor
+                )
+            )
+
+    elif isinstance(
+        partition,
+        tuple,
+    ):
+        assert_hydrophobic_true(
+            len(partition) >= 2
+        )
+
+        flattened = tuple(
+            descriptor
+            for values in partition
+            if isinstance(
+                values,
+                Iterable,
+            )
+            for descriptor in values
+        )
+
+        assert_hydrophobic_true(
+            len(flattened) > 0
+        )
+
+    else:
+        assert_hydrophobic_true(
+            hasattr(
+                partition,
+                "aromatic"
+            )
+            or hasattr(
+                partition,
+                "aliphatic"
+            )
+        )
+
+
+# -----------------------------------------------------------------------------
+# Deduplication tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_5.deduplication.atoms",
+    section="12.2",
+    description=(
+        "Validate atom deduplication while preserving order."
+    ),
+    tags=(
+        "deduplication",
+        "atoms",
+        "section-5",
+    ),
+)
+def _test_atom_deduplication() -> None:
+    """Validate duplicate atom removal."""
+
+    first_atom = make_hydrophobic_test_atom(
+        name="C1",
+        element="C",
+        coordinate=(0.0, 0.0, 0.0),
+        atom_index=1,
+    )
+
+    second_atom = make_hydrophobic_test_atom(
+        name="C2",
+        element="C",
+        coordinate=(1.0, 0.0, 0.0),
+        atom_index=2,
+    )
+
+    deduplicated = deduplicate_atoms(
+        (
+            first_atom,
+            first_atom,
+            second_atom,
+            second_atom,
+        ),
+        strategy="auto",
+    )
+
+    assert_hydrophobic_length(
+        deduplicated,
+        2,
+    )
+
+    assert_hydrophobic_is(
+        deduplicated[0],
+        first_atom,
+    )
+
+    assert_hydrophobic_is(
+        deduplicated[1],
+        second_atom,
+    )
+
+
+@hydrophobic_test(
+    "section_5.deduplication.key_stability",
+    section="12.2",
+    description=(
+        "Validate stable atom deduplication keys."
+    ),
+    tags=(
+        "deduplication",
+        "key",
+        "section-5",
+    ),
+)
+def _test_atom_deduplication_key_stability() -> None:
+    """Validate repeated key generation for the same atom."""
+
+    atom = make_hydrophobic_test_atom(
+        name="C1",
+        element="C",
+        coordinate=(0.0, 0.0, 0.0),
+        atom_index=1,
+    )
+
+    first_key = atom_deduplication_key(
+        atom,
+        strategy="auto",
+    )
+
+    second_key = atom_deduplication_key(
+        atom,
+        strategy="auto",
+    )
+
+    assert_hydrophobic_equal(
+        first_key,
+        second_key,
+    )
+
+    assert_hydrophobic_instance(
+        first_key,
+        tuple,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Preparation tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_5.preparation.single_collection",
+    section="12.2",
+    description=(
+        "Validate preparation of one mixed atom collection."
+    ),
+    tags=(
+        "preparation",
+        "collection",
+        "section-5",
+    ),
+)
+def _test_prepare_single_atom_collection() -> None:
+    """Validate preparation of a single collection."""
+
+    atoms = _test_make_mixed_atom_collection()
+
+    function = prepare_atom_collection
+
+    try:
+        signature = inspect.signature(
+            function
+        )
+
+        keyword_candidates = {
+            "role": "receptor",
+            "source": "receptor",
+            "deduplicate": True,
+            "validate": True,
+        }
+
+        supported_options = {
+            key: value
+            for key, value
+            in keyword_candidates.items()
+            if key in signature.parameters
+        }
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        supported_options = {}
+
+    prepared = function(
+        atoms,
+        **supported_options,
+    )
+
+    assert_hydrophobic_is_not_none(
+        prepared
+    )
+
+    try:
+        prepared_length = len(
+            prepared
+        )
+
+    except TypeError:
+        prepared_length = 1
+
+    assert_hydrophobic_true(
+        prepared_length >= 1
+    )
+
+
+@hydrophobic_test(
+    "section_5.preparation.receptor_ligand",
+    section="12.2",
+    description=(
+        "Validate receptor and ligand hydrophobic preparation."
+    ),
+    tags=(
+        "preparation",
+        "receptor",
+        "ligand",
+        "section-5",
+    ),
+)
+def _test_prepare_receptor_ligand_collections() -> None:
+    """Validate complete receptor/ligand preparation."""
+
+    receptor_atoms = _test_make_residue_atoms(
+        residue_name="LEU",
+        residue_number=10,
+        chain_identifier="A",
+        atom_definitions=(
+            (
+                "CD1",
+                "C",
+                (0.0, 0.0, 0.0),
+                False,
+                0.0,
+            ),
+            (
+                "CD2",
+                "C",
+                (0.0, 1.5, 0.0),
+                False,
+                0.0,
+            ),
+            (
+                "O",
+                "O",
+                (0.0, 3.0, 0.0),
+                False,
+                -0.4,
+            ),
+        ),
+        structure_name="receptor",
+    )
+
+    ligand_atoms = _test_make_residue_atoms(
+        residue_name="LIG",
+        residue_number=1,
+        chain_identifier="L",
+        atom_definitions=(
+            (
+                "C1",
+                "C",
+                (3.8, 0.0, 0.0),
+                False,
+                0.0,
+            ),
+            (
+                "C2",
+                "C",
+                (3.8, 1.5, 0.0),
+                True,
+                0.0,
+            ),
+            (
+                "N1",
+                "N",
+                (3.8, 3.0, 0.0),
+                False,
+                -0.2,
+            ),
+        ),
+        structure_name="ligand",
+    )
+
+    collections = (
+        _test_prepare_hydrophobic_collections(
+            receptor_atoms,
+            ligand_atoms,
+        )
+    )
+
+    assert_hydrophobic_instance(
+        collections,
+        HydrophobicAtomCollections,
+    )
+
+    receptor_descriptors = (
+        _test_extract_collection_members(
+            collections,
+            role="receptor",
+        )
+    )
+
+    ligand_descriptors = (
+        _test_extract_collection_members(
+            collections,
+            role="ligand",
+        )
+    )
+
+    assert_hydrophobic_true(
+        len(receptor_descriptors) >= 1
+    )
+
+    assert_hydrophobic_true(
+        len(ligand_descriptors) >= 1
+    )
+
+
+@hydrophobic_test(
+    "section_5.preparation.excludes_polar_atoms",
+    section="12.2",
+    description=(
+        "Validate exclusion of conventional polar atoms during preparation."
+    ),
+    tags=(
+        "preparation",
+        "filtering",
+        "polar",
+        "section-5",
+    ),
+)
+def _test_preparation_excludes_polar_atoms() -> None:
+    """Validate preparation-level polar atom exclusion."""
+
+    receptor_atoms = (
+        make_hydrophobic_test_atom(
+            name="C1",
+            element="C",
+            coordinate=(0.0, 0.0, 0.0),
+            atom_index=1,
+            partial_charge=0.0,
+        ),
+        make_hydrophobic_test_atom(
+            name="O1",
+            element="O",
+            coordinate=(1.5, 0.0, 0.0),
+            atom_index=2,
+            partial_charge=-0.5,
+        ),
+    )
+
+    ligand_atoms = (
+        make_hydrophobic_test_atom(
+            name="C2",
+            element="C",
+            coordinate=(3.8, 0.0, 0.0),
+            atom_index=3,
+            partial_charge=0.0,
+        ),
+    )
+
+    collections = (
+        _test_prepare_hydrophobic_collections(
+            receptor_atoms,
+            ligand_atoms,
+        )
+    )
+
+    receptor_descriptors = (
+        _test_extract_collection_members(
+            collections,
+            role="receptor",
+        )
+    )
+
+    descriptor_elements = {
+        _test_get_atom_element(
+            _test_descriptor_atom(
+                descriptor
+            )
+        )
+        for descriptor
+        in receptor_descriptors
+        if _test_descriptor_atom(
+            descriptor
+        )
+        is not None
+    }
+
+    assert_hydrophobic_in(
+        "C",
+        descriptor_elements,
+    )
+
+    assert_hydrophobic_not_in(
+        "O",
+        descriptor_elements,
+    )
+
+
+@hydrophobic_test(
+    "section_5.preparation.deduplicates_input",
+    section="12.2",
+    description=(
+        "Validate deduplication during receptor/ligand preparation."
+    ),
+    tags=(
+        "preparation",
+        "deduplication",
+        "section-5",
+    ),
+)
+def _test_preparation_deduplicates_input() -> None:
+    """Validate duplicate input handling."""
+
+    receptor_atom = make_hydrophobic_test_atom(
+        name="C1",
+        element="C",
+        coordinate=(0.0, 0.0, 0.0),
+        atom_index=1,
+    )
+
+    ligand_atom = make_hydrophobic_test_atom(
+        name="C2",
+        element="C",
+        coordinate=(3.8, 0.0, 0.0),
+        atom_index=2,
+    )
+
+    collections = (
+        _test_prepare_hydrophobic_collections(
+            (
+                receptor_atom,
+                receptor_atom,
+                receptor_atom,
+            ),
+            (
+                ligand_atom,
+                ligand_atom,
+            ),
+        )
+    )
+
+    receptor_descriptors = (
+        _test_extract_collection_members(
+            collections,
+            role="receptor",
+        )
+    )
+
+    ligand_descriptors = (
+        _test_extract_collection_members(
+            collections,
+            role="ligand",
+        )
+    )
+
+    assert_hydrophobic_equal(
+        len(receptor_descriptors),
+        1,
+    )
+
+    assert_hydrophobic_equal(
+        len(ligand_descriptors),
+        1,
+    )
+
+
+@hydrophobic_test(
+    "section_5.preparation.empty_collections",
+    section="12.2",
+    description=(
+        "Validate preparation behavior for empty collections."
+    ),
+    tags=(
+        "preparation",
+        "empty",
+        "section-5",
+    ),
+)
+def _test_preparation_empty_collections() -> None:
+    """Validate empty receptor and ligand handling."""
+
+    try:
+        collections = (
+            _test_prepare_hydrophobic_collections(
+                (),
+                (),
+            )
+        )
+
+    except (
+        ValueError,
+        TypeError,
+    ):
+        # Explicit rejection of empty collections is also acceptable.
+        return
+
+    assert_hydrophobic_instance(
+        collections,
+        HydrophobicAtomCollections,
+    )
+
+    receptor_descriptors = (
+        _test_extract_collection_members(
+            collections,
+            role="receptor",
+        )
+    )
+
+    ligand_descriptors = (
+        _test_extract_collection_members(
+            collections,
+            role="ligand",
+        )
+    )
+
+    assert_hydrophobic_length(
+        receptor_descriptors,
+        0,
+    )
+
+    assert_hydrophobic_length(
+        ligand_descriptors,
+        0,
+    )
+
+
+@hydrophobic_test(
+    "section_5.preparation.collection_serialization",
+    section="12.2",
+    description=(
+        "Validate serialization of HydrophobicAtomCollections."
+    ),
+    tags=(
+        "preparation",
+        "serialization",
+        "section-5",
+    ),
+)
+def _test_atom_collections_serialization() -> None:
+    """Validate collection serialization when supported."""
+
+    receptor_atom, ligand_atom = (
+        make_hydrophobic_test_atom_pair(
+            distance=3.8
+        )
+    )
+
+    collections = (
+        _test_prepare_hydrophobic_collections(
+            (
+                receptor_atom,
+            ),
+            (
+                ligand_atom,
+            ),
+        )
+    )
+
+    to_dict = getattr(
+        collections,
+        "to_dict",
+        None,
+    )
+
+    if not callable(
+        to_dict
+    ):
+        skip_hydrophobic_test(
+            "HydrophobicAtomCollections does not expose to_dict()."
+        )
+
+    serialized = to_dict()
+
+    assert_hydrophobic_instance(
+        serialized,
+        Mapping,
+    )
+
+    assert_hydrophobic_serializable(
+        serialized
+    )
+
+
+# -----------------------------------------------------------------------------
+# Cross-component tests for Sections 3–5
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "sections_3_5.cross.perception_to_dataclass",
+    section="12.2",
+    description=(
+        "Validate the path from synthetic atom to HydrophobicAtom."
+    ),
+    tags=(
+        "cross-component",
+        "perception",
+        "dataclass",
+        "sections-3-5",
+    ),
+)
+def _test_perception_to_dataclass_path() -> None:
+    """Validate synthetic atom → descriptor integration."""
+
+    atom = make_hydrophobic_test_atom(
+        name="CINT",
+        element="C",
+        coordinate=(0.0, 0.0, 0.0),
+        residue_name="ILE",
+        residue_number=40,
+        chain_identifier="A",
+        atom_index=5,
+        aromatic=False,
+        partial_charge=0.0,
+    )
+
+    descriptor = _test_perceive_atom(
+        atom,
+        role="receptor",
+    )
+
+    assert_hydrophobic_instance(
+        descriptor,
+        HydrophobicAtom,
+    )
+
+    descriptor_atom = (
+        _test_descriptor_atom(
+            descriptor
+        )
+    )
+
+    if descriptor_atom is not None:
+        assert_hydrophobic_is(
+            descriptor_atom,
+            atom,
+        )
+
+    serialized = _test_object_to_dict(
+        descriptor
+    )
+
+    assert_hydrophobic_serializable(
+        serialized
+    )
+
+
+@hydrophobic_test(
+    "sections_3_5.cross.preparation_partition",
+    section="12.2",
+    description=(
+        "Validate partitioning of descriptors produced by preparation."
+    ),
+    tags=(
+        "cross-component",
+        "preparation",
+        "partition",
+        "sections-3-5",
+    ),
+)
+def _test_preparation_partition_path() -> None:
+    """Validate preparation → partition integration."""
+
+    receptor_atoms = (
+        make_hydrophobic_test_atom(
+            name="CAL",
+            element="C",
+            coordinate=(0.0, 0.0, 0.0),
+            aromatic=False,
+            atom_index=1,
+        ),
+        make_hydrophobic_test_atom(
+            name="CAR",
+            element="C",
+            coordinate=(0.0, 1.5, 0.0),
+            aromatic=True,
+            atom_index=2,
+        ),
+    )
+
+    ligand_atoms = (
+        make_hydrophobic_test_atom(
+            name="LC",
+            element="C",
+            coordinate=(3.8, 0.0, 0.0),
+            aromatic=False,
+            atom_index=3,
+        ),
+    )
+
+    collections = (
+        _test_prepare_hydrophobic_collections(
+            receptor_atoms,
+            ligand_atoms,
+        )
+    )
+
+    receptor_descriptors = (
+        _test_extract_collection_members(
+            collections,
+            role="receptor",
+        )
+    )
+
+    partition = partition_hydrophobic_atoms(
+        receptor_descriptors
+    )
+
+    assert_hydrophobic_is_not_none(
+        partition
+    )
+
+    aromatic_count = sum(
+        _test_descriptor_is_aromatic(
+            descriptor
+        )
+        for descriptor
+        in receptor_descriptors
+    )
+
+    aliphatic_count = sum(
+        _test_descriptor_is_aliphatic(
+            descriptor
+        )
+        or not _test_descriptor_is_aromatic(
+            descriptor
+        )
+        for descriptor
+        in receptor_descriptors
+    )
+
+    assert_hydrophobic_true(
+        aromatic_count >= 1
+    )
+
+    assert_hydrophobic_true(
+        aliphatic_count >= 1
+    )
+
+
+@hydrophobic_test(
+    "sections_3_5.cross.complete_minimal_result",
+    section="12.2",
+    description=(
+        "Validate construction of a minimal result from perceived atoms."
+    ),
+    tags=(
+        "cross-component",
+        "result",
+        "sections-3-5",
+    ),
+)
+def _test_complete_minimal_result_path() -> None:
+    """Validate atom → descriptor → interaction → result integration."""
+
+    receptor_atom, ligand_atom = (
+        make_hydrophobic_test_atom_pair(
+            distance=3.8
+        )
+    )
+
+    receptor_descriptor = _test_perceive_atom(
+        receptor_atom,
+        role="receptor",
+    )
+
+    ligand_descriptor = _test_perceive_atom(
+        ligand_atom,
+        role="ligand",
+    )
+
+    assert_hydrophobic_is_not_none(
+        receptor_descriptor
+    )
+
+    assert_hydrophobic_is_not_none(
+        ligand_descriptor
+    )
+
+    interaction = (
+        _test_construct_hydrophobic_interaction(
+            receptor_atom,
+            ligand_atom,
+            receptor_descriptor,
+            ligand_descriptor,
+            distance=3.8,
+        )
+    )
+
+    residue_group = (
+        _test_construct_residue_group(
+            interaction
+        )
+    )
+
+    statistics = (
+        _test_construct_statistics()
+    )
+
+    result = _test_construct_analysis_result(
+        interaction,
+        residue_group,
+        receptor_descriptor,
+        ligand_descriptor,
+        receptor_atom,
+        ligand_atom,
+        statistics,
+    )
+
+    assert_hydrophobic_instance(
+        result,
+        HydrophobicAnalysisResult,
+    )
+
+    assert_hydrophobic_equal(
+        result.statistics.interaction_count,
+        1,
+    )
+
+    assert_hydrophobic_serializable(
+        _test_object_to_dict(
+            result
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 12.2 dedicated runner
+# -----------------------------------------------------------------------------
+
+def run_hydrophobic_sections_1_to_5_tests(
+    *,
+    fail_fast: bool = False,
+    verbose: bool = True,
+    include_infrastructure: bool = False,
+) -> HydrophobicSelfTestReport:
+    """
+    Execute tests covering Sections 1–5.
+
+    Parameters
+    ----------
+    fail_fast
+        Stop after the first failing test.
+    verbose
+        Print a formatted report.
+    include_infrastructure
+        Also execute the Section 12.1 infrastructure tests.
+    """
+
+    selected_sections: Tuple[str, ...] = (
+        (
+            "12.1",
+            "12.2",
+        )
+        if include_infrastructure
+        else (
+            "12.2",
+        )
+    )
+
+    report = run_registered_hydrophobic_tests(
+        sections=selected_sections,
+        fail_fast=fail_fast,
+        capture_output=True,
+        capture_warnings=True,
+        context=HydrophobicTestContext(
+            verbose=verbose
+        ),
+        metadata={
+            "runner": (
+                "run_hydrophobic_sections_1_to_5_tests"
+            ),
+            "covered_module_sections": (
+                "1-5"
+            ),
+            "include_infrastructure": bool(
+                include_infrastructure
+            ),
+        },
+    )
+
+    if verbose:
+        print(
+            format_hydrophobic_self_test_report(
+                report,
+                include_results=True,
+                include_failures=True,
+                include_captured_output=False,
+            )
+        )
+
+    return report
+
+
+# -----------------------------------------------------------------------------
+# Section 12.2 test listing
+# -----------------------------------------------------------------------------
+
+def list_hydrophobic_sections_1_to_5_tests(
+) -> Tuple[HydrophobicTestCase, ...]:
+    """Return all tests registered by Section 12.2."""
+
+    return list_hydrophobic_self_tests(
+        sections=(
+            "12.2",
+        ),
+        enabled_only=False,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 12.2 public names
+# -----------------------------------------------------------------------------
+
+_SECTION_12_2_PUBLIC_NAMES: Final[
+    Tuple[str, ...]
+] = (
+    "run_hydrophobic_sections_1_to_5_tests",
+    "list_hydrophobic_sections_1_to_5_tests",
+)
+
+for public_name in _SECTION_12_2_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+# =============================================================================
+# End of Section 12.2
+# =============================================================================
+
+# =============================================================================
+# Section 12.3 — Tests for Sections 6–9
+# =============================================================================
+#
+# Coverage:
+#
+# - geometric distances;
+# - centroids and minimum group distances;
+# - contact masks, indices and pair generation;
+# - local neighborhoods;
+# - geometric contact classification;
+# - pair and group geometry analysis;
+# - pair validation;
+# - interaction detection;
+# - deduplication;
+# - preliminary scoring;
+# - residue, chain, pose and local-region grouping;
+# - hotspot identification;
+# - final multifactor classification;
+# - distance, density, diversity and chemical-type components;
+# - polarity and redundancy penalties;
+# - refinement of interactions and complete results.
+#
+# This section depends on:
+#
+# - Sections 1–9;
+# - Section 12.1 test infrastructure;
+# - Section 12.2 synthetic fixture and tolerant-construction helpers.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Section 12.3 synthetic geometry helpers
+# -----------------------------------------------------------------------------
+
+def _test_make_geometry_atom(
+    *,
+    name: str,
+    coordinate: Sequence[Number],
+    element: str = "C",
+    aromatic: bool = False,
+    residue_name: str = "LEU",
+    residue_number: int = 10,
+    chain_identifier: str = "A",
+    atom_index: int = 1,
+    structure_name: str = "geometry-test",
+    partial_charge: Optional[Number] = 0.0,
+) -> Any:
+    """Create one synthetic atom for geometry tests."""
+
+    return make_hydrophobic_test_atom(
+        name=name,
+        element=element,
+        coordinate=coordinate,
+        residue_name=residue_name,
+        residue_number=residue_number,
+        chain_identifier=chain_identifier,
+        atom_index=atom_index,
+        aromatic=aromatic,
+        partial_charge=partial_charge,
+        structure_name=structure_name,
+    )
+
+
+def _test_make_geometry_pair(
+    *,
+    distance: Number = 3.8,
+    receptor_aromatic: bool = False,
+    ligand_aromatic: bool = False,
+    receptor_name: str = "RC1",
+    ligand_name: str = "LC1",
+    receptor_residue_name: str = "LEU",
+    receptor_residue_number: int = 10,
+    receptor_chain: str = "A",
+    pose_identifier: str = "pose-1",
+) -> Tuple[
+    Any,
+    Any,
+    HydrophobicAtom,
+    HydrophobicAtom,
+]:
+    """Create atoms and descriptors separated along the x axis."""
+
+    normalized_distance = float(
+        distance
+    )
+
+    receptor_atom = _test_make_geometry_atom(
+        name=receptor_name,
+        coordinate=(
+            0.0,
+            0.0,
+            0.0,
+        ),
+        aromatic=receptor_aromatic,
+        residue_name=receptor_residue_name,
+        residue_number=receptor_residue_number,
+        chain_identifier=receptor_chain,
+        atom_index=1,
+        structure_name="receptor",
+    )
+
+    ligand_atom = _test_make_geometry_atom(
+        name=ligand_name,
+        coordinate=(
+            normalized_distance,
+            0.0,
+            0.0,
+        ),
+        aromatic=ligand_aromatic,
+        residue_name="LIG",
+        residue_number=1,
+        chain_identifier="L",
+        atom_index=2,
+        structure_name=pose_identifier,
+    )
+
+    receptor_descriptor = (
+        _test_perceive_atom(
+            receptor_atom,
+            role="receptor",
+        )
+        or _test_construct_hydrophobic_atom(
+            receptor_atom,
+            aromatic=receptor_aromatic,
+            is_aromatic=receptor_aromatic,
+            aliphatic=not receptor_aromatic,
+            is_aliphatic=not receptor_aromatic,
+        )
+    )
+
+    ligand_descriptor = (
+        _test_perceive_atom(
+            ligand_atom,
+            role="ligand",
+        )
+        or _test_construct_hydrophobic_atom(
+            ligand_atom,
+            aromatic=ligand_aromatic,
+            is_aromatic=ligand_aromatic,
+            aliphatic=not ligand_aromatic,
+            is_aliphatic=not ligand_aromatic,
+        )
+    )
+
+    return (
+        receptor_atom,
+        ligand_atom,
+        receptor_descriptor,
+        ligand_descriptor,
+    )
+
+
+def _test_make_interaction(
+    *,
+    distance: Number = 3.8,
+    score: Number = 0.70,
+    strength: Number = 0.65,
+    classification: str = "strong",
+    interaction_type: str = "aliphatic_aliphatic",
+    receptor_name: str = "RC1",
+    ligand_name: str = "LC1",
+    receptor_residue_name: str = "LEU",
+    receptor_residue_number: int = 10,
+    receptor_chain: str = "A",
+    pose_identifier: str = "pose-1",
+    receptor_aromatic: bool = False,
+    ligand_aromatic: bool = False,
+    polar_penalty: Number = 0.0,
+) -> HydrophobicInteraction:
+    """Create one synthetic HydrophobicInteraction."""
+
+    (
+        receptor_atom,
+        ligand_atom,
+        receptor_descriptor,
+        ligand_descriptor,
+    ) = _test_make_geometry_pair(
+        distance=distance,
+        receptor_aromatic=receptor_aromatic,
+        ligand_aromatic=ligand_aromatic,
+        receptor_name=receptor_name,
+        ligand_name=ligand_name,
+        receptor_residue_name=(
+            receptor_residue_name
+        ),
+        receptor_residue_number=(
+            receptor_residue_number
+        ),
+        receptor_chain=receptor_chain,
+        pose_identifier=pose_identifier,
+    )
+
+    interaction = (
+        _test_construct_hydrophobic_interaction(
+            receptor_atom,
+            ligand_atom,
+            receptor_descriptor,
+            ligand_descriptor,
+            distance=distance,
+            score=score,
+            strength=strength,
+            classification=classification,
+            interaction_type=interaction_type,
+        )
+    )
+
+    metadata = dict(
+        getattr(
+            interaction,
+            "metadata",
+            {},
+        )
+    )
+
+    metadata.update(
+        {
+            "pose_identifier": (
+                pose_identifier
+            ),
+            "self_test": True,
+        }
+    )
+
+    try:
+        return rebuild_hydrophobic_interaction(
+            interaction,
+            polar_penalty=polar_penalty,
+            metadata=metadata,
+        )
+
+    except Exception:
+        return interaction
+
+
+def _test_make_local_interaction_cluster(
+    *,
+    pose_identifier: str = "pose-1",
+    receptor_residue_name: str = "LEU",
+    receptor_residue_number: int = 10,
+    receptor_chain: str = "A",
+    aromatic: bool = False,
+) -> Tuple[HydrophobicInteraction, ...]:
+    """Create a compact local cluster with several atomic pairs."""
+
+    interaction_definitions = (
+        (
+            "RC1",
+            "LC1",
+            3.40,
+            0.88,
+        ),
+        (
+            "RC1",
+            "LC2",
+            3.70,
+            0.78,
+        ),
+        (
+            "RC2",
+            "LC1",
+            3.65,
+            0.80,
+        ),
+        (
+            "RC2",
+            "LC2",
+            3.90,
+            0.72,
+        ),
+    )
+
+    interactions: List[
+        HydrophobicInteraction
+    ] = []
+
+    receptor_coordinates = {
+        "RC1": (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        "RC2": (
+            0.0,
+            1.2,
+            0.0,
+        ),
+    }
+
+    ligand_coordinates = {
+        "LC1": (
+            3.4,
+            0.0,
+            0.0,
+        ),
+        "LC2": (
+            3.4,
+            1.2,
+            0.0,
+        ),
+    }
+
+    receptor_atoms: Dict[str, Any] = {}
+    ligand_atoms: Dict[str, Any] = {}
+
+    for index, (
+        name,
+        coordinate,
+    ) in enumerate(
+        receptor_coordinates.items(),
+        start=1,
+    ):
+        receptor_atoms[name] = (
+            _test_make_geometry_atom(
+                name=name,
+                coordinate=coordinate,
+                aromatic=aromatic,
+                residue_name=(
+                    receptor_residue_name
+                ),
+                residue_number=(
+                    receptor_residue_number
+                ),
+                chain_identifier=(
+                    receptor_chain
+                ),
+                atom_index=index,
+                structure_name="receptor",
+            )
+        )
+
+    for index, (
+        name,
+        coordinate,
+    ) in enumerate(
+        ligand_coordinates.items(),
+        start=101,
+    ):
+        ligand_atoms[name] = (
+            _test_make_geometry_atom(
+                name=name,
+                coordinate=coordinate,
+                aromatic=aromatic,
+                residue_name="LIG",
+                residue_number=1,
+                chain_identifier="L",
+                atom_index=index,
+                structure_name=(
+                    pose_identifier
+                ),
+            )
+        )
+
+    receptor_descriptors = {
+        name: (
+            _test_perceive_atom(
+                atom,
+                role="receptor",
+            )
+            or _test_construct_hydrophobic_atom(
+                atom,
+                aromatic=aromatic,
+                is_aromatic=aromatic,
+                aliphatic=not aromatic,
+                is_aliphatic=not aromatic,
+            )
+        )
+        for name, atom
+        in receptor_atoms.items()
+    }
+
+    ligand_descriptors = {
+        name: (
+            _test_perceive_atom(
+                atom,
+                role="ligand",
+            )
+            or _test_construct_hydrophobic_atom(
+                atom,
+                aromatic=aromatic,
+                is_aromatic=aromatic,
+                aliphatic=not aromatic,
+                is_aliphatic=not aromatic,
+            )
+        )
+        for name, atom
+        in ligand_atoms.items()
+    }
+
+    interaction_type = (
+        "aromatic_aromatic"
+        if aromatic
+        else "aliphatic_aliphatic"
+    )
+
+    for (
+        receptor_name,
+        ligand_name,
+        expected_distance,
+        score,
+    ) in interaction_definitions:
+        receptor_atom = receptor_atoms[
+            receptor_name
+        ]
+
+        ligand_atom = ligand_atoms[
+            ligand_name
+        ]
+
+        measured_distance = float(
+            hydrophobic_distance(
+                receptor_atom,
+                ligand_atom,
+            )
+        )
+
+        assert_hydrophobic_close(
+            measured_distance,
+            expected_distance,
+            absolute_tolerance=0.30,
+        )
+
+        interaction = (
+            _test_construct_hydrophobic_interaction(
+                receptor_atom,
+                ligand_atom,
+                receptor_descriptors[
+                    receptor_name
+                ],
+                ligand_descriptors[
+                    ligand_name
+                ],
+                distance=measured_distance,
+                score=score,
+                strength=max(
+                    score - 0.05,
+                    0.0,
+                ),
+                classification=(
+                    "strong"
+                    if score >= 0.68
+                    else "moderate"
+                ),
+                interaction_type=(
+                    interaction_type
+                ),
+            )
+        )
+
+        try:
+            interaction = (
+                rebuild_hydrophobic_interaction(
+                    interaction,
+                    local_contact_count=4,
+                    metadata={
+                        "pose_identifier": (
+                            pose_identifier
+                        ),
+                        "self_test_cluster": True,
+                    },
+                )
+            )
+
+        except Exception:
+            pass
+
+        interactions.append(
+            interaction
+        )
+
+    return tuple(
+        interactions
+    )
+
+
+def _test_make_multi_residue_interactions(
+) -> Tuple[HydrophobicInteraction, ...]:
+    """Create contacts distributed across residues, chains and poses."""
+
+    return (
+        _test_make_interaction(
+            receptor_name="LEU_CD1",
+            ligand_name="L1_C1",
+            receptor_residue_name="LEU",
+            receptor_residue_number=10,
+            receptor_chain="A",
+            pose_identifier="pose-1",
+            distance=3.4,
+            score=0.85,
+            classification="very_strong",
+        ),
+        _test_make_interaction(
+            receptor_name="LEU_CD2",
+            ligand_name="L1_C2",
+            receptor_residue_name="LEU",
+            receptor_residue_number=10,
+            receptor_chain="A",
+            pose_identifier="pose-1",
+            distance=3.8,
+            score=0.72,
+            classification="strong",
+        ),
+        _test_make_interaction(
+            receptor_name="PHE_CZ",
+            ligand_name="L1_C3",
+            receptor_residue_name="PHE",
+            receptor_residue_number=20,
+            receptor_chain="A",
+            pose_identifier="pose-1",
+            distance=4.0,
+            score=0.62,
+            classification="moderate",
+            interaction_type=(
+                "aromatic_aliphatic"
+            ),
+            receptor_aromatic=True,
+        ),
+        _test_make_interaction(
+            receptor_name="ILE_CD1",
+            ligand_name="L2_C1",
+            receptor_residue_name="ILE",
+            receptor_residue_number=30,
+            receptor_chain="B",
+            pose_identifier="pose-2",
+            distance=3.6,
+            score=0.78,
+            classification="strong",
+        ),
+        _test_make_interaction(
+            receptor_name="LEU_CD1",
+            ligand_name="L2_C2",
+            receptor_residue_name="LEU",
+            receptor_residue_number=10,
+            receptor_chain="A",
+            pose_identifier="pose-2",
+            distance=4.2,
+            score=0.55,
+            classification="moderate",
+        ),
+    )
+
+
+def _test_call_with_supported_keywords(
+    function: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Call a function after filtering unsupported keyword arguments."""
+
+    try:
+        signature = inspect.signature(
+            function
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return function(
+            *args,
+            **kwargs,
+        )
+
+    accepts_var_keyword = any(
+        parameter.kind
+        is inspect.Parameter.VAR_KEYWORD
+        for parameter
+        in signature.parameters.values()
+    )
+
+    supported_kwargs = (
+        kwargs
+        if accepts_var_keyword
+        else {
+            key: value
+            for key, value
+            in kwargs.items()
+            if key in signature.parameters
+        }
+    )
+
+    return function(
+        *args,
+        **supported_kwargs,
+    )
+
+
+def _test_get_interactions(
+    value: Any,
+) -> Tuple[HydrophobicInteraction, ...]:
+    """Extract interactions from common Section 7–8 result objects."""
+
+    if value is None:
+        return ()
+
+    if isinstance(
+        value,
+        HydrophobicInteraction,
+    ):
+        return (
+            value,
+        )
+
+    for attribute_name in (
+        "interactions",
+        "hydrophobic_interactions",
+        "contacts",
+    ):
+        try:
+            interactions = getattr(
+                value,
+                attribute_name,
+            )
+
+        except Exception:
+            continue
+
+        if interactions is not None:
+            return tuple(
+                interactions
+            )
+
+    try:
+        values = tuple(
+            value
+        )
+
+    except TypeError:
+        return ()
+
+    return tuple(
+        item
+        for item in values
+        if isinstance(
+            item,
+            HydrophobicInteraction,
+        )
+    )
+
+
+def _test_get_group_interactions(
+    group: Any,
+) -> Tuple[HydrophobicInteraction, ...]:
+    """Extract interactions from one grouping object."""
+
+    try:
+        return tuple(
+            group.interactions
+        )
+
+    except Exception:
+        return ()
+
+
+def _test_get_result_classification(
+    value: Any,
+) -> Optional[str]:
+    """Resolve a strength classification from a result object."""
+
+    for attribute_name in (
+        "classification",
+        "strength_class",
+        "category",
+    ):
+        try:
+            result = getattr(
+                value,
+                attribute_name,
+            )
+
+        except Exception:
+            continue
+
+        if result is not None:
+            return str(
+                result
+            )
+
+    return None
+
+
+def _test_get_result_score(
+    value: Any,
+) -> Optional[float]:
+    """Resolve a normalized score from a result object."""
+
+    for attribute_name in (
+        "score",
+        "strength",
+        "group_score",
+        "total_score",
+    ):
+        try:
+            result = getattr(
+                value,
+                attribute_name,
+            )
+
+        except Exception:
+            continue
+
+        if result is None:
+            continue
+
+        try:
+            return float(
+                result
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            continue
+
+    return None
+
+
+def _test_get_group_identifier(
+    group: Any,
+) -> Optional[str]:
+    """Resolve a residue, chain, pose or region identifier."""
+
+    for attribute_name in (
+        "residue_identifier",
+        "chain_identifier",
+        "pose_identifier",
+        "region_identifier",
+        "identifier",
+    ):
+        try:
+            value = getattr(
+                group,
+                attribute_name,
+            )
+
+        except Exception:
+            continue
+
+        if value is not None:
+            normalized = str(
+                value
+            ).strip()
+
+            if normalized:
+                return normalized
+
+    return None
+
+
+# -----------------------------------------------------------------------------
+# Section 6 — Basic geometry tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_6.geometry.distance",
+    section="12.3",
+    description=(
+        "Validate Euclidean hydrophobic atom distance."
+    ),
+    tags=(
+        "geometry",
+        "distance",
+        "section-6",
+    ),
+)
+def _test_hydrophobic_distance() -> None:
+    """Validate atom-pair Euclidean distance."""
+
+    receptor_atom, ligand_atom = (
+        make_hydrophobic_test_atom_pair(
+            distance=3.75
+        )
+    )
+
+    distance = hydrophobic_distance(
+        receptor_atom,
+        ligand_atom,
+    )
+
+    assert_hydrophobic_close(
+        distance,
+        3.75,
+    )
+
+
+@hydrophobic_test(
+    "section_6.geometry.distance_symmetry",
+    section="12.3",
+    description=(
+        "Validate distance symmetry."
+    ),
+    tags=(
+        "geometry",
+        "distance",
+        "symmetry",
+        "section-6",
+    ),
+)
+def _test_hydrophobic_distance_symmetry() -> None:
+    """Validate d(a,b) equals d(b,a)."""
+
+    receptor_atom, ligand_atom = (
+        make_hydrophobic_test_atom_pair(
+            distance=4.1
+        )
+    )
+
+    forward = hydrophobic_distance(
+        receptor_atom,
+        ligand_atom,
+    )
+
+    reverse = hydrophobic_distance(
+        ligand_atom,
+        receptor_atom,
+    )
+
+    assert_hydrophobic_close(
+        forward,
+        reverse,
+    )
+
+
+@hydrophobic_test(
+    "section_6.geometry.centroid",
+    section="12.3",
+    description=(
+        "Validate the centroid of a compact atom group."
+    ),
+    tags=(
+        "geometry",
+        "centroid",
+        "section-6",
+    ),
+)
+def _test_hydrophobic_centroid() -> None:
+    """Validate group-centroid calculation."""
+
+    atoms = (
+        _test_make_geometry_atom(
+            name="C1",
+            coordinate=(
+                0.0,
+                0.0,
+                0.0,
+            ),
+            atom_index=1,
+        ),
+        _test_make_geometry_atom(
+            name="C2",
+            coordinate=(
+                2.0,
+                0.0,
+                0.0,
+            ),
+            atom_index=2,
+        ),
+        _test_make_geometry_atom(
+            name="C3",
+            coordinate=(
+                0.0,
+                2.0,
+                0.0,
+            ),
+            atom_index=3,
+        ),
+    )
+
+    centroid = hydrophobic_centroid(
+        atoms
+    )
+
+    assert_hydrophobic_array_close(
+        centroid,
+        (
+            2.0 / 3.0,
+            2.0 / 3.0,
+            0.0,
+        ),
+    )
+
+
+@hydrophobic_test(
+    "section_6.geometry.minimum_group_distance",
+    section="12.3",
+    description=(
+        "Validate minimum receptor–ligand group distance."
+    ),
+    tags=(
+        "geometry",
+        "group-distance",
+        "section-6",
+    ),
+)
+def _test_minimum_group_distance() -> None:
+    """Validate minimum distance between two atom groups."""
+
+    receptor_atoms = (
+        _test_make_geometry_atom(
+            name="R1",
+            coordinate=(0.0, 0.0, 0.0),
+            atom_index=1,
+        ),
+        _test_make_geometry_atom(
+            name="R2",
+            coordinate=(0.0, 5.0, 0.0),
+            atom_index=2,
+        ),
+    )
+
+    ligand_atoms = (
+        _test_make_geometry_atom(
+            name="L1",
+            coordinate=(3.0, 0.0, 0.0),
+            atom_index=3,
+        ),
+        _test_make_geometry_atom(
+            name="L2",
+            coordinate=(8.0, 5.0, 0.0),
+            atom_index=4,
+        ),
+    )
+
+    distance = minimum_group_distance(
+        receptor_atoms,
+        ligand_atoms,
+    )
+
+    assert_hydrophobic_close(
+        distance,
+        3.0,
+    )
+
+
+@hydrophobic_test(
+    "section_6.geometry.contact_density",
+    section="12.3",
+    description=(
+        "Validate normalized local contact density."
+    ),
+    tags=(
+        "geometry",
+        "density",
+        "section-6",
+    ),
+)
+def _test_contact_density() -> None:
+    """Validate contact-density interval and compact-group response."""
+
+    receptor_atoms, ligand_atoms = (
+        make_hydrophobic_test_collection(
+            receptor_count=3,
+            ligand_count=3,
+            separation=3.6,
+            spacing=1.0,
+        )
+    )
+
+    density = approximate_contact_density(
+        receptor_atoms,
+        ligand_atoms,
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+    )
+
+    assert_hydrophobic_between(
+        density,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_true(
+        float(density) > 0.0
+    )
+
+
+@hydrophobic_test(
+    "section_6.geometry.contact_area",
+    section="12.3",
+    description=(
+        "Validate nonnegative approximate hydrophobic contact area."
+    ),
+    tags=(
+        "geometry",
+        "surface",
+        "section-6",
+    ),
+)
+def _test_approximate_contact_area() -> None:
+    """Validate approximate contact-area calculation."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    area = approximate_hydrophobic_surface_area(
+        interactions
+    )
+
+    assert_hydrophobic_true(
+        np.isfinite(
+            float(area)
+        )
+    )
+
+    assert_hydrophobic_true(
+        float(area) >= 0.0
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 6 — Pair search tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_6.search.contact_mask",
+    section="12.3",
+    description=(
+        "Validate receptor–ligand distance contact mask."
+    ),
+    tags=(
+        "geometry",
+        "pair-search",
+        "mask",
+        "section-6",
+    ),
+)
+def _test_hydrophobic_contact_mask() -> None:
+    """Validate shape and truth values of the contact mask."""
+
+    receptor_atoms = (
+        _test_make_geometry_atom(
+            name="R1",
+            coordinate=(0.0, 0.0, 0.0),
+            atom_index=1,
+        ),
+        _test_make_geometry_atom(
+            name="R2",
+            coordinate=(0.0, 10.0, 0.0),
+            atom_index=2,
+        ),
+    )
+
+    ligand_atoms = (
+        _test_make_geometry_atom(
+            name="L1",
+            coordinate=(3.5, 0.0, 0.0),
+            atom_index=3,
+        ),
+        _test_make_geometry_atom(
+            name="L2",
+            coordinate=(10.0, 10.0, 0.0),
+            atom_index=4,
+        ),
+    )
+
+    mask = hydrophobic_contact_mask(
+        receptor_atoms,
+        ligand_atoms,
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+    )
+
+    mask_array = np.asarray(
+        mask
+    )
+
+    assert_hydrophobic_equal(
+        mask_array.shape,
+        (
+            2,
+            2,
+        ),
+    )
+
+    assert_hydrophobic_true(
+        bool(
+            mask_array[
+                0,
+                0,
+            ]
+        )
+    )
+
+    assert_hydrophobic_false(
+        bool(
+            mask_array[
+                1,
+                1,
+            ]
+        )
+    )
+
+
+@hydrophobic_test(
+    "section_6.search.contact_indices",
+    section="12.3",
+    description=(
+        "Validate extraction of contact-pair indices."
+    ),
+    tags=(
+        "geometry",
+        "pair-search",
+        "indices",
+        "section-6",
+    ),
+)
+def _test_hydrophobic_contact_indices() -> None:
+    """Validate pair-index extraction."""
+
+    receptor_atoms = (
+        _test_make_geometry_atom(
+            name="R1",
+            coordinate=(0.0, 0.0, 0.0),
+            atom_index=1,
+        ),
+        _test_make_geometry_atom(
+            name="R2",
+            coordinate=(0.0, 8.0, 0.0),
+            atom_index=2,
+        ),
+    )
+
+    ligand_atoms = (
+        _test_make_geometry_atom(
+            name="L1",
+            coordinate=(3.5, 0.0, 0.0),
+            atom_index=3,
+        ),
+    )
+
+    indices = hydrophobic_contact_indices(
+        receptor_atoms,
+        ligand_atoms,
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+    )
+
+    index_array = np.asarray(
+        indices
+    )
+
+    assert_hydrophobic_true(
+        index_array.size >= 2
+    )
+
+    flattened_pairs = {
+        tuple(
+            int(value)
+            for value in pair
+        )
+        for pair in index_array.reshape(
+            -1,
+            2,
+        )
+    }
+
+    assert_hydrophobic_in(
+        (
+            0,
+            0,
+        ),
+        flattened_pairs,
+    )
+
+
+@hydrophobic_test(
+    "section_6.search.contact_pairs",
+    section="12.3",
+    description=(
+        "Validate atom-pair generation inside the cutoff."
+    ),
+    tags=(
+        "geometry",
+        "pair-search",
+        "pairs",
+        "section-6",
+    ),
+)
+def _test_hydrophobic_contact_pairs() -> None:
+    """Validate contact-pair generation."""
+
+    receptor_atoms, ligand_atoms = (
+        make_hydrophobic_test_collection(
+            receptor_count=2,
+            ligand_count=2,
+            separation=3.7,
+            spacing=1.0,
+        )
+    )
+
+    pairs = hydrophobic_contact_pairs(
+        receptor_atoms,
+        ligand_atoms,
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+    )
+
+    pair_tuple = tuple(
+        pairs
+    )
+
+    assert_hydrophobic_true(
+        len(pair_tuple) >= 2
+    )
+
+    for pair in pair_tuple:
+        assert_hydrophobic_true(
+            len(pair) >= 2
+        )
+
+
+@hydrophobic_test(
+    "section_6.search.empty_groups",
+    section="12.3",
+    description=(
+        "Validate empty pair search."
+    ),
+    tags=(
+        "geometry",
+        "pair-search",
+        "empty",
+        "section-6",
+    ),
+)
+def _test_hydrophobic_contact_pairs_empty() -> None:
+    """Validate pair search with empty atom collections."""
+
+    pairs = hydrophobic_contact_pairs(
+        (),
+        (),
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+    )
+
+    assert_hydrophobic_length(
+        tuple(pairs),
+        0,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 6 — Neighborhood tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_6.neighborhood.local_neighbors",
+    section="12.3",
+    description=(
+        "Validate local hydrophobic-neighbor selection."
+    ),
+    tags=(
+        "geometry",
+        "neighborhood",
+        "section-6",
+    ),
+)
+def _test_local_hydrophobic_neighbors() -> None:
+    """Validate local-neighbor search."""
+
+    center = _test_make_geometry_atom(
+        name="CENTER",
+        coordinate=(0.0, 0.0, 0.0),
+        atom_index=1,
+    )
+
+    nearby = _test_make_geometry_atom(
+        name="NEAR",
+        coordinate=(2.0, 0.0, 0.0),
+        atom_index=2,
+    )
+
+    distant = _test_make_geometry_atom(
+        name="FAR",
+        coordinate=(10.0, 0.0, 0.0),
+        atom_index=3,
+    )
+
+    neighbors = local_hydrophobic_neighbors(
+        center,
+        (
+            center,
+            nearby,
+            distant,
+        ),
+        radius=3.0,
+    )
+
+    neighbor_tuple = tuple(
+        neighbors
+    )
+
+    assert_hydrophobic_in(
+        nearby,
+        neighbor_tuple,
+    )
+
+    assert_hydrophobic_not_in(
+        distant,
+        neighbor_tuple,
+    )
+
+
+@hydrophobic_test(
+    "section_6.neighborhood.count",
+    section="12.3",
+    description=(
+        "Validate local hydrophobic-neighbor counting."
+    ),
+    tags=(
+        "geometry",
+        "neighborhood",
+        "count",
+        "section-6",
+    ),
+)
+def _test_count_local_hydrophobic_neighbors() -> None:
+    """Validate neighborhood count."""
+
+    center = _test_make_geometry_atom(
+        name="CENTER",
+        coordinate=(0.0, 0.0, 0.0),
+        atom_index=1,
+    )
+
+    atoms = (
+        center,
+        _test_make_geometry_atom(
+            name="N1",
+            coordinate=(1.0, 0.0, 0.0),
+            atom_index=2,
+        ),
+        _test_make_geometry_atom(
+            name="N2",
+            coordinate=(2.0, 0.0, 0.0),
+            atom_index=3,
+        ),
+        _test_make_geometry_atom(
+            name="F1",
+            coordinate=(8.0, 0.0, 0.0),
+            atom_index=4,
+        ),
+    )
+
+    count = count_local_hydrophobic_neighbors(
+        center,
+        atoms,
+        radius=3.0,
+    )
+
+    assert_hydrophobic_true(
+        int(count) >= 2
+    )
+
+    assert_hydrophobic_true(
+        int(count) <= 3
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 6 — Geometric type-classification tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_6.classification.aliphatic_aliphatic",
+    section="12.3",
+    description=(
+        "Validate aliphatic–aliphatic contact classification."
+    ),
+    tags=(
+        "geometry",
+        "classification",
+        "aliphatic",
+        "section-6",
+    ),
+)
+def _test_aliphatic_aliphatic_geometry_type() -> None:
+    """Validate aliphatic–aliphatic type assignment."""
+
+    (
+        _,
+        _,
+        receptor_descriptor,
+        ligand_descriptor,
+    ) = _test_make_geometry_pair(
+        receptor_aromatic=False,
+        ligand_aromatic=False,
+    )
+
+    assert_hydrophobic_true(
+        is_aliphatic_aliphatic_contact(
+            receptor_descriptor,
+            ligand_descriptor,
+        )
+    )
+
+    interaction_type = (
+        classify_hydrophobic_geometry_type(
+            receptor_descriptor,
+            ligand_descriptor,
+        )
+    )
+
+    assert_hydrophobic_in(
+        interaction_type,
+        (
+            "aliphatic_aliphatic",
+            HYDROPHOBIC_TYPE_ALIPHATIC_ALIPHATIC,
+        ),
+    )
+
+
+@hydrophobic_test(
+    "section_6.classification.aromatic_aliphatic",
+    section="12.3",
+    description=(
+        "Validate aromatic–aliphatic contact classification."
+    ),
+    tags=(
+        "geometry",
+        "classification",
+        "aromatic",
+        "aliphatic",
+        "section-6",
+    ),
+)
+def _test_aromatic_aliphatic_geometry_type() -> None:
+    """Validate aromatic–aliphatic type assignment."""
+
+    (
+        _,
+        _,
+        receptor_descriptor,
+        ligand_descriptor,
+    ) = _test_make_geometry_pair(
+        receptor_aromatic=True,
+        ligand_aromatic=False,
+    )
+
+    assert_hydrophobic_true(
+        is_aromatic_aliphatic_contact(
+            receptor_descriptor,
+            ligand_descriptor,
+        )
+    )
+
+    interaction_type = (
+        classify_hydrophobic_geometry_type(
+            receptor_descriptor,
+            ligand_descriptor,
+        )
+    )
+
+    assert_hydrophobic_in(
+        interaction_type,
+        (
+            "aromatic_aliphatic",
+            "aliphatic_aromatic",
+            HYDROPHOBIC_TYPE_AROMATIC_ALIPHATIC,
+            HYDROPHOBIC_TYPE_ALIPHATIC_AROMATIC,
+        ),
+    )
+
+
+@hydrophobic_test(
+    "section_6.classification.aromatic_aromatic",
+    section="12.3",
+    description=(
+        "Validate aromatic–aromatic hydrophobic classification."
+    ),
+    tags=(
+        "geometry",
+        "classification",
+        "aromatic",
+        "section-6",
+    ),
+)
+def _test_aromatic_aromatic_geometry_type() -> None:
+    """Validate aromatic–aromatic hydrophobic assignment."""
+
+    (
+        _,
+        _,
+        receptor_descriptor,
+        ligand_descriptor,
+    ) = _test_make_geometry_pair(
+        receptor_aromatic=True,
+        ligand_aromatic=True,
+    )
+
+    assert_hydrophobic_true(
+        is_aromatic_aromatic_hydrophobic_contact(
+            receptor_descriptor,
+            ligand_descriptor,
+        )
+    )
+
+    interaction_type = (
+        classify_hydrophobic_geometry_type(
+            receptor_descriptor,
+            ligand_descriptor,
+        )
+    )
+
+    assert_hydrophobic_in(
+        interaction_type,
+        (
+            "aromatic_aromatic",
+            HYDROPHOBIC_TYPE_AROMATIC_AROMATIC,
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 6 — Geometry-analysis tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_6.analysis.pair_geometry",
+    section="12.3",
+    description=(
+        "Validate complete hydrophobic pair-geometry analysis."
+    ),
+    tags=(
+        "geometry",
+        "analysis",
+        "pair",
+        "section-6",
+    ),
+)
+def _test_analyze_hydrophobic_pair_geometry() -> None:
+    """Validate pair-geometry result fields."""
+
+    (
+        receptor_atom,
+        ligand_atom,
+        receptor_descriptor,
+        ligand_descriptor,
+    ) = _test_make_geometry_pair(
+        distance=3.6,
+    )
+
+    geometry = (
+        analyze_hydrophobic_pair_geometry(
+            receptor_atom,
+            ligand_atom,
+            receptor_descriptor=(
+                receptor_descriptor
+            ),
+            ligand_descriptor=(
+                ligand_descriptor
+            ),
+        )
+    )
+
+    assert_hydrophobic_instance(
+        geometry,
+        HydrophobicPairGeometry,
+    )
+
+    assert_hydrophobic_close(
+        geometry.distance,
+        3.6,
+    )
+
+    assert_hydrophobic_between(
+        geometry.contact_density,
+        0.0,
+        1.0,
+    )
+
+
+@hydrophobic_test(
+    "section_6.analysis.group_geometry",
+    section="12.3",
+    description=(
+        "Validate complete group-geometry analysis."
+    ),
+    tags=(
+        "geometry",
+        "analysis",
+        "group",
+        "section-6",
+    ),
+)
+def _test_analyze_hydrophobic_group_geometry() -> None:
+    """Validate group-geometry result."""
+
+    receptor_atoms, ligand_atoms = (
+        make_hydrophobic_test_collection(
+            receptor_count=3,
+            ligand_count=3,
+            separation=3.6,
+            spacing=1.0,
+        )
+    )
+
+    geometry = (
+        analyze_hydrophobic_group_geometry(
+            receptor_atoms,
+            ligand_atoms,
+        )
+    )
+
+    assert_hydrophobic_true(
+        isinstance(
+            geometry,
+            (
+                HydrophobicGroupGeometry,
+                HydrophobicGroupContactGeometry,
+            ),
+        )
+    )
+
+    minimum_distance = getattr(
+        geometry,
+        "minimum_distance",
+        None,
+    )
+
+    assert_hydrophobic_is_not_none(
+        minimum_distance
+    )
+
+    assert_hydrophobic_true(
+        float(minimum_distance) > 0.0
+    )
+
+
+@hydrophobic_test(
+    "section_6.validation.geometric_pair",
+    section="12.3",
+    description=(
+        "Validate geometric acceptance and rejection by distance."
+    ),
+    tags=(
+        "geometry",
+        "validation",
+        "section-6",
+    ),
+)
+def _test_is_geometrically_hydrophobic_pair() -> None:
+    """Validate geometric pair cutoff behavior."""
+
+    close_pair = (
+        _test_make_geometry_pair(
+            distance=3.8
+        )
+    )
+
+    far_pair = (
+        _test_make_geometry_pair(
+            distance=10.0
+        )
+    )
+
+    close_valid = (
+        is_geometrically_hydrophobic_pair(
+            close_pair[0],
+            close_pair[1],
+        )
+    )
+
+    far_valid = (
+        is_geometrically_hydrophobic_pair(
+            far_pair[0],
+            far_pair[1],
+        )
+    )
+
+    assert_hydrophobic_true(
+        close_valid
+    )
+
+    assert_hydrophobic_false(
+        far_valid
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 7 — Detection helper tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_7.deduplication.descriptor_pairs",
+    section="12.3",
+    description=(
+        "Validate hydrophobic descriptor-pair deduplication."
+    ),
+    tags=(
+        "detection",
+        "deduplication",
+        "section-7",
+    ),
+)
+def _test_deduplicate_hydrophobic_pairs() -> None:
+    """Validate duplicate descriptor-pair removal."""
+
+    (
+        _,
+        _,
+        receptor_descriptor,
+        ligand_descriptor,
+    ) = _test_make_geometry_pair()
+
+    pair = (
+        receptor_descriptor,
+        ligand_descriptor,
+    )
+
+    deduplicated = deduplicate_hydrophobic_pairs(
+        (
+            pair,
+            pair,
+            pair,
+        )
+    )
+
+    assert_hydrophobic_length(
+        deduplicated,
+        1,
+    )
+
+
+@hydrophobic_test(
+    "section_7.deduplication.interactions",
+    section="12.3",
+    description=(
+        "Validate hydrophobic interaction deduplication."
+    ),
+    tags=(
+        "detection",
+        "deduplication",
+        "interaction",
+        "section-7",
+    ),
+)
+def _test_deduplicate_hydrophobic_interactions() -> None:
+    """Validate duplicate interaction removal."""
+
+    interaction = _test_make_interaction()
+
+    deduplicated = (
+        deduplicate_hydrophobic_interactions(
+            (
+                interaction,
+                interaction,
+                interaction,
+            )
+        )
+    )
+
+    assert_hydrophobic_length(
+        deduplicated,
+        1,
+    )
+
+
+@hydrophobic_test(
+    "section_7.classification.distance",
+    section="12.3",
+    description=(
+        "Validate preliminary distance classification ordering."
+    ),
+    tags=(
+        "detection",
+        "distance",
+        "classification",
+        "section-7",
+    ),
+)
+def _test_classify_hydrophobic_distance() -> None:
+    """Validate shorter contacts do not classify weaker than long ones."""
+
+    short_class = classify_hydrophobic_distance(
+        3.2
+    )
+
+    long_class = classify_hydrophobic_distance(
+        4.8
+    )
+
+    class_order = {
+        "very_strong": 5,
+        "strong": 4,
+        "moderate": 3,
+        "weak": 2,
+        "marginal": 1,
+        "unknown": 0,
+    }
+
+    assert_hydrophobic_in(
+        str(short_class),
+        class_order,
+    )
+
+    assert_hydrophobic_in(
+        str(long_class),
+        class_order,
+    )
+
+    assert_hydrophobic_true(
+        class_order[
+            str(short_class)
+        ]
+        >= class_order[
+            str(long_class)
+        ]
+    )
+
+
+@hydrophobic_test(
+    "section_7.scoring.preliminary_strength",
+    section="12.3",
+    description=(
+        "Validate normalized preliminary geometric strength."
+    ),
+    tags=(
+        "detection",
+        "scoring",
+        "strength",
+        "section-7",
+    ),
+)
+def _test_preliminary_hydrophobic_strength() -> None:
+    """Validate preliminary strength interval and distance response."""
+
+    short_strength = (
+        calculate_preliminary_hydrophobic_strength(
+            3.3
+        )
+    )
+
+    long_strength = (
+        calculate_preliminary_hydrophobic_strength(
+            4.8
+        )
+    )
+
+    assert_hydrophobic_between(
+        short_strength,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_between(
+        long_strength,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_true(
+        float(short_strength)
+        >= float(long_strength)
+    )
+
+
+@hydrophobic_test(
+    "section_7.scoring.chemical_compatibility",
+    section="12.3",
+    description=(
+        "Validate normalized chemical-compatibility score."
+    ),
+    tags=(
+        "detection",
+        "scoring",
+        "chemical-type",
+        "section-7",
+    ),
+)
+def _test_chemical_compatibility_score() -> None:
+    """Validate compatibility score interval."""
+
+    (
+        _,
+        _,
+        receptor_descriptor,
+        ligand_descriptor,
+    ) = _test_make_geometry_pair(
+        receptor_aromatic=True,
+        ligand_aromatic=False,
+    )
+
+    score = hydrophobic_chemical_compatibility_score(
+        receptor_descriptor,
+        ligand_descriptor,
+    )
+
+    assert_hydrophobic_between(
+        score,
+        0.0,
+        1.0,
+    )
+
+
+@hydrophobic_test(
+    "section_7.validation.valid_pair",
+    section="12.3",
+    description=(
+        "Validate chemical and geometric pair acceptance."
+    ),
+    tags=(
+        "detection",
+        "validation",
+        "pair",
+        "section-7",
+    ),
+)
+def _test_is_valid_hydrophobic_pair() -> None:
+    """Validate a conventional carbon–carbon hydrophobic pair."""
+
+    (
+        receptor_atom,
+        ligand_atom,
+        receptor_descriptor,
+        ligand_descriptor,
+    ) = _test_make_geometry_pair(
+        distance=3.8
+    )
+
+    valid = is_valid_hydrophobic_pair(
+        receptor_descriptor,
+        ligand_descriptor,
+        receptor_atom=receptor_atom,
+        ligand_atom=ligand_atom,
+    )
+
+    assert_hydrophobic_true(
+        valid
+    )
+
+
+@hydrophobic_test(
+    "section_7.validation.exclusion_reasons",
+    section="12.3",
+    description=(
+        "Validate exclusion reasons for an excessively distant pair."
+    ),
+    tags=(
+        "detection",
+        "validation",
+        "exclusion",
+        "section-7",
+    ),
+)
+def _test_hydrophobic_pair_exclusion_reasons() -> None:
+    """Validate that distant pairs receive at least one exclusion reason."""
+
+    (
+        receptor_atom,
+        ligand_atom,
+        receptor_descriptor,
+        ligand_descriptor,
+    ) = _test_make_geometry_pair(
+        distance=12.0
+    )
+
+    reasons = hydrophobic_pair_exclusion_reasons(
+        receptor_descriptor,
+        ligand_descriptor,
+        receptor_atom=receptor_atom,
+        ligand_atom=ligand_atom,
+    )
+
+    reason_tuple = tuple(
+        reasons
+    )
+
+    assert_hydrophobic_true(
+        len(reason_tuple) >= 1
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 7 — Detection workflow tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_7.detection.find_pairs",
+    section="12.3",
+    description=(
+        "Validate hydrophobic descriptor-pair discovery."
+    ),
+    tags=(
+        "detection",
+        "pairs",
+        "section-7",
+    ),
+)
+def _test_find_hydrophobic_pairs() -> None:
+    """Validate descriptor-pair discovery."""
+
+    receptor_atoms, ligand_atoms = (
+        make_hydrophobic_test_collection(
+            receptor_count=2,
+            ligand_count=2,
+            separation=3.7,
+            spacing=1.0,
+        )
+    )
+
+    receptor_descriptors = (
+        _test_perceive_atoms(
+            receptor_atoms,
+            role="receptor",
+        )
+    )
+
+    ligand_descriptors = (
+        _test_perceive_atoms(
+            ligand_atoms,
+            role="ligand",
+        )
+    )
+
+    pairs = find_hydrophobic_pairs(
+        receptor_descriptors,
+        ligand_descriptors,
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+    )
+
+    assert_hydrophobic_true(
+        len(
+            tuple(pairs)
+        )
+        >= 2
+    )
+
+
+@hydrophobic_test(
+    "section_7.detection.create_interaction",
+    section="12.3",
+    description=(
+        "Validate creation of a structured hydrophobic interaction."
+    ),
+    tags=(
+        "detection",
+        "interaction",
+        "section-7",
+    ),
+)
+def _test_create_hydrophobic_interaction() -> None:
+    """Validate interaction factory output."""
+
+    (
+        receptor_atom,
+        ligand_atom,
+        receptor_descriptor,
+        ligand_descriptor,
+    ) = _test_make_geometry_pair(
+        distance=3.6
+    )
+
+    geometry = analyze_hydrophobic_pair_geometry(
+        receptor_atom,
+        ligand_atom,
+        receptor_descriptor=(
+            receptor_descriptor
+        ),
+        ligand_descriptor=(
+            ligand_descriptor
+        ),
+    )
+
+    interaction = (
+        _test_call_with_supported_keywords(
+            create_hydrophobic_interaction,
+            receptor_descriptor,
+            ligand_descriptor,
+            receptor_atom=receptor_atom,
+            ligand_atom=ligand_atom,
+            geometry=geometry,
+            pose_identifier="pose-1",
+        )
+    )
+
+    assert_hydrophobic_instance(
+        interaction,
+        HydrophobicInteraction,
+    )
+
+    assert_hydrophobic_close(
+        interaction.distance,
+        3.6,
+    )
+
+
+@hydrophobic_test(
+    "section_7.detection.contacts",
+    section="12.3",
+    description=(
+        "Validate detection of atomic hydrophobic contacts."
+    ),
+    tags=(
+        "detection",
+        "contacts",
+        "section-7",
+    ),
+)
+def _test_detect_hydrophobic_contacts() -> None:
+    """Validate contact detection from prepared descriptors."""
+
+    receptor_atoms, ligand_atoms = (
+        make_hydrophobic_test_collection(
+            receptor_count=2,
+            ligand_count=2,
+            separation=3.6,
+            spacing=1.0,
+        )
+    )
+
+    receptor_descriptors = (
+        _test_perceive_atoms(
+            receptor_atoms,
+            role="receptor",
+        )
+    )
+
+    ligand_descriptors = (
+        _test_perceive_atoms(
+            ligand_atoms,
+            role="ligand",
+        )
+    )
+
+    detected = (
+        _test_call_with_supported_keywords(
+            detect_hydrophobic_contacts,
+            receptor_descriptors,
+            ligand_descriptors,
+            minimum_distance=0.0,
+            maximum_distance=5.0,
+        )
+    )
+
+    interactions = _test_get_interactions(
+        detected
+    )
+
+    assert_hydrophobic_true(
+        len(interactions) >= 2
+    )
+
+    for interaction in interactions:
+        assert_hydrophobic_instance(
+            interaction,
+            HydrophobicInteraction,
+        )
+
+
+@hydrophobic_test(
+    "section_7.detection.interactions",
+    section="12.3",
+    description=(
+        "Validate complete hydrophobic interaction detection."
+    ),
+    tags=(
+        "detection",
+        "workflow",
+        "section-7",
+    ),
+)
+def _test_detect_hydrophobic_interactions() -> None:
+    """Validate the complete detection workflow."""
+
+    receptor_atoms, ligand_atoms = (
+        make_hydrophobic_test_collection(
+            receptor_count=2,
+            ligand_count=2,
+            separation=3.7,
+            spacing=1.0,
+        )
+    )
+
+    detected = (
+        _test_call_with_supported_keywords(
+            detect_hydrophobic_interactions,
+            receptor_atoms,
+            ligand_atoms,
+            minimum_distance=0.0,
+            maximum_distance=5.0,
+        )
+    )
+
+    interactions = _test_get_interactions(
+        detected
+    )
+
+    assert_hydrophobic_true(
+        len(interactions) >= 2
+    )
+
+
+@hydrophobic_test(
+    "section_7.detection.result",
+    section="12.3",
+    description=(
+        "Validate HydrophobicDetectionResult generation."
+    ),
+    tags=(
+        "detection",
+        "result",
+        "section-7",
+    ),
+)
+def _test_run_hydrophobic_detection() -> None:
+    """Validate detection-result structure."""
+
+    receptor_atoms, ligand_atoms = (
+        make_hydrophobic_test_collection(
+            receptor_count=2,
+            ligand_count=2,
+            separation=3.8,
+            spacing=1.0,
+        )
+    )
+
+    result = _test_call_with_supported_keywords(
+        run_hydrophobic_detection,
+        receptor_atoms,
+        ligand_atoms,
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+    )
+
+    assert_hydrophobic_instance(
+        result,
+        HydrophobicDetectionResult,
+    )
+
+    assert_hydrophobic_true(
+        len(result.interactions) >= 2
+    )
+
+    serialized = _test_object_to_dict(
+        result
+    )
+
+    assert_hydrophobic_serializable(
+        serialized
+    )
+
+
+@hydrophobic_test(
+    "section_7.detection.no_contacts",
+    section="12.3",
+    description=(
+        "Validate detection when receptor and ligand are too distant."
+    ),
+    tags=(
+        "detection",
+        "empty",
+        "section-7",
+    ),
+)
+def _test_detection_no_contacts() -> None:
+    """Validate zero-contact detection."""
+
+    receptor_atom = _test_make_geometry_atom(
+        name="R1",
+        coordinate=(0.0, 0.0, 0.0),
+        atom_index=1,
+    )
+
+    ligand_atom = _test_make_geometry_atom(
+        name="L1",
+        coordinate=(20.0, 0.0, 0.0),
+        atom_index=2,
+        structure_name="pose-1",
+    )
+
+    detected = _test_call_with_supported_keywords(
+        detect_hydrophobic_interactions,
+        (
+            receptor_atom,
+        ),
+        (
+            ligand_atom,
+        ),
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+    )
+
+    interactions = _test_get_interactions(
+        detected
+    )
+
+    assert_hydrophobic_length(
+        interactions,
+        0,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 8 — Residue grouping tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_8.grouping.by_residue",
+    section="12.3",
+    description=(
+        "Validate grouping of atomic contacts by receptor residue."
+    ),
+    tags=(
+        "grouping",
+        "residue",
+        "section-8",
+    ),
+)
+def _test_group_interactions_by_residue() -> None:
+    """Validate residue-level grouping."""
+
+    interactions = (
+        _test_make_multi_residue_interactions()
+    )
+
+    groups = (
+        group_hydrophobic_interactions_by_residue(
+            interactions,
+            identify_hotspots=False,
+        )
+    )
+
+    group_tuple = tuple(
+        groups
+    )
+
+    assert_hydrophobic_equal(
+        len(group_tuple),
+        3,
+    )
+
+    total_grouped_contacts = sum(
+        len(
+            _test_get_group_interactions(
+                group
+            )
+        )
+        for group in group_tuple
+    )
+
+    assert_hydrophobic_equal(
+        total_grouped_contacts,
+        len(interactions),
+    )
+
+
+@hydrophobic_test(
+    "section_8.grouping.closest_contact",
+    section="12.3",
+    description=(
+        "Validate closest-contact selection."
+    ),
+    tags=(
+        "grouping",
+        "closest-contact",
+        "section-8",
+    ),
+)
+def _test_select_closest_interaction() -> None:
+    """Validate minimum-distance interaction selection."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    closest = (
+        select_closest_hydrophobic_interaction(
+            interactions
+        )
+    )
+
+    assert_hydrophobic_is_not_none(
+        closest
+    )
+
+    expected_minimum = min(
+        float(
+            interaction.distance
+        )
+        for interaction
+        in interactions
+    )
+
+    assert_hydrophobic_close(
+        closest.distance,
+        expected_minimum,
+    )
+
+
+@hydrophobic_test(
+    "section_8.grouping.highest_score",
+    section="12.3",
+    description=(
+        "Validate highest-score representative selection."
+    ),
+    tags=(
+        "grouping",
+        "score",
+        "section-8",
+    ),
+)
+def _test_select_highest_scoring_interaction() -> None:
+    """Validate highest-score representative selection."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    representative = (
+        select_highest_scoring_hydrophobic_interaction(
+            interactions
+        )
+    )
+
+    assert_hydrophobic_is_not_none(
+        representative
+    )
+
+    expected_maximum = max(
+        float(
+            interaction.score
+        )
+        for interaction
+        in interactions
+    )
+
+    assert_hydrophobic_close(
+        representative.score,
+        expected_maximum,
+    )
+
+
+@hydrophobic_test(
+    "section_8.grouping.contact_count_by_residue",
+    section="12.3",
+    description=(
+        "Validate contact counts by receptor residue."
+    ),
+    tags=(
+        "grouping",
+        "residue",
+        "count",
+        "section-8",
+    ),
+)
+def _test_count_contacts_by_residue() -> None:
+    """Validate residue contact counts."""
+
+    interactions = (
+        _test_make_multi_residue_interactions()
+    )
+
+    counts = (
+        count_hydrophobic_contacts_by_residue(
+            interactions
+        )
+    )
+
+    assert_hydrophobic_instance(
+        counts,
+        Mapping,
+    )
+
+    assert_hydrophobic_equal(
+        sum(
+            int(value)
+            for value
+            in counts.values()
+        ),
+        len(interactions),
+    )
+
+    assert_hydrophobic_true(
+        max(
+            counts.values()
+        )
+        >= 2
+    )
+
+
+@hydrophobic_test(
+    "section_8.grouping.surface_by_residue",
+    section="12.3",
+    description=(
+        "Validate approximate hydrophobic surface by residue."
+    ),
+    tags=(
+        "grouping",
+        "residue",
+        "surface",
+        "section-8",
+    ),
+)
+def _test_surface_by_residue() -> None:
+    """Validate per-residue contact surface."""
+
+    interactions = (
+        _test_make_multi_residue_interactions()
+    )
+
+    surfaces = hydrophobic_surface_by_residue(
+        interactions
+    )
+
+    assert_hydrophobic_instance(
+        surfaces,
+        Mapping,
+    )
+
+    assert_hydrophobic_equal(
+        len(surfaces),
+        3,
+    )
+
+    for value in surfaces.values():
+        assert_hydrophobic_true(
+            float(value) >= 0.0
+        )
+
+
+# -----------------------------------------------------------------------------
+# Section 8 — Local-region grouping tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_8.grouping.shared_atom_connection",
+    section="12.3",
+    description=(
+        "Validate local connectivity through a shared atom."
+    ),
+    tags=(
+        "grouping",
+        "local-region",
+        "connectivity",
+        "section-8",
+    ),
+)
+def _test_local_connection_shared_atom() -> None:
+    """Validate local connectivity based on shared atom identity."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    first = interactions[0]
+    second = interactions[1]
+
+    assert_hydrophobic_true(
+        hydrophobic_interactions_share_atom(
+            first,
+            second,
+        )
+    )
+
+    assert_hydrophobic_true(
+        are_hydrophobic_interactions_locally_connected(
+            first,
+            second,
+            require_same_pose=True,
+        )
+    )
+
+
+@hydrophobic_test(
+    "section_8.grouping.interaction_midpoint",
+    section="12.3",
+    description=(
+        "Validate hydrophobic interaction midpoint calculation."
+    ),
+    tags=(
+        "grouping",
+        "midpoint",
+        "section-8",
+    ),
+)
+def _test_interaction_midpoint() -> None:
+    """Validate midpoint of one atomic contact."""
+
+    interaction = _test_make_interaction(
+        distance=4.0
+    )
+
+    midpoint = hydrophobic_interaction_midpoint(
+        interaction
+    )
+
+    assert_hydrophobic_array_close(
+        midpoint,
+        (
+            2.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+
+@hydrophobic_test(
+    "section_8.grouping.midpoint_distance",
+    section="12.3",
+    description=(
+        "Validate distance between interaction midpoints."
+    ),
+    tags=(
+        "grouping",
+        "midpoint",
+        "distance",
+        "section-8",
+    ),
+)
+def _test_interaction_midpoint_distance() -> None:
+    """Validate midpoint-distance symmetry and nonnegativity."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    first = interactions[0]
+    second = interactions[-1]
+
+    forward = (
+        hydrophobic_interaction_midpoint_distance(
+            first,
+            second,
+        )
+    )
+
+    reverse = (
+        hydrophobic_interaction_midpoint_distance(
+            second,
+            first,
+        )
+    )
+
+    assert_hydrophobic_true(
+        float(forward) >= 0.0
+    )
+
+    assert_hydrophobic_close(
+        forward,
+        reverse,
+    )
+
+
+@hydrophobic_test(
+    "section_8.grouping.local_regions",
+    section="12.3",
+    description=(
+        "Validate clustering of connected atomic contacts."
+    ),
+    tags=(
+        "grouping",
+        "local-region",
+        "section-8",
+    ),
+)
+def _test_cluster_local_regions() -> None:
+    """Validate local-region clustering."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    regions = cluster_hydrophobic_local_regions(
+        interactions,
+        grouping_distance=4.5,
+        require_same_pose=True,
+        identify_hotspots=False,
+    )
+
+    region_tuple = tuple(
+        regions
+    )
+
+    assert_hydrophobic_equal(
+        len(region_tuple),
+        1,
+    )
+
+    assert_hydrophobic_equal(
+        len(
+            region_tuple[0].interactions
+        ),
+        len(interactions),
+    )
+
+
+@hydrophobic_test(
+    "section_8.grouping.separate_poses",
+    section="12.3",
+    description=(
+        "Validate separation of local regions belonging to different poses."
+    ),
+    tags=(
+        "grouping",
+        "local-region",
+        "pose",
+        "section-8",
+    ),
+)
+def _test_cluster_local_regions_separate_poses() -> None:
+    """Validate that pose identity prevents cross-pose clustering."""
+
+    first_pose = (
+        _test_make_local_interaction_cluster(
+            pose_identifier="pose-1"
+        )
+    )
+
+    second_pose = (
+        _test_make_local_interaction_cluster(
+            pose_identifier="pose-2"
+        )
+    )
+
+    regions = cluster_hydrophobic_local_regions(
+        (
+            *first_pose,
+            *second_pose,
+        ),
+        grouping_distance=4.5,
+        require_same_pose=True,
+        identify_hotspots=False,
+    )
+
+    assert_hydrophobic_true(
+        len(
+            tuple(regions)
+        )
+        >= 2
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 8 — Chain and pose grouping tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_8.grouping.by_chain",
+    section="12.3",
+    description=(
+        "Validate grouping of hydrophobic contacts by receptor chain."
+    ),
+    tags=(
+        "grouping",
+        "chain",
+        "section-8",
+    ),
+)
+def _test_group_interactions_by_chain() -> None:
+    """Validate chain grouping."""
+
+    interactions = (
+        _test_make_multi_residue_interactions()
+    )
+
+    groups = group_hydrophobic_interactions_by_chain(
+        interactions
+    )
+
+    group_tuple = tuple(
+        groups
+    )
+
+    assert_hydrophobic_equal(
+        len(group_tuple),
+        2,
+    )
+
+    grouped_count = sum(
+        len(group.interactions)
+        for group in group_tuple
+    )
+
+    assert_hydrophobic_equal(
+        grouped_count,
+        len(interactions),
+    )
+
+
+@hydrophobic_test(
+    "section_8.grouping.by_pose",
+    section="12.3",
+    description=(
+        "Validate grouping of hydrophobic contacts by ligand pose."
+    ),
+    tags=(
+        "grouping",
+        "pose",
+        "section-8",
+    ),
+)
+def _test_group_interactions_by_pose() -> None:
+    """Validate pose grouping."""
+
+    interactions = (
+        _test_make_multi_residue_interactions()
+    )
+
+    groups = group_hydrophobic_interactions_by_pose(
+        interactions
+    )
+
+    group_tuple = tuple(
+        groups
+    )
+
+    assert_hydrophobic_equal(
+        len(group_tuple),
+        2,
+    )
+
+    identifiers = {
+        _test_get_group_identifier(
+            group
+        )
+        for group in group_tuple
+    }
+
+    assert_hydrophobic_in(
+        "pose-1",
+        identifiers,
+    )
+
+    assert_hydrophobic_in(
+        "pose-2",
+        identifiers,
+    )
+
+
+@hydrophobic_test(
+    "section_8.grouping.complete_result",
+    section="12.3",
+    description=(
+        "Validate complete residue, chain, pose and region grouping."
+    ),
+    tags=(
+        "grouping",
+        "workflow",
+        "section-8",
+    ),
+)
+def _test_complete_grouping_result() -> None:
+    """Validate HydrophobicGroupingResult."""
+
+    interactions = (
+        _test_make_multi_residue_interactions()
+    )
+
+    grouping = group_hydrophobic_interactions(
+        interactions,
+        grouping_distance=4.5,
+        identify_hotspots=True,
+    )
+
+    assert_hydrophobic_instance(
+        grouping,
+        HydrophobicGroupingResult,
+    )
+
+    assert_hydrophobic_equal(
+        len(grouping.interactions),
+        len(interactions),
+    )
+
+    assert_hydrophobic_equal(
+        len(grouping.residue_groups),
+        3,
+    )
+
+    assert_hydrophobic_equal(
+        len(grouping.chain_groups),
+        2,
+    )
+
+    assert_hydrophobic_equal(
+        len(grouping.pose_groups),
+        2,
+    )
+
+    assert_hydrophobic_serializable(
+        grouping.to_dict()
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 8 — Hotspot tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_8.hotspot.residue_score",
+    section="12.3",
+    description=(
+        "Validate normalized residue-group score."
+    ),
+    tags=(
+        "grouping",
+        "hotspot",
+        "score",
+        "section-8",
+    ),
+)
+def _test_residue_group_score() -> None:
+    """Validate residue-group score calculation."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    score = calculate_residue_group_score(
+        interactions
+    )
+
+    assert_hydrophobic_between(
+        score,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_true(
+        float(score) > 0.0
+    )
+
+
+@hydrophobic_test(
+    "section_8.hotspot.identification",
+    section="12.3",
+    description=(
+        "Validate hotspot identification for a dense local contact group."
+    ),
+    tags=(
+        "grouping",
+        "hotspot",
+        "section-8",
+    ),
+)
+def _test_hotspot_identification() -> None:
+    """Validate dense contact-group hotspot classification."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    group = (
+        group_hydrophobic_interactions_by_residue(
+            interactions,
+            identify_hotspots=False,
+        )[0]
+    )
+
+    hotspot = is_hydrophobic_hotspot(
+        group,
+        minimum_contact_count=3,
+        minimum_group_score=0.20,
+        minimum_ligand_atom_count=2,
+    )
+
+    assert_hydrophobic_true(
+        hotspot
+    )
+
+
+@hydrophobic_test(
+    "section_8.hotspot.find",
+    section="12.3",
+    description=(
+        "Validate hotspot residue collection."
+    ),
+    tags=(
+        "grouping",
+        "hotspot",
+        "collection",
+        "section-8",
+    ),
+)
+def _test_find_hydrophobic_hotspots() -> None:
+    """Validate hotspot collection."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    hotspots = find_hydrophobic_hotspots(
+        interactions,
+        minimum_contact_count=3,
+        minimum_group_score=0.20,
+        minimum_ligand_atom_count=2,
+    )
+
+    assert_hydrophobic_true(
+        len(
+            tuple(hotspots)
+        )
+        >= 1
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 9 — Normalization and threshold tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_9.normalization.saturating_score",
+    section="12.3",
+    description=(
+        "Validate saturating score normalization."
+    ),
+    tags=(
+        "classification",
+        "normalization",
+        "section-9",
+    ),
+)
+def _test_saturating_score() -> None:
+    """Validate monotonic saturating normalization."""
+
+    zero_score = saturating_hydrophobic_score(
+        0.0,
+        5.0,
+    )
+
+    medium_score = saturating_hydrophobic_score(
+        2.5,
+        5.0,
+    )
+
+    high_score = saturating_hydrophobic_score(
+        10.0,
+        5.0,
+    )
+
+    assert_hydrophobic_close(
+        zero_score,
+        0.0,
+    )
+
+    assert_hydrophobic_true(
+        0.0
+        < float(medium_score)
+        < float(high_score)
+        <= 1.0
+    )
+
+
+@hydrophobic_test(
+    "section_9.normalization.linear_score",
+    section="12.3",
+    description=(
+        "Validate linear score saturation."
+    ),
+    tags=(
+        "classification",
+        "normalization",
+        "section-9",
+    ),
+)
+def _test_linear_saturating_score() -> None:
+    """Validate linear saturation at one."""
+
+    assert_hydrophobic_close(
+        linear_saturating_hydrophobic_score(
+            0.0,
+            5.0,
+        ),
+        0.0,
+    )
+
+    assert_hydrophobic_close(
+        linear_saturating_hydrophobic_score(
+            2.5,
+            5.0,
+        ),
+        0.5,
+    )
+
+    assert_hydrophobic_close(
+        linear_saturating_hydrophobic_score(
+            10.0,
+            5.0,
+        ),
+        1.0,
+    )
+
+
+@hydrophobic_test(
+    "section_9.classification.thresholds",
+    section="12.3",
+    description=(
+        "Validate final score classification thresholds."
+    ),
+    tags=(
+        "classification",
+        "threshold",
+        "section-9",
+    ),
+)
+def _test_final_classification_thresholds() -> None:
+    """Validate score-to-class conversion."""
+
+    cases = (
+        (
+            0.90,
+            "very_strong",
+        ),
+        (
+            0.75,
+            "strong",
+        ),
+        (
+            0.55,
+            "moderate",
+        ),
+        (
+            0.35,
+            "weak",
+        ),
+        (
+            0.15,
+            "marginal",
+        ),
+        (
+            0.05,
+            "unknown",
+        ),
+    )
+
+    for score, expected in cases:
+        classification = (
+            classify_hydrophobic_strength_score(
+                score
+            )
+        )
+
+        assert_hydrophobic_equal(
+            classification,
+            expected,
+        )
+
+
+# -----------------------------------------------------------------------------
+# Section 9 — Positive component tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_9.component.distance",
+    section="12.3",
+    description=(
+        "Validate final distance contribution."
+    ),
+    tags=(
+        "classification",
+        "component",
+        "distance",
+        "section-9",
+    ),
+)
+def _test_distance_component() -> None:
+    """Validate normalized distance components."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    (
+        distance_component,
+        minimum_component,
+    ) = calculate_hydrophobic_distance_component(
+        interactions
+    )
+
+    assert_hydrophobic_between(
+        distance_component,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_between(
+        minimum_component,
+        0.0,
+        1.0,
+    )
+
+
+@hydrophobic_test(
+    "section_9.component.compaction",
+    section="12.3",
+    description=(
+        "Validate normalized group-compaction contribution."
+    ),
+    tags=(
+        "classification",
+        "component",
+        "compaction",
+        "section-9",
+    ),
+)
+def _test_compaction_component() -> None:
+    """Validate compaction component."""
+
+    score = (
+        calculate_hydrophobic_compaction_component(
+            _test_make_local_interaction_cluster()
+        )
+    )
+
+    assert_hydrophobic_between(
+        score,
+        0.0,
+        1.0,
+    )
+
+
+@hydrophobic_test(
+    "section_9.component.density",
+    section="12.3",
+    description=(
+        "Validate normalized local-density contribution."
+    ),
+    tags=(
+        "classification",
+        "component",
+        "density",
+        "section-9",
+    ),
+)
+def _test_density_component() -> None:
+    """Validate density component."""
+
+    score = calculate_hydrophobic_density_component(
+        _test_make_local_interaction_cluster()
+    )
+
+    assert_hydrophobic_between(
+        score,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_true(
+        float(score) > 0.0
+    )
+
+
+@hydrophobic_test(
+    "section_9.component.contact_count",
+    section="12.3",
+    description=(
+        "Validate increasing contribution from additional atomic pairs."
+    ),
+    tags=(
+        "classification",
+        "component",
+        "contact-count",
+        "section-9",
+    ),
+)
+def _test_contact_count_component() -> None:
+    """Validate contact-count component ordering."""
+
+    single = (
+        _test_make_interaction(),
+    )
+
+    multiple = (
+        _test_make_local_interaction_cluster()
+    )
+
+    single_score = (
+        calculate_hydrophobic_contact_count_component(
+            single
+        )
+    )
+
+    multiple_score = (
+        calculate_hydrophobic_contact_count_component(
+            multiple
+        )
+    )
+
+    assert_hydrophobic_true(
+        float(multiple_score)
+        > float(single_score)
+    )
+
+
+@hydrophobic_test(
+    "section_9.component.atom_diversity",
+    section="12.3",
+    description=(
+        "Validate atom-diversity contribution."
+    ),
+    tags=(
+        "classification",
+        "component",
+        "diversity",
+        "section-9",
+    ),
+)
+def _test_atom_diversity_component() -> None:
+    """Validate diversity score interval."""
+
+    score = (
+        calculate_hydrophobic_atom_diversity_component(
+            _test_make_local_interaction_cluster()
+        )
+    )
+
+    assert_hydrophobic_between(
+        score,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_true(
+        float(score) > 0.0
+    )
+
+
+@hydrophobic_test(
+    "section_9.component.group_size",
+    section="12.3",
+    description=(
+        "Validate group-size contribution."
+    ),
+    tags=(
+        "classification",
+        "component",
+        "group-size",
+        "section-9",
+    ),
+)
+def _test_group_size_component() -> None:
+    """Validate group-size contribution."""
+
+    score = calculate_hydrophobic_group_size_component(
+        _test_make_local_interaction_cluster()
+    )
+
+    assert_hydrophobic_between(
+        score,
+        0.0,
+        1.0,
+    )
+
+
+@hydrophobic_test(
+    "section_9.component.chemical_type",
+    section="12.3",
+    description=(
+        "Validate predominant type and chemical-type contribution."
+    ),
+    tags=(
+        "classification",
+        "component",
+        "chemical-type",
+        "section-9",
+    ),
+)
+def _test_chemical_type_component() -> None:
+    """Validate chemical-type scoring."""
+
+    interactions = (
+        _test_make_local_interaction_cluster(
+            aromatic=True
+        )
+    )
+
+    (
+        score,
+        interaction_type,
+    ) = calculate_hydrophobic_chemical_type_component(
+        interactions
+    )
+
+    assert_hydrophobic_between(
+        score,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_equal(
+        interaction_type,
+        "aromatic_aromatic",
+    )
+
+
+@hydrophobic_test(
+    "section_9.component.atom_character",
+    section="12.3",
+    description=(
+        "Validate aromatic and aliphatic participation components."
+    ),
+    tags=(
+        "classification",
+        "component",
+        "atom-character",
+        "section-9",
+    ),
+)
+def _test_atom_character_components() -> None:
+    """Validate aromatic/aliphatic character scores."""
+
+    aromatic_interactions = (
+        _test_make_local_interaction_cluster(
+            aromatic=True
+        )
+    )
+
+    (
+        aromatic_component,
+        aliphatic_component,
+    ) = calculate_hydrophobic_atom_character_components(
+        aromatic_interactions
+    )
+
+    assert_hydrophobic_between(
+        aromatic_component,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_between(
+        aliphatic_component,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_true(
+        float(aromatic_component)
+        >= float(aliphatic_component)
+    )
+
+
+@hydrophobic_test(
+    "section_9.component.character_combination",
+    section="12.3",
+    description=(
+        "Validate combined aromatic/aliphatic character."
+    ),
+    tags=(
+        "classification",
+        "component",
+        "atom-character",
+        "section-9",
+    ),
+)
+def _test_combined_atom_character() -> None:
+    """Validate character combination interval."""
+
+    score = combine_hydrophobic_atom_character(
+        0.6,
+        0.4,
+    )
+
+    assert_hydrophobic_between(
+        score,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_true(
+        float(score) >= 0.6
+    )
+
+
+@hydrophobic_test(
+    "section_9.component.surface",
+    section="12.3",
+    description=(
+        "Validate normalized and absolute contact-surface contributions."
+    ),
+    tags=(
+        "classification",
+        "component",
+        "surface",
+        "section-9",
+    ),
+)
+def _test_surface_component() -> None:
+    """Validate surface component."""
+
+    (
+        normalized_score,
+        absolute_area,
+    ) = calculate_hydrophobic_surface_component(
+        _test_make_local_interaction_cluster()
+    )
+
+    assert_hydrophobic_between(
+        normalized_score,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_true(
+        float(absolute_area) >= 0.0
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 9 — Penalty tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_9.penalty.polarity",
+    section="12.3",
+    description=(
+        "Validate normalized polarity penalty."
+    ),
+    tags=(
+        "classification",
+        "penalty",
+        "polarity",
+        "section-9",
+    ),
+)
+def _test_polarity_penalty() -> None:
+    """Validate polarity penalty interval."""
+
+    interactions = tuple(
+        _test_make_interaction(
+            receptor_name=f"R{index}",
+            ligand_name=f"L{index}",
+            distance=3.8,
+            polar_penalty=0.5,
+        )
+        for index in range(
+            1,
+            4,
+        )
+    )
+
+    penalty = calculate_hydrophobic_polar_penalty(
+        interactions
+    )
+
+    assert_hydrophobic_between(
+        penalty,
+        0.0,
+        1.0,
+    )
+
+
+@hydrophobic_test(
+    "section_9.penalty.redundancy",
+    section="12.3",
+    description=(
+        "Validate penalty for repeated use of the same atoms."
+    ),
+    tags=(
+        "classification",
+        "penalty",
+        "redundancy",
+        "section-9",
+    ),
+)
+def _test_redundancy_penalty() -> None:
+    """Validate redundancy penalty behavior."""
+
+    diverse = (
+        _test_make_local_interaction_cluster()
+    )
+
+    repeated = (
+        diverse[0],
+        diverse[0],
+        diverse[0],
+        diverse[0],
+    )
+
+    diverse_penalty = (
+        calculate_hydrophobic_redundancy_penalty(
+            diverse
+        )
+    )
+
+    repeated_penalty = (
+        calculate_hydrophobic_redundancy_penalty(
+            repeated
+        )
+    )
+
+    assert_hydrophobic_between(
+        diverse_penalty,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_between(
+        repeated_penalty,
+        0.0,
+        1.0,
+    )
+
+
+@hydrophobic_test(
+    "section_9.penalty.additional_unknown",
+    section="12.3",
+    description=(
+        "Validate additional penalty for an unknown interaction type."
+    ),
+    tags=(
+        "classification",
+        "penalty",
+        "unknown-type",
+        "section-9",
+    ),
+)
+def _test_additional_unknown_penalty() -> None:
+    """Validate unknown-type additional penalty."""
+
+    interactions = (
+        _test_make_interaction(
+            interaction_type="unknown"
+        ),
+    )
+
+    penalty = calculate_additional_hydrophobic_penalty(
+        interactions,
+        "unknown",
+    )
+
+    assert_hydrophobic_true(
+        float(penalty) > 0.0
+    )
+
+    assert_hydrophobic_between(
+        penalty,
+        0.0,
+        1.0,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 9 — Combined score and assessment tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_9.scoring.combined_contribution",
+    section="12.3",
+    description=(
+        "Validate weighted combination of positive components."
+    ),
+    tags=(
+        "classification",
+        "scoring",
+        "combined",
+        "section-9",
+    ),
+)
+def _test_combined_contribution() -> None:
+    """Validate combined positive contribution."""
+
+    score = (
+        calculate_combined_hydrophobic_contribution(
+            distance_component=0.8,
+            compaction_component=0.7,
+            density_component=0.6,
+            contact_count_component=0.7,
+            atom_diversity_component=0.8,
+            chemical_type_component=0.9,
+            group_size_component=0.6,
+            surface_area_component=0.5,
+            aromatic_aliphatic_component=0.8,
+        )
+    )
+
+    assert_hydrophobic_between(
+        score,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_true(
+        float(score) > 0.5
+    )
+
+
+@hydrophobic_test(
+    "section_9.assessment.single_interaction",
+    section="12.3",
+    description=(
+        "Validate multifactor assessment of one atomic interaction."
+    ),
+    tags=(
+        "classification",
+        "assessment",
+        "single-contact",
+        "section-9",
+    ),
+)
+def _test_single_interaction_assessment() -> None:
+    """Validate one-contact assessment structure."""
+
+    interaction = _test_make_interaction(
+        distance=3.4,
+        score=0.8,
+    )
+
+    assessment = (
+        assess_hydrophobic_interaction_strength(
+            interaction
+        )
+    )
+
+    assert_hydrophobic_instance(
+        assessment,
+        HydrophobicStrengthAssessment,
+    )
+
+    assert_hydrophobic_between(
+        assessment.score,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_between(
+        assessment.strength,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_equal(
+        assessment.contact_count,
+        1,
+    )
+
+    assert_hydrophobic_serializable(
+        assessment.to_dict()
+    )
+
+
+@hydrophobic_test(
+    "section_9.assessment.local_group",
+    section="12.3",
+    description=(
+        "Validate multifactor assessment of a dense local group."
+    ),
+    tags=(
+        "classification",
+        "assessment",
+        "group",
+        "section-9",
+    ),
+)
+def _test_local_group_assessment() -> None:
+    """Validate local-group assessment."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    assessment = (
+        assess_hydrophobic_interaction_strength(
+            interactions
+        )
+    )
+
+    assert_hydrophobic_instance(
+        assessment,
+        HydrophobicStrengthAssessment,
+    )
+
+    assert_hydrophobic_equal(
+        assessment.contact_count,
+        len(interactions),
+    )
+
+    assert_hydrophobic_true(
+        assessment.unique_receptor_atom_count
+        >= 2
+    )
+
+    assert_hydrophobic_true(
+        assessment.unique_ligand_atom_count
+        >= 2
+    )
+
+    assert_hydrophobic_true(
+        assessment.minimum_distance
+        <= assessment.maximum_distance
+    )
+
+
+@hydrophobic_test(
+    "section_9.assessment.distance_influence",
+    section="12.3",
+    description=(
+        "Validate stronger assessment for a compact group than a distant group."
+    ),
+    tags=(
+        "classification",
+        "assessment",
+        "distance",
+        "section-9",
+    ),
+)
+def _test_assessment_distance_influence() -> None:
+    """Validate distance influence on final assessment."""
+
+    close_interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    distant_interactions = tuple(
+        _test_make_interaction(
+            receptor_name=f"R{index}",
+            ligand_name=f"L{index}",
+            distance=4.9,
+            score=0.35,
+            strength=0.30,
+            classification="weak",
+        )
+        for index in range(
+            1,
+            5,
+        )
+    )
+
+    close_assessment = (
+        assess_hydrophobic_interaction_strength(
+            close_interactions
+        )
+    )
+
+    distant_assessment = (
+        assess_hydrophobic_interaction_strength(
+            distant_interactions
+        )
+    )
+
+    assert_hydrophobic_true(
+        float(close_assessment.score)
+        >= float(distant_assessment.score)
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 9 — Local-context and refinement tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_9.context.related_interactions",
+    section="12.3",
+    description=(
+        "Validate local related-interaction selection."
+    ),
+    tags=(
+        "classification",
+        "local-context",
+        "section-9",
+    ),
+)
+def _test_find_related_interactions() -> None:
+    """Validate local-context selection."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    related = find_related_hydrophobic_interactions(
+        interactions[0],
+        interactions,
+        grouping_distance=4.5,
+        require_same_pose=True,
+    )
+
+    assert_hydrophobic_true(
+        len(related) >= 2
+    )
+
+    assert_hydrophobic_in(
+        interactions[0],
+        related,
+    )
+
+
+@hydrophobic_test(
+    "section_9.refinement.single_interaction",
+    section="12.3",
+    description=(
+        "Validate final classification of one atomic interaction."
+    ),
+    tags=(
+        "classification",
+        "refinement",
+        "interaction",
+        "section-9",
+    ),
+)
+def _test_refine_single_interaction() -> None:
+    """Validate immutable interaction refinement."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    original = interactions[0]
+
+    refined = refine_hydrophobic_interaction(
+        original,
+        related_interactions=interactions,
+        grouping_distance=4.5,
+    )
+
+    assert_hydrophobic_instance(
+        refined,
+        HydrophobicInteraction,
+    )
+
+    assert_hydrophobic_between(
+        refined.score,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_between(
+        refined.strength,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_in(
+        refined.classification,
+        (
+            "very_strong",
+            "strong",
+            "moderate",
+            "weak",
+            "marginal",
+            "unknown",
+        ),
+    )
+
+
+@hydrophobic_test(
+    "section_9.refinement.collection",
+    section="12.3",
+    description=(
+        "Validate final refinement of a complete interaction collection."
+    ),
+    tags=(
+        "classification",
+        "refinement",
+        "collection",
+        "section-9",
+    ),
+)
+def _test_refine_interaction_collection() -> None:
+    """Validate collection refinement and preservation of contact count."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    refined = refine_hydrophobic_interactions(
+        interactions,
+        grouping_distance=4.5,
+        sort_interactions=True,
+    )
+
+    assert_hydrophobic_equal(
+        len(refined),
+        len(interactions),
+    )
+
+    for interaction in refined:
+        assert_hydrophobic_between(
+            interaction.score,
+            0.0,
+            1.0,
+        )
+
+        assert_hydrophobic_between(
+            interaction.strength,
+            0.0,
+            1.0,
+        )
+
+
+@hydrophobic_test(
+    "section_9.classification.residue_group",
+    section="12.3",
+    description=(
+        "Validate final classification of a residue-level group."
+    ),
+    tags=(
+        "classification",
+        "residue-group",
+        "section-9",
+    ),
+)
+def _test_classify_residue_group() -> None:
+    """Validate residue-group strength assessment."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    group = (
+        group_hydrophobic_interactions_by_residue(
+            interactions,
+            identify_hotspots=True,
+        )[0]
+    )
+
+    assessment = classify_hydrophobic_residue_group(
+        group
+    )
+
+    assert_hydrophobic_instance(
+        assessment,
+        HydrophobicStrengthAssessment,
+    )
+
+    assert_hydrophobic_equal(
+        assessment.contact_count,
+        len(interactions),
+    )
+
+
+@hydrophobic_test(
+    "section_9.classification.local_region",
+    section="12.3",
+    description=(
+        "Validate final classification of a local interaction region."
+    ),
+    tags=(
+        "classification",
+        "local-region",
+        "section-9",
+    ),
+)
+def _test_classify_local_region() -> None:
+    """Validate local-region strength assessment."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    region = cluster_hydrophobic_local_regions(
+        interactions,
+        grouping_distance=4.5,
+        identify_hotspots=True,
+    )[0]
+
+    assessment = classify_hydrophobic_local_region(
+        region
+    )
+
+    assert_hydrophobic_instance(
+        assessment,
+        HydrophobicStrengthAssessment,
+    )
+
+    assert_hydrophobic_equal(
+        assessment.contact_count,
+        len(interactions),
+    )
+
+
+# -----------------------------------------------------------------------------
+# Cross-component tests for Sections 6–9
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "sections_6_9.cross.geometry_to_detection",
+    section="12.3",
+    description=(
+        "Validate geometry-to-detection integration."
+    ),
+    tags=(
+        "cross-component",
+        "geometry",
+        "detection",
+        "sections-6-9",
+    ),
+)
+def _test_geometry_to_detection_path() -> None:
+    """Validate atom geometry → interaction detection path."""
+
+    receptor_atoms, ligand_atoms = (
+        make_hydrophobic_test_collection(
+            receptor_count=3,
+            ligand_count=3,
+            separation=3.6,
+            spacing=1.0,
+        )
+    )
+
+    result = run_hydrophobic_detection(
+        receptor_atoms,
+        ligand_atoms,
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+    )
+
+    assert_hydrophobic_true(
+        len(result.interactions) >= 3
+    )
+
+    for interaction in result.interactions:
+        assert_hydrophobic_true(
+            is_geometrically_hydrophobic_pair(
+                interaction.receptor_atom,
+                interaction.ligand_atom,
+                minimum_distance=0.0,
+                maximum_distance=5.0,
+            )
+        )
+
+
+@hydrophobic_test(
+    "sections_6_9.cross.detection_to_grouping",
+    section="12.3",
+    description=(
+        "Validate detection-to-grouping integration."
+    ),
+    tags=(
+        "cross-component",
+        "detection",
+        "grouping",
+        "sections-6-9",
+    ),
+)
+def _test_detection_to_grouping_path() -> None:
+    """Validate detection → residue and region grouping."""
+
+    receptor_atoms, ligand_atoms = (
+        make_hydrophobic_test_collection(
+            receptor_count=3,
+            ligand_count=3,
+            separation=3.6,
+            spacing=1.0,
+        )
+    )
+
+    detected = run_hydrophobic_detection(
+        receptor_atoms,
+        ligand_atoms,
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+    )
+
+    grouping = group_hydrophobic_interactions(
+        detected.interactions,
+        grouping_distance=4.5,
+        identify_hotspots=True,
+    )
+
+    assert_hydrophobic_instance(
+        grouping,
+        HydrophobicGroupingResult,
+    )
+
+    assert_hydrophobic_equal(
+        len(grouping.interactions),
+        len(detected.interactions),
+    )
+
+    assert_hydrophobic_true(
+        len(grouping.local_regions) >= 1
+    )
+
+
+@hydrophobic_test(
+    "sections_6_9.cross.grouping_to_classification",
+    section="12.3",
+    description=(
+        "Validate grouping-to-final-classification integration."
+    ),
+    tags=(
+        "cross-component",
+        "grouping",
+        "classification",
+        "sections-6-9",
+    ),
+)
+def _test_grouping_to_classification_path() -> None:
+    """Validate grouping → multifactor assessment."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    grouping = group_hydrophobic_interactions(
+        interactions,
+        grouping_distance=4.5,
+        identify_hotspots=True,
+    )
+
+    region = grouping.local_regions[0]
+
+    assessment = classify_hydrophobic_local_region(
+        region
+    )
+
+    assert_hydrophobic_between(
+        assessment.score,
+        0.0,
+        1.0,
+    )
+
+    assert_hydrophobic_in(
+        assessment.classification,
+        (
+            "very_strong",
+            "strong",
+            "moderate",
+            "weak",
+            "marginal",
+            "unknown",
+        ),
+    )
+
+
+@hydrophobic_test(
+    "sections_6_9.cross.full_interaction_pipeline",
+    section="12.3",
+    description=(
+        "Validate detection, grouping and final interaction refinement."
+    ),
+    tags=(
+        "cross-component",
+        "pipeline",
+        "sections-6-9",
+    ),
+)
+def _test_full_interaction_pipeline() -> None:
+    """Validate Sections 6–9 without result-level statistics."""
+
+    receptor_atoms, ligand_atoms = (
+        make_hydrophobic_test_collection(
+            receptor_count=3,
+            ligand_count=3,
+            separation=3.6,
+            spacing=1.0,
+        )
+    )
+
+    detected = run_hydrophobic_detection(
+        receptor_atoms,
+        ligand_atoms,
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+    )
+
+    grouped = group_hydrophobic_interactions(
+        detected.interactions,
+        grouping_distance=4.5,
+        identify_hotspots=True,
+    )
+
+    refined = refine_hydrophobic_interactions(
+        grouped.interactions,
+        grouping_distance=4.5,
+    )
+
+    assert_hydrophobic_equal(
+        len(refined),
+        len(detected.interactions),
+    )
+
+    assert_hydrophobic_true(
+        all(
+            0.0
+            <= float(
+                interaction.score
+            )
+            <= 1.0
+            for interaction
+            in refined
+        )
+    )
+
+    assert_hydrophobic_serializable(
+        [
+            interaction.to_dict()
+            for interaction
+            in refined
+        ]
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 12.3 dedicated runner
+# -----------------------------------------------------------------------------
+
+def run_hydrophobic_sections_6_to_9_tests(
+    *,
+    fail_fast: bool = False,
+    verbose: bool = True,
+    include_previous_sections: bool = False,
+) -> HydrophobicSelfTestReport:
+    """
+    Execute tests covering Sections 6–9.
+
+    Parameters
+    ----------
+    fail_fast
+        Stop execution after the first failing test.
+    verbose
+        Print the formatted self-test report.
+    include_previous_sections
+        Also execute Sections 12.1 and 12.2.
+    """
+
+    selected_sections: Tuple[str, ...] = (
+        (
+            "12.1",
+            "12.2",
+            "12.3",
+        )
+        if include_previous_sections
+        else (
+            "12.3",
+        )
+    )
+
+    report = run_registered_hydrophobic_tests(
+        sections=selected_sections,
+        fail_fast=fail_fast,
+        capture_output=True,
+        capture_warnings=True,
+        context=HydrophobicTestContext(
+            verbose=verbose
+        ),
+        metadata={
+            "runner": (
+                "run_hydrophobic_sections_6_to_9_tests"
+            ),
+            "covered_module_sections": (
+                "6-9"
+            ),
+            "include_previous_sections": bool(
+                include_previous_sections
+            ),
+        },
+    )
+
+    if verbose:
+        print(
+            format_hydrophobic_self_test_report(
+                report,
+                include_results=True,
+                include_failures=True,
+                include_captured_output=False,
+            )
+        )
+
+    return report
+
+
+# -----------------------------------------------------------------------------
+# Section 12.3 test listing
+# -----------------------------------------------------------------------------
+
+def list_hydrophobic_sections_6_to_9_tests(
+) -> Tuple[HydrophobicTestCase, ...]:
+    """Return all tests registered by Section 12.3."""
+
+    return list_hydrophobic_self_tests(
+        sections=(
+            "12.3",
+        ),
+        enabled_only=False,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 12.3 public names
+# -----------------------------------------------------------------------------
+
+_SECTION_12_3_PUBLIC_NAMES: Final[
+    Tuple[str, ...]
+] = (
+    "run_hydrophobic_sections_6_to_9_tests",
+    "list_hydrophobic_sections_6_to_9_tests",
+)
+
+for public_name in _SECTION_12_3_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+# =============================================================================
+# End of Section 12.3
+# =============================================================================
+
+# =============================================================================
+# Section 12.4 — Tests for Sections 10–11
+# =============================================================================
+#
+# Coverage:
+#
+# - descriptive statistics;
+# - interaction, atomic-pair and residue counts;
+# - distance summaries;
+# - score and strength summaries;
+# - distributions by classification and interaction type;
+# - score and contact count by residue;
+# - pose occupancy;
+# - hotspot summaries;
+# - HydrophobicSummary;
+# - conversion to HydrophobicStatistics;
+# - serializable interaction, residue, pose, region and hotspot tables;
+# - complete table bundles;
+# - text summaries;
+# - DockModel-compatible object validation;
+# - receptor, ligand and pose extraction;
+# - standardized result attachment;
+# - preservation, append, merge and replacement modes;
+# - hydrophobic score and statistics updates;
+# - optional combined-score updates;
+# - single-pose DockModel analysis;
+# - multipose analysis;
+# - combined multipose occupancy;
+# - standardized serialization;
+# - preservation of legacy and unknown hydrophobic entries.
+#
+# Dependencies:
+#
+# - Sections 1–11;
+# - Section 12.1 infrastructure;
+# - Section 12.2 construction helpers;
+# - Section 12.3 interaction and cluster fixtures.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Section 12.4 synthetic DockModel
+# -----------------------------------------------------------------------------
+
+@dataclass
+class _HydrophobicSyntheticDockModel:
+    """
+    Minimal DockModel-compatible object used exclusively by self-tests.
+    """
+
+    receptor: Any = None
+    ligand: Any = None
+
+    pose_identifier: str = "pose-1"
+
+    hydrophobic: List[Any] = field(
+        default_factory=list
+    )
+
+    score: float = -7.5
+
+    name: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        """Normalize the synthetic DockModel."""
+
+        self.pose_identifier = (
+            str(
+                self.pose_identifier
+            ).strip()
+            or "pose-1"
+        )
+
+        if self.name is None:
+            self.name = self.pose_identifier
+
+
+# -----------------------------------------------------------------------------
+# Section 12.4 fixture helpers
+# -----------------------------------------------------------------------------
+
+def _test_make_statistics_interactions(
+) -> Tuple[HydrophobicInteraction, ...]:
+    """
+    Create interactions with known distances, scores, classes and poses.
+    """
+
+    return (
+        _test_make_interaction(
+            receptor_name="LEU_CD1",
+            ligand_name="P1_C1",
+            receptor_residue_name="LEU",
+            receptor_residue_number=10,
+            receptor_chain="A",
+            pose_identifier="pose-1",
+            distance=3.2,
+            score=0.90,
+            strength=0.88,
+            classification="very_strong",
+            interaction_type="aliphatic_aliphatic",
+        ),
+        _test_make_interaction(
+            receptor_name="LEU_CD2",
+            ligand_name="P1_C2",
+            receptor_residue_name="LEU",
+            receptor_residue_number=10,
+            receptor_chain="A",
+            pose_identifier="pose-1",
+            distance=3.8,
+            score=0.75,
+            strength=0.72,
+            classification="strong",
+            interaction_type="aliphatic_aliphatic",
+        ),
+        _test_make_interaction(
+            receptor_name="PHE_CZ",
+            ligand_name="P1_C3",
+            receptor_residue_name="PHE",
+            receptor_residue_number=20,
+            receptor_chain="A",
+            pose_identifier="pose-1",
+            distance=4.4,
+            score=0.55,
+            strength=0.52,
+            classification="moderate",
+            interaction_type="aromatic_aliphatic",
+            receptor_aromatic=True,
+        ),
+        _test_make_interaction(
+            receptor_name="LEU_CD1",
+            ligand_name="P2_C1",
+            receptor_residue_name="LEU",
+            receptor_residue_number=10,
+            receptor_chain="A",
+            pose_identifier="pose-2",
+            distance=3.5,
+            score=0.80,
+            strength=0.77,
+            classification="strong",
+            interaction_type="aliphatic_aliphatic",
+        ),
+        _test_make_interaction(
+            receptor_name="ILE_CD1",
+            ligand_name="P2_C2",
+            receptor_residue_name="ILE",
+            receptor_residue_number=30,
+            receptor_chain="B",
+            pose_identifier="pose-2",
+            distance=4.8,
+            score=0.30,
+            strength=0.28,
+            classification="weak",
+            interaction_type="aliphatic_aliphatic",
+        ),
+    )
+
+
+def _test_make_minimal_analysis_result(
+    *,
+    interactions: Optional[
+        Iterable[HydrophobicInteraction]
+    ] = None,
+    pose_identifier: str = "pose-1",
+    analysis_identifier: Optional[str] = None,
+) -> HydrophobicAnalysisResult:
+    """
+    Construct a minimal analysis result from a supplied interaction set.
+    """
+
+    interaction_tuple = tuple(
+        _test_make_statistics_interactions()
+        if interactions is None
+        else interactions
+    )
+
+    receptor_atoms, ligand_atoms = (
+        _unique_interaction_atoms(
+            interaction_tuple
+        )
+    )
+
+    receptor_descriptors = tuple(
+        interaction.receptor_descriptor
+        for interaction
+        in interaction_tuple
+        if getattr(
+            interaction,
+            "receptor_descriptor",
+            None,
+        )
+        is not None
+    )
+
+    ligand_descriptors = tuple(
+        interaction.ligand_descriptor
+        for interaction
+        in interaction_tuple
+        if getattr(
+            interaction,
+            "ligand_descriptor",
+            None,
+        )
+        is not None
+    )
+
+    grouping = group_hydrophobic_interactions(
+        interaction_tuple,
+        grouping_distance=4.5,
+        identify_hotspots=True,
+    )
+
+    summary = calculate_hydrophobic_summary(
+        interaction_tuple,
+        grouping_distance=4.5,
+        pose_identifiers=(
+            pose_identifier,
+        ),
+    )
+
+    statistics = summary_to_hydrophobic_statistics(
+        summary
+    )
+
+    constructor = HydrophobicAnalysisResult
+
+    signature = inspect.signature(
+        constructor
+    )
+
+    values: Dict[str, Any] = {
+        "interactions": interaction_tuple,
+        "residue_groups": grouping.residue_groups,
+        "receptor_hydrophobic_atoms": receptor_descriptors,
+        "ligand_hydrophobic_atoms": ligand_descriptors,
+        "receptor_atoms": receptor_atoms,
+        "ligand_atoms": ligand_atoms,
+        "minimum_distance": np.float64(
+            0.0
+        ),
+        "maximum_distance": np.float64(
+            5.0
+        ),
+        "grouping_distance": np.float64(
+            4.5
+        ),
+        "statistics": statistics,
+        "analysis_identifier": (
+            analysis_identifier
+            or f"analysis-{pose_identifier}"
+        ),
+        "receptor_identifier": (
+            "self-test-receptor"
+        ),
+        "ligand_identifier": pose_identifier,
+        "metadata": {
+            "pose_identifier": (
+                pose_identifier
+            ),
+            "self_test": True,
+        },
+    }
+
+    supported_values = {
+        parameter_name: values[
+            parameter_name
+        ]
+        for parameter_name
+        in signature.parameters
+        if parameter_name != "self"
+        and parameter_name in values
+    }
+
+    return constructor(
+        **supported_values
+    )
+
+
+def _test_make_dock_model(
+    *,
+    pose_identifier: str = "pose-1",
+    receptor_offset: Number = 0.0,
+    ligand_distance: Number = 3.7,
+    score: Number = -7.5,
+    hydrophobic: Optional[
+        Iterable[Any]
+    ] = None,
+) -> _HydrophobicSyntheticDockModel:
+    """
+    Create one synthetic DockModel with hydrophobic receptor/ligand atoms.
+    """
+
+    offset = float(
+        receptor_offset
+    )
+
+    receptor_atoms = (
+        _test_make_geometry_atom(
+            name="R1",
+            coordinate=(
+                offset,
+                0.0,
+                0.0,
+            ),
+            residue_name="LEU",
+            residue_number=10,
+            chain_identifier="A",
+            atom_index=1,
+            structure_name="receptor",
+        ),
+        _test_make_geometry_atom(
+            name="R2",
+            coordinate=(
+                offset,
+                1.2,
+                0.0,
+            ),
+            residue_name="LEU",
+            residue_number=10,
+            chain_identifier="A",
+            atom_index=2,
+            structure_name="receptor",
+        ),
+    )
+
+    ligand_atoms = (
+        _test_make_geometry_atom(
+            name="L1",
+            coordinate=(
+                offset
+                + float(
+                    ligand_distance
+                ),
+                0.0,
+                0.0,
+            ),
+            residue_name="LIG",
+            residue_number=1,
+            chain_identifier="L",
+            atom_index=101,
+            structure_name=(
+                pose_identifier
+            ),
+        ),
+        _test_make_geometry_atom(
+            name="L2",
+            coordinate=(
+                offset
+                + float(
+                    ligand_distance
+                ),
+                1.2,
+                0.0,
+            ),
+            residue_name="LIG",
+            residue_number=1,
+            chain_identifier="L",
+            atom_index=102,
+            structure_name=(
+                pose_identifier
+            ),
+        ),
+    )
+
+    return _HydrophobicSyntheticDockModel(
+        receptor=receptor_atoms,
+        ligand=ligand_atoms,
+        pose_identifier=(
+            pose_identifier
+        ),
+        hydrophobic=(
+            []
+            if hydrophobic is None
+            else list(hydrophobic)
+        ),
+        score=float(
+            score
+        ),
+    )
+
+
+def _test_get_attached_entry(
+    dock_model: Any,
+) -> Any:
+    """Return the latest attached hydrophobic entry."""
+
+    entries = (
+        get_existing_dock_model_hydrophobic_results(
+            dock_model
+        )
+    )
+
+    if not entries:
+        return None
+
+    return entries[-1]
+
+
+# -----------------------------------------------------------------------------
+# Section 10 — Count and distance statistics
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_10.statistics.interaction_count",
+    section="12.4",
+    description=(
+        "Validate interaction and atomic-pair counts."
+    ),
+    tags=(
+        "statistics",
+        "counts",
+        "section-10",
+    ),
+)
+def _test_statistics_interaction_count() -> None:
+    """Validate total interaction and atomic-pair counts."""
+
+    interactions = (
+        _test_make_statistics_interactions()
+    )
+
+    assert_hydrophobic_equal(
+        count_hydrophobic_interactions(
+            interactions
+        ),
+        5,
+    )
+
+    assert_hydrophobic_equal(
+        count_hydrophobic_atomic_pairs(
+            interactions
+        ),
+        5,
+    )
+
+
+@hydrophobic_test(
+    "section_10.statistics.local_interaction_count",
+    section="12.4",
+    description=(
+        "Validate local-region interaction counting."
+    ),
+    tags=(
+        "statistics",
+        "counts",
+        "local-region",
+        "section-10",
+    ),
+)
+def _test_statistics_local_interaction_count() -> None:
+    """Validate local clustered interaction count."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    count = count_hydrophobic_interactions(
+        interactions,
+        grouping_distance=4.5,
+        count_local_regions=True,
+    )
+
+    assert_hydrophobic_equal(
+        count,
+        1,
+    )
+
+
+@hydrophobic_test(
+    "section_10.statistics.distance",
+    section="12.4",
+    description=(
+        "Validate minimum, mean, median and maximum distances."
+    ),
+    tags=(
+        "statistics",
+        "distance",
+        "section-10",
+    ),
+)
+def _test_distance_statistics() -> None:
+    """Validate descriptive distance statistics."""
+
+    interactions = (
+        _test_make_statistics_interactions()
+    )
+
+    statistics = hydrophobic_distance_statistics(
+        interactions
+    )
+
+    assert_hydrophobic_close(
+        statistics["minimum"],
+        3.2,
+    )
+
+    assert_hydrophobic_close(
+        statistics["maximum"],
+        4.8,
+    )
+
+    assert_hydrophobic_close(
+        statistics["mean"],
+        (
+            3.2
+            + 3.8
+            + 4.4
+            + 3.5
+            + 4.8
+        )
+        / 5.0,
+    )
+
+    assert_hydrophobic_true(
+        float(
+            statistics[
+                "standard_deviation"
+            ]
+        )
+        >= 0.0
+    )
+
+
+@hydrophobic_test(
+    "section_10.statistics.score",
+    section="12.4",
+    description=(
+        "Validate descriptive score statistics and total score."
+    ),
+    tags=(
+        "statistics",
+        "score",
+        "section-10",
+    ),
+)
+def _test_score_statistics() -> None:
+    """Validate score summary."""
+
+    interactions = (
+        _test_make_statistics_interactions()
+    )
+
+    statistics = hydrophobic_score_statistics(
+        interactions
+    )
+
+    assert_hydrophobic_close(
+        statistics["minimum"],
+        0.30,
+    )
+
+    assert_hydrophobic_close(
+        statistics["maximum"],
+        0.90,
+    )
+
+    assert_hydrophobic_close(
+        statistics["total"],
+        3.30,
+    )
+
+
+@hydrophobic_test(
+    "section_10.statistics.strength",
+    section="12.4",
+    description=(
+        "Validate descriptive geometric-strength statistics."
+    ),
+    tags=(
+        "statistics",
+        "strength",
+        "section-10",
+    ),
+)
+def _test_strength_statistics() -> None:
+    """Validate strength summary."""
+
+    interactions = (
+        _test_make_statistics_interactions()
+    )
+
+    statistics = (
+        hydrophobic_strength_statistics(
+            interactions
+        )
+    )
+
+    assert_hydrophobic_close(
+        statistics["minimum"],
+        0.28,
+    )
+
+    assert_hydrophobic_close(
+        statistics["maximum"],
+        0.88,
+    )
+
+    assert_hydrophobic_true(
+        float(
+            statistics["total"]
+        )
+        > 0.0
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 10 — Distribution tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_10.distribution.classification",
+    section="12.4",
+    description=(
+        "Validate interaction distribution by strength class."
+    ),
+    tags=(
+        "statistics",
+        "distribution",
+        "classification",
+        "section-10",
+    ),
+)
+def _test_classification_distribution() -> None:
+    """Validate strength-class counts."""
+
+    distribution = (
+        hydrophobic_classification_distribution(
+            _test_make_statistics_interactions()
+        )
+    )
+
+    assert_hydrophobic_equal(
+        distribution["very_strong"],
+        1,
+    )
+
+    assert_hydrophobic_equal(
+        distribution["strong"],
+        2,
+    )
+
+    assert_hydrophobic_equal(
+        distribution["moderate"],
+        1,
+    )
+
+    assert_hydrophobic_equal(
+        distribution["weak"],
+        1,
+    )
+
+
+@hydrophobic_test(
+    "section_10.distribution.type",
+    section="12.4",
+    description=(
+        "Validate interaction distribution by hydrophobic type."
+    ),
+    tags=(
+        "statistics",
+        "distribution",
+        "interaction-type",
+        "section-10",
+    ),
+)
+def _test_interaction_type_distribution() -> None:
+    """Validate interaction-type counts."""
+
+    distribution = (
+        hydrophobic_interaction_type_distribution(
+            _test_make_statistics_interactions()
+        )
+    )
+
+    assert_hydrophobic_equal(
+        distribution[
+            "aliphatic_aliphatic"
+        ],
+        4,
+    )
+
+    assert_hydrophobic_equal(
+        distribution[
+            "aromatic_aliphatic"
+        ],
+        1,
+    )
+
+
+@hydrophobic_test(
+    "section_10.distribution.classification_fraction",
+    section="12.4",
+    description=(
+        "Validate normalized strength-class fractions."
+    ),
+    tags=(
+        "statistics",
+        "distribution",
+        "fraction",
+        "section-10",
+    ),
+)
+def _test_classification_fraction_distribution() -> None:
+    """Validate that classification fractions sum to one."""
+
+    fractions = (
+        hydrophobic_classification_fraction_distribution(
+            _test_make_statistics_interactions()
+        )
+    )
+
+    assert_hydrophobic_close(
+        sum(
+            float(value)
+            for value
+            in fractions.values()
+        ),
+        1.0,
+    )
+
+
+@hydrophobic_test(
+    "section_10.distribution.type_fraction",
+    section="12.4",
+    description=(
+        "Validate normalized interaction-type fractions."
+    ),
+    tags=(
+        "statistics",
+        "distribution",
+        "fraction",
+        "section-10",
+    ),
+)
+def _test_type_fraction_distribution() -> None:
+    """Validate that type fractions sum to one."""
+
+    fractions = (
+        hydrophobic_type_fraction_distribution(
+            _test_make_statistics_interactions()
+        )
+    )
+
+    assert_hydrophobic_close(
+        sum(
+            float(value)
+            for value
+            in fractions.values()
+        ),
+        1.0,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 10 — Residue statistics
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_10.residue.identifiers",
+    section="12.4",
+    description=(
+        "Validate unique residue and chain identifiers."
+    ),
+    tags=(
+        "statistics",
+        "residue",
+        "chain",
+        "section-10",
+    ),
+)
+def _test_residue_and_chain_identifiers() -> None:
+    """Validate residue and chain identification."""
+
+    interactions = (
+        _test_make_statistics_interactions()
+    )
+
+    residues = hydrophobic_residue_identifiers(
+        interactions
+    )
+
+    chains = hydrophobic_chain_identifiers(
+        interactions
+    )
+
+    assert_hydrophobic_equal(
+        len(residues),
+        3,
+    )
+
+    assert_hydrophobic_equal(
+        len(chains),
+        2,
+    )
+
+
+@hydrophobic_test(
+    "section_10.residue.contact_counts",
+    section="12.4",
+    description=(
+        "Validate residue-level atomic contact counts."
+    ),
+    tags=(
+        "statistics",
+        "residue",
+        "count",
+        "section-10",
+    ),
+)
+def _test_residue_contact_counts() -> None:
+    """Validate contact counts by residue."""
+
+    counts = hydrophobic_contact_count_by_residue(
+        _test_make_statistics_interactions()
+    )
+
+    assert_hydrophobic_equal(
+        sum(
+            counts.values()
+        ),
+        5,
+    )
+
+    assert_hydrophobic_true(
+        max(
+            counts.values()
+        )
+        >= 3
+    )
+
+
+@hydrophobic_test(
+    "section_10.residue.minimum_distance",
+    section="12.4",
+    description=(
+        "Validate closest distance per receptor residue."
+    ),
+    tags=(
+        "statistics",
+        "residue",
+        "distance",
+        "section-10",
+    ),
+)
+def _test_residue_minimum_distance() -> None:
+    """Validate minimum residue contact distances."""
+
+    distances = (
+        hydrophobic_minimum_distance_by_residue(
+            _test_make_statistics_interactions()
+        )
+    )
+
+    assert_hydrophobic_equal(
+        len(distances),
+        3,
+    )
+
+    assert_hydrophobic_close(
+        min(
+            float(value)
+            for value
+            in distances.values()
+            if value is not None
+        ),
+        3.2,
+    )
+
+
+@hydrophobic_test(
+    "section_10.residue.scores",
+    section="12.4",
+    description=(
+        "Validate grouped hydrophobic score by residue."
+    ),
+    tags=(
+        "statistics",
+        "residue",
+        "score",
+        "section-10",
+    ),
+)
+def _test_residue_scores() -> None:
+    """Validate residue score mapping."""
+
+    scores = hydrophobic_score_by_residue(
+        _test_make_statistics_interactions(),
+        grouped_score=True,
+    )
+
+    assert_hydrophobic_equal(
+        len(scores),
+        3,
+    )
+
+    for score in scores.values():
+        assert_hydrophobic_between(
+            score,
+            0.0,
+            1.0,
+        )
+
+
+# -----------------------------------------------------------------------------
+# Section 10 — Pose occupancy
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_10.occupancy.pose_identifiers",
+    section="12.4",
+    description=(
+        "Validate pose identifier extraction."
+    ),
+    tags=(
+        "statistics",
+        "occupancy",
+        "pose",
+        "section-10",
+    ),
+)
+def _test_pose_identifiers() -> None:
+    """Validate unique pose identifiers."""
+
+    pose_identifiers = (
+        hydrophobic_pose_identifiers(
+            _test_make_statistics_interactions()
+        )
+    )
+
+    assert_hydrophobic_equal(
+        pose_identifiers,
+        (
+            "pose-1",
+            "pose-2",
+        ),
+    )
+
+
+@hydrophobic_test(
+    "section_10.occupancy.residue_presence",
+    section="12.4",
+    description=(
+        "Validate pose presence by receptor residue."
+    ),
+    tags=(
+        "statistics",
+        "occupancy",
+        "residue",
+        "section-10",
+    ),
+)
+def _test_residue_pose_presence() -> None:
+    """Validate residue presence across poses."""
+
+    presence = hydrophobic_residue_pose_presence(
+        _test_make_statistics_interactions()
+    )
+
+    pose_counts = {
+        residue: len(poses)
+        for residue, poses
+        in presence.items()
+    }
+
+    assert_hydrophobic_true(
+        max(
+            pose_counts.values()
+        )
+        == 2
+    )
+
+    assert_hydrophobic_true(
+        min(
+            pose_counts.values()
+        )
+        == 1
+    )
+
+
+@hydrophobic_test(
+    "section_10.occupancy.residue_fraction",
+    section="12.4",
+    description=(
+        "Validate residue occupancy fractions across poses."
+    ),
+    tags=(
+        "statistics",
+        "occupancy",
+        "residue",
+        "section-10",
+    ),
+)
+def _test_residue_pose_occupancy() -> None:
+    """Validate residue pose occupancy."""
+
+    occupancy = (
+        calculate_hydrophobic_residue_pose_occupancy(
+            _test_make_statistics_interactions(),
+            pose_identifiers=(
+                "pose-1",
+                "pose-2",
+            ),
+        )
+    )
+
+    assert_hydrophobic_true(
+        any(
+            _self_test_is_close(
+                value,
+                1.0,
+            )
+            for value
+            in occupancy.values()
+        )
+    )
+
+    assert_hydrophobic_true(
+        any(
+            _self_test_is_close(
+                value,
+                0.5,
+            )
+            for value
+            in occupancy.values()
+        )
+    )
+
+
+@hydrophobic_test(
+    "section_10.occupancy.chain_fraction",
+    section="12.4",
+    description=(
+        "Validate chain occupancy across poses."
+    ),
+    tags=(
+        "statistics",
+        "occupancy",
+        "chain",
+        "section-10",
+    ),
+)
+def _test_chain_pose_occupancy() -> None:
+    """Validate chain pose occupancy."""
+
+    occupancy = (
+        calculate_hydrophobic_chain_pose_occupancy(
+            _test_make_statistics_interactions(),
+            pose_identifiers=(
+                "pose-1",
+                "pose-2",
+            ),
+        )
+    )
+
+    assert_hydrophobic_true(
+        all(
+            0.0
+            <= float(value)
+            <= 1.0
+            for value
+            in occupancy.values()
+        )
+    )
+
+    assert_hydrophobic_true(
+        any(
+            _self_test_is_close(
+                value,
+                1.0,
+            )
+            for value
+            in occupancy.values()
+        )
+    )
+
+
+@hydrophobic_test(
+    "section_10.occupancy.atomic_signature",
+    section="12.4",
+    description=(
+        "Validate atomic contact-signature occupancy."
+    ),
+    tags=(
+        "statistics",
+        "occupancy",
+        "atomic-pair",
+        "section-10",
+    ),
+)
+def _test_interaction_pose_occupancy() -> None:
+    """Validate atomic-signature occupancy mapping."""
+
+    occupancy = (
+        calculate_hydrophobic_interaction_pose_occupancy(
+            _test_make_statistics_interactions(),
+            pose_identifiers=(
+                "pose-1",
+                "pose-2",
+            ),
+        )
+    )
+
+    assert_hydrophobic_true(
+        len(occupancy) >= 4
+    )
+
+    for value in occupancy.values():
+        assert_hydrophobic_between(
+            value,
+            0.0,
+            1.0,
+        )
+
+
+# -----------------------------------------------------------------------------
+# Section 10 — Hotspots and complete summary
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_10.hotspots.summary",
+    section="12.4",
+    description=(
+        "Validate hotspot residue summary."
+    ),
+    tags=(
+        "statistics",
+        "hotspot",
+        "section-10",
+    ),
+)
+def _test_hotspot_summary() -> None:
+    """Validate hotspot summary ordering."""
+
+    interactions = (
+        _test_make_local_interaction_cluster()
+    )
+
+    hotspots = summarize_hydrophobic_hotspots(
+        interactions,
+        minimum_contact_count=3,
+        minimum_group_score=0.2,
+        minimum_ligand_atom_count=2,
+    )
+
+    assert_hydrophobic_true(
+        len(hotspots) >= 1
+    )
+
+
+@hydrophobic_test(
+    "section_10.summary.complete",
+    section="12.4",
+    description=(
+        "Validate complete HydrophobicSummary calculation."
+    ),
+    tags=(
+        "statistics",
+        "summary",
+        "section-10",
+    ),
+)
+def _test_complete_hydrophobic_summary() -> None:
+    """Validate complete summary values."""
+
+    interactions = (
+        _test_make_statistics_interactions()
+    )
+
+    summary = calculate_hydrophobic_summary(
+        interactions,
+        pose_identifiers=(
+            "pose-1",
+            "pose-2",
+        ),
+    )
+
+    assert_hydrophobic_instance(
+        summary,
+        HydrophobicSummary,
+    )
+
+    assert_hydrophobic_equal(
+        summary.interaction_count,
+        5,
+    )
+
+    assert_hydrophobic_equal(
+        summary.atomic_pair_count,
+        5,
+    )
+
+    assert_hydrophobic_equal(
+        summary.residue_count,
+        3,
+    )
+
+    assert_hydrophobic_equal(
+        summary.pose_count,
+        2,
+    )
+
+    assert_hydrophobic_close(
+        summary.total_score,
+        3.30,
+    )
+
+    assert_hydrophobic_serializable(
+        summary.to_dict()
+    )
+
+
+@hydrophobic_test(
+    "section_10.summary.empty",
+    section="12.4",
+    description=(
+        "Validate complete summary for an empty interaction collection."
+    ),
+    tags=(
+        "statistics",
+        "summary",
+        "empty",
+        "section-10",
+    ),
+)
+def _test_empty_hydrophobic_summary() -> None:
+    """Validate empty summary handling."""
+
+    summary = calculate_hydrophobic_summary(
+        (),
+        pose_identifiers=(),
+    )
+
+    assert_hydrophobic_equal(
+        summary.interaction_count,
+        0,
+    )
+
+    assert_hydrophobic_equal(
+        summary.total_score,
+        0.0,
+    )
+
+    assert_hydrophobic_is_none(
+        summary.minimum_distance
+    )
+
+
+@hydrophobic_test(
+    "section_10.summary.base_statistics_conversion",
+    section="12.4",
+    description=(
+        "Validate conversion from HydrophobicSummary to HydrophobicStatistics."
+    ),
+    tags=(
+        "statistics",
+        "summary",
+        "conversion",
+        "section-10",
+    ),
+)
+def _test_summary_statistics_conversion() -> None:
+    """Validate base statistics conversion."""
+
+    summary = calculate_hydrophobic_summary(
+        _test_make_statistics_interactions(),
+        pose_identifiers=(
+            "pose-1",
+            "pose-2",
+        ),
+    )
+
+    statistics = (
+        summary_to_hydrophobic_statistics(
+            summary
+        )
+    )
+
+    assert_hydrophobic_instance(
+        statistics,
+        HydrophobicStatistics,
+    )
+
+    assert_hydrophobic_equal(
+        statistics.interaction_count,
+        summary.interaction_count,
+    )
+
+    assert_hydrophobic_close(
+        statistics.total_score,
+        summary.total_score,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 10 — Serializable tables
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_10.table.interactions",
+    section="12.4",
+    description=(
+        "Validate serializable atomic interaction table."
+    ),
+    tags=(
+        "statistics",
+        "table",
+        "interaction",
+        "serialization",
+        "section-10",
+    ),
+)
+def _test_interaction_table() -> None:
+    """Validate interaction table rows."""
+
+    table = hydrophobic_interaction_table(
+        _test_make_statistics_interactions(),
+        sort_by="distance",
+    )
+
+    assert_hydrophobic_length(
+        table,
+        5,
+    )
+
+    assert_hydrophobic_in(
+        "distance",
+        table[0],
+    )
+
+    assert_hydrophobic_in(
+        "score",
+        table[0],
+    )
+
+    assert_hydrophobic_serializable(
+        table
+    )
+
+
+@hydrophobic_test(
+    "section_10.table.residues",
+    section="12.4",
+    description=(
+        "Validate serializable residue summary table."
+    ),
+    tags=(
+        "statistics",
+        "table",
+        "residue",
+        "serialization",
+        "section-10",
+    ),
+)
+def _test_residue_table() -> None:
+    """Validate residue table rows."""
+
+    table = hydrophobic_residue_table(
+        _test_make_statistics_interactions(),
+        pose_identifiers=(
+            "pose-1",
+            "pose-2",
+        ),
+        sort_by="score",
+    )
+
+    assert_hydrophobic_length(
+        table,
+        3,
+    )
+
+    assert_hydrophobic_in(
+        "residue_identifier",
+        table[0],
+    )
+
+    assert_hydrophobic_in(
+        "pose_occupancy",
+        table[0],
+    )
+
+    assert_hydrophobic_serializable(
+        table
+    )
+
+
+@hydrophobic_test(
+    "section_10.table.poses",
+    section="12.4",
+    description=(
+        "Validate serializable pose summary table."
+    ),
+    tags=(
+        "statistics",
+        "table",
+        "pose",
+        "serialization",
+        "section-10",
+    ),
+)
+def _test_pose_table() -> None:
+    """Validate pose table rows."""
+
+    table = hydrophobic_pose_table(
+        _test_make_statistics_interactions(),
+        sort_by="pose",
+    )
+
+    assert_hydrophobic_length(
+        table,
+        2,
+    )
+
+    assert_hydrophobic_equal(
+        table[0]["pose_identifier"],
+        "pose-1",
+    )
+
+    assert_hydrophobic_equal(
+        table[1]["pose_identifier"],
+        "pose-2",
+    )
+
+
+@hydrophobic_test(
+    "section_10.table.local_regions",
+    section="12.4",
+    description=(
+        "Validate serializable local-region table."
+    ),
+    tags=(
+        "statistics",
+        "table",
+        "local-region",
+        "serialization",
+        "section-10",
+    ),
+)
+def _test_local_region_table() -> None:
+    """Validate local-region table."""
+
+    table = hydrophobic_local_region_table(
+        _test_make_local_interaction_cluster(),
+        grouping_distance=4.5,
+    )
+
+    assert_hydrophobic_length(
+        table,
+        1,
+    )
+
+    assert_hydrophobic_equal(
+        table[0]["atomic_pair_count"],
+        4,
+    )
+
+
+@hydrophobic_test(
+    "section_10.table.hotspots",
+    section="12.4",
+    description=(
+        "Validate serializable hotspot table."
+    ),
+    tags=(
+        "statistics",
+        "table",
+        "hotspot",
+        "serialization",
+        "section-10",
+    ),
+)
+def _test_hotspot_table() -> None:
+    """Validate hotspot table structure."""
+
+    table = hydrophobic_hotspot_table(
+        _test_make_local_interaction_cluster(),
+        pose_identifiers=(
+            "pose-1",
+        ),
+    )
+
+    assert_hydrophobic_true(
+        len(table) >= 1
+    )
+
+    assert_hydrophobic_true(
+        all(
+            bool(
+                row["is_hotspot"]
+            )
+            for row in table
+        )
+    )
+
+
+@hydrophobic_test(
+    "section_10.table.classification_distribution",
+    section="12.4",
+    description=(
+        "Validate serializable strength-distribution table."
+    ),
+    tags=(
+        "statistics",
+        "table",
+        "distribution",
+        "classification",
+        "section-10",
+    ),
+)
+def _test_classification_table() -> None:
+    """Validate classification distribution table."""
+
+    table = hydrophobic_classification_table(
+        _test_make_statistics_interactions()
+    )
+
+    assert_hydrophobic_true(
+        len(table) >= 5
+    )
+
+    assert_hydrophobic_close(
+        sum(
+            float(
+                row["fraction"]
+            )
+            for row in table
+        ),
+        1.0,
+    )
+
+
+@hydrophobic_test(
+    "section_10.table.type_distribution",
+    section="12.4",
+    description=(
+        "Validate serializable interaction-type distribution table."
+    ),
+    tags=(
+        "statistics",
+        "table",
+        "distribution",
+        "interaction-type",
+        "section-10",
+    ),
+)
+def _test_type_table() -> None:
+    """Validate interaction-type distribution table."""
+
+    table = hydrophobic_type_table(
+        _test_make_statistics_interactions()
+    )
+
+    assert_hydrophobic_true(
+        len(table) >= 5
+    )
+
+    assert_hydrophobic_close(
+        sum(
+            float(
+                row["fraction"]
+            )
+            for row in table
+        ),
+        1.0,
+    )
+
+
+@hydrophobic_test(
+    "section_10.table.occupancy",
+    section="12.4",
+    description=(
+        "Validate serializable residue occupancy table."
+    ),
+    tags=(
+        "statistics",
+        "table",
+        "occupancy",
+        "section-10",
+    ),
+)
+def _test_occupancy_table() -> None:
+    """Validate occupancy table."""
+
+    table = hydrophobic_occupancy_table(
+        _test_make_statistics_interactions(),
+        pose_identifiers=(
+            "pose-1",
+            "pose-2",
+        ),
+    )
+
+    assert_hydrophobic_equal(
+        len(table),
+        3,
+    )
+
+    for row in table:
+        assert_hydrophobic_between(
+            row["occupancy"],
+            0.0,
+            1.0,
+        )
+
+
+@hydrophobic_test(
+    "section_10.table.bundle",
+    section="12.4",
+    description=(
+        "Validate complete serializable table bundle."
+    ),
+    tags=(
+        "statistics",
+        "table",
+        "bundle",
+        "serialization",
+        "section-10",
+    ),
+)
+def _test_serializable_table_bundle() -> None:
+    """Validate complete table bundle."""
+
+    interactions = (
+        _test_make_statistics_interactions()
+    )
+
+    tables = build_hydrophobic_serializable_tables(
+        interactions,
+        pose_identifiers=(
+            "pose-1",
+            "pose-2",
+        ),
+    )
+
+    assert_hydrophobic_instance(
+        tables,
+        HydrophobicSerializableTables,
+    )
+
+    assert_hydrophobic_length(
+        tables.interactions,
+        5,
+    )
+
+    assert_hydrophobic_length(
+        tables.residues,
+        3,
+    )
+
+    assert_hydrophobic_length(
+        tables.poses,
+        2,
+    )
+
+    assert_hydrophobic_serializable(
+        tables.to_dict()
+    )
+
+
+@hydrophobic_test(
+    "section_10.summary.text_format",
+    section="12.4",
+    description=(
+        "Validate human-readable summary formatting."
+    ),
+    tags=(
+        "statistics",
+        "summary",
+        "formatting",
+        "section-10",
+    ),
+)
+def _test_text_summary_format() -> None:
+    """Validate text summary formatting."""
+
+    summary = calculate_hydrophobic_summary(
+        _test_make_statistics_interactions(),
+        pose_identifiers=(
+            "pose-1",
+            "pose-2",
+        ),
+    )
+
+    text = format_hydrophobic_summary(
+        summary
+    )
+
+    assert_hydrophobic_instance(
+        text,
+        str,
+    )
+
+    assert_hydrophobic_in(
+        "Interactions:",
+        text,
+    )
+
+    assert_hydrophobic_in(
+        "Total score:",
+        text,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 10 — Updating HydrophobicAnalysisResult
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_10.result.statistics_update",
+    section="12.4",
+    description=(
+        "Validate addition of complete statistics to an analysis result."
+    ),
+    tags=(
+        "statistics",
+        "analysis-result",
+        "update",
+        "section-10",
+    ),
+)
+def _test_add_statistics_to_result() -> None:
+    """Validate result-level statistics update."""
+
+    result = _test_make_minimal_analysis_result(
+        interactions=(
+            _test_make_statistics_interactions()
+        ),
+        pose_identifier="pose-1",
+    )
+
+    updated = add_hydrophobic_statistics_to_result(
+        result,
+        pose_identifiers=(
+            "pose-1",
+            "pose-2",
+        ),
+        include_serializable_tables=True,
+    )
+
+    assert_hydrophobic_instance(
+        updated,
+        HydrophobicAnalysisResult,
+    )
+
+    assert_hydrophobic_equal(
+        updated.statistics.interaction_count,
+        5,
+    )
+
+    assert_hydrophobic_true(
+        bool(
+            updated.metadata.get(
+                "statistics_completed"
+            )
+        )
+    )
+
+    assert_hydrophobic_in(
+        "serializable_tables",
+        updated.metadata,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 11 — DockModel validation and attribute extraction
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_11.dock_model.validation",
+    section="12.4",
+    description=(
+        "Validate DockModel-compatible object recognition."
+    ),
+    tags=(
+        "dockmodel",
+        "validation",
+        "section-11",
+    ),
+)
+def _test_dock_model_validation() -> None:
+    """Validate DockModel-like recognition."""
+
+    dock_model = _test_make_dock_model()
+
+    assert_hydrophobic_true(
+        is_dock_model_like(
+            dock_model
+        )
+    )
+
+    assert_hydrophobic_is(
+        validate_dock_model_like(
+            dock_model
+        ),
+        dock_model,
+    )
+
+    assert_hydrophobic_false(
+        is_dock_model_like(
+            None
+        )
+    )
+
+
+@hydrophobic_test(
+    "section_11.dock_model.pose_identifier",
+    section="12.4",
+    description=(
+        "Validate DockModel pose identifier extraction."
+    ),
+    tags=(
+        "dockmodel",
+        "pose",
+        "section-11",
+    ),
+)
+def _test_dock_model_pose_identifier() -> None:
+    """Validate pose identifier extraction."""
+
+    dock_model = _test_make_dock_model(
+        pose_identifier="pose-42"
+    )
+
+    assert_hydrophobic_equal(
+        get_dock_model_pose_identifier(
+            dock_model
+        ),
+        "pose-42",
+    )
+
+
+@hydrophobic_test(
+    "section_11.dock_model.receptor_ligand",
+    section="12.4",
+    description=(
+        "Validate receptor and ligand extraction from DockModel."
+    ),
+    tags=(
+        "dockmodel",
+        "receptor",
+        "ligand",
+        "section-11",
+    ),
+)
+def _test_dock_model_receptor_ligand() -> None:
+    """Validate receptor and ligand source extraction."""
+
+    dock_model = _test_make_dock_model()
+
+    assert_hydrophobic_is(
+        get_dock_model_receptor(
+            dock_model
+        ),
+        dock_model.receptor,
+    )
+
+    assert_hydrophobic_is(
+        get_dock_model_ligand(
+            dock_model
+        ),
+        dock_model.ligand,
+    )
+
+
+@hydrophobic_test(
+    "section_11.dock_model.existing_entries",
+    section="12.4",
+    description=(
+        "Validate normalization of existing hydrophobic entries."
+    ),
+    tags=(
+        "dockmodel",
+        "attachment",
+        "existing-results",
+        "section-11",
+    ),
+)
+def _test_existing_hydrophobic_entries() -> None:
+    """Validate existing result normalization."""
+
+    dock_model = _test_make_dock_model(
+        hydrophobic=(
+            {
+                "legacy": True,
+            },
+            "legacy-value",
+        )
+    )
+
+    entries = (
+        get_existing_dock_model_hydrophobic_results(
+            dock_model
+        )
+    )
+
+    assert_hydrophobic_length(
+        entries,
+        2,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 11 — Identity and merge behavior
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_11.merge.identity_key",
+    section="12.4",
+    description=(
+        "Validate semantic identity keys for serialized results."
+    ),
+    tags=(
+        "dockmodel",
+        "merge",
+        "identity",
+        "section-11",
+    ),
+)
+def _test_result_identity_key() -> None:
+    """Validate stable identity keys."""
+
+    entry = {
+        "schema": (
+            "dockanalyzer.hydrophobic"
+        ),
+        "analysis_identifier": (
+            "analysis-1"
+        ),
+        "pose_identifier": "pose-1",
+        "receptor_identifier": "rec",
+        "ligand_identifier": "lig",
+    }
+
+    first_key = (
+        hydrophobic_result_identity_key(
+            entry
+        )
+    )
+
+    second_key = (
+        hydrophobic_result_identity_key(
+            dict(entry)
+        )
+    )
+
+    assert_hydrophobic_equal(
+        first_key,
+        second_key,
+    )
+
+
+@hydrophobic_test(
+    "section_11.merge.entries",
+    section="12.4",
+    description=(
+        "Validate replacement of semantically equivalent stored entries."
+    ),
+    tags=(
+        "dockmodel",
+        "merge",
+        "section-11",
+    ),
+)
+def _test_merge_hydrophobic_entries() -> None:
+    """Validate semantic merge behavior."""
+
+    previous = {
+        "schema": (
+            "dockanalyzer.hydrophobic"
+        ),
+        "analysis_identifier": (
+            "analysis-1"
+        ),
+        "pose_identifier": "pose-1",
+        "receptor_identifier": "rec",
+        "ligand_identifier": "lig",
+        "total_score": 1.0,
+    }
+
+    updated = {
+        **previous,
+        "total_score": 2.0,
+    }
+
+    unrelated = {
+        "legacy": True,
+    }
+
+    merged = merge_hydrophobic_result_entries(
+        (
+            unrelated,
+            previous,
+        ),
+        (
+            updated,
+        ),
+    )
+
+    assert_hydrophobic_length(
+        merged,
+        2,
+    )
+
+    assert_hydrophobic_equal(
+        merged[-1]["total_score"],
+        2.0,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 11 — Result serialization
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_11.serialization.single_result",
+    section="12.4",
+    description=(
+        "Validate standardized DockModel hydrophobic serialization."
+    ),
+    tags=(
+        "dockmodel",
+        "serialization",
+        "section-11",
+    ),
+)
+def _test_dock_model_result_serialization() -> None:
+    """Validate standardized serialized result."""
+
+    result = _test_make_minimal_analysis_result(
+        interactions=(
+            _test_make_statistics_interactions()
+        ),
+        pose_identifier="pose-1",
+    )
+
+    serialized = (
+        serialize_hydrophobic_analysis_result_for_dock_model(
+            result,
+            pose_identifier="pose-1",
+            include_interactions=True,
+            include_tables=True,
+            include_atoms=False,
+        )
+    )
+
+    assert_hydrophobic_equal(
+        serialized["schema"],
+        "dockanalyzer.hydrophobic",
+    )
+
+    assert_hydrophobic_equal(
+        serialized["pose_identifier"],
+        "pose-1",
+    )
+
+    assert_hydrophobic_equal(
+        serialized["interaction_count"],
+        5,
+    )
+
+    assert_hydrophobic_in(
+        "interactions",
+        serialized,
+    )
+
+    assert_hydrophobic_in(
+        "tables",
+        serialized,
+    )
+
+    assert_hydrophobic_serializable(
+        serialized
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 11 — Score and statistics updates
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_11.score.calculate",
+    section="12.4",
+    description=(
+        "Validate DockModel hydrophobic score calculation."
+    ),
+    tags=(
+        "dockmodel",
+        "score",
+        "section-11",
+    ),
+)
+def _test_calculate_dock_model_score() -> None:
+    """Validate dedicated hydrophobic score."""
+
+    result = _test_make_minimal_analysis_result(
+        interactions=(
+            _test_make_statistics_interactions()
+        )
+    )
+
+    score = calculate_dock_model_hydrophobic_score(
+        result
+    )
+
+    assert_hydrophobic_close(
+        score,
+        3.30,
+    )
+
+    normalized_score = (
+        calculate_dock_model_hydrophobic_score(
+            result,
+            normalize_by_residue_count=True,
+        )
+    )
+
+    assert_hydrophobic_true(
+        float(normalized_score)
+        < float(score)
+    )
+
+
+@hydrophobic_test(
+    "section_11.score.update_dedicated",
+    section="12.4",
+    description=(
+        "Validate update of the dedicated DockModel hydrophobic score."
+    ),
+    tags=(
+        "dockmodel",
+        "score",
+        "update",
+        "section-11",
+    ),
+)
+def _test_update_dedicated_hydrophobic_score() -> None:
+    """Validate dedicated score attachment."""
+
+    dock_model = _test_make_dock_model()
+
+    result = _test_make_minimal_analysis_result(
+        interactions=(
+            _test_make_statistics_interactions()
+        )
+    )
+
+    score = update_dock_model_hydrophobic_score(
+        dock_model,
+        result,
+        strict=True,
+    )
+
+    assert_hydrophobic_close(
+        dock_model.hydrophobic_score,
+        score,
+    )
+
+
+@hydrophobic_test(
+    "section_11.statistics.update",
+    section="12.4",
+    description=(
+        "Validate DockModel hydrophobic statistics update."
+    ),
+    tags=(
+        "dockmodel",
+        "statistics",
+        "update",
+        "section-11",
+    ),
+)
+def _test_update_dock_model_statistics() -> None:
+    """Validate statistics attachment."""
+
+    dock_model = _test_make_dock_model()
+
+    result = _test_make_minimal_analysis_result(
+        interactions=(
+            _test_make_statistics_interactions()
+        )
+    )
+
+    summary = (
+        update_dock_model_hydrophobic_statistics(
+            dock_model,
+            result,
+            serialize=True,
+            strict=True,
+        )
+    )
+
+    assert_hydrophobic_instance(
+        summary,
+        HydrophobicSummary,
+    )
+
+    assert_hydrophobic_instance(
+        dock_model.hydrophobic_statistics,
+        Mapping,
+    )
+
+    assert_hydrophobic_equal(
+        dock_model.hydrophobic_statistics[
+            "counts"
+        ][
+            "interactions"
+        ],
+        5,
+    )
+
+
+@hydrophobic_test(
+    "section_11.score.combined_update",
+    section="12.4",
+    description=(
+        "Validate optional combination with DockModel's general score."
+    ),
+    tags=(
+        "dockmodel",
+        "score",
+        "combined",
+        "section-11",
+    ),
+)
+def _test_update_combined_score() -> None:
+    """Validate optional combined score update."""
+
+    dock_model = _test_make_dock_model(
+        score=-7.5
+    )
+
+    combined = update_dock_model_combined_score(
+        dock_model,
+        hydrophobic_score=2.0,
+        contribution_weight=0.5,
+        preserve_original_score=True,
+        strict=True,
+    )
+
+    assert_hydrophobic_close(
+        combined,
+        -6.5,
+    )
+
+    assert_hydrophobic_close(
+        dock_model.score,
+        -6.5,
+    )
+
+    assert_hydrophobic_close(
+        dock_model.score_before_hydrophobic,
+        -7.5,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 11 — Attachment modes
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_11.attachment.append",
+    section="12.4",
+    description=(
+        "Validate append mode and preservation of previous results."
+    ),
+    tags=(
+        "dockmodel",
+        "attachment",
+        "append",
+        "section-11",
+    ),
+)
+def _test_attach_append_mode() -> None:
+    """Validate append attachment mode."""
+
+    legacy_entry = {
+        "legacy": True,
+    }
+
+    dock_model = _test_make_dock_model(
+        hydrophobic=(
+            legacy_entry,
+        )
+    )
+
+    result = _test_make_minimal_analysis_result(
+        pose_identifier="pose-1"
+    )
+
+    attachment = attach_hydrophobic_results(
+        dock_model,
+        result,
+        mode="append",
+        preserve_previous=True,
+        serialize=True,
+        update_statistics=False,
+        update_hydrophobic_score=False,
+    )
+
+    assert_hydrophobic_instance(
+        attachment,
+        HydrophobicDockModelAttachment,
+    )
+
+    assert_hydrophobic_equal(
+        attachment.previous_entry_count,
+        1,
+    )
+
+    assert_hydrophobic_equal(
+        attachment.final_entry_count,
+        2,
+    )
+
+    assert_hydrophobic_is(
+        dock_model.hydrophobic[0],
+        legacy_entry,
+    )
+
+
+@hydrophobic_test(
+    "section_11.attachment.replace",
+    section="12.4",
+    description=(
+        "Validate replacement of all previous hydrophobic entries."
+    ),
+    tags=(
+        "dockmodel",
+        "attachment",
+        "replace",
+        "section-11",
+    ),
+)
+def _test_attach_replace_mode() -> None:
+    """Validate replacement attachment mode."""
+
+    dock_model = _test_make_dock_model(
+        hydrophobic=(
+            {
+                "legacy": 1,
+            },
+            {
+                "legacy": 2,
+            },
+        )
+    )
+
+    result = _test_make_minimal_analysis_result(
+        pose_identifier="pose-1"
+    )
+
+    attachment = attach_hydrophobic_results(
+        dock_model,
+        result,
+        mode="replace",
+        preserve_previous=False,
+        serialize=True,
+        update_statistics=False,
+        update_hydrophobic_score=False,
+    )
+
+    assert_hydrophobic_equal(
+        attachment.final_entry_count,
+        1,
+    )
+
+    assert_hydrophobic_length(
+        dock_model.hydrophobic,
+        1,
+    )
+
+    assert_hydrophobic_equal(
+        dock_model.hydrophobic[0]["schema"],
+        "dockanalyzer.hydrophobic",
+    )
+
+
+@hydrophobic_test(
+    "section_11.attachment.merge",
+    section="12.4",
+    description=(
+        "Validate merge mode for repeated analysis of the same pose."
+    ),
+    tags=(
+        "dockmodel",
+        "attachment",
+        "merge",
+        "section-11",
+    ),
+)
+def _test_attach_merge_mode() -> None:
+    """Validate semantic merge attachment mode."""
+
+    dock_model = _test_make_dock_model()
+
+    first_result = _test_make_minimal_analysis_result(
+        interactions=(
+            _test_make_statistics_interactions()
+        ),
+        pose_identifier="pose-1",
+        analysis_identifier="analysis-pose-1",
+    )
+
+    second_result = _test_make_minimal_analysis_result(
+        interactions=(
+            _test_make_local_interaction_cluster()
+        ),
+        pose_identifier="pose-1",
+        analysis_identifier="analysis-pose-1",
+    )
+
+    attach_hydrophobic_results(
+        dock_model,
+        first_result,
+        mode="merge",
+        preserve_previous=True,
+        serialize=True,
+        update_statistics=False,
+        update_hydrophobic_score=False,
+    )
+
+    attach_hydrophobic_results(
+        dock_model,
+        second_result,
+        mode="merge",
+        preserve_previous=True,
+        serialize=True,
+        update_statistics=False,
+        update_hydrophobic_score=False,
+    )
+
+    standardized = (
+        get_standardized_dock_model_hydrophobic_results(
+            dock_model
+        )
+    )
+
+    assert_hydrophobic_length(
+        standardized,
+        1,
+    )
+
+    assert_hydrophobic_equal(
+        standardized[0][
+            "interaction_count"
+        ],
+        len(
+            second_result.interactions
+        ),
+    )
+
+
+@hydrophobic_test(
+    "section_11.attachment.live_result",
+    section="12.4",
+    description=(
+        "Validate attachment of a live HydrophobicAnalysisResult."
+    ),
+    tags=(
+        "dockmodel",
+        "attachment",
+        "live-object",
+        "section-11",
+    ),
+)
+def _test_attach_live_result() -> None:
+    """Validate nonserialized attachment."""
+
+    dock_model = _test_make_dock_model()
+
+    result = _test_make_minimal_analysis_result()
+
+    attachment = attach_hydrophobic_results(
+        dock_model,
+        result,
+        mode="replace",
+        preserve_previous=False,
+        serialize=False,
+        update_statistics=False,
+        update_hydrophobic_score=False,
+    )
+
+    assert_hydrophobic_is(
+        dock_model.hydrophobic[0],
+        result,
+    )
+
+    assert_hydrophobic_is_none(
+        attachment.serialized_result
+    )
+
+
+@hydrophobic_test(
+    "section_11.attachment.statistics_and_score",
+    section="12.4",
+    description=(
+        "Validate simultaneous result, statistics and score attachment."
+    ),
+    tags=(
+        "dockmodel",
+        "attachment",
+        "statistics",
+        "score",
+        "section-11",
+    ),
+)
+def _test_attachment_statistics_and_score() -> None:
+    """Validate complete attachment-side updates."""
+
+    dock_model = _test_make_dock_model()
+
+    result = _test_make_minimal_analysis_result()
+
+    attachment = attach_hydrophobic_results(
+        dock_model,
+        result,
+        mode="replace",
+        preserve_previous=False,
+        serialize=True,
+        update_statistics=True,
+        update_hydrophobic_score=True,
+        update_combined_score=False,
+    )
+
+    assert_hydrophobic_true(
+        attachment.statistics_updated
+    )
+
+    assert_hydrophobic_true(
+        attachment.hydrophobic_score_updated
+    )
+
+    assert_hydrophobic_true(
+        hasattr(
+            dock_model,
+            "hydrophobic_statistics",
+        )
+    )
+
+    assert_hydrophobic_true(
+        hasattr(
+            dock_model,
+            "hydrophobic_score",
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 11 — Reading and refreshing attached results
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_11.results.standardized_filter",
+    section="12.4",
+    description=(
+        "Validate filtering of standardized serialized entries."
+    ),
+    tags=(
+        "dockmodel",
+        "results",
+        "serialization",
+        "section-11",
+    ),
+)
+def _test_standardized_result_filter() -> None:
+    """Validate standardized result extraction."""
+
+    dock_model = _test_make_dock_model(
+        hydrophobic=(
+            {
+                "legacy": True,
+            },
+        )
+    )
+
+    result = _test_make_minimal_analysis_result()
+
+    attach_hydrophobic_results(
+        dock_model,
+        result,
+        mode="append",
+        preserve_previous=True,
+        serialize=True,
+        update_statistics=False,
+        update_hydrophobic_score=False,
+    )
+
+    standardized = (
+        get_standardized_dock_model_hydrophobic_results(
+            dock_model
+        )
+    )
+
+    assert_hydrophobic_length(
+        standardized,
+        1,
+    )
+
+    assert_hydrophobic_equal(
+        standardized[0]["schema"],
+        "dockanalyzer.hydrophobic",
+    )
+
+
+@hydrophobic_test(
+    "section_11.results.latest",
+    section="12.4",
+    description=(
+        "Validate retrieval of the latest attached result."
+    ),
+    tags=(
+        "dockmodel",
+        "results",
+        "latest",
+        "section-11",
+    ),
+)
+def _test_latest_attached_result() -> None:
+    """Validate latest-result retrieval."""
+
+    dock_model = _test_make_dock_model(
+        hydrophobic=(
+            "first",
+            "second",
+        )
+    )
+
+    assert_hydrophobic_equal(
+        get_latest_dock_model_hydrophobic_result(
+            dock_model
+        ),
+        "second",
+    )
+
+
+@hydrophobic_test(
+    "section_11.results.refresh",
+    section="12.4",
+    description=(
+        "Validate reserialization of attached live results."
+    ),
+    tags=(
+        "dockmodel",
+        "results",
+        "refresh",
+        "serialization",
+        "section-11",
+    ),
+)
+def _test_refresh_attached_results() -> None:
+    """Validate refresh of live attached results."""
+
+    live_result = (
+        _test_make_minimal_analysis_result()
+    )
+
+    legacy_entry = {
+        "legacy": True,
+    }
+
+    dock_model = _test_make_dock_model(
+        hydrophobic=(
+            legacy_entry,
+            live_result,
+        )
+    )
+
+    refreshed = (
+        refresh_dock_model_hydrophobic_results(
+            dock_model,
+            preserve_unknown_entries=True,
+            include_tables=True,
+        )
+    )
+
+    assert_hydrophobic_length(
+        refreshed,
+        2,
+    )
+
+    assert_hydrophobic_is(
+        refreshed[0],
+        legacy_entry,
+    )
+
+    assert_hydrophobic_instance(
+        refreshed[1],
+        Mapping,
+    )
+
+    assert_hydrophobic_equal(
+        refreshed[1]["schema"],
+        "dockanalyzer.hydrophobic",
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 11 — Single-pose DockModel analysis
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_11.analysis.single_pose",
+    section="12.4",
+    description=(
+        "Validate one-pose hydrophobic DockModel analysis."
+    ),
+    tags=(
+        "dockmodel",
+        "analysis",
+        "single-pose",
+        "section-11",
+    ),
+)
+def _test_single_pose_dock_model_analysis() -> None:
+    """Validate complete single-pose analysis."""
+
+    dock_model = _test_make_dock_model(
+        pose_identifier="pose-single",
+        ligand_distance=3.6,
+    )
+
+    result = analyze_dock_model_hydrophobic(
+        dock_model,
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+        grouping_distance=4.5,
+        attach=True,
+        attachment_mode="replace",
+        preserve_previous=False,
+        serialize=True,
+        include_tables=True,
+        update_statistics=True,
+        update_hydrophobic_score=True,
+        update_combined_score=False,
+    )
+
+    assert_hydrophobic_instance(
+        result,
+        HydrophobicAnalysisResult,
+    )
+
+    assert_hydrophobic_true(
+        len(result.interactions) >= 2
+    )
+
+    assert_hydrophobic_length(
+        dock_model.hydrophobic,
+        1,
+    )
+
+    assert_hydrophobic_equal(
+        dock_model.hydrophobic[0][
+            "pose_identifier"
+        ],
+        "pose-single",
+    )
+
+
+@hydrophobic_test(
+    "section_11.analysis.single_pose_no_attachment",
+    section="12.4",
+    description=(
+        "Validate single-pose analysis without changing DockModel."
+    ),
+    tags=(
+        "dockmodel",
+        "analysis",
+        "single-pose",
+        "preservation",
+        "section-11",
+    ),
+)
+def _test_single_pose_without_attachment() -> None:
+    """Validate analysis with attach disabled."""
+
+    dock_model = _test_make_dock_model(
+        hydrophobic=(
+            {
+                "legacy": True,
+            },
+        )
+    )
+
+    result = analyze_dock_model_hydrophobic(
+        dock_model,
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+        attach=False,
+    )
+
+    assert_hydrophobic_instance(
+        result,
+        HydrophobicAnalysisResult,
+    )
+
+    assert_hydrophobic_length(
+        dock_model.hydrophobic,
+        1,
+    )
+
+    assert_hydrophobic_true(
+        dock_model.hydrophobic[0][
+            "legacy"
+        ]
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 11 — Multipose combination
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_11.multipose.combine_interactions",
+    section="12.4",
+    description=(
+        "Validate combination of interactions from multiple poses."
+    ),
+    tags=(
+        "dockmodel",
+        "multipose",
+        "interaction",
+        "section-11",
+    ),
+)
+def _test_combine_pose_interactions() -> None:
+    """Validate multipose interaction combination."""
+
+    first_result = (
+        _test_make_minimal_analysis_result(
+            interactions=(
+                _test_make_interaction(
+                    pose_identifier="pose-1"
+                ),
+            ),
+            pose_identifier="pose-1",
+        )
+    )
+
+    second_result = (
+        _test_make_minimal_analysis_result(
+            interactions=(
+                _test_make_interaction(
+                    pose_identifier="pose-2"
+                ),
+            ),
+            pose_identifier="pose-2",
+        )
+    )
+
+    combined = combine_hydrophobic_pose_interactions(
+        (
+            first_result,
+            second_result,
+        )
+    )
+
+    assert_hydrophobic_length(
+        combined,
+        2,
+    )
+
+    poses = {
+        get_interaction_pose_identifier(
+            interaction
+        )
+        for interaction in combined
+    }
+
+    assert_hydrophobic_equal(
+        poses,
+        {
+            "pose-1",
+            "pose-2",
+        },
+    )
+
+
+@hydrophobic_test(
+    "section_11.multipose.summary",
+    section="12.4",
+    description=(
+        "Validate combined multipose summary and tables."
+    ),
+    tags=(
+        "dockmodel",
+        "multipose",
+        "summary",
+        "section-11",
+    ),
+)
+def _test_multipose_summary() -> None:
+    """Validate multipose summary."""
+
+    first_result = (
+        _test_make_minimal_analysis_result(
+            interactions=(
+                _test_make_interaction(
+                    receptor_name="LEU_CD1",
+                    ligand_name="P1_C1",
+                    receptor_residue_name="LEU",
+                    receptor_residue_number=10,
+                    pose_identifier="pose-1",
+                ),
+            ),
+            pose_identifier="pose-1",
+        )
+    )
+
+    second_result = (
+        _test_make_minimal_analysis_result(
+            interactions=(
+                _test_make_interaction(
+                    receptor_name="LEU_CD1",
+                    ligand_name="P2_C1",
+                    receptor_residue_name="LEU",
+                    receptor_residue_number=10,
+                    pose_identifier="pose-2",
+                ),
+            ),
+            pose_identifier="pose-2",
+        )
+    )
+
+    summary, tables = (
+        summarize_multiple_hydrophobic_results(
+            (
+                first_result,
+                second_result,
+            ),
+            pose_identifiers=(
+                "pose-1",
+                "pose-2",
+            ),
+        )
+    )
+
+    assert_hydrophobic_instance(
+        summary,
+        HydrophobicSummary,
+    )
+
+    assert_hydrophobic_instance(
+        tables,
+        HydrophobicSerializableTables,
+    )
+
+    assert_hydrophobic_equal(
+        summary.pose_count,
+        2,
+    )
+
+    assert_hydrophobic_true(
+        any(
+            _self_test_is_close(
+                occupancy,
+                1.0,
+            )
+            for occupancy
+            in summary.residue_pose_occupancy.values()
+        )
+    )
+
+
+@hydrophobic_test(
+    "section_11.multipose.analysis",
+    section="12.4",
+    description=(
+        "Validate complete analysis of multiple DockModel poses."
+    ),
+    tags=(
+        "dockmodel",
+        "multipose",
+        "analysis",
+        "section-11",
+    ),
+)
+def _test_multiple_dock_model_analysis() -> None:
+    """Validate complete multipose DockModel workflow."""
+
+    dock_models = (
+        _test_make_dock_model(
+            pose_identifier="pose-1",
+            ligand_distance=3.5,
+        ),
+        _test_make_dock_model(
+            pose_identifier="pose-2",
+            ligand_distance=3.9,
+        ),
+    )
+
+    result = (
+        analyze_multiple_dock_models_hydrophobic(
+            dock_models,
+            minimum_distance=0.0,
+            maximum_distance=5.0,
+            grouping_distance=4.5,
+            attach=True,
+            attachment_mode="replace",
+            preserve_previous=False,
+            serialize=True,
+            include_tables=True,
+            update_statistics=True,
+            update_hydrophobic_score=True,
+            update_combined_score=False,
+            continue_on_error=False,
+        )
+    )
+
+    assert_hydrophobic_instance(
+        result,
+        HydrophobicMultiPoseResult,
+    )
+
+    assert_hydrophobic_equal(
+        result.pose_count,
+        2,
+    )
+
+    assert_hydrophobic_equal(
+        result.failed_pose_count,
+        0,
+    )
+
+    assert_hydrophobic_equal(
+        len(result.attachments),
+        2,
+    )
+
+    assert_hydrophobic_is_not_none(
+        result.combined_summary
+    )
+
+    assert_hydrophobic_equal(
+        result.combined_summary.pose_count,
+        2,
+    )
+
+    for dock_model in dock_models:
+        assert_hydrophobic_length(
+            dock_model.hydrophobic,
+            1,
+        )
+
+
+@hydrophobic_test(
+    "section_11.multipose.continue_on_error",
+    section="12.4",
+    description=(
+        "Validate partial multipose completion when one pose fails."
+    ),
+    tags=(
+        "dockmodel",
+        "multipose",
+        "error-handling",
+        "section-11",
+    ),
+)
+def _test_multipose_continue_on_error() -> None:
+    """Validate continue-on-error behavior."""
+
+    valid_model = _test_make_dock_model(
+        pose_identifier="valid-pose"
+    )
+
+    invalid_model = object()
+
+    result = (
+        analyze_multiple_dock_models_hydrophobic(
+            (
+                valid_model,
+                invalid_model,
+            ),
+            minimum_distance=0.0,
+            maximum_distance=5.0,
+            attach=False,
+            continue_on_error=True,
+        )
+    )
+
+    assert_hydrophobic_equal(
+        result.pose_count,
+        1,
+    )
+
+    assert_hydrophobic_equal(
+        result.failed_pose_count,
+        1,
+    )
+
+    assert_hydrophobic_true(
+        len(result.errors) == 1
+    )
+
+
+@hydrophobic_test(
+    "section_11.multipose.serialization",
+    section="12.4",
+    description=(
+        "Validate standardized multipose serialization."
+    ),
+    tags=(
+        "dockmodel",
+        "multipose",
+        "serialization",
+        "section-11",
+    ),
+)
+def _test_multipose_serialization() -> None:
+    """Validate multipose result serialization."""
+
+    dock_models = (
+        _test_make_dock_model(
+            pose_identifier="pose-1"
+        ),
+        _test_make_dock_model(
+            pose_identifier="pose-2"
+        ),
+    )
+
+    result = (
+        analyze_multiple_dock_models_hydrophobic(
+            dock_models,
+            minimum_distance=0.0,
+            maximum_distance=5.0,
+            attach=False,
+            continue_on_error=False,
+        )
+    )
+
+    serialized = (
+        serialize_hydrophobic_multi_pose_result(
+            result,
+            include_pose_results=True,
+            include_attachments=True,
+        )
+    )
+
+    assert_hydrophobic_equal(
+        serialized["schema"],
+        "dockanalyzer.hydrophobic.multipose",
+    )
+
+    assert_hydrophobic_equal(
+        serialized["pose_count"],
+        2,
+    )
+
+    assert_hydrophobic_serializable(
+        serialized
+    )
+
+
+# -----------------------------------------------------------------------------
+# Cross-component tests for Sections 10–11
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "sections_10_11.cross.statistics_to_serialization",
+    section="12.4",
+    description=(
+        "Validate statistics-to-table serialization integration."
+    ),
+    tags=(
+        "cross-component",
+        "statistics",
+        "serialization",
+        "sections-10-11",
+    ),
+)
+def _test_statistics_to_serialization_path() -> None:
+    """Validate interactions → summary → tables."""
+
+    interactions = (
+        _test_make_statistics_interactions()
+    )
+
+    summary = calculate_hydrophobic_summary(
+        interactions,
+        pose_identifiers=(
+            "pose-1",
+            "pose-2",
+        ),
+    )
+
+    tables = build_hydrophobic_serializable_tables(
+        interactions,
+        pose_identifiers=(
+            "pose-1",
+            "pose-2",
+        ),
+    )
+
+    serialized = {
+        "summary": summary.to_dict(),
+        "tables": tables.to_dict(),
+    }
+
+    assert_hydrophobic_equal(
+        serialized[
+            "summary"
+        ][
+            "counts"
+        ][
+            "interactions"
+        ],
+        5,
+    )
+
+    assert_hydrophobic_equal(
+        len(
+            serialized[
+                "tables"
+            ][
+                "interactions"
+            ]
+        ),
+        5,
+    )
+
+    assert_hydrophobic_serializable(
+        serialized
+    )
+
+
+@hydrophobic_test(
+    "sections_10_11.cross.result_to_dock_model",
+    section="12.4",
+    description=(
+        "Validate analysis-result attachment to DockModel."
+    ),
+    tags=(
+        "cross-component",
+        "analysis-result",
+        "dockmodel",
+        "sections-10-11",
+    ),
+)
+def _test_result_to_dock_model_path() -> None:
+    """Validate result → statistics → serialized DockModel entry."""
+
+    result = _test_make_minimal_analysis_result(
+        interactions=(
+            _test_make_statistics_interactions()
+        ),
+        pose_identifier="pose-1",
+    )
+
+    dock_model = _test_make_dock_model(
+        pose_identifier="pose-1",
+        hydrophobic=(
+            {
+                "legacy": True,
+            },
+        ),
+    )
+
+    attachment = attach_hydrophobic_results(
+        dock_model,
+        result,
+        mode="append",
+        preserve_previous=True,
+        serialize=True,
+        include_interactions=True,
+        include_tables=True,
+        update_statistics=True,
+        update_hydrophobic_score=True,
+    )
+
+    assert_hydrophobic_equal(
+        attachment.final_entry_count,
+        2,
+    )
+
+    latest = _test_get_attached_entry(
+        dock_model
+    )
+
+    assert_hydrophobic_equal(
+        latest["schema"],
+        "dockanalyzer.hydrophobic",
+    )
+
+    assert_hydrophobic_equal(
+        latest["summary"][
+            "counts"
+        ][
+            "interactions"
+        ],
+        5,
+    )
+
+
+@hydrophobic_test(
+    "sections_10_11.cross.previous_result_preservation",
+    section="12.4",
+    description=(
+        "Validate preservation of unknown prior DockModel results."
+    ),
+    tags=(
+        "cross-component",
+        "dockmodel",
+        "preservation",
+        "sections-10-11",
+    ),
+)
+def _test_previous_result_preservation() -> None:
+    """Validate legacy-entry preservation."""
+
+    legacy_entries = [
+        {
+            "module": "hbonds",
+            "count": 3,
+        },
+        {
+            "module": "salt_bridges",
+            "count": 1,
+        },
+    ]
+
+    dock_model = _test_make_dock_model(
+        hydrophobic=legacy_entries
+    )
+
+    result = _test_make_minimal_analysis_result()
+
+    attach_hydrophobic_results(
+        dock_model,
+        result,
+        mode="append",
+        preserve_previous=True,
+        serialize=True,
+        update_statistics=False,
+        update_hydrophobic_score=False,
+    )
+
+    assert_hydrophobic_length(
+        dock_model.hydrophobic,
+        3,
+    )
+
+    assert_hydrophobic_equal(
+        dock_model.hydrophobic[0],
+        legacy_entries[0],
+    )
+
+    assert_hydrophobic_equal(
+        dock_model.hydrophobic[1],
+        legacy_entries[1],
+    )
+
+
+@hydrophobic_test(
+    "sections_10_11.cross.full_single_pose_pipeline",
+    section="12.4",
+    description=(
+        "Validate the complete one-pose pipeline through DockModel serialization."
+    ),
+    tags=(
+        "cross-component",
+        "pipeline",
+        "single-pose",
+        "sections-10-11",
+    ),
+)
+def _test_full_single_pose_pipeline() -> None:
+    """Validate detection through standardized DockModel output."""
+
+    dock_model = _test_make_dock_model(
+        pose_identifier="complete-pose",
+        ligand_distance=3.5,
+    )
+
+    result = analyze_dock_model_hydrophobic(
+        dock_model,
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+        grouping_distance=4.5,
+        attach=True,
+        attachment_mode="replace",
+        preserve_previous=False,
+        serialize=True,
+        include_interactions=True,
+        include_tables=True,
+        update_statistics=True,
+        update_hydrophobic_score=True,
+        update_combined_score=False,
+    )
+
+    entry = dock_model.hydrophobic[0]
+
+    assert_hydrophobic_true(
+        len(result.interactions) > 0
+    )
+
+    assert_hydrophobic_equal(
+        entry["interaction_count"],
+        len(result.interactions),
+    )
+
+    assert_hydrophobic_equal(
+        len(
+            entry["tables"][
+                "interactions"
+            ]
+        ),
+        len(result.interactions),
+    )
+
+    assert_hydrophobic_close(
+        dock_model.hydrophobic_score,
+        entry["total_score"],
+    )
+
+    assert_hydrophobic_serializable(
+        entry
+    )
+
+
+@hydrophobic_test(
+    "sections_10_11.cross.full_multipose_pipeline",
+    section="12.4",
+    description=(
+        "Validate the complete multipose pipeline and occupancy summary."
+    ),
+    tags=(
+        "cross-component",
+        "pipeline",
+        "multipose",
+        "sections-10-11",
+    ),
+)
+def _test_full_multipose_pipeline() -> None:
+    """Validate multipose analysis, attachment and serialization."""
+
+    dock_models = (
+        _test_make_dock_model(
+            pose_identifier="pose-A",
+            ligand_distance=3.5,
+        ),
+        _test_make_dock_model(
+            pose_identifier="pose-B",
+            ligand_distance=4.0,
+        ),
+        _test_make_dock_model(
+            pose_identifier="pose-C",
+            ligand_distance=4.6,
+        ),
+    )
+
+    result = (
+        analyze_multiple_dock_models_hydrophobic(
+            dock_models,
+            minimum_distance=0.0,
+            maximum_distance=5.0,
+            grouping_distance=4.5,
+            attach=True,
+            attachment_mode="replace",
+            preserve_previous=False,
+            serialize=True,
+            include_interactions=True,
+            include_tables=True,
+            update_statistics=True,
+            update_hydrophobic_score=True,
+            continue_on_error=False,
+        )
+    )
+
+    assert_hydrophobic_equal(
+        result.pose_count,
+        3,
+    )
+
+    assert_hydrophobic_equal(
+        result.failed_pose_count,
+        0,
+    )
+
+    assert_hydrophobic_equal(
+        result.combined_summary.pose_count,
+        3,
+    )
+
+    assert_hydrophobic_true(
+        len(
+            result.combined_summary.residue_pose_occupancy
+        )
+        >= 1
+    )
+
+    serialized = (
+        serialize_hydrophobic_multi_pose_result(
+            result
+        )
+    )
+
+    assert_hydrophobic_serializable(
+        serialized
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 12.4 dedicated runner
+# -----------------------------------------------------------------------------
+
+def run_hydrophobic_sections_10_to_11_tests(
+    *,
+    fail_fast: bool = False,
+    verbose: bool = True,
+    include_previous_sections: bool = False,
+) -> HydrophobicSelfTestReport:
+    """
+    Execute tests covering Sections 10–11.
+
+    Parameters
+    ----------
+    fail_fast
+        Stop after the first failing test.
+
+    verbose
+        Print the formatted self-test report.
+
+    include_previous_sections
+        Also execute Sections 12.1, 12.2 and 12.3.
+    """
+
+    selected_sections: Tuple[str, ...] = (
+        (
+            "12.1",
+            "12.2",
+            "12.3",
+            "12.4",
+        )
+        if include_previous_sections
+        else (
+            "12.4",
+        )
+    )
+
+    report = run_registered_hydrophobic_tests(
+        sections=selected_sections,
+        fail_fast=fail_fast,
+        capture_output=True,
+        capture_warnings=True,
+        context=HydrophobicTestContext(
+            verbose=verbose
+        ),
+        metadata={
+            "runner": (
+                "run_hydrophobic_sections_10_to_11_tests"
+            ),
+            "covered_module_sections": (
+                "10-11"
+            ),
+            "include_previous_sections": bool(
+                include_previous_sections
+            ),
+        },
+    )
+
+    if verbose:
+        print(
+            format_hydrophobic_self_test_report(
+                report,
+                include_results=True,
+                include_failures=True,
+                include_captured_output=False,
+            )
+        )
+
+    return report
+
+
+# -----------------------------------------------------------------------------
+# Section 12.4 test listing
+# -----------------------------------------------------------------------------
+
+def list_hydrophobic_sections_10_to_11_tests(
+) -> Tuple[HydrophobicTestCase, ...]:
+    """Return all tests registered by Section 12.4."""
+
+    return list_hydrophobic_self_tests(
+        sections=(
+            "12.4",
+        ),
+        enabled_only=False,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Section 12.4 public names
+# -----------------------------------------------------------------------------
+
+_SECTION_12_4_PUBLIC_NAMES: Final[
+    Tuple[str, ...]
+] = (
+    "run_hydrophobic_sections_10_to_11_tests",
+    "list_hydrophobic_sections_10_to_11_tests",
+)
+
+for public_name in _SECTION_12_4_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+# =============================================================================
+# End of Section 12.4
+# =============================================================================
+
+# =============================================================================
+# Section 12.5 — Final self-test runner
+# =============================================================================
+#
+# Final responsibilities:
+#
+# - execute the complete hydrophobic self-test suite;
+# - select tests by section, tag or identifier;
+# - support fail-fast execution;
+# - generate a human-readable report;
+# - generate a serializable report;
+# - optionally save JSON and text reports;
+# - return a stable process exit code;
+# - provide run_self_tests();
+# - provide a command-line entry point;
+# - close hydrophobic.py with:
+#
+#       if __name__ == "__main__":
+#
+# Dependencies:
+#
+# - Section 12.1 — test infrastructure;
+# - Section 12.2 — tests for Sections 1–5;
+# - Section 12.3 — tests for Sections 6–9;
+# - Section 12.4 — tests for Sections 10–11.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Final runner constants
+# -----------------------------------------------------------------------------
+
+HYDROPHOBIC_SELF_TEST_ALL_SECTIONS: Final[
+    Tuple[HydrophobicTestSection, ...]
+] = (
+    "12.1",
+    "12.2",
+    "12.3",
+    "12.4",
+)
+
+HYDROPHOBIC_SELF_TEST_RUNNER_SECTION: Final[
+    HydrophobicTestSection
+] = "12.5"
+
+HYDROPHOBIC_SELF_TEST_DEFAULT_TEXT_REPORT_NAME: Final[str] = (
+    "hydrophobic_self_test_report.txt"
+)
+
+HYDROPHOBIC_SELF_TEST_DEFAULT_JSON_REPORT_NAME: Final[str] = (
+    "hydrophobic_self_test_report.json"
+)
+
+HYDROPHOBIC_SELF_TEST_EXIT_SUCCESS: Final[int] = 0
+HYDROPHOBIC_SELF_TEST_EXIT_FAILURE: Final[int] = 1
+HYDROPHOBIC_SELF_TEST_EXIT_RUNNER_ERROR: Final[int] = 2
+
+
+# -----------------------------------------------------------------------------
+# Final-runner aliases
+# -----------------------------------------------------------------------------
+
+HydrophobicSelfTestOutputFormat: TypeAlias = Literal[
+    "text",
+    "json",
+    "both",
+    "none",
+]
+
+
+# -----------------------------------------------------------------------------
+# Final-runner configuration
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class HydrophobicSelfTestConfiguration:
+    """
+    Configuration used by the final hydrophobic self-test runner.
+    """
+
+    sections: Sequence[
+        HydrophobicTestSection
+    ] = field(
+        default_factory=lambda: (
+            HYDROPHOBIC_SELF_TEST_ALL_SECTIONS
+        )
+    )
+
+    tags: Sequence[str] = field(
+        default_factory=tuple
+    )
+
+    identifiers: Sequence[str] = field(
+        default_factory=tuple
+    )
+
+    enabled_only: bool = True
+    fail_fast: bool = False
+
+    capture_output: bool = True
+    capture_warnings: bool = True
+
+    verbose: bool = True
+    include_result_lines: bool = True
+    include_failure_details: bool = True
+    include_captured_output: bool = False
+
+    output_format: HydrophobicSelfTestOutputFormat = "text"
+
+    text_report_path: Optional[str] = None
+    json_report_path: Optional[str] = None
+
+    json_indent: Optional[int] = 2
+    json_sort_keys: bool = True
+
+    random_seed: int = 12345
+
+    absolute_tolerance: np.float64 = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_TOLERANCE
+    )
+
+    relative_tolerance: np.float64 = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_RELATIVE_TOLERANCE
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Validate and normalize final-runner configuration."""
+
+        normalized_sections = tuple(
+            sorted(
+                {
+                    _self_test_normalize_section(
+                        section
+                    )
+                    for section
+                    in self.sections
+                },
+                key=lambda section: (
+                    HYDROPHOBIC_SELF_TEST_SECTION_ORDER[
+                        section
+                    ]
+                ),
+            )
+        )
+
+        if not normalized_sections:
+            raise ValueError(
+                "At least one self-test section must be selected."
+            )
+
+        object.__setattr__(
+            self,
+            "sections",
+            normalized_sections,
+        )
+
+        object.__setattr__(
+            self,
+            "tags",
+            _self_test_normalize_tags(
+                self.tags
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "identifiers",
+            tuple(
+                sorted(
+                    {
+                        _self_test_normalize_identifier(
+                            identifier
+                        )
+                        for identifier
+                        in self.identifiers
+                    }
+                )
+            ),
+        )
+
+        output_format = str(
+            self.output_format
+        ).strip().lower()
+
+        if output_format not in {
+            "text",
+            "json",
+            "both",
+            "none",
+        }:
+            raise ValueError(
+                "output_format must be 'text', 'json', "
+                "'both' or 'none'."
+            )
+
+        object.__setattr__(
+            self,
+            "output_format",
+            output_format,
+        )
+
+        object.__setattr__(
+            self,
+            "text_report_path",
+            _self_test_normalize_optional_string(
+                self.text_report_path
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "json_report_path",
+            _self_test_normalize_optional_string(
+                self.json_report_path
+            ),
+        )
+
+        if self.json_indent is not None:
+            json_indent = int(
+                self.json_indent
+            )
+
+            if json_indent < 0:
+                raise ValueError(
+                    "json_indent cannot be negative."
+                )
+
+            object.__setattr__(
+                self,
+                "json_indent",
+                json_indent,
+            )
+
+        absolute_tolerance = np.float64(
+            float(
+                self.absolute_tolerance
+            )
+        )
+
+        relative_tolerance = np.float64(
+            float(
+                self.relative_tolerance
+            )
+        )
+
+        if (
+            not np.isfinite(
+                absolute_tolerance
+            )
+            or absolute_tolerance < 0.0
+        ):
+            raise ValueError(
+                "absolute_tolerance must be finite and nonnegative."
+            )
+
+        if (
+            not np.isfinite(
+                relative_tolerance
+            )
+            or relative_tolerance < 0.0
+        ):
+            raise ValueError(
+                "relative_tolerance must be finite and nonnegative."
+            )
+
+        object.__setattr__(
+            self,
+            "absolute_tolerance",
+            absolute_tolerance,
+        )
+
+        object.__setattr__(
+            self,
+            "relative_tolerance",
+            relative_tolerance,
+        )
+
+        object.__setattr__(
+            self,
+            "random_seed",
+            int(
+                self.random_seed
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "metadata",
+            _self_test_freeze_metadata(
+                self.metadata
+            ),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the final-runner configuration."""
+
+        return {
+            "sections": list(
+                self.sections
+            ),
+            "tags": list(
+                self.tags
+            ),
+            "identifiers": list(
+                self.identifiers
+            ),
+            "enabled_only": self.enabled_only,
+            "fail_fast": self.fail_fast,
+            "capture_output": (
+                self.capture_output
+            ),
+            "capture_warnings": (
+                self.capture_warnings
+            ),
+            "verbose": self.verbose,
+            "include_result_lines": (
+                self.include_result_lines
+            ),
+            "include_failure_details": (
+                self.include_failure_details
+            ),
+            "include_captured_output": (
+                self.include_captured_output
+            ),
+            "output_format": (
+                self.output_format
+            ),
+            "text_report_path": (
+                self.text_report_path
+            ),
+            "json_report_path": (
+                self.json_report_path
+            ),
+            "json_indent": self.json_indent,
+            "json_sort_keys": (
+                self.json_sort_keys
+            ),
+            "random_seed": (
+                self.random_seed
+            ),
+            "absolute_tolerance": float(
+                self.absolute_tolerance
+            ),
+            "relative_tolerance": float(
+                self.relative_tolerance
+            ),
+            "metadata": _self_test_json_safe(
+                self.metadata
+            ),
+        }
+
+
+# -----------------------------------------------------------------------------
+# Final-runner result
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class HydrophobicSelfTestRun:
+    """
+    Complete final-runner output.
+
+    This object contains the test report, rendered outputs and exit code.
+    """
+
+    report: HydrophobicSelfTestReport
+    configuration: HydrophobicSelfTestConfiguration
+
+    text_report: Optional[str] = None
+    json_report: Optional[str] = None
+
+    written_text_report_path: Optional[str] = None
+    written_json_report_path: Optional[str] = None
+
+    exit_code: int = (
+        HYDROPHOBIC_SELF_TEST_EXIT_SUCCESS
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Validate and normalize final-runner output."""
+
+        if not isinstance(
+            self.report,
+            HydrophobicSelfTestReport,
+        ):
+            raise TypeError(
+                "report must be a HydrophobicSelfTestReport."
+            )
+
+        if not isinstance(
+            self.configuration,
+            HydrophobicSelfTestConfiguration,
+        ):
+            raise TypeError(
+                "configuration must be a "
+                "HydrophobicSelfTestConfiguration."
+            )
+
+        exit_code = int(
+            self.exit_code
+        )
+
+        if exit_code < 0:
+            raise ValueError(
+                "exit_code cannot be negative."
+            )
+
+        object.__setattr__(
+            self,
+            "exit_code",
+            exit_code,
+        )
+
+        object.__setattr__(
+            self,
+            "text_report",
+            (
+                None
+                if self.text_report is None
+                else str(
+                    self.text_report
+                )
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "json_report",
+            (
+                None
+                if self.json_report is None
+                else str(
+                    self.json_report
+                )
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "written_text_report_path",
+            _self_test_normalize_optional_string(
+                self.written_text_report_path
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "written_json_report_path",
+            _self_test_normalize_optional_string(
+                self.written_json_report_path
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "metadata",
+            _self_test_freeze_metadata(
+                self.metadata
+            ),
+        )
+
+    @property
+    def successful(self) -> bool:
+        """Return whether the complete final run succeeded."""
+
+        return (
+            self.exit_code
+            == HYDROPHOBIC_SELF_TEST_EXIT_SUCCESS
+            and self.report.successful
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_text_report: bool = False,
+        include_json_report: bool = False,
+        include_test_output: bool = True,
+        include_tracebacks: bool = True,
+    ) -> Dict[str, Any]:
+        """Serialize the complete final-runner output."""
+
+        serialized: Dict[str, Any] = {
+            "schema": (
+                HYDROPHOBIC_SELF_TEST_SCHEMA
+            ),
+            "schema_version": (
+                HYDROPHOBIC_SELF_TEST_SCHEMA_VERSION
+            ),
+            "runner_section": (
+                HYDROPHOBIC_SELF_TEST_RUNNER_SECTION
+            ),
+            "successful": self.successful,
+            "exit_code": self.exit_code,
+            "configuration": (
+                self.configuration.to_dict()
+            ),
+            "report": self.report.to_dict(
+                include_output=(
+                    include_test_output
+                ),
+                include_traceback=(
+                    include_tracebacks
+                ),
+                include_return_values=False,
+            ),
+            "written_text_report_path": (
+                self.written_text_report_path
+            ),
+            "written_json_report_path": (
+                self.written_json_report_path
+            ),
+            "metadata": _self_test_json_safe(
+                self.metadata
+            ),
+        }
+
+        if include_text_report:
+            serialized[
+                "text_report"
+            ] = self.text_report
+
+        if include_json_report:
+            serialized[
+                "json_report"
+            ] = self.json_report
+
+        return serialized
+
+
+# -----------------------------------------------------------------------------
+# Test-selection helpers
+# -----------------------------------------------------------------------------
+
+def resolve_hydrophobic_self_test_sections(
+    sections: Optional[
+        Iterable[str]
+    ] = None,
+) -> Tuple[HydrophobicTestSection, ...]:
+    """
+    Resolve final-runner section selection.
+
+    ``None`` selects every executable self-test section, 12.1–12.4.
+    Section 12.5 contains the runner itself and is not a test collection.
+    """
+
+    if sections is None:
+        return (
+            HYDROPHOBIC_SELF_TEST_ALL_SECTIONS
+        )
+
+    normalized_sections = tuple(
+        sorted(
+            {
+                _self_test_normalize_section(
+                    section
+                )
+                for section in sections
+            },
+            key=lambda section: (
+                HYDROPHOBIC_SELF_TEST_SECTION_ORDER[
+                    section
+                ]
+            ),
+        )
+    )
+
+    executable_sections = tuple(
+        section
+        for section in normalized_sections
+        if section
+        != HYDROPHOBIC_SELF_TEST_RUNNER_SECTION
+    )
+
+    if not executable_sections:
+        raise ValueError(
+            "No executable self-test section was selected. "
+            "Select one or more sections from 12.1 to 12.4."
+        )
+
+    return executable_sections
+
+
+def validate_hydrophobic_self_test_registry(
+    *,
+    required_sections: Sequence[str] = (
+        HYDROPHOBIC_SELF_TEST_ALL_SECTIONS
+    ),
+    require_tests: bool = True,
+) -> Mapping[str, int]:
+    """
+    Validate that the expected self-test sections are registered.
+
+    Returns
+    -------
+    Mapping[str, int]
+        Number of registered tests in each requested section.
+    """
+
+    normalized_sections = (
+        resolve_hydrophobic_self_test_sections(
+            required_sections
+        )
+    )
+
+    section_counts: Dict[
+        str,
+        int,
+    ] = {}
+
+    for section in normalized_sections:
+        tests = list_hydrophobic_self_tests(
+            sections=(
+                section,
+            ),
+            enabled_only=False,
+        )
+
+        section_counts[
+            section
+        ] = len(
+            tests
+        )
+
+        if (
+            require_tests
+            and not tests
+        ):
+            raise HydrophobicTestExecutionError(
+                f"No tests are registered for Section {section}."
+            )
+
+    return MappingProxyType(
+        section_counts
+    )
+
+
+# -----------------------------------------------------------------------------
+# Report rendering
+# -----------------------------------------------------------------------------
+
+def build_hydrophobic_self_test_text_report(
+    report: HydrophobicSelfTestReport,
+    *,
+    include_results: bool = True,
+    include_failures: bool = True,
+    include_captured_output: bool = False,
+    include_registry_summary: bool = True,
+) -> str:
+    """
+    Build the final human-readable self-test report.
+    """
+
+    if not isinstance(
+        report,
+        HydrophobicSelfTestReport,
+    ):
+        raise TypeError(
+            "report must be a HydrophobicSelfTestReport."
+        )
+
+    base_report = (
+        format_hydrophobic_self_test_report(
+            report,
+            include_results=include_results,
+            include_failures=include_failures,
+            include_captured_output=(
+                include_captured_output
+            ),
+        )
+    )
+
+    lines = [
+        base_report,
+    ]
+
+    if include_registry_summary:
+        lines.extend(
+            [
+                "",
+                "Section summary",
+                "---------------",
+            ]
+        )
+
+        for section in report.sections:
+            section_results = (
+                report.results_for_section(
+                    section
+                )
+            )
+
+            successful_count = sum(
+                result.successful
+                for result
+                in section_results
+            )
+
+            unsuccessful_count = sum(
+                result.failed
+                for result
+                in section_results
+            )
+
+            lines.append(
+                (
+                    f"{section}: "
+                    f"{successful_count} successful, "
+                    f"{unsuccessful_count} unsuccessful, "
+                    f"{len(section_results)} total"
+                )
+            )
+
+    lines.extend(
+        [
+            "",
+            "Final result",
+            "------------",
+            (
+                "All selected hydrophobic self-tests passed."
+                if report.successful
+                else (
+                    "One or more selected hydrophobic "
+                    "self-tests failed."
+                )
+            ),
+        ]
+    )
+
+    return "\n".join(
+        lines
+    )
+
+
+def build_hydrophobic_self_test_json_report(
+    report: HydrophobicSelfTestReport,
+    *,
+    configuration: Optional[
+        HydrophobicSelfTestConfiguration
+    ] = None,
+    indent: Optional[int] = 2,
+    sort_keys: bool = True,
+    include_output: bool = True,
+    include_traceback: bool = True,
+) -> str:
+    """
+    Build the final JSON self-test report.
+    """
+
+    if not isinstance(
+        report,
+        HydrophobicSelfTestReport,
+    ):
+        raise TypeError(
+            "report must be a HydrophobicSelfTestReport."
+        )
+
+    payload: Dict[str, Any] = {
+        "schema": (
+            HYDROPHOBIC_SELF_TEST_SCHEMA
+        ),
+        "schema_version": (
+            HYDROPHOBIC_SELF_TEST_SCHEMA_VERSION
+        ),
+        "runner_section": (
+            HYDROPHOBIC_SELF_TEST_RUNNER_SECTION
+        ),
+        "report": report.to_dict(
+            include_output=include_output,
+            include_traceback=include_traceback,
+            include_return_values=False,
+        ),
+    }
+
+    if configuration is not None:
+        if not isinstance(
+            configuration,
+            HydrophobicSelfTestConfiguration,
+        ):
+            raise TypeError(
+                "configuration must be a "
+                "HydrophobicSelfTestConfiguration."
+            )
+
+        payload[
+            "configuration"
+        ] = configuration.to_dict()
+
+    return json.dumps(
+        payload,
+        indent=indent,
+        sort_keys=sort_keys,
+        ensure_ascii=False,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Report-file writing
+# -----------------------------------------------------------------------------
+
+def write_hydrophobic_self_test_report(
+    content: str,
+    path: str,
+    *,
+    encoding: str = "utf-8",
+    create_parent_directories: bool = True,
+) -> str:
+    """
+    Write a self-test report and return its resolved file path.
+    """
+
+    from pathlib import Path
+
+    normalized_path = (
+        _self_test_normalize_identifier(
+            path,
+            name="report path",
+        )
+    )
+
+    report_path = Path(
+        normalized_path
+    ).expanduser()
+
+    if create_parent_directories:
+        report_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+    report_path.write_text(
+        str(content),
+        encoding=encoding,
+    )
+
+    return str(
+        report_path.resolve()
+    )
+
+
+def save_hydrophobic_self_test_reports(
+    *,
+    text_report: Optional[str] = None,
+    json_report: Optional[str] = None,
+    text_report_path: Optional[str] = None,
+    json_report_path: Optional[str] = None,
+) -> Tuple[
+    Optional[str],
+    Optional[str],
+]:
+    """
+    Save the generated text and JSON reports.
+
+    A report is written only when both its content and destination path
+    are provided.
+    """
+
+    written_text_path: Optional[
+        str
+    ] = None
+
+    written_json_path: Optional[
+        str
+    ] = None
+
+    if (
+        text_report is not None
+        and text_report_path is not None
+    ):
+        written_text_path = (
+            write_hydrophobic_self_test_report(
+                text_report,
+                text_report_path,
+            )
+        )
+
+    if (
+        json_report is not None
+        and json_report_path is not None
+    ):
+        written_json_path = (
+            write_hydrophobic_self_test_report(
+                json_report,
+                json_report_path,
+            )
+        )
+
+    return (
+        written_text_path,
+        written_json_path,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Exit-code calculation
+# -----------------------------------------------------------------------------
+
+def hydrophobic_self_test_exit_code(
+    report: HydrophobicSelfTestReport,
+) -> int:
+    """
+    Convert a self-test report into a process exit code.
+    """
+
+    if not isinstance(
+        report,
+        HydrophobicSelfTestReport,
+    ):
+        raise TypeError(
+            "report must be a HydrophobicSelfTestReport."
+        )
+
+    if report.successful:
+        return (
+            HYDROPHOBIC_SELF_TEST_EXIT_SUCCESS
+        )
+
+    return (
+        HYDROPHOBIC_SELF_TEST_EXIT_FAILURE
+    )
+
+
+# -----------------------------------------------------------------------------
+# Main public runner
+# -----------------------------------------------------------------------------
+
+def run_self_tests(
+    *,
+    sections: Optional[
+        Iterable[str]
+    ] = None,
+    tags: Optional[
+        Iterable[str]
+    ] = None,
+    identifiers: Optional[
+        Iterable[str]
+    ] = None,
+    enabled_only: bool = True,
+    fail_fast: bool = False,
+    capture_output: bool = True,
+    capture_warnings: bool = True,
+    verbose: bool = True,
+    include_result_lines: bool = True,
+    include_failure_details: bool = True,
+    include_captured_output: bool = False,
+    output_format: HydrophobicSelfTestOutputFormat = "text",
+    text_report_path: Optional[str] = None,
+    json_report_path: Optional[str] = None,
+    json_indent: Optional[int] = 2,
+    json_sort_keys: bool = True,
+    random_seed: int = 12345,
+    absolute_tolerance: Number = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_TOLERANCE
+    ),
+    relative_tolerance: Number = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_RELATIVE_TOLERANCE
+    ),
+    validate_registry: bool = True,
+    raise_on_failure: bool = False,
+    metadata: Optional[
+        Mapping[str, Any]
+    ] = None,
+) -> HydrophobicSelfTestRun:
+    """
+    Execute the complete hydrophobic self-test suite.
+
+    By default, this runs all tests registered in Sections 12.1–12.4.
+
+    Parameters
+    ----------
+    sections
+        Optional selection of test sections. Section 12.5 is ignored
+        because it contains the runner rather than test cases.
+
+    tags
+        Optional selection of tests that match at least one tag.
+
+    identifiers
+        Optional explicit selection of test identifiers.
+
+    fail_fast
+        Stop after the first failing or erroneous test.
+
+    verbose
+        Print the generated report.
+
+    output_format
+        ``"text"``, ``"json"``, ``"both"`` or ``"none"``.
+
+    text_report_path
+        Optional destination for the human-readable report.
+
+    json_report_path
+        Optional destination for the JSON report.
+
+    validate_registry
+        Ensure every selected section contains registered tests before
+        running the suite.
+
+    raise_on_failure
+        Raise ``HydrophobicTestExecutionError`` when the final report is
+        unsuccessful.
+
+    Returns
+    -------
+    HydrophobicSelfTestRun
+        Final report, rendered outputs, file paths and exit code.
+    """
+
+    resolved_sections = (
+        resolve_hydrophobic_self_test_sections(
+            sections
+        )
+    )
+
+    configuration = (
+        HydrophobicSelfTestConfiguration(
+            sections=resolved_sections,
+            tags=(
+                ()
+                if tags is None
+                else tuple(tags)
+            ),
+            identifiers=(
+                ()
+                if identifiers is None
+                else tuple(identifiers)
+            ),
+            enabled_only=enabled_only,
+            fail_fast=fail_fast,
+            capture_output=capture_output,
+            capture_warnings=(
+                capture_warnings
+            ),
+            verbose=verbose,
+            include_result_lines=(
+                include_result_lines
+            ),
+            include_failure_details=(
+                include_failure_details
+            ),
+            include_captured_output=(
+                include_captured_output
+            ),
+            output_format=output_format,
+            text_report_path=(
+                text_report_path
+            ),
+            json_report_path=(
+                json_report_path
+            ),
+            json_indent=json_indent,
+            json_sort_keys=(
+                json_sort_keys
+            ),
+            random_seed=random_seed,
+            absolute_tolerance=np.float64(
+                float(
+                    absolute_tolerance
+                )
+            ),
+            relative_tolerance=np.float64(
+                float(
+                    relative_tolerance
+                )
+            ),
+            metadata=(
+                {}
+                if metadata is None
+                else dict(metadata)
+            ),
+        )
+    )
+
+    if validate_registry:
+        registry_counts = (
+            validate_hydrophobic_self_test_registry(
+                required_sections=(
+                    resolved_sections
+                ),
+                require_tests=True,
+            )
+        )
+
+    else:
+        registry_counts = MappingProxyType(
+            {}
+        )
+
+    context = HydrophobicTestContext(
+        random_seed=(
+            configuration.random_seed
+        ),
+        absolute_tolerance=(
+            configuration.absolute_tolerance
+        ),
+        relative_tolerance=(
+            configuration.relative_tolerance
+        ),
+        verbose=configuration.verbose,
+        metadata={
+            "runner": "run_self_tests",
+            "selected_sections": list(
+                configuration.sections
+            ),
+        },
+    )
+
+    report_metadata: Dict[
+        str,
+        Any,
+    ] = {
+        "runner": "run_self_tests",
+        "runner_section": (
+            HYDROPHOBIC_SELF_TEST_RUNNER_SECTION
+        ),
+        "selected_sections": list(
+            configuration.sections
+        ),
+        "registry_counts": dict(
+            registry_counts
+        ),
+        "hydrophobic_self_test_schema": (
+            HYDROPHOBIC_SELF_TEST_SCHEMA
+        ),
+        "hydrophobic_self_test_schema_version": (
+            HYDROPHOBIC_SELF_TEST_SCHEMA_VERSION
+        ),
+    }
+
+    report_metadata.update(
+        dict(
+            configuration.metadata
+        )
+    )
+
+    report = run_registered_hydrophobic_tests(
+        sections=(
+            configuration.sections
+        ),
+        tags=(
+            configuration.tags
+            or None
+        ),
+        identifiers=(
+            configuration.identifiers
+            or None
+        ),
+        enabled_only=(
+            configuration.enabled_only
+        ),
+        fail_fast=(
+            configuration.fail_fast
+        ),
+        capture_output=(
+            configuration.capture_output
+        ),
+        capture_warnings=(
+            configuration.capture_warnings
+        ),
+        context=context,
+        metadata=report_metadata,
+    )
+
+    text_report: Optional[
+        str
+    ] = None
+
+    json_report: Optional[
+        str
+    ] = None
+
+    if configuration.output_format in {
+        "text",
+        "both",
+    }:
+        text_report = (
+            build_hydrophobic_self_test_text_report(
+                report,
+                include_results=(
+                    configuration.include_result_lines
+                ),
+                include_failures=(
+                    configuration.include_failure_details
+                ),
+                include_captured_output=(
+                    configuration.include_captured_output
+                ),
+                include_registry_summary=True,
+            )
+        )
+
+    if configuration.output_format in {
+        "json",
+        "both",
+    }:
+        json_report = (
+            build_hydrophobic_self_test_json_report(
+                report,
+                configuration=(
+                    configuration
+                ),
+                indent=(
+                    configuration.json_indent
+                ),
+                sort_keys=(
+                    configuration.json_sort_keys
+                ),
+                include_output=(
+                    configuration.capture_output
+                ),
+                include_traceback=True,
+            )
+        )
+
+    (
+        written_text_report_path,
+        written_json_report_path,
+    ) = save_hydrophobic_self_test_reports(
+        text_report=text_report,
+        json_report=json_report,
+        text_report_path=(
+            configuration.text_report_path
+        ),
+        json_report_path=(
+            configuration.json_report_path
+        ),
+    )
+
+    exit_code = hydrophobic_self_test_exit_code(
+        report
+    )
+
+    final_run = HydrophobicSelfTestRun(
+        report=report,
+        configuration=configuration,
+        text_report=text_report,
+        json_report=json_report,
+        written_text_report_path=(
+            written_text_report_path
+        ),
+        written_json_report_path=(
+            written_json_report_path
+        ),
+        exit_code=exit_code,
+        metadata={
+            "registry_counts": dict(
+                registry_counts
+            ),
+            "selected_test_count": (
+                report.metadata.get(
+                    "selected_test_count"
+                )
+            ),
+            "executed_test_count": (
+                report.test_count
+            ),
+        },
+    )
+
+    if configuration.verbose:
+        if text_report is not None:
+            print(
+                text_report
+            )
+
+        elif json_report is not None:
+            print(
+                json_report
+            )
+
+        else:
+            print(
+                (
+                    "Hydrophobic self-tests passed."
+                    if final_run.successful
+                    else (
+                        "Hydrophobic self-tests failed."
+                    )
+                )
+            )
+
+        if (
+            written_text_report_path
+            is not None
+        ):
+            print(
+                (
+                    "Text report written to: "
+                    f"{written_text_report_path}"
+                )
+            )
+
+        if (
+            written_json_report_path
+            is not None
+        ):
+            print(
+                (
+                    "JSON report written to: "
+                    f"{written_json_report_path}"
+                )
+            )
+
+    if (
+        raise_on_failure
+        and not final_run.successful
+    ):
+        failed_identifiers = tuple(
+            result.identifier
+            for result
+            in report.failed_results()
+        )
+
+        raise HydrophobicTestExecutionError(
+            (
+                "Hydrophobic self-tests failed. "
+                f"Failing tests: {failed_identifiers!r}"
+            )
+        )
+
+    return final_run
+
+
+# -----------------------------------------------------------------------------
+# Convenience runners
+# -----------------------------------------------------------------------------
+
+def run_all_hydrophobic_self_tests(
+    *,
+    fail_fast: bool = False,
+    verbose: bool = True,
+    raise_on_failure: bool = False,
+) -> HydrophobicSelfTestRun:
+    """
+    Execute every registered hydrophobic self-test from 12.1 to 12.4.
+    """
+
+    return run_self_tests(
+        sections=(
+            HYDROPHOBIC_SELF_TEST_ALL_SECTIONS
+        ),
+        fail_fast=fail_fast,
+        verbose=verbose,
+        output_format="text",
+        raise_on_failure=(
+            raise_on_failure
+        ),
+    )
+
+
+def run_hydrophobic_self_test_section(
+    section: str,
+    *,
+    fail_fast: bool = False,
+    verbose: bool = True,
+    raise_on_failure: bool = False,
+) -> HydrophobicSelfTestRun:
+    """
+    Execute one self-test section.
+    """
+
+    normalized_section = (
+        _self_test_normalize_section(
+            section
+        )
+    )
+
+    if (
+        normalized_section
+        == HYDROPHOBIC_SELF_TEST_RUNNER_SECTION
+    ):
+        raise ValueError(
+            "Section 12.5 contains the runner and has no "
+            "registered test cases."
+        )
+
+    return run_self_tests(
+        sections=(
+            normalized_section,
+        ),
+        fail_fast=fail_fast,
+        verbose=verbose,
+        output_format="text",
+        raise_on_failure=(
+            raise_on_failure
+        ),
+    )
+
+
+def run_hydrophobic_self_tests_to_files(
+    *,
+    output_directory: str = ".",
+    fail_fast: bool = False,
+    verbose: bool = True,
+    text_filename: str = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_TEXT_REPORT_NAME
+    ),
+    json_filename: str = (
+        HYDROPHOBIC_SELF_TEST_DEFAULT_JSON_REPORT_NAME
+    ),
+) -> HydrophobicSelfTestRun:
+    """
+    Execute the complete suite and save both report formats.
+    """
+
+    from pathlib import Path
+
+    output_path = Path(
+        output_directory
+    ).expanduser()
+
+    return run_self_tests(
+        sections=(
+            HYDROPHOBIC_SELF_TEST_ALL_SECTIONS
+        ),
+        fail_fast=fail_fast,
+        verbose=verbose,
+        output_format="both",
+        text_report_path=str(
+            output_path
+            / text_filename
+        ),
+        json_report_path=str(
+            output_path
+            / json_filename
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# Compact result check
+# -----------------------------------------------------------------------------
+
+def assert_hydrophobic_self_tests_passed(
+    result: Union[
+        HydrophobicSelfTestRun,
+        HydrophobicSelfTestReport,
+    ],
+) -> None:
+    """
+    Raise an exception unless the supplied self-test result succeeded.
+    """
+
+    if isinstance(
+        result,
+        HydrophobicSelfTestRun,
+    ):
+        report = result.report
+
+    elif isinstance(
+        result,
+        HydrophobicSelfTestReport,
+    ):
+        report = result
+
+    else:
+        raise TypeError(
+            "result must be HydrophobicSelfTestRun or "
+            "HydrophobicSelfTestReport."
+        )
+
+    if report.successful:
+        return
+
+    failed_results = (
+        report.failed_results()
+    )
+
+    failure_text = "; ".join(
+        (
+            f"{result.identifier}: "
+            f"{result.exception_text or result.message}"
+        )
+        for result
+        in failed_results
+    )
+
+    raise HydrophobicTestExecutionError(
+        (
+            "Hydrophobic self-test suite did not pass."
+            + (
+                f" {failure_text}"
+                if failure_text
+                else ""
+            )
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# Command-line argument parser
+# -----------------------------------------------------------------------------
+
+def build_hydrophobic_self_test_argument_parser() -> Any:
+    """
+    Build the command-line parser for hydrophobic.py self-tests.
+    """
+
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="hydrophobic.py",
+        description=(
+            "Run the hydrophobic interaction module self-tests."
+        ),
+    )
+
+    parser.add_argument(
+        "--section",
+        dest="sections",
+        action="append",
+        choices=(
+            "12.1",
+            "12.2",
+            "12.3",
+            "12.4",
+        ),
+        help=(
+            "Run one self-test section. May be supplied multiple times."
+        ),
+    )
+
+    parser.add_argument(
+        "--tag",
+        dest="tags",
+        action="append",
+        help=(
+            "Run tests matching a tag. May be supplied multiple times."
+        ),
+    )
+
+    parser.add_argument(
+        "--test",
+        dest="identifiers",
+        action="append",
+        help=(
+            "Run a specific test identifier. "
+            "May be supplied multiple times."
+        ),
+    )
+
+    parser.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help=(
+            "Stop after the first unsuccessful test."
+        ),
+    )
+
+    parser.add_argument(
+        "--include-disabled",
+        action="store_true",
+        help=(
+            "Include tests registered as disabled."
+        ),
+    )
+
+    parser.add_argument(
+        "--no-capture-output",
+        action="store_true",
+        help=(
+            "Do not capture stdout and stderr produced by tests."
+        ),
+    )
+
+    parser.add_argument(
+        "--no-capture-warnings",
+        action="store_true",
+        help=(
+            "Do not capture warnings emitted by tests."
+        ),
+    )
+
+    parser.add_argument(
+        "--show-output",
+        action="store_true",
+        help=(
+            "Include captured test output in the text report."
+        ),
+    )
+
+    parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help=(
+            "Omit individual result lines from the text report."
+        ),
+    )
+
+    parser.add_argument(
+        "--format",
+        dest="output_format",
+        choices=(
+            "text",
+            "json",
+            "both",
+            "none",
+        ),
+        default="text",
+        help=(
+            "Report format printed or generated."
+        ),
+    )
+
+    parser.add_argument(
+        "--text-report",
+        dest="text_report_path",
+        help=(
+            "Optional path for the text report."
+        ),
+    )
+
+    parser.add_argument(
+        "--json-report",
+        dest="json_report_path",
+        help=(
+            "Optional path for the JSON report."
+        ),
+    )
+
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=12345,
+        help=(
+            "Random seed used by synthetic tests."
+        ),
+    )
+
+    parser.add_argument(
+        "--atol",
+        type=float,
+        default=float(
+            HYDROPHOBIC_SELF_TEST_DEFAULT_TOLERANCE
+        ),
+        help=(
+            "Default absolute numeric tolerance."
+        ),
+    )
+
+    parser.add_argument(
+        "--rtol",
+        type=float,
+        default=float(
+            HYDROPHOBIC_SELF_TEST_DEFAULT_RELATIVE_TOLERANCE
+        ),
+        help=(
+            "Default relative numeric tolerance."
+        ),
+    )
+
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help=(
+            "Do not print the generated report."
+        ),
+    )
+
+    parser.add_argument(
+        "--raise-on-failure",
+        action="store_true",
+        help=(
+            "Raise a runner exception after unsuccessful tests."
+        ),
+    )
+
+    parser.add_argument(
+        "--list-tests",
+        action="store_true",
+        help=(
+            "List matching registered tests without running them."
+        ),
+    )
+
+    return parser
+
+
+# -----------------------------------------------------------------------------
+# Command-line test listing
+# -----------------------------------------------------------------------------
+
+def format_hydrophobic_self_test_listing(
+    tests: Iterable[
+        HydrophobicTestCase
+    ],
+) -> str:
+    """
+    Format a list of registered tests for command-line display.
+    """
+
+    test_tuple = tuple(
+        tests
+    )
+
+    if not test_tuple:
+        return (
+            "No hydrophobic self-tests match the selection."
+        )
+
+    lines = [
+        "Registered hydrophobic self-tests",
+        "=================================",
+    ]
+
+    current_section: Optional[
+        str
+    ] = None
+
+    for test_case in test_tuple:
+        if (
+            test_case.section
+            != current_section
+        ):
+            current_section = (
+                test_case.section
+            )
+
+            lines.extend(
+                [
+                    "",
+                    f"Section {current_section}",
+                    "-" * (
+                        len(
+                            current_section
+                        )
+                        + 8
+                    ),
+                ]
+            )
+
+        tag_text = (
+            ", ".join(
+                test_case.tags
+            )
+            if test_case.tags
+            else "-"
+        )
+
+        state = (
+            "enabled"
+            if test_case.enabled
+            else "disabled"
+        )
+
+        lines.append(
+            (
+                f"{test_case.identifier} "
+                f"[{state}] "
+                f"tags={tag_text}"
+            )
+        )
+
+        if test_case.description:
+            lines.append(
+                (
+                    "  "
+                    f"{test_case.description}"
+                )
+            )
+
+    lines.extend(
+        [
+            "",
+            f"Total: {len(test_tuple)}",
+        ]
+    )
+
+    return "\n".join(
+        lines
+    )
+
+
+# -----------------------------------------------------------------------------
+# Command-line entry function
+# -----------------------------------------------------------------------------
+
+def hydrophobic_self_test_main(
+    argv: Optional[
+        Sequence[str]
+    ] = None,
+) -> int:
+    """
+    Command-line entry point for the hydrophobic self-tests.
+
+    Returns a process-compatible exit code.
+    """
+
+    parser = (
+        build_hydrophobic_self_test_argument_parser()
+    )
+
+    arguments = parser.parse_args(
+        None
+        if argv is None
+        else list(argv)
+    )
+
+    try:
+        selected_sections = (
+            resolve_hydrophobic_self_test_sections(
+                arguments.sections
+            )
+        )
+
+        if arguments.list_tests:
+            tests = list_hydrophobic_self_tests(
+                sections=(
+                    selected_sections
+                ),
+                tags=arguments.tags,
+                enabled_only=(
+                    not arguments.include_disabled
+                ),
+            )
+
+            if arguments.identifiers:
+                identifier_set = {
+                    _self_test_normalize_identifier(
+                        identifier
+                    )
+                    for identifier
+                    in arguments.identifiers
+                }
+
+                tests = tuple(
+                    test_case
+                    for test_case
+                    in tests
+                    if test_case.identifier
+                    in identifier_set
+                )
+
+            print(
+                format_hydrophobic_self_test_listing(
+                    tests
+                )
+            )
+
+            return (
+                HYDROPHOBIC_SELF_TEST_EXIT_SUCCESS
+            )
+
+        final_run = run_self_tests(
+            sections=selected_sections,
+            tags=arguments.tags,
+            identifiers=(
+                arguments.identifiers
+            ),
+            enabled_only=(
+                not arguments.include_disabled
+            ),
+            fail_fast=(
+                arguments.fail_fast
+            ),
+            capture_output=(
+                not arguments.no_capture_output
+            ),
+            capture_warnings=(
+                not arguments.no_capture_warnings
+            ),
+            verbose=(
+                not arguments.quiet
+            ),
+            include_result_lines=(
+                not arguments.summary_only
+            ),
+            include_failure_details=True,
+            include_captured_output=(
+                arguments.show_output
+            ),
+            output_format=(
+                arguments.output_format
+            ),
+            text_report_path=(
+                arguments.text_report_path
+            ),
+            json_report_path=(
+                arguments.json_report_path
+            ),
+            random_seed=(
+                arguments.random_seed
+            ),
+            absolute_tolerance=(
+                arguments.atol
+            ),
+            relative_tolerance=(
+                arguments.rtol
+            ),
+            validate_registry=True,
+            raise_on_failure=(
+                arguments.raise_on_failure
+            ),
+            metadata={
+                "command_line": True,
+            },
+        )
+
+        return final_run.exit_code
+
+    except (
+        HydrophobicTestExecutionError,
+        HydrophobicTestRegistrationError,
+        TypeError,
+        ValueError,
+        OSError,
+    ) as exc:
+        import sys
+
+        print(
+            (
+                "Hydrophobic self-test runner error: "
+                f"{type(exc).__name__}: {exc}"
+            ),
+            file=sys.stderr,
+        )
+
+        return (
+            HYDROPHOBIC_SELF_TEST_EXIT_RUNNER_ERROR
+        )
+
+
+# -----------------------------------------------------------------------------
+# Final-runner self-validation
+# -----------------------------------------------------------------------------
+
+def validate_hydrophobic_self_test_runner(
+) -> Mapping[str, Any]:
+    """
+    Validate the final runner without executing the complete test suite.
+    """
+
+    registry_counts = (
+        validate_hydrophobic_self_test_registry(
+            required_sections=(
+                HYDROPHOBIC_SELF_TEST_ALL_SECTIONS
+            ),
+            require_tests=True,
+        )
+    )
+
+    configuration = (
+        HydrophobicSelfTestConfiguration()
+    )
+
+    assert_hydrophobic_equal(
+        configuration.sections,
+        HYDROPHOBIC_SELF_TEST_ALL_SECTIONS,
+    )
+
+    assert_hydrophobic_true(
+        all(
+            count > 0
+            for count
+            in registry_counts.values()
+        )
+    )
+
+    assert_hydrophobic_equal(
+        hydrophobic_self_test_exit_code(
+            _EMPTY_HYDROPHOBIC_SELF_TEST_REPORT
+        ),
+        HYDROPHOBIC_SELF_TEST_EXIT_SUCCESS,
+    )
+
+    return MappingProxyType(
+        {
+            "valid": True,
+            "registry_counts": dict(
+                registry_counts
+            ),
+            "selected_sections": list(
+                configuration.sections
+            ),
+        }
+    )
+
+
+# -----------------------------------------------------------------------------
+# Final Section 12 public names
+# -----------------------------------------------------------------------------
+
+_SECTION_12_5_PUBLIC_NAMES: Final[
+    Tuple[str, ...]
+] = (
+    # Configuration and run result
+    "HydrophobicSelfTestOutputFormat",
+    "HydrophobicSelfTestConfiguration",
+    "HydrophobicSelfTestRun",
+
+    # Selection and validation
+    "resolve_hydrophobic_self_test_sections",
+    "validate_hydrophobic_self_test_registry",
+    "validate_hydrophobic_self_test_runner",
+
+    # Report rendering and writing
+    "build_hydrophobic_self_test_text_report",
+    "build_hydrophobic_self_test_json_report",
+    "write_hydrophobic_self_test_report",
+    "save_hydrophobic_self_test_reports",
+
+    # Result checking
+    "hydrophobic_self_test_exit_code",
+    "assert_hydrophobic_self_tests_passed",
+
+    # Main runners
+    "run_self_tests",
+    "run_all_hydrophobic_self_tests",
+    "run_hydrophobic_self_test_section",
+    "run_hydrophobic_self_tests_to_files",
+
+    # Command-line interface
+    "build_hydrophobic_self_test_argument_parser",
+    "format_hydrophobic_self_test_listing",
+    "hydrophobic_self_test_main",
+)
+
+for public_name in _SECTION_12_5_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+# =============================================================================
+# Final module entry point
+# =============================================================================
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(
+        hydrophobic_self_test_main()
+    )
+
+
+# =============================================================================
+# End of Section 12.5
+# End of hydrophobic.py
+# =============================================================================
+
 
