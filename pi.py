@@ -19165,4 +19165,2927 @@ def summarize_amide_groups(
 # -----------------------------------------------------------------------------
 
 
+# =============================================================================
+# 8. DETECÇÃO DAS INTERAÇÕES π
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 8.1. Constantes geométricas de detecção
+# -----------------------------------------------------------------------------
+
+DEFAULT_PI_PI_MAXIMUM_CENTROID_DISTANCE: Final[float] = 7.50
+DEFAULT_PI_PI_MAXIMUM_ATOMIC_DISTANCE: Final[float] = 5.50
+DEFAULT_PI_PI_MAXIMUM_LATERAL_OFFSET: Final[float] = 3.50
+DEFAULT_PI_PI_MAXIMUM_PLANE_HEIGHT: Final[float] = 5.50
+
+DEFAULT_PI_PI_PARALLEL_MAXIMUM_ANGLE: Final[float] = 30.0
+DEFAULT_PI_PI_T_SHAPED_MINIMUM_ANGLE: Final[float] = 60.0
+DEFAULT_PI_PI_T_SHAPED_MAXIMUM_ANGLE: Final[float] = 90.0
+
+DEFAULT_CATION_PI_MAXIMUM_CENTER_DISTANCE: Final[float] = 7.00
+DEFAULT_CATION_PI_MAXIMUM_PLANE_DISTANCE: Final[float] = 6.00
+DEFAULT_CATION_PI_MAXIMUM_RADIAL_OFFSET: Final[float] = 3.50
+DEFAULT_CATION_PI_MAXIMUM_ATOMIC_DISTANCE: Final[float] = 5.50
+DEFAULT_CATION_PI_MAXIMUM_DIRECTION_ANGLE: Final[float] = 60.0
+
+DEFAULT_ANION_PI_MAXIMUM_CENTER_DISTANCE: Final[float] = 7.00
+DEFAULT_ANION_PI_MAXIMUM_PLANE_DISTANCE: Final[float] = 6.00
+DEFAULT_ANION_PI_MAXIMUM_RADIAL_OFFSET: Final[float] = 3.50
+DEFAULT_ANION_PI_MAXIMUM_ATOMIC_DISTANCE: Final[float] = 5.50
+DEFAULT_ANION_PI_MAXIMUM_DIRECTION_ANGLE: Final[float] = 70.0
+
+DEFAULT_AMIDE_PI_MAXIMUM_CENTER_DISTANCE: Final[float] = 7.00
+DEFAULT_AMIDE_PI_MAXIMUM_PLANE_DISTANCE: Final[float] = 5.50
+DEFAULT_AMIDE_PI_MAXIMUM_RADIAL_OFFSET: Final[float] = 3.50
+DEFAULT_AMIDE_PI_MAXIMUM_ATOMIC_DISTANCE: Final[float] = 5.50
+
+DEFAULT_AMIDE_PI_PARALLEL_MAXIMUM_ANGLE: Final[float] = 35.0
+DEFAULT_AMIDE_PI_PERPENDICULAR_MINIMUM_ANGLE: Final[float] = 55.0
+
+DEFAULT_PI_CONTACT_DISTANCE: Final[float] = 5.50
+DEFAULT_PI_DETECTION_TOLERANCE: Final[float] = 1.0e-6
+
+
+PI_PI_GEOMETRY_PARALLEL: Final[str] = "parallel"
+PI_PI_GEOMETRY_OFFSET_PARALLEL: Final[str] = "offset_parallel"
+PI_PI_GEOMETRY_T_SHAPED: Final[str] = "t_shaped"
+PI_PI_GEOMETRY_INTERMEDIATE: Final[str] = "intermediate"
+
+AMIDE_PI_GEOMETRY_PARALLEL: Final[str] = "parallel"
+AMIDE_PI_GEOMETRY_PERPENDICULAR: Final[str] = "perpendicular"
+AMIDE_PI_GEOMETRY_INTERMEDIATE: Final[str] = "intermediate"
+
+
+# -----------------------------------------------------------------------------
+# 8.2. Estrutura interna de limites geométricos
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PiDetectionLimits:
+    """
+    Geometric limits used during interaction detection.
+    """
+
+    pi_pi_maximum_centroid_distance: float = (
+        DEFAULT_PI_PI_MAXIMUM_CENTROID_DISTANCE
+    )
+    pi_pi_maximum_atomic_distance: float = (
+        DEFAULT_PI_PI_MAXIMUM_ATOMIC_DISTANCE
+    )
+    pi_pi_maximum_lateral_offset: float = (
+        DEFAULT_PI_PI_MAXIMUM_LATERAL_OFFSET
+    )
+    pi_pi_maximum_plane_height: float = (
+        DEFAULT_PI_PI_MAXIMUM_PLANE_HEIGHT
+    )
+    pi_pi_parallel_maximum_angle: float = (
+        DEFAULT_PI_PI_PARALLEL_MAXIMUM_ANGLE
+    )
+    pi_pi_t_shaped_minimum_angle: float = (
+        DEFAULT_PI_PI_T_SHAPED_MINIMUM_ANGLE
+    )
+    pi_pi_t_shaped_maximum_angle: float = (
+        DEFAULT_PI_PI_T_SHAPED_MAXIMUM_ANGLE
+    )
+
+    cation_pi_maximum_center_distance: float = (
+        DEFAULT_CATION_PI_MAXIMUM_CENTER_DISTANCE
+    )
+    cation_pi_maximum_plane_distance: float = (
+        DEFAULT_CATION_PI_MAXIMUM_PLANE_DISTANCE
+    )
+    cation_pi_maximum_radial_offset: float = (
+        DEFAULT_CATION_PI_MAXIMUM_RADIAL_OFFSET
+    )
+    cation_pi_maximum_atomic_distance: float = (
+        DEFAULT_CATION_PI_MAXIMUM_ATOMIC_DISTANCE
+    )
+    cation_pi_maximum_direction_angle: float = (
+        DEFAULT_CATION_PI_MAXIMUM_DIRECTION_ANGLE
+    )
+
+    anion_pi_maximum_center_distance: float = (
+        DEFAULT_ANION_PI_MAXIMUM_CENTER_DISTANCE
+    )
+    anion_pi_maximum_plane_distance: float = (
+        DEFAULT_ANION_PI_MAXIMUM_PLANE_DISTANCE
+    )
+    anion_pi_maximum_radial_offset: float = (
+        DEFAULT_ANION_PI_MAXIMUM_RADIAL_OFFSET
+    )
+    anion_pi_maximum_atomic_distance: float = (
+        DEFAULT_ANION_PI_MAXIMUM_ATOMIC_DISTANCE
+    )
+    anion_pi_maximum_direction_angle: float = (
+        DEFAULT_ANION_PI_MAXIMUM_DIRECTION_ANGLE
+    )
+
+    amide_pi_maximum_center_distance: float = (
+        DEFAULT_AMIDE_PI_MAXIMUM_CENTER_DISTANCE
+    )
+    amide_pi_maximum_plane_distance: float = (
+        DEFAULT_AMIDE_PI_MAXIMUM_PLANE_DISTANCE
+    )
+    amide_pi_maximum_radial_offset: float = (
+        DEFAULT_AMIDE_PI_MAXIMUM_RADIAL_OFFSET
+    )
+    amide_pi_maximum_atomic_distance: float = (
+        DEFAULT_AMIDE_PI_MAXIMUM_ATOMIC_DISTANCE
+    )
+    amide_pi_parallel_maximum_angle: float = (
+        DEFAULT_AMIDE_PI_PARALLEL_MAXIMUM_ANGLE
+    )
+    amide_pi_perpendicular_minimum_angle: float = (
+        DEFAULT_AMIDE_PI_PERPENDICULAR_MINIMUM_ANGLE
+    )
+
+    atomic_contact_distance: float = (
+        DEFAULT_PI_CONTACT_DISTANCE
+    )
+
+    def __post_init__(self) -> None:
+        for field_definition in fields(self):
+            field_name = field_definition.name
+
+            object.__setattr__(
+                self,
+                field_name,
+                _coerce_non_negative_float(
+                    getattr(self, field_name),
+                    field_name=(
+                        f"PiDetectionLimits.{field_name}"
+                    ),
+                ),
+            )
+
+        if self.pi_pi_parallel_maximum_angle > 90.0:
+            raise ValueError(
+                "pi_pi_parallel_maximum_angle cannot exceed 90 degrees."
+            )
+
+        if self.pi_pi_t_shaped_minimum_angle > 90.0:
+            raise ValueError(
+                "pi_pi_t_shaped_minimum_angle cannot exceed 90 degrees."
+            )
+
+        if (
+            self.pi_pi_t_shaped_maximum_angle
+            > 90.0
+        ):
+            raise ValueError(
+                "pi_pi_t_shaped_maximum_angle cannot exceed 90 degrees."
+            )
+
+        if (
+            self.pi_pi_t_shaped_minimum_angle
+            > self.pi_pi_t_shaped_maximum_angle
+        ):
+            raise ValueError(
+                "T-shaped minimum angle cannot exceed maximum angle."
+            )
+
+        if (
+            self.amide_pi_parallel_maximum_angle
+            > 90.0
+        ):
+            raise ValueError(
+                "amide_pi_parallel_maximum_angle cannot exceed 90 degrees."
+            )
+
+        if (
+            self.amide_pi_perpendicular_minimum_angle
+            > 90.0
+        ):
+            raise ValueError(
+                "amide_pi_perpendicular_minimum_angle cannot exceed "
+                "90 degrees."
+            )
+
+    def to_dict(self) -> Dict[str, float]:
+        """
+        Convert limits into a serializable dictionary.
+        """
+
+        return {
+            field_definition.name: float(
+                getattr(
+                    self,
+                    field_definition.name,
+                )
+            )
+            for field_definition in fields(self)
+        }
+
+
+# -----------------------------------------------------------------------------
+# 8.3. Conversão de PiAnalysisConfig em limites de detecção
+# -----------------------------------------------------------------------------
+
+def _get_config_float(
+    config: PiAnalysisConfig,
+    names: Sequence[str],
+    default: float,
+) -> float:
+    """
+    Return the first valid numeric configuration value.
+    """
+
+    for name in names:
+        value = getattr(
+            config,
+            name,
+            None,
+        )
+
+        normalized = _normalize_optional_numeric(
+            value
+        )
+
+        if normalized is not None:
+            return normalized
+
+    return float(default)
+
+
+def create_pi_detection_limits(
+    config: Optional[PiAnalysisConfig] = None,
+) -> PiDetectionLimits:
+    """
+    Create detection limits from the analysis configuration.
+
+    Several aliases are supported to preserve compatibility with previous
+    configuration revisions.
+    """
+
+    analysis_config = (
+        config
+        if config is not None
+        else create_default_pi_config()
+    )
+
+    if not isinstance(
+        analysis_config,
+        PiAnalysisConfig,
+    ):
+        raise TypeError(
+            "config must be a PiAnalysisConfig or None."
+        )
+
+    return PiDetectionLimits(
+        pi_pi_maximum_centroid_distance=_get_config_float(
+            analysis_config,
+            (
+                "pi_pi_maximum_centroid_distance",
+                "maximum_pi_pi_centroid_distance",
+                "pi_pi_distance_maximum",
+            ),
+            DEFAULT_PI_PI_MAXIMUM_CENTROID_DISTANCE,
+        ),
+        pi_pi_maximum_atomic_distance=_get_config_float(
+            analysis_config,
+            (
+                "pi_pi_maximum_atomic_distance",
+                "maximum_pi_pi_atomic_distance",
+            ),
+            DEFAULT_PI_PI_MAXIMUM_ATOMIC_DISTANCE,
+        ),
+        pi_pi_maximum_lateral_offset=_get_config_float(
+            analysis_config,
+            (
+                "pi_pi_maximum_lateral_offset",
+                "maximum_pi_pi_lateral_offset",
+            ),
+            DEFAULT_PI_PI_MAXIMUM_LATERAL_OFFSET,
+        ),
+        pi_pi_maximum_plane_height=_get_config_float(
+            analysis_config,
+            (
+                "pi_pi_maximum_plane_height",
+                "maximum_pi_pi_plane_height",
+            ),
+            DEFAULT_PI_PI_MAXIMUM_PLANE_HEIGHT,
+        ),
+        pi_pi_parallel_maximum_angle=_get_config_float(
+            analysis_config,
+            (
+                "pi_pi_parallel_maximum_angle",
+                "maximum_parallel_pi_pi_angle",
+            ),
+            DEFAULT_PI_PI_PARALLEL_MAXIMUM_ANGLE,
+        ),
+        pi_pi_t_shaped_minimum_angle=_get_config_float(
+            analysis_config,
+            (
+                "pi_pi_t_shaped_minimum_angle",
+                "minimum_t_shaped_pi_pi_angle",
+            ),
+            DEFAULT_PI_PI_T_SHAPED_MINIMUM_ANGLE,
+        ),
+        pi_pi_t_shaped_maximum_angle=_get_config_float(
+            analysis_config,
+            (
+                "pi_pi_t_shaped_maximum_angle",
+                "maximum_t_shaped_pi_pi_angle",
+            ),
+            DEFAULT_PI_PI_T_SHAPED_MAXIMUM_ANGLE,
+        ),
+        cation_pi_maximum_center_distance=_get_config_float(
+            analysis_config,
+            (
+                "cation_pi_maximum_center_distance",
+                "maximum_cation_pi_distance",
+            ),
+            DEFAULT_CATION_PI_MAXIMUM_CENTER_DISTANCE,
+        ),
+        cation_pi_maximum_plane_distance=_get_config_float(
+            analysis_config,
+            (
+                "cation_pi_maximum_plane_distance",
+                "maximum_cation_pi_plane_distance",
+            ),
+            DEFAULT_CATION_PI_MAXIMUM_PLANE_DISTANCE,
+        ),
+        cation_pi_maximum_radial_offset=_get_config_float(
+            analysis_config,
+            (
+                "cation_pi_maximum_radial_offset",
+                "maximum_cation_pi_radial_offset",
+            ),
+            DEFAULT_CATION_PI_MAXIMUM_RADIAL_OFFSET,
+        ),
+        cation_pi_maximum_atomic_distance=_get_config_float(
+            analysis_config,
+            (
+                "cation_pi_maximum_atomic_distance",
+                "maximum_cation_pi_atomic_distance",
+            ),
+            DEFAULT_CATION_PI_MAXIMUM_ATOMIC_DISTANCE,
+        ),
+        cation_pi_maximum_direction_angle=_get_config_float(
+            analysis_config,
+            (
+                "cation_pi_maximum_direction_angle",
+                "maximum_cation_pi_direction_angle",
+            ),
+            DEFAULT_CATION_PI_MAXIMUM_DIRECTION_ANGLE,
+        ),
+        anion_pi_maximum_center_distance=_get_config_float(
+            analysis_config,
+            (
+                "anion_pi_maximum_center_distance",
+                "maximum_anion_pi_distance",
+            ),
+            DEFAULT_ANION_PI_MAXIMUM_CENTER_DISTANCE,
+        ),
+        anion_pi_maximum_plane_distance=_get_config_float(
+            analysis_config,
+            (
+                "anion_pi_maximum_plane_distance",
+                "maximum_anion_pi_plane_distance",
+            ),
+            DEFAULT_ANION_PI_MAXIMUM_PLANE_DISTANCE,
+        ),
+        anion_pi_maximum_radial_offset=_get_config_float(
+            analysis_config,
+            (
+                "anion_pi_maximum_radial_offset",
+                "maximum_anion_pi_radial_offset",
+            ),
+            DEFAULT_ANION_PI_MAXIMUM_RADIAL_OFFSET,
+        ),
+        anion_pi_maximum_atomic_distance=_get_config_float(
+            analysis_config,
+            (
+                "anion_pi_maximum_atomic_distance",
+                "maximum_anion_pi_atomic_distance",
+            ),
+            DEFAULT_ANION_PI_MAXIMUM_ATOMIC_DISTANCE,
+        ),
+        anion_pi_maximum_direction_angle=_get_config_float(
+            analysis_config,
+            (
+                "anion_pi_maximum_direction_angle",
+                "maximum_anion_pi_direction_angle",
+            ),
+            DEFAULT_ANION_PI_MAXIMUM_DIRECTION_ANGLE,
+        ),
+        amide_pi_maximum_center_distance=_get_config_float(
+            analysis_config,
+            (
+                "amide_pi_maximum_center_distance",
+                "maximum_amide_pi_distance",
+            ),
+            DEFAULT_AMIDE_PI_MAXIMUM_CENTER_DISTANCE,
+        ),
+        amide_pi_maximum_plane_distance=_get_config_float(
+            analysis_config,
+            (
+                "amide_pi_maximum_plane_distance",
+                "maximum_amide_pi_plane_distance",
+            ),
+            DEFAULT_AMIDE_PI_MAXIMUM_PLANE_DISTANCE,
+        ),
+        amide_pi_maximum_radial_offset=_get_config_float(
+            analysis_config,
+            (
+                "amide_pi_maximum_radial_offset",
+                "maximum_amide_pi_radial_offset",
+            ),
+            DEFAULT_AMIDE_PI_MAXIMUM_RADIAL_OFFSET,
+        ),
+        amide_pi_maximum_atomic_distance=_get_config_float(
+            analysis_config,
+            (
+                "amide_pi_maximum_atomic_distance",
+                "maximum_amide_pi_atomic_distance",
+            ),
+            DEFAULT_AMIDE_PI_MAXIMUM_ATOMIC_DISTANCE,
+        ),
+        amide_pi_parallel_maximum_angle=_get_config_float(
+            analysis_config,
+            (
+                "amide_pi_parallel_maximum_angle",
+                "maximum_parallel_amide_pi_angle",
+            ),
+            DEFAULT_AMIDE_PI_PARALLEL_MAXIMUM_ANGLE,
+        ),
+        amide_pi_perpendicular_minimum_angle=_get_config_float(
+            analysis_config,
+            (
+                "amide_pi_perpendicular_minimum_angle",
+                "minimum_perpendicular_amide_pi_angle",
+            ),
+            DEFAULT_AMIDE_PI_PERPENDICULAR_MINIMUM_ANGLE,
+        ),
+        atomic_contact_distance=_get_config_float(
+            analysis_config,
+            (
+                "pi_atomic_contact_distance",
+                "maximum_pi_atomic_contact_distance",
+                "atomic_contact_distance",
+            ),
+            DEFAULT_PI_CONTACT_DISTANCE,
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 8.4. Comparação de participantes moleculares
+# -----------------------------------------------------------------------------
+
+def participants_are_different(
+    participant_1: Optional[str],
+    participant_2: Optional[str],
+) -> bool:
+    """
+    Return whether two participant labels represent different molecules.
+    """
+
+    if participant_1 is None or participant_2 is None:
+        return False
+
+    normalized_1 = str(
+        participant_1
+    ).strip().lower()
+
+    normalized_2 = str(
+        participant_2
+    ).strip().lower()
+
+    if not normalized_1 or not normalized_2:
+        return False
+
+    return normalized_1 != normalized_2
+
+
+def objects_share_atoms(
+    atoms_1: Iterable[Any],
+    atoms_2: Iterable[Any],
+) -> bool:
+    """
+    Return whether two molecular objects share at least one atom.
+    """
+
+    atom_ids_1 = {
+        id(atom)
+        for atom in atoms_1
+    }
+
+    return any(
+        id(atom) in atom_ids_1
+        for atom in atoms_2
+    )
+
+
+def objects_belong_to_same_residue(
+    object_1: Any,
+    object_2: Any,
+) -> bool:
+    """
+    Compare residue information exposed by molecular objects.
+    """
+
+    chain_1 = getattr(
+        object_1,
+        "chain_id",
+        None,
+    )
+    chain_2 = getattr(
+        object_2,
+        "chain_id",
+        None,
+    )
+
+    residue_name_1 = getattr(
+        object_1,
+        "residue_name",
+        None,
+    )
+    residue_name_2 = getattr(
+        object_2,
+        "residue_name",
+        None,
+    )
+
+    residue_number_1 = getattr(
+        object_1,
+        "residue_number",
+        None,
+    )
+    residue_number_2 = getattr(
+        object_2,
+        "residue_number",
+        None,
+    )
+
+    model_1 = getattr(
+        object_1,
+        "model_id",
+        None,
+    )
+    model_2 = getattr(
+        object_2,
+        "model_id",
+        None,
+    )
+
+    if (
+        residue_number_1 is None
+        or residue_number_2 is None
+    ):
+        return False
+
+    return (
+        model_1 == model_2
+        and chain_1 == chain_2
+        and residue_name_1 == residue_name_2
+        and residue_number_1 == residue_number_2
+    )
+
+
+def is_cross_participant_pair(
+    object_1: Any,
+    object_2: Any,
+) -> bool:
+    """
+    Return whether two objects belong to receptor and ligand participants.
+    """
+
+    return participants_are_different(
+        getattr(
+            object_1,
+            "participant_type",
+            None,
+        ),
+        getattr(
+            object_2,
+            "participant_type",
+            None,
+        ),
+    )
+
+
+def interaction_pair_is_allowed(
+    object_1: Any,
+    object_2: Any,
+    *,
+    require_cross_participant: bool = True,
+    exclude_same_residue: bool = True,
+    exclude_shared_atoms: bool = True,
+) -> bool:
+    """
+    Apply general pair-level exclusions.
+    """
+
+    atoms_1 = tuple(
+        getattr(
+            object_1,
+            "atoms",
+            (),
+        )
+    )
+
+    atoms_2 = tuple(
+        getattr(
+            object_2,
+            "atoms",
+            (),
+        )
+    )
+
+    if (
+        exclude_shared_atoms
+        and objects_share_atoms(
+            atoms_1,
+            atoms_2,
+        )
+    ):
+        return False
+
+    if (
+        exclude_same_residue
+        and objects_belong_to_same_residue(
+            object_1,
+            object_2,
+        )
+    ):
+        return False
+
+    if (
+        require_cross_participant
+        and not is_cross_participant_pair(
+            object_1,
+            object_2,
+        )
+    ):
+        return False
+
+    return True
+
+
+# -----------------------------------------------------------------------------
+# 8.5. Classificação geométrica preliminar de π–π
+# -----------------------------------------------------------------------------
+
+def classify_pi_pi_geometry(
+    geometry: PiRingPairGeometry,
+    *,
+    limits: Optional[PiDetectionLimits] = None,
+) -> str:
+    """
+    Classify relative aromatic-ring geometry.
+    """
+
+    if not isinstance(
+        geometry,
+        PiRingPairGeometry,
+    ):
+        raise TypeError(
+            "geometry must be a PiRingPairGeometry."
+        )
+
+    detection_limits = (
+        limits
+        if limits is not None
+        else PiDetectionLimits()
+    )
+
+    angle = geometry.acute_normal_angle
+
+    if (
+        angle
+        <= detection_limits
+        .pi_pi_parallel_maximum_angle
+    ):
+        if (
+            geometry.mean_lateral_offset
+            <= 1.50
+        ):
+            return PI_PI_GEOMETRY_PARALLEL
+
+        return PI_PI_GEOMETRY_OFFSET_PARALLEL
+
+    if (
+        detection_limits
+        .pi_pi_t_shaped_minimum_angle
+        <= angle
+        <= detection_limits
+        .pi_pi_t_shaped_maximum_angle
+    ):
+        return PI_PI_GEOMETRY_T_SHAPED
+
+    return PI_PI_GEOMETRY_INTERMEDIATE
+
+
+def pi_pi_geometry_passes_limits(
+    geometry: PiRingPairGeometry,
+    *,
+    limits: PiDetectionLimits,
+) -> Tuple[bool, Tuple[str, ...]]:
+    """
+    Validate ring–ring geometry against detection limits.
+    """
+
+    messages: List[str] = []
+
+    if (
+        geometry.centroid_distance
+        > limits.pi_pi_maximum_centroid_distance
+        + DEFAULT_PI_DETECTION_TOLERANCE
+    ):
+        messages.append(
+            "Centroid distance exceeds the π–π limit."
+        )
+
+    if (
+        geometry.mean_lateral_offset
+        > limits.pi_pi_maximum_lateral_offset
+        + DEFAULT_PI_DETECTION_TOLERANCE
+    ):
+        messages.append(
+            "Lateral offset exceeds the π–π limit."
+        )
+
+    if (
+        geometry.mean_plane_height
+        > limits.pi_pi_maximum_plane_height
+        + DEFAULT_PI_DETECTION_TOLERANCE
+    ):
+        messages.append(
+            "Plane height exceeds the π–π limit."
+        )
+
+    if (
+        geometry.minimum_atomic_distance is not None
+        and geometry.minimum_atomic_distance
+        > limits.pi_pi_maximum_atomic_distance
+        + DEFAULT_PI_DETECTION_TOLERANCE
+    ):
+        messages.append(
+            "Minimum atomic distance exceeds the π–π limit."
+        )
+
+    geometry_class = classify_pi_pi_geometry(
+        geometry,
+        limits=limits,
+    )
+
+    if geometry_class == PI_PI_GEOMETRY_INTERMEDIATE:
+        messages.append(
+            "Ring orientation is outside parallel and T-shaped windows."
+        )
+
+    return (
+        not messages,
+        tuple(messages),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 8.6. Contatos atômicos ring–ring
+# -----------------------------------------------------------------------------
+
+def create_ring_ring_atomic_contacts(
+    ring_1: PiRing,
+    ring_2: PiRing,
+    *,
+    maximum_distance: float,
+) -> Tuple[PiAtomicContact, ...]:
+    """
+    Create atom-level contacts between two aromatic rings.
+    """
+
+    distance_limit = _coerce_non_negative_float(
+        maximum_distance,
+        field_name="maximum_distance",
+    )
+
+    contacts: List[PiAtomicContact] = []
+
+    for atom_1 in ring_1.atoms:
+        coordinate_1 = get_atom_coordinate(
+            atom_1
+        )
+
+        if coordinate_1 is None:
+            continue
+
+        for atom_2 in ring_2.atoms:
+            coordinate_2 = get_atom_coordinate(
+                atom_2
+            )
+
+            if coordinate_2 is None:
+                continue
+
+            distance = distance_between_points(
+                coordinate_1,
+                coordinate_2,
+            )
+
+            if distance > distance_limit:
+                continue
+
+            contacts.append(
+                PiAtomicContact(
+                    atom_1=create_pi_atom_reference(
+                        atom_1
+                    ),
+                    atom_2=create_pi_atom_reference(
+                        atom_2
+                    ),
+                    distance=distance,
+                    contact_type=PI_PI,
+                    metadata={
+                        "ring_1_id": ring_1.ring_id,
+                        "ring_2_id": ring_2.ring_id,
+                    },
+                )
+            )
+
+    contacts.sort(
+        key=lambda contact: (
+            contact.distance,
+            contact.atom_1.atom_name,
+            contact.atom_2.atom_name,
+        )
+    )
+
+    return tuple(contacts)
+
+
+# -----------------------------------------------------------------------------
+# 8.7. Construção padronizada de PiInteraction
+# -----------------------------------------------------------------------------
+
+def _build_interaction_id(
+    interaction_type: str,
+    participant_1_id: Optional[str],
+    participant_2_id: Optional[str],
+) -> str:
+    """
+    Build a deterministic preliminary interaction identifier.
+    """
+
+    first = (
+        str(participant_1_id)
+        if participant_1_id
+        else "unknown-1"
+    )
+
+    second = (
+        str(participant_2_id)
+        if participant_2_id
+        else "unknown-2"
+    )
+
+    return (
+        f"{interaction_type}:"
+        f"{first}:"
+        f"{second}"
+    )
+
+
+def create_pi_pi_interaction(
+    ring_1: PiRing,
+    ring_2: PiRing,
+    geometry: PiRingPairGeometry,
+    *,
+    limits: PiDetectionLimits,
+    atomic_contacts: Optional[
+        Iterable[PiAtomicContact]
+    ] = None,
+) -> PiInteraction:
+    """
+    Create a π–π interaction object.
+    """
+
+    geometry_class = classify_pi_pi_geometry(
+        geometry,
+        limits=limits,
+    )
+
+    interaction = PiInteraction(
+        interaction_id=_build_interaction_id(
+            PI_PI,
+            ring_1.ring_id,
+            ring_2.ring_id,
+        ),
+        interaction_type=PI_PI,
+        geometry_class=geometry_class,
+        ring_1=ring_1,
+        ring_2=ring_2,
+        charged_group=None,
+        amide_group=None,
+        atomic_contacts=tuple(
+            atomic_contacts or ()
+        ),
+        centroid_distance=(
+            geometry.centroid_distance
+        ),
+        minimum_atomic_distance=(
+            geometry.minimum_atomic_distance
+        ),
+        maximum_atomic_distance=(
+            geometry.maximum_atomic_distance
+        ),
+        normal_angle=(
+            geometry.acute_normal_angle
+        ),
+        plane_angle=(
+            geometry.acute_normal_angle
+        ),
+        lateral_offset=(
+            geometry.mean_lateral_offset
+        ),
+        radial_offset=(
+            geometry.mean_lateral_offset
+        ),
+        plane_height=(
+            geometry.mean_plane_height
+        ),
+        ring_1_planarity=(
+            ring_1.planarity_rmsd
+        ),
+        ring_2_planarity=(
+            ring_2.planarity_rmsd
+        ),
+        participant_1_type=(
+            ring_1.participant_type
+        ),
+        participant_2_type=(
+            ring_2.participant_type
+        ),
+        valid=True,
+        metadata={
+            "ring_pair_geometry": (
+                geometry.to_dict()
+            ),
+            "detection_limits": (
+                limits.to_dict()
+            ),
+        },
+    )
+
+    for warning in geometry.warnings:
+        if warning not in interaction.warnings:
+            interaction.warnings.append(
+                warning
+            )
+
+    return interaction
+
+
+def create_charged_group_pi_interaction(
+    group: PiChargedGroup,
+    ring: PiRing,
+    geometry: PiPointRingGeometry,
+    *,
+    interaction_type: str,
+    limits: PiDetectionLimits,
+    atomic_contacts: Optional[
+        Iterable[PiAtomicContact]
+    ] = None,
+) -> PiInteraction:
+    """
+    Create cation–π or anion–π interaction object.
+    """
+
+    normalized_type = _validate_interaction_type(
+        interaction_type
+    )
+
+    if normalized_type not in {
+        CATION_PI,
+        ANION_PI,
+    }:
+        raise ValueError(
+            "interaction_type must be cation–π or anion–π."
+        )
+
+    interaction = PiInteraction(
+        interaction_id=_build_interaction_id(
+            normalized_type,
+            group.group_id,
+            ring.ring_id,
+        ),
+        interaction_type=normalized_type,
+        geometry_class=(
+            "face_centered"
+            if geometry.radial_offset <= 1.50
+            else "offset"
+        ),
+        ring_1=ring,
+        ring_2=None,
+        charged_group=group,
+        amide_group=None,
+        atomic_contacts=tuple(
+            atomic_contacts or ()
+        ),
+        centroid_distance=(
+            geometry.center_distance
+        ),
+        minimum_atomic_distance=(
+            min(
+                (
+                    contact.distance
+                    for contact in (
+                        atomic_contacts or ()
+                    )
+                ),
+                default=None,
+            )
+        ),
+        maximum_atomic_distance=(
+            max(
+                (
+                    contact.distance
+                    for contact in (
+                        atomic_contacts or ()
+                    )
+                ),
+                default=None,
+            )
+        ),
+        normal_angle=(
+            geometry.direction_angle
+        ),
+        plane_angle=(
+            geometry.direction_angle
+        ),
+        lateral_offset=(
+            geometry.radial_offset
+        ),
+        radial_offset=(
+            geometry.radial_offset
+        ),
+        plane_height=(
+            geometry.absolute_plane_distance
+        ),
+        ring_1_planarity=(
+            ring.planarity_rmsd
+        ),
+        ring_2_planarity=None,
+        participant_1_type=(
+            ring.participant_type
+        ),
+        participant_2_type=(
+            group.participant_type
+        ),
+        valid=True,
+        metadata={
+            "point_ring_geometry": (
+                geometry.to_dict()
+            ),
+            "charged_group_id": (
+                group.group_id
+            ),
+            "charged_group_type": (
+                group.group_type
+            ),
+            "effective_charge": (
+                group.effective_charge
+            ),
+            "detection_limits": (
+                limits.to_dict()
+            ),
+        },
+    )
+
+    for warning in geometry.warnings:
+        if warning not in interaction.warnings:
+            interaction.warnings.append(
+                warning
+            )
+
+    return interaction
+
+
+def create_amide_pi_interaction(
+    amide_group: PiAmideGroup,
+    ring: PiRing,
+    geometry: Mapping[str, Any],
+    *,
+    limits: PiDetectionLimits,
+    atomic_contacts: Optional[
+        Iterable[PiAtomicContact]
+    ] = None,
+) -> PiInteraction:
+    """
+    Create an amide–π interaction object.
+    """
+
+    plane_angle = _normalize_optional_numeric(
+        geometry.get("plane_angle")
+    )
+
+    if plane_angle is None:
+        geometry_class = (
+            AMIDE_PI_GEOMETRY_INTERMEDIATE
+        )
+
+    elif (
+        plane_angle
+        <= limits.amide_pi_parallel_maximum_angle
+    ):
+        geometry_class = (
+            AMIDE_PI_GEOMETRY_PARALLEL
+        )
+
+    elif (
+        plane_angle
+        >= limits
+        .amide_pi_perpendicular_minimum_angle
+    ):
+        geometry_class = (
+            AMIDE_PI_GEOMETRY_PERPENDICULAR
+        )
+
+    else:
+        geometry_class = (
+            AMIDE_PI_GEOMETRY_INTERMEDIATE
+        )
+
+    interaction = PiInteraction(
+        interaction_id=_build_interaction_id(
+            AMIDE_PI,
+            amide_group.group_id,
+            ring.ring_id,
+        ),
+        interaction_type=AMIDE_PI,
+        geometry_class=geometry_class,
+        ring_1=ring,
+        ring_2=None,
+        charged_group=None,
+        amide_group=amide_group,
+        atomic_contacts=tuple(
+            atomic_contacts or ()
+        ),
+        centroid_distance=(
+            _normalize_optional_numeric(
+                geometry.get(
+                    "centroid_distance"
+                )
+            )
+        ),
+        minimum_atomic_distance=(
+            _normalize_optional_numeric(
+                geometry.get(
+                    "minimum_atomic_distance"
+                )
+            )
+        ),
+        maximum_atomic_distance=(
+            _normalize_optional_numeric(
+                geometry.get(
+                    "maximum_atomic_distance"
+                )
+            )
+        ),
+        normal_angle=plane_angle,
+        plane_angle=plane_angle,
+        lateral_offset=(
+            _normalize_optional_numeric(
+                geometry.get(
+                    "radial_offset"
+                )
+            )
+        ),
+        radial_offset=(
+            _normalize_optional_numeric(
+                geometry.get(
+                    "radial_offset"
+                )
+            )
+        ),
+        plane_height=(
+            _normalize_optional_numeric(
+                geometry.get(
+                    "plane_height"
+                )
+            )
+        ),
+        ring_1_planarity=(
+            ring.planarity_rmsd
+        ),
+        ring_2_planarity=None,
+        participant_1_type=(
+            ring.participant_type
+        ),
+        participant_2_type=(
+            amide_group.participant_type
+        ),
+        valid=True,
+        metadata={
+            "amide_group_id": (
+                amide_group.group_id
+            ),
+            "amide_group_type": (
+                amide_group.group_type
+            ),
+            "amide_ring_geometry": (
+                dict(geometry)
+            ),
+            "detection_limits": (
+                limits.to_dict()
+            ),
+        },
+    )
+
+    for warning in geometry.get(
+        "warnings",
+        (),
+    ):
+        if warning not in interaction.warnings:
+            interaction.warnings.append(
+                str(warning)
+            )
+
+    return interaction
+
+
+# -----------------------------------------------------------------------------
+# 8.8. Detecção de interações π–π
+# -----------------------------------------------------------------------------
+
+def detect_pi_pi_interactions(
+    rings_1: Iterable[PiRing],
+    rings_2: Optional[Iterable[PiRing]] = None,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    limits: Optional[PiDetectionLimits] = None,
+    require_cross_participant: bool = True,
+    exclude_same_residue: bool = True,
+    calculate_atomic_contacts: bool = True,
+    strict: bool = False,
+) -> List[PiInteraction]:
+    """
+    Detect π–π interactions between two aromatic-ring collections.
+
+    When ``rings_2`` is omitted, all unique pairs in ``rings_1`` are tested.
+    """
+
+    detection_limits = (
+        limits
+        if limits is not None
+        else create_pi_detection_limits(
+            config
+        )
+    )
+
+    first_rings = ensure_pi_ring_geometries(
+        rings_1,
+        config=config,
+        remove_invalid=True,
+        strict=strict,
+    )
+
+    interactions: List[PiInteraction] = []
+
+    if rings_2 is None:
+        pair_iterator = (
+            (
+                first_rings[index_1],
+                first_rings[index_2],
+            )
+            for index_1 in range(
+                len(first_rings)
+            )
+            for index_2 in range(
+                index_1 + 1,
+                len(first_rings),
+            )
+        )
+
+    else:
+        second_rings = ensure_pi_ring_geometries(
+            rings_2,
+            config=config,
+            remove_invalid=True,
+            strict=strict,
+        )
+
+        pair_iterator = (
+            (
+                ring_1,
+                ring_2,
+            )
+            for ring_1 in first_rings
+            for ring_2 in second_rings
+        )
+
+    for ring_1, ring_2 in pair_iterator:
+        if not interaction_pair_is_allowed(
+            ring_1,
+            ring_2,
+            require_cross_participant=(
+                require_cross_participant
+            ),
+            exclude_same_residue=(
+                exclude_same_residue
+            ),
+            exclude_shared_atoms=True,
+        ):
+            continue
+
+        geometry = calculate_pi_ring_pair_geometry(
+            ring_1,
+            ring_2,
+            config=config,
+            calculate_atomic_distances=True,
+            strict=strict,
+        )
+
+        if geometry is None:
+            continue
+
+        accepted, _ = (
+            pi_pi_geometry_passes_limits(
+                geometry,
+                limits=detection_limits,
+            )
+        )
+
+        if not accepted:
+            continue
+
+        contacts: Tuple[
+            PiAtomicContact,
+            ...,
+        ] = ()
+
+        if calculate_atomic_contacts:
+            contacts = (
+                create_ring_ring_atomic_contacts(
+                    ring_1,
+                    ring_2,
+                    maximum_distance=(
+                        detection_limits
+                        .atomic_contact_distance
+                    ),
+                )
+            )
+
+        interaction = create_pi_pi_interaction(
+            ring_1,
+            ring_2,
+            geometry,
+            limits=detection_limits,
+            atomic_contacts=contacts,
+        )
+
+        interactions.append(
+            interaction
+        )
+
+    return deduplicate_pi_interactions(
+        interactions
+    )
+
+
+# -----------------------------------------------------------------------------
+# 8.9. Validação de geometria charged-group–π
+# -----------------------------------------------------------------------------
+
+def charged_group_pi_geometry_passes_limits(
+    geometry: PiPointRingGeometry,
+    group: PiChargedGroup,
+    *,
+    interaction_type: str,
+    limits: PiDetectionLimits,
+    minimum_atomic_distance: Optional[float] = None,
+) -> Tuple[bool, Tuple[str, ...]]:
+    """
+    Validate cation–π or anion–π geometry.
+    """
+
+    normalized_type = _validate_interaction_type(
+        interaction_type
+    )
+
+    messages: List[str] = []
+
+    if normalized_type == CATION_PI:
+        center_limit = (
+            limits.cation_pi_maximum_center_distance
+        )
+        plane_limit = (
+            limits.cation_pi_maximum_plane_distance
+        )
+        radial_limit = (
+            limits.cation_pi_maximum_radial_offset
+        )
+        atomic_limit = (
+            limits.cation_pi_maximum_atomic_distance
+        )
+        direction_limit = (
+            limits.cation_pi_maximum_direction_angle
+        )
+
+        if group.charge_sign != CHARGE_POSITIVE:
+            messages.append(
+                "Charged group is not cationic."
+            )
+
+    elif normalized_type == ANION_PI:
+        center_limit = (
+            limits.anion_pi_maximum_center_distance
+        )
+        plane_limit = (
+            limits.anion_pi_maximum_plane_distance
+        )
+        radial_limit = (
+            limits.anion_pi_maximum_radial_offset
+        )
+        atomic_limit = (
+            limits.anion_pi_maximum_atomic_distance
+        )
+        direction_limit = (
+            limits.anion_pi_maximum_direction_angle
+        )
+
+        if group.charge_sign != CHARGE_NEGATIVE:
+            messages.append(
+                "Charged group is not anionic."
+            )
+
+    else:
+        raise ValueError(
+            "interaction_type must be cation–π or anion–π."
+        )
+
+    if (
+        geometry.center_distance
+        > center_limit
+        + DEFAULT_PI_DETECTION_TOLERANCE
+    ):
+        messages.append(
+            "Group-to-ring center distance exceeds the limit."
+        )
+
+    if (
+        geometry.absolute_plane_distance
+        > plane_limit
+        + DEFAULT_PI_DETECTION_TOLERANCE
+    ):
+        messages.append(
+            "Group-to-ring plane distance exceeds the limit."
+        )
+
+    if (
+        geometry.radial_offset
+        > radial_limit
+        + DEFAULT_PI_DETECTION_TOLERANCE
+    ):
+        messages.append(
+            "Charged group lies outside the accepted ring-face region."
+        )
+
+    if (
+        minimum_atomic_distance is not None
+        and minimum_atomic_distance
+        > atomic_limit
+        + DEFAULT_PI_DETECTION_TOLERANCE
+    ):
+        messages.append(
+            "Minimum charged-group atomic distance exceeds the limit."
+        )
+
+    if (
+        geometry.direction_angle is not None
+        and geometry.direction_angle
+        > direction_limit
+        + DEFAULT_PI_DETECTION_TOLERANCE
+    ):
+        messages.append(
+            "Charged-group direction is outside the accepted angle."
+        )
+
+    return (
+        not messages,
+        tuple(messages),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 8.10. Detecção genérica charged-group–π
+# -----------------------------------------------------------------------------
+
+def detect_charged_group_pi_interactions(
+    charged_groups: Iterable[PiChargedGroup],
+    rings: Iterable[PiRing],
+    *,
+    interaction_type: str,
+    config: Optional[PiAnalysisConfig] = None,
+    limits: Optional[PiDetectionLimits] = None,
+    require_cross_participant: bool = True,
+    exclude_same_residue: bool = True,
+    calculate_atomic_contacts: bool = True,
+    strict: bool = False,
+) -> List[PiInteraction]:
+    """
+    Detect cation–π or anion–π interactions.
+    """
+
+    normalized_type = _validate_interaction_type(
+        interaction_type
+    )
+
+    if normalized_type not in {
+        CATION_PI,
+        ANION_PI,
+    }:
+        raise ValueError(
+            "interaction_type must be cation–π or anion–π."
+        )
+
+    detection_limits = (
+        limits
+        if limits is not None
+        else create_pi_detection_limits(
+            config
+        )
+    )
+
+    validated_groups = validate_charged_groups(
+        charged_groups,
+        minimum_charge_magnitude=(
+            (
+                config
+                if config is not None
+                else create_default_pi_config()
+            ).minimum_group_charge_magnitude
+        ),
+        remove_invalid=True,
+    )
+
+    prepared_rings = ensure_pi_ring_geometries(
+        rings,
+        config=config,
+        remove_invalid=True,
+        strict=strict,
+    )
+
+    interactions: List[PiInteraction] = []
+
+    for group in validated_groups:
+        expected_sign = (
+            CHARGE_POSITIVE
+            if normalized_type == CATION_PI
+            else CHARGE_NEGATIVE
+        )
+
+        if group.charge_sign != expected_sign:
+            continue
+
+        for ring in prepared_rings:
+            if not interaction_pair_is_allowed(
+                group,
+                ring,
+                require_cross_participant=(
+                    require_cross_participant
+                ),
+                exclude_same_residue=(
+                    exclude_same_residue
+                ),
+                exclude_shared_atoms=True,
+            ):
+                continue
+
+            geometry = (
+                calculate_charged_group_ring_geometry(
+                    group,
+                    ring,
+                    config=config,
+                    strict=strict,
+                )
+            )
+
+            if geometry is None:
+                continue
+
+            source_atoms = (
+                group.charge_atoms
+                if group.charge_atoms
+                else group.atoms
+            )
+
+            minimum_atomic_distance = (
+                calculate_minimum_atomic_distance(
+                    source_atoms,
+                    ring.atoms,
+                    skip_invalid=False,
+                )
+            )
+
+            accepted, _ = (
+                charged_group_pi_geometry_passes_limits(
+                    geometry,
+                    group,
+                    interaction_type=normalized_type,
+                    limits=detection_limits,
+                    minimum_atomic_distance=(
+                        minimum_atomic_distance
+                    ),
+                )
+            )
+
+            if not accepted:
+                continue
+
+            contacts: Tuple[
+                PiAtomicContact,
+                ...,
+            ] = ()
+
+            if calculate_atomic_contacts:
+                contacts = (
+                    create_charged_group_atomic_contacts(
+                        group,
+                        ring,
+                        maximum_distance=(
+                            detection_limits
+                            .atomic_contact_distance
+                        ),
+                    )
+                )
+
+            interaction = (
+                create_charged_group_pi_interaction(
+                    group,
+                    ring,
+                    geometry,
+                    interaction_type=(
+                        normalized_type
+                    ),
+                    limits=detection_limits,
+                    atomic_contacts=contacts,
+                )
+            )
+
+            if (
+                interaction.minimum_atomic_distance
+                is None
+            ):
+                interaction.minimum_atomic_distance = (
+                    minimum_atomic_distance
+                )
+
+            interactions.append(
+                interaction
+            )
+
+    return deduplicate_pi_interactions(
+        interactions
+    )
+
+
+def detect_cation_pi_interactions(
+    cationic_groups: Iterable[PiChargedGroup],
+    rings: Iterable[PiRing],
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    limits: Optional[PiDetectionLimits] = None,
+    require_cross_participant: bool = True,
+    exclude_same_residue: bool = True,
+    calculate_atomic_contacts: bool = True,
+    strict: bool = False,
+) -> List[PiInteraction]:
+    """
+    Detect cation–π interactions.
+    """
+
+    return detect_charged_group_pi_interactions(
+        cationic_groups,
+        rings,
+        interaction_type=CATION_PI,
+        config=config,
+        limits=limits,
+        require_cross_participant=(
+            require_cross_participant
+        ),
+        exclude_same_residue=(
+            exclude_same_residue
+        ),
+        calculate_atomic_contacts=(
+            calculate_atomic_contacts
+        ),
+        strict=strict,
+    )
+
+
+def detect_anion_pi_interactions(
+    anionic_groups: Iterable[PiChargedGroup],
+    rings: Iterable[PiRing],
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    limits: Optional[PiDetectionLimits] = None,
+    require_cross_participant: bool = True,
+    exclude_same_residue: bool = True,
+    calculate_atomic_contacts: bool = True,
+    strict: bool = False,
+) -> List[PiInteraction]:
+    """
+    Detect anion–π interactions.
+    """
+
+    return detect_charged_group_pi_interactions(
+        anionic_groups,
+        rings,
+        interaction_type=ANION_PI,
+        config=config,
+        limits=limits,
+        require_cross_participant=(
+            require_cross_participant
+        ),
+        exclude_same_residue=(
+            exclude_same_residue
+        ),
+        calculate_atomic_contacts=(
+            calculate_atomic_contacts
+        ),
+        strict=strict,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 8.11. Validação de geometria amide–π
+# -----------------------------------------------------------------------------
+
+def amide_pi_geometry_passes_limits(
+    geometry: Mapping[str, Any],
+    *,
+    limits: PiDetectionLimits,
+) -> Tuple[bool, Tuple[str, ...]]:
+    """
+    Validate amide–ring geometry.
+    """
+
+    messages: List[str] = []
+
+    centroid_distance = (
+        _normalize_optional_numeric(
+            geometry.get(
+                "centroid_distance"
+            )
+        )
+    )
+
+    plane_height = (
+        _normalize_optional_numeric(
+            geometry.get(
+                "plane_height"
+            )
+        )
+    )
+
+    radial_offset = (
+        _normalize_optional_numeric(
+            geometry.get(
+                "radial_offset"
+            )
+        )
+    )
+
+    minimum_atomic_distance = (
+        _normalize_optional_numeric(
+            geometry.get(
+                "minimum_atomic_distance"
+            )
+        )
+    )
+
+    plane_angle = (
+        _normalize_optional_numeric(
+            geometry.get(
+                "plane_angle"
+            )
+        )
+    )
+
+    if centroid_distance is None:
+        messages.append(
+            "Amide–ring centroid distance is unavailable."
+        )
+
+    elif (
+        centroid_distance
+        > limits.amide_pi_maximum_center_distance
+        + DEFAULT_PI_DETECTION_TOLERANCE
+    ):
+        messages.append(
+            "Amide–ring center distance exceeds the limit."
+        )
+
+    if plane_height is None:
+        messages.append(
+            "Amide–ring plane height is unavailable."
+        )
+
+    elif (
+        plane_height
+        > limits.amide_pi_maximum_plane_distance
+        + DEFAULT_PI_DETECTION_TOLERANCE
+    ):
+        messages.append(
+            "Amide–ring plane distance exceeds the limit."
+        )
+
+    if radial_offset is None:
+        messages.append(
+            "Amide–ring radial offset is unavailable."
+        )
+
+    elif (
+        radial_offset
+        > limits.amide_pi_maximum_radial_offset
+        + DEFAULT_PI_DETECTION_TOLERANCE
+    ):
+        messages.append(
+            "Amide group lies outside the accepted ring-face region."
+        )
+
+    if (
+        minimum_atomic_distance is not None
+        and minimum_atomic_distance
+        > limits.amide_pi_maximum_atomic_distance
+        + DEFAULT_PI_DETECTION_TOLERANCE
+    ):
+        messages.append(
+            "Minimum amide–ring atomic distance exceeds the limit."
+        )
+
+    if plane_angle is None:
+        messages.append(
+            "Amide–ring plane angle is unavailable."
+        )
+
+    elif (
+        limits.amide_pi_parallel_maximum_angle
+        < plane_angle
+        < limits.amide_pi_perpendicular_minimum_angle
+    ):
+        messages.append(
+            "Amide orientation is outside parallel and perpendicular "
+            "windows."
+        )
+
+    return (
+        not messages,
+        tuple(messages),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 8.12. Detecção de interações amide–π
+# -----------------------------------------------------------------------------
+
+def detect_amide_pi_interactions(
+    amide_groups: Iterable[PiAmideGroup],
+    rings: Iterable[PiRing],
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    limits: Optional[PiDetectionLimits] = None,
+    require_cross_participant: bool = True,
+    exclude_same_residue: bool = True,
+    calculate_atomic_contacts: bool = True,
+    strict: bool = False,
+) -> List[PiInteraction]:
+    """
+    Detect amide–π interactions.
+    """
+
+    detection_limits = (
+        limits
+        if limits is not None
+        else create_pi_detection_limits(
+            config
+        )
+    )
+
+    analysis_config = (
+        config
+        if config is not None
+        else create_default_pi_config()
+    )
+
+    prepared_groups = validate_amide_groups(
+        amide_groups,
+        maximum_planarity_rmsd=getattr(
+            analysis_config,
+            "maximum_amide_planarity_rmsd",
+            DEFAULT_MAXIMUM_AMIDE_PLANARITY_RMSD,
+        ),
+        maximum_atom_deviation=getattr(
+            analysis_config,
+            "maximum_amide_atom_deviation",
+            DEFAULT_MAXIMUM_AMIDE_ATOM_DEVIATION,
+        ),
+        remove_invalid=True,
+    )
+
+    prepared_rings = ensure_pi_ring_geometries(
+        rings,
+        config=analysis_config,
+        remove_invalid=True,
+        strict=strict,
+    )
+
+    interactions: List[PiInteraction] = []
+
+    for amide_group in prepared_groups:
+        for ring in prepared_rings:
+            if not interaction_pair_is_allowed(
+                amide_group,
+                ring,
+                require_cross_participant=(
+                    require_cross_participant
+                ),
+                exclude_same_residue=(
+                    exclude_same_residue
+                ),
+                exclude_shared_atoms=True,
+            ):
+                continue
+
+            geometry = (
+                calculate_amide_group_ring_geometry(
+                    amide_group,
+                    ring,
+                    config=analysis_config,
+                    strict=strict,
+                )
+            )
+
+            if geometry is None:
+                continue
+
+            accepted, _ = (
+                amide_pi_geometry_passes_limits(
+                    geometry,
+                    limits=detection_limits,
+                )
+            )
+
+            if not accepted:
+                continue
+
+            contacts: Tuple[
+                PiAtomicContact,
+                ...,
+            ] = ()
+
+            if calculate_atomic_contacts:
+                contacts = (
+                    create_amide_ring_atomic_contacts(
+                        amide_group,
+                        ring,
+                        maximum_distance=(
+                            detection_limits
+                            .atomic_contact_distance
+                        ),
+                    )
+                )
+
+            interaction = (
+                create_amide_pi_interaction(
+                    amide_group,
+                    ring,
+                    geometry,
+                    limits=detection_limits,
+                    atomic_contacts=contacts,
+                )
+            )
+
+            interactions.append(
+                interaction
+            )
+
+    return deduplicate_pi_interactions(
+        interactions
+    )
+
+
+# -----------------------------------------------------------------------------
+# 8.13. Identidade de interações
+# -----------------------------------------------------------------------------
+
+def _pi_interaction_participant_keys(
+    interaction: PiInteraction,
+) -> Tuple[str, str]:
+    """
+    Return canonical participant keys for an interaction.
+    """
+
+    if interaction.interaction_type == PI_PI:
+        first = (
+            interaction.ring_1.ring_id
+            if interaction.ring_1 is not None
+            else "unknown-ring-1"
+        )
+
+        second = (
+            interaction.ring_2.ring_id
+            if interaction.ring_2 is not None
+            else "unknown-ring-2"
+        )
+
+        return tuple(
+            sorted(
+                (
+                    str(first),
+                    str(second),
+                )
+            )
+        )
+
+    ring_id = (
+        interaction.ring_1.ring_id
+        if interaction.ring_1 is not None
+        else "unknown-ring"
+    )
+
+    if interaction.interaction_type in {
+        CATION_PI,
+        ANION_PI,
+    }:
+        other_id = (
+            interaction.charged_group.group_id
+            if interaction.charged_group is not None
+            else "unknown-charged-group"
+        )
+
+    elif interaction.interaction_type == AMIDE_PI:
+        other_id = (
+            interaction.amide_group.group_id
+            if interaction.amide_group is not None
+            else "unknown-amide-group"
+        )
+
+    else:
+        other_id = "unknown-participant"
+
+    return (
+        str(ring_id),
+        str(other_id),
+    )
+
+
+def get_pi_interaction_identity_key(
+    interaction: PiInteraction,
+) -> Tuple[Any, ...]:
+    """
+    Return a stable identity key for a π interaction.
+    """
+
+    if not isinstance(
+        interaction,
+        PiInteraction,
+    ):
+        raise TypeError(
+            "interaction must be a PiInteraction."
+        )
+
+    participant_keys = (
+        _pi_interaction_participant_keys(
+            interaction
+        )
+    )
+
+    return (
+        interaction.interaction_type,
+        participant_keys,
+    )
+
+
+def _interaction_detection_priority(
+    interaction: PiInteraction,
+) -> Tuple[
+    int,
+    float,
+    float,
+    int,
+]:
+    """
+    Return a priority tuple for interaction deduplication.
+    """
+
+    valid_priority = (
+        1
+        if interaction.valid
+        else 0
+    )
+
+    centroid_distance = (
+        interaction.centroid_distance
+        if interaction.centroid_distance
+        is not None
+        else float("inf")
+    )
+
+    atomic_distance = (
+        interaction.minimum_atomic_distance
+        if interaction.minimum_atomic_distance
+        is not None
+        else float("inf")
+    )
+
+    contact_count = len(
+        interaction.atomic_contacts
+    )
+
+    return (
+        valid_priority,
+        -centroid_distance,
+        -atomic_distance,
+        contact_count,
+    )
+
+
+def deduplicate_pi_interactions(
+    interactions: Iterable[PiInteraction],
+) -> List[PiInteraction]:
+    """
+    Deduplicate interactions by type and molecular participants.
+    """
+
+    unique_by_key: Dict[
+        Tuple[Any, ...],
+        PiInteraction,
+    ] = {}
+
+    for interaction in interactions:
+        key = get_pi_interaction_identity_key(
+            interaction
+        )
+
+        existing = unique_by_key.get(
+            key
+        )
+
+        if existing is None:
+            unique_by_key[key] = interaction
+            continue
+
+        if (
+            _interaction_detection_priority(
+                interaction
+            )
+            > _interaction_detection_priority(
+                existing
+            )
+        ):
+            unique_by_key[key] = interaction
+
+    unique = list(
+        unique_by_key.values()
+    )
+
+    unique.sort(
+        key=lambda interaction: (
+            interaction.interaction_type,
+            (
+                interaction.centroid_distance
+                if interaction.centroid_distance
+                is not None
+                else float("inf")
+            ),
+            _pi_interaction_participant_keys(
+                interaction
+            ),
+        )
+    )
+
+    for interaction_index, interaction in enumerate(
+        unique,
+        start=1,
+    ):
+        interaction.interaction_index = (
+            interaction_index
+        )
+
+        if not interaction.interaction_id:
+            participant_1, participant_2 = (
+                _pi_interaction_participant_keys(
+                    interaction
+                )
+            )
+
+            interaction.interaction_id = (
+                _build_interaction_id(
+                    interaction.interaction_type,
+                    participant_1,
+                    participant_2,
+                )
+            )
+
+    return unique
+
+
+# -----------------------------------------------------------------------------
+# 8.14. Validação básica das interações detectadas
+# -----------------------------------------------------------------------------
+
+def validate_detected_pi_interaction(
+    interaction: PiInteraction,
+) -> Tuple[bool, Tuple[str, ...]]:
+    """
+    Validate structural completeness of a detected interaction.
+    """
+
+    if not isinstance(
+        interaction,
+        PiInteraction,
+    ):
+        raise TypeError(
+            "interaction must be a PiInteraction."
+        )
+
+    messages: List[str] = []
+
+    try:
+        interaction_type = (
+            _validate_interaction_type(
+                interaction.interaction_type
+            )
+        )
+
+    except ValueError:
+        interaction_type = ""
+        messages.append(
+            "Interaction type is invalid."
+        )
+
+    if interaction.ring_1 is None:
+        messages.append(
+            "Primary aromatic ring is unavailable."
+        )
+
+    elif not interaction.ring_1.valid:
+        messages.append(
+            "Primary aromatic ring is invalid."
+        )
+
+    if interaction_type == PI_PI:
+        if interaction.ring_2 is None:
+            messages.append(
+                "Secondary aromatic ring is unavailable."
+            )
+
+        elif not interaction.ring_2.valid:
+            messages.append(
+                "Secondary aromatic ring is invalid."
+            )
+
+    elif interaction_type in {
+        CATION_PI,
+        ANION_PI,
+    }:
+        if interaction.charged_group is None:
+            messages.append(
+                "Charged group is unavailable."
+            )
+
+        elif not interaction.charged_group.valid:
+            messages.append(
+                "Charged group is invalid."
+            )
+
+    elif interaction_type == AMIDE_PI:
+        if interaction.amide_group is None:
+            messages.append(
+                "Amide group is unavailable."
+            )
+
+        elif not interaction.amide_group.valid:
+            messages.append(
+                "Amide group is invalid."
+            )
+
+    if interaction.centroid_distance is None:
+        messages.append(
+            "Interaction centroid distance is unavailable."
+        )
+
+    elif interaction.centroid_distance < 0.0:
+        messages.append(
+            "Interaction centroid distance is negative."
+        )
+
+    if (
+        interaction.minimum_atomic_distance
+        is not None
+        and interaction.minimum_atomic_distance
+        < 0.0
+    ):
+        messages.append(
+            "Minimum atomic distance is negative."
+        )
+
+    interaction.valid = not messages
+
+    for message in messages:
+        if message not in interaction.warnings:
+            interaction.warnings.append(
+                message
+            )
+
+    return (
+        interaction.valid,
+        tuple(messages),
+    )
+
+
+def validate_detected_pi_interactions(
+    interactions: Iterable[PiInteraction],
+    *,
+    remove_invalid: bool = False,
+) -> List[PiInteraction]:
+    """
+    Validate multiple detected interactions.
+    """
+
+    validated: List[PiInteraction] = []
+
+    for interaction in interactions:
+        valid, _ = (
+            validate_detected_pi_interaction(
+                interaction
+            )
+        )
+
+        if remove_invalid and not valid:
+            continue
+
+        validated.append(
+            interaction
+        )
+
+    return validated
+
+
+# -----------------------------------------------------------------------------
+# 8.15. Detecção cruzada receptor–ligante
+# -----------------------------------------------------------------------------
+
+def detect_cross_pi_pi_interactions(
+    receptor_rings: Iterable[PiRing],
+    ligand_rings: Iterable[PiRing],
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    limits: Optional[PiDetectionLimits] = None,
+) -> List[PiInteraction]:
+    """
+    Detect receptor-ring versus ligand-ring π–π interactions.
+    """
+
+    return detect_pi_pi_interactions(
+        receptor_rings,
+        ligand_rings,
+        config=config,
+        limits=limits,
+        require_cross_participant=True,
+        exclude_same_residue=True,
+    )
+
+
+def detect_cross_cation_pi_interactions(
+    receptor_rings: Iterable[PiRing],
+    ligand_rings: Iterable[PiRing],
+    receptor_cations: Iterable[PiChargedGroup],
+    ligand_cations: Iterable[PiChargedGroup],
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    limits: Optional[PiDetectionLimits] = None,
+) -> List[PiInteraction]:
+    """
+    Detect receptor-cation/ligand-ring and ligand-cation/receptor-ring pairs.
+    """
+
+    interactions: List[PiInteraction] = []
+
+    interactions.extend(
+        detect_cation_pi_interactions(
+            receptor_cations,
+            ligand_rings,
+            config=config,
+            limits=limits,
+            require_cross_participant=True,
+        )
+    )
+
+    interactions.extend(
+        detect_cation_pi_interactions(
+            ligand_cations,
+            receptor_rings,
+            config=config,
+            limits=limits,
+            require_cross_participant=True,
+        )
+    )
+
+    return deduplicate_pi_interactions(
+        interactions
+    )
+
+
+def detect_cross_anion_pi_interactions(
+    receptor_rings: Iterable[PiRing],
+    ligand_rings: Iterable[PiRing],
+    receptor_anions: Iterable[PiChargedGroup],
+    ligand_anions: Iterable[PiChargedGroup],
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    limits: Optional[PiDetectionLimits] = None,
+) -> List[PiInteraction]:
+    """
+    Detect receptor-anion/ligand-ring and ligand-anion/receptor-ring pairs.
+    """
+
+    interactions: List[PiInteraction] = []
+
+    interactions.extend(
+        detect_anion_pi_interactions(
+            receptor_anions,
+            ligand_rings,
+            config=config,
+            limits=limits,
+            require_cross_participant=True,
+        )
+    )
+
+    interactions.extend(
+        detect_anion_pi_interactions(
+            ligand_anions,
+            receptor_rings,
+            config=config,
+            limits=limits,
+            require_cross_participant=True,
+        )
+    )
+
+    return deduplicate_pi_interactions(
+        interactions
+    )
+
+
+def detect_cross_amide_pi_interactions(
+    receptor_rings: Iterable[PiRing],
+    ligand_rings: Iterable[PiRing],
+    receptor_amides: Iterable[PiAmideGroup],
+    ligand_amides: Iterable[PiAmideGroup],
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+    limits: Optional[PiDetectionLimits] = None,
+) -> List[PiInteraction]:
+    """
+    Detect receptor-amide/ligand-ring and ligand-amide/receptor-ring pairs.
+    """
+
+    interactions: List[PiInteraction] = []
+
+    interactions.extend(
+        detect_amide_pi_interactions(
+            receptor_amides,
+            ligand_rings,
+            config=config,
+            limits=limits,
+            require_cross_participant=True,
+        )
+    )
+
+    interactions.extend(
+        detect_amide_pi_interactions(
+            ligand_amides,
+            receptor_rings,
+            config=config,
+            limits=limits,
+            require_cross_participant=True,
+        )
+    )
+
+    return deduplicate_pi_interactions(
+        interactions
+    )
+
+
+# -----------------------------------------------------------------------------
+# 8.16. Pipeline completo de detecção
+# -----------------------------------------------------------------------------
+
+def detect_all_pi_interactions(
+    *,
+    receptor_rings: Iterable[PiRing],
+    ligand_rings: Iterable[PiRing],
+    receptor_cations: Iterable[PiChargedGroup] = (),
+    receptor_anions: Iterable[PiChargedGroup] = (),
+    ligand_cations: Iterable[PiChargedGroup] = (),
+    ligand_anions: Iterable[PiChargedGroup] = (),
+    receptor_amides: Iterable[PiAmideGroup] = (),
+    ligand_amides: Iterable[PiAmideGroup] = (),
+    config: Optional[PiAnalysisConfig] = None,
+    limits: Optional[PiDetectionLimits] = None,
+    detect_pi_pi: bool = True,
+    detect_cation_pi: bool = True,
+    detect_anion_pi: bool = True,
+    detect_amide_pi: bool = True,
+    validate_interactions: bool = True,
+    remove_invalid: bool = True,
+) -> List[PiInteraction]:
+    """
+    Detect all supported receptor–ligand π interactions.
+    """
+
+    detection_limits = (
+        limits
+        if limits is not None
+        else create_pi_detection_limits(
+            config
+        )
+    )
+
+    receptor_ring_list = list(
+        receptor_rings
+    )
+    ligand_ring_list = list(
+        ligand_rings
+    )
+
+    interactions: List[PiInteraction] = []
+
+    if detect_pi_pi:
+        interactions.extend(
+            detect_cross_pi_pi_interactions(
+                receptor_ring_list,
+                ligand_ring_list,
+                config=config,
+                limits=detection_limits,
+            )
+        )
+
+    if detect_cation_pi:
+        interactions.extend(
+            detect_cross_cation_pi_interactions(
+                receptor_ring_list,
+                ligand_ring_list,
+                receptor_cations,
+                ligand_cations,
+                config=config,
+                limits=detection_limits,
+            )
+        )
+
+    if detect_anion_pi:
+        interactions.extend(
+            detect_cross_anion_pi_interactions(
+                receptor_ring_list,
+                ligand_ring_list,
+                receptor_anions,
+                ligand_anions,
+                config=config,
+                limits=detection_limits,
+            )
+        )
+
+    if detect_amide_pi:
+        interactions.extend(
+            detect_cross_amide_pi_interactions(
+                receptor_ring_list,
+                ligand_ring_list,
+                receptor_amides,
+                ligand_amides,
+                config=config,
+                limits=detection_limits,
+            )
+        )
+
+    interactions = deduplicate_pi_interactions(
+        interactions
+    )
+
+    if validate_interactions:
+        interactions = (
+            validate_detected_pi_interactions(
+                interactions,
+                remove_invalid=remove_invalid,
+            )
+        )
+
+    for interaction_index, interaction in enumerate(
+        interactions,
+        start=1,
+    ):
+        interaction.interaction_index = (
+            interaction_index
+        )
+
+    return interactions
+
+
+# -----------------------------------------------------------------------------
+# 8.17. Pipeline a partir de estruturas preparadas
+# -----------------------------------------------------------------------------
+
+def detect_pi_interactions_from_prepared_data(
+    *,
+    receptor_rings: Iterable[PiRing],
+    ligand_rings: Iterable[PiRing],
+    charged_group_data: Optional[
+        Mapping[str, Iterable[PiChargedGroup]]
+    ] = None,
+    amide_group_data: Optional[
+        Mapping[str, Iterable[PiAmideGroup]]
+    ] = None,
+    config: Optional[PiAnalysisConfig] = None,
+) -> List[PiInteraction]:
+    """
+    Detect interactions from the outputs of Sections 5–7.
+    """
+
+    charged_data = dict(
+        charged_group_data or {}
+    )
+
+    amide_data = dict(
+        amide_group_data or {}
+    )
+
+    return detect_all_pi_interactions(
+        receptor_rings=receptor_rings,
+        ligand_rings=ligand_rings,
+        receptor_cations=charged_data.get(
+            "receptor_cations",
+            (),
+        ),
+        receptor_anions=charged_data.get(
+            "receptor_anions",
+            (),
+        ),
+        ligand_cations=charged_data.get(
+            "ligand_cations",
+            (),
+        ),
+        ligand_anions=charged_data.get(
+            "ligand_anions",
+            (),
+        ),
+        receptor_amides=amide_data.get(
+            "receptor_amide_groups",
+            (),
+        ),
+        ligand_amides=amide_data.get(
+            "ligand_amide_groups",
+            (),
+        ),
+        config=config,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 8.18. Pipeline a partir de PiNormalizedInput
+# -----------------------------------------------------------------------------
+
+def detect_pi_interactions_from_normalized_input(
+    normalized_input: PiNormalizedInput,
+    *,
+    config: Optional[PiAnalysisConfig] = None,
+) -> List[PiInteraction]:
+    """
+    Detect all π interactions directly from normalized receptor/ligand atoms.
+    """
+
+    if not isinstance(
+        normalized_input,
+        PiNormalizedInput,
+    ):
+        raise TypeError(
+            "normalized_input must be a PiNormalizedInput."
+        )
+
+    analysis_config = (
+        config
+        if config is not None
+        else create_default_pi_config()
+    )
+
+    receptor_rings = (
+        detect_receptor_aromatic_rings(
+            normalized_input.receptor_atoms,
+            config=analysis_config,
+        )
+    )
+
+    ligand_rings = (
+        detect_ligand_aromatic_rings(
+            normalized_input.ligand_atoms,
+            config=analysis_config,
+        )
+    )
+
+    receptor_rings, ligand_rings = (
+        prepare_pi_analysis_ring_geometries(
+            receptor_rings,
+            ligand_rings,
+            config=analysis_config,
+        )
+    )
+
+    charged_data = (
+        prepare_pi_analysis_charged_groups(
+            normalized_input,
+            config=analysis_config,
+        )
+    )
+
+    amide_data = (
+        prepare_pi_analysis_amide_groups(
+            normalized_input,
+            config=analysis_config,
+        )
+    )
+
+    return detect_pi_interactions_from_prepared_data(
+        receptor_rings=receptor_rings,
+        ligand_rings=ligand_rings,
+        charged_group_data=charged_data,
+        amide_group_data=amide_data,
+        config=analysis_config,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 8.19. Separação por tipo
+# -----------------------------------------------------------------------------
+
+def group_pi_interactions_by_type(
+    interactions: Iterable[PiInteraction],
+) -> Dict[str, List[PiInteraction]]:
+    """
+    Group detected interactions by interaction type.
+    """
+
+    grouped: Dict[
+        str,
+        List[PiInteraction],
+    ] = {
+        PI_PI: [],
+        CATION_PI: [],
+        ANION_PI: [],
+        AMIDE_PI: [],
+    }
+
+    for interaction in interactions:
+        grouped.setdefault(
+            interaction.interaction_type,
+            [],
+        ).append(
+            interaction
+        )
+
+    return grouped
+
+
+def filter_pi_interactions_by_type(
+    interactions: Iterable[PiInteraction],
+    interaction_type: str,
+) -> List[PiInteraction]:
+    """
+    Filter interactions by a normalized interaction type.
+    """
+
+    normalized_type = _validate_interaction_type(
+        interaction_type
+    )
+
+    return [
+        interaction
+        for interaction in interactions
+        if interaction.interaction_type
+        == normalized_type
+    ]
+
+
+# -----------------------------------------------------------------------------
+# 8.20. Resumo da detecção
+# -----------------------------------------------------------------------------
+
+def summarize_detected_pi_interactions(
+    interactions: Iterable[PiInteraction],
+) -> Dict[str, Any]:
+    """
+    Generate a preliminary summary of detected interactions.
+    """
+
+    interaction_list = list(
+        interactions
+    )
+
+    type_distribution = Counter(
+        interaction.interaction_type
+        for interaction in interaction_list
+    )
+
+    geometry_distribution = Counter(
+        interaction.geometry_class
+        for interaction in interaction_list
+    )
+
+    centroid_distances = [
+        interaction.centroid_distance
+        for interaction in interaction_list
+        if interaction.centroid_distance
+        is not None
+    ]
+
+    minimum_atomic_distances = [
+        interaction.minimum_atomic_distance
+        for interaction in interaction_list
+        if interaction.minimum_atomic_distance
+        is not None
+    ]
+
+    plane_heights = [
+        interaction.plane_height
+        for interaction in interaction_list
+        if interaction.plane_height
+        is not None
+    ]
+
+    radial_offsets = [
+        interaction.radial_offset
+        for interaction in interaction_list
+        if interaction.radial_offset
+        is not None
+    ]
+
+    def summarize_values(
+        values: Sequence[float],
+    ) -> Dict[str, Optional[float]]:
+        if not values:
+            return {
+                "minimum": None,
+                "mean": None,
+                "maximum": None,
+            }
+
+        return {
+            "minimum": min(values),
+            "mean": (
+                sum(values)
+                / len(values)
+            ),
+            "maximum": max(values),
+        }
+
+    return {
+        "total_interactions": len(
+            interaction_list
+        ),
+        "valid_interactions": sum(
+            1
+            for interaction in interaction_list
+            if interaction.valid
+        ),
+        "invalid_interactions": sum(
+            1
+            for interaction in interaction_list
+            if not interaction.valid
+        ),
+        "type_distribution": dict(
+            type_distribution
+        ),
+        "geometry_distribution": dict(
+            geometry_distribution
+        ),
+        "centroid_distance": summarize_values(
+            centroid_distances
+        ),
+        "minimum_atomic_distance": (
+            summarize_values(
+                minimum_atomic_distances
+            )
+        ),
+        "plane_height": summarize_values(
+            plane_heights
+        ),
+        "radial_offset": summarize_values(
+            radial_offsets
+        ),
+        "total_atomic_contacts": sum(
+            len(
+                interaction.atomic_contacts
+            )
+            for interaction in interaction_list
+        ),
+        "interaction_ids": [
+            interaction.interaction_id
+            for interaction in interaction_list
+        ],
+    }
+
+
+# -----------------------------------------------------------------------------
+# End of section 8.
+# -----------------------------------------------------------------------------
+
 
