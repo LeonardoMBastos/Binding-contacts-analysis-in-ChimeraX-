@@ -9855,6 +9855,1644 @@ def get_best_salt_bridge(
 
 
 
+# =============================================================================
+# 11. DEDUPLICATION
+# =============================================================================
+
+
+# =============================================================================
+# 11.1. INTERACTION IDENTITY KEYS
+# =============================================================================
+
+
+def interaction_group_pair_key(
+    interaction: SaltBridgeInteraction,
+    *,
+    include_pose: bool = True,
+    include_model: bool = True,
+    include_group_type: bool = True,
+) -> Tuple[Any, ...]:
+    """
+    Build an identity key from the cation-anion group pair.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+    include_pose
+        Whether the pose identifier should be included.
+    include_model
+        Whether the model identifier should be included.
+    include_group_type
+        Whether charged-group types should be included.
+
+    Returns
+    -------
+    Tuple[Any, ...]
+        Hashable interaction identity key.
+    """
+
+    if not isinstance(interaction, SaltBridgeInteraction):
+        raise SaltBridgeDetectionError(
+            "interaction must be a SaltBridgeInteraction instance."
+        )
+
+    cation_key = charged_group_identity(
+        interaction.cation,
+        include_polarity=True,
+    )
+
+    anion_key = charged_group_identity(
+        interaction.anion,
+        include_polarity=True,
+    )
+
+    if not include_group_type:
+        cation_key = (
+            interaction.cation.polarity,
+            tuple(
+                sorted(
+                    (
+                        repr(charged_atom_identity(charged_atom)),
+                        charged_atom_identity(charged_atom),
+                    )
+                    for charged_atom in interaction.cation.atoms
+                )
+            ),
+        )
+
+        anion_key = (
+            interaction.anion.polarity,
+            tuple(
+                sorted(
+                    (
+                        repr(charged_atom_identity(charged_atom)),
+                        charged_atom_identity(charged_atom),
+                    )
+                    for charged_atom in interaction.anion.atoms
+                )
+            ),
+        )
+
+    key_parts: List[Any] = [
+        "salt_bridge",
+        cation_key,
+        anion_key,
+    ]
+
+    if include_pose:
+        key_parts.append(
+            ("pose", interaction.pose_id)
+        )
+
+    if include_model:
+        key_parts.append(
+            ("model", interaction.model_id)
+        )
+
+    return tuple(key_parts)
+
+
+def interaction_atom_pair_key(
+    interaction: SaltBridgeInteraction,
+    *,
+    include_pose: bool = True,
+    include_model: bool = True,
+) -> Tuple[Any, ...]:
+    """
+    Build an identity key from the closest positive-negative atom pair.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+    include_pose
+        Whether the pose identifier should be included.
+    include_model
+        Whether the model identifier should be included.
+
+    Returns
+    -------
+    Tuple[Any, ...]
+        Hashable closest-contact identity key.
+    """
+
+    if not isinstance(interaction, SaltBridgeInteraction):
+        raise SaltBridgeDetectionError(
+            "interaction must be a SaltBridgeInteraction instance."
+        )
+
+    closest_positive_atom = (
+        interaction.geometry.closest_positive_atom
+    )
+
+    closest_negative_atom = (
+        interaction.geometry.closest_negative_atom
+    )
+
+    positive_atom_key = (
+        charged_atom_identity(closest_positive_atom)
+        if closest_positive_atom is not None
+        else None
+    )
+
+    negative_atom_key = (
+        charged_atom_identity(closest_negative_atom)
+        if closest_negative_atom is not None
+        else None
+    )
+
+    key_parts: List[Any] = [
+        "salt_bridge_atom_pair",
+        positive_atom_key,
+        negative_atom_key,
+    ]
+
+    if include_pose:
+        key_parts.append(
+            ("pose", interaction.pose_id)
+        )
+
+    if include_model:
+        key_parts.append(
+            ("model", interaction.model_id)
+        )
+
+    return tuple(key_parts)
+
+
+def interaction_residue_pair_key(
+    interaction: SaltBridgeInteraction,
+    *,
+    include_pose: bool = True,
+    include_model: bool = True,
+    include_group_type: bool = False,
+) -> Tuple[Any, ...]:
+    """
+    Build an interaction key from the participating residues.
+
+    Residue-level keys are intentionally broader than group-level keys. They
+    are useful when one residue pair generates multiple equivalent atomic
+    representations.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+    include_pose
+        Whether the pose identifier should be included.
+    include_model
+        Whether the model identifier should be included.
+    include_group_type
+        Whether cation and anion group types should be included.
+
+    Returns
+    -------
+    Tuple[Any, ...]
+        Hashable residue-pair identity key.
+    """
+
+    if not isinstance(interaction, SaltBridgeInteraction):
+        raise SaltBridgeDetectionError(
+            "interaction must be a SaltBridgeInteraction instance."
+        )
+
+    key_parts: List[Any] = [
+        "salt_bridge_residue_pair",
+        residue_identity(interaction.cation.residue),
+        residue_identity(interaction.anion.residue),
+    ]
+
+    if include_group_type:
+        key_parts.extend(
+            (
+                interaction.cation.group_type,
+                interaction.anion.group_type,
+            )
+        )
+
+    if include_pose:
+        key_parts.append(
+            ("pose", interaction.pose_id)
+        )
+
+    if include_model:
+        key_parts.append(
+            ("model", interaction.model_id)
+        )
+
+    return tuple(key_parts)
+
+
+def interaction_identity_key(
+    interaction: SaltBridgeInteraction,
+    *,
+    mode: str = "group_pair",
+    include_pose: bool = True,
+    include_model: bool = True,
+) -> Tuple[Any, ...]:
+    """
+    Build an interaction identity key using a selected strategy.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+    mode
+        Identity mode. Supported values are ``"group_pair"``,
+        ``"atom_pair"``, and ``"residue_pair"``.
+    include_pose
+        Whether pose information should be included.
+    include_model
+        Whether model information should be included.
+
+    Returns
+    -------
+    Tuple[Any, ...]
+        Hashable identity key.
+
+    Raises
+    ------
+    SaltBridgeDetectionError
+        If the identity mode is unsupported.
+    """
+
+    normalized_mode = normalize_text(
+        mode,
+        lowercase=True,
+    )
+
+    if normalized_mode == "group_pair":
+        return interaction_group_pair_key(
+            interaction,
+            include_pose=include_pose,
+            include_model=include_model,
+        )
+
+    if normalized_mode == "atom_pair":
+        return interaction_atom_pair_key(
+            interaction,
+            include_pose=include_pose,
+            include_model=include_model,
+        )
+
+    if normalized_mode == "residue_pair":
+        return interaction_residue_pair_key(
+            interaction,
+            include_pose=include_pose,
+            include_model=include_model,
+        )
+
+    raise SaltBridgeDetectionError(
+        f"Unsupported interaction identity mode: {mode!r}."
+    )
+
+
+# =============================================================================
+# 11.2. ATOMIC AND GROUP OVERLAP
+# =============================================================================
+
+
+def interaction_atom_sets(
+    interaction: SaltBridgeInteraction,
+) -> Tuple[Set[Tuple[Any, ...]], Set[Tuple[Any, ...]]]:
+    """
+    Return cationic and anionic atom-identity sets.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+
+    Returns
+    -------
+    Tuple[Set[Tuple[Any, ...]], Set[Tuple[Any, ...]]]
+        Cationic atom keys followed by anionic atom keys.
+    """
+
+    cation_atoms = {
+        charged_atom_identity(charged_atom)
+        for charged_atom in interaction.cation.atoms
+    }
+
+    anion_atoms = {
+        charged_atom_identity(charged_atom)
+        for charged_atom in interaction.anion.atoms
+    }
+
+    return cation_atoms, anion_atoms
+
+
+def calculate_set_overlap_fraction(
+    first_set: Set[Any],
+    second_set: Set[Any],
+) -> float:
+    """
+    Calculate overlap relative to the smaller non-empty set.
+
+    Parameters
+    ----------
+    first_set
+        First identity set.
+    second_set
+        Second identity set.
+
+    Returns
+    -------
+    float
+        Overlap fraction between 0.0 and 1.0.
+    """
+
+    if not first_set or not second_set:
+        return 0.0
+
+    overlap_size = len(first_set & second_set)
+    smaller_size = min(
+        len(first_set),
+        len(second_set),
+    )
+
+    if smaller_size == 0:
+        return 0.0
+
+    return overlap_size / smaller_size
+
+
+def calculate_interaction_atomic_overlap(
+    first: SaltBridgeInteraction,
+    second: SaltBridgeInteraction,
+) -> Tuple[float, float]:
+    """
+    Calculate cationic and anionic atomic overlap fractions.
+
+    Parameters
+    ----------
+    first
+        First interaction.
+    second
+        Second interaction.
+
+    Returns
+    -------
+    Tuple[float, float]
+        Cation overlap followed by anion overlap.
+    """
+
+    (
+        first_cation_atoms,
+        first_anion_atoms,
+    ) = interaction_atom_sets(first)
+
+    (
+        second_cation_atoms,
+        second_anion_atoms,
+    ) = interaction_atom_sets(second)
+
+    cation_overlap = calculate_set_overlap_fraction(
+        first_cation_atoms,
+        second_cation_atoms,
+    )
+
+    anion_overlap = calculate_set_overlap_fraction(
+        first_anion_atoms,
+        second_anion_atoms,
+    )
+
+    return cation_overlap, anion_overlap
+
+
+def interactions_share_group_pair(
+    first: SaltBridgeInteraction,
+    second: SaltBridgeInteraction,
+) -> bool:
+    """
+    Return whether two interactions contain the same charged-group pair.
+
+    Parameters
+    ----------
+    first
+        First interaction.
+    second
+        Second interaction.
+
+    Returns
+    -------
+    bool
+        Whether both group identities match.
+    """
+
+    return (
+        charged_group_identity(first.cation)
+        == charged_group_identity(second.cation)
+        and charged_group_identity(first.anion)
+        == charged_group_identity(second.anion)
+    )
+
+
+def interactions_share_residue_pair(
+    first: SaltBridgeInteraction,
+    second: SaltBridgeInteraction,
+) -> bool:
+    """
+    Return whether two interactions connect the same residue pair.
+
+    Parameters
+    ----------
+    first
+        First interaction.
+    second
+        Second interaction.
+
+    Returns
+    -------
+    bool
+        Whether both residue identities match.
+    """
+
+    return (
+        residue_identity(first.cation.residue)
+        == residue_identity(second.cation.residue)
+        and residue_identity(first.anion.residue)
+        == residue_identity(second.anion.residue)
+    )
+
+
+def interactions_share_context(
+    first: SaltBridgeInteraction,
+    second: SaltBridgeInteraction,
+    *,
+    include_pose: bool = True,
+    include_model: bool = True,
+) -> bool:
+    """
+    Return whether interactions belong to the same pose and model context.
+
+    Parameters
+    ----------
+    first
+        First interaction.
+    second
+        Second interaction.
+    include_pose
+        Whether pose identifiers must match.
+    include_model
+        Whether model identifiers must match.
+
+    Returns
+    -------
+    bool
+        Whether the selected contextual identifiers match.
+    """
+
+    if include_pose and first.pose_id != second.pose_id:
+        return False
+
+    if include_model and first.model_id != second.model_id:
+        return False
+
+    return True
+
+
+# =============================================================================
+# 11.3. DUPLICATE DECISION
+# =============================================================================
+
+
+def interactions_are_exact_duplicates(
+    first: SaltBridgeInteraction,
+    second: SaltBridgeInteraction,
+    *,
+    include_pose: bool = True,
+    include_model: bool = True,
+) -> bool:
+    """
+    Return whether two interactions have identical group-pair identities.
+
+    Parameters
+    ----------
+    first
+        First interaction.
+    second
+        Second interaction.
+    include_pose
+        Whether pose identifiers must match.
+    include_model
+        Whether model identifiers must match.
+
+    Returns
+    -------
+    bool
+        Whether both interactions are exact duplicates.
+    """
+
+    if not interactions_share_context(
+        first,
+        second,
+        include_pose=include_pose,
+        include_model=include_model,
+    ):
+        return False
+
+    return interactions_share_group_pair(
+        first,
+        second,
+    )
+
+
+def interactions_are_atomic_duplicates(
+    first: SaltBridgeInteraction,
+    second: SaltBridgeInteraction,
+    *,
+    minimum_overlap: float = 0.5,
+    include_pose: bool = True,
+    include_model: bool = True,
+) -> bool:
+    """
+    Return whether two interactions substantially overlap atomically.
+
+    Both cationic and anionic atom sets must satisfy the overlap threshold.
+
+    Parameters
+    ----------
+    first
+        First interaction.
+    second
+        Second interaction.
+    minimum_overlap
+        Minimum overlap fraction for both charged sides.
+    include_pose
+        Whether pose identifiers must match.
+    include_model
+        Whether model identifiers must match.
+
+    Returns
+    -------
+    bool
+        Whether the interactions are atomic duplicates.
+    """
+
+    normalized_overlap = safe_float(minimum_overlap)
+
+    if (
+        normalized_overlap is None
+        or not 0.0 <= normalized_overlap <= 1.0
+    ):
+        raise SaltBridgeDetectionError(
+            "minimum_overlap must be between 0.0 and 1.0."
+        )
+
+    if not interactions_share_context(
+        first,
+        second,
+        include_pose=include_pose,
+        include_model=include_model,
+    ):
+        return False
+
+    if not interactions_share_residue_pair(first, second):
+        return False
+
+    cation_overlap, anion_overlap = (
+        calculate_interaction_atomic_overlap(
+            first,
+            second,
+        )
+    )
+
+    return (
+        cation_overlap >= normalized_overlap
+        and anion_overlap >= normalized_overlap
+    )
+
+
+def interactions_are_residue_duplicates(
+    first: SaltBridgeInteraction,
+    second: SaltBridgeInteraction,
+    *,
+    distance_tolerance: float = 0.25,
+    include_pose: bool = True,
+    include_model: bool = True,
+) -> bool:
+    """
+    Return whether interactions represent equivalent contacts for one residue
+    pair.
+
+    Residue-level duplicates require matching context and a sufficiently small
+    difference between minimum atom distances.
+
+    Parameters
+    ----------
+    first
+        First interaction.
+    second
+        Second interaction.
+    distance_tolerance
+        Maximum allowed absolute distance difference.
+    include_pose
+        Whether pose identifiers must match.
+    include_model
+        Whether model identifiers must match.
+
+    Returns
+    -------
+    bool
+        Whether the interactions are residue-level duplicates.
+    """
+
+    normalized_tolerance = safe_float(distance_tolerance)
+
+    if normalized_tolerance is None or normalized_tolerance < 0.0:
+        raise SaltBridgeDetectionError(
+            "distance_tolerance must be finite and non-negative."
+        )
+
+    if not interactions_share_context(
+        first,
+        second,
+        include_pose=include_pose,
+        include_model=include_model,
+    ):
+        return False
+
+    if not interactions_share_residue_pair(first, second):
+        return False
+
+    first_distance = safe_float(
+        first.distance,
+        default=math.inf,
+    )
+
+    second_distance = safe_float(
+        second.distance,
+        default=math.inf,
+    )
+
+    if (
+        first_distance is None
+        or second_distance is None
+        or not math.isfinite(first_distance)
+        or not math.isfinite(second_distance)
+    ):
+        return False
+
+    return (
+        abs(first_distance - second_distance)
+        <= normalized_tolerance
+    )
+
+
+def interactions_are_duplicates(
+    first: SaltBridgeInteraction,
+    second: SaltBridgeInteraction,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    mode: Optional[str] = None,
+    include_pose: bool = True,
+    include_model: bool = True,
+) -> bool:
+    """
+    Return whether two salt bridges should be considered duplicates.
+
+    Parameters
+    ----------
+    first
+        First interaction.
+    second
+        Second interaction.
+    config
+        Salt-bridge configuration.
+    mode
+        Optional explicit deduplication mode. Supported values are
+        ``"exact"``, ``"atomic_overlap"``, and ``"residue_pair"``.
+    include_pose
+        Whether pose identifiers must match.
+    include_model
+        Whether model identifiers must match.
+
+    Returns
+    -------
+    bool
+        Whether the interactions are duplicates.
+    """
+
+    resolved_config = resolve_config(config)
+
+    configured_mode = getattr(
+        resolved_config,
+        "interaction_deduplication_mode",
+        "atomic_overlap",
+    )
+
+    normalized_mode = normalize_text(
+        mode if mode is not None else configured_mode,
+        default="atomic_overlap",
+        lowercase=True,
+    )
+
+    if normalized_mode == "exact":
+        return interactions_are_exact_duplicates(
+            first,
+            second,
+            include_pose=include_pose,
+            include_model=include_model,
+        )
+
+    if normalized_mode == "atomic_overlap":
+        minimum_overlap = safe_float(
+            getattr(
+                resolved_config,
+                "interaction_overlap_threshold",
+                0.5,
+            ),
+            default=0.5,
+        )
+
+        return interactions_are_atomic_duplicates(
+            first,
+            second,
+            minimum_overlap=minimum_overlap or 0.5,
+            include_pose=include_pose,
+            include_model=include_model,
+        )
+
+    if normalized_mode == "residue_pair":
+        distance_tolerance = safe_float(
+            getattr(
+                resolved_config,
+                "deduplication_distance_tolerance",
+                0.25,
+            ),
+            default=0.25,
+        )
+
+        return interactions_are_residue_duplicates(
+            first,
+            second,
+            distance_tolerance=distance_tolerance or 0.0,
+            include_pose=include_pose,
+            include_model=include_model,
+        )
+
+    raise SaltBridgeDetectionError(
+        f"Unsupported interaction deduplication mode: {normalized_mode!r}."
+    )
+
+
+# =============================================================================
+# 11.4. INTERACTION QUALITY RANKING
+# =============================================================================
+
+
+_STRENGTH_PRIORITY = {
+    STRENGTH_STRONG: 4,
+    STRENGTH_MODERATE: 3,
+    STRENGTH_WEAK: 2,
+    STRENGTH_REJECTED: 1,
+}
+
+
+def interaction_strength_priority(
+    interaction: SaltBridgeInteraction,
+) -> int:
+    """
+    Return the ranking priority of an interaction strength.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+
+    Returns
+    -------
+    int
+        Strength-priority value.
+    """
+
+    return _STRENGTH_PRIORITY.get(
+        normalize_text(
+            interaction.strength,
+            lowercase=True,
+        ),
+        0,
+    )
+
+
+def interaction_recognition_confidence(
+    interaction: SaltBridgeInteraction,
+) -> float:
+    """
+    Return the joint recognition confidence of an interaction.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+
+    Returns
+    -------
+    float
+        Joint confidence between 0.0 and 1.0.
+    """
+
+    return calculate_group_confidence_factor(
+        interaction.cation,
+        interaction.anion,
+    )
+
+
+def interaction_quality_key(
+    interaction: SaltBridgeInteraction,
+) -> Tuple[Any, ...]:
+    """
+    Build a sortable interaction-quality key.
+
+    Better interactions produce lexicographically larger values. Ranking
+    considers:
+
+    1. geometric validity;
+    2. score;
+    3. strength;
+    4. recognition confidence;
+    5. atomic contact count;
+    6. shorter minimum distance;
+    7. shorter center distance.
+
+    Parameters
+    ----------
+    interaction
+        Salt-bridge interaction.
+
+    Returns
+    -------
+    Tuple[Any, ...]
+        Quality-ranking key.
+    """
+
+    valid_priority = (
+        1
+        if interaction.geometry.valid
+        else 0
+    )
+
+    score = safe_float(
+        interaction.score,
+        default=0.0,
+    )
+
+    contact_count = safe_int(
+        interaction.geometry.contact_count,
+        default=0,
+    )
+
+    minimum_distance = safe_float(
+        interaction.distance,
+        default=math.inf,
+    )
+
+    center_distance = safe_float(
+        interaction.center_distance,
+        default=math.inf,
+    )
+
+    return (
+        valid_priority,
+        score or 0.0,
+        interaction_strength_priority(interaction),
+        interaction_recognition_confidence(interaction),
+        contact_count or 0,
+        -(minimum_distance or math.inf),
+        -(center_distance or math.inf),
+    )
+
+
+def select_preferred_interaction(
+    first: SaltBridgeInteraction,
+    second: SaltBridgeInteraction,
+) -> SaltBridgeInteraction:
+    """
+    Select the preferred representation of two duplicate interactions.
+
+    Parameters
+    ----------
+    first
+        First interaction.
+    second
+        Second interaction.
+
+    Returns
+    -------
+    SaltBridgeInteraction
+        Preferred interaction.
+    """
+
+    first_key = interaction_quality_key(first)
+    second_key = interaction_quality_key(second)
+
+    if second_key > first_key:
+        return second
+
+    return first
+
+
+def merge_duplicate_interaction_metadata(
+    preferred: SaltBridgeInteraction,
+    discarded: SaltBridgeInteraction,
+) -> SaltBridgeInteraction:
+    """
+    Record duplicate provenance in the retained interaction.
+
+    Parameters
+    ----------
+    preferred
+        Retained interaction.
+    discarded
+        Duplicate interaction being removed.
+
+    Returns
+    -------
+    SaltBridgeInteraction
+        Retained interaction with updated metadata.
+    """
+
+    duplicate_ids = preferred.metadata.setdefault(
+        "merged_duplicate_ids",
+        [],
+    )
+
+    discarded_identifier = (
+        discarded.interaction_id
+        or make_interaction_identifier(
+            discarded.cation,
+            discarded.anion,
+            pose_id=discarded.pose_id,
+            model_id=discarded.model_id,
+        )
+    )
+
+    if discarded_identifier not in duplicate_ids:
+        duplicate_ids.append(discarded_identifier)
+
+    preferred.metadata["duplicate_count"] = (
+        len(duplicate_ids)
+    )
+
+    preferred.metadata["deduplicated"] = True
+
+    return preferred
+
+
+# =============================================================================
+# 11.5. LINEAR KEY-BASED DEDUPLICATION
+# =============================================================================
+
+
+def deduplicate_interactions_by_key(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    key_mode: str = "group_pair",
+    include_pose: bool = True,
+    include_model: bool = True,
+    merge_metadata: bool = True,
+) -> List[SaltBridgeInteraction]:
+    """
+    Deduplicate interactions using an exact hashable identity key.
+
+    This method has approximately linear complexity and should be preferred
+    when exact group-, atom-, or residue-pair identity is sufficient.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    key_mode
+        Identity-key mode.
+    include_pose
+        Whether pose identifiers should be part of the identity.
+    include_model
+        Whether model identifiers should be part of the identity.
+    merge_metadata
+        Whether duplicate provenance should be retained.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Deduplicated interactions.
+    """
+
+    retained_by_key: Dict[
+        Tuple[Any, ...],
+        SaltBridgeInteraction,
+    ] = {}
+
+    key_order: List[Tuple[Any, ...]] = []
+
+    for interaction in interactions:
+        if not isinstance(interaction, SaltBridgeInteraction):
+            raise SaltBridgeDetectionError(
+                "All values must be SaltBridgeInteraction instances."
+            )
+
+        identity_key = interaction_identity_key(
+            interaction,
+            mode=key_mode,
+            include_pose=include_pose,
+            include_model=include_model,
+        )
+
+        existing_interaction = retained_by_key.get(
+            identity_key
+        )
+
+        if existing_interaction is None:
+            retained_by_key[identity_key] = interaction
+            key_order.append(identity_key)
+            continue
+
+        preferred_interaction = select_preferred_interaction(
+            existing_interaction,
+            interaction,
+        )
+
+        discarded_interaction = (
+            interaction
+            if preferred_interaction is existing_interaction
+            else existing_interaction
+        )
+
+        if merge_metadata:
+            merge_duplicate_interaction_metadata(
+                preferred_interaction,
+                discarded_interaction,
+            )
+
+        retained_by_key[identity_key] = (
+            preferred_interaction
+        )
+
+    return [
+        retained_by_key[identity_key]
+        for identity_key in key_order
+    ]
+
+
+# =============================================================================
+# 11.6. OVERLAP-BASED DEDUPLICATION
+# =============================================================================
+
+
+def deduplicate_interactions_by_overlap(
+    interactions: Iterable[SaltBridgeInteraction],
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    mode: Optional[str] = None,
+    include_pose: bool = True,
+    include_model: bool = True,
+    merge_metadata: bool = True,
+) -> List[SaltBridgeInteraction]:
+    """
+    Deduplicate interactions using pairwise duplicate evaluation.
+
+    This method supports partial atomic overlap and residue-level comparison.
+    It is more flexible than exact key-based deduplication but may have
+    quadratic worst-case complexity.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    config
+        Salt-bridge configuration.
+    mode
+        Optional duplicate-comparison mode.
+    include_pose
+        Whether pose identifiers must match.
+    include_model
+        Whether model identifiers must match.
+    merge_metadata
+        Whether duplicate provenance should be retained.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Deduplicated interactions.
+    """
+
+    resolved_config = resolve_config(config)
+    retained_interactions: List[SaltBridgeInteraction] = []
+
+    for candidate in interactions:
+        if not isinstance(candidate, SaltBridgeInteraction):
+            raise SaltBridgeDetectionError(
+                "All values must be SaltBridgeInteraction instances."
+            )
+
+        duplicate_index: Optional[int] = None
+
+        for index, retained in enumerate(
+            retained_interactions
+        ):
+            if interactions_are_duplicates(
+                candidate,
+                retained,
+                resolved_config,
+                mode=mode,
+                include_pose=include_pose,
+                include_model=include_model,
+            ):
+                duplicate_index = index
+                break
+
+        if duplicate_index is None:
+            retained_interactions.append(candidate)
+            continue
+
+        retained = retained_interactions[
+            duplicate_index
+        ]
+
+        preferred = select_preferred_interaction(
+            retained,
+            candidate,
+        )
+
+        discarded = (
+            candidate
+            if preferred is retained
+            else retained
+        )
+
+        if merge_metadata:
+            merge_duplicate_interaction_metadata(
+                preferred,
+                discarded,
+            )
+
+        retained_interactions[
+            duplicate_index
+        ] = preferred
+
+    return retained_interactions
+
+
+# =============================================================================
+# 11.7. PUBLIC INTERACTION DEDUPLICATION API
+# =============================================================================
+
+
+def deduplicate_salt_bridge_interactions(
+    interactions: Iterable[SaltBridgeInteraction],
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    mode: Optional[str] = None,
+    include_pose: bool = True,
+    include_model: bool = True,
+    merge_metadata: bool = True,
+) -> List[SaltBridgeInteraction]:
+    """
+    Deduplicate a salt-bridge interaction collection.
+
+    The function automatically selects exact key-based or overlap-based
+    processing according to the requested mode.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    config
+        Salt-bridge configuration.
+    mode
+        Optional deduplication mode. Supported values are ``"exact"``,
+        ``"group_pair"``, ``"atom_pair"``, ``"atomic_overlap"``, and
+        ``"residue_pair"``.
+    include_pose
+        Whether pose identifiers should isolate duplicate groups.
+    include_model
+        Whether model identifiers should isolate duplicate groups.
+    merge_metadata
+        Whether removed duplicate identifiers should be stored.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Deduplicated interactions.
+    """
+
+    resolved_config = resolve_config(config)
+    interaction_list = list(interactions)
+
+    if not getattr(
+        resolved_config,
+        "deduplicate_interactions",
+        True,
+    ):
+        return interaction_list
+
+    configured_mode = getattr(
+        resolved_config,
+        "interaction_deduplication_mode",
+        "atomic_overlap",
+    )
+
+    normalized_mode = normalize_text(
+        mode if mode is not None else configured_mode,
+        default="atomic_overlap",
+        lowercase=True,
+    )
+
+    if normalized_mode == "exact":
+        normalized_mode = "group_pair"
+
+    if normalized_mode in {
+        "group_pair",
+        "atom_pair",
+    }:
+        return deduplicate_interactions_by_key(
+            interaction_list,
+            key_mode=normalized_mode,
+            include_pose=include_pose,
+            include_model=include_model,
+            merge_metadata=merge_metadata,
+        )
+
+    if normalized_mode in {
+        "atomic_overlap",
+        "residue_pair",
+    }:
+        return deduplicate_interactions_by_overlap(
+            interaction_list,
+            resolved_config,
+            mode=normalized_mode,
+            include_pose=include_pose,
+            include_model=include_model,
+            merge_metadata=merge_metadata,
+        )
+
+    raise SaltBridgeDetectionError(
+        f"Unsupported salt-bridge deduplication mode: "
+        f"{normalized_mode!r}."
+    )
+
+
+# =============================================================================
+# 11.8. INTERACTION IDENTIFIER REFRESH
+# =============================================================================
+
+
+def refresh_interaction_identifiers(
+    interactions: Iterable[SaltBridgeInteraction],
+    *,
+    preserve_existing: bool = False,
+) -> List[SaltBridgeInteraction]:
+    """
+    Assign deterministic sequential identifiers after deduplication.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    preserve_existing
+        Whether existing non-empty identifiers should be retained.
+
+    Returns
+    -------
+    List[SaltBridgeInteraction]
+        Same interaction objects with refreshed identifiers.
+    """
+
+    interaction_list = list(interactions)
+
+    for index, interaction in enumerate(
+        interaction_list,
+        start=1,
+    ):
+        if (
+            preserve_existing
+            and interaction.interaction_id
+        ):
+            continue
+
+        interaction.interaction_id = (
+            make_interaction_identifier(
+                interaction.cation,
+                interaction.anion,
+                pose_id=interaction.pose_id,
+                model_id=interaction.model_id,
+                index=index,
+            )
+        )
+
+    return interaction_list
+
+
+# =============================================================================
+# 11.9. RESULT-LEVEL DEDUPLICATION
+# =============================================================================
+
+
+def deduplicate_salt_bridge_result(
+    result: SaltBridgeResult,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    mode: Optional[str] = None,
+    in_place: bool = True,
+    include_pose: bool = True,
+    include_model: bool = True,
+    merge_metadata: bool = True,
+    refresh_identifiers: bool = True,
+) -> SaltBridgeResult:
+    """
+    Deduplicate all interactions stored in a SaltBridgeResult.
+
+    Parameters
+    ----------
+    result
+        Salt-bridge result.
+    config
+        Salt-bridge configuration.
+    mode
+        Optional deduplication mode.
+    in_place
+        Whether the original result should be modified.
+    include_pose
+        Whether pose identifiers should isolate duplicates.
+    include_model
+        Whether model identifiers should isolate duplicates.
+    merge_metadata
+        Whether duplicate provenance should be retained.
+    refresh_identifiers
+        Whether identifiers should be regenerated after deduplication.
+
+    Returns
+    -------
+    SaltBridgeResult
+        Result containing deduplicated interactions.
+    """
+
+    resolved_config = resolve_config(config)
+
+    if not isinstance(result, SaltBridgeResult):
+        raise SaltBridgeDetectionError(
+            "result must be a SaltBridgeResult instance."
+        )
+
+    target_result = result
+
+    if not in_place:
+        target_result = SaltBridgeResult(
+            interactions=list(result.interactions),
+            cationic_groups=list(result.cationic_groups),
+            anionic_groups=list(result.anionic_groups),
+            statistics=dict(result.statistics),
+            warnings=list(result.warnings),
+            pose_id=result.pose_id,
+            model_id=result.model_id,
+            metadata=dict(result.metadata),
+        )
+
+    original_count = len(
+        target_result.interactions
+    )
+
+    deduplicated_interactions = (
+        deduplicate_salt_bridge_interactions(
+            target_result.interactions,
+            resolved_config,
+            mode=mode,
+            include_pose=include_pose,
+            include_model=include_model,
+            merge_metadata=merge_metadata,
+        )
+    )
+
+    if refresh_identifiers:
+        deduplicated_interactions = (
+            refresh_interaction_identifiers(
+                deduplicated_interactions,
+                preserve_existing=False,
+            )
+        )
+
+    target_result.interactions = (
+        deduplicated_interactions
+    )
+
+    final_count = len(
+        deduplicated_interactions
+    )
+
+    removed_count = max(
+        0,
+        original_count - final_count,
+    )
+
+    target_result.metadata[
+        "deduplication_completed"
+    ] = True
+
+    target_result.metadata[
+        "pre_deduplication_interaction_count"
+    ] = original_count
+
+    target_result.metadata[
+        "deduplicated_interaction_count"
+    ] = final_count
+
+    target_result.metadata[
+        "removed_duplicate_count"
+    ] = removed_count
+
+    target_result.metadata[
+        "interaction_deduplication_mode"
+    ] = normalize_text(
+        mode
+        if mode is not None
+        else getattr(
+            resolved_config,
+            "interaction_deduplication_mode",
+            "atomic_overlap",
+        ),
+        lowercase=True,
+    )
+
+    return target_result
+
+
+# =============================================================================
+# 11.10. DUPLICATE GROUP INSPECTION
+# =============================================================================
+
+
+def group_duplicate_interactions(
+    interactions: Iterable[SaltBridgeInteraction],
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    mode: Optional[str] = None,
+    include_pose: bool = True,
+    include_model: bool = True,
+) -> List[List[SaltBridgeInteraction]]:
+    """
+    Group interactions into duplicate-equivalence collections.
+
+    This function is intended for diagnostics and self-tests. It does not
+    remove any interaction.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    config
+        Salt-bridge configuration.
+    mode
+        Optional duplicate-comparison mode.
+    include_pose
+        Whether pose identifiers must match.
+    include_model
+        Whether model identifiers must match.
+
+    Returns
+    -------
+    List[List[SaltBridgeInteraction]]
+        Duplicate-equivalence groups.
+    """
+
+    resolved_config = resolve_config(config)
+    duplicate_groups: List[
+        List[SaltBridgeInteraction]
+    ] = []
+
+    for interaction in interactions:
+        assigned = False
+
+        for duplicate_group in duplicate_groups:
+            representative = duplicate_group[0]
+
+            if interactions_are_duplicates(
+                interaction,
+                representative,
+                resolved_config,
+                mode=mode,
+                include_pose=include_pose,
+                include_model=include_model,
+            ):
+                duplicate_group.append(interaction)
+                assigned = True
+                break
+
+        if not assigned:
+            duplicate_groups.append(
+                [interaction]
+            )
+
+    return duplicate_groups
+
+
+def find_duplicate_salt_bridges(
+    interactions: Iterable[SaltBridgeInteraction],
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    mode: Optional[str] = None,
+    include_pose: bool = True,
+    include_model: bool = True,
+) -> List[List[SaltBridgeInteraction]]:
+    """
+    Return only interaction groups containing duplicates.
+
+    Parameters
+    ----------
+    interactions
+        Salt-bridge interactions.
+    config
+        Salt-bridge configuration.
+    mode
+        Optional deduplication mode.
+    include_pose
+        Whether pose identifiers must match.
+    include_model
+        Whether model identifiers must match.
+
+    Returns
+    -------
+    List[List[SaltBridgeInteraction]]
+        Groups containing at least two interactions.
+    """
+
+    return [
+        duplicate_group
+        for duplicate_group in group_duplicate_interactions(
+            interactions,
+            config,
+            mode=mode,
+            include_pose=include_pose,
+            include_model=include_model,
+        )
+        if len(duplicate_group) > 1
+    ]
+
+
+# =============================================================================
+# 11.11. COMPLETE PIPELINE THROUGH DEDUPLICATION
+# =============================================================================
+
+
+def analyze_and_deduplicate_salt_bridges(
+    source: Any,
+    config: Optional[SaltBridgeConfig] = None,
+    *,
+    pose_id: Optional[Union[str, int]] = None,
+    model_id: Optional[Union[str, int]] = None,
+    warnings: Optional[List[str]] = None,
+    deduplication_mode: Optional[str] = None,
+) -> SaltBridgeResult:
+    """
+    Recognize, detect, classify, score, and deduplicate salt bridges.
+
+    This function combines Sections 7 through 11. Grouping, statistics,
+    DockModel integration, multipose handling, serialization, and ChimeraX
+    compatibility remain separate.
+
+    Parameters
+    ----------
+    source
+        Molecular source.
+    config
+        Salt-bridge configuration.
+    pose_id
+        Optional docking-pose identifier.
+    model_id
+        Optional molecular-model identifier.
+    warnings
+        Optional warning collector.
+    deduplication_mode
+        Optional interaction deduplication mode.
+
+    Returns
+    -------
+    SaltBridgeResult
+        Classified, scored, and deduplicated result.
+    """
+
+    resolved_config = resolve_config(config)
+
+    result = analyze_salt_bridges(
+        source,
+        resolved_config,
+        pose_id=pose_id,
+        model_id=model_id,
+        warnings=warnings,
+    )
+
+    return deduplicate_salt_bridge_result(
+        result,
+        resolved_config,
+        mode=deduplication_mode,
+        in_place=True,
+        include_pose=True,
+        include_model=True,
+        merge_metadata=not resolved_config.compact_results,
+        refresh_identifiers=True,
+    )
+
+
 
 
 
