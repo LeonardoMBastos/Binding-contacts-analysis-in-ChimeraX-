@@ -96,7 +96,7 @@ from dataclasses import (
 )
 from enum import Enum
 from functools import lru_cache
-from math import isfinite
+from math import isfinite, sqrt
 from statistics import fmean, median
 from types import MappingProxyType
 from typing import (
@@ -13650,3 +13650,7444 @@ for public_name in SECTION_4_PUBLIC_NAMES:
 # End of Section 4.3
 # End of Section 4 — Scoring result structures
 # =============================================================================
+
+# =============================================================================
+# Section 5 — Extraction and adaptation utilities
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 5.1. Extraction constants
+# -----------------------------------------------------------------------------
+
+MISSING: Final[Any] = object()
+
+DEFAULT_RESIDUE_SEPARATOR: Final[str] = ":"
+DEFAULT_ATOM_SEPARATOR: Final[str] = ":"
+DEFAULT_INTERACTION_ID_PREFIX: Final[str] = "interaction"
+
+EXTRACTION_SOURCE_ATTRIBUTE: Final[str] = "attribute"
+EXTRACTION_SOURCE_MAPPING: Final[str] = "mapping"
+EXTRACTION_SOURCE_METHOD: Final[str] = "method"
+EXTRACTION_SOURCE_DEFAULT: Final[str] = "default"
+EXTRACTION_SOURCE_INFERRED: Final[str] = "inferred"
+EXTRACTION_SOURCE_UNKNOWN: Final[str] = "unknown"
+
+EXTRACTION_SOURCES: Final[FrozenSet[str]] = frozenset(
+    {
+        EXTRACTION_SOURCE_ATTRIBUTE,
+        EXTRACTION_SOURCE_MAPPING,
+        EXTRACTION_SOURCE_METHOD,
+        EXTRACTION_SOURCE_DEFAULT,
+        EXTRACTION_SOURCE_INFERRED,
+        EXTRACTION_SOURCE_UNKNOWN,
+    }
+)
+
+
+ATOM_IDENTIFIER_FIELDS: Final[Tuple[str, ...]] = (
+    "atom_id",
+    "id",
+    "serial",
+    "serial_number",
+    "index",
+    "atom_index",
+)
+
+ATOM_NAME_FIELDS: Final[Tuple[str, ...]] = (
+    "atom_name",
+    "name",
+    "label",
+)
+
+ATOM_ELEMENT_FIELDS: Final[Tuple[str, ...]] = (
+    "element",
+    "element_name",
+    "atomic_symbol",
+    "symbol",
+)
+
+ATOM_COORDINATE_FIELDS: Final[Tuple[str, ...]] = (
+    "coord",
+    "coords",
+    "coordinate",
+    "coordinates",
+    "xyz",
+    "position",
+    "scene_coord",
+)
+
+
+RESIDUE_IDENTIFIER_FIELDS: Final[Tuple[str, ...]] = (
+    "residue_id",
+    "res_id",
+    "resid",
+    "id",
+)
+
+RESIDUE_NAME_FIELDS: Final[Tuple[str, ...]] = (
+    "residue_name",
+    "resname",
+    "name",
+)
+
+RESIDUE_NUMBER_FIELDS: Final[Tuple[str, ...]] = (
+    "residue_number",
+    "residue_index",
+    "resnum",
+    "number",
+    "position",
+)
+
+RESIDUE_CHAIN_FIELDS: Final[Tuple[str, ...]] = (
+    "chain_id",
+    "chain",
+    "chain_name",
+)
+
+RESIDUE_INSERTION_CODE_FIELDS: Final[Tuple[str, ...]] = (
+    "insertion_code",
+    "icode",
+    "insert_code",
+)
+
+
+INTERACTION_IDENTIFIER_FIELDS: Final[Tuple[str, ...]] = (
+    "interaction_id",
+    "contact_id",
+    "id",
+    "identifier",
+    "uid",
+)
+
+INTERACTION_TYPE_FIELDS: Final[Tuple[str, ...]] = (
+    "interaction_type",
+    "type",
+    "kind",
+    "category",
+    "subtype",
+)
+
+INTERACTION_FAMILY_FIELDS: Final[Tuple[str, ...]] = (
+    "interaction_family",
+    "family",
+    "group",
+)
+
+INTERACTION_STRENGTH_FIELDS: Final[Tuple[str, ...]] = (
+    "strength",
+    "strength_class",
+    "strength_level",
+)
+
+INTERACTION_CLASSIFICATION_FIELDS: Final[Tuple[str, ...]] = (
+    "classification",
+    "interaction_class",
+    "geometry_class",
+    "class_name",
+)
+
+INTERACTION_GEOMETRY_QUALITY_FIELDS: Final[Tuple[str, ...]] = (
+    "geometry_quality",
+    "quality",
+    "geometric_quality",
+)
+
+INTERACTION_ACCEPTED_FIELDS: Final[Tuple[str, ...]] = (
+    "accepted",
+    "is_valid",
+    "valid",
+    "is_accepted",
+)
+
+INTERACTION_REJECTION_REASON_FIELDS: Final[Tuple[str, ...]] = (
+    "rejection_reason",
+    "reason",
+    "failure_reason",
+    "invalid_reason",
+)
+
+
+INTERACTION_ATOM_PAIR_FIELDS: Final[
+    Tuple[Tuple[str, str], ...]
+] = (
+    ("atom1", "atom2"),
+    ("atom_1", "atom_2"),
+    ("atom_a", "atom_b"),
+    ("donor", "acceptor"),
+    ("cation_atom", "anion_atom"),
+    ("ligand_atom", "receptor_atom"),
+    ("source_atom", "target_atom"),
+)
+
+INTERACTION_RESIDUE_PAIR_FIELDS: Final[
+    Tuple[Tuple[str, str], ...]
+] = (
+    ("residue1", "residue2"),
+    ("residue_1", "residue_2"),
+    ("residue_a", "residue_b"),
+    ("donor_residue", "acceptor_residue"),
+    ("cation_residue", "anion_residue"),
+    ("ligand_residue", "receptor_residue"),
+    ("source_residue", "target_residue"),
+)
+
+
+DISTANCE_FIELDS: Final[Tuple[str, ...]] = (
+    "distance",
+    "distance_angstrom",
+    "distance_a",
+    "separation",
+)
+
+ANGLE_FIELDS: Final[Tuple[str, ...]] = (
+    "angle",
+    "angle_degrees",
+    "interaction_angle",
+)
+
+DIHEDRAL_FIELDS: Final[Tuple[str, ...]] = (
+    "dihedral",
+    "torsion",
+    "torsion_angle",
+)
+
+OFFSET_FIELDS: Final[Tuple[str, ...]] = (
+    "offset",
+    "lateral_offset",
+    "centroid_offset",
+)
+
+PLANARITY_FIELDS: Final[Tuple[str, ...]] = (
+    "planarity",
+    "planarity_rmsd",
+)
+
+OVERLAP_FIELDS: Final[Tuple[str, ...]] = (
+    "overlap",
+    "overlap_fraction",
+    "overlap_ratio",
+)
+
+
+KNOWN_INTERACTION_CONTAINER_FIELDS: Final[Tuple[str, ...]] = (
+    "interactions",
+    "contacts",
+    "results",
+    "items",
+    "hbonds",
+    "hydrogen_bonds",
+    "hydrophobic",
+    "pi",
+    "pi_interactions",
+    "saltbridge",
+    "salt_bridges",
+    "clashes",
+)
+
+
+# -----------------------------------------------------------------------------
+# 5.2. Extraction exceptions
+# -----------------------------------------------------------------------------
+
+class ScoringExtractionError(ScoringError):
+    """
+    Base exception for extraction and adaptation failures.
+    """
+
+
+class MissingScoringFieldError(ScoringExtractionError):
+    """
+    Raised when a required field cannot be extracted.
+    """
+
+
+class UnsupportedScoringObjectError(ScoringExtractionError):
+    """
+    Raised when an object cannot be adapted to the scoring interface.
+    """
+
+
+class AmbiguousScoringFieldError(ScoringExtractionError):
+    """
+    Raised when mutually inconsistent values are extracted.
+    """
+
+
+# -----------------------------------------------------------------------------
+# 5.3. Extracted-value structure
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ExtractedValue:
+    """
+    Immutable record describing one extracted value.
+
+    Parameters
+    ----------
+    value
+        Extracted value.
+    field_name
+        Attribute, key or method name used to obtain the value.
+    source
+        Extraction mechanism.
+    found
+        Whether a value was found.
+    object_type
+        Source object type name.
+    metadata
+        Additional extraction metadata.
+    """
+
+    value: Any = None
+    field_name: str = ""
+    source: str = EXTRACTION_SOURCE_UNKNOWN
+    found: bool = False
+    object_type: str = ""
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize the extraction record.
+        """
+
+        normalized_source = _normalize_scoring_name(
+            self.source
+        )
+
+        if normalized_source not in EXTRACTION_SOURCES:
+            normalized_source = EXTRACTION_SOURCE_UNKNOWN
+
+        object.__setattr__(
+            self,
+            "field_name",
+            _coerce_identifier(self.field_name),
+        )
+        object.__setattr__(
+            self,
+            "source",
+            normalized_source,
+        )
+        object.__setattr__(
+            self,
+            "found",
+            bool(self.found),
+        )
+        object.__setattr__(
+            self,
+            "object_type",
+            _coerce_identifier(self.object_type),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    def require(
+        self,
+        *,
+        field_description: str = "value",
+    ) -> Any:
+        """
+        Return the value or raise when it was not found.
+        """
+
+        if not self.found:
+            raise MissingScoringFieldError(
+                f"Required {field_description} was not found."
+            )
+
+        return self.value
+
+    def to_dict(
+        self,
+        *,
+        include_value: bool = True,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a mutable dictionary representation.
+        """
+
+        result: Dict[str, Any] = {
+            "field_name": self.field_name,
+            "source": self.source,
+            "found": bool(self.found),
+            "object_type": self.object_type,
+        }
+
+        if include_value:
+            result["value"] = self.value
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+    def __bool__(self) -> bool:
+        """Return whether a value was found."""
+
+        return self.found
+
+
+# -----------------------------------------------------------------------------
+# 5.4. Generic object inspection
+# -----------------------------------------------------------------------------
+
+def object_type_name(value: Any) -> str:
+    """
+    Return a stable source-object type name.
+    """
+
+    if value is None:
+        return "NoneType"
+
+    value_type = type(value)
+
+    module_name = getattr(
+        value_type,
+        "__module__",
+        "",
+    )
+    class_name = getattr(
+        value_type,
+        "__qualname__",
+        value_type.__name__,
+    )
+
+    if module_name in {
+        "",
+        "builtins",
+    }:
+        return class_name
+
+    return f"{module_name}.{class_name}"
+
+
+def is_mapping_like(value: Any) -> bool:
+    """
+    Return whether a value implements the mapping interface.
+    """
+
+    return isinstance(value, Mapping)
+
+
+def is_sequence_like(
+    value: Any,
+    *,
+    allow_strings: bool = False,
+) -> bool:
+    """
+    Return whether a value behaves like a non-mapping sequence.
+    """
+
+    if isinstance(value, Mapping):
+        return False
+
+    if not allow_strings and isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        return False
+
+    return isinstance(value, Sequence)
+
+
+def safe_getattr(
+    obj: Any,
+    name: str,
+    default: Any = MISSING,
+) -> Any:
+    """
+    Read an attribute without propagating property-access exceptions.
+    """
+
+    try:
+        return getattr(obj, name)
+    except (
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+        RuntimeError,
+    ):
+        if default is MISSING:
+            raise
+
+        return default
+
+
+def safe_call_zero_argument(
+    value: Any,
+    *,
+    default: Any = MISSING,
+) -> Any:
+    """
+    Call a zero-argument callable safely.
+
+    Non-callable values are returned unchanged.
+    """
+
+    if not callable(value):
+        return value
+
+    try:
+        return value()
+    except (
+        TypeError,
+        ValueError,
+        RuntimeError,
+        AttributeError,
+        KeyError,
+    ):
+        if default is MISSING:
+            raise
+
+        return default
+
+
+def extract_named_value(
+    obj: Any,
+    names: Iterable[str],
+    *,
+    default: Any = MISSING,
+    call_methods: bool = True,
+    allow_none: bool = False,
+) -> ExtractedValue:
+    """
+    Extract the first available value from a mapping or object.
+
+    Mapping keys are checked before attributes. When ``call_methods`` is true,
+    zero-argument callables are invoked.
+
+    Parameters
+    ----------
+    obj
+        Source object.
+    names
+        Candidate keys or attribute names.
+    default
+        Default value returned when no candidate is found.
+    call_methods
+        Invoke zero-argument callable values.
+    allow_none
+        Treat ``None`` as a successful extraction.
+
+    Returns
+    -------
+    ExtractedValue
+        Extraction record.
+    """
+
+    source_type = object_type_name(obj)
+
+    if obj is None:
+        if default is not MISSING:
+            return ExtractedValue(
+                value=default,
+                source=EXTRACTION_SOURCE_DEFAULT,
+                found=True,
+                object_type=source_type,
+            )
+
+        return ExtractedValue(
+            value=None,
+            source=EXTRACTION_SOURCE_UNKNOWN,
+            found=False,
+            object_type=source_type,
+        )
+
+    normalized_names = tuple(
+        _coerce_identifier(name)
+        for name in names
+        if _coerce_identifier(name)
+    )
+
+    if isinstance(obj, Mapping):
+        for name in normalized_names:
+            if name not in obj:
+                continue
+
+            value = obj[name]
+
+            if callable(value) and call_methods:
+                value = safe_call_zero_argument(
+                    value,
+                    default=MISSING,
+                )
+
+                if value is MISSING:
+                    continue
+
+                extraction_source = EXTRACTION_SOURCE_METHOD
+            else:
+                extraction_source = EXTRACTION_SOURCE_MAPPING
+
+            if value is None and not allow_none:
+                continue
+
+            return ExtractedValue(
+                value=value,
+                field_name=name,
+                source=extraction_source,
+                found=True,
+                object_type=source_type,
+            )
+
+    for name in normalized_names:
+        value = safe_getattr(
+            obj,
+            name,
+            MISSING,
+        )
+
+        if value is MISSING:
+            continue
+
+        if callable(value) and call_methods:
+            value = safe_call_zero_argument(
+                value,
+                default=MISSING,
+            )
+
+            if value is MISSING:
+                continue
+
+            extraction_source = EXTRACTION_SOURCE_METHOD
+        else:
+            extraction_source = EXTRACTION_SOURCE_ATTRIBUTE
+
+        if value is None and not allow_none:
+            continue
+
+        return ExtractedValue(
+            value=value,
+            field_name=name,
+            source=extraction_source,
+            found=True,
+            object_type=source_type,
+        )
+
+    if default is not MISSING:
+        return ExtractedValue(
+            value=default,
+            source=EXTRACTION_SOURCE_DEFAULT,
+            found=True,
+            object_type=source_type,
+        )
+
+    return ExtractedValue(
+        value=None,
+        source=EXTRACTION_SOURCE_UNKNOWN,
+        found=False,
+        object_type=source_type,
+    )
+
+
+def extract_nested_value(
+    obj: Any,
+    paths: Iterable[Sequence[str]],
+    *,
+    default: Any = MISSING,
+    call_methods: bool = True,
+    allow_none: bool = False,
+) -> ExtractedValue:
+    """
+    Extract a value from the first valid nested field path.
+
+    Example
+    -------
+    ``("residue", "chain", "chain_id")``.
+    """
+
+    source_type = object_type_name(obj)
+
+    for path in paths:
+        current = obj
+        used_fields: List[str] = []
+        last_source = EXTRACTION_SOURCE_UNKNOWN
+        valid_path = True
+
+        for name in path:
+            extracted = extract_named_value(
+                current,
+                (name,),
+                call_methods=call_methods,
+                allow_none=True,
+            )
+
+            if not extracted.found:
+                valid_path = False
+                break
+
+            current = extracted.value
+            used_fields.append(name)
+            last_source = extracted.source
+
+            if current is None:
+                valid_path = False
+                break
+
+        if not valid_path:
+            continue
+
+        if current is None and not allow_none:
+            continue
+
+        return ExtractedValue(
+            value=current,
+            field_name=".".join(used_fields),
+            source=last_source,
+            found=True,
+            object_type=source_type,
+        )
+
+    if default is not MISSING:
+        return ExtractedValue(
+            value=default,
+            source=EXTRACTION_SOURCE_DEFAULT,
+            found=True,
+            object_type=source_type,
+        )
+
+    return ExtractedValue(
+        value=None,
+        source=EXTRACTION_SOURCE_UNKNOWN,
+        found=False,
+        object_type=source_type,
+    )
+
+
+def extract_first_available(
+    obj: Any,
+    *candidate_groups: Iterable[str],
+    default: Any = MISSING,
+    allow_none: bool = False,
+) -> ExtractedValue:
+    """
+    Extract the first value found across multiple candidate-name groups.
+    """
+
+    for names in candidate_groups:
+        extracted = extract_named_value(
+            obj,
+            names,
+            allow_none=allow_none,
+        )
+
+        if extracted.found:
+            return extracted
+
+    if default is not MISSING:
+        return ExtractedValue(
+            value=default,
+            source=EXTRACTION_SOURCE_DEFAULT,
+            found=True,
+            object_type=object_type_name(obj),
+        )
+
+    return ExtractedValue(
+        value=None,
+        source=EXTRACTION_SOURCE_UNKNOWN,
+        found=False,
+        object_type=object_type_name(obj),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 5.5. Numeric and Boolean extraction
+# -----------------------------------------------------------------------------
+
+def extract_numeric_value(
+    obj: Any,
+    names: Iterable[str],
+    *,
+    default: Optional[float] = None,
+    required: bool = False,
+) -> Optional[float]:
+    """
+    Extract a finite numeric value.
+    """
+
+    extracted = extract_named_value(
+        obj,
+        names,
+        allow_none=False,
+    )
+
+    if not extracted.found:
+        if required:
+            raise MissingScoringFieldError(
+                "Required numeric field was not found. "
+                f"Candidates: {tuple(names)!r}."
+            )
+
+        return default
+
+    try:
+        return float(
+            _coerce_finite_score_value(
+                extracted.value,
+                name=extracted.field_name or "numeric value",
+            )
+        )
+    except ScoringConfigurationError as exc:
+        raise ScoringExtractionError(
+            f"Could not convert field {extracted.field_name!r} "
+            "to a finite number."
+        ) from exc
+
+
+def extract_integer_value(
+    obj: Any,
+    names: Iterable[str],
+    *,
+    default: Optional[int] = None,
+    required: bool = False,
+) -> Optional[int]:
+    """
+    Extract an integer value.
+    """
+
+    extracted = extract_named_value(
+        obj,
+        names,
+        allow_none=False,
+    )
+
+    if not extracted.found:
+        if required:
+            raise MissingScoringFieldError(
+                "Required integer field was not found. "
+                f"Candidates: {tuple(names)!r}."
+            )
+
+        return default
+
+    if isinstance(extracted.value, bool):
+        raise ScoringExtractionError(
+            f"Field {extracted.field_name!r} cannot be Boolean."
+        )
+
+    try:
+        return int(extracted.value)
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+    ) as exc:
+        raise ScoringExtractionError(
+            f"Could not convert field {extracted.field_name!r} "
+            "to an integer."
+        ) from exc
+
+
+def extract_boolean_value(
+    obj: Any,
+    names: Iterable[str],
+    *,
+    default: Optional[bool] = None,
+) -> Optional[bool]:
+    """
+    Extract a Boolean value.
+    """
+
+    extracted = extract_named_value(
+        obj,
+        names,
+        allow_none=False,
+    )
+
+    if not extracted.found:
+        return default
+
+    value = extracted.value
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, Number):
+        return bool(value)
+
+    normalized = _normalize_scoring_name(
+        value
+    )
+
+    if normalized in {
+        "true",
+        "yes",
+        "accepted",
+        "valid",
+        "enabled",
+        "active",
+        "1",
+    }:
+        return True
+
+    if normalized in {
+        "false",
+        "no",
+        "rejected",
+        "invalid",
+        "disabled",
+        "inactive",
+        "0",
+    }:
+        return False
+
+    raise ScoringExtractionError(
+        f"Could not interpret field {extracted.field_name!r} "
+        "as a Boolean value."
+    )
+
+
+# -----------------------------------------------------------------------------
+# 5.6. Coordinate extraction
+# -----------------------------------------------------------------------------
+
+def normalize_coordinates(
+    value: Any,
+    *,
+    field_name: str = "coordinates",
+) -> Tuple[float, float, float]:
+    """
+    Normalize a coordinate-like object to an ``(x, y, z)`` tuple.
+    """
+
+    if value is None:
+        raise ScoringExtractionError(
+            f"{field_name} cannot be None."
+        )
+
+    if isinstance(value, Mapping):
+        coordinate_names = (
+            ("x", "y", "z"),
+            ("X", "Y", "Z"),
+        )
+
+        for names in coordinate_names:
+            if all(name in value for name in names):
+                raw_values = tuple(
+                    value[name]
+                    for name in names
+                )
+                break
+        else:
+            raise ScoringExtractionError(
+                f"{field_name} mapping must contain x, y and z."
+            )
+
+    else:
+        xyz_attributes = (
+            safe_getattr(value, "x", MISSING),
+            safe_getattr(value, "y", MISSING),
+            safe_getattr(value, "z", MISSING),
+        )
+
+        if all(
+            coordinate is not MISSING
+            for coordinate in xyz_attributes
+        ):
+            raw_values = xyz_attributes
+        else:
+            try:
+                raw_values = tuple(value)
+            except TypeError as exc:
+                raise ScoringExtractionError(
+                    f"{field_name} must be a three-dimensional sequence."
+                ) from exc
+
+    if len(raw_values) != 3:
+        raise ScoringExtractionError(
+            f"{field_name} must contain exactly three values."
+        )
+
+    normalized = tuple(
+        float(
+            _coerce_finite_score_value(
+                coordinate,
+                name=f"{field_name}[{index}]",
+            )
+        )
+        for index, coordinate in enumerate(raw_values)
+    )
+
+    return (
+        normalized[0],
+        normalized[1],
+        normalized[2],
+    )
+
+
+def extract_coordinates(
+    obj: Any,
+    *,
+    required: bool = False,
+) -> Optional[Tuple[float, float, float]]:
+    """
+    Extract Cartesian coordinates from an atom-like object.
+    """
+
+    extracted = extract_named_value(
+        obj,
+        ATOM_COORDINATE_FIELDS,
+        allow_none=False,
+    )
+
+    if extracted.found:
+        return normalize_coordinates(
+            extracted.value,
+            field_name=extracted.field_name,
+        )
+
+    coordinate_components = (
+        extract_named_value(obj, ("x",), allow_none=False),
+        extract_named_value(obj, ("y",), allow_none=False),
+        extract_named_value(obj, ("z",), allow_none=False),
+    )
+
+    if all(component.found for component in coordinate_components):
+        return normalize_coordinates(
+            tuple(
+                component.value
+                for component in coordinate_components
+            )
+        )
+
+    if required:
+        raise MissingScoringFieldError(
+            "Cartesian coordinates could not be extracted."
+        )
+
+    return None
+
+
+# -----------------------------------------------------------------------------
+# 5.7. Residue extraction
+# -----------------------------------------------------------------------------
+
+def extract_residue_object(
+    atom_or_residue: Any,
+) -> Any:
+    """
+    Return a residue-like object from an atom or residue object.
+    """
+
+    if atom_or_residue is None:
+        return None
+
+    residue = extract_named_value(
+        atom_or_residue,
+        (
+            "residue",
+            "res",
+            "parent_residue",
+        ),
+        allow_none=False,
+    )
+
+    if residue.found:
+        return residue.value
+
+    return atom_or_residue
+
+
+def extract_residue_name(
+    residue_or_atom: Any,
+    *,
+    default: str = "",
+) -> str:
+    """
+    Extract a residue name.
+    """
+
+    residue = extract_residue_object(
+        residue_or_atom
+    )
+
+    extracted = extract_named_value(
+        residue,
+        RESIDUE_NAME_FIELDS,
+        default=default,
+        allow_none=False,
+    )
+
+    return _coerce_optional_text(
+        extracted.value,
+        default=default,
+    ).upper()
+
+
+def extract_chain_id(
+    residue_or_atom: Any,
+    *,
+    default: str = "",
+) -> str:
+    """
+    Extract a chain identifier.
+    """
+
+    residue = extract_residue_object(
+        residue_or_atom
+    )
+
+    direct = extract_named_value(
+        residue,
+        RESIDUE_CHAIN_FIELDS,
+        allow_none=False,
+    )
+
+    if direct.found:
+        chain_value = direct.value
+
+        if not isinstance(
+            chain_value,
+            (str, bytes, Number),
+        ):
+            nested = extract_named_value(
+                chain_value,
+                (
+                    "chain_id",
+                    "id",
+                    "name",
+                ),
+                allow_none=False,
+            )
+
+            if nested.found:
+                chain_value = nested.value
+
+        return _coerce_identifier(
+            chain_value,
+            default=default,
+        )
+
+    nested = extract_nested_value(
+        residue,
+        (
+            ("structure", "chain_id"),
+            ("parent", "chain_id"),
+        ),
+        default=default,
+    )
+
+    return _coerce_identifier(
+        nested.value,
+        default=default,
+    )
+
+
+def extract_residue_number(
+    residue_or_atom: Any,
+    *,
+    default: str = "",
+) -> str:
+    """
+    Extract a residue sequence number.
+    """
+
+    residue = extract_residue_object(
+        residue_or_atom
+    )
+
+    extracted = extract_named_value(
+        residue,
+        RESIDUE_NUMBER_FIELDS,
+        default=default,
+        allow_none=False,
+    )
+
+    return _coerce_identifier(
+        extracted.value,
+        default=default,
+    )
+
+
+def extract_insertion_code(
+    residue_or_atom: Any,
+    *,
+    default: str = "",
+) -> str:
+    """
+    Extract a residue insertion code.
+    """
+
+    residue = extract_residue_object(
+        residue_or_atom
+    )
+
+    extracted = extract_named_value(
+        residue,
+        RESIDUE_INSERTION_CODE_FIELDS,
+        default=default,
+        allow_none=False,
+    )
+
+    return _coerce_identifier(
+        extracted.value,
+        default=default,
+    )
+
+
+def build_residue_identifier(
+    *,
+    chain_id: Any = "",
+    residue_number: Any = "",
+    residue_name: Any = "",
+    insertion_code: Any = "",
+    separator: str = DEFAULT_RESIDUE_SEPARATOR,
+) -> str:
+    """
+    Build a stable residue identifier.
+
+    The default format is:
+
+    ``CHAIN:NUMBER[INSERTION]:NAME``
+
+    Missing sections are omitted without adding empty separators.
+    """
+
+    chain = _coerce_identifier(chain_id)
+    number = _coerce_identifier(residue_number)
+    name = _coerce_optional_text(
+        residue_name
+    ).upper()
+    insertion = _coerce_identifier(
+        insertion_code
+    )
+
+    if number and insertion:
+        number = f"{number}{insertion}"
+
+    parts = [
+        part
+        for part in (
+            chain,
+            number,
+            name,
+        )
+        if part
+    ]
+
+    return separator.join(parts)
+
+
+def extract_residue_identifier(
+    residue_or_atom: Any,
+    *,
+    default: str = "",
+    separator: str = DEFAULT_RESIDUE_SEPARATOR,
+) -> str:
+    """
+    Extract or construct a stable residue identifier.
+    """
+
+    residue = extract_residue_object(
+        residue_or_atom
+    )
+
+    explicit = extract_named_value(
+        residue,
+        RESIDUE_IDENTIFIER_FIELDS,
+        allow_none=False,
+    )
+
+    if explicit.found:
+        explicit_value = _coerce_identifier(
+            explicit.value
+        )
+
+        if explicit_value:
+            return explicit_value
+
+    identifier = build_residue_identifier(
+        chain_id=extract_chain_id(
+            residue,
+            default="",
+        ),
+        residue_number=extract_residue_number(
+            residue,
+            default="",
+        ),
+        residue_name=extract_residue_name(
+            residue,
+            default="",
+        ),
+        insertion_code=extract_insertion_code(
+            residue,
+            default="",
+        ),
+        separator=separator,
+    )
+
+    return identifier or default
+
+
+def extract_residue_role(
+    residue_or_atom: Any,
+    *,
+    default: str = RESIDUE_ROLE_UNKNOWN,
+) -> str:
+    """
+    Extract or infer a residue role.
+    """
+
+    residue = extract_residue_object(
+        residue_or_atom
+    )
+
+    extracted = extract_named_value(
+        residue,
+        (
+            "role",
+            "residue_role",
+            "molecular_role",
+            "category",
+        ),
+        allow_none=False,
+    )
+
+    if extracted.found:
+        return _normalize_residue_role(
+            extracted.value,
+            default=default,
+        )
+
+    is_water = extract_boolean_value(
+        residue,
+        (
+            "is_water",
+            "water",
+        ),
+        default=None,
+    )
+
+    if is_water:
+        return RESIDUE_ROLE_WATER
+
+    is_ion = extract_boolean_value(
+        residue,
+        (
+            "is_ion",
+            "ion",
+            "is_metal",
+        ),
+        default=None,
+    )
+
+    if is_ion:
+        return RESIDUE_ROLE_ION
+
+    is_ligand = extract_boolean_value(
+        residue,
+        (
+            "is_ligand",
+            "ligand",
+        ),
+        default=None,
+    )
+
+    if is_ligand:
+        return RESIDUE_ROLE_LIGAND
+
+    is_polymer = extract_boolean_value(
+        residue,
+        (
+            "is_polymer",
+            "polymer",
+            "is_protein",
+        ),
+        default=None,
+    )
+
+    if is_polymer:
+        return RESIDUE_ROLE_RECEPTOR
+
+    return default
+
+
+# -----------------------------------------------------------------------------
+# 5.8. Atom extraction
+# -----------------------------------------------------------------------------
+
+def extract_atom_name(
+    atom: Any,
+    *,
+    default: str = "",
+) -> str:
+    """
+    Extract an atom name.
+    """
+
+    extracted = extract_named_value(
+        atom,
+        ATOM_NAME_FIELDS,
+        default=default,
+        allow_none=False,
+    )
+
+    return _coerce_identifier(
+        extracted.value,
+        default=default,
+    )
+
+
+def extract_atom_element(
+    atom: Any,
+    *,
+    default: str = "",
+) -> str:
+    """
+    Extract an atomic-element symbol.
+    """
+
+    extracted = extract_named_value(
+        atom,
+        ATOM_ELEMENT_FIELDS,
+        allow_none=False,
+    )
+
+    if extracted.found:
+        element = extracted.value
+
+        if not isinstance(
+            element,
+            (str, bytes, Number),
+        ):
+            nested = extract_named_value(
+                element,
+                (
+                    "name",
+                    "symbol",
+                ),
+                allow_none=False,
+            )
+
+            if nested.found:
+                element = nested.value
+
+        normalized = _coerce_identifier(
+            element
+        )
+
+        if normalized:
+            return normalized.upper()
+
+    atom_name = extract_atom_name(
+        atom,
+        default="",
+    )
+
+    if atom_name:
+        letters = "".join(
+            character
+            for character in atom_name
+            if character.isalpha()
+        )
+
+        if letters:
+            if len(letters) >= 2 and letters[:2].upper() in {
+                "CL",
+                "BR",
+                "NA",
+                "MG",
+                "ZN",
+                "FE",
+                "CA",
+                "MN",
+                "CU",
+            }:
+                return letters[:2].upper()
+
+            return letters[0].upper()
+
+    return default
+
+
+def extract_atom_serial(
+    atom: Any,
+    *,
+    default: str = "",
+) -> str:
+    """
+    Extract an atom serial or index.
+    """
+
+    extracted = extract_named_value(
+        atom,
+        ATOM_IDENTIFIER_FIELDS,
+        default=default,
+        allow_none=False,
+    )
+
+    return _coerce_identifier(
+        extracted.value,
+        default=default,
+    )
+
+
+def build_atom_identifier(
+    *,
+    residue_id: Any = "",
+    atom_name: Any = "",
+    atom_serial: Any = "",
+    separator: str = DEFAULT_ATOM_SEPARATOR,
+) -> str:
+    """
+    Build a stable atom identifier.
+    """
+
+    normalized_residue = _coerce_identifier(
+        residue_id
+    )
+    normalized_name = _coerce_identifier(
+        atom_name
+    )
+    normalized_serial = _coerce_identifier(
+        atom_serial
+    )
+
+    parts = [
+        part
+        for part in (
+            normalized_residue,
+            normalized_name,
+            normalized_serial,
+        )
+        if part
+    ]
+
+    return separator.join(parts)
+
+
+def extract_atom_identifier(
+    atom: Any,
+    *,
+    default: str = "",
+    separator: str = DEFAULT_ATOM_SEPARATOR,
+) -> str:
+    """
+    Extract or construct a stable atom identifier.
+    """
+
+    explicit = extract_named_value(
+        atom,
+        (
+            "atom_id",
+            "identifier",
+            "uid",
+        ),
+        allow_none=False,
+    )
+
+    if explicit.found:
+        explicit_value = _coerce_identifier(
+            explicit.value
+        )
+
+        if explicit_value:
+            return explicit_value
+
+    identifier = build_atom_identifier(
+        residue_id=extract_residue_identifier(
+            atom,
+            default="",
+        ),
+        atom_name=extract_atom_name(
+            atom,
+            default="",
+        ),
+        atom_serial=extract_atom_serial(
+            atom,
+            default="",
+        ),
+        separator=separator,
+    )
+
+    return identifier or default
+
+
+# -----------------------------------------------------------------------------
+# 5.9. Interaction-object extraction
+# -----------------------------------------------------------------------------
+
+def extract_interaction_identifier(
+    interaction: Any,
+    *,
+    default: str = "",
+    index: Optional[int] = None,
+    prefix: str = DEFAULT_INTERACTION_ID_PREFIX,
+) -> str:
+    """
+    Extract or generate an interaction identifier.
+    """
+
+    extracted = extract_named_value(
+        interaction,
+        INTERACTION_IDENTIFIER_FIELDS,
+        allow_none=False,
+    )
+
+    if extracted.found:
+        identifier = _coerce_identifier(
+            extracted.value
+        )
+
+        if identifier:
+            return identifier
+
+    if index is not None:
+        return f"{prefix}_{int(index)}"
+
+    interaction_type = extract_interaction_type(
+        interaction,
+        default=SCORE_TYPE_UNKNOWN,
+    )
+
+    atom_pair = extract_interaction_atom_pair(
+        interaction
+    )
+
+    if atom_pair is not None:
+        first, second = sorted(atom_pair)
+
+        return (
+            f"{interaction_type}:"
+            f"{first}:"
+            f"{second}"
+        )
+
+    residue_pair = extract_interaction_residue_pair(
+        interaction
+    )
+
+    if residue_pair is not None:
+        first, second = sorted(residue_pair)
+
+        return (
+            f"{interaction_type}:"
+            f"{first}:"
+            f"{second}"
+        )
+
+    return default
+
+
+def infer_interaction_type_from_class_name(
+    interaction: Any,
+    *,
+    default: str = SCORE_TYPE_UNKNOWN,
+) -> str:
+    """
+    Infer an interaction type from its class name.
+    """
+
+    class_name = type(
+        interaction
+    ).__name__
+
+    normalized = _normalize_scoring_name(
+        class_name
+    )
+
+    inference_rules: Tuple[
+        Tuple[Tuple[str, ...], str],
+        ...
+    ] = (
+        (
+            (
+                "hydrogen_bond",
+                "hbond",
+                "hydrogenbond",
+            ),
+            "hydrogen_bond",
+        ),
+        (
+            (
+                "hydrophobic",
+                "nonpolar",
+                "non_polar",
+            ),
+            "hydrophobic",
+        ),
+        (
+            (
+                "salt_bridge",
+                "saltbridge",
+                "ionic_pair",
+            ),
+            "salt_bridge",
+        ),
+        (
+            (
+                "cation_pi",
+                "cationpi",
+            ),
+            "cation_pi",
+        ),
+        (
+            (
+                "anion_pi",
+                "anionpi",
+            ),
+            "anion_pi",
+        ),
+        (
+            (
+                "amide_pi",
+                "amidepi",
+            ),
+            "amide_pi",
+        ),
+        (
+            (
+                "pi_stack",
+                "pi_stacking",
+                "pistacking",
+            ),
+            "pi_stacking",
+        ),
+        (
+            (
+                "t_shaped",
+                "tshape",
+                "t_shaped_pi",
+            ),
+            "t_shaped",
+        ),
+        (
+            (
+                "clash",
+                "steric",
+                "overlap",
+            ),
+            "clash",
+        ),
+        (
+            (
+                "contact",
+                "interaction",
+            ),
+            "contact",
+        ),
+    )
+
+    for aliases, canonical_type in inference_rules:
+        if any(
+            alias in normalized
+            for alias in aliases
+        ):
+            return normalize_interaction_type(
+                canonical_type,
+                preserve_unknown=True,
+            )
+
+    return default
+
+
+def extract_interaction_type(
+    interaction: Any,
+    *,
+    default: str = SCORE_TYPE_UNKNOWN,
+) -> str:
+    """
+    Extract or infer a canonical interaction type.
+    """
+
+    extracted = extract_named_value(
+        interaction,
+        INTERACTION_TYPE_FIELDS,
+        allow_none=False,
+    )
+
+    if extracted.found:
+        return normalize_interaction_type(
+            extracted.value,
+            preserve_unknown=True,
+        )
+
+    return infer_interaction_type_from_class_name(
+        interaction,
+        default=default,
+    )
+
+
+def extract_interaction_family(
+    interaction: Any,
+    *,
+    interaction_type: Optional[str] = None,
+    default: str = SCORE_FAMILY_UNKNOWN,
+) -> str:
+    """
+    Extract or infer an interaction family.
+    """
+
+    extracted = extract_named_value(
+        interaction,
+        INTERACTION_FAMILY_FIELDS,
+        allow_none=False,
+    )
+
+    if extracted.found:
+        return canonical_interaction_family(
+            extracted.value
+        )
+
+    canonical_type = (
+        extract_interaction_type(
+            interaction
+        )
+        if interaction_type is None
+        else normalize_interaction_type(
+            interaction_type,
+            preserve_unknown=True,
+        )
+    )
+
+    family = canonical_interaction_family(
+        canonical_type
+    )
+
+    return family or default
+
+
+def extract_interaction_strength(
+    interaction: Any,
+    *,
+    default: str = STRENGTH_UNKNOWN,
+) -> str:
+    """
+    Extract a canonical interaction-strength label.
+    """
+
+    extracted = extract_named_value(
+        interaction,
+        INTERACTION_STRENGTH_FIELDS,
+        allow_none=False,
+    )
+
+    if not extracted.found:
+        return default
+
+    return normalize_interaction_strength(
+        extracted.value
+    )
+
+
+def extract_interaction_classification(
+    interaction: Any,
+    *,
+    default: str = CLASSIFICATION_UNKNOWN,
+) -> str:
+    """
+    Extract a canonical interaction classification.
+    """
+
+    extracted = extract_named_value(
+        interaction,
+        INTERACTION_CLASSIFICATION_FIELDS,
+        allow_none=False,
+    )
+
+    if not extracted.found:
+        return default
+
+    return normalize_interaction_classification(
+        extracted.value
+    )
+
+
+def extract_geometry_quality(
+    interaction: Any,
+    *,
+    default: str = GEOMETRY_UNKNOWN,
+) -> str:
+    """
+    Extract a canonical geometry-quality label.
+    """
+
+    extracted = extract_named_value(
+        interaction,
+        INTERACTION_GEOMETRY_QUALITY_FIELDS,
+        allow_none=False,
+    )
+
+    if not extracted.found:
+        return default
+
+    return normalize_geometry_quality(
+        extracted.value
+    )
+
+
+def extract_interaction_accepted(
+    interaction: Any,
+    *,
+    default: bool = True,
+) -> bool:
+    """
+    Extract whether an interaction is accepted.
+    """
+
+    value = extract_boolean_value(
+        interaction,
+        INTERACTION_ACCEPTED_FIELDS,
+        default=default,
+    )
+
+    return bool(value)
+
+
+def extract_interaction_rejection_reason(
+    interaction: Any,
+    *,
+    default: str = "",
+) -> str:
+    """
+    Extract an interaction rejection reason.
+    """
+
+    extracted = extract_named_value(
+        interaction,
+        INTERACTION_REJECTION_REASON_FIELDS,
+        default=default,
+        allow_none=False,
+    )
+
+    return _coerce_optional_text(
+        extracted.value,
+        default=default,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 5.10. Pair extraction
+# -----------------------------------------------------------------------------
+
+def _extract_explicit_pair(
+    obj: Any,
+    names: Iterable[str],
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Extract a pair stored in one sequence-valued field.
+    """
+
+    extracted = extract_named_value(
+        obj,
+        names,
+        allow_none=False,
+    )
+
+    if not extracted.found:
+        return None
+
+    value = extracted.value
+
+    if isinstance(value, Mapping):
+        candidates = (
+            ("first", "second"),
+            ("a", "b"),
+            ("source", "target"),
+        )
+
+        for first_name, second_name in candidates:
+            if (
+                first_name in value
+                and second_name in value
+            ):
+                return (
+                    value[first_name],
+                    value[second_name],
+                )
+
+    if isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        return None
+
+    try:
+        pair = tuple(value)
+    except TypeError:
+        return None
+
+    if len(pair) != 2:
+        return None
+
+    return pair[0], pair[1]
+
+
+def _extract_pair_from_fields(
+    obj: Any,
+    field_pairs: Iterable[Tuple[str, str]],
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Extract a pair from two separate fields.
+    """
+
+    for first_field, second_field in field_pairs:
+        first = extract_named_value(
+            obj,
+            (first_field,),
+            allow_none=False,
+        )
+        second = extract_named_value(
+            obj,
+            (second_field,),
+            allow_none=False,
+        )
+
+        if first.found and second.found:
+            return first.value, second.value
+
+    return None
+
+
+def extract_interaction_atom_objects(
+    interaction: Any,
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Extract the two atom objects involved in an interaction.
+    """
+
+    explicit = _extract_explicit_pair(
+        interaction,
+        (
+            "atom_pair",
+            "atoms",
+            "atom_objects",
+        ),
+    )
+
+    if explicit is not None:
+        return explicit
+
+    return _extract_pair_from_fields(
+        interaction,
+        INTERACTION_ATOM_PAIR_FIELDS,
+    )
+
+
+def extract_interaction_atom_pair(
+    interaction: Any,
+) -> Optional[Tuple[str, str]]:
+    """
+    Extract a stable atom-identifier pair.
+    """
+
+    explicit = _extract_explicit_pair(
+        interaction,
+        (
+            "atom_ids",
+            "atom_pair_ids",
+            "atom_pair",
+        ),
+    )
+
+    if explicit is not None:
+        first = (
+            explicit[0]
+            if isinstance(
+                explicit[0],
+                (str, bytes, Number),
+            )
+            else extract_atom_identifier(
+                explicit[0]
+            )
+        )
+        second = (
+            explicit[1]
+            if isinstance(
+                explicit[1],
+                (str, bytes, Number),
+            )
+            else extract_atom_identifier(
+                explicit[1]
+            )
+        )
+
+        first_id = _coerce_identifier(first)
+        second_id = _coerce_identifier(second)
+
+        if first_id and second_id:
+            return first_id, second_id
+
+    atom_objects = extract_interaction_atom_objects(
+        interaction
+    )
+
+    if atom_objects is None:
+        return None
+
+    first_id = extract_atom_identifier(
+        atom_objects[0]
+    )
+    second_id = extract_atom_identifier(
+        atom_objects[1]
+    )
+
+    if not first_id or not second_id:
+        return None
+
+    return first_id, second_id
+
+
+def extract_interaction_residue_objects(
+    interaction: Any,
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Extract the two residue objects involved in an interaction.
+    """
+
+    explicit = _extract_explicit_pair(
+        interaction,
+        (
+            "residue_pair",
+            "residues",
+            "residue_objects",
+        ),
+    )
+
+    if explicit is not None:
+        return explicit
+
+    explicit_fields = _extract_pair_from_fields(
+        interaction,
+        INTERACTION_RESIDUE_PAIR_FIELDS,
+    )
+
+    if explicit_fields is not None:
+        return explicit_fields
+
+    atom_objects = extract_interaction_atom_objects(
+        interaction
+    )
+
+    if atom_objects is None:
+        return None
+
+    return (
+        extract_residue_object(atom_objects[0]),
+        extract_residue_object(atom_objects[1]),
+    )
+
+
+def extract_interaction_residue_pair(
+    interaction: Any,
+) -> Optional[Tuple[str, str]]:
+    """
+    Extract a stable residue-identifier pair.
+    """
+
+    explicit = _extract_explicit_pair(
+        interaction,
+        (
+            "residue_ids",
+            "residue_pair_ids",
+            "residue_pair",
+        ),
+    )
+
+    if explicit is not None:
+        first = (
+            explicit[0]
+            if isinstance(
+                explicit[0],
+                (str, bytes, Number),
+            )
+            else extract_residue_identifier(
+                explicit[0]
+            )
+        )
+        second = (
+            explicit[1]
+            if isinstance(
+                explicit[1],
+                (str, bytes, Number),
+            )
+            else extract_residue_identifier(
+                explicit[1]
+            )
+        )
+
+        first_id = _coerce_identifier(first)
+        second_id = _coerce_identifier(second)
+
+        if first_id and second_id:
+            return first_id, second_id
+
+    residue_objects = extract_interaction_residue_objects(
+        interaction
+    )
+
+    if residue_objects is None:
+        return None
+
+    first_id = extract_residue_identifier(
+        residue_objects[0]
+    )
+    second_id = extract_residue_identifier(
+        residue_objects[1]
+    )
+
+    if not first_id or not second_id:
+        return None
+
+    return first_id, second_id
+
+
+# -----------------------------------------------------------------------------
+# 5.11. Geometry extraction
+# -----------------------------------------------------------------------------
+
+def extract_interaction_distance(
+    interaction: Any,
+    *,
+    default: Optional[float] = None,
+) -> Optional[float]:
+    """
+    Extract an interaction distance in ångströms.
+    """
+
+    return extract_numeric_value(
+        interaction,
+        DISTANCE_FIELDS,
+        default=default,
+    )
+
+
+def extract_interaction_angle(
+    interaction: Any,
+    *,
+    default: Optional[float] = None,
+) -> Optional[float]:
+    """
+    Extract a primary interaction angle in degrees.
+    """
+
+    return extract_numeric_value(
+        interaction,
+        ANGLE_FIELDS,
+        default=default,
+    )
+
+
+def extract_interaction_dihedral(
+    interaction: Any,
+    *,
+    default: Optional[float] = None,
+) -> Optional[float]:
+    """
+    Extract a dihedral or torsion angle in degrees.
+    """
+
+    return extract_numeric_value(
+        interaction,
+        DIHEDRAL_FIELDS,
+        default=default,
+    )
+
+
+def extract_interaction_offset(
+    interaction: Any,
+    *,
+    default: Optional[float] = None,
+) -> Optional[float]:
+    """
+    Extract a lateral or centroid offset.
+    """
+
+    return extract_numeric_value(
+        interaction,
+        OFFSET_FIELDS,
+        default=default,
+    )
+
+
+def extract_interaction_planarity(
+    interaction: Any,
+    *,
+    default: Optional[float] = None,
+) -> Optional[float]:
+    """
+    Extract a planarity metric.
+    """
+
+    return extract_numeric_value(
+        interaction,
+        PLANARITY_FIELDS,
+        default=default,
+    )
+
+
+def extract_interaction_overlap(
+    interaction: Any,
+    *,
+    default: Optional[float] = None,
+) -> Optional[float]:
+    """
+    Extract an overlap metric.
+    """
+
+    return extract_numeric_value(
+        interaction,
+        OVERLAP_FIELDS,
+        default=default,
+    )
+
+
+def extract_geometry_metadata(
+    interaction: Any,
+    *,
+    include_missing: bool = False,
+) -> Mapping[str, Optional[float]]:
+    """
+    Extract standard geometric measurements.
+    """
+
+    values: Dict[str, Optional[float]] = {
+        "distance": extract_interaction_distance(
+            interaction
+        ),
+        "angle": extract_interaction_angle(
+            interaction
+        ),
+        "dihedral": extract_interaction_dihedral(
+            interaction
+        ),
+        "offset": extract_interaction_offset(
+            interaction
+        ),
+        "planarity": extract_interaction_planarity(
+            interaction
+        ),
+        "overlap": extract_interaction_overlap(
+            interaction
+        ),
+    }
+
+    if not include_missing:
+        values = {
+            key: value
+            for key, value in values.items()
+            if value is not None
+        }
+
+    return MappingProxyType(values)
+
+
+# -----------------------------------------------------------------------------
+# 5.12. Pose and model identifiers
+# -----------------------------------------------------------------------------
+
+def extract_pose_id(
+    source: Any,
+    *,
+    default: str = "",
+) -> str:
+    """
+    Extract a pose identifier.
+    """
+
+    extracted = extract_named_value(
+        source,
+        (
+            "pose_id",
+            "pose_name",
+            "pose",
+            "state_id",
+        ),
+        allow_none=False,
+    )
+
+    if extracted.found:
+        value = extracted.value
+
+        if not isinstance(
+            value,
+            (str, bytes, Number),
+        ):
+            nested = extract_named_value(
+                value,
+                (
+                    "pose_id",
+                    "id",
+                    "name",
+                ),
+                allow_none=False,
+            )
+
+            if nested.found:
+                value = nested.value
+
+        return _coerce_identifier(
+            value,
+            default=default,
+        )
+
+    return default
+
+
+def extract_model_id(
+    source: Any,
+    *,
+    default: str = "",
+) -> str:
+    """
+    Extract a molecular-model identifier.
+    """
+
+    extracted = extract_named_value(
+        source,
+        (
+            "model_id",
+            "structure_id",
+            "model_name",
+            "model",
+        ),
+        allow_none=False,
+    )
+
+    if extracted.found:
+        value = extracted.value
+
+        if not isinstance(
+            value,
+            (str, bytes, Number),
+        ):
+            nested = extract_named_value(
+                value,
+                (
+                    "model_id",
+                    "id",
+                    "name",
+                    "id_string",
+                ),
+                allow_none=False,
+            )
+
+            if nested.found:
+                value = nested.value
+
+        return _coerce_identifier(
+            value,
+            default=default,
+        )
+
+    return default
+
+
+def extract_ligand_id(
+    source: Any,
+    *,
+    default: str = "",
+) -> str:
+    """
+    Extract a ligand identifier.
+    """
+
+    extracted = extract_named_value(
+        source,
+        (
+            "ligand_id",
+            "ligand_name",
+            "compound_id",
+            "compound_name",
+            "ligand",
+        ),
+        allow_none=False,
+    )
+
+    if extracted.found:
+        value = extracted.value
+
+        if not isinstance(
+            value,
+            (str, bytes, Number),
+        ):
+            nested = extract_named_value(
+                value,
+                (
+                    "ligand_id",
+                    "id",
+                    "name",
+                ),
+                allow_none=False,
+            )
+
+            if nested.found:
+                value = nested.value
+
+        return _coerce_identifier(
+            value,
+            default=default,
+        )
+
+    return default
+
+
+# -----------------------------------------------------------------------------
+# 5.13. Metadata extraction
+# -----------------------------------------------------------------------------
+
+def extract_object_metadata(
+    source: Any,
+    *,
+    exclude_private: bool = True,
+    exclude_callables: bool = True,
+    field_names: Optional[Iterable[str]] = None,
+) -> Mapping[str, Any]:
+    """
+    Extract shallow metadata from a mapping, dataclass or object.
+
+    This helper is intentionally conservative. It does not recursively inspect
+    arbitrary nested molecular objects.
+    """
+
+    if source is None:
+        return _EMPTY_METADATA
+
+    if field_names is not None:
+        metadata: Dict[str, Any] = {}
+
+        for name in field_names:
+            extracted = extract_named_value(
+                source,
+                (name,),
+                allow_none=True,
+                call_methods=False,
+            )
+
+            if extracted.found:
+                metadata[name] = extracted.value
+
+        return MappingProxyType(metadata)
+
+    if isinstance(source, Mapping):
+        items = source.items()
+
+    elif is_dataclass(source):
+        items = (
+            (
+                dataclass_field.name,
+                safe_getattr(
+                    source,
+                    dataclass_field.name,
+                    None,
+                ),
+            )
+            for dataclass_field in fields(source)
+        )
+
+    elif hasattr(source, "__dict__"):
+        try:
+            items = vars(source).items()
+        except TypeError:
+            return _EMPTY_METADATA
+
+    else:
+        return _EMPTY_METADATA
+
+    metadata = {}
+
+    for key, value in items:
+        normalized_key = _coerce_identifier(
+            key
+        )
+
+        if not normalized_key:
+            continue
+
+        if (
+            exclude_private
+            and normalized_key.startswith("_")
+        ):
+            continue
+
+        if exclude_callables and callable(value):
+            continue
+
+        metadata[normalized_key] = value
+
+    return MappingProxyType(metadata)
+
+
+def build_interaction_metadata(
+    interaction: Any,
+    *,
+    include_geometry: bool = True,
+    include_source_metadata: bool = False,
+) -> Mapping[str, Any]:
+    """
+    Build standard metadata for an adapted interaction.
+    """
+
+    metadata: Dict[str, Any] = {
+        "source_object_type": object_type_name(
+            interaction
+        ),
+    }
+
+    if include_geometry:
+        metadata["geometry"] = dict(
+            extract_geometry_metadata(
+                interaction
+            )
+        )
+
+    if include_source_metadata:
+        metadata["source_metadata"] = dict(
+            extract_object_metadata(
+                interaction
+            )
+        )
+
+    return MappingProxyType(metadata)
+
+
+# -----------------------------------------------------------------------------
+# 5.14. Interaction-container extraction
+# -----------------------------------------------------------------------------
+
+def unwrap_interaction_container(
+    source: Any,
+) -> Any:
+    """
+    Unwrap common interaction-result container fields.
+    """
+
+    if source is None:
+        return ()
+
+    if isinstance(
+        source,
+        (
+            InteractionScore,
+            ResidueScore,
+            PoseScore,
+            MultiPoseScoreResult,
+        ),
+    ):
+        return source
+
+    extracted = extract_named_value(
+        source,
+        KNOWN_INTERACTION_CONTAINER_FIELDS,
+        allow_none=False,
+        call_methods=False,
+    )
+
+    if extracted.found:
+        return extracted.value
+
+    return source
+
+
+def iter_interaction_objects(
+    source: Any,
+    *,
+    flatten_mappings: bool = True,
+    skip_none: bool = True,
+) -> Iterator[Any]:
+    """
+    Iterate over interaction-like objects from heterogeneous containers.
+
+    Supported inputs include:
+
+    - a single interaction object;
+    - a sequence of interaction objects;
+    - a mapping of names to interaction collections;
+    - a detector result exposing an ``interactions`` or ``results`` field;
+    - ``InteractionScore``;
+    - ``PoseScore``;
+    - ``MultiPoseScoreResult``.
+    """
+
+    source = unwrap_interaction_container(
+        source
+    )
+
+    if source is None:
+        return
+
+    if isinstance(source, InteractionScore):
+        yield source
+        return
+
+    if isinstance(source, ResidueScore):
+        yield from source.interactions
+        return
+
+    if isinstance(source, PoseScore):
+        yield from source.interactions
+        return
+
+    if isinstance(source, MultiPoseScoreResult):
+        for pose in source.poses:
+            yield from pose.interactions
+        return
+
+    if isinstance(source, Mapping):
+        if flatten_mappings:
+            for value in source.values():
+                yield from iter_interaction_objects(
+                    value,
+                    flatten_mappings=True,
+                    skip_none=skip_none,
+                )
+            return
+
+        yield source
+        return
+
+    if isinstance(
+        source,
+        (str, bytes, bytearray),
+    ):
+        raise UnsupportedScoringObjectError(
+            "String values cannot be interpreted as interaction "
+            "collections."
+        )
+
+    if isinstance(source, Iterable):
+        for value in source:
+            if value is None and skip_none:
+                continue
+
+            yield from iter_interaction_objects(
+                value,
+                flatten_mappings=flatten_mappings,
+                skip_none=skip_none,
+            )
+
+        return
+
+    yield source
+
+
+def collect_interaction_objects(
+    source: Any,
+    *,
+    flatten_mappings: bool = True,
+    skip_none: bool = True,
+) -> Tuple[Any, ...]:
+    """
+    Return interaction-like objects as an immutable tuple.
+    """
+
+    return tuple(
+        iter_interaction_objects(
+            source,
+            flatten_mappings=flatten_mappings,
+            skip_none=skip_none,
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 5.15. Canonical extracted interaction data
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ExtractedInteractionData:
+    """
+    Immutable canonical data extracted from one interaction object.
+
+    This structure separates detector-specific recognition from scoring logic.
+    It does not contain weights or calculated scores.
+    """
+
+    interaction_id: str
+    interaction_type: str
+    interaction_family: str
+
+    strength: str = STRENGTH_UNKNOWN
+    classification: str = CLASSIFICATION_UNKNOWN
+    geometry_quality: str = GEOMETRY_UNKNOWN
+    polarity: str = POLARITY_UNKNOWN
+
+    accepted: bool = True
+    rejection_reason: str = ""
+
+    atom_pair: Optional[Tuple[str, str]] = None
+    residue_pair: Optional[Tuple[str, str]] = None
+
+    pose_id: str = ""
+    model_id: str = ""
+    ligand_id: str = ""
+
+    distance: Optional[float] = None
+    angle: Optional[float] = None
+    dihedral: Optional[float] = None
+    offset: Optional[float] = None
+    planarity: Optional[float] = None
+    overlap: Optional[float] = None
+
+    source: str = ""
+    interaction: Any = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize extracted interaction data.
+        """
+
+        interaction_id = _coerce_identifier(
+            self.interaction_id
+        )
+
+        if not interaction_id:
+            raise ScoringExtractionError(
+                "ExtractedInteractionData.interaction_id cannot be empty."
+            )
+
+        interaction_type = normalize_interaction_type(
+            self.interaction_type,
+            preserve_unknown=True,
+        )
+
+        interaction_family = canonical_interaction_family(
+            self.interaction_family
+            or interaction_type
+        )
+
+        polarity = _normalize_scoring_name(
+            self.polarity
+        )
+
+        if polarity not in CANONICAL_POLARITIES:
+            polarity = get_interaction_polarity(
+                interaction_type
+            )
+
+        object.__setattr__(
+            self,
+            "interaction_id",
+            interaction_id,
+        )
+        object.__setattr__(
+            self,
+            "interaction_type",
+            interaction_type,
+        )
+        object.__setattr__(
+            self,
+            "interaction_family",
+            interaction_family,
+        )
+        object.__setattr__(
+            self,
+            "strength",
+            normalize_interaction_strength(
+                self.strength
+            ),
+        )
+        object.__setattr__(
+            self,
+            "classification",
+            normalize_interaction_classification(
+                self.classification
+            ),
+        )
+        object.__setattr__(
+            self,
+            "geometry_quality",
+            normalize_geometry_quality(
+                self.geometry_quality
+            ),
+        )
+        object.__setattr__(
+            self,
+            "polarity",
+            polarity,
+        )
+        object.__setattr__(
+            self,
+            "accepted",
+            bool(self.accepted),
+        )
+        object.__setattr__(
+            self,
+            "rejection_reason",
+            _coerce_optional_text(
+                self.rejection_reason
+            ),
+        )
+        object.__setattr__(
+            self,
+            "atom_pair",
+            _normalize_identifier_pair(
+                self.atom_pair,
+                field_name="ExtractedInteractionData.atom_pair",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "residue_pair",
+            _normalize_identifier_pair(
+                self.residue_pair,
+                field_name="ExtractedInteractionData.residue_pair",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "pose_id",
+            _coerce_identifier(
+                self.pose_id
+            ),
+        )
+        object.__setattr__(
+            self,
+            "model_id",
+            _coerce_identifier(
+                self.model_id
+            ),
+        )
+        object.__setattr__(
+            self,
+            "ligand_id",
+            _coerce_identifier(
+                self.ligand_id
+            ),
+        )
+        object.__setattr__(
+            self,
+            "distance",
+            _coerce_finite_score_value(
+                self.distance,
+                name="ExtractedInteractionData.distance",
+                allow_none=True,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "angle",
+            _coerce_finite_score_value(
+                self.angle,
+                name="ExtractedInteractionData.angle",
+                allow_none=True,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "dihedral",
+            _coerce_finite_score_value(
+                self.dihedral,
+                name="ExtractedInteractionData.dihedral",
+                allow_none=True,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "offset",
+            _coerce_finite_score_value(
+                self.offset,
+                name="ExtractedInteractionData.offset",
+                allow_none=True,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "planarity",
+            _coerce_finite_score_value(
+                self.planarity,
+                name="ExtractedInteractionData.planarity",
+                allow_none=True,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "overlap",
+            _coerce_finite_score_value(
+                self.overlap,
+                name="ExtractedInteractionData.overlap",
+                allow_none=True,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "source",
+            _coerce_optional_text(
+                self.source
+            ),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(
+                self.metadata
+            ),
+        )
+
+    @property
+    def geometry(self) -> Mapping[str, float]:
+        """
+        Return all available geometry measurements.
+        """
+
+        values = {
+            "distance": self.distance,
+            "angle": self.angle,
+            "dihedral": self.dihedral,
+            "offset": self.offset,
+            "planarity": self.planarity,
+            "overlap": self.overlap,
+        }
+
+        return MappingProxyType(
+            {
+                key: float(value)
+                for key, value in values.items()
+                if value is not None
+            }
+        )
+
+    @property
+    def has_atom_pair(self) -> bool:
+        """Return whether atom identifiers were extracted."""
+
+        return self.atom_pair is not None
+
+    @property
+    def has_residue_pair(self) -> bool:
+        """Return whether residue identifiers were extracted."""
+
+        return self.residue_pair is not None
+
+    @property
+    def canonical_key(
+        self,
+    ) -> Tuple[
+        str,
+        Optional[Tuple[str, str]],
+        Optional[Tuple[str, str]],
+        str,
+        str,
+    ]:
+        """
+        Return a stable extracted-interaction identity key.
+        """
+
+        return (
+            self.interaction_type,
+            self.atom_pair,
+            self.residue_pair,
+            self.pose_id,
+            self.model_id,
+        )
+
+    def without_interaction_reference(
+        self,
+    ) -> "ExtractedInteractionData":
+        """
+        Return a copy without the detector object.
+        """
+
+        return replace(
+            self,
+            interaction=None,
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+        include_interaction: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Return a mutable dictionary representation.
+        """
+
+        result: Dict[str, Any] = {
+            "interaction_id": self.interaction_id,
+            "interaction_type": self.interaction_type,
+            "interaction_family": self.interaction_family,
+            "strength": self.strength,
+            "classification": self.classification,
+            "geometry_quality": self.geometry_quality,
+            "polarity": self.polarity,
+            "accepted": bool(self.accepted),
+            "rejection_reason": self.rejection_reason,
+            "atom_pair": (
+                None
+                if self.atom_pair is None
+                else list(self.atom_pair)
+            ),
+            "residue_pair": (
+                None
+                if self.residue_pair is None
+                else list(self.residue_pair)
+            ),
+            "pose_id": self.pose_id,
+            "model_id": self.model_id,
+            "ligand_id": self.ligand_id,
+            "geometry": dict(self.geometry),
+            "source": self.source,
+        }
+
+        if include_metadata:
+            result["metadata"] = dict(
+                self.metadata
+            )
+
+        if include_interaction:
+            result["interaction"] = self.interaction
+
+        return result
+
+    def __hash__(self) -> int:
+        """
+        Return a stable hash excluding source-object references and metadata.
+        """
+
+        return hash(
+            (
+                self.interaction_id,
+                self.interaction_type,
+                self.interaction_family,
+                self.strength,
+                self.classification,
+                self.geometry_quality,
+                self.polarity,
+                self.accepted,
+                self.rejection_reason,
+                self.atom_pair,
+                self.residue_pair,
+                self.pose_id,
+                self.model_id,
+                self.ligand_id,
+                self.distance,
+                self.angle,
+                self.dihedral,
+                self.offset,
+                self.planarity,
+                self.overlap,
+                self.source,
+            )
+        )
+
+
+# -----------------------------------------------------------------------------
+# 5.16. Interaction adaptation
+# -----------------------------------------------------------------------------
+
+def extract_interaction_data(
+    interaction: Any,
+    *,
+    index: Optional[int] = None,
+    pose_id: Optional[str] = None,
+    model_id: Optional[str] = None,
+    ligand_id: Optional[str] = None,
+    preserve_reference: bool = True,
+    include_source_metadata: bool = False,
+) -> ExtractedInteractionData:
+    """
+    Convert a detector-specific interaction object to canonical extracted data.
+    """
+
+    if isinstance(
+        interaction,
+        ExtractedInteractionData,
+    ):
+        updates: Dict[str, Any] = {}
+
+        if pose_id is not None:
+            updates["pose_id"] = pose_id
+
+        if model_id is not None:
+            updates["model_id"] = model_id
+
+        if ligand_id is not None:
+            updates["ligand_id"] = ligand_id
+
+        if not preserve_reference:
+            updates["interaction"] = None
+
+        return (
+            replace(
+                interaction,
+                **updates,
+            )
+            if updates
+            else interaction
+        )
+
+    if isinstance(interaction, InteractionScore):
+        metadata = dict(
+            interaction.metadata
+        )
+
+        geometry = metadata.get(
+            "geometry",
+            {},
+        )
+
+        if not isinstance(geometry, Mapping):
+            geometry = {}
+
+        return ExtractedInteractionData(
+            interaction_id=interaction.interaction_id,
+            interaction_type=interaction.interaction_type,
+            interaction_family=interaction.interaction_family,
+            strength=interaction.strength,
+            classification=interaction.classification,
+            geometry_quality=interaction.geometry_quality,
+            polarity=interaction.polarity,
+            accepted=interaction.accepted,
+            rejection_reason=interaction.rejection_reason,
+            atom_pair=interaction.atom_pair,
+            residue_pair=interaction.residue_pair,
+            pose_id=(
+                interaction.pose_id
+                if pose_id is None
+                else pose_id
+            ),
+            model_id=(
+                interaction.model_id
+                if model_id is None
+                else model_id
+            ),
+            ligand_id=(
+                ligand_id or ""
+            ),
+            distance=geometry.get("distance"),
+            angle=geometry.get("angle"),
+            dihedral=geometry.get("dihedral"),
+            offset=geometry.get("offset"),
+            planarity=geometry.get("planarity"),
+            overlap=geometry.get("overlap"),
+            source=interaction.source,
+            interaction=(
+                interaction.interaction
+                if preserve_reference
+                else None
+            ),
+            metadata=metadata,
+        )
+
+    canonical_type = extract_interaction_type(
+        interaction
+    )
+
+    canonical_family = extract_interaction_family(
+        interaction,
+        interaction_type=canonical_type,
+    )
+
+    accepted = extract_interaction_accepted(
+        interaction,
+        default=True,
+    )
+
+    rejection_reason = extract_interaction_rejection_reason(
+        interaction
+    )
+
+    resolved_pose_id = (
+        extract_pose_id(
+            interaction
+        )
+        if pose_id is None
+        else _coerce_identifier(pose_id)
+    )
+
+    resolved_model_id = (
+        extract_model_id(
+            interaction
+        )
+        if model_id is None
+        else _coerce_identifier(model_id)
+    )
+
+    resolved_ligand_id = (
+        extract_ligand_id(
+            interaction
+        )
+        if ligand_id is None
+        else _coerce_identifier(ligand_id)
+    )
+
+    interaction_id = extract_interaction_identifier(
+        interaction,
+        index=index,
+    )
+
+    if not interaction_id:
+        position = (
+            index
+            if index is not None
+            else 0
+        )
+
+        interaction_id = (
+            f"{DEFAULT_INTERACTION_ID_PREFIX}_{position}"
+        )
+
+    metadata = build_interaction_metadata(
+        interaction,
+        include_geometry=True,
+        include_source_metadata=include_source_metadata,
+    )
+
+    return ExtractedInteractionData(
+        interaction_id=interaction_id,
+        interaction_type=canonical_type,
+        interaction_family=canonical_family,
+        strength=extract_interaction_strength(
+            interaction
+        ),
+        classification=extract_interaction_classification(
+            interaction
+        ),
+        geometry_quality=extract_geometry_quality(
+            interaction
+        ),
+        polarity=get_interaction_polarity(
+            canonical_type
+        ),
+        accepted=accepted,
+        rejection_reason=rejection_reason,
+        atom_pair=extract_interaction_atom_pair(
+            interaction
+        ),
+        residue_pair=extract_interaction_residue_pair(
+            interaction
+        ),
+        pose_id=resolved_pose_id,
+        model_id=resolved_model_id,
+        ligand_id=resolved_ligand_id,
+        distance=extract_interaction_distance(
+            interaction
+        ),
+        angle=extract_interaction_angle(
+            interaction
+        ),
+        dihedral=extract_interaction_dihedral(
+            interaction
+        ),
+        offset=extract_interaction_offset(
+            interaction
+        ),
+        planarity=extract_interaction_planarity(
+            interaction
+        ),
+        overlap=extract_interaction_overlap(
+            interaction
+        ),
+        source=object_type_name(
+            interaction
+        ),
+        interaction=(
+            interaction
+            if preserve_reference
+            else None
+        ),
+        metadata=metadata,
+    )
+
+
+def extract_interaction_data_collection(
+    source: Any,
+    *,
+    pose_id: Optional[str] = None,
+    model_id: Optional[str] = None,
+    ligand_id: Optional[str] = None,
+    preserve_references: bool = True,
+    include_source_metadata: bool = False,
+    skip_errors: bool = False,
+) -> Tuple[ExtractedInteractionData, ...]:
+    """
+    Extract canonical data from an interaction collection.
+    """
+
+    results: List[ExtractedInteractionData] = []
+
+    for index, interaction in enumerate(
+        iter_interaction_objects(source),
+        start=1,
+    ):
+        try:
+            result = extract_interaction_data(
+                interaction,
+                index=index,
+                pose_id=pose_id,
+                model_id=model_id,
+                ligand_id=ligand_id,
+                preserve_reference=preserve_references,
+                include_source_metadata=include_source_metadata,
+            )
+        except (
+            ScoringError,
+            TypeError,
+            ValueError,
+            AttributeError,
+        ):
+            if skip_errors:
+                continue
+
+            raise
+
+        results.append(result)
+
+    return tuple(results)
+
+
+# -----------------------------------------------------------------------------
+# 5.17. Adaptation to InteractionScore
+# -----------------------------------------------------------------------------
+
+def interaction_score_from_extracted_data(
+    data: ExtractedInteractionData,
+    *,
+    base_weight: Number = DEFAULT_UNKNOWN_SCORE,
+    strength_multiplier: Number = DEFAULT_NEUTRAL_MULTIPLIER,
+    classification_multiplier: Number = DEFAULT_NEUTRAL_MULTIPLIER,
+    geometry_multiplier: Number = DEFAULT_NEUTRAL_MULTIPLIER,
+    penalty_score: Number = 0.0,
+    bonus_score: Number = 0.0,
+    preserve_components: bool = True,
+) -> InteractionScore:
+    """
+    Create an ``InteractionScore`` from canonical extracted data.
+
+    Weight recognition and scoring policy are intentionally supplied by the
+    caller. Later sections will calculate these values from ``ScoringConfig``.
+    """
+
+    if not isinstance(
+        data,
+        ExtractedInteractionData,
+    ):
+        raise ScoringExtractionError(
+            "data must be an ExtractedInteractionData instance."
+        )
+
+    status = (
+        SCORE_STATUS_ACCEPTED
+        if data.accepted
+        else SCORE_STATUS_REJECTED
+    )
+
+    metadata = dict(
+        data.metadata
+    )
+    metadata["geometry"] = dict(
+        data.geometry
+    )
+    metadata["ligand_id"] = data.ligand_id
+
+    return create_interaction_score(
+        interaction_id=data.interaction_id,
+        interaction_type=data.interaction_type,
+        base_weight=base_weight,
+        strength=data.strength,
+        classification=data.classification,
+        geometry_quality=data.geometry_quality,
+        strength_multiplier=strength_multiplier,
+        classification_multiplier=classification_multiplier,
+        geometry_multiplier=geometry_multiplier,
+        penalty_score=penalty_score,
+        bonus_score=bonus_score,
+        status=status,
+        accepted=data.accepted,
+        rejection_reason=data.rejection_reason,
+        source=data.source,
+        atom_pair=data.atom_pair,
+        residue_pair=data.residue_pair,
+        pose_id=data.pose_id,
+        model_id=data.model_id,
+        interaction=data.interaction,
+        metadata=metadata,
+        preserve_components=preserve_components,
+    )
+
+
+def adapt_interaction_to_score(
+    interaction: Any,
+    *,
+    index: Optional[int] = None,
+    pose_id: Optional[str] = None,
+    model_id: Optional[str] = None,
+    ligand_id: Optional[str] = None,
+    base_weight: Number = DEFAULT_UNKNOWN_SCORE,
+    strength_multiplier: Number = DEFAULT_NEUTRAL_MULTIPLIER,
+    classification_multiplier: Number = DEFAULT_NEUTRAL_MULTIPLIER,
+    geometry_multiplier: Number = DEFAULT_NEUTRAL_MULTIPLIER,
+    penalty_score: Number = 0.0,
+    bonus_score: Number = 0.0,
+    preserve_reference: bool = True,
+    preserve_components: bool = True,
+) -> InteractionScore:
+    """
+    Adapt one heterogeneous interaction object to ``InteractionScore``.
+    """
+
+    if isinstance(interaction, InteractionScore):
+        return interaction
+
+    data = extract_interaction_data(
+        interaction,
+        index=index,
+        pose_id=pose_id,
+        model_id=model_id,
+        ligand_id=ligand_id,
+        preserve_reference=preserve_reference,
+    )
+
+    return interaction_score_from_extracted_data(
+        data,
+        base_weight=base_weight,
+        strength_multiplier=strength_multiplier,
+        classification_multiplier=classification_multiplier,
+        geometry_multiplier=geometry_multiplier,
+        penalty_score=penalty_score,
+        bonus_score=bonus_score,
+        preserve_components=preserve_components,
+    )
+
+
+def adapt_interactions_to_scores(
+    source: Any,
+    *,
+    pose_id: Optional[str] = None,
+    model_id: Optional[str] = None,
+    ligand_id: Optional[str] = None,
+    base_weight: Number = DEFAULT_UNKNOWN_SCORE,
+    strength_multiplier: Number = DEFAULT_NEUTRAL_MULTIPLIER,
+    classification_multiplier: Number = DEFAULT_NEUTRAL_MULTIPLIER,
+    geometry_multiplier: Number = DEFAULT_NEUTRAL_MULTIPLIER,
+    penalty_score: Number = 0.0,
+    bonus_score: Number = 0.0,
+    preserve_references: bool = True,
+    preserve_components: bool = True,
+    skip_errors: bool = False,
+) -> Tuple[InteractionScore, ...]:
+    """
+    Adapt a heterogeneous interaction collection to score objects.
+
+    This helper applies the same provisional weight and multipliers to every
+    interaction. Later scoring sections will replace this behavior with
+    interaction-specific rules.
+    """
+
+    scores: List[InteractionScore] = []
+
+    for index, interaction in enumerate(
+        iter_interaction_objects(source),
+        start=1,
+    ):
+        try:
+            score = adapt_interaction_to_score(
+                interaction,
+                index=index,
+                pose_id=pose_id,
+                model_id=model_id,
+                ligand_id=ligand_id,
+                base_weight=base_weight,
+                strength_multiplier=strength_multiplier,
+                classification_multiplier=classification_multiplier,
+                geometry_multiplier=geometry_multiplier,
+                penalty_score=penalty_score,
+                bonus_score=bonus_score,
+                preserve_reference=preserve_references,
+                preserve_components=preserve_components,
+            )
+        except (
+            ScoringError,
+            TypeError,
+            ValueError,
+            AttributeError,
+        ):
+            if skip_errors:
+                continue
+
+            raise
+
+        scores.append(score)
+
+    return sort_interaction_scores(
+        scores
+    )
+
+
+# -----------------------------------------------------------------------------
+# 5.18. DockModel interaction extraction
+# -----------------------------------------------------------------------------
+
+def extract_dock_model_interaction_groups(
+    dock_model: Any,
+    *,
+    include_empty: bool = False,
+) -> Mapping[str, Tuple[Any, ...]]:
+    """
+    Extract interaction collections from a DockModel-like object.
+
+    The function does not require an exact ``DockModel`` instance. Any object
+    exposing compatible fields can be used.
+    """
+
+    group_fields: Final[
+        Mapping[str, Tuple[str, ...]]
+    ] = MappingProxyType(
+        {
+            "contacts": (
+                "contacts",
+                "contact",
+            ),
+            "hydrogen_bonds": (
+                "hbonds",
+                "hydrogen_bonds",
+                "hydrogen_bond",
+            ),
+            "hydrophobic": (
+                "hydrophobic",
+                "hydrophobic_interactions",
+            ),
+            "pi": (
+                "pi",
+                "pi_interactions",
+            ),
+            "salt_bridges": (
+                "saltbridge",
+                "salt_bridges",
+                "salt_bridge",
+            ),
+            "clashes": (
+                "clashes",
+                "steric_clashes",
+            ),
+        }
+    )
+
+    groups: Dict[str, Tuple[Any, ...]] = {}
+
+    for canonical_group, field_candidates in group_fields.items():
+        extracted = extract_named_value(
+            dock_model,
+            field_candidates,
+            allow_none=False,
+            call_methods=False,
+        )
+
+        if not extracted.found:
+            if include_empty:
+                groups[canonical_group] = ()
+            continue
+
+        values = collect_interaction_objects(
+            extracted.value
+        )
+
+        if values or include_empty:
+            groups[canonical_group] = values
+
+    return MappingProxyType(groups)
+
+
+def extract_dock_model_interactions(
+    dock_model: Any,
+) -> Tuple[Any, ...]:
+    """
+    Return all interaction objects stored in a DockModel-like object.
+    """
+
+    groups = extract_dock_model_interaction_groups(
+        dock_model,
+        include_empty=False,
+    )
+
+    interactions: List[Any] = []
+
+    for values in groups.values():
+        interactions.extend(values)
+
+    return tuple(interactions)
+
+
+def extract_dock_model_context(
+    dock_model: Any,
+) -> Mapping[str, Any]:
+    """
+    Extract common model, ligand and pose identifiers from a DockModel.
+    """
+
+    context = {
+        "model_id": extract_model_id(
+            dock_model
+        ),
+        "pose_id": extract_pose_id(
+            dock_model
+        ),
+        "ligand_id": extract_ligand_id(
+            dock_model
+        ),
+    }
+
+    return MappingProxyType(context)
+
+
+# -----------------------------------------------------------------------------
+# 5.19. Result adaptation helpers
+# -----------------------------------------------------------------------------
+
+def adapt_to_residue_scores(
+    source: Any,
+    *,
+    residue_metadata: Optional[
+        Mapping[str, Mapping[str, Any]]
+    ] = None,
+    pose_id: str = "",
+    model_id: str = "",
+    default_role: str = RESIDUE_ROLE_RECEPTOR,
+    include_unassigned: bool = False,
+) -> Tuple[ResidueScore, ...]:
+    """
+    Adapt interactions or interaction scores to residue aggregates.
+    """
+
+    interaction_scores = tuple(
+        interaction
+        for interaction in iter_interaction_objects(
+            source
+        )
+        if isinstance(
+            interaction,
+            InteractionScore,
+        )
+    )
+
+    if not interaction_scores:
+        interaction_scores = adapt_interactions_to_scores(
+            source,
+            pose_id=pose_id,
+            model_id=model_id,
+        )
+
+    return build_residue_scores(
+        interaction_scores,
+        residue_metadata=residue_metadata,
+        default_role=default_role,
+        pose_id=pose_id,
+        model_id=model_id,
+        include_unassigned=include_unassigned,
+    )
+
+
+def adapt_to_pose_score(
+    source: Any,
+    *,
+    pose_id: Optional[str] = None,
+    model_id: Optional[str] = None,
+    ligand_id: Optional[str] = None,
+    residue_metadata: Optional[
+        Mapping[str, Mapping[str, Any]]
+    ] = None,
+    build_residues: bool = True,
+    include_unassigned_residues: bool = False,
+) -> PoseScore:
+    """
+    Adapt interaction data, a detector result or a DockModel to ``PoseScore``.
+
+    The created interaction scores use the default unknown weight. Actual
+    scoring policies are applied in later sections.
+    """
+
+    if isinstance(source, PoseScore):
+        return source
+
+    resolved_pose_id = (
+        extract_pose_id(
+            source,
+            default="pose_1",
+        )
+        if pose_id is None
+        else _coerce_identifier(
+            pose_id,
+            default="pose_1",
+        )
+    )
+
+    resolved_model_id = (
+        extract_model_id(
+            source
+        )
+        if model_id is None
+        else _coerce_identifier(
+            model_id
+        )
+    )
+
+    resolved_ligand_id = (
+        extract_ligand_id(
+            source
+        )
+        if ligand_id is None
+        else _coerce_identifier(
+            ligand_id
+        )
+    )
+
+    interaction_source = (
+        extract_dock_model_interactions(
+            source
+        )
+        if isinstance(source, DockModel)
+        else source
+    )
+
+    interactions = adapt_interactions_to_scores(
+        interaction_source,
+        pose_id=resolved_pose_id,
+        model_id=resolved_model_id,
+        ligand_id=resolved_ligand_id,
+    )
+
+    residues = (
+        build_residue_scores(
+            interactions,
+            residue_metadata=residue_metadata,
+            pose_id=resolved_pose_id,
+            model_id=resolved_model_id,
+            include_unassigned=include_unassigned_residues,
+        )
+        if build_residues
+        else ()
+    )
+
+    if not interactions:
+        return create_empty_pose_score(
+            pose_id=resolved_pose_id,
+            model_id=resolved_model_id,
+            ligand_id=resolved_ligand_id,
+            metadata={
+                "adapted_from": object_type_name(
+                    source
+                ),
+            },
+        )
+
+    return create_pose_score(
+        pose_id=resolved_pose_id,
+        interactions=interactions,
+        residues=residues,
+        model_id=resolved_model_id,
+        ligand_id=resolved_ligand_id,
+        metadata={
+            "adapted_from": object_type_name(
+                source
+            ),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 5.20. Extraction validation
+# -----------------------------------------------------------------------------
+
+def validate_extracted_interaction_data(
+    data: ExtractedInteractionData,
+    *,
+    require_atom_pair: bool = False,
+    require_residue_pair: bool = False,
+) -> ExtractedInteractionData:
+    """
+    Validate canonical extracted interaction data.
+    """
+
+    if not isinstance(
+        data,
+        ExtractedInteractionData,
+    ):
+        raise ScoringExtractionError(
+            "Expected an ExtractedInteractionData instance."
+        )
+
+    if require_atom_pair and data.atom_pair is None:
+        raise MissingScoringFieldError(
+            "An atom pair is required."
+        )
+
+    if require_residue_pair and data.residue_pair is None:
+        raise MissingScoringFieldError(
+            "A residue pair is required."
+        )
+
+    return data
+
+
+def validate_extractable_interaction(
+    interaction: Any,
+    *,
+    require_type: bool = True,
+    require_identifier: bool = False,
+    require_atom_pair: bool = False,
+    require_residue_pair: bool = False,
+) -> bool:
+    """
+    Validate whether an interaction object can be adapted.
+    """
+
+    data = extract_interaction_data(
+        interaction,
+        preserve_reference=False,
+    )
+
+    if (
+        require_type
+        and data.interaction_type == SCORE_TYPE_UNKNOWN
+    ):
+        raise MissingScoringFieldError(
+            "Interaction type could not be extracted or inferred."
+        )
+
+    if (
+        require_identifier
+        and not data.interaction_id
+    ):
+        raise MissingScoringFieldError(
+            "Interaction identifier could not be extracted."
+        )
+
+    validate_extracted_interaction_data(
+        data,
+        require_atom_pair=require_atom_pair,
+        require_residue_pair=require_residue_pair,
+    )
+
+    return True
+
+
+# -----------------------------------------------------------------------------
+# 5.21. Section consistency validation
+# -----------------------------------------------------------------------------
+
+def _validate_section_5_extraction() -> None:
+    """
+    Validate extraction and adaptation utilities during module import.
+    """
+
+    @dataclass(frozen=True)
+    class _TestResidue:
+        name: str
+        number: int
+        chain_id: str
+
+    @dataclass(frozen=True)
+    class _TestAtom:
+        name: str
+        serial: int
+        element: str
+        residue: _TestResidue
+        coord: Tuple[float, float, float]
+
+    @dataclass(frozen=True)
+    class _TestInteraction:
+        interaction_type: str
+        atom1: _TestAtom
+        atom2: _TestAtom
+        distance: float
+        strength: str
+        geometry_quality: str
+
+    residue_a = _TestResidue(
+        name="ASP",
+        number=100,
+        chain_id="A",
+    )
+    residue_b = _TestResidue(
+        name="LIG",
+        number=1,
+        chain_id="L",
+    )
+
+    atom_a = _TestAtom(
+        name="OD1",
+        serial=10,
+        element="O",
+        residue=residue_a,
+        coord=(0.0, 0.0, 0.0),
+    )
+    atom_b = _TestAtom(
+        name="N1",
+        serial=20,
+        element="N",
+        residue=residue_b,
+        coord=(2.8, 0.0, 0.0),
+    )
+
+    interaction = _TestInteraction(
+        interaction_type="hbond",
+        atom1=atom_a,
+        atom2=atom_b,
+        distance=2.8,
+        strength="strong",
+        geometry_quality="ideal",
+    )
+
+    extracted = extract_interaction_data(
+        interaction,
+        index=1,
+        pose_id="pose_1",
+        model_id="model_1",
+    )
+
+    if extracted.interaction_type != SCORE_TYPE_HYDROGEN_BOND:
+        raise RuntimeError(
+            "Interaction-type extraction validation failed."
+        )
+
+    if extracted.distance != 2.8:
+        raise RuntimeError(
+            "Distance extraction validation failed."
+        )
+
+    if extracted.atom_pair is None:
+        raise RuntimeError(
+            "Atom-pair extraction validation failed."
+        )
+
+    if extracted.residue_pair is None:
+        raise RuntimeError(
+            "Residue-pair extraction validation failed."
+        )
+
+    if extracted.pose_id != "pose_1":
+        raise RuntimeError(
+            "Pose identifier adaptation validation failed."
+        )
+
+    score = interaction_score_from_extracted_data(
+        extracted,
+        base_weight=2.0,
+    )
+
+    if score.interaction_type != SCORE_TYPE_HYDROGEN_BOND:
+        raise RuntimeError(
+            "InteractionScore adaptation validation failed."
+        )
+
+    pose = adapt_to_pose_score(
+        (
+            interaction,
+        ),
+        pose_id="pose_1",
+        model_id="model_1",
+    )
+
+    if pose.interaction_count != 1:
+        raise RuntimeError(
+            "Pose adaptation validation failed."
+        )
+
+
+_validate_section_5_extraction()
+
+
+# -----------------------------------------------------------------------------
+# 5.22. Section public interface
+# -----------------------------------------------------------------------------
+
+_SECTION_5_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    # Constants
+    "MISSING",
+    "DEFAULT_RESIDUE_SEPARATOR",
+    "DEFAULT_ATOM_SEPARATOR",
+    "DEFAULT_INTERACTION_ID_PREFIX",
+    "EXTRACTION_SOURCE_ATTRIBUTE",
+    "EXTRACTION_SOURCE_MAPPING",
+    "EXTRACTION_SOURCE_METHOD",
+    "EXTRACTION_SOURCE_DEFAULT",
+    "EXTRACTION_SOURCE_INFERRED",
+    "EXTRACTION_SOURCE_UNKNOWN",
+    "EXTRACTION_SOURCES",
+
+    # Exceptions
+    "ScoringExtractionError",
+    "MissingScoringFieldError",
+    "UnsupportedScoringObjectError",
+    "AmbiguousScoringFieldError",
+
+    # Dataclasses
+    "ExtractedValue",
+    "ExtractedInteractionData",
+
+    # Object inspection
+    "object_type_name",
+    "is_mapping_like",
+    "is_sequence_like",
+    "safe_getattr",
+    "safe_call_zero_argument",
+    "extract_named_value",
+    "extract_nested_value",
+    "extract_first_available",
+
+    # Primitive extraction
+    "extract_numeric_value",
+    "extract_integer_value",
+    "extract_boolean_value",
+    "normalize_coordinates",
+    "extract_coordinates",
+
+    # Residue extraction
+    "extract_residue_object",
+    "extract_residue_name",
+    "extract_chain_id",
+    "extract_residue_number",
+    "extract_insertion_code",
+    "build_residue_identifier",
+    "extract_residue_identifier",
+    "extract_residue_role",
+
+    # Atom extraction
+    "extract_atom_name",
+    "extract_atom_element",
+    "extract_atom_serial",
+    "build_atom_identifier",
+    "extract_atom_identifier",
+
+    # Interaction extraction
+    "extract_interaction_identifier",
+    "infer_interaction_type_from_class_name",
+    "extract_interaction_type",
+    "extract_interaction_family",
+    "extract_interaction_strength",
+    "extract_interaction_classification",
+    "extract_geometry_quality",
+    "extract_interaction_accepted",
+    "extract_interaction_rejection_reason",
+
+    # Pair extraction
+    "extract_interaction_atom_objects",
+    "extract_interaction_atom_pair",
+    "extract_interaction_residue_objects",
+    "extract_interaction_residue_pair",
+
+    # Geometry extraction
+    "extract_interaction_distance",
+    "extract_interaction_angle",
+    "extract_interaction_dihedral",
+    "extract_interaction_offset",
+    "extract_interaction_planarity",
+    "extract_interaction_overlap",
+    "extract_geometry_metadata",
+
+    # Context extraction
+    "extract_pose_id",
+    "extract_model_id",
+    "extract_ligand_id",
+
+    # Metadata
+    "extract_object_metadata",
+    "build_interaction_metadata",
+
+    # Collection extraction
+    "unwrap_interaction_container",
+    "iter_interaction_objects",
+    "collect_interaction_objects",
+
+    # Canonical adaptation
+    "extract_interaction_data",
+    "extract_interaction_data_collection",
+    "interaction_score_from_extracted_data",
+    "adapt_interaction_to_score",
+    "adapt_interactions_to_scores",
+
+    # DockModel
+    "extract_dock_model_interaction_groups",
+    "extract_dock_model_interactions",
+    "extract_dock_model_context",
+
+    # Aggregate adaptation
+    "adapt_to_residue_scores",
+    "adapt_to_pose_score",
+
+    # Validation
+    "validate_extracted_interaction_data",
+    "validate_extractable_interaction",
+)
+
+for public_name in _SECTION_5_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+# =============================================================================
+# End of Section 5 — Extraction and adaptation utilities
+# =============================================================================
+
+# =============================================================================
+# Section 6 — Interaction recognition
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 6.1. Recognition constants
+# -----------------------------------------------------------------------------
+
+RECOGNITION_STATUS_RECOGNIZED: Final[str] = "recognized"
+RECOGNITION_STATUS_INFERRED: Final[str] = "inferred"
+RECOGNITION_STATUS_AMBIGUOUS: Final[str] = "ambiguous"
+RECOGNITION_STATUS_UNKNOWN: Final[str] = "unknown"
+RECOGNITION_STATUS_REJECTED: Final[str] = "rejected"
+RECOGNITION_STATUS_INVALID: Final[str] = "invalid"
+
+RECOGNITION_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        RECOGNITION_STATUS_RECOGNIZED,
+        RECOGNITION_STATUS_INFERRED,
+        RECOGNITION_STATUS_AMBIGUOUS,
+        RECOGNITION_STATUS_UNKNOWN,
+        RECOGNITION_STATUS_REJECTED,
+        RECOGNITION_STATUS_INVALID,
+    }
+)
+
+
+RECOGNITION_SOURCE_EXPLICIT_TYPE: Final[str] = "explicit_type"
+RECOGNITION_SOURCE_EXPLICIT_FAMILY: Final[str] = "explicit_family"
+RECOGNITION_SOURCE_CLASS_NAME: Final[str] = "class_name"
+RECOGNITION_SOURCE_CONTAINER_NAME: Final[str] = "container_name"
+RECOGNITION_SOURCE_ATTRIBUTE_PATTERN: Final[str] = "attribute_pattern"
+RECOGNITION_SOURCE_GEOMETRY_PATTERN: Final[str] = "geometry_pattern"
+RECOGNITION_SOURCE_ATOM_PATTERN: Final[str] = "atom_pattern"
+RECOGNITION_SOURCE_RESIDUE_PATTERN: Final[str] = "residue_pattern"
+RECOGNITION_SOURCE_ALIAS: Final[str] = "alias"
+RECOGNITION_SOURCE_DEFAULT: Final[str] = "default"
+RECOGNITION_SOURCE_CUSTOM_RULE: Final[str] = "custom_rule"
+
+RECOGNITION_SOURCES: Final[FrozenSet[str]] = frozenset(
+    {
+        RECOGNITION_SOURCE_EXPLICIT_TYPE,
+        RECOGNITION_SOURCE_EXPLICIT_FAMILY,
+        RECOGNITION_SOURCE_CLASS_NAME,
+        RECOGNITION_SOURCE_CONTAINER_NAME,
+        RECOGNITION_SOURCE_ATTRIBUTE_PATTERN,
+        RECOGNITION_SOURCE_GEOMETRY_PATTERN,
+        RECOGNITION_SOURCE_ATOM_PATTERN,
+        RECOGNITION_SOURCE_RESIDUE_PATTERN,
+        RECOGNITION_SOURCE_ALIAS,
+        RECOGNITION_SOURCE_DEFAULT,
+        RECOGNITION_SOURCE_CUSTOM_RULE,
+    }
+)
+
+
+RECOGNITION_CONFIDENCE_CERTAIN: Final[str] = "certain"
+RECOGNITION_CONFIDENCE_HIGH: Final[str] = "high"
+RECOGNITION_CONFIDENCE_MEDIUM: Final[str] = "medium"
+RECOGNITION_CONFIDENCE_LOW: Final[str] = "low"
+RECOGNITION_CONFIDENCE_NONE: Final[str] = "none"
+
+RECOGNITION_CONFIDENCE_LEVELS: Final[FrozenSet[str]] = frozenset(
+    {
+        RECOGNITION_CONFIDENCE_CERTAIN,
+        RECOGNITION_CONFIDENCE_HIGH,
+        RECOGNITION_CONFIDENCE_MEDIUM,
+        RECOGNITION_CONFIDENCE_LOW,
+        RECOGNITION_CONFIDENCE_NONE,
+    }
+)
+
+
+RECOGNITION_SCORE_EXPLICIT_TYPE: Final[float] = 100.0
+RECOGNITION_SCORE_EXPLICIT_FAMILY: Final[float] = 25.0
+RECOGNITION_SCORE_CLASS_NAME: Final[float] = 70.0
+RECOGNITION_SCORE_CONTAINER_NAME: Final[float] = 60.0
+RECOGNITION_SCORE_ATTRIBUTE_PATTERN: Final[float] = 45.0
+RECOGNITION_SCORE_GEOMETRY_PATTERN: Final[float] = 30.0
+RECOGNITION_SCORE_ATOM_PATTERN: Final[float] = 20.0
+RECOGNITION_SCORE_RESIDUE_PATTERN: Final[float] = 15.0
+RECOGNITION_SCORE_CUSTOM_RULE: Final[float] = 50.0
+RECOGNITION_SCORE_DEFAULT: Final[float] = 0.0
+
+DEFAULT_RECOGNITION_MINIMUM_SCORE: Final[float] = 20.0
+DEFAULT_RECOGNITION_AMBIGUITY_MARGIN: Final[float] = 5.0
+DEFAULT_RECOGNITION_MAX_CANDIDATES: Final[int] = 8
+
+
+# -----------------------------------------------------------------------------
+# 6.2. Recognition aliases
+# -----------------------------------------------------------------------------
+
+_RECOGNITION_STATUS_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "recognized": RECOGNITION_STATUS_RECOGNIZED,
+        "recognised": RECOGNITION_STATUS_RECOGNIZED,
+        "explicit": RECOGNITION_STATUS_RECOGNIZED,
+
+        "inferred": RECOGNITION_STATUS_INFERRED,
+        "predicted": RECOGNITION_STATUS_INFERRED,
+
+        "ambiguous": RECOGNITION_STATUS_AMBIGUOUS,
+        "uncertain": RECOGNITION_STATUS_AMBIGUOUS,
+        "conflicting": RECOGNITION_STATUS_AMBIGUOUS,
+
+        "unknown": RECOGNITION_STATUS_UNKNOWN,
+        "unrecognized": RECOGNITION_STATUS_UNKNOWN,
+        "unrecognised": RECOGNITION_STATUS_UNKNOWN,
+
+        "rejected": RECOGNITION_STATUS_REJECTED,
+        "excluded": RECOGNITION_STATUS_REJECTED,
+
+        "invalid": RECOGNITION_STATUS_INVALID,
+        "error": RECOGNITION_STATUS_INVALID,
+    }
+)
+
+_RECOGNITION_CONFIDENCE_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "certain": RECOGNITION_CONFIDENCE_CERTAIN,
+        "definite": RECOGNITION_CONFIDENCE_CERTAIN,
+
+        "high": RECOGNITION_CONFIDENCE_HIGH,
+        "strong": RECOGNITION_CONFIDENCE_HIGH,
+
+        "medium": RECOGNITION_CONFIDENCE_MEDIUM,
+        "moderate": RECOGNITION_CONFIDENCE_MEDIUM,
+
+        "low": RECOGNITION_CONFIDENCE_LOW,
+        "weak": RECOGNITION_CONFIDENCE_LOW,
+
+        "none": RECOGNITION_CONFIDENCE_NONE,
+        "unknown": RECOGNITION_CONFIDENCE_NONE,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 6.3. Recognition exceptions
+# -----------------------------------------------------------------------------
+
+class InteractionRecognitionError(ScoringError):
+    """
+    Base exception for interaction-recognition failures.
+    """
+
+
+class AmbiguousInteractionRecognitionError(InteractionRecognitionError):
+    """
+    Raised when interaction recognition produces unresolved ambiguity.
+    """
+
+
+class UnknownInteractionRecognitionError(InteractionRecognitionError):
+    """
+    Raised when an interaction type cannot be recognized.
+    """
+
+
+class InvalidRecognitionRuleError(InteractionRecognitionError):
+    """
+    Raised when a recognition rule is invalid.
+    """
+
+
+# -----------------------------------------------------------------------------
+# 6.4. Recognition normalization helpers
+# -----------------------------------------------------------------------------
+
+def normalize_recognition_status(
+    value: Any,
+    *,
+    default: str = RECOGNITION_STATUS_UNKNOWN,
+) -> str:
+    """
+    Normalize an interaction-recognition status.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return default
+
+    if normalized in RECOGNITION_STATUSES:
+        return normalized
+
+    return _RECOGNITION_STATUS_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def normalize_recognition_confidence(
+    value: Any,
+    *,
+    default: str = RECOGNITION_CONFIDENCE_NONE,
+) -> str:
+    """
+    Normalize a recognition-confidence label.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return default
+
+    if normalized in RECOGNITION_CONFIDENCE_LEVELS:
+        return normalized
+
+    return _RECOGNITION_CONFIDENCE_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def recognition_confidence_from_score(
+    score: Number,
+) -> str:
+    """
+    Convert a recognition score to a confidence label.
+    """
+
+    value = _coerce_finite_score_value(
+        score,
+        name="recognition score",
+    )
+
+    if value >= RECOGNITION_SCORE_EXPLICIT_TYPE:
+        return RECOGNITION_CONFIDENCE_CERTAIN
+
+    if value >= 70.0:
+        return RECOGNITION_CONFIDENCE_HIGH
+
+    if value >= 40.0:
+        return RECOGNITION_CONFIDENCE_MEDIUM
+
+    if value > 0.0:
+        return RECOGNITION_CONFIDENCE_LOW
+
+    return RECOGNITION_CONFIDENCE_NONE
+
+
+# -----------------------------------------------------------------------------
+# 6.5. Recognition evidence structure
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class RecognitionEvidence:
+    """
+    Immutable evidence supporting an interaction-type candidate.
+
+    Parameters
+    ----------
+    interaction_type
+        Canonical interaction type supported by this evidence.
+    score
+        Numerical evidence weight.
+    source
+        Source of the evidence.
+    field_name
+        Field, attribute or rule that generated the evidence.
+    observed_value
+        Original observed value.
+    description
+        Human-readable evidence description.
+    metadata
+        Additional immutable evidence metadata.
+    """
+
+    interaction_type: str
+    score: float
+
+    source: str = RECOGNITION_SOURCE_DEFAULT
+    field_name: str = ""
+    observed_value: Any = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+    description: str = ""
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize recognition evidence.
+        """
+
+        interaction_type = normalize_interaction_type(
+            self.interaction_type,
+            preserve_unknown=True,
+        )
+
+        score = _coerce_finite_score_value(
+            self.score,
+            name="RecognitionEvidence.score",
+        )
+
+        source = _normalize_scoring_name(
+            self.source
+        )
+
+        if source not in RECOGNITION_SOURCES:
+            source = RECOGNITION_SOURCE_CUSTOM_RULE
+
+        object.__setattr__(
+            self,
+            "interaction_type",
+            interaction_type,
+        )
+        object.__setattr__(
+            self,
+            "score",
+            float(score),
+        )
+        object.__setattr__(
+            self,
+            "source",
+            source,
+        )
+        object.__setattr__(
+            self,
+            "field_name",
+            _coerce_identifier(self.field_name),
+        )
+        object.__setattr__(
+            self,
+            "description",
+            _coerce_optional_text(self.description),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def interaction_family(self) -> str:
+        """
+        Return the family associated with the candidate type.
+        """
+
+        return canonical_interaction_family(
+            self.interaction_type
+        )
+
+    @property
+    def is_positive(self) -> bool:
+        """Return whether the evidence supports the candidate."""
+
+        return self.score > 0.0
+
+    @property
+    def is_negative(self) -> bool:
+        """Return whether the evidence opposes the candidate."""
+
+        return self.score < 0.0
+
+    @property
+    def sort_key(
+        self,
+    ) -> Tuple[float, str, str]:
+        """
+        Return a deterministic evidence sorting key.
+        """
+
+        return (
+            -self.score,
+            self.interaction_type,
+            self.source,
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_observed_value: bool = True,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a mutable dictionary representation.
+        """
+
+        result: Dict[str, Any] = {
+            "interaction_type": self.interaction_type,
+            "interaction_family": self.interaction_family,
+            "score": float(self.score),
+            "source": self.source,
+            "field_name": self.field_name,
+            "description": self.description,
+        }
+
+        if include_observed_value:
+            result["observed_value"] = self.observed_value
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+    def __float__(self) -> float:
+        """Return the evidence score."""
+
+        return float(self.score)
+
+    def __hash__(self) -> int:
+        """
+        Return a stable hash excluding arbitrary observed values and metadata.
+        """
+
+        return hash(
+            (
+                self.interaction_type,
+                self.score,
+                self.source,
+                self.field_name,
+                self.description,
+            )
+        )
+
+
+# -----------------------------------------------------------------------------
+# 6.6. Recognition candidate structure
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class InteractionRecognitionCandidate:
+    """
+    Aggregated candidate for one canonical interaction type.
+    """
+
+    interaction_type: str
+    score: float
+
+    evidence: Tuple[RecognitionEvidence, ...] = field(
+        default_factory=tuple
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize a recognition candidate.
+        """
+
+        interaction_type = normalize_interaction_type(
+            self.interaction_type,
+            preserve_unknown=True,
+        )
+
+        score = _coerce_finite_score_value(
+            self.score,
+            name="InteractionRecognitionCandidate.score",
+        )
+
+        normalized_evidence: List[RecognitionEvidence] = []
+
+        for item in self.evidence:
+            if not isinstance(item, RecognitionEvidence):
+                raise InteractionRecognitionError(
+                    "Candidate evidence must contain only "
+                    "RecognitionEvidence instances."
+                )
+
+            if item.interaction_type != interaction_type:
+                raise InteractionRecognitionError(
+                    "Recognition evidence type is inconsistent with "
+                    "its candidate."
+                )
+
+            normalized_evidence.append(item)
+
+        normalized_evidence.sort(
+            key=lambda item: item.sort_key
+        )
+
+        object.__setattr__(
+            self,
+            "interaction_type",
+            interaction_type,
+        )
+        object.__setattr__(
+            self,
+            "score",
+            float(score),
+        )
+        object.__setattr__(
+            self,
+            "evidence",
+            tuple(normalized_evidence),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def interaction_family(self) -> str:
+        """Return the candidate interaction family."""
+
+        return canonical_interaction_family(
+            self.interaction_type
+        )
+
+    @property
+    def confidence(self) -> str:
+        """Return confidence inferred from the candidate score."""
+
+        return recognition_confidence_from_score(
+            self.score
+        )
+
+    @property
+    def evidence_count(self) -> int:
+        """Return the number of evidence records."""
+
+        return len(self.evidence)
+
+    @property
+    def primary_evidence(self) -> Optional[RecognitionEvidence]:
+        """
+        Return the strongest evidence record.
+        """
+
+        if not self.evidence:
+            return None
+
+        return self.evidence[0]
+
+    @property
+    def sort_key(
+        self,
+    ) -> Tuple[float, str]:
+        """
+        Return deterministic candidate ranking order.
+        """
+
+        return (
+            -self.score,
+            self.interaction_type,
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_evidence: bool = True,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a mutable dictionary representation.
+        """
+
+        result: Dict[str, Any] = {
+            "interaction_type": self.interaction_type,
+            "interaction_family": self.interaction_family,
+            "score": float(self.score),
+            "confidence": self.confidence,
+            "evidence_count": int(self.evidence_count),
+        }
+
+        if include_evidence:
+            result["evidence"] = [
+                item.to_dict(
+                    include_observed_value=True,
+                    include_metadata=include_metadata,
+                )
+                for item in self.evidence
+            ]
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+    def __float__(self) -> float:
+        """Return the candidate recognition score."""
+
+        return float(self.score)
+
+    def __hash__(self) -> int:
+        """
+        Return a stable hash excluding arbitrary metadata.
+        """
+
+        return hash(
+            (
+                self.interaction_type,
+                self.score,
+                self.evidence,
+            )
+        )
+
+
+# -----------------------------------------------------------------------------
+# 6.7. Recognition result structure
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class InteractionRecognitionResult:
+    """
+    Immutable result of recognizing one interaction object.
+
+    Parameters
+    ----------
+    interaction_type
+        Selected canonical interaction type.
+    interaction_family
+        Selected canonical interaction family.
+    status
+        Recognition status.
+    confidence
+        Recognition-confidence level.
+    score
+        Score of the selected candidate.
+    margin
+        Difference between the first- and second-ranked candidates.
+    candidates
+        Ordered recognition candidates.
+    explicit_type
+        Explicit type extracted from the source object, when available.
+    explicit_family
+        Explicit family extracted from the source object, when available.
+    reason
+        Human-readable recognition reason.
+    interaction
+        Original detector-specific interaction object.
+    metadata
+        Additional immutable recognition metadata.
+    """
+
+    interaction_type: str
+    interaction_family: str
+
+    status: str = RECOGNITION_STATUS_UNKNOWN
+    confidence: str = RECOGNITION_CONFIDENCE_NONE
+
+    score: float = 0.0
+    margin: Optional[float] = None
+
+    candidates: Tuple[InteractionRecognitionCandidate, ...] = field(
+        default_factory=tuple
+    )
+
+    explicit_type: str = ""
+    explicit_family: str = ""
+    reason: str = ""
+
+    interaction: Any = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize the recognition result.
+        """
+
+        interaction_type = normalize_interaction_type(
+            self.interaction_type,
+            preserve_unknown=True,
+        )
+
+        interaction_family = canonical_interaction_family(
+            self.interaction_family
+            or interaction_type
+        )
+
+        score = _coerce_finite_score_value(
+            self.score,
+            name="InteractionRecognitionResult.score",
+        )
+
+        margin = _coerce_finite_score_value(
+            self.margin,
+            name="InteractionRecognitionResult.margin",
+            allow_none=True,
+        )
+
+        normalized_candidates: List[
+            InteractionRecognitionCandidate
+        ] = []
+
+        for candidate in self.candidates:
+            if not isinstance(
+                candidate,
+                InteractionRecognitionCandidate,
+            ):
+                raise InteractionRecognitionError(
+                    "Recognition result candidates must contain only "
+                    "InteractionRecognitionCandidate instances."
+                )
+
+            normalized_candidates.append(candidate)
+
+        normalized_candidates.sort(
+            key=lambda candidate: candidate.sort_key
+        )
+
+        object.__setattr__(
+            self,
+            "interaction_type",
+            interaction_type,
+        )
+        object.__setattr__(
+            self,
+            "interaction_family",
+            interaction_family,
+        )
+        object.__setattr__(
+            self,
+            "status",
+            normalize_recognition_status(
+                self.status
+            ),
+        )
+        object.__setattr__(
+            self,
+            "confidence",
+            normalize_recognition_confidence(
+                self.confidence
+            ),
+        )
+        object.__setattr__(
+            self,
+            "score",
+            float(score),
+        )
+        object.__setattr__(
+            self,
+            "margin",
+            margin,
+        )
+        object.__setattr__(
+            self,
+            "candidates",
+            tuple(normalized_candidates),
+        )
+        object.__setattr__(
+            self,
+            "explicit_type",
+            (
+                ""
+                if not self.explicit_type
+                else normalize_interaction_type(
+                    self.explicit_type,
+                    preserve_unknown=True,
+                )
+            ),
+        )
+        object.__setattr__(
+            self,
+            "explicit_family",
+            (
+                ""
+                if not self.explicit_family
+                else canonical_interaction_family(
+                    self.explicit_family
+                )
+            ),
+        )
+        object.__setattr__(
+            self,
+            "reason",
+            _coerce_optional_text(self.reason),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def recognized(self) -> bool:
+        """
+        Return whether a non-unknown type was selected.
+        """
+
+        return (
+            self.interaction_type != SCORE_TYPE_UNKNOWN
+            and self.status
+            in {
+                RECOGNITION_STATUS_RECOGNIZED,
+                RECOGNITION_STATUS_INFERRED,
+            }
+        )
+
+    @property
+    def ambiguous(self) -> bool:
+        """Return whether the result is ambiguous."""
+
+        return self.status == RECOGNITION_STATUS_AMBIGUOUS
+
+    @property
+    def unknown(self) -> bool:
+        """Return whether no type was recognized."""
+
+        return (
+            self.status == RECOGNITION_STATUS_UNKNOWN
+            or self.interaction_type == SCORE_TYPE_UNKNOWN
+        )
+
+    @property
+    def rejected(self) -> bool:
+        """Return whether recognition was rejected."""
+
+        return self.status == RECOGNITION_STATUS_REJECTED
+
+    @property
+    def best_candidate(
+        self,
+    ) -> Optional[InteractionRecognitionCandidate]:
+        """Return the highest-ranked candidate."""
+
+        if not self.candidates:
+            return None
+
+        return self.candidates[0]
+
+    @property
+    def alternative_candidates(
+        self,
+    ) -> Tuple[InteractionRecognitionCandidate, ...]:
+        """Return all candidates except the selected candidate."""
+
+        return self.candidates[1:]
+
+    def candidate(
+        self,
+        interaction_type: Any,
+    ) -> Optional[InteractionRecognitionCandidate]:
+        """
+        Return a candidate by canonical interaction type.
+        """
+
+        canonical_type = normalize_interaction_type(
+            interaction_type,
+            preserve_unknown=True,
+        )
+
+        for candidate in self.candidates:
+            if candidate.interaction_type == canonical_type:
+                return candidate
+
+        return None
+
+    def without_interaction_reference(
+        self,
+    ) -> "InteractionRecognitionResult":
+        """
+        Return a copy without the detector-specific object.
+        """
+
+        return replace(
+            self,
+            interaction=None,
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_candidates: bool = True,
+        include_evidence: bool = True,
+        include_metadata: bool = True,
+        include_interaction: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Return a mutable dictionary representation.
+        """
+
+        result: Dict[str, Any] = {
+            "interaction_type": self.interaction_type,
+            "interaction_family": self.interaction_family,
+            "status": self.status,
+            "confidence": self.confidence,
+            "recognized": bool(self.recognized),
+            "ambiguous": bool(self.ambiguous),
+            "unknown": bool(self.unknown),
+            "score": float(self.score),
+            "margin": (
+                None
+                if self.margin is None
+                else float(self.margin)
+            ),
+            "explicit_type": self.explicit_type,
+            "explicit_family": self.explicit_family,
+            "reason": self.reason,
+        }
+
+        if include_candidates:
+            result["candidates"] = [
+                candidate.to_dict(
+                    include_evidence=include_evidence,
+                    include_metadata=include_metadata,
+                )
+                for candidate in self.candidates
+            ]
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        if include_interaction:
+            result["interaction"] = self.interaction
+
+        return result
+
+    def __bool__(self) -> bool:
+        """Return whether recognition succeeded."""
+
+        return self.recognized
+
+    def __hash__(self) -> int:
+        """
+        Return a stable hash excluding the source object and metadata.
+        """
+
+        return hash(
+            (
+                self.interaction_type,
+                self.interaction_family,
+                self.status,
+                self.confidence,
+                self.score,
+                self.margin,
+                self.candidates,
+                self.explicit_type,
+                self.explicit_family,
+                self.reason,
+            )
+        )
+
+
+# -----------------------------------------------------------------------------
+# 6.8. Recognition configuration
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class InteractionRecognitionConfig:
+    """
+    Immutable configuration for interaction recognition.
+    """
+
+    minimum_score: float = DEFAULT_RECOGNITION_MINIMUM_SCORE
+    ambiguity_margin: float = DEFAULT_RECOGNITION_AMBIGUITY_MARGIN
+    maximum_candidates: int = DEFAULT_RECOGNITION_MAX_CANDIDATES
+
+    trust_explicit_type: bool = True
+    allow_class_name_inference: bool = True
+    allow_attribute_inference: bool = True
+    allow_geometry_inference: bool = True
+    allow_atom_inference: bool = True
+    allow_residue_inference: bool = True
+
+    reject_ambiguous: bool = False
+    reject_unknown: bool = False
+    preserve_evidence: bool = True
+    preserve_interaction_reference: bool = True
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Validate recognition configuration.
+        """
+
+        minimum_score = _coerce_finite_score_value(
+            self.minimum_score,
+            name="InteractionRecognitionConfig.minimum_score",
+        )
+
+        ambiguity_margin = _coerce_finite_score_value(
+            self.ambiguity_margin,
+            name="InteractionRecognitionConfig.ambiguity_margin",
+        )
+
+        if minimum_score < 0.0:
+            raise InteractionRecognitionError(
+                "Recognition minimum_score cannot be negative."
+            )
+
+        if ambiguity_margin < 0.0:
+            raise InteractionRecognitionError(
+                "Recognition ambiguity_margin cannot be negative."
+            )
+
+        if isinstance(self.maximum_candidates, bool):
+            raise InteractionRecognitionError(
+                "maximum_candidates must be an integer."
+            )
+
+        try:
+            maximum_candidates = int(
+                self.maximum_candidates
+            )
+        except (
+            TypeError,
+            ValueError,
+            OverflowError,
+        ) as exc:
+            raise InteractionRecognitionError(
+                "maximum_candidates must be an integer."
+            ) from exc
+
+        if maximum_candidates < 1:
+            raise InteractionRecognitionError(
+                "maximum_candidates must be at least 1."
+            )
+
+        object.__setattr__(
+            self,
+            "minimum_score",
+            float(minimum_score),
+        )
+        object.__setattr__(
+            self,
+            "ambiguity_margin",
+            float(ambiguity_margin),
+        )
+        object.__setattr__(
+            self,
+            "maximum_candidates",
+            maximum_candidates,
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    def with_updates(
+        self,
+        **changes: Any,
+    ) -> "InteractionRecognitionConfig":
+        """
+        Return a validated configuration copy.
+        """
+
+        return replace(
+            self,
+            **changes,
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a mutable dictionary representation.
+        """
+
+        result: Dict[str, Any] = {
+            "minimum_score": float(self.minimum_score),
+            "ambiguity_margin": float(self.ambiguity_margin),
+            "maximum_candidates": int(self.maximum_candidates),
+            "trust_explicit_type": bool(self.trust_explicit_type),
+            "allow_class_name_inference": bool(
+                self.allow_class_name_inference
+            ),
+            "allow_attribute_inference": bool(
+                self.allow_attribute_inference
+            ),
+            "allow_geometry_inference": bool(
+                self.allow_geometry_inference
+            ),
+            "allow_atom_inference": bool(
+                self.allow_atom_inference
+            ),
+            "allow_residue_inference": bool(
+                self.allow_residue_inference
+            ),
+            "reject_ambiguous": bool(self.reject_ambiguous),
+            "reject_unknown": bool(self.reject_unknown),
+            "preserve_evidence": bool(self.preserve_evidence),
+            "preserve_interaction_reference": bool(
+                self.preserve_interaction_reference
+            ),
+        }
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+DEFAULT_INTERACTION_RECOGNITION_CONFIG: Final[
+    InteractionRecognitionConfig
+] = InteractionRecognitionConfig()
+
+
+# -----------------------------------------------------------------------------
+# 6.9. Recognition rule structure
+# -----------------------------------------------------------------------------
+
+RecognitionRuleFunction = Callable[
+    [Any],
+    Iterable[RecognitionEvidence],
+]
+
+
+@dataclass(frozen=True, slots=True)
+class InteractionRecognitionRule:
+    """
+    Immutable custom interaction-recognition rule.
+    """
+
+    name: str
+    function: RecognitionRuleFunction
+
+    priority: int = 0
+    enabled: bool = True
+
+    interaction_types: FrozenSet[str] = field(
+        default_factory=frozenset
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Validate a recognition rule.
+        """
+
+        name = _normalize_scoring_name(
+            self.name
+        )
+
+        if not name:
+            raise InvalidRecognitionRuleError(
+                "Recognition rule name cannot be empty."
+            )
+
+        if not callable(self.function):
+            raise InvalidRecognitionRuleError(
+                "Recognition rule function must be callable."
+            )
+
+        if isinstance(self.priority, bool):
+            raise InvalidRecognitionRuleError(
+                "Recognition rule priority must be an integer."
+            )
+
+        try:
+            priority = int(self.priority)
+        except (
+            TypeError,
+            ValueError,
+            OverflowError,
+        ) as exc:
+            raise InvalidRecognitionRuleError(
+                "Recognition rule priority must be an integer."
+            ) from exc
+
+        normalized_types = frozenset(
+            normalize_interaction_type(
+                interaction_type,
+                preserve_unknown=True,
+            )
+            for interaction_type in self.interaction_types
+        )
+
+        object.__setattr__(
+            self,
+            "name",
+            name,
+        )
+        object.__setattr__(
+            self,
+            "priority",
+            priority,
+        )
+        object.__setattr__(
+            self,
+            "enabled",
+            bool(self.enabled),
+        )
+        object.__setattr__(
+            self,
+            "interaction_types",
+            normalized_types,
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def sort_key(
+        self,
+    ) -> Tuple[int, str]:
+        """
+        Return deterministic rule ordering.
+        """
+
+        return (
+            -self.priority,
+            self.name,
+        )
+
+    def evaluate(
+        self,
+        interaction: Any,
+    ) -> Tuple[RecognitionEvidence, ...]:
+        """
+        Evaluate this recognition rule.
+        """
+
+        if not self.enabled:
+            return ()
+
+        result = self.function(interaction)
+
+        if result is None:
+            return ()
+
+        normalized: List[RecognitionEvidence] = []
+
+        for evidence in result:
+            if not isinstance(evidence, RecognitionEvidence):
+                raise InvalidRecognitionRuleError(
+                    f"Recognition rule {self.name!r} returned a "
+                    "non-RecognitionEvidence object."
+                )
+
+            normalized.append(evidence)
+
+        normalized.sort(
+            key=lambda item: item.sort_key
+        )
+
+        return tuple(normalized)
+
+
+# -----------------------------------------------------------------------------
+# 6.10. Built-in alias patterns
+# -----------------------------------------------------------------------------
+
+INTERACTION_RECOGNITION_PATTERNS: Final[
+    Mapping[str, Tuple[str, ...]]
+] = MappingProxyType(
+    {
+        "hydrogen_bond": (
+            "hydrogen_bond",
+            "hydrogenbond",
+            "hbond",
+            "h_bond",
+            "donor_acceptor",
+        ),
+        "hydrophobic": (
+            "hydrophobic",
+            "nonpolar",
+            "non_polar",
+            "alkyl_contact",
+            "van_der_waals",
+        ),
+        "pi_stacking": (
+            "pi_stacking",
+            "pi_stack",
+            "pistacking",
+            "aromatic_stack",
+            "parallel_pi",
+            "parallel_displaced",
+        ),
+        "t_shaped": (
+            "t_shaped",
+            "t_shape",
+            "tstack",
+            "edge_to_face",
+            "edge_face",
+        ),
+        "cation_pi": (
+            "cation_pi",
+            "cationpi",
+            "positive_pi",
+        ),
+        "anion_pi": (
+            "anion_pi",
+            "anionpi",
+            "negative_pi",
+        ),
+        "amide_pi": (
+            "amide_pi",
+            "amidepi",
+        ),
+        "salt_bridge": (
+            "salt_bridge",
+            "saltbridge",
+            "ionic_pair",
+            "ion_pair",
+            "charge_pair",
+        ),
+        "clash": (
+            "clash",
+            "steric_clash",
+            "steric_overlap",
+            "collision",
+        ),
+        "contact": (
+            "contact",
+            "generic_contact",
+            "close_contact",
+        ),
+    }
+)
+
+
+INTERACTION_ATTRIBUTE_SIGNATURES: Final[
+    Mapping[str, Tuple[str, ...]]
+] = MappingProxyType(
+    {
+        "hydrogen_bond": (
+            "donor",
+            "acceptor",
+            "donor_atom",
+            "acceptor_atom",
+            "dha_angle",
+            "hydrogen",
+        ),
+        "hydrophobic": (
+            "hydrophobic_atom",
+            "carbon_pair",
+            "nonpolar_pair",
+        ),
+        "pi_stacking": (
+            "ring1",
+            "ring2",
+            "ring_1",
+            "ring_2",
+            "centroid_distance",
+            "normal_angle",
+        ),
+        "t_shaped": (
+            "ring1",
+            "ring2",
+            "edge_ring",
+            "face_ring",
+            "normal_angle",
+        ),
+        "cation_pi": (
+            "cation",
+            "cation_group",
+            "aromatic_ring",
+        ),
+        "anion_pi": (
+            "anion",
+            "anion_group",
+            "aromatic_ring",
+        ),
+        "amide_pi": (
+            "amide_group",
+            "aromatic_ring",
+        ),
+        "salt_bridge": (
+            "cation_group",
+            "anion_group",
+            "positive_group",
+            "negative_group",
+        ),
+        "clash": (
+            "overlap",
+            "vdw_overlap",
+            "penetration",
+        ),
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 6.11. Evidence-generation helpers
+# -----------------------------------------------------------------------------
+
+def _string_contains_pattern(
+    value: Any,
+    patterns: Iterable[str],
+) -> Optional[str]:
+    """
+    Return the first normalized pattern found in a value.
+    """
+
+    normalized_value = _normalize_scoring_name(
+        value
+    )
+
+    if not normalized_value:
+        return None
+
+    for pattern in patterns:
+        normalized_pattern = _normalize_scoring_name(
+            pattern
+        )
+
+        if normalized_pattern in normalized_value:
+            return normalized_pattern
+
+    return None
+
+
+def _object_has_field(
+    obj: Any,
+    field_name: str,
+) -> bool:
+    """
+    Return whether an object exposes a non-None field.
+    """
+
+    extracted = extract_named_value(
+        obj,
+        (field_name,),
+        allow_none=False,
+        call_methods=False,
+    )
+
+    return extracted.found
+
+
+def _count_present_fields(
+    obj: Any,
+    field_names: Iterable[str],
+) -> Tuple[str, ...]:
+    """
+    Return candidate field names present on an object.
+    """
+
+    return tuple(
+        field_name
+        for field_name in field_names
+        if _object_has_field(
+            obj,
+            field_name,
+        )
+    )
+
+
+def recognize_explicit_type_evidence(
+    interaction: Any,
+) -> Tuple[RecognitionEvidence, ...]:
+    """
+    Generate evidence from explicit interaction-type fields.
+    """
+
+    extracted = extract_named_value(
+        interaction,
+        INTERACTION_TYPE_FIELDS,
+        allow_none=False,
+    )
+
+    if not extracted.found:
+        return ()
+
+    canonical_type = normalize_interaction_type(
+        extracted.value,
+        preserve_unknown=True,
+    )
+
+    if canonical_type == SCORE_TYPE_UNKNOWN:
+        return ()
+
+    return (
+        RecognitionEvidence(
+            interaction_type=canonical_type,
+            score=RECOGNITION_SCORE_EXPLICIT_TYPE,
+            source=RECOGNITION_SOURCE_EXPLICIT_TYPE,
+            field_name=extracted.field_name,
+            observed_value=extracted.value,
+            description=(
+                "The source object explicitly declares the "
+                "interaction type."
+            ),
+        ),
+    )
+
+
+def recognize_explicit_family_evidence(
+    interaction: Any,
+) -> Tuple[RecognitionEvidence, ...]:
+    """
+    Generate weak supporting evidence from an explicit family field.
+    """
+
+    extracted = extract_named_value(
+        interaction,
+        INTERACTION_FAMILY_FIELDS,
+        allow_none=False,
+    )
+
+    if not extracted.found:
+        return ()
+
+    family = canonical_interaction_family(
+        extracted.value
+    )
+
+    compatible_types = tuple(
+        interaction_type
+        for interaction_type, mapped_family
+        in INTERACTION_TYPE_TO_FAMILY.items()
+        if mapped_family == family
+    )
+
+    if len(compatible_types) != 1:
+        return ()
+
+    return (
+        RecognitionEvidence(
+            interaction_type=compatible_types[0],
+            score=RECOGNITION_SCORE_EXPLICIT_FAMILY,
+            source=RECOGNITION_SOURCE_EXPLICIT_FAMILY,
+            field_name=extracted.field_name,
+            observed_value=extracted.value,
+            description=(
+                "The interaction family uniquely identifies a "
+                "canonical interaction type."
+            ),
+        ),
+    )
+
+
+def recognize_class_name_evidence(
+    interaction: Any,
+) -> Tuple[RecognitionEvidence, ...]:
+    """
+    Generate evidence from the interaction class name.
+    """
+
+    class_name = type(interaction).__name__
+    normalized_class_name = _normalize_scoring_name(
+        class_name
+    )
+
+    evidence: List[RecognitionEvidence] = []
+
+    for interaction_type, patterns in (
+        INTERACTION_RECOGNITION_PATTERNS.items()
+    ):
+        matched_pattern = _string_contains_pattern(
+            normalized_class_name,
+            patterns,
+        )
+
+        if matched_pattern is None:
+            continue
+
+        evidence.append(
+            RecognitionEvidence(
+                interaction_type=interaction_type,
+                score=RECOGNITION_SCORE_CLASS_NAME,
+                source=RECOGNITION_SOURCE_CLASS_NAME,
+                field_name="__class__.__name__",
+                observed_value=class_name,
+                description=(
+                    f"Class name matched recognition pattern "
+                    f"{matched_pattern!r}."
+                ),
+            )
+        )
+
+    return tuple(evidence)
+
+
+def recognize_container_name_evidence(
+    interaction: Any,
+    *,
+    container_name: Optional[str] = None,
+) -> Tuple[RecognitionEvidence, ...]:
+    """
+    Generate evidence from the source container name.
+    """
+
+    if not container_name:
+        return ()
+
+    normalized_container_name = _normalize_scoring_name(
+        container_name
+    )
+
+    evidence: List[RecognitionEvidence] = []
+
+    for interaction_type, patterns in (
+        INTERACTION_RECOGNITION_PATTERNS.items()
+    ):
+        matched_pattern = _string_contains_pattern(
+            normalized_container_name,
+            patterns,
+        )
+
+        if matched_pattern is None:
+            continue
+
+        evidence.append(
+            RecognitionEvidence(
+                interaction_type=interaction_type,
+                score=RECOGNITION_SCORE_CONTAINER_NAME,
+                source=RECOGNITION_SOURCE_CONTAINER_NAME,
+                field_name="container_name",
+                observed_value=container_name,
+                description=(
+                    f"Container name matched recognition pattern "
+                    f"{matched_pattern!r}."
+                ),
+            )
+        )
+
+    return tuple(evidence)
+
+
+def recognize_attribute_pattern_evidence(
+    interaction: Any,
+) -> Tuple[RecognitionEvidence, ...]:
+    """
+    Generate evidence from detector-specific field signatures.
+    """
+
+    evidence: List[RecognitionEvidence] = []
+
+    for interaction_type, field_names in (
+        INTERACTION_ATTRIBUTE_SIGNATURES.items()
+    ):
+        present_fields = _count_present_fields(
+            interaction,
+            field_names,
+        )
+
+        if not present_fields:
+            continue
+
+        score = (
+            RECOGNITION_SCORE_ATTRIBUTE_PATTERN
+            * min(
+                len(present_fields) / 2.0,
+                1.0,
+            )
+        )
+
+        evidence.append(
+            RecognitionEvidence(
+                interaction_type=interaction_type,
+                score=score,
+                source=RECOGNITION_SOURCE_ATTRIBUTE_PATTERN,
+                field_name=",".join(present_fields),
+                observed_value=present_fields,
+                description=(
+                    "The source object exposes fields commonly used "
+                    f"for {interaction_type!r} interactions."
+                ),
+            )
+        )
+
+    return tuple(evidence)
+
+
+def recognize_geometry_pattern_evidence(
+    interaction: Any,
+) -> Tuple[RecognitionEvidence, ...]:
+    """
+    Generate conservative evidence from available geometric fields.
+    """
+
+    distance = extract_interaction_distance(
+        interaction
+    )
+    angle = extract_interaction_angle(
+        interaction
+    )
+    offset = extract_interaction_offset(
+        interaction
+    )
+    overlap = extract_interaction_overlap(
+        interaction
+    )
+
+    evidence: List[RecognitionEvidence] = []
+
+    if (
+        distance is not None
+        and angle is not None
+        and 1.5 <= distance <= 4.0
+        and 80.0 <= angle <= 180.0
+    ):
+        evidence.append(
+            RecognitionEvidence(
+                interaction_type="hydrogen_bond",
+                score=RECOGNITION_SCORE_GEOMETRY_PATTERN,
+                source=RECOGNITION_SOURCE_GEOMETRY_PATTERN,
+                field_name="distance,angle",
+                observed_value={
+                    "distance": distance,
+                    "angle": angle,
+                },
+                description=(
+                    "Distance and angle are compatible with a "
+                    "hydrogen-bond geometry."
+                ),
+            )
+        )
+
+    if (
+        distance is not None
+        and angle is not None
+        and offset is not None
+        and 3.0 <= distance <= 6.5
+    ):
+        if angle <= 35.0 or angle >= 145.0:
+            evidence.append(
+                RecognitionEvidence(
+                    interaction_type="pi_stacking",
+                    score=RECOGNITION_SCORE_GEOMETRY_PATTERN,
+                    source=RECOGNITION_SOURCE_GEOMETRY_PATTERN,
+                    field_name="distance,angle,offset",
+                    observed_value={
+                        "distance": distance,
+                        "angle": angle,
+                        "offset": offset,
+                    },
+                    description=(
+                        "Ring distance, normal angle and lateral offset "
+                        "are compatible with π-stacking."
+                    ),
+                )
+            )
+
+        if 55.0 <= angle <= 125.0:
+            evidence.append(
+                RecognitionEvidence(
+                    interaction_type="t_shaped",
+                    score=RECOGNITION_SCORE_GEOMETRY_PATTERN,
+                    source=RECOGNITION_SOURCE_GEOMETRY_PATTERN,
+                    field_name="distance,angle,offset",
+                    observed_value={
+                        "distance": distance,
+                        "angle": angle,
+                        "offset": offset,
+                    },
+                    description=(
+                        "Ring distance and approximately perpendicular "
+                        "orientation are compatible with a T-shaped "
+                        "interaction."
+                    ),
+                )
+            )
+
+    if overlap is not None and overlap > 0.0:
+        evidence.append(
+            RecognitionEvidence(
+                interaction_type="clash",
+                score=RECOGNITION_SCORE_GEOMETRY_PATTERN,
+                source=RECOGNITION_SOURCE_GEOMETRY_PATTERN,
+                field_name="overlap",
+                observed_value=overlap,
+                description=(
+                    "A positive atomic overlap is compatible with a "
+                    "steric clash."
+                ),
+            )
+        )
+
+    return tuple(evidence)
+
+
+def recognize_atom_pattern_evidence(
+    interaction: Any,
+) -> Tuple[RecognitionEvidence, ...]:
+    """
+    Generate weak evidence from atom elements.
+    """
+
+    atom_objects = extract_interaction_atom_objects(
+        interaction
+    )
+
+    if atom_objects is None:
+        return ()
+
+    first_element = extract_atom_element(
+        atom_objects[0]
+    )
+    second_element = extract_atom_element(
+        atom_objects[1]
+    )
+
+    elements = {
+        first_element,
+        second_element,
+    }
+
+    evidence: List[RecognitionEvidence] = []
+
+    if elements and elements.issubset(
+        {
+            "N",
+            "O",
+            "S",
+            "F",
+            "CL",
+        }
+    ):
+        evidence.append(
+            RecognitionEvidence(
+                interaction_type="hydrogen_bond",
+                score=RECOGNITION_SCORE_ATOM_PATTERN,
+                source=RECOGNITION_SOURCE_ATOM_PATTERN,
+                field_name="atom elements",
+                observed_value=(
+                    first_element,
+                    second_element,
+                ),
+                description=(
+                    "The atom elements are compatible with common "
+                    "hydrogen-bond donors and acceptors."
+                ),
+            )
+        )
+
+    if elements and elements.issubset(
+        {
+            "C",
+            "S",
+            "F",
+            "CL",
+            "BR",
+            "I",
+        }
+    ):
+        evidence.append(
+            RecognitionEvidence(
+                interaction_type="hydrophobic",
+                score=RECOGNITION_SCORE_ATOM_PATTERN,
+                source=RECOGNITION_SOURCE_ATOM_PATTERN,
+                field_name="atom elements",
+                observed_value=(
+                    first_element,
+                    second_element,
+                ),
+                description=(
+                    "The atom elements are compatible with a "
+                    "nonpolar contact."
+                ),
+            )
+        )
+
+    return tuple(evidence)
+
+
+def recognize_residue_pattern_evidence(
+    interaction: Any,
+) -> Tuple[RecognitionEvidence, ...]:
+    """
+    Generate weak evidence from residue identities.
+    """
+
+    residue_objects = extract_interaction_residue_objects(
+        interaction
+    )
+
+    if residue_objects is None:
+        return ()
+
+    first_name = extract_residue_name(
+        residue_objects[0]
+    )
+    second_name = extract_residue_name(
+        residue_objects[1]
+    )
+
+    residue_names = {
+        first_name,
+        second_name,
+    }
+
+    positive_residues = {
+        "ARG",
+        "LYS",
+        "HIS",
+    }
+    negative_residues = {
+        "ASP",
+        "GLU",
+    }
+    aromatic_residues = {
+        "PHE",
+        "TYR",
+        "TRP",
+        "HIS",
+    }
+    hydrophobic_residues = {
+        "ALA",
+        "VAL",
+        "LEU",
+        "ILE",
+        "MET",
+        "PHE",
+        "TRP",
+        "PRO",
+        "TYR",
+    }
+
+    evidence: List[RecognitionEvidence] = []
+
+    if (
+        residue_names & positive_residues
+        and residue_names & negative_residues
+    ):
+        evidence.append(
+            RecognitionEvidence(
+                interaction_type="salt_bridge",
+                score=RECOGNITION_SCORE_RESIDUE_PATTERN,
+                source=RECOGNITION_SOURCE_RESIDUE_PATTERN,
+                field_name="residue names",
+                observed_value=(
+                    first_name,
+                    second_name,
+                ),
+                description=(
+                    "The residue pair contains oppositely charged "
+                    "canonical amino-acid groups."
+                ),
+            )
+        )
+
+    if residue_names.issubset(aromatic_residues):
+        evidence.append(
+            RecognitionEvidence(
+                interaction_type="pi_stacking",
+                score=RECOGNITION_SCORE_RESIDUE_PATTERN,
+                source=RECOGNITION_SOURCE_RESIDUE_PATTERN,
+                field_name="residue names",
+                observed_value=(
+                    first_name,
+                    second_name,
+                ),
+                description=(
+                    "Both residues are aromatic and may form an "
+                    "aromatic interaction."
+                ),
+            )
+        )
+
+    if residue_names.issubset(hydrophobic_residues):
+        evidence.append(
+            RecognitionEvidence(
+                interaction_type="hydrophobic",
+                score=RECOGNITION_SCORE_RESIDUE_PATTERN,
+                source=RECOGNITION_SOURCE_RESIDUE_PATTERN,
+                field_name="residue names",
+                observed_value=(
+                    first_name,
+                    second_name,
+                ),
+                description=(
+                    "Both residues have hydrophobic side chains."
+                ),
+            )
+        )
+
+    return tuple(evidence)
+
+
+# -----------------------------------------------------------------------------
+# 6.12. Candidate aggregation
+# -----------------------------------------------------------------------------
+
+def aggregate_recognition_evidence(
+    evidence: Iterable[RecognitionEvidence],
+    *,
+    maximum_candidates: Optional[int] = None,
+) -> Tuple[InteractionRecognitionCandidate, ...]:
+    """
+    Aggregate recognition evidence by canonical interaction type.
+    """
+
+    grouped: Dict[str, List[RecognitionEvidence]] = {}
+
+    for item in evidence:
+        if not isinstance(item, RecognitionEvidence):
+            raise InteractionRecognitionError(
+                "Recognition evidence collection contains an invalid "
+                "object."
+            )
+
+        grouped.setdefault(
+            item.interaction_type,
+            [],
+        ).append(item)
+
+    candidates: List[InteractionRecognitionCandidate] = []
+
+    for interaction_type, items in grouped.items():
+        score = float(
+            sum(item.score for item in items)
+        )
+
+        candidates.append(
+            InteractionRecognitionCandidate(
+                interaction_type=interaction_type,
+                score=score,
+                evidence=tuple(items),
+            )
+        )
+
+    candidates.sort(
+        key=lambda candidate: candidate.sort_key
+    )
+
+    if maximum_candidates is not None:
+        candidates = candidates[
+            :maximum_candidates
+        ]
+
+    return tuple(candidates)
+
+
+def calculate_recognition_margin(
+    candidates: Sequence[InteractionRecognitionCandidate],
+) -> Optional[float]:
+    """
+    Return the score difference between the two best candidates.
+    """
+
+    if not candidates:
+        return None
+
+    if len(candidates) == 1:
+        return float(candidates[0].score)
+
+    return float(
+        candidates[0].score
+        - candidates[1].score
+    )
+
+
+# -----------------------------------------------------------------------------
+# 6.13. Recognition execution
+# -----------------------------------------------------------------------------
+
+def collect_recognition_evidence(
+    interaction: Any,
+    *,
+    container_name: Optional[str] = None,
+    config: InteractionRecognitionConfig = (
+        DEFAULT_INTERACTION_RECOGNITION_CONFIG
+    ),
+    custom_rules: Iterable[InteractionRecognitionRule] = (),
+) -> Tuple[RecognitionEvidence, ...]:
+    """
+    Collect all enabled recognition evidence.
+    """
+
+    if not isinstance(
+        config,
+        InteractionRecognitionConfig,
+    ):
+        raise InteractionRecognitionError(
+            "config must be an InteractionRecognitionConfig instance."
+        )
+
+    evidence: List[RecognitionEvidence] = []
+
+    explicit_evidence = recognize_explicit_type_evidence(
+        interaction
+    )
+
+    if config.trust_explicit_type and explicit_evidence:
+        evidence.extend(explicit_evidence)
+
+    evidence.extend(
+        recognize_explicit_family_evidence(
+            interaction
+        )
+    )
+
+    if config.allow_class_name_inference:
+        evidence.extend(
+            recognize_class_name_evidence(
+                interaction
+            )
+        )
+
+    if container_name:
+        evidence.extend(
+            recognize_container_name_evidence(
+                interaction,
+                container_name=container_name,
+            )
+        )
+
+    if config.allow_attribute_inference:
+        evidence.extend(
+            recognize_attribute_pattern_evidence(
+                interaction
+            )
+        )
+
+    if config.allow_geometry_inference:
+        evidence.extend(
+            recognize_geometry_pattern_evidence(
+                interaction
+            )
+        )
+
+    if config.allow_atom_inference:
+        evidence.extend(
+            recognize_atom_pattern_evidence(
+                interaction
+            )
+        )
+
+    if config.allow_residue_inference:
+        evidence.extend(
+            recognize_residue_pattern_evidence(
+                interaction
+            )
+        )
+
+    normalized_rules = sorted(
+        custom_rules,
+        key=lambda rule: rule.sort_key,
+    )
+
+    for rule in normalized_rules:
+        if not isinstance(
+            rule,
+            InteractionRecognitionRule,
+        ):
+            raise InvalidRecognitionRuleError(
+                "custom_rules must contain only "
+                "InteractionRecognitionRule instances."
+            )
+
+        evidence.extend(
+            rule.evaluate(interaction)
+        )
+
+    evidence.sort(
+        key=lambda item: item.sort_key
+    )
+
+    return tuple(evidence)
+
+
+def recognize_interaction(
+    interaction: Any,
+    *,
+    container_name: Optional[str] = None,
+    config: InteractionRecognitionConfig = (
+        DEFAULT_INTERACTION_RECOGNITION_CONFIG
+    ),
+    custom_rules: Iterable[InteractionRecognitionRule] = (),
+) -> InteractionRecognitionResult:
+    """
+    Recognize the canonical type of one interaction object.
+
+    Recognition priority is based on accumulated evidence rather than a single
+    detector-specific attribute. Explicit canonical types normally dominate,
+    while class names, field signatures and geometry provide fallback
+    recognition.
+    """
+
+    if isinstance(
+        interaction,
+        InteractionRecognitionResult,
+    ):
+        return interaction
+
+    if isinstance(
+        interaction,
+        InteractionScore,
+    ):
+        return InteractionRecognitionResult(
+            interaction_type=interaction.interaction_type,
+            interaction_family=interaction.interaction_family,
+            status=RECOGNITION_STATUS_RECOGNIZED,
+            confidence=RECOGNITION_CONFIDENCE_CERTAIN,
+            score=RECOGNITION_SCORE_EXPLICIT_TYPE,
+            margin=RECOGNITION_SCORE_EXPLICIT_TYPE,
+            explicit_type=interaction.interaction_type,
+            explicit_family=interaction.interaction_family,
+            reason=(
+                "The source object is already an InteractionScore "
+                "with a canonical type."
+            ),
+            interaction=(
+                interaction
+                if config.preserve_interaction_reference
+                else None
+            ),
+            metadata={
+                "source_object_type": object_type_name(
+                    interaction
+                ),
+            },
+        )
+
+    explicit_type_extraction = extract_named_value(
+        interaction,
+        INTERACTION_TYPE_FIELDS,
+        allow_none=False,
+    )
+
+    explicit_family_extraction = extract_named_value(
+        interaction,
+        INTERACTION_FAMILY_FIELDS,
+        allow_none=False,
+    )
+
+    explicit_type = (
+        normalize_interaction_type(
+            explicit_type_extraction.value,
+            preserve_unknown=True,
+        )
+        if explicit_type_extraction.found
+        else ""
+    )
+
+    explicit_family = (
+        canonical_interaction_family(
+            explicit_family_extraction.value
+        )
+        if explicit_family_extraction.found
+        else ""
+    )
+
+    evidence = collect_recognition_evidence(
+        interaction,
+        container_name=container_name,
+        config=config,
+        custom_rules=custom_rules,
+    )
+
+    candidates = aggregate_recognition_evidence(
+        evidence,
+        maximum_candidates=config.maximum_candidates,
+    )
+
+    margin = calculate_recognition_margin(
+        candidates
+    )
+
+    if not candidates:
+        status = (
+            RECOGNITION_STATUS_REJECTED
+            if config.reject_unknown
+            else RECOGNITION_STATUS_UNKNOWN
+        )
+
+        result = InteractionRecognitionResult(
+            interaction_type=SCORE_TYPE_UNKNOWN,
+            interaction_family=SCORE_FAMILY_UNKNOWN,
+            status=status,
+            confidence=RECOGNITION_CONFIDENCE_NONE,
+            score=0.0,
+            margin=None,
+            candidates=(),
+            explicit_type=explicit_type,
+            explicit_family=explicit_family,
+            reason=(
+                "No recognition evidence was available for the "
+                "interaction object."
+            ),
+            interaction=(
+                interaction
+                if config.preserve_interaction_reference
+                else None
+            ),
+            metadata={
+                "source_object_type": object_type_name(
+                    interaction
+                ),
+                "container_name": container_name or "",
+            },
+        )
+
+        if config.reject_unknown:
+            raise UnknownInteractionRecognitionError(
+                result.reason
+            )
+
+        return result
+
+    best_candidate = candidates[0]
+
+    if best_candidate.score < config.minimum_score:
+        status = (
+            RECOGNITION_STATUS_REJECTED
+            if config.reject_unknown
+            else RECOGNITION_STATUS_UNKNOWN
+        )
+
+        result = InteractionRecognitionResult(
+            interaction_type=SCORE_TYPE_UNKNOWN,
+            interaction_family=SCORE_FAMILY_UNKNOWN,
+            status=status,
+            confidence=RECOGNITION_CONFIDENCE_LOW,
+            score=best_candidate.score,
+            margin=margin,
+            candidates=candidates,
+            explicit_type=explicit_type,
+            explicit_family=explicit_family,
+            reason=(
+                "The strongest recognition candidate did not reach "
+                f"the minimum score of {config.minimum_score:g}."
+            ),
+            interaction=(
+                interaction
+                if config.preserve_interaction_reference
+                else None
+            ),
+            metadata={
+                "source_object_type": object_type_name(
+                    interaction
+                ),
+                "container_name": container_name or "",
+            },
+        )
+
+        if config.reject_unknown:
+            raise UnknownInteractionRecognitionError(
+                result.reason
+            )
+
+        return result
+
+    is_ambiguous = (
+        len(candidates) > 1
+        and margin is not None
+        and margin <= config.ambiguity_margin
+    )
+
+    if is_ambiguous:
+        result = InteractionRecognitionResult(
+            interaction_type=best_candidate.interaction_type,
+            interaction_family=best_candidate.interaction_family,
+            status=(
+                RECOGNITION_STATUS_REJECTED
+                if config.reject_ambiguous
+                else RECOGNITION_STATUS_AMBIGUOUS
+            ),
+            confidence=recognition_confidence_from_score(
+                best_candidate.score
+            ),
+            score=best_candidate.score,
+            margin=margin,
+            candidates=candidates,
+            explicit_type=explicit_type,
+            explicit_family=explicit_family,
+            reason=(
+                "The two strongest recognition candidates are "
+                f"separated by only {margin:g} score units."
+            ),
+            interaction=(
+                interaction
+                if config.preserve_interaction_reference
+                else None
+            ),
+            metadata={
+                "source_object_type": object_type_name(
+                    interaction
+                ),
+                "container_name": container_name or "",
+            },
+        )
+
+        if config.reject_ambiguous:
+            raise AmbiguousInteractionRecognitionError(
+                result.reason
+            )
+
+        return result
+
+    explicit_match = (
+        explicit_type
+        and explicit_type != SCORE_TYPE_UNKNOWN
+        and explicit_type == best_candidate.interaction_type
+    )
+
+    status = (
+        RECOGNITION_STATUS_RECOGNIZED
+        if explicit_match
+        else RECOGNITION_STATUS_INFERRED
+    )
+
+    reason = (
+        "The explicit interaction type was recognized and supported "
+        "by the available evidence."
+        if explicit_match
+        else (
+            "The interaction type was inferred from the strongest "
+            "combined recognition evidence."
+        )
+    )
+
+    return InteractionRecognitionResult(
+        interaction_type=best_candidate.interaction_type,
+        interaction_family=best_candidate.interaction_family,
+        status=status,
+        confidence=recognition_confidence_from_score(
+            best_candidate.score
+        ),
+        score=best_candidate.score,
+        margin=margin,
+        candidates=candidates,
+        explicit_type=explicit_type,
+        explicit_family=explicit_family,
+        reason=reason,
+        interaction=(
+            interaction
+            if config.preserve_interaction_reference
+            else None
+        ),
+        metadata={
+            "source_object_type": object_type_name(
+                interaction
+            ),
+            "container_name": container_name or "",
+            "evidence_count": len(evidence),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 6.14. Collection recognition
+# -----------------------------------------------------------------------------
+
+def recognize_interactions(
+    source: Any,
+    *,
+    container_name: Optional[str] = None,
+    config: InteractionRecognitionConfig = (
+        DEFAULT_INTERACTION_RECOGNITION_CONFIG
+    ),
+    custom_rules: Iterable[InteractionRecognitionRule] = (),
+    skip_errors: bool = False,
+) -> Tuple[InteractionRecognitionResult, ...]:
+    """
+    Recognize all interactions in a heterogeneous collection.
+    """
+
+    results: List[InteractionRecognitionResult] = []
+
+    for interaction in iter_interaction_objects(
+        source
+    ):
+        try:
+            result = recognize_interaction(
+                interaction,
+                container_name=container_name,
+                config=config,
+                custom_rules=custom_rules,
+            )
+        except InteractionRecognitionError:
+            if skip_errors:
+                continue
+
+            raise
+
+        results.append(result)
+
+    return tuple(results)
+
+
+def recognize_interaction_groups(
+    groups: Mapping[str, Any],
+    *,
+    config: InteractionRecognitionConfig = (
+        DEFAULT_INTERACTION_RECOGNITION_CONFIG
+    ),
+    custom_rules: Iterable[InteractionRecognitionRule] = (),
+    skip_errors: bool = False,
+) -> Mapping[
+    str,
+    Tuple[InteractionRecognitionResult, ...],
+]:
+    """
+    Recognize interactions grouped by detector or container name.
+    """
+
+    if not isinstance(groups, Mapping):
+        raise InteractionRecognitionError(
+            "groups must be a mapping."
+        )
+
+    results: Dict[
+        str,
+        Tuple[InteractionRecognitionResult, ...],
+    ] = {}
+
+    for group_name, source in groups.items():
+        normalized_group_name = _normalize_scoring_name(
+            group_name
+        )
+
+        results[normalized_group_name] = (
+            recognize_interactions(
+                source,
+                container_name=normalized_group_name,
+                config=config,
+                custom_rules=custom_rules,
+                skip_errors=skip_errors,
+            )
+        )
+
+    return MappingProxyType(results)
+
+
+def recognize_dock_model_interactions(
+    dock_model: Any,
+    *,
+    config: InteractionRecognitionConfig = (
+        DEFAULT_INTERACTION_RECOGNITION_CONFIG
+    ),
+    custom_rules: Iterable[InteractionRecognitionRule] = (),
+    skip_errors: bool = False,
+) -> Mapping[
+    str,
+    Tuple[InteractionRecognitionResult, ...],
+]:
+    """
+    Recognize interactions stored in a DockModel-like object.
+    """
+
+    groups = extract_dock_model_interaction_groups(
+        dock_model,
+        include_empty=False,
+    )
+
+    return recognize_interaction_groups(
+        groups,
+        config=config,
+        custom_rules=custom_rules,
+        skip_errors=skip_errors,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 6.15. Recognition summaries
+# -----------------------------------------------------------------------------
+
+def count_recognition_statuses(
+    results: Iterable[InteractionRecognitionResult],
+) -> Mapping[str, int]:
+    """
+    Count recognition results by status.
+    """
+
+    counts: Dict[str, int] = {}
+
+    for result in results:
+        validate_interaction_recognition_result(
+            result,
+            validate_candidates=False,
+        )
+
+        counts[result.status] = (
+            counts.get(result.status, 0)
+            + 1
+        )
+
+    return MappingProxyType(counts)
+
+
+def count_recognized_interaction_types(
+    results: Iterable[InteractionRecognitionResult],
+    *,
+    recognized_only: bool = True,
+) -> Mapping[str, int]:
+    """
+    Count recognition results by selected interaction type.
+    """
+
+    counts: Dict[str, int] = {}
+
+    for result in results:
+        validate_interaction_recognition_result(
+            result,
+            validate_candidates=False,
+        )
+
+        if recognized_only and not result.recognized:
+            continue
+
+        counts[result.interaction_type] = (
+            counts.get(result.interaction_type, 0)
+            + 1
+        )
+
+    return MappingProxyType(counts)
+
+
+def recognition_success_rate(
+    results: Iterable[InteractionRecognitionResult],
+) -> float:
+    """
+    Return the fraction of successfully recognized interactions.
+    """
+
+    normalized_results = tuple(results)
+
+    if not normalized_results:
+        return 0.0
+
+    recognized_count = sum(
+        1
+        for result in normalized_results
+        if result.recognized
+    )
+
+    return float(
+        recognized_count
+        / len(normalized_results)
+    )
+
+
+def flatten_recognition_groups(
+    groups: Mapping[
+        str,
+        Iterable[InteractionRecognitionResult],
+    ],
+) -> Tuple[InteractionRecognitionResult, ...]:
+    """
+    Flatten grouped recognition results.
+    """
+
+    flattened: List[InteractionRecognitionResult] = []
+
+    for group_name in sorted(groups):
+        for result in groups[group_name]:
+            flattened.append(
+                validate_interaction_recognition_result(
+                    result,
+                    validate_candidates=False,
+                )
+            )
+
+    return tuple(flattened)
+
+
+# -----------------------------------------------------------------------------
+# 6.16. Applying recognition to extracted data
+# -----------------------------------------------------------------------------
+
+def apply_recognition_to_extracted_data(
+    data: ExtractedInteractionData,
+    recognition: InteractionRecognitionResult,
+    *,
+    reject_unknown: bool = False,
+    reject_ambiguous: bool = False,
+) -> ExtractedInteractionData:
+    """
+    Return extracted interaction data updated with recognition results.
+    """
+
+    validate_extracted_interaction_data(data)
+    validate_interaction_recognition_result(
+        recognition,
+        validate_candidates=False,
+    )
+
+    accepted = data.accepted
+    rejection_reason = data.rejection_reason
+
+    if recognition.unknown and reject_unknown:
+        accepted = False
+        rejection_reason = (
+            rejection_reason
+            or recognition.reason
+            or "Interaction type could not be recognized."
+        )
+
+    if recognition.ambiguous and reject_ambiguous:
+        accepted = False
+        rejection_reason = (
+            rejection_reason
+            or recognition.reason
+            or "Interaction recognition was ambiguous."
+        )
+
+    metadata = dict(data.metadata)
+    metadata["recognition"] = recognition.to_dict(
+        include_candidates=True,
+        include_evidence=True,
+        include_metadata=True,
+        include_interaction=False,
+    )
+
+    return replace(
+        data,
+        interaction_type=recognition.interaction_type,
+        interaction_family=recognition.interaction_family,
+        accepted=accepted,
+        rejection_reason=rejection_reason,
+        metadata=metadata,
+    )
+
+
+def extract_and_recognize_interaction(
+    interaction: Any,
+    *,
+    index: Optional[int] = None,
+    container_name: Optional[str] = None,
+    pose_id: Optional[str] = None,
+    model_id: Optional[str] = None,
+    ligand_id: Optional[str] = None,
+    config: InteractionRecognitionConfig = (
+        DEFAULT_INTERACTION_RECOGNITION_CONFIG
+    ),
+    custom_rules: Iterable[InteractionRecognitionRule] = (),
+    preserve_reference: bool = True,
+) -> ExtractedInteractionData:
+    """
+    Extract canonical interaction data and apply recognition.
+    """
+
+    data = extract_interaction_data(
+        interaction,
+        index=index,
+        pose_id=pose_id,
+        model_id=model_id,
+        ligand_id=ligand_id,
+        preserve_reference=preserve_reference,
+    )
+
+    recognition = recognize_interaction(
+        interaction,
+        container_name=container_name,
+        config=config,
+        custom_rules=custom_rules,
+    )
+
+    return apply_recognition_to_extracted_data(
+        data,
+        recognition,
+        reject_unknown=config.reject_unknown,
+        reject_ambiguous=config.reject_ambiguous,
+    )
+
+
+def extract_and_recognize_interactions(
+    source: Any,
+    *,
+    container_name: Optional[str] = None,
+    pose_id: Optional[str] = None,
+    model_id: Optional[str] = None,
+    ligand_id: Optional[str] = None,
+    config: InteractionRecognitionConfig = (
+        DEFAULT_INTERACTION_RECOGNITION_CONFIG
+    ),
+    custom_rules: Iterable[InteractionRecognitionRule] = (),
+    preserve_references: bool = True,
+    skip_errors: bool = False,
+) -> Tuple[ExtractedInteractionData, ...]:
+    """
+    Extract and recognize a heterogeneous interaction collection.
+    """
+
+    results: List[ExtractedInteractionData] = []
+
+    for index, interaction in enumerate(
+        iter_interaction_objects(source),
+        start=1,
+    ):
+        try:
+            result = extract_and_recognize_interaction(
+                interaction,
+                index=index,
+                container_name=container_name,
+                pose_id=pose_id,
+                model_id=model_id,
+                ligand_id=ligand_id,
+                config=config,
+                custom_rules=custom_rules,
+                preserve_reference=preserve_references,
+            )
+        except (
+            ScoringError,
+            TypeError,
+            ValueError,
+            AttributeError,
+        ):
+            if skip_errors:
+                continue
+
+            raise
+
+        results.append(result)
+
+    return tuple(results)
+
+
+# -----------------------------------------------------------------------------
+# 6.17. Validation helpers
+# -----------------------------------------------------------------------------
+
+def validate_recognition_evidence(
+    evidence: RecognitionEvidence,
+) -> RecognitionEvidence:
+    """
+    Validate and return recognition evidence.
+    """
+
+    if not isinstance(
+        evidence,
+        RecognitionEvidence,
+    ):
+        raise InteractionRecognitionError(
+            "Expected a RecognitionEvidence instance."
+        )
+
+    return evidence
+
+
+def validate_recognition_candidate(
+    candidate: InteractionRecognitionCandidate,
+    *,
+    validate_evidence: bool = True,
+    tolerance: float = SCORE_COMPARISON_TOLERANCE,
+) -> InteractionRecognitionCandidate:
+    """
+    Validate and return a recognition candidate.
+    """
+
+    if not isinstance(
+        candidate,
+        InteractionRecognitionCandidate,
+    ):
+        raise InteractionRecognitionError(
+            "Expected an InteractionRecognitionCandidate instance."
+        )
+
+    if validate_evidence:
+        for evidence in candidate.evidence:
+            validate_recognition_evidence(evidence)
+
+        expected_score = sum(
+            evidence.score
+            for evidence in candidate.evidence
+        )
+
+        if (
+            abs(candidate.score - expected_score)
+            > tolerance
+        ):
+            raise InteractionRecognitionError(
+                "Recognition candidate score is inconsistent with "
+                "its evidence."
+            )
+
+    return candidate
+
+
+def validate_interaction_recognition_result(
+    result: InteractionRecognitionResult,
+    *,
+    validate_candidates: bool = True,
+    tolerance: float = SCORE_COMPARISON_TOLERANCE,
+) -> InteractionRecognitionResult:
+    """
+    Validate and return an interaction-recognition result.
+    """
+
+    if not isinstance(
+        result,
+        InteractionRecognitionResult,
+    ):
+        raise InteractionRecognitionError(
+            "Expected an InteractionRecognitionResult instance."
+        )
+
+    if validate_candidates:
+        for candidate in result.candidates:
+            validate_recognition_candidate(
+                candidate,
+                validate_evidence=True,
+                tolerance=tolerance,
+            )
+
+        if result.candidates:
+            best_candidate = result.candidates[0]
+
+            if (
+                abs(result.score - best_candidate.score)
+                > tolerance
+            ):
+                raise InteractionRecognitionError(
+                    "Recognition result score is inconsistent with "
+                    "its best candidate."
+                )
+
+            if (
+                result.interaction_type
+                != best_candidate.interaction_type
+                and not result.unknown
+            ):
+                raise InteractionRecognitionError(
+                    "Recognition result type is inconsistent with "
+                    "its best candidate."
+                )
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 6.18. Explanation integration
+# -----------------------------------------------------------------------------
+
+def explain_interaction_recognition(
+    result: InteractionRecognitionResult,
+    *,
+    include_candidates: bool = True,
+) -> ScoreExplanation:
+    """
+    Create a structured explanation for interaction recognition.
+    """
+
+    validate_interaction_recognition_result(
+        result,
+        validate_candidates=False,
+    )
+
+    if result.recognized:
+        severity = EXPLANATION_SEVERITY_SUCCESS
+    elif result.ambiguous:
+        severity = EXPLANATION_SEVERITY_WARNING
+    elif result.rejected:
+        severity = EXPLANATION_SEVERITY_ERROR
+    else:
+        severity = EXPLANATION_SEVERITY_WARNING
+
+    children: List[ScoreExplanation] = []
+
+    if include_candidates:
+        for rank, candidate in enumerate(
+            result.candidates,
+            start=1,
+        ):
+            evidence_text = (
+                ", ".join(
+                    evidence.source
+                    for evidence in candidate.evidence
+                )
+                or "no evidence"
+            )
+
+            children.append(
+                ScoreExplanation(
+                    explanation_id=(
+                        f"recognition:candidate:{rank}:"
+                        f"{candidate.interaction_type}"
+                    ),
+                    title=(
+                        f"Candidate {rank}: "
+                        f"{interaction_type_display_name(candidate.interaction_type)}"
+                    ),
+                    message=(
+                        f"Candidate score: {candidate.score:g}. "
+                        f"Evidence sources: {evidence_text}."
+                    ),
+                    scope=EXPLANATION_SCOPE_INTERACTION,
+                    severity=(
+                        EXPLANATION_SEVERITY_SUCCESS
+                        if rank == 1
+                        else EXPLANATION_SEVERITY_INFO
+                    ),
+                    level=EXPLANATION_LEVEL_DETAILED,
+                    value=candidate.score,
+                    entity_id=candidate.interaction_type,
+                    interaction_type=candidate.interaction_type,
+                    tags=(
+                        "recognition_candidate",
+                        candidate.confidence,
+                    ),
+                )
+            )
+
+    return ScoreExplanation(
+        explanation_id=(
+            f"recognition:{result.interaction_type}:"
+            f"{result.status}"
+        ),
+        title="Interaction recognition",
+        message=result.reason,
+        scope=EXPLANATION_SCOPE_INTERACTION,
+        severity=severity,
+        level=EXPLANATION_LEVEL_STANDARD,
+        value=result.score,
+        reference_value=(
+            None
+            if result.margin is None
+            else result.score - result.margin
+        ),
+        entity_id=result.interaction_type,
+        interaction_type=result.interaction_type,
+        tags=(
+            result.status,
+            result.confidence,
+            "interaction_recognition",
+        ),
+        children=tuple(children),
+        metadata={
+            "interaction_family": result.interaction_family,
+            "margin": result.margin,
+            "explicit_type": result.explicit_type,
+            "explicit_family": result.explicit_family,
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 6.19. Section consistency validation
+# -----------------------------------------------------------------------------
+
+def _validate_section_6_recognition() -> None:
+    """
+    Validate interaction-recognition structures during module import.
+    """
+
+    @dataclass(frozen=True)
+    class _HydrogenBondTestInteraction:
+        donor: str
+        acceptor: str
+        distance: float
+        angle: float
+
+    @dataclass(frozen=True)
+    class _ExplicitSaltBridge:
+        interaction_type: str
+        cation_group: str
+        anion_group: str
+
+    inferred_interaction = _HydrogenBondTestInteraction(
+        donor="N1",
+        acceptor="O1",
+        distance=2.8,
+        angle=165.0,
+    )
+
+    inferred_result = recognize_interaction(
+        inferred_interaction
+    )
+
+    if (
+        inferred_result.interaction_type
+        != SCORE_TYPE_HYDROGEN_BOND
+    ):
+        raise RuntimeError(
+            "Hydrogen-bond recognition validation failed."
+        )
+
+    if not inferred_result.recognized:
+        raise RuntimeError(
+            "Inferred recognition-status validation failed."
+        )
+
+    explicit_interaction = _ExplicitSaltBridge(
+        interaction_type="saltbridge",
+        cation_group="LYS",
+        anion_group="ASP",
+    )
+
+    explicit_result = recognize_interaction(
+        explicit_interaction
+    )
+
+    if explicit_result.interaction_type != SCORE_TYPE_SALT_BRIDGE:
+        raise RuntimeError(
+            "Explicit salt-bridge recognition validation failed."
+        )
+
+    if explicit_result.status != RECOGNITION_STATUS_RECOGNIZED:
+        raise RuntimeError(
+            "Explicit recognition-status validation failed."
+        )
+
+    extracted = extract_and_recognize_interaction(
+        inferred_interaction,
+        index=1,
+    )
+
+    if extracted.interaction_type != SCORE_TYPE_HYDROGEN_BOND:
+        raise RuntimeError(
+            "Extraction and recognition integration validation failed."
+        )
+
+    explanation = explain_interaction_recognition(
+        explicit_result
+    )
+
+    if explanation.scope != EXPLANATION_SCOPE_INTERACTION:
+        raise RuntimeError(
+            "Recognition explanation validation failed."
+        )
+
+    validate_interaction_recognition_result(
+        inferred_result
+    )
+    validate_interaction_recognition_result(
+        explicit_result
+    )
+
+
+_validate_section_6_recognition()
+
+
+# -----------------------------------------------------------------------------
+# 6.20. Section public interface
+# -----------------------------------------------------------------------------
+
+_SECTION_6_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    # Statuses
+    "RECOGNITION_STATUS_RECOGNIZED",
+    "RECOGNITION_STATUS_INFERRED",
+    "RECOGNITION_STATUS_AMBIGUOUS",
+    "RECOGNITION_STATUS_UNKNOWN",
+    "RECOGNITION_STATUS_REJECTED",
+    "RECOGNITION_STATUS_INVALID",
+    "RECOGNITION_STATUSES",
+
+    # Sources
+    "RECOGNITION_SOURCE_EXPLICIT_TYPE",
+    "RECOGNITION_SOURCE_EXPLICIT_FAMILY",
+    "RECOGNITION_SOURCE_CLASS_NAME",
+    "RECOGNITION_SOURCE_CONTAINER_NAME",
+    "RECOGNITION_SOURCE_ATTRIBUTE_PATTERN",
+    "RECOGNITION_SOURCE_GEOMETRY_PATTERN",
+    "RECOGNITION_SOURCE_ATOM_PATTERN",
+    "RECOGNITION_SOURCE_RESIDUE_PATTERN",
+    "RECOGNITION_SOURCE_ALIAS",
+    "RECOGNITION_SOURCE_DEFAULT",
+    "RECOGNITION_SOURCE_CUSTOM_RULE",
+    "RECOGNITION_SOURCES",
+
+    # Confidence
+    "RECOGNITION_CONFIDENCE_CERTAIN",
+    "RECOGNITION_CONFIDENCE_HIGH",
+    "RECOGNITION_CONFIDENCE_MEDIUM",
+    "RECOGNITION_CONFIDENCE_LOW",
+    "RECOGNITION_CONFIDENCE_NONE",
+    "RECOGNITION_CONFIDENCE_LEVELS",
+
+    # Scores and defaults
+    "RECOGNITION_SCORE_EXPLICIT_TYPE",
+    "RECOGNITION_SCORE_EXPLICIT_FAMILY",
+    "RECOGNITION_SCORE_CLASS_NAME",
+    "RECOGNITION_SCORE_CONTAINER_NAME",
+    "RECOGNITION_SCORE_ATTRIBUTE_PATTERN",
+    "RECOGNITION_SCORE_GEOMETRY_PATTERN",
+    "RECOGNITION_SCORE_ATOM_PATTERN",
+    "RECOGNITION_SCORE_RESIDUE_PATTERN",
+    "RECOGNITION_SCORE_CUSTOM_RULE",
+    "RECOGNITION_SCORE_DEFAULT",
+    "DEFAULT_RECOGNITION_MINIMUM_SCORE",
+    "DEFAULT_RECOGNITION_AMBIGUITY_MARGIN",
+    "DEFAULT_RECOGNITION_MAX_CANDIDATES",
+
+    # Exceptions
+    "InteractionRecognitionError",
+    "AmbiguousInteractionRecognitionError",
+    "UnknownInteractionRecognitionError",
+    "InvalidRecognitionRuleError",
+
+    # Dataclasses
+    "RecognitionEvidence",
+    "InteractionRecognitionCandidate",
+    "InteractionRecognitionResult",
+    "InteractionRecognitionConfig",
+    "InteractionRecognitionRule",
+
+    # Defaults
+    "DEFAULT_INTERACTION_RECOGNITION_CONFIG",
+
+    # Normalization
+    "normalize_recognition_status",
+    "normalize_recognition_confidence",
+    "recognition_confidence_from_score",
+
+    # Built-in rules
+    "recognize_explicit_type_evidence",
+    "recognize_explicit_family_evidence",
+    "recognize_class_name_evidence",
+    "recognize_container_name_evidence",
+    "recognize_attribute_pattern_evidence",
+    "recognize_geometry_pattern_evidence",
+    "recognize_atom_pattern_evidence",
+    "recognize_residue_pattern_evidence",
+
+    # Aggregation
+    "aggregate_recognition_evidence",
+    "calculate_recognition_margin",
+    "collect_recognition_evidence",
+
+    # Recognition execution
+    "recognize_interaction",
+    "recognize_interactions",
+    "recognize_interaction_groups",
+    "recognize_dock_model_interactions",
+
+    # Summaries
+    "count_recognition_statuses",
+    "count_recognized_interaction_types",
+    "recognition_success_rate",
+    "flatten_recognition_groups",
+
+    # Extraction integration
+    "apply_recognition_to_extracted_data",
+    "extract_and_recognize_interaction",
+    "extract_and_recognize_interactions",
+
+    # Validation
+    "validate_recognition_evidence",
+    "validate_recognition_candidate",
+    "validate_interaction_recognition_result",
+
+    # Explainability
+    "explain_interaction_recognition",
+)
+
+for public_name in _SECTION_6_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+# =============================================================================
+# End of Section 6 — Interaction recognition
+# =============================================================================
+
+
+
+
+
