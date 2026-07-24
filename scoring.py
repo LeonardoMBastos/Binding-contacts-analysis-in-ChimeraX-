@@ -131,6 +131,7 @@ import contextlib
 import json
 import math
 import warnings
+import sys
 
 
 # -----------------------------------------------------------------------------
@@ -2421,5 +2422,7363 @@ for public_name in _SECTION_2_PUBLIC_NAMES:
 # =============================================================================
 
 
+# =============================================================================
+# Section 3 — Scoring configuration and weights
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 3.1. Default interaction weights
+# -----------------------------------------------------------------------------
+#
+# These values are heuristic DockAnalyzer scoring units. They are not energies
+# and must not be reported as kcal/mol.
+#
+# More-specific interaction types may override their family weights. When a
+# subtype has no explicit weight, later scoring functions may fall back to the
+# corresponding general family.
+# -----------------------------------------------------------------------------
+
+DEFAULT_INTERACTION_WEIGHTS: Final[Mapping[str, float]] = MappingProxyType(
+    {
+        # Generic contacts are neutral by default to prevent double counting.
+        SCORE_TYPE_CONTACT: 0.0,
+        SCORE_TYPE_VAN_DER_WAALS: 0.0,
+        SCORE_TYPE_CLOSE_CONTACT: 0.0,
+        SCORE_TYPE_POLAR_CONTACT: 0.0,
+        SCORE_TYPE_NONPOLAR_CONTACT: 0.0,
+        SCORE_TYPE_METAL_CONTACT: 0.0,
+
+        # Hydrogen bonds
+        SCORE_TYPE_HYDROGEN_BOND: 2.0,
+        SCORE_TYPE_HBOND_DIRECT: 2.0,
+        SCORE_TYPE_HBOND_INFERRED: 1.6,
+        SCORE_TYPE_HBOND_WATER_MEDIATED: 1.4,
+        SCORE_TYPE_HBOND_CHARGE_ASSISTED: 2.4,
+        SCORE_TYPE_HBOND_WEAK: 1.0,
+
+        # Hydrophobic interactions
+        SCORE_TYPE_HYDROPHOBIC: 1.0,
+        SCORE_TYPE_HYDROPHOBIC_ATOMIC: 0.35,
+        SCORE_TYPE_HYDROPHOBIC_GROUP: 1.0,
+        SCORE_TYPE_HYDROPHOBIC_RESIDUE: 1.0,
+        SCORE_TYPE_HYDROPHOBIC_CLUSTER: 1.5,
+
+        # Pi interactions
+        SCORE_TYPE_PI: 2.0,
+        SCORE_TYPE_PI_STACKING: 2.0,
+        SCORE_TYPE_PI_PARALLEL: 2.0,
+        SCORE_TYPE_PI_OFFSET: 1.8,
+        SCORE_TYPE_PI_T_SHAPED: 1.7,
+        SCORE_TYPE_CATION_PI: 2.0,
+        SCORE_TYPE_ANION_PI: 1.5,
+        SCORE_TYPE_AMIDE_PI: 1.3,
+        SCORE_TYPE_PI_UNKNOWN: 1.0,
+
+        # Salt bridges
+        SCORE_TYPE_SALT_BRIDGE: 3.0,
+        SCORE_TYPE_SALT_BRIDGE_ATOMIC: 1.0,
+        SCORE_TYPE_SALT_BRIDGE_GROUP: 3.0,
+        SCORE_TYPE_SALT_BRIDGE_CENTER: 3.0,
+        SCORE_TYPE_SALT_BRIDGE_HISTIDINE: 2.0,
+        SCORE_TYPE_SALT_BRIDGE_BIDENTATE: 3.5,
+
+        # Steric clashes
+        SCORE_TYPE_CLASH: -2.0,
+        SCORE_TYPE_CLASH_MINOR: -0.5,
+        SCORE_TYPE_CLASH_MODERATE: -2.0,
+        SCORE_TYPE_CLASH_SEVERE: -4.0,
+
+        # Unknown interactions are ignored by default.
+        SCORE_TYPE_UNKNOWN: DEFAULT_UNKNOWN_SCORE,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 3.2. Default strength multipliers
+# -----------------------------------------------------------------------------
+
+DEFAULT_STRENGTH_MULTIPLIERS: Final[Mapping[str, float]] = MappingProxyType(
+    {
+        STRENGTH_STRONG: 1.25,
+        STRENGTH_MODERATE: 1.00,
+        STRENGTH_WEAK: 0.70,
+        STRENGTH_UNCLASSIFIED: 1.00,
+        STRENGTH_UNKNOWN: 1.00,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 3.3. Default classification multipliers
+# -----------------------------------------------------------------------------
+#
+# Classification multipliers describe the confidence or quality of an
+# interaction after it has already passed the detection stage.
+# -----------------------------------------------------------------------------
+
+DEFAULT_CLASSIFICATION_MULTIPLIERS: Final[Mapping[str, float]] = (
+    MappingProxyType(
+        {
+            CLASSIFICATION_FAVORABLE: 1.00,
+            CLASSIFICATION_BORDERLINE: 0.70,
+            CLASSIFICATION_UNFAVORABLE: 0.35,
+            CLASSIFICATION_REJECTED: 0.00,
+            CLASSIFICATION_UNCLASSIFIED: 1.00,
+            CLASSIFICATION_UNKNOWN: 1.00,
+
+            CLASSIFICATION_PARALLEL: 1.00,
+            CLASSIFICATION_OFFSET: 0.90,
+            CLASSIFICATION_T_SHAPED: 0.85,
+
+            CLASSIFICATION_DIRECT: 1.00,
+            CLASSIFICATION_INFERRED: 0.80,
+            CLASSIFICATION_CHARGE_ASSISTED: 1.20,
+            CLASSIFICATION_WATER_MEDIATED: 0.70,
+
+            CLASSIFICATION_MINOR: 0.50,
+            CLASSIFICATION_MODERATE: 1.00,
+            CLASSIFICATION_SEVERE: 2.00,
+        }
+    )
+)
+
+
+# -----------------------------------------------------------------------------
+# 3.4. Default geometry-quality multipliers
+# -----------------------------------------------------------------------------
+
+DEFAULT_GEOMETRY_MULTIPLIERS: Final[Mapping[str, float]] = MappingProxyType(
+    {
+        GEOMETRY_OPTIMAL: 1.00,
+        GEOMETRY_FAVORABLE: 0.90,
+        GEOMETRY_WEAK: 0.70,
+        GEOMETRY_BORDERLINE: 0.45,
+        GEOMETRY_REJECTED: 0.00,
+        GEOMETRY_UNCLASSIFIED: 1.00,
+        GEOMETRY_UNKNOWN: 1.00,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 3.5. Default explicit penalties
+# -----------------------------------------------------------------------------
+#
+# These penalties are additive and separate from negative interaction weights.
+# They are applied only when later scoring sections identify the corresponding
+# condition.
+# -----------------------------------------------------------------------------
+
+PENALTY_CLASH: Final[str] = "clash"
+PENALTY_REDUNDANCY: Final[str] = "redundancy"
+PENALTY_MISSING_GEOMETRY: Final[str] = "missing_geometry"
+PENALTY_INVALID_GEOMETRY: Final[str] = "invalid_geometry"
+PENALTY_INVALID_VALUE: Final[str] = "invalid_value"
+PENALTY_UNKNOWN_INTERACTION: Final[str] = "unknown_interaction"
+
+PENALTY_NAMES: Final[FrozenSet[str]] = frozenset(
+    {
+        PENALTY_CLASH,
+        PENALTY_REDUNDANCY,
+        PENALTY_MISSING_GEOMETRY,
+        PENALTY_INVALID_GEOMETRY,
+        PENALTY_INVALID_VALUE,
+        PENALTY_UNKNOWN_INTERACTION,
+    }
+)
+
+DEFAULT_PENALTIES: Final[Mapping[str, float]] = MappingProxyType(
+    {
+        PENALTY_CLASH: 0.0,
+        PENALTY_REDUNDANCY: 0.0,
+        PENALTY_MISSING_GEOMETRY: 0.0,
+        PENALTY_INVALID_GEOMETRY: 0.0,
+        PENALTY_INVALID_VALUE: 0.0,
+        PENALTY_UNKNOWN_INTERACTION: 0.0,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 3.6. Default scoring-control constants
+# -----------------------------------------------------------------------------
+
+DEFAULT_GEOMETRY_QUALITY_WEIGHT: Final[float] = 1.0
+DEFAULT_UNKNOWN_INTERACTION_WEIGHT: Final[float] = DEFAULT_UNKNOWN_SCORE
+
+DEFAULT_MINIMUM_SCORE: Final[Optional[float]] = None
+DEFAULT_MAXIMUM_SCORE: Final[Optional[float]] = None
+
+DEFAULT_NORMALIZATION_MODE: Final[str] = NORMALIZATION_NONE
+DEFAULT_AGGREGATION_MODE: Final[str] = AGGREGATION_SUM
+DEFAULT_DEDUPLICATION_MODE: Final[str] = DEDUPLICATION_EXACT
+DEFAULT_SCORE_DIRECTION: Final[str] = SCORE_DIRECTION_HIGHER_IS_BETTER
+
+DEFAULT_DEDUPLICATE: Final[bool] = True
+DEFAULT_USE_GEOMETRY_QUALITY: Final[bool] = True
+DEFAULT_USE_STRENGTH: Final[bool] = True
+DEFAULT_USE_CLASSIFICATION: Final[bool] = True
+DEFAULT_APPLY_PENALTIES: Final[bool] = True
+DEFAULT_ALLOW_UNKNOWN_TYPES: Final[bool] = True
+DEFAULT_PRESERVE_COMPONENTS: Final[bool] = True
+
+DEFAULT_DIVERSITY_BONUS_ENABLED: Final[bool] = False
+DEFAULT_DIVERSITY_BONUS_WEIGHT: Final[float] = 0.10
+DEFAULT_MAXIMUM_DIVERSITY_BONUS: Final[float] = 1.00
+
+DEFAULT_MISSING_GEOMETRY_IS_NEUTRAL: Final[bool] = True
+DEFAULT_REJECTED_GEOMETRY_CONTRIBUTES: Final[bool] = False
+
+DEFAULT_SCORE_DECIMAL_PLACES: Final[int] = SCORE_ROUND_DIGITS
+
+
+# -----------------------------------------------------------------------------
+# 3.7. Configuration exception classes
+# -----------------------------------------------------------------------------
+
+class ScoringError(Exception):
+    """Base exception for DockAnalyzer scoring errors."""
+
+
+class ScoringConfigurationError(ScoringError, ValueError):
+    """Raised when a scoring configuration is invalid."""
+
+
+class ScoringWeightError(ScoringConfigurationError):
+    """Raised when an interaction weight is invalid."""
+
+
+class ScoringMultiplierError(ScoringConfigurationError):
+    """Raised when a scoring multiplier is invalid."""
+
+
+class ScoringNormalizationError(ScoringError, ValueError):
+    """Raised when score normalization cannot be performed."""
+
+
+# -----------------------------------------------------------------------------
+# 3.8. Internal mapping-conversion helpers
+# -----------------------------------------------------------------------------
+
+def _copy_numeric_mapping(
+    values: Optional[Mapping[Any, Any]],
+) -> Dict[str, float]:
+    """
+    Return a mutable string-to-float copy of a numeric mapping.
+
+    Parameters
+    ----------
+    values
+        Mapping to copy. ``None`` produces an empty dictionary.
+
+    Returns
+    -------
+    dict
+        New dictionary with string keys and native floating-point values.
+    """
+
+    if values is None:
+        return {}
+
+    if not isinstance(values, Mapping):
+        raise ScoringConfigurationError(
+            "Expected a mapping of scoring names to numeric values."
+        )
+
+    copied: Dict[str, float] = {}
+
+    for raw_key, raw_value in values.items():
+        key = str(raw_key)
+
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ScoringConfigurationError(
+                f"Scoring value for {key!r} must be numeric."
+            ) from exc
+
+        if not isfinite(value):
+            raise ScoringConfigurationError(
+                f"Scoring value for {key!r} must be finite."
+            )
+
+        copied[key] = value
+
+    return copied
+
+
+def _immutable_numeric_mapping(
+    values: Optional[Mapping[Any, Any]],
+) -> Mapping[str, float]:
+    """
+    Return an immutable copy of a numeric mapping.
+    """
+
+    return MappingProxyType(
+        _copy_numeric_mapping(values)
+    )
+
+
+def _merge_numeric_mappings(
+    base: Mapping[str, Number],
+    override: Optional[Mapping[str, Number]],
+) -> Dict[str, float]:
+    """
+    Merge numeric mappings without modifying either input.
+    """
+
+    merged = _copy_numeric_mapping(base)
+
+    if override is not None:
+        merged.update(
+            _copy_numeric_mapping(override)
+        )
+
+    return merged
+
+
+# -----------------------------------------------------------------------------
+# 3.9. Interaction-weight normalization
+# -----------------------------------------------------------------------------
+
+def normalize_weight_mapping(
+    weights: Optional[Mapping[Any, Any]],
+    *,
+    preserve_unknown: bool = True,
+) -> Dict[str, float]:
+    """
+    Normalize the keys and values of an interaction-weight mapping.
+
+    Parameters
+    ----------
+    weights
+        Mapping containing interaction labels and numeric weights.
+    preserve_unknown
+        Preserve normalized custom interaction names rather than converting
+        them to ``unknown``.
+
+    Returns
+    -------
+    dict
+        New mutable mapping using canonical interaction-type names.
+
+    Notes
+    -----
+    When multiple aliases resolve to the same canonical type, the last value
+    encountered takes precedence.
+    """
+
+    if weights is None:
+        return {}
+
+    if not isinstance(weights, Mapping):
+        raise ScoringWeightError(
+            "Interaction weights must be supplied as a mapping."
+        )
+
+    normalized_weights: Dict[str, float] = {}
+
+    for raw_type, raw_weight in weights.items():
+        interaction_type = normalize_interaction_type(
+            raw_type,
+            preserve_unknown=preserve_unknown,
+        )
+
+        if not interaction_type:
+            raise ScoringWeightError(
+                f"Invalid interaction-weight key: {raw_type!r}."
+            )
+
+        try:
+            weight = float(raw_weight)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ScoringWeightError(
+                f"Weight for {raw_type!r} must be numeric."
+            ) from exc
+
+        if not isfinite(weight):
+            raise ScoringWeightError(
+                f"Weight for {raw_type!r} must be finite."
+            )
+
+        normalized_weights[interaction_type] = weight
+
+    return normalized_weights
+
+
+def normalize_multiplier_mapping(
+    multipliers: Optional[Mapping[Any, Any]],
+    *,
+    normalizer: Callable[[Any], str],
+    minimum: float = 0.0,
+    mapping_name: str = "multiplier",
+) -> Dict[str, float]:
+    """
+    Normalize and validate a multiplier mapping.
+    """
+
+    if multipliers is None:
+        return {}
+
+    if not isinstance(multipliers, Mapping):
+        raise ScoringMultiplierError(
+            f"{mapping_name.capitalize()} values must be supplied as a mapping."
+        )
+
+    normalized_multipliers: Dict[str, float] = {}
+
+    for raw_name, raw_multiplier in multipliers.items():
+        canonical_name = normalizer(raw_name)
+
+        if not canonical_name:
+            raise ScoringMultiplierError(
+                f"Invalid {mapping_name} key: {raw_name!r}."
+            )
+
+        try:
+            multiplier = float(raw_multiplier)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ScoringMultiplierError(
+                f"{mapping_name.capitalize()} for {raw_name!r} "
+                "must be numeric."
+            ) from exc
+
+        if not isfinite(multiplier):
+            raise ScoringMultiplierError(
+                f"{mapping_name.capitalize()} for {raw_name!r} "
+                "must be finite."
+            )
+
+        if multiplier < minimum:
+            raise ScoringMultiplierError(
+                f"{mapping_name.capitalize()} for {raw_name!r} "
+                f"must be greater than or equal to {minimum}."
+            )
+
+        normalized_multipliers[canonical_name] = multiplier
+
+    return normalized_multipliers
+
+
+# -----------------------------------------------------------------------------
+# 3.10. ScoringConfig dataclass
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ScoringConfig:
+    """
+    Immutable configuration for DockAnalyzer interaction scoring.
+
+    Parameters
+    ----------
+    interaction_weights
+        Base weights assigned to canonical interaction types.
+    strength_multipliers
+        Multipliers applied to interaction-strength classes.
+    classification_multipliers
+        Multipliers applied to chemical or geometric classifications.
+    geometry_multipliers
+        Multipliers applied to qualitative geometry classes.
+    penalties
+        Optional additive penalties indexed by canonical penalty names.
+    geometry_quality_weight
+        Controls the influence of continuous geometric-quality values.
+        A value of ``0`` disables continuous geometry modulation, whereas
+        ``1`` applies the quality value directly.
+    unknown_interaction_weight
+        Fallback base weight for unrecognized interaction types.
+    minimum_score
+        Optional lower bound for an individual final score.
+    maximum_score
+        Optional upper bound for an individual final score.
+    normalization_mode
+        Default pose-score normalization strategy.
+    aggregation_mode
+        Default component aggregation strategy.
+    deduplication_mode
+        Default interaction-deduplication strategy.
+    score_direction
+        Direction used for pose ranking.
+    deduplicate
+        Whether duplicate interactions should be removed.
+    use_geometry_quality
+        Whether geometry quality should modulate interaction scores.
+    use_strength
+        Whether strength classes should modulate interaction scores.
+    use_classification
+        Whether interaction classifications should modulate scores.
+    apply_penalties
+        Whether additive penalties should be applied.
+    allow_unknown_types
+        Whether custom or unknown interaction types are accepted.
+    preserve_components
+        Whether detailed score components should be retained.
+    diversity_bonus_enabled
+        Whether interaction-family diversity may add a small bonus.
+    diversity_bonus_weight
+        Bonus added per additional represented favorable family.
+    maximum_diversity_bonus
+        Upper bound for the total diversity bonus.
+    missing_geometry_is_neutral
+        Whether absent geometry information receives a neutral multiplier.
+    rejected_geometry_contributes
+        Whether geometrically rejected interactions may contribute.
+    decimal_places
+        Decimal places used in stable public representations.
+    metadata
+        Optional immutable configuration metadata.
+    """
+
+    interaction_weights: Mapping[str, float] = field(
+        default_factory=lambda: DEFAULT_INTERACTION_WEIGHTS
+    )
+    strength_multipliers: Mapping[str, float] = field(
+        default_factory=lambda: DEFAULT_STRENGTH_MULTIPLIERS
+    )
+    classification_multipliers: Mapping[str, float] = field(
+        default_factory=lambda: DEFAULT_CLASSIFICATION_MULTIPLIERS
+    )
+    geometry_multipliers: Mapping[str, float] = field(
+        default_factory=lambda: DEFAULT_GEOMETRY_MULTIPLIERS
+    )
+    penalties: Mapping[str, float] = field(
+        default_factory=lambda: DEFAULT_PENALTIES
+    )
+
+    geometry_quality_weight: float = DEFAULT_GEOMETRY_QUALITY_WEIGHT
+    unknown_interaction_weight: float = DEFAULT_UNKNOWN_INTERACTION_WEIGHT
+
+    minimum_score: Optional[float] = DEFAULT_MINIMUM_SCORE
+    maximum_score: Optional[float] = DEFAULT_MAXIMUM_SCORE
+
+    normalization_mode: str = DEFAULT_NORMALIZATION_MODE
+    aggregation_mode: str = DEFAULT_AGGREGATION_MODE
+    deduplication_mode: str = DEFAULT_DEDUPLICATION_MODE
+    score_direction: str = DEFAULT_SCORE_DIRECTION
+
+    deduplicate: bool = DEFAULT_DEDUPLICATE
+    use_geometry_quality: bool = DEFAULT_USE_GEOMETRY_QUALITY
+    use_strength: bool = DEFAULT_USE_STRENGTH
+    use_classification: bool = DEFAULT_USE_CLASSIFICATION
+    apply_penalties: bool = DEFAULT_APPLY_PENALTIES
+    allow_unknown_types: bool = DEFAULT_ALLOW_UNKNOWN_TYPES
+    preserve_components: bool = DEFAULT_PRESERVE_COMPONENTS
+
+    diversity_bonus_enabled: bool = DEFAULT_DIVERSITY_BONUS_ENABLED
+    diversity_bonus_weight: float = DEFAULT_DIVERSITY_BONUS_WEIGHT
+    maximum_diversity_bonus: float = DEFAULT_MAXIMUM_DIVERSITY_BONUS
+
+    missing_geometry_is_neutral: bool = (
+        DEFAULT_MISSING_GEOMETRY_IS_NEUTRAL
+    )
+    rejected_geometry_contributes: bool = (
+        DEFAULT_REJECTED_GEOMETRY_CONTRIBUTES
+    )
+
+    decimal_places: int = DEFAULT_SCORE_DECIMAL_PLACES
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize mutable inputs and validate the completed configuration.
+        """
+
+        normalized_weights = normalize_weight_mapping(
+            self.interaction_weights,
+            preserve_unknown=self.allow_unknown_types,
+        )
+
+        normalized_strengths = normalize_multiplier_mapping(
+            self.strength_multipliers,
+            normalizer=normalize_interaction_strength,
+            minimum=MIN_STRENGTH_MULTIPLIER,
+            mapping_name="strength multiplier",
+        )
+
+        normalized_classifications = normalize_multiplier_mapping(
+            self.classification_multipliers,
+            normalizer=normalize_interaction_classification,
+            minimum=MIN_CLASSIFICATION_MULTIPLIER,
+            mapping_name="classification multiplier",
+        )
+
+        normalized_geometries = normalize_multiplier_mapping(
+            self.geometry_multipliers,
+            normalizer=normalize_geometry_quality,
+            minimum=MIN_GEOMETRY_MULTIPLIER,
+            mapping_name="geometry multiplier",
+        )
+
+        normalized_penalties = _copy_numeric_mapping(
+            self.penalties
+        )
+
+        normalized_metadata = dict(
+            self.metadata or {}
+        )
+
+        object.__setattr__(
+            self,
+            "interaction_weights",
+            MappingProxyType(normalized_weights),
+        )
+        object.__setattr__(
+            self,
+            "strength_multipliers",
+            MappingProxyType(normalized_strengths),
+        )
+        object.__setattr__(
+            self,
+            "classification_multipliers",
+            MappingProxyType(normalized_classifications),
+        )
+        object.__setattr__(
+            self,
+            "geometry_multipliers",
+            MappingProxyType(normalized_geometries),
+        )
+        object.__setattr__(
+            self,
+            "penalties",
+            MappingProxyType(normalized_penalties),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(normalized_metadata),
+        )
+
+        object.__setattr__(
+            self,
+            "normalization_mode",
+            normalize_normalization_mode(self.normalization_mode),
+        )
+        object.__setattr__(
+            self,
+            "aggregation_mode",
+            normalize_aggregation_mode(self.aggregation_mode),
+        )
+        object.__setattr__(
+            self,
+            "deduplication_mode",
+            normalize_deduplication_mode(self.deduplication_mode),
+        )
+        object.__setattr__(
+            self,
+            "score_direction",
+            normalize_score_direction(self.score_direction),
+        )
+
+        validate_scoring_config(self)
+
+    def weight_for(
+        self,
+        interaction_type: Any,
+        *,
+        use_family_fallback: bool = True,
+    ) -> float:
+        """
+        Return the configured weight for an interaction type.
+
+        Resolution order:
+
+        1. exact canonical subtype;
+        2. canonical interaction family;
+        3. configured unknown-interaction weight.
+        """
+
+        canonical_type = normalize_interaction_type(
+            interaction_type,
+            preserve_unknown=self.allow_unknown_types,
+        )
+
+        exact_weight = self.interaction_weights.get(canonical_type)
+
+        if exact_weight is not None:
+            return float(exact_weight)
+
+        if use_family_fallback:
+            family = canonical_interaction_family(canonical_type)
+            family_weight = self.interaction_weights.get(family)
+
+            if family_weight is not None:
+                return float(family_weight)
+
+        return float(self.unknown_interaction_weight)
+
+    def strength_multiplier_for(self, strength: Any) -> float:
+        """Return a strength multiplier with a neutral fallback."""
+
+        canonical = normalize_interaction_strength(strength)
+
+        return float(
+            self.strength_multipliers.get(
+                canonical,
+                DEFAULT_NEUTRAL_MULTIPLIER,
+            )
+        )
+
+    def classification_multiplier_for(
+        self,
+        classification: Any,
+    ) -> float:
+        """Return a classification multiplier with a neutral fallback."""
+
+        canonical = normalize_interaction_classification(
+            classification
+        )
+
+        return float(
+            self.classification_multipliers.get(
+                canonical,
+                DEFAULT_NEUTRAL_MULTIPLIER,
+            )
+        )
+
+    def geometry_multiplier_for(self, quality: Any) -> float:
+        """Return a qualitative geometry multiplier."""
+
+        canonical = normalize_geometry_quality(quality)
+
+        return float(
+            self.geometry_multipliers.get(
+                canonical,
+                DEFAULT_NEUTRAL_MULTIPLIER,
+            )
+        )
+
+    def penalty_for(
+        self,
+        penalty_name: Any,
+        *,
+        default: float = 0.0,
+    ) -> float:
+        """Return a configured additive penalty."""
+
+        canonical = _normalize_scoring_name(penalty_name)
+
+        return float(
+            self.penalties.get(canonical, default)
+        )
+
+    def with_updates(self, **changes: Any) -> "ScoringConfig":
+        """
+        Return a validated copy with selected fields replaced.
+        """
+
+        return replace(self, **changes)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Return a mutable dictionary representation of the configuration.
+        """
+
+        return {
+            "interaction_weights": dict(self.interaction_weights),
+            "strength_multipliers": dict(self.strength_multipliers),
+            "classification_multipliers": dict(
+                self.classification_multipliers
+            ),
+            "geometry_multipliers": dict(self.geometry_multipliers),
+            "penalties": dict(self.penalties),
+            "geometry_quality_weight": float(
+                self.geometry_quality_weight
+            ),
+            "unknown_interaction_weight": float(
+                self.unknown_interaction_weight
+            ),
+            "minimum_score": (
+                None
+                if self.minimum_score is None
+                else float(self.minimum_score)
+            ),
+            "maximum_score": (
+                None
+                if self.maximum_score is None
+                else float(self.maximum_score)
+            ),
+            "normalization_mode": self.normalization_mode,
+            "aggregation_mode": self.aggregation_mode,
+            "deduplication_mode": self.deduplication_mode,
+            "score_direction": self.score_direction,
+            "deduplicate": bool(self.deduplicate),
+            "use_geometry_quality": bool(self.use_geometry_quality),
+            "use_strength": bool(self.use_strength),
+            "use_classification": bool(self.use_classification),
+            "apply_penalties": bool(self.apply_penalties),
+            "allow_unknown_types": bool(self.allow_unknown_types),
+            "preserve_components": bool(self.preserve_components),
+            "diversity_bonus_enabled": bool(
+                self.diversity_bonus_enabled
+            ),
+            "diversity_bonus_weight": float(
+                self.diversity_bonus_weight
+            ),
+            "maximum_diversity_bonus": float(
+                self.maximum_diversity_bonus
+            ),
+            "missing_geometry_is_neutral": bool(
+                self.missing_geometry_is_neutral
+            ),
+            "rejected_geometry_contributes": bool(
+                self.rejected_geometry_contributes
+            ),
+            "decimal_places": int(self.decimal_places),
+            "metadata": dict(self.metadata),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 3.11. Individual validation helpers
+# -----------------------------------------------------------------------------
+
+def validate_weight_mapping(
+    weights: Mapping[str, Number],
+    *,
+    allow_unknown_types: bool = True,
+) -> None:
+    """
+    Validate an interaction-weight mapping.
+
+    Positive, zero and negative weights are accepted. Negative weights are
+    required for penalty interaction types such as steric clashes.
+    """
+
+    if not isinstance(weights, Mapping):
+        raise ScoringWeightError(
+            "Interaction weights must be a mapping."
+        )
+
+    for interaction_type, raw_weight in weights.items():
+        normalized_type = normalize_interaction_type(
+            interaction_type,
+            preserve_unknown=allow_unknown_types,
+        )
+
+        if (
+            not allow_unknown_types
+            and normalized_type == SCORE_TYPE_UNKNOWN
+            and _normalize_scoring_name(interaction_type)
+            not in {"unknown", "unclassified", "undefined", "other", "none"}
+        ):
+            raise ScoringWeightError(
+                f"Unknown interaction type: {interaction_type!r}."
+            )
+
+        try:
+            weight = float(raw_weight)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ScoringWeightError(
+                f"Weight for {interaction_type!r} must be numeric."
+            ) from exc
+
+        if not isfinite(weight):
+            raise ScoringWeightError(
+                f"Weight for {interaction_type!r} must be finite."
+            )
+
+
+def validate_multiplier_mapping(
+    multipliers: Mapping[str, Number],
+    *,
+    mapping_name: str = "multiplier",
+    minimum: float = 0.0,
+) -> None:
+    """
+    Validate a multiplier mapping.
+    """
+
+    if not isinstance(multipliers, Mapping):
+        raise ScoringMultiplierError(
+            f"{mapping_name.capitalize()} mapping is required."
+        )
+
+    for name, raw_multiplier in multipliers.items():
+        try:
+            multiplier = float(raw_multiplier)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ScoringMultiplierError(
+                f"{mapping_name.capitalize()} for {name!r} "
+                "must be numeric."
+            ) from exc
+
+        if not isfinite(multiplier):
+            raise ScoringMultiplierError(
+                f"{mapping_name.capitalize()} for {name!r} "
+                "must be finite."
+            )
+
+        if multiplier < minimum:
+            raise ScoringMultiplierError(
+                f"{mapping_name.capitalize()} for {name!r} "
+                f"must be greater than or equal to {minimum}."
+            )
+
+
+def _validate_optional_finite_number(
+    value: Optional[Number],
+    *,
+    name: str,
+) -> None:
+    """Validate a finite optional numeric value."""
+
+    if value is None:
+        return
+
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ScoringConfigurationError(
+            f"{name} must be numeric or None."
+        ) from exc
+
+    if not isfinite(numeric):
+        raise ScoringConfigurationError(
+            f"{name} must be finite when provided."
+        )
+
+
+# -----------------------------------------------------------------------------
+# 3.12. Complete configuration validation
+# -----------------------------------------------------------------------------
+
+def validate_scoring_config(
+    scoring_config: ScoringConfig,
+) -> ScoringConfig:
+    """
+    Validate and return a scoring configuration.
+
+    Returning the validated object makes this function convenient in factory
+    functions and pipelines.
+    """
+
+    if not isinstance(scoring_config, ScoringConfig):
+        raise ScoringConfigurationError(
+            "Expected a ScoringConfig instance."
+        )
+
+    validate_weight_mapping(
+        scoring_config.interaction_weights,
+        allow_unknown_types=scoring_config.allow_unknown_types,
+    )
+
+    validate_multiplier_mapping(
+        scoring_config.strength_multipliers,
+        mapping_name="strength multiplier",
+        minimum=MIN_STRENGTH_MULTIPLIER,
+    )
+
+    validate_multiplier_mapping(
+        scoring_config.classification_multipliers,
+        mapping_name="classification multiplier",
+        minimum=MIN_CLASSIFICATION_MULTIPLIER,
+    )
+
+    validate_multiplier_mapping(
+        scoring_config.geometry_multipliers,
+        mapping_name="geometry multiplier",
+        minimum=MIN_GEOMETRY_MULTIPLIER,
+    )
+
+    validate_multiplier_mapping(
+        scoring_config.penalties,
+        mapping_name="penalty",
+        minimum=-math.inf,
+    )
+
+    try:
+        geometry_quality_weight = float(
+            scoring_config.geometry_quality_weight
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ScoringConfigurationError(
+            "geometry_quality_weight must be numeric."
+        ) from exc
+
+    if not isfinite(geometry_quality_weight):
+        raise ScoringConfigurationError(
+            "geometry_quality_weight must be finite."
+        )
+
+    if geometry_quality_weight < 0.0:
+        raise ScoringConfigurationError(
+            "geometry_quality_weight cannot be negative."
+        )
+
+    try:
+        unknown_weight = float(
+            scoring_config.unknown_interaction_weight
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ScoringConfigurationError(
+            "unknown_interaction_weight must be numeric."
+        ) from exc
+
+    if not isfinite(unknown_weight):
+        raise ScoringConfigurationError(
+            "unknown_interaction_weight must be finite."
+        )
+
+    _validate_optional_finite_number(
+        scoring_config.minimum_score,
+        name="minimum_score",
+    )
+    _validate_optional_finite_number(
+        scoring_config.maximum_score,
+        name="maximum_score",
+    )
+
+    if (
+        scoring_config.minimum_score is not None
+        and scoring_config.maximum_score is not None
+        and float(scoring_config.minimum_score)
+        > float(scoring_config.maximum_score)
+    ):
+        raise ScoringConfigurationError(
+            "minimum_score cannot exceed maximum_score."
+        )
+
+    if scoring_config.normalization_mode not in NORMALIZATION_MODES:
+        raise ScoringConfigurationError(
+            "Unsupported normalization mode: "
+            f"{scoring_config.normalization_mode!r}."
+        )
+
+    if scoring_config.aggregation_mode not in AGGREGATION_MODES:
+        raise ScoringConfigurationError(
+            "Unsupported aggregation mode: "
+            f"{scoring_config.aggregation_mode!r}."
+        )
+
+    if scoring_config.deduplication_mode not in DEDUPLICATION_MODES:
+        raise ScoringConfigurationError(
+            "Unsupported deduplication mode: "
+            f"{scoring_config.deduplication_mode!r}."
+        )
+
+    if scoring_config.score_direction not in SCORE_DIRECTIONS:
+        raise ScoringConfigurationError(
+            "Unsupported score direction: "
+            f"{scoring_config.score_direction!r}."
+        )
+
+    for name, value in (
+        (
+            "diversity_bonus_weight",
+            scoring_config.diversity_bonus_weight,
+        ),
+        (
+            "maximum_diversity_bonus",
+            scoring_config.maximum_diversity_bonus,
+        ),
+    ):
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ScoringConfigurationError(
+                f"{name} must be numeric."
+            ) from exc
+
+        if not isfinite(numeric) or numeric < 0.0:
+            raise ScoringConfigurationError(
+                f"{name} must be finite and non-negative."
+            )
+
+    if isinstance(scoring_config.decimal_places, bool):
+        raise ScoringConfigurationError(
+            "decimal_places must be an integer, not a boolean."
+        )
+
+    try:
+        decimal_places = int(scoring_config.decimal_places)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ScoringConfigurationError(
+            "decimal_places must be an integer."
+        ) from exc
+
+    if decimal_places < 0:
+        raise ScoringConfigurationError(
+            "decimal_places cannot be negative."
+        )
+
+    if decimal_places > 15:
+        raise ScoringConfigurationError(
+            "decimal_places cannot exceed 15."
+        )
+
+    return scoring_config
+
+
+# -----------------------------------------------------------------------------
+# 3.13. Default configuration factory
+# -----------------------------------------------------------------------------
+
+@lru_cache(maxsize=1)
+def get_default_scoring_config() -> ScoringConfig:
+    """
+    Return the validated default scoring configuration.
+
+    The returned object is immutable and may therefore be safely cached and
+    reused.
+    """
+
+    return ScoringConfig()
+
+
+# -----------------------------------------------------------------------------
+# 3.14. Reading weights from config.py
+# -----------------------------------------------------------------------------
+
+def _get_module_scoring_mapping(
+    module: Any = config,
+) -> Mapping[Any, Any]:
+    """
+    Read a scoring-weight mapping from a configuration module.
+
+    Supported attribute names are checked in the following order:
+
+    1. ``SCORING_WEIGHTS``;
+    2. ``INTERACTION_WEIGHTS``;
+    3. ``SCORE_WEIGHTS``;
+    4. ``SCORE``.
+
+    The final name preserves compatibility with the initial DockAnalyzer
+    ``config.py``.
+    """
+
+    if module is None:
+        return {}
+
+    for attribute_name in (
+        "SCORING_WEIGHTS",
+        "INTERACTION_WEIGHTS",
+        "SCORE_WEIGHTS",
+        "SCORE",
+    ):
+        candidate = getattr(
+            module,
+            attribute_name,
+            None,
+        )
+
+        if candidate is None:
+            continue
+
+        if not isinstance(candidate, Mapping):
+            raise ScoringConfigurationError(
+                f"config.{attribute_name} must be a mapping."
+            )
+
+        return candidate
+
+    return {}
+
+
+def scoring_config_from_module(
+    module: Any = config,
+    *,
+    base_config: Optional[ScoringConfig] = None,
+    strict: bool = False,
+) -> ScoringConfig:
+    """
+    Build a scoring configuration using values from a configuration module.
+
+    Parameters
+    ----------
+    module
+        Module or object containing DockAnalyzer configuration attributes.
+    base_config
+        Configuration used as the starting point. The default scoring
+        configuration is used when omitted.
+    strict
+        When ``True``, unsupported configuration values raise errors. When
+        ``False``, absent optional attributes retain their base values.
+
+    Returns
+    -------
+    ScoringConfig
+        New immutable scoring configuration.
+    """
+
+    base = (
+        get_default_scoring_config()
+        if base_config is None
+        else validate_scoring_config(base_config)
+    )
+
+    raw_weights = _get_module_scoring_mapping(module)
+
+    module_weights = normalize_weight_mapping(
+        raw_weights,
+        preserve_unknown=base.allow_unknown_types,
+    )
+
+    merged_weights = _merge_numeric_mappings(
+        base.interaction_weights,
+        module_weights,
+    )
+
+    optional_attributes = {
+        "normalization_mode": (
+            "SCORING_NORMALIZATION_MODE",
+            "NORMALIZATION_MODE",
+        ),
+        "aggregation_mode": (
+            "SCORING_AGGREGATION_MODE",
+            "AGGREGATION_MODE",
+        ),
+        "deduplication_mode": (
+            "SCORING_DEDUPLICATION_MODE",
+            "DEDUPLICATION_MODE",
+        ),
+        "geometry_quality_weight": (
+            "SCORING_GEOMETRY_QUALITY_WEIGHT",
+        ),
+        "unknown_interaction_weight": (
+            "SCORING_UNKNOWN_INTERACTION_WEIGHT",
+        ),
+        "minimum_score": (
+            "SCORING_MINIMUM_SCORE",
+        ),
+        "maximum_score": (
+            "SCORING_MAXIMUM_SCORE",
+        ),
+        "deduplicate": (
+            "SCORING_DEDUPLICATE",
+        ),
+        "use_geometry_quality": (
+            "SCORING_USE_GEOMETRY_QUALITY",
+        ),
+        "use_strength": (
+            "SCORING_USE_STRENGTH",
+        ),
+        "use_classification": (
+            "SCORING_USE_CLASSIFICATION",
+        ),
+        "apply_penalties": (
+            "SCORING_APPLY_PENALTIES",
+        ),
+        "allow_unknown_types": (
+            "SCORING_ALLOW_UNKNOWN_TYPES",
+        ),
+        "diversity_bonus_enabled": (
+            "SCORING_DIVERSITY_BONUS_ENABLED",
+        ),
+        "diversity_bonus_weight": (
+            "SCORING_DIVERSITY_BONUS_WEIGHT",
+        ),
+        "maximum_diversity_bonus": (
+            "SCORING_MAXIMUM_DIVERSITY_BONUS",
+        ),
+        "decimal_places": (
+            "SCORING_DECIMAL_PLACES",
+        ),
+    }
+
+    updates: Dict[str, Any] = {
+        "interaction_weights": merged_weights,
+        "metadata": {
+            **dict(base.metadata),
+            "source": "config_module",
+            "module_name": getattr(
+                module,
+                "__name__",
+                type(module).__name__,
+            ),
+        },
+    }
+
+    for field_name, attribute_names in optional_attributes.items():
+        found = False
+
+        for attribute_name in attribute_names:
+            if hasattr(module, attribute_name):
+                updates[field_name] = getattr(
+                    module,
+                    attribute_name
+                )
+                found = True
+                break
+
+        if strict and not found:
+            continue
+
+    return replace(base, **updates)
+
+
+# -----------------------------------------------------------------------------
+# 3.15. Configuration copying
+# -----------------------------------------------------------------------------
+
+def copy_scoring_config(
+    scoring_config: Optional[ScoringConfig] = None,
+) -> ScoringConfig:
+    """
+    Return an independent immutable copy of a scoring configuration.
+    """
+
+    source = (
+        get_default_scoring_config()
+        if scoring_config is None
+        else validate_scoring_config(scoring_config)
+    )
+
+    return ScoringConfig(
+        interaction_weights=dict(source.interaction_weights),
+        strength_multipliers=dict(source.strength_multipliers),
+        classification_multipliers=dict(
+            source.classification_multipliers
+        ),
+        geometry_multipliers=dict(source.geometry_multipliers),
+        penalties=dict(source.penalties),
+        geometry_quality_weight=source.geometry_quality_weight,
+        unknown_interaction_weight=source.unknown_interaction_weight,
+        minimum_score=source.minimum_score,
+        maximum_score=source.maximum_score,
+        normalization_mode=source.normalization_mode,
+        aggregation_mode=source.aggregation_mode,
+        deduplication_mode=source.deduplication_mode,
+        score_direction=source.score_direction,
+        deduplicate=source.deduplicate,
+        use_geometry_quality=source.use_geometry_quality,
+        use_strength=source.use_strength,
+        use_classification=source.use_classification,
+        apply_penalties=source.apply_penalties,
+        allow_unknown_types=source.allow_unknown_types,
+        preserve_components=source.preserve_components,
+        diversity_bonus_enabled=source.diversity_bonus_enabled,
+        diversity_bonus_weight=source.diversity_bonus_weight,
+        maximum_diversity_bonus=source.maximum_diversity_bonus,
+        missing_geometry_is_neutral=source.missing_geometry_is_neutral,
+        rejected_geometry_contributes=(
+            source.rejected_geometry_contributes
+        ),
+        decimal_places=source.decimal_places,
+        metadata=dict(source.metadata),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 3.16. Configuration merging
+# -----------------------------------------------------------------------------
+
+def merge_scoring_config(
+    base_config: Optional[ScoringConfig] = None,
+    *,
+    interaction_weights: Optional[Mapping[str, Number]] = None,
+    strength_multipliers: Optional[Mapping[str, Number]] = None,
+    classification_multipliers: Optional[
+        Mapping[str, Number]
+    ] = None,
+    geometry_multipliers: Optional[Mapping[str, Number]] = None,
+    penalties: Optional[Mapping[str, Number]] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+    **field_updates: Any,
+) -> ScoringConfig:
+    """
+    Return a configuration containing selected mapping and field overrides.
+
+    Mapping arguments are merged with the existing mappings rather than
+    replacing them completely.
+    """
+
+    base = (
+        get_default_scoring_config()
+        if base_config is None
+        else validate_scoring_config(base_config)
+    )
+
+    merged_weights = _merge_numeric_mappings(
+        base.interaction_weights,
+        normalize_weight_mapping(
+            interaction_weights,
+            preserve_unknown=base.allow_unknown_types,
+        ),
+    )
+
+    merged_strengths = _merge_numeric_mappings(
+        base.strength_multipliers,
+        (
+            normalize_multiplier_mapping(
+                strength_multipliers,
+                normalizer=normalize_interaction_strength,
+                minimum=MIN_STRENGTH_MULTIPLIER,
+                mapping_name="strength multiplier",
+            )
+            if strength_multipliers is not None
+            else None
+        ),
+    )
+
+    merged_classifications = _merge_numeric_mappings(
+        base.classification_multipliers,
+        (
+            normalize_multiplier_mapping(
+                classification_multipliers,
+                normalizer=normalize_interaction_classification,
+                minimum=MIN_CLASSIFICATION_MULTIPLIER,
+                mapping_name="classification multiplier",
+            )
+            if classification_multipliers is not None
+            else None
+        ),
+    )
+
+    merged_geometries = _merge_numeric_mappings(
+        base.geometry_multipliers,
+        (
+            normalize_multiplier_mapping(
+                geometry_multipliers,
+                normalizer=normalize_geometry_quality,
+                minimum=MIN_GEOMETRY_MULTIPLIER,
+                mapping_name="geometry multiplier",
+            )
+            if geometry_multipliers is not None
+            else None
+        ),
+    )
+
+    merged_penalties = _merge_numeric_mappings(
+        base.penalties,
+        penalties,
+    )
+
+    merged_metadata = {
+        **dict(base.metadata),
+        **dict(metadata or {}),
+    }
+
+    valid_field_names = {
+        dataclass_field.name
+        for dataclass_field in fields(ScoringConfig)
+    }
+
+    invalid_fields = (
+        set(field_updates)
+        - valid_field_names
+    )
+
+    if invalid_fields:
+        raise ScoringConfigurationError(
+            "Unknown ScoringConfig fields: "
+            + ", ".join(sorted(invalid_fields))
+        )
+
+    protected_mapping_fields = {
+        "interaction_weights",
+        "strength_multipliers",
+        "classification_multipliers",
+        "geometry_multipliers",
+        "penalties",
+        "metadata",
+    }
+
+    conflicting_fields = (
+        set(field_updates)
+        & protected_mapping_fields
+    )
+
+    if conflicting_fields:
+        raise ScoringConfigurationError(
+            "Use the explicit merge arguments for: "
+            + ", ".join(sorted(conflicting_fields))
+        )
+
+    return replace(
+        base,
+        interaction_weights=merged_weights,
+        strength_multipliers=merged_strengths,
+        classification_multipliers=merged_classifications,
+        geometry_multipliers=merged_geometries,
+        penalties=merged_penalties,
+        metadata=merged_metadata,
+        **field_updates,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 3.17. Configuration creation from dictionaries
+# -----------------------------------------------------------------------------
+
+def scoring_config_from_dict(
+    data: Mapping[str, Any],
+    *,
+    base_config: Optional[ScoringConfig] = None,
+) -> ScoringConfig:
+    """
+    Build a scoring configuration from a dictionary-like object.
+
+    Mapping fields are merged with the base configuration. Scalar fields
+    replace their corresponding base values.
+    """
+
+    if not isinstance(data, Mapping):
+        raise ScoringConfigurationError(
+            "Scoring configuration data must be a mapping."
+        )
+
+    known_fields = {
+        dataclass_field.name
+        for dataclass_field in fields(ScoringConfig)
+    }
+
+    unknown_fields = (
+        set(data)
+        - known_fields
+    )
+
+    if unknown_fields:
+        raise ScoringConfigurationError(
+            "Unknown scoring configuration keys: "
+            + ", ".join(sorted(map(str, unknown_fields)))
+        )
+
+    scalar_updates = {
+        key: value
+        for key, value in data.items()
+        if key
+        not in {
+            "interaction_weights",
+            "strength_multipliers",
+            "classification_multipliers",
+            "geometry_multipliers",
+            "penalties",
+            "metadata",
+        }
+    }
+
+    return merge_scoring_config(
+        base_config,
+        interaction_weights=data.get("interaction_weights"),
+        strength_multipliers=data.get("strength_multipliers"),
+        classification_multipliers=data.get(
+            "classification_multipliers"
+        ),
+        geometry_multipliers=data.get("geometry_multipliers"),
+        penalties=data.get("penalties"),
+        metadata=data.get("metadata"),
+        **scalar_updates,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 3.18. Configuration comparison
+# -----------------------------------------------------------------------------
+
+def scoring_configs_equal(
+    first: ScoringConfig,
+    second: ScoringConfig,
+    *,
+    compare_metadata: bool = False,
+) -> bool:
+    """
+    Return whether two scoring configurations are functionally equivalent.
+    """
+
+    if not isinstance(first, ScoringConfig):
+        return False
+
+    if not isinstance(second, ScoringConfig):
+        return False
+
+    first_data = first.to_dict()
+    second_data = second.to_dict()
+
+    if not compare_metadata:
+        first_data.pop("metadata", None)
+        second_data.pop("metadata", None)
+
+    return first_data == second_data
+
+
+# -----------------------------------------------------------------------------
+# 3.19. Compact configuration summary
+# -----------------------------------------------------------------------------
+
+def summarize_scoring_config(
+    scoring_config: Optional[ScoringConfig] = None,
+) -> Dict[str, Any]:
+    """
+    Return a compact summary of the active scoring configuration.
+    """
+
+    active = (
+        get_default_scoring_config()
+        if scoring_config is None
+        else validate_scoring_config(scoring_config)
+    )
+
+    family_weights = {
+        family: active.weight_for(
+            family,
+            use_family_fallback=False,
+        )
+        for family in INTERACTION_FAMILY_ORDER
+    }
+
+    return {
+        "interaction_weight_count": len(
+            active.interaction_weights
+        ),
+        "family_weights": family_weights,
+        "normalization_mode": active.normalization_mode,
+        "aggregation_mode": active.aggregation_mode,
+        "deduplication_mode": active.deduplication_mode,
+        "score_direction": active.score_direction,
+        "deduplicate": active.deduplicate,
+        "use_geometry_quality": active.use_geometry_quality,
+        "use_strength": active.use_strength,
+        "use_classification": active.use_classification,
+        "apply_penalties": active.apply_penalties,
+        "allow_unknown_types": active.allow_unknown_types,
+        "diversity_bonus_enabled": (
+            active.diversity_bonus_enabled
+        ),
+        "minimum_score": active.minimum_score,
+        "maximum_score": active.maximum_score,
+    }
+
+
+# -----------------------------------------------------------------------------
+# 3.20. Module-level default configuration
+# -----------------------------------------------------------------------------
+#
+# This object is immutable. Functions should accept an optional explicit
+# configuration and fall back to this instance when one is not supplied.
+# -----------------------------------------------------------------------------
+
+DEFAULT_SCORING_CONFIG: Final[ScoringConfig] = (
+    get_default_scoring_config()
+)
+
+
+# -----------------------------------------------------------------------------
+# 3.21. Section consistency validation
+# -----------------------------------------------------------------------------
+
+def _validate_section_3_defaults() -> None:
+    """
+    Validate the default configuration and its required entries.
+    """
+
+    validate_scoring_config(DEFAULT_SCORING_CONFIG)
+
+    required_weight_types = (
+        CANONICAL_INTERACTION_TYPES
+    )
+
+    missing_weights = (
+        required_weight_types
+        - set(DEFAULT_INTERACTION_WEIGHTS)
+    )
+
+    if missing_weights:
+        raise RuntimeError(
+            "Missing default scoring weights for: "
+            + ", ".join(sorted(missing_weights))
+        )
+
+    missing_strengths = (
+        CANONICAL_STRENGTHS
+        - set(DEFAULT_STRENGTH_MULTIPLIERS)
+    )
+
+    if missing_strengths:
+        raise RuntimeError(
+            "Missing default strength multipliers for: "
+            + ", ".join(sorted(missing_strengths))
+        )
+
+    missing_geometry_qualities = (
+        CANONICAL_GEOMETRY_QUALITIES
+        - set(DEFAULT_GEOMETRY_MULTIPLIERS)
+    )
+
+    if missing_geometry_qualities:
+        raise RuntimeError(
+            "Missing default geometry multipliers for: "
+            + ", ".join(sorted(missing_geometry_qualities))
+        )
+
+    missing_classifications = (
+        CANONICAL_CLASSIFICATIONS
+        - set(DEFAULT_CLASSIFICATION_MULTIPLIERS)
+    )
+
+    if missing_classifications:
+        raise RuntimeError(
+            "Missing default classification multipliers for: "
+            + ", ".join(sorted(missing_classifications))
+        )
+
+    invalid_penalty_names = (
+        set(DEFAULT_PENALTIES)
+        - PENALTY_NAMES
+    )
+
+    if invalid_penalty_names:
+        raise RuntimeError(
+            "Invalid default penalty names: "
+            + ", ".join(sorted(invalid_penalty_names))
+        )
+
+
+_validate_section_3_defaults()
+
+
+# -----------------------------------------------------------------------------
+# 3.22. Section public interface
+# -----------------------------------------------------------------------------
+
+_SECTION_3_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    # Default mappings
+    "DEFAULT_INTERACTION_WEIGHTS",
+    "DEFAULT_STRENGTH_MULTIPLIERS",
+    "DEFAULT_CLASSIFICATION_MULTIPLIERS",
+    "DEFAULT_GEOMETRY_MULTIPLIERS",
+    "DEFAULT_PENALTIES",
+
+    # Penalty names
+    "PENALTY_CLASH",
+    "PENALTY_REDUNDANCY",
+    "PENALTY_MISSING_GEOMETRY",
+    "PENALTY_INVALID_GEOMETRY",
+    "PENALTY_INVALID_VALUE",
+    "PENALTY_UNKNOWN_INTERACTION",
+    "PENALTY_NAMES",
+
+    # Default options
+    "DEFAULT_GEOMETRY_QUALITY_WEIGHT",
+    "DEFAULT_UNKNOWN_INTERACTION_WEIGHT",
+    "DEFAULT_MINIMUM_SCORE",
+    "DEFAULT_MAXIMUM_SCORE",
+    "DEFAULT_NORMALIZATION_MODE",
+    "DEFAULT_AGGREGATION_MODE",
+    "DEFAULT_DEDUPLICATION_MODE",
+    "DEFAULT_SCORE_DIRECTION",
+    "DEFAULT_DEDUPLICATE",
+    "DEFAULT_USE_GEOMETRY_QUALITY",
+    "DEFAULT_USE_STRENGTH",
+    "DEFAULT_USE_CLASSIFICATION",
+    "DEFAULT_APPLY_PENALTIES",
+    "DEFAULT_ALLOW_UNKNOWN_TYPES",
+    "DEFAULT_PRESERVE_COMPONENTS",
+    "DEFAULT_DIVERSITY_BONUS_ENABLED",
+    "DEFAULT_DIVERSITY_BONUS_WEIGHT",
+    "DEFAULT_MAXIMUM_DIVERSITY_BONUS",
+    "DEFAULT_MISSING_GEOMETRY_IS_NEUTRAL",
+    "DEFAULT_REJECTED_GEOMETRY_CONTRIBUTES",
+    "DEFAULT_SCORE_DECIMAL_PLACES",
+
+    # Exceptions
+    "ScoringError",
+    "ScoringConfigurationError",
+    "ScoringWeightError",
+    "ScoringMultiplierError",
+    "ScoringNormalizationError",
+
+    # Dataclass
+    "ScoringConfig",
+    "DEFAULT_SCORING_CONFIG",
+
+    # Mapping and validation functions
+    "normalize_weight_mapping",
+    "normalize_multiplier_mapping",
+    "validate_weight_mapping",
+    "validate_multiplier_mapping",
+    "validate_scoring_config",
+
+    # Factory and manipulation functions
+    "get_default_scoring_config",
+    "scoring_config_from_module",
+    "copy_scoring_config",
+    "merge_scoring_config",
+    "scoring_config_from_dict",
+    "scoring_configs_equal",
+    "summarize_scoring_config",
+)
+
+for public_name in _SECTION_3_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+# =============================================================================
+# End of Section 3
+# =============================================================================
+
+
+# =============================================================================
+# Section 4.1 — Core result dataclasses
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 4.1.1. Canonical score-component names
+# -----------------------------------------------------------------------------
+
+COMPONENT_BASE_WEIGHT: Final[str] = "base_weight"
+COMPONENT_STRENGTH_MULTIPLIER: Final[str] = "strength_multiplier"
+COMPONENT_CLASSIFICATION_MULTIPLIER: Final[str] = (
+    "classification_multiplier"
+)
+COMPONENT_GEOMETRY_MULTIPLIER: Final[str] = "geometry_multiplier"
+COMPONENT_PENALTY: Final[str] = "penalty"
+COMPONENT_BONUS: Final[str] = "bonus"
+COMPONENT_ADJUSTMENT: Final[str] = "adjustment"
+COMPONENT_FINAL_SCORE: Final[str] = "final_score"
+COMPONENT_INFORMATIONAL: Final[str] = "informational"
+
+SCORE_COMPONENT_TYPES: Final[FrozenSet[str]] = frozenset(
+    {
+        COMPONENT_BASE_WEIGHT,
+        COMPONENT_STRENGTH_MULTIPLIER,
+        COMPONENT_CLASSIFICATION_MULTIPLIER,
+        COMPONENT_GEOMETRY_MULTIPLIER,
+        COMPONENT_PENALTY,
+        COMPONENT_BONUS,
+        COMPONENT_ADJUSTMENT,
+        COMPONENT_FINAL_SCORE,
+        COMPONENT_INFORMATIONAL,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 4.1.2. Canonical score-component operations
+# -----------------------------------------------------------------------------
+
+COMPONENT_OPERATION_ADD: Final[str] = "add"
+COMPONENT_OPERATION_MULTIPLY: Final[str] = "multiply"
+COMPONENT_OPERATION_REPLACE: Final[str] = "replace"
+COMPONENT_OPERATION_INFORMATIONAL: Final[str] = "informational"
+
+SCORE_COMPONENT_OPERATIONS: Final[FrozenSet[str]] = frozenset(
+    {
+        COMPONENT_OPERATION_ADD,
+        COMPONENT_OPERATION_MULTIPLY,
+        COMPONENT_OPERATION_REPLACE,
+        COMPONENT_OPERATION_INFORMATIONAL,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 4.1.3. Score status names
+# -----------------------------------------------------------------------------
+
+SCORE_STATUS_ACCEPTED: Final[str] = "accepted"
+SCORE_STATUS_REJECTED: Final[str] = "rejected"
+SCORE_STATUS_SKIPPED: Final[str] = "skipped"
+SCORE_STATUS_DUPLICATE: Final[str] = "duplicate"
+SCORE_STATUS_INVALID: Final[str] = "invalid"
+SCORE_STATUS_UNKNOWN: Final[str] = "unknown"
+
+SCORE_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORE_STATUS_ACCEPTED,
+        SCORE_STATUS_REJECTED,
+        SCORE_STATUS_SKIPPED,
+        SCORE_STATUS_DUPLICATE,
+        SCORE_STATUS_INVALID,
+        SCORE_STATUS_UNKNOWN,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 4.1.4. Component-name aliases
+# -----------------------------------------------------------------------------
+
+_SCORE_COMPONENT_TYPE_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "base": COMPONENT_BASE_WEIGHT,
+        "weight": COMPONENT_BASE_WEIGHT,
+        "base_weight": COMPONENT_BASE_WEIGHT,
+
+        "strength": COMPONENT_STRENGTH_MULTIPLIER,
+        "strength_factor": COMPONENT_STRENGTH_MULTIPLIER,
+        "strength_multiplier": COMPONENT_STRENGTH_MULTIPLIER,
+
+        "classification": COMPONENT_CLASSIFICATION_MULTIPLIER,
+        "classification_factor": COMPONENT_CLASSIFICATION_MULTIPLIER,
+        "classification_multiplier": COMPONENT_CLASSIFICATION_MULTIPLIER,
+
+        "geometry": COMPONENT_GEOMETRY_MULTIPLIER,
+        "geometry_factor": COMPONENT_GEOMETRY_MULTIPLIER,
+        "geometry_multiplier": COMPONENT_GEOMETRY_MULTIPLIER,
+
+        "penalty": COMPONENT_PENALTY,
+        "negative_adjustment": COMPONENT_PENALTY,
+
+        "bonus": COMPONENT_BONUS,
+        "positive_adjustment": COMPONENT_BONUS,
+
+        "adjustment": COMPONENT_ADJUSTMENT,
+        "correction": COMPONENT_ADJUSTMENT,
+
+        "final": COMPONENT_FINAL_SCORE,
+        "score": COMPONENT_FINAL_SCORE,
+        "final_score": COMPONENT_FINAL_SCORE,
+
+        "information": COMPONENT_INFORMATIONAL,
+        "informational": COMPONENT_INFORMATIONAL,
+        "metadata": COMPONENT_INFORMATIONAL,
+    }
+)
+
+_SCORE_COMPONENT_OPERATION_ALIASES: Final[Mapping[str, str]] = (
+    MappingProxyType(
+        {
+            "add": COMPONENT_OPERATION_ADD,
+            "addition": COMPONENT_OPERATION_ADD,
+            "sum": COMPONENT_OPERATION_ADD,
+            "plus": COMPONENT_OPERATION_ADD,
+
+            "multiply": COMPONENT_OPERATION_MULTIPLY,
+            "multiplication": COMPONENT_OPERATION_MULTIPLY,
+            "product": COMPONENT_OPERATION_MULTIPLY,
+            "times": COMPONENT_OPERATION_MULTIPLY,
+
+            "replace": COMPONENT_OPERATION_REPLACE,
+            "replacement": COMPONENT_OPERATION_REPLACE,
+            "set": COMPONENT_OPERATION_REPLACE,
+
+            "informational": COMPONENT_OPERATION_INFORMATIONAL,
+            "information": COMPONENT_OPERATION_INFORMATIONAL,
+            "none": COMPONENT_OPERATION_INFORMATIONAL,
+        }
+    )
+)
+
+_SCORE_STATUS_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "accepted": SCORE_STATUS_ACCEPTED,
+        "accept": SCORE_STATUS_ACCEPTED,
+        "valid": SCORE_STATUS_ACCEPTED,
+        "scored": SCORE_STATUS_ACCEPTED,
+
+        "rejected": SCORE_STATUS_REJECTED,
+        "reject": SCORE_STATUS_REJECTED,
+        "excluded": SCORE_STATUS_REJECTED,
+
+        "skipped": SCORE_STATUS_SKIPPED,
+        "skip": SCORE_STATUS_SKIPPED,
+        "ignored": SCORE_STATUS_SKIPPED,
+
+        "duplicate": SCORE_STATUS_DUPLICATE,
+        "duplicated": SCORE_STATUS_DUPLICATE,
+        "deduplicated": SCORE_STATUS_DUPLICATE,
+
+        "invalid": SCORE_STATUS_INVALID,
+        "error": SCORE_STATUS_INVALID,
+        "failed": SCORE_STATUS_INVALID,
+
+        "unknown": SCORE_STATUS_UNKNOWN,
+        "undefined": SCORE_STATUS_UNKNOWN,
+        "unclassified": SCORE_STATUS_UNKNOWN,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 4.1.5. General result-structure helpers
+# -----------------------------------------------------------------------------
+
+def _coerce_finite_score_value(
+    value: Any,
+    *,
+    name: str,
+    default: Optional[float] = None,
+    allow_none: bool = False,
+) -> Optional[float]:
+    """
+    Convert a value to a finite floating-point score.
+
+    Parameters
+    ----------
+    value
+        Value to convert.
+    name
+        Human-readable field name used in validation errors.
+    default
+        Value used when ``value`` is ``None`` and ``allow_none`` is false.
+    allow_none
+        Whether ``None`` is accepted as a valid result.
+
+    Returns
+    -------
+    float or None
+        Validated native floating-point value.
+    """
+
+    if value is None:
+        if allow_none:
+            return None
+
+        if default is not None:
+            value = default
+        else:
+            raise ScoringConfigurationError(
+                f"{name} cannot be None."
+            )
+
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ScoringConfigurationError(
+            f"{name} must be numeric."
+        ) from exc
+
+    if not isfinite(numeric_value):
+        raise ScoringConfigurationError(
+            f"{name} must be finite."
+        )
+
+    return numeric_value
+
+
+def _coerce_optional_text(
+    value: Any,
+    *,
+    default: str = "",
+    strip: bool = True,
+) -> str:
+    """
+    Convert an optional value to text.
+    """
+
+    if value is None:
+        return default
+
+    text = str(value)
+
+    if strip:
+        text = text.strip()
+
+    return text or default
+
+
+def _coerce_identifier(
+    value: Any,
+    *,
+    default: str = "",
+) -> str:
+    """
+    Convert an identifier-like value to a stable string.
+    """
+
+    if value is None:
+        return default
+
+    if isinstance(value, Enum):
+        value = value.value
+
+    return str(value).strip() or default
+
+
+def _freeze_result_metadata(
+    metadata: Optional[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    """
+    Return a shallow immutable copy of result metadata.
+
+    A shallow copy is intentional. Result metadata may contain references to
+    scientific objects that should not be recursively transformed at this
+    stage. Deep JSON conversion is handled by the serialization section.
+    """
+
+    if metadata is None:
+        return _EMPTY_METADATA
+
+    if not isinstance(metadata, Mapping):
+        raise ScoringConfigurationError(
+            "Result metadata must be a mapping."
+        )
+
+    return MappingProxyType(dict(metadata))
+
+
+def _normalize_component_type(
+    value: Any,
+    *,
+    default: str = COMPONENT_ADJUSTMENT,
+    preserve_unknown: bool = False,
+) -> str:
+    """
+    Normalize a score-component type.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return default
+
+    if normalized in SCORE_COMPONENT_TYPES:
+        return normalized
+
+    alias = _SCORE_COMPONENT_TYPE_ALIASES.get(normalized)
+
+    if alias is not None:
+        return alias
+
+    if preserve_unknown:
+        return normalized
+
+    return default
+
+
+def _normalize_component_operation(
+    value: Any,
+    *,
+    component_type: Optional[str] = None,
+) -> str:
+    """
+    Normalize a score-component operation.
+
+    When no explicit operation is provided, a suitable default is inferred
+    from the component type.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if normalized:
+        if normalized in SCORE_COMPONENT_OPERATIONS:
+            return normalized
+
+        alias = _SCORE_COMPONENT_OPERATION_ALIASES.get(normalized)
+
+        if alias is not None:
+            return alias
+
+    canonical_type = _normalize_component_type(
+        component_type,
+        preserve_unknown=True,
+    )
+
+    if canonical_type in {
+        COMPONENT_STRENGTH_MULTIPLIER,
+        COMPONENT_CLASSIFICATION_MULTIPLIER,
+        COMPONENT_GEOMETRY_MULTIPLIER,
+    }:
+        return COMPONENT_OPERATION_MULTIPLY
+
+    if canonical_type == COMPONENT_FINAL_SCORE:
+        return COMPONENT_OPERATION_REPLACE
+
+    if canonical_type == COMPONENT_INFORMATIONAL:
+        return COMPONENT_OPERATION_INFORMATIONAL
+
+    return COMPONENT_OPERATION_ADD
+
+
+def _normalize_score_status(
+    value: Any,
+    *,
+    default: str = SCORE_STATUS_ACCEPTED,
+) -> str:
+    """
+    Normalize an interaction-scoring status.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return default
+
+    if normalized in SCORE_STATUSES:
+        return normalized
+
+    return _SCORE_STATUS_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def _normalize_identifier_pair(
+    value: Optional[Sequence[Any]],
+    *,
+    field_name: str,
+) -> Optional[Tuple[str, str]]:
+    """
+    Normalize an optional pair of identifiers.
+    """
+
+    if value is None:
+        return None
+
+    if isinstance(value, (str, bytes)):
+        raise ScoringConfigurationError(
+            f"{field_name} must contain exactly two identifiers."
+        )
+
+    try:
+        items = tuple(value)
+    except TypeError as exc:
+        raise ScoringConfigurationError(
+            f"{field_name} must be a two-element sequence."
+        ) from exc
+
+    if len(items) != 2:
+        raise ScoringConfigurationError(
+            f"{field_name} must contain exactly two identifiers."
+        )
+
+    first = _coerce_identifier(items[0])
+    second = _coerce_identifier(items[1])
+
+    if not first or not second:
+        raise ScoringConfigurationError(
+            f"{field_name} identifiers cannot be empty."
+        )
+
+    return first, second
+
+
+# -----------------------------------------------------------------------------
+# 4.1.6. ScoreComponent
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ScoreComponent:
+    """
+    Immutable representation of one scoring contribution.
+
+    A component records one element used to construct or explain an
+    interaction score. Examples include:
+
+    - a base interaction weight;
+    - a strength multiplier;
+    - a classification multiplier;
+    - a geometry multiplier;
+    - an additive penalty;
+    - an additive bonus;
+    - an informational value.
+
+    Parameters
+    ----------
+    name
+        Stable component name, such as ``base_weight`` or
+        ``distance_quality``.
+    value
+        Numeric component value.
+    component_type
+        Canonical semantic type of the component.
+    operation
+        Mathematical operation represented by the component.
+    applied
+        Whether the component was actually used in the score.
+    source
+        Module, function or rule that generated the component.
+    interaction_type
+        Canonical interaction type associated with the component.
+    description
+        Human-readable explanation.
+    unit
+        Optional unit label. Most scoring components are dimensionless.
+    order
+        Stable display order used in reports.
+    metadata
+        Additional immutable metadata.
+    """
+
+    name: str
+    value: float
+
+    component_type: str = COMPONENT_ADJUSTMENT
+    operation: str = ""
+
+    applied: bool = True
+
+    source: str = ""
+    interaction_type: str = SCORE_TYPE_UNKNOWN
+    description: str = ""
+    unit: str = ""
+
+    order: int = 0
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize and validate the score component.
+        """
+
+        normalized_name = _normalize_scoring_name(self.name)
+
+        if not normalized_name:
+            raise ScoringConfigurationError(
+                "ScoreComponent.name cannot be empty."
+            )
+
+        normalized_type = _normalize_component_type(
+            self.component_type,
+            preserve_unknown=True,
+        )
+
+        normalized_operation = _normalize_component_operation(
+            self.operation,
+            component_type=normalized_type,
+        )
+
+        normalized_interaction_type = normalize_interaction_type(
+            self.interaction_type,
+            preserve_unknown=True,
+        )
+
+        numeric_value = _coerce_finite_score_value(
+            self.value,
+            name=f"ScoreComponent[{normalized_name}].value",
+        )
+
+        try:
+            normalized_order = int(self.order)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ScoringConfigurationError(
+                "ScoreComponent.order must be an integer."
+            ) from exc
+
+        object.__setattr__(
+            self,
+            "name",
+            normalized_name,
+        )
+        object.__setattr__(
+            self,
+            "value",
+            float(numeric_value),
+        )
+        object.__setattr__(
+            self,
+            "component_type",
+            normalized_type,
+        )
+        object.__setattr__(
+            self,
+            "operation",
+            normalized_operation,
+        )
+        object.__setattr__(
+            self,
+            "applied",
+            bool(self.applied),
+        )
+        object.__setattr__(
+            self,
+            "source",
+            _coerce_optional_text(self.source),
+        )
+        object.__setattr__(
+            self,
+            "interaction_type",
+            normalized_interaction_type,
+        )
+        object.__setattr__(
+            self,
+            "description",
+            _coerce_optional_text(self.description),
+        )
+        object.__setattr__(
+            self,
+            "unit",
+            _coerce_optional_text(self.unit),
+        )
+        object.__setattr__(
+            self,
+            "order",
+            normalized_order,
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def is_additive(self) -> bool:
+        """Return whether this component is additive."""
+
+        return self.operation == COMPONENT_OPERATION_ADD
+
+    @property
+    def is_multiplicative(self) -> bool:
+        """Return whether this component is multiplicative."""
+
+        return self.operation == COMPONENT_OPERATION_MULTIPLY
+
+    @property
+    def is_replacement(self) -> bool:
+        """Return whether this component replaces the running score."""
+
+        return self.operation == COMPONENT_OPERATION_REPLACE
+
+    @property
+    def is_informational(self) -> bool:
+        """Return whether this component is informational only."""
+
+        return (
+            self.operation == COMPONENT_OPERATION_INFORMATIONAL
+            or self.component_type == COMPONENT_INFORMATIONAL
+        )
+
+    @property
+    def is_penalty(self) -> bool:
+        """Return whether this component represents a penalty."""
+
+        return (
+            self.component_type == COMPONENT_PENALTY
+            or (
+                self.is_additive
+                and self.value < 0.0
+            )
+        )
+
+    @property
+    def is_bonus(self) -> bool:
+        """Return whether this component represents a bonus."""
+
+        return (
+            self.component_type == COMPONENT_BONUS
+            or (
+                self.is_additive
+                and self.value > 0.0
+                and self.component_type == COMPONENT_ADJUSTMENT
+            )
+        )
+
+    @property
+    def effective_value(self) -> float:
+        """
+        Return the value used when the component is applied.
+
+        Non-applied additive components contribute zero. Non-applied
+        multiplicative components contribute the neutral multiplier one.
+        Informational components contribute zero.
+        """
+
+        if self.is_informational:
+            return 0.0
+
+        if self.applied:
+            return float(self.value)
+
+        if self.is_multiplicative:
+            return DEFAULT_NEUTRAL_MULTIPLIER
+
+        return 0.0
+
+    @property
+    def sort_key(self) -> Tuple[int, str, str]:
+        """
+        Return a deterministic component-sorting key.
+        """
+
+        return (
+            int(self.order),
+            self.component_type,
+            self.name,
+        )
+
+    def apply(self, current_score: Number) -> float:
+        """
+        Apply the component to a running score.
+
+        Parameters
+        ----------
+        current_score
+            Current numeric score.
+
+        Returns
+        -------
+        float
+            Updated score.
+        """
+
+        current = _coerce_finite_score_value(
+            current_score,
+            name="current_score",
+        )
+
+        if not self.applied or self.is_informational:
+            return float(current)
+
+        if self.operation == COMPONENT_OPERATION_ADD:
+            return float(current + self.value)
+
+        if self.operation == COMPONENT_OPERATION_MULTIPLY:
+            return float(current * self.value)
+
+        if self.operation == COMPONENT_OPERATION_REPLACE:
+            return float(self.value)
+
+        raise ScoringConfigurationError(
+            f"Unsupported component operation: {self.operation!r}."
+        )
+
+    def with_updates(self, **changes: Any) -> "ScoreComponent":
+        """
+        Return a validated copy with selected fields changed.
+        """
+
+        return replace(self, **changes)
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a mutable dictionary representation.
+        """
+
+        result: Dict[str, Any] = {
+            "name": self.name,
+            "value": float(self.value),
+            "component_type": self.component_type,
+            "operation": self.operation,
+            "applied": bool(self.applied),
+            "source": self.source,
+            "interaction_type": self.interaction_type,
+            "description": self.description,
+            "unit": self.unit,
+            "order": int(self.order),
+        }
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+    def __float__(self) -> float:
+        """Return the raw component value."""
+
+        return float(self.value)
+
+    def __hash__(self) -> int:
+        """
+        Return a stable hash excluding arbitrary metadata.
+        """
+
+        return hash(
+            (
+                self.name,
+                self.value,
+                self.component_type,
+                self.operation,
+                self.applied,
+                self.source,
+                self.interaction_type,
+                self.description,
+                self.unit,
+                self.order,
+            )
+        )
+
+
+# -----------------------------------------------------------------------------
+# 4.1.7. ScoreComponent constructors
+# -----------------------------------------------------------------------------
+
+def make_base_weight_component(
+    value: Number,
+    *,
+    interaction_type: Any = SCORE_TYPE_UNKNOWN,
+    source: str = "",
+    description: str = "",
+    applied: bool = True,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoreComponent:
+    """
+    Create a canonical base-weight component.
+    """
+
+    return ScoreComponent(
+        name=COMPONENT_BASE_WEIGHT,
+        value=float(value),
+        component_type=COMPONENT_BASE_WEIGHT,
+        operation=COMPONENT_OPERATION_REPLACE,
+        applied=applied,
+        source=source,
+        interaction_type=normalize_interaction_type(
+            interaction_type,
+            preserve_unknown=True,
+        ),
+        description=description,
+        order=10,
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+def make_multiplier_component(
+    name: str,
+    value: Number,
+    *,
+    component_type: str = COMPONENT_ADJUSTMENT,
+    interaction_type: Any = SCORE_TYPE_UNKNOWN,
+    source: str = "",
+    description: str = "",
+    applied: bool = True,
+    order: int = 20,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoreComponent:
+    """
+    Create a multiplicative score component.
+    """
+
+    return ScoreComponent(
+        name=name,
+        value=float(value),
+        component_type=component_type,
+        operation=COMPONENT_OPERATION_MULTIPLY,
+        applied=applied,
+        source=source,
+        interaction_type=normalize_interaction_type(
+            interaction_type,
+            preserve_unknown=True,
+        ),
+        description=description,
+        order=order,
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+def make_penalty_component(
+    name: str,
+    value: Number,
+    *,
+    interaction_type: Any = SCORE_TYPE_UNKNOWN,
+    source: str = "",
+    description: str = "",
+    applied: bool = True,
+    order: int = 80,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoreComponent:
+    """
+    Create an additive penalty component.
+
+    Positive penalty magnitudes are automatically converted to negative
+    values. Negative values are preserved.
+    """
+
+    numeric_value = float(value)
+
+    if numeric_value > 0.0:
+        numeric_value = -numeric_value
+
+    return ScoreComponent(
+        name=name,
+        value=numeric_value,
+        component_type=COMPONENT_PENALTY,
+        operation=COMPONENT_OPERATION_ADD,
+        applied=applied,
+        source=source,
+        interaction_type=normalize_interaction_type(
+            interaction_type,
+            preserve_unknown=True,
+        ),
+        description=description,
+        order=order,
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+def make_bonus_component(
+    name: str,
+    value: Number,
+    *,
+    interaction_type: Any = SCORE_TYPE_UNKNOWN,
+    source: str = "",
+    description: str = "",
+    applied: bool = True,
+    order: int = 90,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoreComponent:
+    """
+    Create an additive bonus component.
+
+    Negative bonus values are converted to their absolute value.
+    """
+
+    numeric_value = abs(float(value))
+
+    return ScoreComponent(
+        name=name,
+        value=numeric_value,
+        component_type=COMPONENT_BONUS,
+        operation=COMPONENT_OPERATION_ADD,
+        applied=applied,
+        source=source,
+        interaction_type=normalize_interaction_type(
+            interaction_type,
+            preserve_unknown=True,
+        ),
+        description=description,
+        order=order,
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 4.1.8. InteractionScore
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class InteractionScore:
+    """
+    Immutable scoring result for one detected interaction.
+
+    The original interaction object is retained only as an optional reference.
+    The scoring result itself remains independent from the implementation of
+    ``contacts.py``, ``hbonds.py``, ``hydrophobic.py``, ``pi.py`` and
+    ``saltbridge.py``.
+
+    Parameters
+    ----------
+    interaction_id
+        Stable identifier for the scored interaction.
+    interaction_type
+        Canonical interaction type or subtype.
+    base_weight
+        Base weight before multipliers and additive adjustments.
+    raw_score
+        Score after multiplicative adjustments but before penalties and
+        bonuses. When omitted, it is calculated automatically.
+    final_score
+        Final interaction score. When omitted, it is calculated from
+        ``raw_score + penalty_score + bonus_score``.
+    interaction_family
+        General interaction family. It is inferred automatically when omitted.
+    strength
+        Canonical interaction-strength label.
+    classification
+        Canonical chemical or geometric classification.
+    geometry_quality
+        Canonical geometry-quality label.
+    polarity
+        Favorable, penalty, neutral or unknown polarity.
+    strength_multiplier
+        Multiplier associated with interaction strength.
+    classification_multiplier
+        Multiplier associated with the interaction classification.
+    geometry_multiplier
+        Multiplier associated with geometric quality.
+    penalty_score
+        Sum of additive penalties.
+    bonus_score
+        Sum of additive bonuses.
+    status
+        Scoring status such as accepted, rejected or duplicate.
+    accepted
+        Whether the interaction contributes to aggregate scores.
+    rejection_reason
+        Explanation for excluded interactions.
+    source
+        Module or scoring rule that generated the result.
+    atom_pair
+        Optional stable pair of atom identifiers.
+    residue_pair
+        Optional stable pair of residue identifiers.
+    pose_id
+        Optional pose identifier.
+    model_id
+        Optional molecular-model identifier.
+    components
+        Detailed score-component sequence.
+    interaction
+        Optional reference to the original interaction object.
+    metadata
+        Additional immutable metadata.
+    """
+
+    interaction_id: str
+    interaction_type: str
+
+    base_weight: float
+
+    raw_score: Optional[float] = None
+    final_score: Optional[float] = None
+
+    interaction_family: str = ""
+
+    strength: str = STRENGTH_UNKNOWN
+    classification: str = CLASSIFICATION_UNKNOWN
+    geometry_quality: str = GEOMETRY_UNKNOWN
+    polarity: str = POLARITY_UNKNOWN
+
+    strength_multiplier: float = DEFAULT_NEUTRAL_MULTIPLIER
+    classification_multiplier: float = DEFAULT_NEUTRAL_MULTIPLIER
+    geometry_multiplier: float = DEFAULT_NEUTRAL_MULTIPLIER
+
+    penalty_score: float = 0.0
+    bonus_score: float = 0.0
+
+    status: str = SCORE_STATUS_ACCEPTED
+    accepted: bool = True
+    rejection_reason: str = ""
+
+    source: str = ""
+
+    atom_pair: Optional[Tuple[str, str]] = None
+    residue_pair: Optional[Tuple[str, str]] = None
+
+    pose_id: str = ""
+    model_id: str = ""
+
+    components: Tuple[ScoreComponent, ...] = field(
+        default_factory=tuple
+    )
+
+    interaction: Any = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize values and calculate omitted score fields.
+        """
+
+        normalized_id = _coerce_identifier(
+            self.interaction_id
+        )
+
+        if not normalized_id:
+            raise ScoringConfigurationError(
+                "InteractionScore.interaction_id cannot be empty."
+            )
+
+        normalized_type = normalize_interaction_type(
+            self.interaction_type,
+            preserve_unknown=True,
+        )
+
+        if not normalized_type:
+            normalized_type = SCORE_TYPE_UNKNOWN
+
+        normalized_family = (
+            canonical_interaction_family(normalized_type)
+            if not self.interaction_family
+            else canonical_interaction_family(
+                self.interaction_family
+            )
+        )
+
+        normalized_strength = normalize_interaction_strength(
+            self.strength
+        )
+
+        normalized_classification = (
+            normalize_interaction_classification(
+                self.classification
+            )
+        )
+
+        normalized_geometry = normalize_geometry_quality(
+            self.geometry_quality
+        )
+
+        normalized_polarity = _normalize_scoring_name(
+            self.polarity
+        )
+
+        if normalized_polarity not in CANONICAL_POLARITIES:
+            normalized_polarity = get_interaction_polarity(
+                normalized_type
+            )
+
+        base_weight = _coerce_finite_score_value(
+            self.base_weight,
+            name="InteractionScore.base_weight",
+        )
+
+        strength_multiplier = _coerce_finite_score_value(
+            self.strength_multiplier,
+            name="InteractionScore.strength_multiplier",
+        )
+
+        classification_multiplier = _coerce_finite_score_value(
+            self.classification_multiplier,
+            name="InteractionScore.classification_multiplier",
+        )
+
+        geometry_multiplier = _coerce_finite_score_value(
+            self.geometry_multiplier,
+            name="InteractionScore.geometry_multiplier",
+        )
+
+        for multiplier_name, multiplier_value in (
+            (
+                "strength_multiplier",
+                strength_multiplier,
+            ),
+            (
+                "classification_multiplier",
+                classification_multiplier,
+            ),
+            (
+                "geometry_multiplier",
+                geometry_multiplier,
+            ),
+        ):
+            if multiplier_value < 0.0:
+                raise ScoringMultiplierError(
+                    f"InteractionScore.{multiplier_name} "
+                    "cannot be negative."
+                )
+
+        penalty_score = _coerce_finite_score_value(
+            self.penalty_score,
+            name="InteractionScore.penalty_score",
+            default=0.0,
+        )
+
+        bonus_score = _coerce_finite_score_value(
+            self.bonus_score,
+            name="InteractionScore.bonus_score",
+            default=0.0,
+        )
+
+        calculated_raw_score = float(
+            base_weight
+            * strength_multiplier
+            * classification_multiplier
+            * geometry_multiplier
+        )
+
+        if self.raw_score is None:
+            raw_score = calculated_raw_score
+        else:
+            raw_score = _coerce_finite_score_value(
+                self.raw_score,
+                name="InteractionScore.raw_score",
+            )
+
+        calculated_final_score = float(
+            raw_score
+            + penalty_score
+            + bonus_score
+        )
+
+        if self.final_score is None:
+            final_score = calculated_final_score
+        else:
+            final_score = _coerce_finite_score_value(
+                self.final_score,
+                name="InteractionScore.final_score",
+            )
+
+        normalized_status = _normalize_score_status(
+            self.status
+        )
+
+        normalized_accepted = bool(self.accepted)
+
+        if normalized_status in {
+            SCORE_STATUS_REJECTED,
+            SCORE_STATUS_SKIPPED,
+            SCORE_STATUS_DUPLICATE,
+            SCORE_STATUS_INVALID,
+        }:
+            normalized_accepted = False
+
+        normalized_reason = _coerce_optional_text(
+            self.rejection_reason
+        )
+
+        if (
+            not normalized_accepted
+            and not normalized_reason
+            and normalized_status != SCORE_STATUS_ACCEPTED
+        ):
+            normalized_reason = normalized_status
+
+        normalized_components: List[ScoreComponent] = []
+
+        for component in self.components:
+            if not isinstance(component, ScoreComponent):
+                raise ScoringConfigurationError(
+                    "InteractionScore.components must contain only "
+                    "ScoreComponent instances."
+                )
+
+            normalized_components.append(component)
+
+        normalized_components.sort(
+            key=lambda component: component.sort_key
+        )
+
+        object.__setattr__(
+            self,
+            "interaction_id",
+            normalized_id,
+        )
+        object.__setattr__(
+            self,
+            "interaction_type",
+            normalized_type,
+        )
+        object.__setattr__(
+            self,
+            "interaction_family",
+            normalized_family,
+        )
+        object.__setattr__(
+            self,
+            "base_weight",
+            float(base_weight),
+        )
+        object.__setattr__(
+            self,
+            "strength",
+            normalized_strength,
+        )
+        object.__setattr__(
+            self,
+            "classification",
+            normalized_classification,
+        )
+        object.__setattr__(
+            self,
+            "geometry_quality",
+            normalized_geometry,
+        )
+        object.__setattr__(
+            self,
+            "polarity",
+            normalized_polarity,
+        )
+        object.__setattr__(
+            self,
+            "strength_multiplier",
+            float(strength_multiplier),
+        )
+        object.__setattr__(
+            self,
+            "classification_multiplier",
+            float(classification_multiplier),
+        )
+        object.__setattr__(
+            self,
+            "geometry_multiplier",
+            float(geometry_multiplier),
+        )
+        object.__setattr__(
+            self,
+            "penalty_score",
+            float(penalty_score),
+        )
+        object.__setattr__(
+            self,
+            "bonus_score",
+            float(bonus_score),
+        )
+        object.__setattr__(
+            self,
+            "raw_score",
+            float(raw_score),
+        )
+        object.__setattr__(
+            self,
+            "final_score",
+            float(final_score),
+        )
+        object.__setattr__(
+            self,
+            "status",
+            normalized_status,
+        )
+        object.__setattr__(
+            self,
+            "accepted",
+            normalized_accepted,
+        )
+        object.__setattr__(
+            self,
+            "rejection_reason",
+            normalized_reason,
+        )
+        object.__setattr__(
+            self,
+            "source",
+            _coerce_optional_text(self.source),
+        )
+        object.__setattr__(
+            self,
+            "atom_pair",
+            _normalize_identifier_pair(
+                self.atom_pair,
+                field_name="InteractionScore.atom_pair",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "residue_pair",
+            _normalize_identifier_pair(
+                self.residue_pair,
+                field_name="InteractionScore.residue_pair",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "pose_id",
+            _coerce_identifier(self.pose_id),
+        )
+        object.__setattr__(
+            self,
+            "model_id",
+            _coerce_identifier(self.model_id),
+        )
+        object.__setattr__(
+            self,
+            "components",
+            tuple(normalized_components),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def score(self) -> float:
+        """
+        Return the final interaction score.
+        """
+
+        return float(self.final_score)
+
+    @property
+    def calculated_raw_score(self) -> float:
+        """
+        Return the raw score implied by the stored base weight and multipliers.
+        """
+
+        return float(
+            self.base_weight
+            * self.strength_multiplier
+            * self.classification_multiplier
+            * self.geometry_multiplier
+        )
+
+    @property
+    def calculated_final_score(self) -> float:
+        """
+        Return the final score implied by raw score, penalties and bonuses.
+        """
+
+        return float(
+            self.raw_score
+            + self.penalty_score
+            + self.bonus_score
+        )
+
+    @property
+    def score_delta(self) -> float:
+        """
+        Return the difference between final and raw scores.
+        """
+
+        return float(
+            self.final_score
+            - self.raw_score
+        )
+
+    @property
+    def multiplier_product(self) -> float:
+        """
+        Return the product of all standard multipliers.
+        """
+
+        return float(
+            self.strength_multiplier
+            * self.classification_multiplier
+            * self.geometry_multiplier
+        )
+
+    @property
+    def is_favorable(self) -> bool:
+        """Return whether the interaction has favorable polarity."""
+
+        return self.polarity == POLARITY_FAVORABLE
+
+    @property
+    def is_penalty(self) -> bool:
+        """Return whether the interaction represents a penalty."""
+
+        return self.polarity == POLARITY_PENALTY
+
+    @property
+    def is_neutral(self) -> bool:
+        """Return whether the interaction has neutral polarity."""
+
+        return self.polarity == POLARITY_NEUTRAL
+
+    @property
+    def is_rejected(self) -> bool:
+        """Return whether the interaction was rejected."""
+
+        return (
+            not self.accepted
+            or self.status == SCORE_STATUS_REJECTED
+        )
+
+    @property
+    def is_duplicate(self) -> bool:
+        """Return whether the interaction was marked as a duplicate."""
+
+        return self.status == SCORE_STATUS_DUPLICATE
+
+    @property
+    def contributes(self) -> bool:
+        """
+        Return whether the interaction contributes to aggregate scores.
+        """
+
+        return (
+            self.accepted
+            and self.status == SCORE_STATUS_ACCEPTED
+        )
+
+    @property
+    def contribution(self) -> float:
+        """
+        Return the score contribution used in aggregate scoring.
+
+        Rejected, skipped, invalid and duplicate interactions contribute zero.
+        """
+
+        if not self.contributes:
+            return 0.0
+
+        return float(self.final_score)
+
+    @property
+    def component_count(self) -> int:
+        """Return the number of recorded score components."""
+
+        return len(self.components)
+
+    @property
+    def applied_components(self) -> Tuple[ScoreComponent, ...]:
+        """Return all applied score components."""
+
+        return tuple(
+            component
+            for component in self.components
+            if component.applied
+        )
+
+    @property
+    def penalties(self) -> Tuple[ScoreComponent, ...]:
+        """Return all penalty components."""
+
+        return tuple(
+            component
+            for component in self.components
+            if component.is_penalty
+        )
+
+    @property
+    def bonuses(self) -> Tuple[ScoreComponent, ...]:
+        """Return all bonus components."""
+
+        return tuple(
+            component
+            for component in self.components
+            if component.is_bonus
+        )
+
+    @property
+    def canonical_key(
+        self,
+    ) -> Tuple[
+        str,
+        str,
+        Optional[Tuple[str, str]],
+        Optional[Tuple[str, str]],
+        str,
+        str,
+    ]:
+        """
+        Return a stable identity key suitable for exact deduplication.
+        """
+
+        return (
+            self.interaction_type,
+            self.interaction_family,
+            self.atom_pair,
+            self.residue_pair,
+            self.pose_id,
+            self.model_id,
+        )
+
+    @property
+    def atom_pair_key(
+        self,
+    ) -> Optional[Tuple[str, str, str]]:
+        """
+        Return a canonical atom-pair deduplication key.
+        """
+
+        if self.atom_pair is None:
+            return None
+
+        first, second = sorted(self.atom_pair)
+
+        return (
+            self.interaction_type,
+            first,
+            second,
+        )
+
+    @property
+    def residue_pair_key(
+        self,
+    ) -> Optional[Tuple[str, str, str]]:
+        """
+        Return a canonical residue-pair deduplication key.
+        """
+
+        if self.residue_pair is None:
+            return None
+
+        first, second = sorted(self.residue_pair)
+
+        return (
+            self.interaction_type,
+            first,
+            second,
+        )
+
+    @property
+    def sort_key(
+        self,
+    ) -> Tuple[int, float, str]:
+        """
+        Return a deterministic interaction-score sorting key.
+
+        Interaction types follow the canonical type order. Within each type,
+        higher scores are placed first.
+        """
+
+        type_index, canonical_name = interaction_type_sort_key(
+            self.interaction_type
+        )
+
+        return (
+            type_index,
+            -float(self.final_score),
+            self.interaction_id or canonical_name,
+        )
+
+    def component(
+        self,
+        name: Any,
+        *,
+        default: Optional[ScoreComponent] = None,
+    ) -> Optional[ScoreComponent]:
+        """
+        Return the first component matching a normalized name.
+        """
+
+        normalized_name = _normalize_scoring_name(name)
+
+        for component in self.components:
+            if component.name == normalized_name:
+                return component
+
+        return default
+
+    def components_of_type(
+        self,
+        component_type: Any,
+    ) -> Tuple[ScoreComponent, ...]:
+        """
+        Return all components with a specific canonical type.
+        """
+
+        canonical_type = _normalize_component_type(
+            component_type,
+            preserve_unknown=True,
+        )
+
+        return tuple(
+            component
+            for component in self.components
+            if component.component_type == canonical_type
+        )
+
+    def validate_consistency(
+        self,
+        *,
+        tolerance: float = SCORE_COMPARISON_TOLERANCE,
+        require_raw_formula: bool = False,
+        require_final_formula: bool = True,
+    ) -> bool:
+        """
+        Validate internal mathematical consistency.
+
+        Parameters
+        ----------
+        tolerance
+            Absolute comparison tolerance.
+        require_raw_formula
+            Require ``raw_score`` to equal base weight multiplied by all
+            standard multipliers.
+        require_final_formula
+            Require ``final_score`` to equal raw score plus penalties and
+            bonuses.
+
+        Returns
+        -------
+        bool
+            ``True`` when all requested consistency checks pass.
+
+        Raises
+        ------
+        ScoringConfigurationError
+            If a requested consistency rule is violated.
+        """
+
+        tolerance_value = _coerce_finite_score_value(
+            tolerance,
+            name="tolerance",
+        )
+
+        if tolerance_value < 0.0:
+            raise ScoringConfigurationError(
+                "tolerance cannot be negative."
+            )
+
+        if require_raw_formula:
+            raw_difference = abs(
+                self.raw_score
+                - self.calculated_raw_score
+            )
+
+            if raw_difference > tolerance_value:
+                raise ScoringConfigurationError(
+                    "InteractionScore.raw_score is inconsistent with "
+                    "base_weight and multipliers."
+                )
+
+        if require_final_formula:
+            final_difference = abs(
+                self.final_score
+                - self.calculated_final_score
+            )
+
+            if final_difference > tolerance_value:
+                raise ScoringConfigurationError(
+                    "InteractionScore.final_score is inconsistent with "
+                    "raw_score, penalty_score and bonus_score."
+                )
+
+        return True
+
+    def with_updates(self, **changes: Any) -> "InteractionScore":
+        """
+        Return a validated copy with selected fields changed.
+        """
+
+        return replace(self, **changes)
+
+    def with_component(
+        self,
+        component: ScoreComponent,
+        *,
+        replace_existing: bool = False,
+        recalculate: bool = False,
+    ) -> "InteractionScore":
+        """
+        Return a copy containing an additional score component.
+
+        Parameters
+        ----------
+        component
+            Component to append.
+        replace_existing
+            Replace components with the same name.
+        recalculate
+            Recalculate the score by applying the complete component sequence.
+            This option should be used only when the sequence fully represents
+            the scoring calculation.
+        """
+
+        if not isinstance(component, ScoreComponent):
+            raise ScoringConfigurationError(
+                "component must be a ScoreComponent instance."
+            )
+
+        if replace_existing:
+            updated_components = tuple(
+                existing
+                for existing in self.components
+                if existing.name != component.name
+            ) + (component,)
+        else:
+            updated_components = self.components + (component,)
+
+        if not recalculate:
+            return replace(
+                self,
+                components=updated_components,
+            )
+
+        recalculated_score = apply_score_components(
+            updated_components
+        )
+
+        return replace(
+            self,
+            components=updated_components,
+            final_score=recalculated_score,
+        )
+
+    def without_interaction_reference(self) -> "InteractionScore":
+        """
+        Return a copy without the original interaction-object reference.
+        """
+
+        return replace(
+            self,
+            interaction=None,
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_components: bool = True,
+        include_metadata: bool = True,
+        include_interaction: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Return a mutable dictionary representation.
+
+        The original interaction object is omitted by default because it may
+        not be serializable.
+        """
+
+        result: Dict[str, Any] = {
+            "interaction_id": self.interaction_id,
+            "interaction_type": self.interaction_type,
+            "interaction_family": self.interaction_family,
+            "base_weight": float(self.base_weight),
+            "strength": self.strength,
+            "classification": self.classification,
+            "geometry_quality": self.geometry_quality,
+            "polarity": self.polarity,
+            "strength_multiplier": float(
+                self.strength_multiplier
+            ),
+            "classification_multiplier": float(
+                self.classification_multiplier
+            ),
+            "geometry_multiplier": float(
+                self.geometry_multiplier
+            ),
+            "multiplier_product": float(
+                self.multiplier_product
+            ),
+            "raw_score": float(self.raw_score),
+            "penalty_score": float(self.penalty_score),
+            "bonus_score": float(self.bonus_score),
+            "final_score": float(self.final_score),
+            "contribution": float(self.contribution),
+            "score_delta": float(self.score_delta),
+            "status": self.status,
+            "accepted": bool(self.accepted),
+            "contributes": bool(self.contributes),
+            "rejection_reason": self.rejection_reason,
+            "source": self.source,
+            "atom_pair": (
+                None
+                if self.atom_pair is None
+                else list(self.atom_pair)
+            ),
+            "residue_pair": (
+                None
+                if self.residue_pair is None
+                else list(self.residue_pair)
+            ),
+            "pose_id": self.pose_id,
+            "model_id": self.model_id,
+        }
+
+        if include_components:
+            result["components"] = [
+                component.to_dict(
+                    include_metadata=include_metadata
+                )
+                for component in self.components
+            ]
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        if include_interaction:
+            result["interaction"] = self.interaction
+
+        return result
+
+    def __float__(self) -> float:
+        """Return the final interaction score."""
+
+        return float(self.final_score)
+
+    def __bool__(self) -> bool:
+        """Return whether the interaction contributes to aggregate scoring."""
+
+        return self.contributes
+
+    def __hash__(self) -> int:
+        """
+        Return a stable hash excluding metadata and original interaction data.
+        """
+
+        return hash(
+            (
+                self.interaction_id,
+                self.interaction_type,
+                self.interaction_family,
+                self.base_weight,
+                self.raw_score,
+                self.final_score,
+                self.strength,
+                self.classification,
+                self.geometry_quality,
+                self.polarity,
+                self.strength_multiplier,
+                self.classification_multiplier,
+                self.geometry_multiplier,
+                self.penalty_score,
+                self.bonus_score,
+                self.status,
+                self.accepted,
+                self.rejection_reason,
+                self.source,
+                self.atom_pair,
+                self.residue_pair,
+                self.pose_id,
+                self.model_id,
+                self.components,
+            )
+        )
+
+
+# -----------------------------------------------------------------------------
+# 4.1.9. Score-component execution
+# -----------------------------------------------------------------------------
+
+def apply_score_components(
+    components: Iterable[ScoreComponent],
+    *,
+    initial_score: float = 0.0,
+    sort_components: bool = True,
+) -> float:
+    """
+    Apply a sequence of score components.
+
+    Parameters
+    ----------
+    components
+        Components to apply.
+    initial_score
+        Initial running score.
+    sort_components
+        Apply components using their deterministic ``sort_key`` order.
+
+    Returns
+    -------
+    float
+        Final calculated score.
+    """
+
+    running_score = _coerce_finite_score_value(
+        initial_score,
+        name="initial_score",
+    )
+
+    validated_components: List[ScoreComponent] = []
+
+    for component in components:
+        if not isinstance(component, ScoreComponent):
+            raise ScoringConfigurationError(
+                "All score components must be ScoreComponent instances."
+            )
+
+        validated_components.append(component)
+
+    if sort_components:
+        validated_components.sort(
+            key=lambda component: component.sort_key
+        )
+
+    for component in validated_components:
+        running_score = component.apply(
+            running_score
+        )
+
+    return float(running_score)
+
+
+# -----------------------------------------------------------------------------
+# 4.1.10. Standard component construction
+# -----------------------------------------------------------------------------
+
+def build_standard_score_components(
+    *,
+    interaction_type: Any,
+    base_weight: Number,
+    strength_multiplier: Number = DEFAULT_NEUTRAL_MULTIPLIER,
+    classification_multiplier: Number = DEFAULT_NEUTRAL_MULTIPLIER,
+    geometry_multiplier: Number = DEFAULT_NEUTRAL_MULTIPLIER,
+    penalty_score: Number = 0.0,
+    bonus_score: Number = 0.0,
+    source: str = "",
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> Tuple[ScoreComponent, ...]:
+    """
+    Build the standard DockAnalyzer interaction-scoring component sequence.
+    """
+
+    canonical_type = normalize_interaction_type(
+        interaction_type,
+        preserve_unknown=True,
+    )
+
+    shared_metadata = metadata or _EMPTY_METADATA
+
+    components: List[ScoreComponent] = [
+        make_base_weight_component(
+            base_weight,
+            interaction_type=canonical_type,
+            source=source,
+            description="Base weight assigned to the interaction type.",
+            metadata=shared_metadata,
+        ),
+        make_multiplier_component(
+            COMPONENT_STRENGTH_MULTIPLIER,
+            strength_multiplier,
+            component_type=COMPONENT_STRENGTH_MULTIPLIER,
+            interaction_type=canonical_type,
+            source=source,
+            description="Interaction-strength multiplier.",
+            order=20,
+            metadata=shared_metadata,
+        ),
+        make_multiplier_component(
+            COMPONENT_CLASSIFICATION_MULTIPLIER,
+            classification_multiplier,
+            component_type=COMPONENT_CLASSIFICATION_MULTIPLIER,
+            interaction_type=canonical_type,
+            source=source,
+            description="Interaction-classification multiplier.",
+            order=30,
+            metadata=shared_metadata,
+        ),
+        make_multiplier_component(
+            COMPONENT_GEOMETRY_MULTIPLIER,
+            geometry_multiplier,
+            component_type=COMPONENT_GEOMETRY_MULTIPLIER,
+            interaction_type=canonical_type,
+            source=source,
+            description="Interaction-geometry multiplier.",
+            order=40,
+            metadata=shared_metadata,
+        ),
+    ]
+
+    penalty_value = float(penalty_score)
+
+    if abs(penalty_value) > SCORE_EPSILON:
+        components.append(
+            make_penalty_component(
+                PENALTY_CLASH
+                if canonical_type == SCORE_TYPE_CLASH
+                else COMPONENT_PENALTY,
+                penalty_value,
+                interaction_type=canonical_type,
+                source=source,
+                description="Total additive interaction penalty.",
+                order=80,
+                metadata=shared_metadata,
+            )
+        )
+
+    bonus_value = float(bonus_score)
+
+    if abs(bonus_value) > SCORE_EPSILON:
+        components.append(
+            make_bonus_component(
+                COMPONENT_BONUS,
+                bonus_value,
+                interaction_type=canonical_type,
+                source=source,
+                description="Total additive interaction bonus.",
+                order=90,
+                metadata=shared_metadata,
+            )
+        )
+
+    return tuple(components)
+
+
+# -----------------------------------------------------------------------------
+# 4.1.11. InteractionScore factory
+# -----------------------------------------------------------------------------
+
+def create_interaction_score(
+    *,
+    interaction_id: Any,
+    interaction_type: Any,
+    base_weight: Number,
+    strength: Any = STRENGTH_UNKNOWN,
+    classification: Any = CLASSIFICATION_UNKNOWN,
+    geometry_quality: Any = GEOMETRY_UNKNOWN,
+    strength_multiplier: Number = DEFAULT_NEUTRAL_MULTIPLIER,
+    classification_multiplier: Number = DEFAULT_NEUTRAL_MULTIPLIER,
+    geometry_multiplier: Number = DEFAULT_NEUTRAL_MULTIPLIER,
+    penalty_score: Number = 0.0,
+    bonus_score: Number = 0.0,
+    status: Any = SCORE_STATUS_ACCEPTED,
+    accepted: bool = True,
+    rejection_reason: str = "",
+    source: str = "",
+    atom_pair: Optional[Sequence[Any]] = None,
+    residue_pair: Optional[Sequence[Any]] = None,
+    pose_id: Any = "",
+    model_id: Any = "",
+    interaction: Any = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+    preserve_components: bool = True,
+) -> InteractionScore:
+    """
+    Create a standard interaction-scoring result.
+
+    This factory calculates raw and final scores automatically and optionally
+    records the complete component sequence.
+    """
+
+    canonical_type = normalize_interaction_type(
+        interaction_type,
+        preserve_unknown=True,
+    )
+
+    components = (
+        build_standard_score_components(
+            interaction_type=canonical_type,
+            base_weight=base_weight,
+            strength_multiplier=strength_multiplier,
+            classification_multiplier=classification_multiplier,
+            geometry_multiplier=geometry_multiplier,
+            penalty_score=penalty_score,
+            bonus_score=bonus_score,
+            source=source,
+            metadata=metadata,
+        )
+        if preserve_components
+        else _EMPTY_COMPONENT_TUPLE
+    )
+
+    return InteractionScore(
+        interaction_id=_coerce_identifier(interaction_id),
+        interaction_type=canonical_type,
+        base_weight=float(base_weight),
+        strength=normalize_interaction_strength(strength),
+        classification=normalize_interaction_classification(
+            classification
+        ),
+        geometry_quality=normalize_geometry_quality(
+            geometry_quality
+        ),
+        strength_multiplier=float(strength_multiplier),
+        classification_multiplier=float(
+            classification_multiplier
+        ),
+        geometry_multiplier=float(geometry_multiplier),
+        penalty_score=float(penalty_score),
+        bonus_score=float(bonus_score),
+        status=_normalize_score_status(status),
+        accepted=bool(accepted),
+        rejection_reason=rejection_reason,
+        source=source,
+        atom_pair=(
+            None
+            if atom_pair is None
+            else tuple(atom_pair)
+        ),
+        residue_pair=(
+            None
+            if residue_pair is None
+            else tuple(residue_pair)
+        ),
+        pose_id=_coerce_identifier(pose_id),
+        model_id=_coerce_identifier(model_id),
+        components=components,
+        interaction=interaction,
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 4.1.12. Rejected and duplicate result factories
+# -----------------------------------------------------------------------------
+
+def create_rejected_interaction_score(
+    *,
+    interaction_id: Any,
+    interaction_type: Any,
+    reason: str,
+    source: str = "",
+    interaction: Any = None,
+    atom_pair: Optional[Sequence[Any]] = None,
+    residue_pair: Optional[Sequence[Any]] = None,
+    pose_id: Any = "",
+    model_id: Any = "",
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> InteractionScore:
+    """
+    Create a rejected interaction result with zero contribution.
+    """
+
+    return InteractionScore(
+        interaction_id=_coerce_identifier(interaction_id),
+        interaction_type=normalize_interaction_type(
+            interaction_type,
+            preserve_unknown=True,
+        ),
+        base_weight=0.0,
+        raw_score=0.0,
+        final_score=0.0,
+        status=SCORE_STATUS_REJECTED,
+        accepted=False,
+        rejection_reason=reason,
+        source=source,
+        atom_pair=(
+            None
+            if atom_pair is None
+            else tuple(atom_pair)
+        ),
+        residue_pair=(
+            None
+            if residue_pair is None
+            else tuple(residue_pair)
+        ),
+        pose_id=_coerce_identifier(pose_id),
+        model_id=_coerce_identifier(model_id),
+        interaction=interaction,
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+def create_duplicate_interaction_score(
+    original: InteractionScore,
+    *,
+    reason: str = "Duplicate interaction.",
+    duplicate_of: Optional[Any] = None,
+) -> InteractionScore:
+    """
+    Return a duplicate-marked copy of an interaction score.
+    """
+
+    if not isinstance(original, InteractionScore):
+        raise ScoringConfigurationError(
+            "original must be an InteractionScore instance."
+        )
+
+    metadata = dict(original.metadata)
+
+    if duplicate_of is not None:
+        metadata["duplicate_of"] = _coerce_identifier(
+            duplicate_of
+        )
+
+    return replace(
+        original,
+        status=SCORE_STATUS_DUPLICATE,
+        accepted=False,
+        rejection_reason=reason,
+        metadata=metadata,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 4.1.13. Result validation helpers
+# -----------------------------------------------------------------------------
+
+def validate_score_component(
+    component: ScoreComponent,
+) -> ScoreComponent:
+    """
+    Validate and return a score component.
+    """
+
+    if not isinstance(component, ScoreComponent):
+        raise ScoringConfigurationError(
+            "Expected a ScoreComponent instance."
+        )
+
+    if component.component_type not in SCORE_COMPONENT_TYPES:
+        # Custom types are allowed, but they must still be normalized.
+        if not _normalize_scoring_name(component.component_type):
+            raise ScoringConfigurationError(
+                "ScoreComponent.component_type cannot be empty."
+            )
+
+    if component.operation not in SCORE_COMPONENT_OPERATIONS:
+        raise ScoringConfigurationError(
+            "Unsupported ScoreComponent operation: "
+            f"{component.operation!r}."
+        )
+
+    _coerce_finite_score_value(
+        component.value,
+        name="ScoreComponent.value",
+    )
+
+    return component
+
+
+def validate_interaction_score(
+    result: InteractionScore,
+    *,
+    validate_consistency: bool = True,
+    tolerance: float = SCORE_COMPARISON_TOLERANCE,
+) -> InteractionScore:
+    """
+    Validate and return an interaction score.
+    """
+
+    if not isinstance(result, InteractionScore):
+        raise ScoringConfigurationError(
+            "Expected an InteractionScore instance."
+        )
+
+    for component in result.components:
+        validate_score_component(component)
+
+    if validate_consistency:
+        result.validate_consistency(
+            tolerance=tolerance,
+            require_raw_formula=False,
+            require_final_formula=True,
+        )
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 4.1.14. Collection helpers
+# -----------------------------------------------------------------------------
+
+def sort_interaction_scores(
+    results: Iterable[InteractionScore],
+    *,
+    reverse: bool = False,
+) -> Tuple[InteractionScore, ...]:
+    """
+    Return interaction scores in deterministic canonical order.
+    """
+
+    validated: List[InteractionScore] = []
+
+    for result in results:
+        validated.append(
+            validate_interaction_score(
+                result,
+                validate_consistency=False,
+            )
+        )
+
+    return tuple(
+        sorted(
+            validated,
+            key=lambda result: result.sort_key,
+            reverse=reverse,
+        )
+    )
+
+
+def interaction_score_total(
+    results: Iterable[InteractionScore],
+    *,
+    accepted_only: bool = True,
+) -> float:
+    """
+    Return the sum of interaction-score contributions.
+    """
+
+    total = 0.0
+
+    for result in results:
+        validate_interaction_score(
+            result,
+            validate_consistency=False,
+        )
+
+        if accepted_only:
+            total += result.contribution
+        else:
+            total += float(result.final_score)
+
+    return float(total)
+
+
+def interaction_score_components_total(
+    result: InteractionScore,
+    *,
+    component_type: Optional[str] = None,
+    applied_only: bool = True,
+) -> float:
+    """
+    Sum additive components from one interaction score.
+
+    Multiplicative, replacement and informational components are not included.
+    """
+
+    validate_interaction_score(
+        result,
+        validate_consistency=False,
+    )
+
+    canonical_type = (
+        None
+        if component_type is None
+        else _normalize_component_type(
+            component_type,
+            preserve_unknown=True,
+        )
+    )
+
+    total = 0.0
+
+    for component in result.components:
+        if applied_only and not component.applied:
+            continue
+
+        if canonical_type is not None:
+            if component.component_type != canonical_type:
+                continue
+
+        if not component.is_additive:
+            continue
+
+        total += component.value
+
+    return float(total)
+
+
+# -----------------------------------------------------------------------------
+# 4.1.15. Section consistency validation
+# -----------------------------------------------------------------------------
+
+def _validate_section_4_1_structures() -> None:
+    """
+    Validate the core result dataclasses during module import.
+    """
+
+    component = ScoreComponent(
+        name="test_component",
+        value=1.0,
+        component_type=COMPONENT_ADJUSTMENT,
+        operation=COMPONENT_OPERATION_ADD,
+    )
+
+    if component.apply(1.0) != 2.0:
+        raise RuntimeError(
+            "ScoreComponent additive operation validation failed."
+        )
+
+    test_result = create_interaction_score(
+        interaction_id="test_interaction",
+        interaction_type=SCORE_TYPE_HYDROGEN_BOND,
+        base_weight=2.0,
+        strength_multiplier=1.25,
+        classification_multiplier=1.0,
+        geometry_multiplier=0.8,
+        penalty_score=-0.1,
+        bonus_score=0.0,
+    )
+
+    expected_raw = 2.0 * 1.25 * 1.0 * 0.8
+    expected_final = expected_raw - 0.1
+
+    if (
+        abs(test_result.raw_score - expected_raw)
+        > SCORE_COMPARISON_TOLERANCE
+    ):
+        raise RuntimeError(
+            "InteractionScore raw-score validation failed."
+        )
+
+    if (
+        abs(test_result.final_score - expected_final)
+        > SCORE_COMPARISON_TOLERANCE
+    ):
+        raise RuntimeError(
+            "InteractionScore final-score validation failed."
+        )
+
+    test_result.validate_consistency()
+
+
+_validate_section_4_1_structures()
+
+
+# -----------------------------------------------------------------------------
+# 4.1.16. Section public interface
+# -----------------------------------------------------------------------------
+
+_SECTION_4_1_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    # Component types
+    "COMPONENT_BASE_WEIGHT",
+    "COMPONENT_STRENGTH_MULTIPLIER",
+    "COMPONENT_CLASSIFICATION_MULTIPLIER",
+    "COMPONENT_GEOMETRY_MULTIPLIER",
+    "COMPONENT_PENALTY",
+    "COMPONENT_BONUS",
+    "COMPONENT_ADJUSTMENT",
+    "COMPONENT_FINAL_SCORE",
+    "COMPONENT_INFORMATIONAL",
+    "SCORE_COMPONENT_TYPES",
+
+    # Component operations
+    "COMPONENT_OPERATION_ADD",
+    "COMPONENT_OPERATION_MULTIPLY",
+    "COMPONENT_OPERATION_REPLACE",
+    "COMPONENT_OPERATION_INFORMATIONAL",
+    "SCORE_COMPONENT_OPERATIONS",
+
+    # Score statuses
+    "SCORE_STATUS_ACCEPTED",
+    "SCORE_STATUS_REJECTED",
+    "SCORE_STATUS_SKIPPED",
+    "SCORE_STATUS_DUPLICATE",
+    "SCORE_STATUS_INVALID",
+    "SCORE_STATUS_UNKNOWN",
+    "SCORE_STATUSES",
+
+    # Dataclasses
+    "ScoreComponent",
+    "InteractionScore",
+
+    # Component factories
+    "make_base_weight_component",
+    "make_multiplier_component",
+    "make_penalty_component",
+    "make_bonus_component",
+
+    # Interaction-score factories
+    "create_interaction_score",
+    "create_rejected_interaction_score",
+    "create_duplicate_interaction_score",
+
+    # Execution and construction
+    "apply_score_components",
+    "build_standard_score_components",
+
+    # Validation
+    "validate_score_component",
+    "validate_interaction_score",
+
+    # Collection helpers
+    "sort_interaction_scores",
+    "interaction_score_total",
+    "interaction_score_components_total",
+)
+
+for public_name in _SECTION_4_1_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+# =============================================================================
+# End of Section 4.1
+# =============================================================================
+
+# =============================================================================
+# Section 4.2 — Aggregate result structures
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 4.2.1. Aggregate-result constants
+# -----------------------------------------------------------------------------
+
+RESIDUE_ROLE_RECEPTOR: Final[str] = "receptor"
+RESIDUE_ROLE_LIGAND: Final[str] = "ligand"
+RESIDUE_ROLE_WATER: Final[str] = "water"
+RESIDUE_ROLE_ION: Final[str] = "ion"
+RESIDUE_ROLE_COFACTOR: Final[str] = "cofactor"
+RESIDUE_ROLE_OTHER: Final[str] = "other"
+RESIDUE_ROLE_UNKNOWN: Final[str] = "unknown"
+
+RESIDUE_ROLES: Final[FrozenSet[str]] = frozenset(
+    {
+        RESIDUE_ROLE_RECEPTOR,
+        RESIDUE_ROLE_LIGAND,
+        RESIDUE_ROLE_WATER,
+        RESIDUE_ROLE_ION,
+        RESIDUE_ROLE_COFACTOR,
+        RESIDUE_ROLE_OTHER,
+        RESIDUE_ROLE_UNKNOWN,
+    }
+)
+
+
+POSE_STATUS_SCORED: Final[str] = "scored"
+POSE_STATUS_PARTIAL: Final[str] = "partial"
+POSE_STATUS_EMPTY: Final[str] = "empty"
+POSE_STATUS_REJECTED: Final[str] = "rejected"
+POSE_STATUS_INVALID: Final[str] = "invalid"
+POSE_STATUS_UNKNOWN: Final[str] = "unknown"
+
+POSE_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        POSE_STATUS_SCORED,
+        POSE_STATUS_PARTIAL,
+        POSE_STATUS_EMPTY,
+        POSE_STATUS_REJECTED,
+        POSE_STATUS_INVALID,
+        POSE_STATUS_UNKNOWN,
+    }
+)
+
+
+AGGREGATE_SCOPE_RESIDUE: Final[str] = "residue"
+AGGREGATE_SCOPE_POSE: Final[str] = "pose"
+
+
+_EMPTY_INTERACTION_SCORE_TUPLE: Final[
+    Tuple[InteractionScore, ...]
+] = ()
+
+_EMPTY_RESIDUE_SCORE_TUPLE: Final[
+    Tuple["ResidueScore", ...]
+] = ()
+
+_EMPTY_STRING_FLOAT_MAPPING: Final[Mapping[str, float]] = (
+    MappingProxyType({})
+)
+
+_EMPTY_STRING_INTEGER_MAPPING: Final[Mapping[str, int]] = (
+    MappingProxyType({})
+)
+
+
+# -----------------------------------------------------------------------------
+# 4.2.2. Aggregate normalization helpers
+# -----------------------------------------------------------------------------
+
+_RESIDUE_ROLE_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "receptor": RESIDUE_ROLE_RECEPTOR,
+        "protein": RESIDUE_ROLE_RECEPTOR,
+        "target": RESIDUE_ROLE_RECEPTOR,
+        "macromolecule": RESIDUE_ROLE_RECEPTOR,
+
+        "ligand": RESIDUE_ROLE_LIGAND,
+        "compound": RESIDUE_ROLE_LIGAND,
+        "drug": RESIDUE_ROLE_LIGAND,
+        "small_molecule": RESIDUE_ROLE_LIGAND,
+
+        "water": RESIDUE_ROLE_WATER,
+        "solvent": RESIDUE_ROLE_WATER,
+        "hoh": RESIDUE_ROLE_WATER,
+
+        "ion": RESIDUE_ROLE_ION,
+        "metal": RESIDUE_ROLE_ION,
+
+        "cofactor": RESIDUE_ROLE_COFACTOR,
+        "co_factor": RESIDUE_ROLE_COFACTOR,
+
+        "other": RESIDUE_ROLE_OTHER,
+        "unknown": RESIDUE_ROLE_UNKNOWN,
+        "undefined": RESIDUE_ROLE_UNKNOWN,
+        "unclassified": RESIDUE_ROLE_UNKNOWN,
+    }
+)
+
+_POSE_STATUS_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "scored": POSE_STATUS_SCORED,
+        "complete": POSE_STATUS_SCORED,
+        "completed": POSE_STATUS_SCORED,
+        "valid": POSE_STATUS_SCORED,
+
+        "partial": POSE_STATUS_PARTIAL,
+        "incomplete": POSE_STATUS_PARTIAL,
+
+        "empty": POSE_STATUS_EMPTY,
+        "no_interactions": POSE_STATUS_EMPTY,
+
+        "rejected": POSE_STATUS_REJECTED,
+        "excluded": POSE_STATUS_REJECTED,
+
+        "invalid": POSE_STATUS_INVALID,
+        "error": POSE_STATUS_INVALID,
+        "failed": POSE_STATUS_INVALID,
+
+        "unknown": POSE_STATUS_UNKNOWN,
+        "undefined": POSE_STATUS_UNKNOWN,
+    }
+)
+
+
+def _normalize_residue_role(
+    value: Any,
+    *,
+    default: str = RESIDUE_ROLE_UNKNOWN,
+) -> str:
+    """
+    Normalize a residue role.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return default
+
+    if normalized in RESIDUE_ROLES:
+        return normalized
+
+    return _RESIDUE_ROLE_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def _normalize_pose_status(
+    value: Any,
+    *,
+    default: str = POSE_STATUS_SCORED,
+) -> str:
+    """
+    Normalize a pose-scoring status.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return default
+
+    if normalized in POSE_STATUSES:
+        return normalized
+
+    return _POSE_STATUS_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def _freeze_string_float_mapping(
+    values: Optional[Mapping[Any, Any]],
+    *,
+    name: str,
+) -> Mapping[str, float]:
+    """
+    Return an immutable string-to-float mapping.
+    """
+
+    if values is None:
+        return _EMPTY_STRING_FLOAT_MAPPING
+
+    if not isinstance(values, Mapping):
+        raise ScoringConfigurationError(
+            f"{name} must be a mapping."
+        )
+
+    normalized: Dict[str, float] = {}
+
+    for raw_key, raw_value in values.items():
+        key = _normalize_scoring_name(raw_key)
+
+        if not key:
+            raise ScoringConfigurationError(
+                f"{name} contains an empty key."
+            )
+
+        value = _coerce_finite_score_value(
+            raw_value,
+            name=f"{name}[{key!r}]",
+        )
+
+        normalized[key] = float(value)
+
+    return MappingProxyType(normalized)
+
+
+def _freeze_string_integer_mapping(
+    values: Optional[Mapping[Any, Any]],
+    *,
+    name: str,
+) -> Mapping[str, int]:
+    """
+    Return an immutable string-to-integer mapping.
+    """
+
+    if values is None:
+        return _EMPTY_STRING_INTEGER_MAPPING
+
+    if not isinstance(values, Mapping):
+        raise ScoringConfigurationError(
+            f"{name} must be a mapping."
+        )
+
+    normalized: Dict[str, int] = {}
+
+    for raw_key, raw_value in values.items():
+        key = _normalize_scoring_name(raw_key)
+
+        if not key:
+            raise ScoringConfigurationError(
+                f"{name} contains an empty key."
+            )
+
+        if isinstance(raw_value, bool):
+            raise ScoringConfigurationError(
+                f"{name}[{key!r}] must be an integer."
+            )
+
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ScoringConfigurationError(
+                f"{name}[{key!r}] must be an integer."
+            ) from exc
+
+        if value < 0:
+            raise ScoringConfigurationError(
+                f"{name}[{key!r}] cannot be negative."
+            )
+
+        normalized[key] = value
+
+    return MappingProxyType(normalized)
+
+
+def _normalize_interaction_score_sequence(
+    values: Optional[Iterable[InteractionScore]],
+    *,
+    sort_results: bool = True,
+) -> Tuple[InteractionScore, ...]:
+    """
+    Validate and normalize an interaction-score sequence.
+    """
+
+    if values is None:
+        return _EMPTY_INTERACTION_SCORE_TUPLE
+
+    normalized: List[InteractionScore] = []
+
+    for result in values:
+        normalized.append(
+            validate_interaction_score(
+                result,
+                validate_consistency=False,
+            )
+        )
+
+    if sort_results:
+        normalized.sort(
+            key=lambda result: result.sort_key
+        )
+
+    return tuple(normalized)
+
+
+def _normalize_residue_score_sequence(
+    values: Optional[Iterable["ResidueScore"]],
+    *,
+    sort_results: bool = True,
+) -> Tuple["ResidueScore", ...]:
+    """
+    Validate and normalize a residue-score sequence.
+    """
+
+    if values is None:
+        return _EMPTY_RESIDUE_SCORE_TUPLE
+
+    normalized: List[ResidueScore] = []
+
+    for result in values:
+        if not isinstance(result, ResidueScore):
+            raise ScoringConfigurationError(
+                "Residue collections must contain only ResidueScore "
+                "instances."
+            )
+
+        normalized.append(result)
+
+    if sort_results:
+        normalized.sort(
+            key=lambda result: result.sort_key
+        )
+
+    return tuple(normalized)
+
+
+def _calculate_score_by_interaction_type(
+    interactions: Iterable[InteractionScore],
+    *,
+    accepted_only: bool = True,
+) -> Dict[str, float]:
+    """
+    Calculate score totals grouped by canonical interaction type.
+    """
+
+    totals: Dict[str, float] = {}
+
+    for interaction in interactions:
+        if accepted_only and not interaction.contributes:
+            continue
+
+        value = (
+            interaction.contribution
+            if accepted_only
+            else float(interaction.final_score)
+        )
+
+        totals[interaction.interaction_type] = (
+            totals.get(interaction.interaction_type, 0.0)
+            + value
+        )
+
+    return totals
+
+
+def _calculate_score_by_interaction_family(
+    interactions: Iterable[InteractionScore],
+    *,
+    accepted_only: bool = True,
+) -> Dict[str, float]:
+    """
+    Calculate score totals grouped by canonical interaction family.
+    """
+
+    totals: Dict[str, float] = {}
+
+    for interaction in interactions:
+        if accepted_only and not interaction.contributes:
+            continue
+
+        value = (
+            interaction.contribution
+            if accepted_only
+            else float(interaction.final_score)
+        )
+
+        totals[interaction.interaction_family] = (
+            totals.get(interaction.interaction_family, 0.0)
+            + value
+        )
+
+    return totals
+
+
+def _count_by_interaction_type(
+    interactions: Iterable[InteractionScore],
+    *,
+    accepted_only: bool = False,
+) -> Dict[str, int]:
+    """
+    Count interactions grouped by canonical interaction type.
+    """
+
+    counts: Dict[str, int] = {}
+
+    for interaction in interactions:
+        if accepted_only and not interaction.contributes:
+            continue
+
+        counts[interaction.interaction_type] = (
+            counts.get(interaction.interaction_type, 0)
+            + 1
+        )
+
+    return counts
+
+
+def _count_by_interaction_family(
+    interactions: Iterable[InteractionScore],
+    *,
+    accepted_only: bool = False,
+) -> Dict[str, int]:
+    """
+    Count interactions grouped by canonical interaction family.
+    """
+
+    counts: Dict[str, int] = {}
+
+    for interaction in interactions:
+        if accepted_only and not interaction.contributes:
+            continue
+
+        counts[interaction.interaction_family] = (
+            counts.get(interaction.interaction_family, 0)
+            + 1
+        )
+
+    return counts
+
+
+# -----------------------------------------------------------------------------
+# 4.2.3. ResidueScore
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ResidueScore:
+    """
+    Immutable aggregate score for one residue.
+
+    A residue score groups all scored interactions associated with a residue.
+    The structure is independent of ChimeraX and may therefore be used with
+    simulated atoms, PDB-derived objects, DockModel instances or other
+    molecular representations.
+
+    Parameters
+    ----------
+    residue_id
+        Stable residue identifier.
+    total_score
+        Aggregate score assigned to the residue. When omitted, it is
+        calculated from accepted interaction contributions.
+    residue_name
+        Residue name, such as ``ASP``, ``TYR`` or a ligand residue name.
+    chain_id
+        Chain identifier.
+    residue_number
+        Residue sequence identifier.
+    insertion_code
+        Optional residue insertion code.
+    role
+        Residue role, such as receptor or ligand.
+    pose_id
+        Associated pose identifier.
+    model_id
+        Associated model identifier.
+    interactions
+        Interaction-level scoring results assigned to the residue.
+    score_by_type
+        Optional precomputed totals grouped by interaction type.
+    score_by_family
+        Optional precomputed totals grouped by interaction family.
+    interaction_counts
+        Optional precomputed counts grouped by interaction type.
+    family_counts
+        Optional precomputed counts grouped by interaction family.
+    metadata
+        Additional immutable residue-level metadata.
+    """
+
+    residue_id: str
+
+    total_score: Optional[float] = None
+
+    residue_name: str = ""
+    chain_id: str = ""
+    residue_number: str = ""
+    insertion_code: str = ""
+
+    role: str = RESIDUE_ROLE_UNKNOWN
+
+    pose_id: str = ""
+    model_id: str = ""
+
+    interactions: Tuple[InteractionScore, ...] = field(
+        default_factory=tuple
+    )
+
+    score_by_type: Mapping[str, float] = field(
+        default_factory=lambda: _EMPTY_STRING_FLOAT_MAPPING
+    )
+    score_by_family: Mapping[str, float] = field(
+        default_factory=lambda: _EMPTY_STRING_FLOAT_MAPPING
+    )
+
+    interaction_counts: Mapping[str, int] = field(
+        default_factory=lambda: _EMPTY_STRING_INTEGER_MAPPING
+    )
+    family_counts: Mapping[str, int] = field(
+        default_factory=lambda: _EMPTY_STRING_INTEGER_MAPPING
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize the residue aggregate and calculate omitted values.
+        """
+
+        normalized_residue_id = _coerce_identifier(
+            self.residue_id
+        )
+
+        if not normalized_residue_id:
+            raise ScoringConfigurationError(
+                "ResidueScore.residue_id cannot be empty."
+            )
+
+        normalized_interactions = (
+            _normalize_interaction_score_sequence(
+                self.interactions
+            )
+        )
+
+        calculated_total = interaction_score_total(
+            normalized_interactions,
+            accepted_only=True,
+        )
+
+        if self.total_score is None:
+            total_score = calculated_total
+        else:
+            total_score = _coerce_finite_score_value(
+                self.total_score,
+                name="ResidueScore.total_score",
+            )
+
+        calculated_score_by_type = (
+            _calculate_score_by_interaction_type(
+                normalized_interactions,
+                accepted_only=True,
+            )
+        )
+
+        calculated_score_by_family = (
+            _calculate_score_by_interaction_family(
+                normalized_interactions,
+                accepted_only=True,
+            )
+        )
+
+        calculated_interaction_counts = (
+            _count_by_interaction_type(
+                normalized_interactions,
+                accepted_only=False,
+            )
+        )
+
+        calculated_family_counts = (
+            _count_by_interaction_family(
+                normalized_interactions,
+                accepted_only=False,
+            )
+        )
+
+        score_by_type = (
+            calculated_score_by_type
+            if not self.score_by_type
+            else dict(self.score_by_type)
+        )
+
+        score_by_family = (
+            calculated_score_by_family
+            if not self.score_by_family
+            else dict(self.score_by_family)
+        )
+
+        interaction_counts = (
+            calculated_interaction_counts
+            if not self.interaction_counts
+            else dict(self.interaction_counts)
+        )
+
+        family_counts = (
+            calculated_family_counts
+            if not self.family_counts
+            else dict(self.family_counts)
+        )
+
+        object.__setattr__(
+            self,
+            "residue_id",
+            normalized_residue_id,
+        )
+        object.__setattr__(
+            self,
+            "total_score",
+            float(total_score),
+        )
+        object.__setattr__(
+            self,
+            "residue_name",
+            _coerce_optional_text(self.residue_name).upper(),
+        )
+        object.__setattr__(
+            self,
+            "chain_id",
+            _coerce_identifier(self.chain_id),
+        )
+        object.__setattr__(
+            self,
+            "residue_number",
+            _coerce_identifier(self.residue_number),
+        )
+        object.__setattr__(
+            self,
+            "insertion_code",
+            _coerce_identifier(self.insertion_code),
+        )
+        object.__setattr__(
+            self,
+            "role",
+            _normalize_residue_role(self.role),
+        )
+        object.__setattr__(
+            self,
+            "pose_id",
+            _coerce_identifier(self.pose_id),
+        )
+        object.__setattr__(
+            self,
+            "model_id",
+            _coerce_identifier(self.model_id),
+        )
+        object.__setattr__(
+            self,
+            "interactions",
+            normalized_interactions,
+        )
+        object.__setattr__(
+            self,
+            "score_by_type",
+            _freeze_string_float_mapping(
+                score_by_type,
+                name="ResidueScore.score_by_type",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "score_by_family",
+            _freeze_string_float_mapping(
+                score_by_family,
+                name="ResidueScore.score_by_family",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "interaction_counts",
+            _freeze_string_integer_mapping(
+                interaction_counts,
+                name="ResidueScore.interaction_counts",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "family_counts",
+            _freeze_string_integer_mapping(
+                family_counts,
+                name="ResidueScore.family_counts",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def score(self) -> float:
+        """Return the residue total score."""
+
+        return float(self.total_score)
+
+    @property
+    def contribution(self) -> float:
+        """Return the residue contribution to the pose score."""
+
+        return float(self.total_score)
+
+    @property
+    def interaction_count(self) -> int:
+        """Return the total number of assigned interactions."""
+
+        return len(self.interactions)
+
+    @property
+    def accepted_interaction_count(self) -> int:
+        """Return the number of contributing interactions."""
+
+        return sum(
+            1
+            for interaction in self.interactions
+            if interaction.contributes
+        )
+
+    @property
+    def rejected_interaction_count(self) -> int:
+        """Return the number of non-contributing interactions."""
+
+        return (
+            self.interaction_count
+            - self.accepted_interaction_count
+        )
+
+    @property
+    def favorable_score(self) -> float:
+        """Return the sum of favorable interaction contributions."""
+
+        return float(
+            sum(
+                interaction.contribution
+                for interaction in self.interactions
+                if interaction.is_favorable
+            )
+        )
+
+    @property
+    def penalty_score(self) -> float:
+        """Return the sum of penalty interaction contributions."""
+
+        return float(
+            sum(
+                interaction.contribution
+                for interaction in self.interactions
+                if interaction.is_penalty
+            )
+        )
+
+    @property
+    def neutral_score(self) -> float:
+        """Return the sum of neutral interaction contributions."""
+
+        return float(
+            sum(
+                interaction.contribution
+                for interaction in self.interactions
+                if interaction.is_neutral
+            )
+        )
+
+    @property
+    def interaction_types(self) -> FrozenSet[str]:
+        """Return the represented interaction types."""
+
+        return frozenset(
+            interaction.interaction_type
+            for interaction in self.interactions
+        )
+
+    @property
+    def interaction_families(self) -> FrozenSet[str]:
+        """Return the represented interaction families."""
+
+        return frozenset(
+            interaction.interaction_family
+            for interaction in self.interactions
+        )
+
+    @property
+    def family_diversity(self) -> int:
+        """Return the number of represented interaction families."""
+
+        return len(self.interaction_families)
+
+    @property
+    def residue_key(
+        self,
+    ) -> Tuple[str, str, str, str]:
+        """
+        Return a stable residue identity key.
+        """
+
+        return (
+            self.chain_id,
+            self.residue_number,
+            self.insertion_code,
+            self.residue_name,
+        )
+
+    @property
+    def sort_key(
+        self,
+    ) -> Tuple[str, str, str, str]:
+        """
+        Return a deterministic residue sorting key.
+        """
+
+        return (
+            self.chain_id,
+            self.residue_number,
+            self.insertion_code,
+            self.residue_id,
+        )
+
+    def score_for_type(
+        self,
+        interaction_type: Any,
+        *,
+        default: float = 0.0,
+    ) -> float:
+        """
+        Return the residue score for an interaction type.
+        """
+
+        canonical_type = normalize_interaction_type(
+            interaction_type,
+            preserve_unknown=True,
+        )
+
+        return float(
+            self.score_by_type.get(
+                canonical_type,
+                default,
+            )
+        )
+
+    def score_for_family(
+        self,
+        interaction_family: Any,
+        *,
+        default: float = 0.0,
+    ) -> float:
+        """
+        Return the residue score for an interaction family.
+        """
+
+        canonical_family = canonical_interaction_family(
+            interaction_family
+        )
+
+        return float(
+            self.score_by_family.get(
+                canonical_family,
+                default,
+            )
+        )
+
+    def count_for_type(
+        self,
+        interaction_type: Any,
+    ) -> int:
+        """
+        Return the number of interactions of a given type.
+        """
+
+        canonical_type = normalize_interaction_type(
+            interaction_type,
+            preserve_unknown=True,
+        )
+
+        return int(
+            self.interaction_counts.get(
+                canonical_type,
+                0,
+            )
+        )
+
+    def count_for_family(
+        self,
+        interaction_family: Any,
+    ) -> int:
+        """
+        Return the number of interactions of a given family.
+        """
+
+        canonical_family = canonical_interaction_family(
+            interaction_family
+        )
+
+        return int(
+            self.family_counts.get(
+                canonical_family,
+                0,
+            )
+        )
+
+    def interactions_of_type(
+        self,
+        interaction_type: Any,
+        *,
+        accepted_only: bool = False,
+    ) -> Tuple[InteractionScore, ...]:
+        """
+        Return interactions matching a canonical type.
+        """
+
+        canonical_type = normalize_interaction_type(
+            interaction_type,
+            preserve_unknown=True,
+        )
+
+        return tuple(
+            interaction
+            for interaction in self.interactions
+            if (
+                interaction.interaction_type == canonical_type
+                and (
+                    not accepted_only
+                    or interaction.contributes
+                )
+            )
+        )
+
+    def interactions_of_family(
+        self,
+        interaction_family: Any,
+        *,
+        accepted_only: bool = False,
+    ) -> Tuple[InteractionScore, ...]:
+        """
+        Return interactions matching a canonical family.
+        """
+
+        canonical_family = canonical_interaction_family(
+            interaction_family
+        )
+
+        return tuple(
+            interaction
+            for interaction in self.interactions
+            if (
+                interaction.interaction_family == canonical_family
+                and (
+                    not accepted_only
+                    or interaction.contributes
+                )
+            )
+        )
+
+    def validate_consistency(
+        self,
+        *,
+        tolerance: float = SCORE_COMPARISON_TOLERANCE,
+        validate_breakdown: bool = True,
+    ) -> bool:
+        """
+        Validate residue-level aggregation consistency.
+        """
+
+        tolerance_value = _coerce_finite_score_value(
+            tolerance,
+            name="tolerance",
+        )
+
+        if tolerance_value < 0.0:
+            raise ScoringConfigurationError(
+                "tolerance cannot be negative."
+            )
+
+        calculated_total = interaction_score_total(
+            self.interactions,
+            accepted_only=True,
+        )
+
+        if abs(self.total_score - calculated_total) > tolerance_value:
+            raise ScoringConfigurationError(
+                "ResidueScore.total_score is inconsistent with its "
+                "interaction contributions."
+            )
+
+        if validate_breakdown:
+            expected_by_type = _calculate_score_by_interaction_type(
+                self.interactions,
+                accepted_only=True,
+            )
+
+            expected_by_family = (
+                _calculate_score_by_interaction_family(
+                    self.interactions,
+                    accepted_only=True,
+                )
+            )
+
+            all_types = (
+                set(expected_by_type)
+                | set(self.score_by_type)
+            )
+
+            for interaction_type in all_types:
+                expected = expected_by_type.get(
+                    interaction_type,
+                    0.0,
+                )
+                observed = self.score_by_type.get(
+                    interaction_type,
+                    0.0,
+                )
+
+                if abs(expected - observed) > tolerance_value:
+                    raise ScoringConfigurationError(
+                        "ResidueScore.score_by_type is inconsistent for "
+                        f"{interaction_type!r}."
+                    )
+
+            all_families = (
+                set(expected_by_family)
+                | set(self.score_by_family)
+            )
+
+            for interaction_family in all_families:
+                expected = expected_by_family.get(
+                    interaction_family,
+                    0.0,
+                )
+                observed = self.score_by_family.get(
+                    interaction_family,
+                    0.0,
+                )
+
+                if abs(expected - observed) > tolerance_value:
+                    raise ScoringConfigurationError(
+                        "ResidueScore.score_by_family is inconsistent for "
+                        f"{interaction_family!r}."
+                    )
+
+        return True
+
+    def with_updates(self, **changes: Any) -> "ResidueScore":
+        """
+        Return a validated copy with selected fields changed.
+        """
+
+        return replace(self, **changes)
+
+    def without_interaction_references(self) -> "ResidueScore":
+        """
+        Return a copy whose interactions do not retain detector objects.
+        """
+
+        return replace(
+            self,
+            interactions=tuple(
+                interaction.without_interaction_reference()
+                for interaction in self.interactions
+            ),
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_interactions: bool = True,
+        include_components: bool = True,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a mutable dictionary representation.
+        """
+
+        result: Dict[str, Any] = {
+            "residue_id": self.residue_id,
+            "residue_name": self.residue_name,
+            "chain_id": self.chain_id,
+            "residue_number": self.residue_number,
+            "insertion_code": self.insertion_code,
+            "role": self.role,
+            "pose_id": self.pose_id,
+            "model_id": self.model_id,
+            "total_score": float(self.total_score),
+            "favorable_score": float(self.favorable_score),
+            "penalty_score": float(self.penalty_score),
+            "neutral_score": float(self.neutral_score),
+            "interaction_count": int(self.interaction_count),
+            "accepted_interaction_count": int(
+                self.accepted_interaction_count
+            ),
+            "rejected_interaction_count": int(
+                self.rejected_interaction_count
+            ),
+            "family_diversity": int(self.family_diversity),
+            "score_by_type": dict(self.score_by_type),
+            "score_by_family": dict(self.score_by_family),
+            "interaction_counts": dict(self.interaction_counts),
+            "family_counts": dict(self.family_counts),
+        }
+
+        if include_interactions:
+            result["interactions"] = [
+                interaction.to_dict(
+                    include_components=include_components,
+                    include_metadata=include_metadata,
+                    include_interaction=False,
+                )
+                for interaction in self.interactions
+            ]
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+    def __float__(self) -> float:
+        """Return the residue total score."""
+
+        return float(self.total_score)
+
+    def __bool__(self) -> bool:
+        """Return whether the residue has contributing interactions."""
+
+        return self.accepted_interaction_count > 0
+
+    def __hash__(self) -> int:
+        """
+        Return a stable hash excluding arbitrary metadata.
+        """
+
+        return hash(
+            (
+                self.residue_id,
+                self.total_score,
+                self.residue_name,
+                self.chain_id,
+                self.residue_number,
+                self.insertion_code,
+                self.role,
+                self.pose_id,
+                self.model_id,
+                self.interactions,
+                tuple(sorted(self.score_by_type.items())),
+                tuple(sorted(self.score_by_family.items())),
+                tuple(sorted(self.interaction_counts.items())),
+                tuple(sorted(self.family_counts.items())),
+            )
+        )
+
+
+# -----------------------------------------------------------------------------
+# 4.2.4. PoseScore
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PoseScore:
+    """
+    Immutable aggregate score for one docking pose.
+
+    A pose score stores interaction-level results, residue-level summaries and
+    the final aggregate score assigned to a molecular pose.
+
+    Parameters
+    ----------
+    pose_id
+        Stable pose identifier.
+    total_score
+        Final pose score. When omitted, it is calculated from accepted
+        interactions plus explicit pose-level adjustments.
+    raw_score
+        Sum of accepted interaction contributions before pose-level
+        adjustments. When omitted, it is calculated automatically.
+    normalized_score
+        Optional normalized pose score.
+    ranking_score
+        Optional score used for multipose ranking. When omitted, the normalized
+        score is preferred, followed by the total score.
+    status
+        Pose status such as scored, partial or invalid.
+    accepted
+        Whether the pose is eligible for ranking and downstream analysis.
+    rejection_reason
+        Explanation for an excluded pose.
+    model_id
+        Associated model identifier.
+    ligand_id
+        Associated ligand identifier.
+    pose_index
+        Optional integer pose index.
+    docking_affinity
+        Optional docking affinity reported by the docking engine.
+    docking_affinity_unit
+        Unit of the docking affinity, usually ``kcal/mol``.
+    interactions
+        Interaction-level scoring results.
+    residues
+        Residue-level aggregate results.
+    penalty_score
+        Explicit pose-level additive penalty.
+    bonus_score
+        Explicit pose-level additive bonus.
+    diversity_bonus
+        Optional interaction-diversity bonus.
+    score_by_type
+        Optional totals grouped by interaction type.
+    score_by_family
+        Optional totals grouped by interaction family.
+    interaction_counts
+        Optional counts grouped by interaction type.
+    family_counts
+        Optional counts grouped by interaction family.
+    metadata
+        Additional immutable pose metadata.
+    """
+
+    pose_id: str
+
+    total_score: Optional[float] = None
+    raw_score: Optional[float] = None
+    normalized_score: Optional[float] = None
+    ranking_score: Optional[float] = None
+
+    status: str = POSE_STATUS_SCORED
+    accepted: bool = True
+    rejection_reason: str = ""
+
+    model_id: str = ""
+    ligand_id: str = ""
+    pose_index: Optional[int] = None
+
+    docking_affinity: Optional[float] = None
+    docking_affinity_unit: str = "kcal/mol"
+
+    interactions: Tuple[InteractionScore, ...] = field(
+        default_factory=tuple
+    )
+    residues: Tuple[ResidueScore, ...] = field(
+        default_factory=tuple
+    )
+
+    penalty_score: float = 0.0
+    bonus_score: float = 0.0
+    diversity_bonus: float = 0.0
+
+    score_by_type: Mapping[str, float] = field(
+        default_factory=lambda: _EMPTY_STRING_FLOAT_MAPPING
+    )
+    score_by_family: Mapping[str, float] = field(
+        default_factory=lambda: _EMPTY_STRING_FLOAT_MAPPING
+    )
+
+    interaction_counts: Mapping[str, int] = field(
+        default_factory=lambda: _EMPTY_STRING_INTEGER_MAPPING
+    )
+    family_counts: Mapping[str, int] = field(
+        default_factory=lambda: _EMPTY_STRING_INTEGER_MAPPING
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize the pose result and calculate omitted aggregate values.
+        """
+
+        normalized_pose_id = _coerce_identifier(
+            self.pose_id
+        )
+
+        if not normalized_pose_id:
+            raise ScoringConfigurationError(
+                "PoseScore.pose_id cannot be empty."
+            )
+
+        normalized_interactions = (
+            _normalize_interaction_score_sequence(
+                self.interactions
+            )
+        )
+
+        normalized_residues = (
+            _normalize_residue_score_sequence(
+                self.residues
+            )
+        )
+
+        calculated_raw_score = interaction_score_total(
+            normalized_interactions,
+            accepted_only=True,
+        )
+
+        if self.raw_score is None:
+            raw_score = calculated_raw_score
+        else:
+            raw_score = _coerce_finite_score_value(
+                self.raw_score,
+                name="PoseScore.raw_score",
+            )
+
+        penalty_score = _coerce_finite_score_value(
+            self.penalty_score,
+            name="PoseScore.penalty_score",
+            default=0.0,
+        )
+
+        bonus_score = _coerce_finite_score_value(
+            self.bonus_score,
+            name="PoseScore.bonus_score",
+            default=0.0,
+        )
+
+        diversity_bonus = _coerce_finite_score_value(
+            self.diversity_bonus,
+            name="PoseScore.diversity_bonus",
+            default=0.0,
+        )
+
+        calculated_total_score = float(
+            raw_score
+            + penalty_score
+            + bonus_score
+            + diversity_bonus
+        )
+
+        if self.total_score is None:
+            total_score = calculated_total_score
+        else:
+            total_score = _coerce_finite_score_value(
+                self.total_score,
+                name="PoseScore.total_score",
+            )
+
+        normalized_score = _coerce_finite_score_value(
+            self.normalized_score,
+            name="PoseScore.normalized_score",
+            allow_none=True,
+        )
+
+        if self.ranking_score is None:
+            ranking_score = (
+                normalized_score
+                if normalized_score is not None
+                else total_score
+            )
+        else:
+            ranking_score = _coerce_finite_score_value(
+                self.ranking_score,
+                name="PoseScore.ranking_score",
+            )
+
+        normalized_status = _normalize_pose_status(
+            self.status
+        )
+
+        normalized_accepted = bool(self.accepted)
+
+        if normalized_status in {
+            POSE_STATUS_REJECTED,
+            POSE_STATUS_INVALID,
+            POSE_STATUS_EMPTY,
+        }:
+            normalized_accepted = False
+
+        if (
+            not normalized_interactions
+            and normalized_status == POSE_STATUS_SCORED
+        ):
+            normalized_status = POSE_STATUS_EMPTY
+            normalized_accepted = False
+
+        normalized_reason = _coerce_optional_text(
+            self.rejection_reason
+        )
+
+        if (
+            not normalized_accepted
+            and not normalized_reason
+            and normalized_status != POSE_STATUS_SCORED
+        ):
+            normalized_reason = normalized_status
+
+        normalized_pose_index: Optional[int]
+
+        if self.pose_index is None:
+            normalized_pose_index = None
+        else:
+            if isinstance(self.pose_index, bool):
+                raise ScoringConfigurationError(
+                    "PoseScore.pose_index must be an integer or None."
+                )
+
+            try:
+                normalized_pose_index = int(
+                    self.pose_index
+                )
+            except (
+                TypeError,
+                ValueError,
+                OverflowError,
+            ) as exc:
+                raise ScoringConfigurationError(
+                    "PoseScore.pose_index must be an integer or None."
+                ) from exc
+
+        normalized_affinity = _coerce_finite_score_value(
+            self.docking_affinity,
+            name="PoseScore.docking_affinity",
+            allow_none=True,
+        )
+
+        calculated_score_by_type = (
+            _calculate_score_by_interaction_type(
+                normalized_interactions,
+                accepted_only=True,
+            )
+        )
+
+        calculated_score_by_family = (
+            _calculate_score_by_interaction_family(
+                normalized_interactions,
+                accepted_only=True,
+            )
+        )
+
+        calculated_interaction_counts = (
+            _count_by_interaction_type(
+                normalized_interactions,
+                accepted_only=False,
+            )
+        )
+
+        calculated_family_counts = (
+            _count_by_interaction_family(
+                normalized_interactions,
+                accepted_only=False,
+            )
+        )
+
+        score_by_type = (
+            calculated_score_by_type
+            if not self.score_by_type
+            else dict(self.score_by_type)
+        )
+
+        score_by_family = (
+            calculated_score_by_family
+            if not self.score_by_family
+            else dict(self.score_by_family)
+        )
+
+        interaction_counts = (
+            calculated_interaction_counts
+            if not self.interaction_counts
+            else dict(self.interaction_counts)
+        )
+
+        family_counts = (
+            calculated_family_counts
+            if not self.family_counts
+            else dict(self.family_counts)
+        )
+
+        object.__setattr__(
+            self,
+            "pose_id",
+            normalized_pose_id,
+        )
+        object.__setattr__(
+            self,
+            "raw_score",
+            float(raw_score),
+        )
+        object.__setattr__(
+            self,
+            "penalty_score",
+            float(penalty_score),
+        )
+        object.__setattr__(
+            self,
+            "bonus_score",
+            float(bonus_score),
+        )
+        object.__setattr__(
+            self,
+            "diversity_bonus",
+            float(diversity_bonus),
+        )
+        object.__setattr__(
+            self,
+            "total_score",
+            float(total_score),
+        )
+        object.__setattr__(
+            self,
+            "normalized_score",
+            (
+                None
+                if normalized_score is None
+                else float(normalized_score)
+            ),
+        )
+        object.__setattr__(
+            self,
+            "ranking_score",
+            float(ranking_score),
+        )
+        object.__setattr__(
+            self,
+            "status",
+            normalized_status,
+        )
+        object.__setattr__(
+            self,
+            "accepted",
+            normalized_accepted,
+        )
+        object.__setattr__(
+            self,
+            "rejection_reason",
+            normalized_reason,
+        )
+        object.__setattr__(
+            self,
+            "model_id",
+            _coerce_identifier(self.model_id),
+        )
+        object.__setattr__(
+            self,
+            "ligand_id",
+            _coerce_identifier(self.ligand_id),
+        )
+        object.__setattr__(
+            self,
+            "pose_index",
+            normalized_pose_index,
+        )
+        object.__setattr__(
+            self,
+            "docking_affinity",
+            (
+                None
+                if normalized_affinity is None
+                else float(normalized_affinity)
+            ),
+        )
+        object.__setattr__(
+            self,
+            "docking_affinity_unit",
+            _coerce_optional_text(
+                self.docking_affinity_unit,
+                default="kcal/mol",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "interactions",
+            normalized_interactions,
+        )
+        object.__setattr__(
+            self,
+            "residues",
+            normalized_residues,
+        )
+        object.__setattr__(
+            self,
+            "score_by_type",
+            _freeze_string_float_mapping(
+                score_by_type,
+                name="PoseScore.score_by_type",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "score_by_family",
+            _freeze_string_float_mapping(
+                score_by_family,
+                name="PoseScore.score_by_family",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "interaction_counts",
+            _freeze_string_integer_mapping(
+                interaction_counts,
+                name="PoseScore.interaction_counts",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "family_counts",
+            _freeze_string_integer_mapping(
+                family_counts,
+                name="PoseScore.family_counts",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def score(self) -> float:
+        """Return the final pose score."""
+
+        return float(self.total_score)
+
+    @property
+    def contribution(self) -> float:
+        """
+        Return the pose contribution to multipose aggregation.
+        """
+
+        if not self.accepted:
+            return 0.0
+
+        return float(self.ranking_score)
+
+    @property
+    def calculated_total_score(self) -> float:
+        """
+        Return the total implied by the stored score components.
+        """
+
+        return float(
+            self.raw_score
+            + self.penalty_score
+            + self.bonus_score
+            + self.diversity_bonus
+        )
+
+    @property
+    def score_delta(self) -> float:
+        """
+        Return the pose-level adjustment relative to the raw score.
+        """
+
+        return float(
+            self.total_score
+            - self.raw_score
+        )
+
+    @property
+    def interaction_count(self) -> int:
+        """Return the total number of interaction results."""
+
+        return len(self.interactions)
+
+    @property
+    def accepted_interaction_count(self) -> int:
+        """Return the number of contributing interactions."""
+
+        return sum(
+            1
+            for interaction in self.interactions
+            if interaction.contributes
+        )
+
+    @property
+    def rejected_interaction_count(self) -> int:
+        """Return the number of non-contributing interactions."""
+
+        return (
+            self.interaction_count
+            - self.accepted_interaction_count
+        )
+
+    @property
+    def residue_count(self) -> int:
+        """Return the number of residue summaries."""
+
+        return len(self.residues)
+
+    @property
+    def scored_residue_count(self) -> int:
+        """Return the number of residues with contributing interactions."""
+
+        return sum(
+            1
+            for residue in self.residues
+            if bool(residue)
+        )
+
+    @property
+    def favorable_score(self) -> float:
+        """Return the favorable interaction contribution."""
+
+        return float(
+            sum(
+                interaction.contribution
+                for interaction in self.interactions
+                if interaction.is_favorable
+            )
+        )
+
+    @property
+    def interaction_penalty_score(self) -> float:
+        """
+        Return the contribution from penalty interaction types.
+        """
+
+        return float(
+            sum(
+                interaction.contribution
+                for interaction in self.interactions
+                if interaction.is_penalty
+            )
+        )
+
+    @property
+    def neutral_score(self) -> float:
+        """Return the neutral interaction contribution."""
+
+        return float(
+            sum(
+                interaction.contribution
+                for interaction in self.interactions
+                if interaction.is_neutral
+            )
+        )
+
+    @property
+    def interaction_types(self) -> FrozenSet[str]:
+        """Return all represented interaction types."""
+
+        return frozenset(
+            interaction.interaction_type
+            for interaction in self.interactions
+        )
+
+    @property
+    def interaction_families(self) -> FrozenSet[str]:
+        """Return all represented interaction families."""
+
+        return frozenset(
+            interaction.interaction_family
+            for interaction in self.interactions
+        )
+
+    @property
+    def family_diversity(self) -> int:
+        """
+        Return the number of represented contributing families.
+        """
+
+        return len(
+            {
+                interaction.interaction_family
+                for interaction in self.interactions
+                if interaction.contributes
+            }
+        )
+
+    @property
+    def is_empty(self) -> bool:
+        """Return whether the pose has no interaction results."""
+
+        return self.interaction_count == 0
+
+    @property
+    def is_rejected(self) -> bool:
+        """Return whether the pose is excluded."""
+
+        return (
+            not self.accepted
+            or self.status
+            in {
+                POSE_STATUS_REJECTED,
+                POSE_STATUS_INVALID,
+                POSE_STATUS_EMPTY,
+            }
+        )
+
+    @property
+    def sort_key(
+        self,
+    ) -> Tuple[float, int, str]:
+        """
+        Return the default higher-is-better pose sorting key.
+        """
+
+        pose_index = (
+            self.pose_index
+            if self.pose_index is not None
+            else sys.maxsize
+        )
+
+        return (
+            -float(self.ranking_score),
+            pose_index,
+            self.pose_id,
+        )
+
+    def ranking_key(
+        self,
+        *,
+        score_direction: str = SCORE_DIRECTION_HIGHER_IS_BETTER,
+    ) -> Tuple[float, int, str]:
+        """
+        Return a sorting key for a selected score direction.
+        """
+
+        direction = normalize_score_direction(
+            score_direction
+        )
+
+        pose_index = (
+            self.pose_index
+            if self.pose_index is not None
+            else sys.maxsize
+        )
+
+        score_value = float(self.ranking_score)
+
+        if direction == SCORE_DIRECTION_HIGHER_IS_BETTER:
+            primary = -score_value
+        else:
+            primary = score_value
+
+        return (
+            primary,
+            pose_index,
+            self.pose_id,
+        )
+
+    def score_for_type(
+        self,
+        interaction_type: Any,
+        *,
+        default: float = 0.0,
+    ) -> float:
+        """
+        Return the pose score for an interaction type.
+        """
+
+        canonical_type = normalize_interaction_type(
+            interaction_type,
+            preserve_unknown=True,
+        )
+
+        return float(
+            self.score_by_type.get(
+                canonical_type,
+                default,
+            )
+        )
+
+    def score_for_family(
+        self,
+        interaction_family: Any,
+        *,
+        default: float = 0.0,
+    ) -> float:
+        """
+        Return the pose score for an interaction family.
+        """
+
+        canonical_family = canonical_interaction_family(
+            interaction_family
+        )
+
+        return float(
+            self.score_by_family.get(
+                canonical_family,
+                default,
+            )
+        )
+
+    def count_for_type(
+        self,
+        interaction_type: Any,
+    ) -> int:
+        """
+        Return the interaction count for a canonical type.
+        """
+
+        canonical_type = normalize_interaction_type(
+            interaction_type,
+            preserve_unknown=True,
+        )
+
+        return int(
+            self.interaction_counts.get(
+                canonical_type,
+                0,
+            )
+        )
+
+    def count_for_family(
+        self,
+        interaction_family: Any,
+    ) -> int:
+        """
+        Return the interaction count for a canonical family.
+        """
+
+        canonical_family = canonical_interaction_family(
+            interaction_family
+        )
+
+        return int(
+            self.family_counts.get(
+                canonical_family,
+                0,
+            )
+        )
+
+    def interaction(
+        self,
+        interaction_id: Any,
+        *,
+        default: Optional[InteractionScore] = None,
+    ) -> Optional[InteractionScore]:
+        """
+        Return an interaction result by identifier.
+        """
+
+        normalized_id = _coerce_identifier(
+            interaction_id
+        )
+
+        for result in self.interactions:
+            if result.interaction_id == normalized_id:
+                return result
+
+        return default
+
+    def residue(
+        self,
+        residue_id: Any,
+        *,
+        default: Optional[ResidueScore] = None,
+    ) -> Optional[ResidueScore]:
+        """
+        Return a residue result by identifier.
+        """
+
+        normalized_id = _coerce_identifier(
+            residue_id
+        )
+
+        for result in self.residues:
+            if result.residue_id == normalized_id:
+                return result
+
+        return default
+
+    def interactions_of_type(
+        self,
+        interaction_type: Any,
+        *,
+        accepted_only: bool = False,
+    ) -> Tuple[InteractionScore, ...]:
+        """
+        Return interactions matching a canonical type.
+        """
+
+        canonical_type = normalize_interaction_type(
+            interaction_type,
+            preserve_unknown=True,
+        )
+
+        return tuple(
+            interaction
+            for interaction in self.interactions
+            if (
+                interaction.interaction_type == canonical_type
+                and (
+                    not accepted_only
+                    or interaction.contributes
+                )
+            )
+        )
+
+    def interactions_of_family(
+        self,
+        interaction_family: Any,
+        *,
+        accepted_only: bool = False,
+    ) -> Tuple[InteractionScore, ...]:
+        """
+        Return interactions matching a canonical family.
+        """
+
+        canonical_family = canonical_interaction_family(
+            interaction_family
+        )
+
+        return tuple(
+            interaction
+            for interaction in self.interactions
+            if (
+                interaction.interaction_family == canonical_family
+                and (
+                    not accepted_only
+                    or interaction.contributes
+                )
+            )
+        )
+
+    def residues_with_family(
+        self,
+        interaction_family: Any,
+    ) -> Tuple[ResidueScore, ...]:
+        """
+        Return residues containing a selected interaction family.
+        """
+
+        canonical_family = canonical_interaction_family(
+            interaction_family
+        )
+
+        return tuple(
+            residue
+            for residue in self.residues
+            if canonical_family in residue.interaction_families
+        )
+
+    def top_residues(
+        self,
+        *,
+        limit: Optional[int] = None,
+        absolute: bool = False,
+    ) -> Tuple[ResidueScore, ...]:
+        """
+        Return residues ordered by score contribution.
+
+        Parameters
+        ----------
+        limit
+            Maximum number of residues to return.
+        absolute
+            Order by absolute score magnitude instead of signed score.
+        """
+
+        if limit is not None:
+            if isinstance(limit, bool):
+                raise ScoringConfigurationError(
+                    "limit must be an integer or None."
+                )
+
+            try:
+                normalized_limit = int(limit)
+            except (
+                TypeError,
+                ValueError,
+                OverflowError,
+            ) as exc:
+                raise ScoringConfigurationError(
+                    "limit must be an integer or None."
+                ) from exc
+
+            if normalized_limit < 0:
+                raise ScoringConfigurationError(
+                    "limit cannot be negative."
+                )
+        else:
+            normalized_limit = None
+
+        if absolute:
+            ordered = sorted(
+                self.residues,
+                key=lambda residue: (
+                    -abs(residue.total_score),
+                    residue.sort_key,
+                ),
+            )
+        else:
+            ordered = sorted(
+                self.residues,
+                key=lambda residue: (
+                    -residue.total_score,
+                    residue.sort_key,
+                ),
+            )
+
+        if normalized_limit is not None:
+            ordered = ordered[:normalized_limit]
+
+        return tuple(ordered)
+
+    def validate_consistency(
+        self,
+        *,
+        tolerance: float = SCORE_COMPARISON_TOLERANCE,
+        validate_breakdown: bool = True,
+        validate_residues: bool = False,
+    ) -> bool:
+        """
+        Validate pose-level aggregation consistency.
+        """
+
+        tolerance_value = _coerce_finite_score_value(
+            tolerance,
+            name="tolerance",
+        )
+
+        if tolerance_value < 0.0:
+            raise ScoringConfigurationError(
+                "tolerance cannot be negative."
+            )
+
+        calculated_raw = interaction_score_total(
+            self.interactions,
+            accepted_only=True,
+        )
+
+        if abs(self.raw_score - calculated_raw) > tolerance_value:
+            raise ScoringConfigurationError(
+                "PoseScore.raw_score is inconsistent with its "
+                "interaction contributions."
+            )
+
+        if (
+            abs(
+                self.total_score
+                - self.calculated_total_score
+            )
+            > tolerance_value
+        ):
+            raise ScoringConfigurationError(
+                "PoseScore.total_score is inconsistent with raw_score "
+                "and pose-level adjustments."
+            )
+
+        if validate_breakdown:
+            expected_by_type = _calculate_score_by_interaction_type(
+                self.interactions,
+                accepted_only=True,
+            )
+
+            expected_by_family = (
+                _calculate_score_by_interaction_family(
+                    self.interactions,
+                    accepted_only=True,
+                )
+            )
+
+            all_types = (
+                set(expected_by_type)
+                | set(self.score_by_type)
+            )
+
+            for interaction_type in all_types:
+                expected = expected_by_type.get(
+                    interaction_type,
+                    0.0,
+                )
+                observed = self.score_by_type.get(
+                    interaction_type,
+                    0.0,
+                )
+
+                if abs(expected - observed) > tolerance_value:
+                    raise ScoringConfigurationError(
+                        "PoseScore.score_by_type is inconsistent for "
+                        f"{interaction_type!r}."
+                    )
+
+            all_families = (
+                set(expected_by_family)
+                | set(self.score_by_family)
+            )
+
+            for interaction_family in all_families:
+                expected = expected_by_family.get(
+                    interaction_family,
+                    0.0,
+                )
+                observed = self.score_by_family.get(
+                    interaction_family,
+                    0.0,
+                )
+
+                if abs(expected - observed) > tolerance_value:
+                    raise ScoringConfigurationError(
+                        "PoseScore.score_by_family is inconsistent for "
+                        f"{interaction_family!r}."
+                    )
+
+        if validate_residues:
+            for residue in self.residues:
+                residue.validate_consistency(
+                    tolerance=tolerance_value,
+                    validate_breakdown=validate_breakdown,
+                )
+
+        return True
+
+    def with_updates(self, **changes: Any) -> "PoseScore":
+        """
+        Return a validated copy with selected fields changed.
+        """
+
+        return replace(self, **changes)
+
+    def with_normalized_score(
+        self,
+        normalized_score: Number,
+        *,
+        use_for_ranking: bool = True,
+    ) -> "PoseScore":
+        """
+        Return a copy with a normalized score.
+        """
+
+        normalized_value = _coerce_finite_score_value(
+            normalized_score,
+            name="normalized_score",
+        )
+
+        updates: Dict[str, Any] = {
+            "normalized_score": normalized_value,
+        }
+
+        if use_for_ranking:
+            updates["ranking_score"] = normalized_value
+
+        return replace(
+            self,
+            **updates,
+        )
+
+    def without_interaction_references(self) -> "PoseScore":
+        """
+        Return a copy without detector-object references.
+        """
+
+        stripped_interactions = tuple(
+            interaction.without_interaction_reference()
+            for interaction in self.interactions
+        )
+
+        interaction_by_id = {
+            interaction.interaction_id: interaction
+            for interaction in stripped_interactions
+        }
+
+        stripped_residues: List[ResidueScore] = []
+
+        for residue in self.residues:
+            residue_interactions = tuple(
+                interaction_by_id.get(
+                    interaction.interaction_id,
+                    interaction.without_interaction_reference(),
+                )
+                for interaction in residue.interactions
+            )
+
+            stripped_residues.append(
+                replace(
+                    residue,
+                    interactions=residue_interactions,
+                )
+            )
+
+        return replace(
+            self,
+            interactions=stripped_interactions,
+            residues=tuple(stripped_residues),
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_interactions: bool = True,
+        include_residues: bool = True,
+        include_components: bool = True,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a mutable dictionary representation.
+        """
+
+        result: Dict[str, Any] = {
+            "pose_id": self.pose_id,
+            "model_id": self.model_id,
+            "ligand_id": self.ligand_id,
+            "pose_index": self.pose_index,
+            "status": self.status,
+            "accepted": bool(self.accepted),
+            "rejection_reason": self.rejection_reason,
+            "raw_score": float(self.raw_score),
+            "penalty_score": float(self.penalty_score),
+            "bonus_score": float(self.bonus_score),
+            "diversity_bonus": float(self.diversity_bonus),
+            "total_score": float(self.total_score),
+            "normalized_score": (
+                None
+                if self.normalized_score is None
+                else float(self.normalized_score)
+            ),
+            "ranking_score": float(self.ranking_score),
+            "contribution": float(self.contribution),
+            "score_delta": float(self.score_delta),
+            "docking_affinity": (
+                None
+                if self.docking_affinity is None
+                else float(self.docking_affinity)
+            ),
+            "docking_affinity_unit": self.docking_affinity_unit,
+            "interaction_count": int(self.interaction_count),
+            "accepted_interaction_count": int(
+                self.accepted_interaction_count
+            ),
+            "rejected_interaction_count": int(
+                self.rejected_interaction_count
+            ),
+            "residue_count": int(self.residue_count),
+            "scored_residue_count": int(
+                self.scored_residue_count
+            ),
+            "family_diversity": int(self.family_diversity),
+            "favorable_score": float(self.favorable_score),
+            "interaction_penalty_score": float(
+                self.interaction_penalty_score
+            ),
+            "neutral_score": float(self.neutral_score),
+            "score_by_type": dict(self.score_by_type),
+            "score_by_family": dict(self.score_by_family),
+            "interaction_counts": dict(self.interaction_counts),
+            "family_counts": dict(self.family_counts),
+        }
+
+        if include_interactions:
+            result["interactions"] = [
+                interaction.to_dict(
+                    include_components=include_components,
+                    include_metadata=include_metadata,
+                    include_interaction=False,
+                )
+                for interaction in self.interactions
+            ]
+
+        if include_residues:
+            result["residues"] = [
+                residue.to_dict(
+                    include_interactions=include_interactions,
+                    include_components=include_components,
+                    include_metadata=include_metadata,
+                )
+                for residue in self.residues
+            ]
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+    def __float__(self) -> float:
+        """Return the final pose score."""
+
+        return float(self.total_score)
+
+    def __bool__(self) -> bool:
+        """Return whether the pose is accepted for downstream use."""
+
+        return bool(self.accepted)
+
+    def __hash__(self) -> int:
+        """
+        Return a stable hash excluding arbitrary metadata.
+        """
+
+        return hash(
+            (
+                self.pose_id,
+                self.total_score,
+                self.raw_score,
+                self.normalized_score,
+                self.ranking_score,
+                self.status,
+                self.accepted,
+                self.rejection_reason,
+                self.model_id,
+                self.ligand_id,
+                self.pose_index,
+                self.docking_affinity,
+                self.docking_affinity_unit,
+                self.interactions,
+                self.residues,
+                self.penalty_score,
+                self.bonus_score,
+                self.diversity_bonus,
+                tuple(sorted(self.score_by_type.items())),
+                tuple(sorted(self.score_by_family.items())),
+                tuple(sorted(self.interaction_counts.items())),
+                tuple(sorted(self.family_counts.items())),
+            )
+        )
+
+
+# -----------------------------------------------------------------------------
+# 4.2.5. ResidueScore factory
+# -----------------------------------------------------------------------------
+
+def create_residue_score(
+    *,
+    residue_id: Any,
+    interactions: Optional[
+        Iterable[InteractionScore]
+    ] = None,
+    residue_name: Any = "",
+    chain_id: Any = "",
+    residue_number: Any = "",
+    insertion_code: Any = "",
+    role: Any = RESIDUE_ROLE_UNKNOWN,
+    pose_id: Any = "",
+    model_id: Any = "",
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ResidueScore:
+    """
+    Create a residue aggregate from interaction scores.
+    """
+
+    return ResidueScore(
+        residue_id=_coerce_identifier(residue_id),
+        residue_name=_coerce_optional_text(
+            residue_name
+        ),
+        chain_id=_coerce_identifier(chain_id),
+        residue_number=_coerce_identifier(
+            residue_number
+        ),
+        insertion_code=_coerce_identifier(
+            insertion_code
+        ),
+        role=_normalize_residue_role(role),
+        pose_id=_coerce_identifier(pose_id),
+        model_id=_coerce_identifier(model_id),
+        interactions=_normalize_interaction_score_sequence(
+            interactions
+        ),
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 4.2.6. PoseScore factory
+# -----------------------------------------------------------------------------
+
+def create_pose_score(
+    *,
+    pose_id: Any,
+    interactions: Optional[
+        Iterable[InteractionScore]
+    ] = None,
+    residues: Optional[
+        Iterable[ResidueScore]
+    ] = None,
+    model_id: Any = "",
+    ligand_id: Any = "",
+    pose_index: Optional[int] = None,
+    docking_affinity: Optional[Number] = None,
+    docking_affinity_unit: str = "kcal/mol",
+    penalty_score: Number = 0.0,
+    bonus_score: Number = 0.0,
+    diversity_bonus: Number = 0.0,
+    normalized_score: Optional[Number] = None,
+    ranking_score: Optional[Number] = None,
+    status: Any = POSE_STATUS_SCORED,
+    accepted: bool = True,
+    rejection_reason: str = "",
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> PoseScore:
+    """
+    Create a pose aggregate from interaction and residue results.
+    """
+
+    return PoseScore(
+        pose_id=_coerce_identifier(pose_id),
+        normalized_score=(
+            None
+            if normalized_score is None
+            else float(normalized_score)
+        ),
+        ranking_score=(
+            None
+            if ranking_score is None
+            else float(ranking_score)
+        ),
+        status=_normalize_pose_status(status),
+        accepted=accepted,
+        rejection_reason=rejection_reason,
+        model_id=_coerce_identifier(model_id),
+        ligand_id=_coerce_identifier(ligand_id),
+        pose_index=pose_index,
+        docking_affinity=(
+            None
+            if docking_affinity is None
+            else float(docking_affinity)
+        ),
+        docking_affinity_unit=docking_affinity_unit,
+        interactions=_normalize_interaction_score_sequence(
+            interactions
+        ),
+        residues=_normalize_residue_score_sequence(
+            residues
+        ),
+        penalty_score=float(penalty_score),
+        bonus_score=float(bonus_score),
+        diversity_bonus=float(diversity_bonus),
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 4.2.7. Rejected and empty pose factories
+# -----------------------------------------------------------------------------
+
+def create_rejected_pose_score(
+    *,
+    pose_id: Any,
+    reason: str,
+    model_id: Any = "",
+    ligand_id: Any = "",
+    pose_index: Optional[int] = None,
+    interactions: Optional[
+        Iterable[InteractionScore]
+    ] = None,
+    residues: Optional[
+        Iterable[ResidueScore]
+    ] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> PoseScore:
+    """
+    Create a rejected pose result with zero aggregate contribution.
+    """
+
+    return PoseScore(
+        pose_id=_coerce_identifier(pose_id),
+        total_score=0.0,
+        raw_score=0.0,
+        normalized_score=None,
+        ranking_score=0.0,
+        status=POSE_STATUS_REJECTED,
+        accepted=False,
+        rejection_reason=reason,
+        model_id=_coerce_identifier(model_id),
+        ligand_id=_coerce_identifier(ligand_id),
+        pose_index=pose_index,
+        interactions=_normalize_interaction_score_sequence(
+            interactions
+        ),
+        residues=_normalize_residue_score_sequence(
+            residues
+        ),
+        penalty_score=0.0,
+        bonus_score=0.0,
+        diversity_bonus=0.0,
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+def create_empty_pose_score(
+    *,
+    pose_id: Any,
+    model_id: Any = "",
+    ligand_id: Any = "",
+    pose_index: Optional[int] = None,
+    reason: str = "No scoreable interactions were found.",
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> PoseScore:
+    """
+    Create an empty pose result.
+    """
+
+    return PoseScore(
+        pose_id=_coerce_identifier(pose_id),
+        total_score=0.0,
+        raw_score=0.0,
+        normalized_score=None,
+        ranking_score=0.0,
+        status=POSE_STATUS_EMPTY,
+        accepted=False,
+        rejection_reason=reason,
+        model_id=_coerce_identifier(model_id),
+        ligand_id=_coerce_identifier(ligand_id),
+        pose_index=pose_index,
+        interactions=(),
+        residues=(),
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 4.2.8. Aggregate validation helpers
+# -----------------------------------------------------------------------------
+
+def validate_residue_score(
+    result: ResidueScore,
+    *,
+    validate_consistency: bool = True,
+    tolerance: float = SCORE_COMPARISON_TOLERANCE,
+) -> ResidueScore:
+    """
+    Validate and return a residue score.
+    """
+
+    if not isinstance(result, ResidueScore):
+        raise ScoringConfigurationError(
+            "Expected a ResidueScore instance."
+        )
+
+    for interaction in result.interactions:
+        validate_interaction_score(
+            interaction,
+            validate_consistency=False,
+        )
+
+    if validate_consistency:
+        result.validate_consistency(
+            tolerance=tolerance,
+            validate_breakdown=True,
+        )
+
+    return result
+
+
+def validate_pose_score(
+    result: PoseScore,
+    *,
+    validate_consistency: bool = True,
+    validate_residues: bool = False,
+    tolerance: float = SCORE_COMPARISON_TOLERANCE,
+) -> PoseScore:
+    """
+    Validate and return a pose score.
+    """
+
+    if not isinstance(result, PoseScore):
+        raise ScoringConfigurationError(
+            "Expected a PoseScore instance."
+        )
+
+    for interaction in result.interactions:
+        validate_interaction_score(
+            interaction,
+            validate_consistency=False,
+        )
+
+    for residue in result.residues:
+        validate_residue_score(
+            residue,
+            validate_consistency=False,
+        )
+
+    if validate_consistency:
+        result.validate_consistency(
+            tolerance=tolerance,
+            validate_breakdown=True,
+            validate_residues=validate_residues,
+        )
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 4.2.9. Residue aggregation from interaction scores
+# -----------------------------------------------------------------------------
+
+def group_interaction_scores_by_residue(
+    interactions: Iterable[InteractionScore],
+    *,
+    include_unassigned: bool = False,
+    unassigned_residue_id: str = "unassigned",
+) -> Mapping[str, Tuple[InteractionScore, ...]]:
+    """
+    Group interaction scores by residue identifiers.
+
+    Each interaction may be assigned to both residues in ``residue_pair``.
+    This means residue-level totals are local residue contributions and must
+    not be summed to reconstruct the pose score without correcting for the
+    duplicate assignment.
+    """
+
+    grouped: Dict[str, List[InteractionScore]] = {}
+
+    for interaction in interactions:
+        validate_interaction_score(
+            interaction,
+            validate_consistency=False,
+        )
+
+        residue_pair = interaction.residue_pair
+
+        if residue_pair is None:
+            if not include_unassigned:
+                continue
+
+            residue_ids = (
+                _coerce_identifier(
+                    unassigned_residue_id,
+                    default="unassigned",
+                ),
+            )
+        else:
+            residue_ids = tuple(
+                dict.fromkeys(residue_pair)
+            )
+
+        for residue_id in residue_ids:
+            grouped.setdefault(
+                residue_id,
+                [],
+            ).append(interaction)
+
+    frozen_groups = {
+        residue_id: tuple(
+            sorted(
+                residue_interactions,
+                key=lambda result: result.sort_key,
+            )
+        )
+        for residue_id, residue_interactions in grouped.items()
+    }
+
+    return MappingProxyType(frozen_groups)
+
+
+def build_residue_scores(
+    interactions: Iterable[InteractionScore],
+    *,
+    residue_metadata: Optional[
+        Mapping[str, Mapping[str, Any]]
+    ] = None,
+    default_role: str = RESIDUE_ROLE_RECEPTOR,
+    pose_id: Any = "",
+    model_id: Any = "",
+    include_unassigned: bool = False,
+) -> Tuple[ResidueScore, ...]:
+    """
+    Build residue aggregates from interaction scores.
+
+    Parameters
+    ----------
+    interactions
+        Interaction-level scoring results.
+    residue_metadata
+        Optional metadata indexed by residue identifier. Supported fields
+        include ``residue_name``, ``chain_id``, ``residue_number``,
+        ``insertion_code``, ``role`` and ``metadata``.
+    default_role
+        Role assigned when no role is supplied.
+    pose_id
+        Pose identifier assigned to created residue results.
+    model_id
+        Model identifier assigned to created residue results.
+    include_unassigned
+        Create an ``unassigned`` residue for interactions without a
+        ``residue_pair``.
+    """
+
+    groups = group_interaction_scores_by_residue(
+        interactions,
+        include_unassigned=include_unassigned,
+    )
+
+    metadata_by_residue = dict(
+        residue_metadata or {}
+    )
+
+    results: List[ResidueScore] = []
+
+    for residue_id, residue_interactions in groups.items():
+        residue_data = dict(
+            metadata_by_residue.get(
+                residue_id,
+                {},
+            )
+        )
+
+        extra_metadata = residue_data.pop(
+            "metadata",
+            {},
+        )
+
+        result = create_residue_score(
+            residue_id=residue_id,
+            interactions=residue_interactions,
+            residue_name=residue_data.pop(
+                "residue_name",
+                residue_data.pop("name", ""),
+            ),
+            chain_id=residue_data.pop(
+                "chain_id",
+                residue_data.pop("chain", ""),
+            ),
+            residue_number=residue_data.pop(
+                "residue_number",
+                residue_data.pop("number", ""),
+            ),
+            insertion_code=residue_data.pop(
+                "insertion_code",
+                residue_data.pop("icode", ""),
+            ),
+            role=residue_data.pop(
+                "role",
+                default_role,
+            ),
+            pose_id=pose_id,
+            model_id=model_id,
+            metadata={
+                **dict(extra_metadata),
+                **residue_data,
+            },
+        )
+
+        results.append(result)
+
+    results.sort(
+        key=lambda result: result.sort_key
+    )
+
+    return tuple(results)
+
+
+# -----------------------------------------------------------------------------
+# 4.2.10. Aggregate collection helpers
+# -----------------------------------------------------------------------------
+
+def sort_residue_scores(
+    results: Iterable[ResidueScore],
+    *,
+    by_score: bool = False,
+    reverse: bool = False,
+) -> Tuple[ResidueScore, ...]:
+    """
+    Return residue scores in deterministic order.
+    """
+
+    validated = [
+        validate_residue_score(
+            result,
+            validate_consistency=False,
+        )
+        for result in results
+    ]
+
+    if by_score:
+        key = lambda result: (
+            -result.total_score,
+            result.sort_key,
+        )
+    else:
+        key = lambda result: result.sort_key
+
+    return tuple(
+        sorted(
+            validated,
+            key=key,
+            reverse=reverse,
+        )
+    )
+
+
+def sort_pose_scores(
+    results: Iterable[PoseScore],
+    *,
+    score_direction: str = SCORE_DIRECTION_HIGHER_IS_BETTER,
+    accepted_first: bool = True,
+) -> Tuple[PoseScore, ...]:
+    """
+    Return pose scores in ranking order.
+    """
+
+    direction = normalize_score_direction(
+        score_direction
+    )
+
+    validated = [
+        validate_pose_score(
+            result,
+            validate_consistency=False,
+        )
+        for result in results
+    ]
+
+    return tuple(
+        sorted(
+            validated,
+            key=lambda result: (
+                0
+                if (
+                    result.accepted
+                    or not accepted_first
+                )
+                else 1,
+                *result.ranking_key(
+                    score_direction=direction
+                ),
+            ),
+        )
+    )
+
+
+def pose_score_total(
+    results: Iterable[PoseScore],
+    *,
+    accepted_only: bool = True,
+    use_ranking_score: bool = False,
+) -> float:
+    """
+    Return the sum of pose scores.
+    """
+
+    total = 0.0
+
+    for result in results:
+        validate_pose_score(
+            result,
+            validate_consistency=False,
+        )
+
+        if accepted_only and not result.accepted:
+            continue
+
+        total += (
+            result.ranking_score
+            if use_ranking_score
+            else result.total_score
+        )
+
+    return float(total)
+
+
+# -----------------------------------------------------------------------------
+# 4.2.11. Section consistency validation
+# -----------------------------------------------------------------------------
+
+def _validate_section_4_2_structures() -> None:
+    """
+    Validate aggregate result structures during module import.
+    """
+
+    interaction_a = create_interaction_score(
+        interaction_id="hbond_1",
+        interaction_type=SCORE_TYPE_HYDROGEN_BOND,
+        base_weight=2.0,
+        residue_pair=("A:100:ASP", "L:1:LIG"),
+        pose_id="pose_1",
+    )
+
+    interaction_b = create_interaction_score(
+        interaction_id="hydrophobic_1",
+        interaction_type=SCORE_TYPE_HYDROPHOBIC,
+        base_weight=1.0,
+        residue_pair=("A:101:TYR", "L:1:LIG"),
+        pose_id="pose_1",
+    )
+
+    residue_scores = build_residue_scores(
+        (
+            interaction_a,
+            interaction_b,
+        ),
+        pose_id="pose_1",
+    )
+
+    if len(residue_scores) != 3:
+        raise RuntimeError(
+            "ResidueScore grouping validation failed."
+        )
+
+    pose_score = create_pose_score(
+        pose_id="pose_1",
+        interactions=(
+            interaction_a,
+            interaction_b,
+        ),
+        residues=residue_scores,
+    )
+
+    expected_total = (
+        interaction_a.contribution
+        + interaction_b.contribution
+    )
+
+    if (
+        abs(pose_score.total_score - expected_total)
+        > SCORE_COMPARISON_TOLERANCE
+    ):
+        raise RuntimeError(
+            "PoseScore total-score validation failed."
+        )
+
+    if pose_score.interaction_count != 2:
+        raise RuntimeError(
+            "PoseScore interaction-count validation failed."
+        )
+
+    if pose_score.residue_count != 3:
+        raise RuntimeError(
+            "PoseScore residue-count validation failed."
+        )
+
+    pose_score.validate_consistency(
+        validate_residues=True,
+    )
+
+
+_validate_section_4_2_structures()
+
+
+# -----------------------------------------------------------------------------
+# 4.2.12. Section public interface
+# -----------------------------------------------------------------------------
+
+_SECTION_4_2_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    # Residue roles
+    "RESIDUE_ROLE_RECEPTOR",
+    "RESIDUE_ROLE_LIGAND",
+    "RESIDUE_ROLE_WATER",
+    "RESIDUE_ROLE_ION",
+    "RESIDUE_ROLE_COFACTOR",
+    "RESIDUE_ROLE_OTHER",
+    "RESIDUE_ROLE_UNKNOWN",
+    "RESIDUE_ROLES",
+
+    # Pose statuses
+    "POSE_STATUS_SCORED",
+    "POSE_STATUS_PARTIAL",
+    "POSE_STATUS_EMPTY",
+    "POSE_STATUS_REJECTED",
+    "POSE_STATUS_INVALID",
+    "POSE_STATUS_UNKNOWN",
+    "POSE_STATUSES",
+
+    # Aggregate scopes
+    "AGGREGATE_SCOPE_RESIDUE",
+    "AGGREGATE_SCOPE_POSE",
+
+    # Dataclasses
+    "ResidueScore",
+    "PoseScore",
+
+    # Factories
+    "create_residue_score",
+    "create_pose_score",
+    "create_rejected_pose_score",
+    "create_empty_pose_score",
+
+    # Validation
+    "validate_residue_score",
+    "validate_pose_score",
+
+    # Residue aggregation
+    "group_interaction_scores_by_residue",
+    "build_residue_scores",
+
+    # Collection helpers
+    "sort_residue_scores",
+    "sort_pose_scores",
+    "pose_score_total",
+)
+
+for public_name in _SECTION_4_2_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+# =============================================================================
+# End of Section 4.2
+# =============================================================================
 
 
