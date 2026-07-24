@@ -9781,4 +9781,3872 @@ for public_name in _SECTION_4_2_PUBLIC_NAMES:
 # End of Section 4.2
 # =============================================================================
 
+# =============================================================================
+# Section 4.3 — Multipose, statistics and explainability
+# =============================================================================
 
+
+# -----------------------------------------------------------------------------
+# 4.3.1. Multipose and explanation constants
+# -----------------------------------------------------------------------------
+
+MULTIPOSE_STATUS_COMPLETE: Final[str] = "complete"
+MULTIPOSE_STATUS_PARTIAL: Final[str] = "partial"
+MULTIPOSE_STATUS_EMPTY: Final[str] = "empty"
+MULTIPOSE_STATUS_INVALID: Final[str] = "invalid"
+MULTIPOSE_STATUS_UNKNOWN: Final[str] = "unknown"
+
+MULTIPOSE_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        MULTIPOSE_STATUS_COMPLETE,
+        MULTIPOSE_STATUS_PARTIAL,
+        MULTIPOSE_STATUS_EMPTY,
+        MULTIPOSE_STATUS_INVALID,
+        MULTIPOSE_STATUS_UNKNOWN,
+    }
+)
+
+
+EXPLANATION_LEVEL_SUMMARY: Final[str] = "summary"
+EXPLANATION_LEVEL_STANDARD: Final[str] = "standard"
+EXPLANATION_LEVEL_DETAILED: Final[str] = "detailed"
+EXPLANATION_LEVEL_DEBUG: Final[str] = "debug"
+
+EXPLANATION_LEVELS: Final[FrozenSet[str]] = frozenset(
+    {
+        EXPLANATION_LEVEL_SUMMARY,
+        EXPLANATION_LEVEL_STANDARD,
+        EXPLANATION_LEVEL_DETAILED,
+        EXPLANATION_LEVEL_DEBUG,
+    }
+)
+
+
+EXPLANATION_SEVERITY_INFO: Final[str] = "info"
+EXPLANATION_SEVERITY_SUCCESS: Final[str] = "success"
+EXPLANATION_SEVERITY_WARNING: Final[str] = "warning"
+EXPLANATION_SEVERITY_ERROR: Final[str] = "error"
+
+EXPLANATION_SEVERITIES: Final[FrozenSet[str]] = frozenset(
+    {
+        EXPLANATION_SEVERITY_INFO,
+        EXPLANATION_SEVERITY_SUCCESS,
+        EXPLANATION_SEVERITY_WARNING,
+        EXPLANATION_SEVERITY_ERROR,
+    }
+)
+
+
+EXPLANATION_SCOPE_COMPONENT: Final[str] = "component"
+EXPLANATION_SCOPE_INTERACTION: Final[str] = "interaction"
+EXPLANATION_SCOPE_RESIDUE: Final[str] = "residue"
+EXPLANATION_SCOPE_POSE: Final[str] = "pose"
+EXPLANATION_SCOPE_MULTIPOSE: Final[str] = "multipose"
+EXPLANATION_SCOPE_STATISTICS: Final[str] = "statistics"
+EXPLANATION_SCOPE_GENERAL: Final[str] = "general"
+
+EXPLANATION_SCOPES: Final[FrozenSet[str]] = frozenset(
+    {
+        EXPLANATION_SCOPE_COMPONENT,
+        EXPLANATION_SCOPE_INTERACTION,
+        EXPLANATION_SCOPE_RESIDUE,
+        EXPLANATION_SCOPE_POSE,
+        EXPLANATION_SCOPE_MULTIPOSE,
+        EXPLANATION_SCOPE_STATISTICS,
+        EXPLANATION_SCOPE_GENERAL,
+    }
+)
+
+
+_EMPTY_POSE_SCORE_TUPLE: Final[Tuple[PoseScore, ...]] = ()
+_EMPTY_EXPLANATION_TUPLE: Final[Tuple["ScoreExplanation", ...]] = ()
+_EMPTY_FLOAT_TUPLE: Final[Tuple[float, ...]] = ()
+
+
+# -----------------------------------------------------------------------------
+# 4.3.2. Normalization aliases
+# -----------------------------------------------------------------------------
+
+_MULTIPOSE_STATUS_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "complete": MULTIPOSE_STATUS_COMPLETE,
+        "completed": MULTIPOSE_STATUS_COMPLETE,
+        "valid": MULTIPOSE_STATUS_COMPLETE,
+        "scored": MULTIPOSE_STATUS_COMPLETE,
+
+        "partial": MULTIPOSE_STATUS_PARTIAL,
+        "incomplete": MULTIPOSE_STATUS_PARTIAL,
+
+        "empty": MULTIPOSE_STATUS_EMPTY,
+        "no_poses": MULTIPOSE_STATUS_EMPTY,
+
+        "invalid": MULTIPOSE_STATUS_INVALID,
+        "failed": MULTIPOSE_STATUS_INVALID,
+        "error": MULTIPOSE_STATUS_INVALID,
+
+        "unknown": MULTIPOSE_STATUS_UNKNOWN,
+        "undefined": MULTIPOSE_STATUS_UNKNOWN,
+    }
+)
+
+_EXPLANATION_LEVEL_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "summary": EXPLANATION_LEVEL_SUMMARY,
+        "short": EXPLANATION_LEVEL_SUMMARY,
+        "brief": EXPLANATION_LEVEL_SUMMARY,
+
+        "standard": EXPLANATION_LEVEL_STANDARD,
+        "normal": EXPLANATION_LEVEL_STANDARD,
+        "default": EXPLANATION_LEVEL_STANDARD,
+
+        "detailed": EXPLANATION_LEVEL_DETAILED,
+        "detail": EXPLANATION_LEVEL_DETAILED,
+        "full": EXPLANATION_LEVEL_DETAILED,
+
+        "debug": EXPLANATION_LEVEL_DEBUG,
+        "diagnostic": EXPLANATION_LEVEL_DEBUG,
+        "verbose": EXPLANATION_LEVEL_DEBUG,
+    }
+)
+
+_EXPLANATION_SEVERITY_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "info": EXPLANATION_SEVERITY_INFO,
+        "information": EXPLANATION_SEVERITY_INFO,
+        "neutral": EXPLANATION_SEVERITY_INFO,
+
+        "success": EXPLANATION_SEVERITY_SUCCESS,
+        "positive": EXPLANATION_SEVERITY_SUCCESS,
+        "favorable": EXPLANATION_SEVERITY_SUCCESS,
+
+        "warning": EXPLANATION_SEVERITY_WARNING,
+        "warn": EXPLANATION_SEVERITY_WARNING,
+        "caution": EXPLANATION_SEVERITY_WARNING,
+
+        "error": EXPLANATION_SEVERITY_ERROR,
+        "failure": EXPLANATION_SEVERITY_ERROR,
+        "invalid": EXPLANATION_SEVERITY_ERROR,
+    }
+)
+
+_EXPLANATION_SCOPE_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "component": EXPLANATION_SCOPE_COMPONENT,
+        "score_component": EXPLANATION_SCOPE_COMPONENT,
+
+        "interaction": EXPLANATION_SCOPE_INTERACTION,
+        "contact": EXPLANATION_SCOPE_INTERACTION,
+
+        "residue": EXPLANATION_SCOPE_RESIDUE,
+        "hotspot": EXPLANATION_SCOPE_RESIDUE,
+
+        "pose": EXPLANATION_SCOPE_POSE,
+        "model": EXPLANATION_SCOPE_POSE,
+
+        "multipose": EXPLANATION_SCOPE_MULTIPOSE,
+        "multi_pose": EXPLANATION_SCOPE_MULTIPOSE,
+        "ranking": EXPLANATION_SCOPE_MULTIPOSE,
+
+        "statistics": EXPLANATION_SCOPE_STATISTICS,
+        "stats": EXPLANATION_SCOPE_STATISTICS,
+
+        "general": EXPLANATION_SCOPE_GENERAL,
+        "global": EXPLANATION_SCOPE_GENERAL,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 4.3.3. General helpers
+# -----------------------------------------------------------------------------
+
+def _normalize_multipose_status(
+    value: Any,
+    *,
+    default: str = MULTIPOSE_STATUS_COMPLETE,
+) -> str:
+    """
+    Normalize a multipose-result status.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return default
+
+    if normalized in MULTIPOSE_STATUSES:
+        return normalized
+
+    return _MULTIPOSE_STATUS_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def _normalize_explanation_level(
+    value: Any,
+    *,
+    default: str = EXPLANATION_LEVEL_STANDARD,
+) -> str:
+    """
+    Normalize an explanation-detail level.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return default
+
+    if normalized in EXPLANATION_LEVELS:
+        return normalized
+
+    return _EXPLANATION_LEVEL_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def _normalize_explanation_severity(
+    value: Any,
+    *,
+    default: str = EXPLANATION_SEVERITY_INFO,
+) -> str:
+    """
+    Normalize an explanation-severity label.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return default
+
+    if normalized in EXPLANATION_SEVERITIES:
+        return normalized
+
+    return _EXPLANATION_SEVERITY_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def _normalize_explanation_scope(
+    value: Any,
+    *,
+    default: str = EXPLANATION_SCOPE_GENERAL,
+) -> str:
+    """
+    Normalize an explanation scope.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if not normalized:
+        return default
+
+    if normalized in EXPLANATION_SCOPES:
+        return normalized
+
+    return _EXPLANATION_SCOPE_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def _normalize_float_sequence(
+    values: Optional[Iterable[Any]],
+    *,
+    name: str,
+    sort_values: bool = False,
+) -> Tuple[float, ...]:
+    """
+    Validate and normalize a finite floating-point sequence.
+    """
+
+    if values is None:
+        return _EMPTY_FLOAT_TUPLE
+
+    normalized: List[float] = []
+
+    for index, value in enumerate(values):
+        normalized_value = _coerce_finite_score_value(
+            value,
+            name=f"{name}[{index}]",
+        )
+
+        normalized.append(float(normalized_value))
+
+    if sort_values:
+        normalized.sort()
+
+    return tuple(normalized)
+
+
+def _normalize_pose_score_sequence(
+    values: Optional[Iterable[PoseScore]],
+    *,
+    score_direction: str = SCORE_DIRECTION_HIGHER_IS_BETTER,
+    accepted_first: bool = True,
+) -> Tuple[PoseScore, ...]:
+    """
+    Validate and rank a pose-score sequence.
+    """
+
+    if values is None:
+        return _EMPTY_POSE_SCORE_TUPLE
+
+    validated: List[PoseScore] = []
+
+    for value in values:
+        validated.append(
+            validate_pose_score(
+                value,
+                validate_consistency=False,
+            )
+        )
+
+    return sort_pose_scores(
+        validated,
+        score_direction=score_direction,
+        accepted_first=accepted_first,
+    )
+
+
+def _mean(values: Sequence[float]) -> Optional[float]:
+    """
+    Return the arithmetic mean or ``None`` for an empty sequence.
+    """
+
+    if not values:
+        return None
+
+    return float(sum(values) / len(values))
+
+
+def _median(values: Sequence[float]) -> Optional[float]:
+    """
+    Return the median or ``None`` for an empty sequence.
+    """
+
+    if not values:
+        return None
+
+    ordered = sorted(values)
+    size = len(ordered)
+    midpoint = size // 2
+
+    if size % 2:
+        return float(ordered[midpoint])
+
+    return float(
+        (
+            ordered[midpoint - 1]
+            + ordered[midpoint]
+        )
+        / 2.0
+    )
+
+
+def _population_variance(
+    values: Sequence[float],
+    *,
+    mean_value: Optional[float] = None,
+) -> Optional[float]:
+    """
+    Return population variance or ``None`` for an empty sequence.
+    """
+
+    if not values:
+        return None
+
+    center = (
+        _mean(values)
+        if mean_value is None
+        else float(mean_value)
+    )
+
+    return float(
+        sum(
+            (value - center) ** 2
+            for value in values
+        )
+        / len(values)
+    )
+
+
+def _sample_variance(
+    values: Sequence[float],
+    *,
+    mean_value: Optional[float] = None,
+) -> Optional[float]:
+    """
+    Return sample variance or ``None`` when fewer than two values exist.
+    """
+
+    if len(values) < 2:
+        return None
+
+    center = (
+        _mean(values)
+        if mean_value is None
+        else float(mean_value)
+    )
+
+    return float(
+        sum(
+            (value - center) ** 2
+            for value in values
+        )
+        / (len(values) - 1)
+    )
+
+
+def _linear_percentile(
+    values: Sequence[float],
+    percentile: float,
+) -> Optional[float]:
+    """
+    Calculate a percentile using linear interpolation.
+    """
+
+    if not values:
+        return None
+
+    percentile_value = _coerce_finite_score_value(
+        percentile,
+        name="percentile",
+    )
+
+    if percentile_value < 0.0 or percentile_value > 100.0:
+        raise ScoringConfigurationError(
+            "percentile must be between 0 and 100."
+        )
+
+    ordered = sorted(values)
+
+    if len(ordered) == 1:
+        return float(ordered[0])
+
+    position = (
+        percentile_value
+        / 100.0
+        * (len(ordered) - 1)
+    )
+
+    lower_index = int(position)
+    upper_index = min(
+        lower_index + 1,
+        len(ordered) - 1,
+    )
+
+    fraction = position - lower_index
+
+    return float(
+        ordered[lower_index]
+        + fraction
+        * (
+            ordered[upper_index]
+            - ordered[lower_index]
+        )
+    )
+
+
+def _round_optional(
+    value: Optional[float],
+    decimal_places: Optional[int],
+) -> Optional[float]:
+    """
+    Round an optional value.
+    """
+
+    if value is None:
+        return None
+
+    if decimal_places is None:
+        return float(value)
+
+    return round(
+        float(value),
+        int(decimal_places),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 4.3.4. ScoringStatistics
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ScoringStatistics:
+    """
+    Immutable descriptive statistics for a numeric scoring collection.
+
+    The raw values are retained to support reproducible percentile calculation
+    and later report generation. Empty collections are valid and produce
+    ``None`` for statistics that require at least one observation.
+
+    Parameters
+    ----------
+    values
+        Numeric values represented by this statistical summary.
+    count
+        Number of observations. It is calculated automatically when omitted.
+    total
+        Sum of observations.
+    minimum
+        Minimum observed value.
+    maximum
+        Maximum observed value.
+    mean
+        Arithmetic mean.
+    median
+        Median.
+    variance
+        Population variance.
+    standard_deviation
+        Population standard deviation.
+    sample_variance
+        Sample variance.
+    sample_standard_deviation
+        Sample standard deviation.
+    first_quartile
+        Twenty-fifth percentile.
+    third_quartile
+        Seventy-fifth percentile.
+    interquartile_range
+        Difference between third and first quartiles.
+    range_value
+        Difference between maximum and minimum.
+    nonzero_count
+        Number of nonzero values.
+    positive_count
+        Number of positive values.
+    negative_count
+        Number of negative values.
+    zero_count
+        Number of values numerically equal to zero.
+    metadata
+        Additional immutable metadata.
+    """
+
+    values: Tuple[float, ...] = field(
+        default_factory=tuple
+    )
+
+    count: Optional[int] = None
+    total: Optional[float] = None
+
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
+
+    mean: Optional[float] = None
+    median: Optional[float] = None
+
+    variance: Optional[float] = None
+    standard_deviation: Optional[float] = None
+
+    sample_variance: Optional[float] = None
+    sample_standard_deviation: Optional[float] = None
+
+    first_quartile: Optional[float] = None
+    third_quartile: Optional[float] = None
+    interquartile_range: Optional[float] = None
+    range_value: Optional[float] = None
+
+    nonzero_count: Optional[int] = None
+    positive_count: Optional[int] = None
+    negative_count: Optional[int] = None
+    zero_count: Optional[int] = None
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Calculate omitted statistics and validate explicit values.
+        """
+
+        normalized_values = _normalize_float_sequence(
+            self.values,
+            name="ScoringStatistics.values",
+            sort_values=False,
+        )
+
+        calculated_count = len(normalized_values)
+        calculated_total = float(
+            sum(normalized_values)
+        )
+
+        calculated_minimum = (
+            min(normalized_values)
+            if normalized_values
+            else None
+        )
+
+        calculated_maximum = (
+            max(normalized_values)
+            if normalized_values
+            else None
+        )
+
+        calculated_mean = _mean(
+            normalized_values
+        )
+
+        calculated_median = _median(
+            normalized_values
+        )
+
+        calculated_variance = _population_variance(
+            normalized_values,
+            mean_value=calculated_mean,
+        )
+
+        calculated_standard_deviation = (
+            None
+            if calculated_variance is None
+            else sqrt(calculated_variance)
+        )
+
+        calculated_sample_variance = _sample_variance(
+            normalized_values,
+            mean_value=calculated_mean,
+        )
+
+        calculated_sample_standard_deviation = (
+            None
+            if calculated_sample_variance is None
+            else sqrt(calculated_sample_variance)
+        )
+
+        calculated_first_quartile = _linear_percentile(
+            normalized_values,
+            25.0,
+        )
+
+        calculated_third_quartile = _linear_percentile(
+            normalized_values,
+            75.0,
+        )
+
+        calculated_interquartile_range = (
+            None
+            if (
+                calculated_first_quartile is None
+                or calculated_third_quartile is None
+            )
+            else (
+                calculated_third_quartile
+                - calculated_first_quartile
+            )
+        )
+
+        calculated_range = (
+            None
+            if (
+                calculated_minimum is None
+                or calculated_maximum is None
+            )
+            else calculated_maximum - calculated_minimum
+        )
+
+        calculated_positive_count = sum(
+            1
+            for value in normalized_values
+            if value > SCORE_EPSILON
+        )
+
+        calculated_negative_count = sum(
+            1
+            for value in normalized_values
+            if value < -SCORE_EPSILON
+        )
+
+        calculated_zero_count = (
+            calculated_count
+            - calculated_positive_count
+            - calculated_negative_count
+        )
+
+        calculated_nonzero_count = (
+            calculated_positive_count
+            + calculated_negative_count
+        )
+
+        count = (
+            calculated_count
+            if self.count is None
+            else int(self.count)
+        )
+
+        if count < 0:
+            raise ScoringConfigurationError(
+                "ScoringStatistics.count cannot be negative."
+            )
+
+        if count != calculated_count:
+            raise ScoringConfigurationError(
+                "ScoringStatistics.count is inconsistent with values."
+            )
+
+        def resolve_optional(
+            explicit: Optional[float],
+            calculated: Optional[float],
+            field_name: str,
+        ) -> Optional[float]:
+            if explicit is None:
+                return calculated
+
+            return _coerce_finite_score_value(
+                explicit,
+                name=f"ScoringStatistics.{field_name}",
+                allow_none=True,
+            )
+
+        def resolve_count(
+            explicit: Optional[int],
+            calculated: int,
+            field_name: str,
+        ) -> int:
+            if explicit is None:
+                return calculated
+
+            if isinstance(explicit, bool):
+                raise ScoringConfigurationError(
+                    f"ScoringStatistics.{field_name} must be an integer."
+                )
+
+            try:
+                value = int(explicit)
+            except (
+                TypeError,
+                ValueError,
+                OverflowError,
+            ) as exc:
+                raise ScoringConfigurationError(
+                    f"ScoringStatistics.{field_name} must be an integer."
+                ) from exc
+
+            if value < 0:
+                raise ScoringConfigurationError(
+                    f"ScoringStatistics.{field_name} cannot be negative."
+                )
+
+            return value
+
+        total = resolve_optional(
+            self.total,
+            calculated_total,
+            "total",
+        )
+
+        minimum = resolve_optional(
+            self.minimum,
+            calculated_minimum,
+            "minimum",
+        )
+
+        maximum = resolve_optional(
+            self.maximum,
+            calculated_maximum,
+            "maximum",
+        )
+
+        mean_value = resolve_optional(
+            self.mean,
+            calculated_mean,
+            "mean",
+        )
+
+        median_value = resolve_optional(
+            self.median,
+            calculated_median,
+            "median",
+        )
+
+        variance_value = resolve_optional(
+            self.variance,
+            calculated_variance,
+            "variance",
+        )
+
+        standard_deviation_value = resolve_optional(
+            self.standard_deviation,
+            calculated_standard_deviation,
+            "standard_deviation",
+        )
+
+        sample_variance_value = resolve_optional(
+            self.sample_variance,
+            calculated_sample_variance,
+            "sample_variance",
+        )
+
+        sample_standard_deviation_value = resolve_optional(
+            self.sample_standard_deviation,
+            calculated_sample_standard_deviation,
+            "sample_standard_deviation",
+        )
+
+        first_quartile_value = resolve_optional(
+            self.first_quartile,
+            calculated_first_quartile,
+            "first_quartile",
+        )
+
+        third_quartile_value = resolve_optional(
+            self.third_quartile,
+            calculated_third_quartile,
+            "third_quartile",
+        )
+
+        interquartile_range_value = resolve_optional(
+            self.interquartile_range,
+            calculated_interquartile_range,
+            "interquartile_range",
+        )
+
+        range_value = resolve_optional(
+            self.range_value,
+            calculated_range,
+            "range_value",
+        )
+
+        nonzero_count = resolve_count(
+            self.nonzero_count,
+            calculated_nonzero_count,
+            "nonzero_count",
+        )
+
+        positive_count = resolve_count(
+            self.positive_count,
+            calculated_positive_count,
+            "positive_count",
+        )
+
+        negative_count = resolve_count(
+            self.negative_count,
+            calculated_negative_count,
+            "negative_count",
+        )
+
+        zero_count = resolve_count(
+            self.zero_count,
+            calculated_zero_count,
+            "zero_count",
+        )
+
+        if (
+            positive_count
+            + negative_count
+            + zero_count
+            != count
+        ):
+            raise ScoringConfigurationError(
+                "ScoringStatistics sign counts are inconsistent "
+                "with the total count."
+            )
+
+        object.__setattr__(
+            self,
+            "values",
+            normalized_values,
+        )
+        object.__setattr__(
+            self,
+            "count",
+            count,
+        )
+        object.__setattr__(
+            self,
+            "total",
+            float(total),
+        )
+        object.__setattr__(
+            self,
+            "minimum",
+            minimum,
+        )
+        object.__setattr__(
+            self,
+            "maximum",
+            maximum,
+        )
+        object.__setattr__(
+            self,
+            "mean",
+            mean_value,
+        )
+        object.__setattr__(
+            self,
+            "median",
+            median_value,
+        )
+        object.__setattr__(
+            self,
+            "variance",
+            variance_value,
+        )
+        object.__setattr__(
+            self,
+            "standard_deviation",
+            standard_deviation_value,
+        )
+        object.__setattr__(
+            self,
+            "sample_variance",
+            sample_variance_value,
+        )
+        object.__setattr__(
+            self,
+            "sample_standard_deviation",
+            sample_standard_deviation_value,
+        )
+        object.__setattr__(
+            self,
+            "first_quartile",
+            first_quartile_value,
+        )
+        object.__setattr__(
+            self,
+            "third_quartile",
+            third_quartile_value,
+        )
+        object.__setattr__(
+            self,
+            "interquartile_range",
+            interquartile_range_value,
+        )
+        object.__setattr__(
+            self,
+            "range_value",
+            range_value,
+        )
+        object.__setattr__(
+            self,
+            "nonzero_count",
+            nonzero_count,
+        )
+        object.__setattr__(
+            self,
+            "positive_count",
+            positive_count,
+        )
+        object.__setattr__(
+            self,
+            "negative_count",
+            negative_count,
+        )
+        object.__setattr__(
+            self,
+            "zero_count",
+            zero_count,
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def is_empty(self) -> bool:
+        """Return whether the collection is empty."""
+
+        return self.count == 0
+
+    @property
+    def coefficient_of_variation(self) -> Optional[float]:
+        """
+        Return population standard deviation divided by the absolute mean.
+        """
+
+        if (
+            self.mean is None
+            or self.standard_deviation is None
+            or abs(self.mean) <= SCORE_EPSILON
+        ):
+            return None
+
+        return float(
+            self.standard_deviation
+            / abs(self.mean)
+        )
+
+    @property
+    def relative_range(self) -> Optional[float]:
+        """
+        Return range divided by the absolute mean.
+        """
+
+        if (
+            self.mean is None
+            or self.range_value is None
+            or abs(self.mean) <= SCORE_EPSILON
+        ):
+            return None
+
+        return float(
+            self.range_value
+            / abs(self.mean)
+        )
+
+    def percentile(
+        self,
+        value: Number,
+    ) -> Optional[float]:
+        """
+        Return a percentile using the stored values.
+        """
+
+        return _linear_percentile(
+            self.values,
+            float(value),
+        )
+
+    def validate_consistency(
+        self,
+        *,
+        tolerance: float = SCORE_COMPARISON_TOLERANCE,
+    ) -> bool:
+        """
+        Validate all stored statistics against the raw values.
+        """
+
+        tolerance_value = _coerce_finite_score_value(
+            tolerance,
+            name="tolerance",
+        )
+
+        expected = ScoringStatistics(
+            values=self.values
+        )
+
+        numeric_fields = (
+            "total",
+            "minimum",
+            "maximum",
+            "mean",
+            "median",
+            "variance",
+            "standard_deviation",
+            "sample_variance",
+            "sample_standard_deviation",
+            "first_quartile",
+            "third_quartile",
+            "interquartile_range",
+            "range_value",
+        )
+
+        for field_name in numeric_fields:
+            observed_value = getattr(
+                self,
+                field_name,
+            )
+            expected_value = getattr(
+                expected,
+                field_name,
+            )
+
+            if (
+                observed_value is None
+                and expected_value is None
+            ):
+                continue
+
+            if (
+                observed_value is None
+                or expected_value is None
+                or abs(
+                    observed_value
+                    - expected_value
+                )
+                > tolerance_value
+            ):
+                raise ScoringConfigurationError(
+                    f"ScoringStatistics.{field_name} is inconsistent "
+                    "with stored values."
+                )
+
+        count_fields = (
+            "count",
+            "nonzero_count",
+            "positive_count",
+            "negative_count",
+            "zero_count",
+        )
+
+        for field_name in count_fields:
+            if getattr(self, field_name) != getattr(
+                expected,
+                field_name,
+            ):
+                raise ScoringConfigurationError(
+                    f"ScoringStatistics.{field_name} is inconsistent "
+                    "with stored values."
+                )
+
+        return True
+
+    def with_updates(
+        self,
+        **changes: Any,
+    ) -> "ScoringStatistics":
+        """
+        Return a validated copy with selected fields changed.
+        """
+
+        return replace(
+            self,
+            **changes,
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_values: bool = True,
+        include_metadata: bool = True,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Return a mutable dictionary representation.
+        """
+
+        result: Dict[str, Any] = {
+            "count": int(self.count),
+            "total": _round_optional(
+                self.total,
+                decimal_places,
+            ),
+            "minimum": _round_optional(
+                self.minimum,
+                decimal_places,
+            ),
+            "maximum": _round_optional(
+                self.maximum,
+                decimal_places,
+            ),
+            "mean": _round_optional(
+                self.mean,
+                decimal_places,
+            ),
+            "median": _round_optional(
+                self.median,
+                decimal_places,
+            ),
+            "variance": _round_optional(
+                self.variance,
+                decimal_places,
+            ),
+            "standard_deviation": _round_optional(
+                self.standard_deviation,
+                decimal_places,
+            ),
+            "sample_variance": _round_optional(
+                self.sample_variance,
+                decimal_places,
+            ),
+            "sample_standard_deviation": _round_optional(
+                self.sample_standard_deviation,
+                decimal_places,
+            ),
+            "first_quartile": _round_optional(
+                self.first_quartile,
+                decimal_places,
+            ),
+            "third_quartile": _round_optional(
+                self.third_quartile,
+                decimal_places,
+            ),
+            "interquartile_range": _round_optional(
+                self.interquartile_range,
+                decimal_places,
+            ),
+            "range": _round_optional(
+                self.range_value,
+                decimal_places,
+            ),
+            "coefficient_of_variation": _round_optional(
+                self.coefficient_of_variation,
+                decimal_places,
+            ),
+            "relative_range": _round_optional(
+                self.relative_range,
+                decimal_places,
+            ),
+            "nonzero_count": int(self.nonzero_count),
+            "positive_count": int(self.positive_count),
+            "negative_count": int(self.negative_count),
+            "zero_count": int(self.zero_count),
+        }
+
+        if include_values:
+            result["values"] = [
+                (
+                    float(value)
+                    if decimal_places is None
+                    else round(
+                        float(value),
+                        decimal_places,
+                    )
+                )
+                for value in self.values
+            ]
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+    def __len__(self) -> int:
+        """Return the number of observations."""
+
+        return self.count
+
+    def __bool__(self) -> bool:
+        """Return whether at least one observation exists."""
+
+        return self.count > 0
+
+    def __hash__(self) -> int:
+        """
+        Return a stable hash excluding arbitrary metadata.
+        """
+
+        return hash(
+            (
+                self.values,
+                self.count,
+                self.total,
+                self.minimum,
+                self.maximum,
+                self.mean,
+                self.median,
+                self.variance,
+                self.standard_deviation,
+                self.sample_variance,
+                self.sample_standard_deviation,
+                self.first_quartile,
+                self.third_quartile,
+                self.interquartile_range,
+                self.range_value,
+                self.nonzero_count,
+                self.positive_count,
+                self.negative_count,
+                self.zero_count,
+            )
+        )
+
+
+# -----------------------------------------------------------------------------
+# 4.3.5. ScoreExplanation
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ScoreExplanation:
+    """
+    Immutable human-readable explanation of a scoring decision.
+
+    Explanations may describe one component, interaction, residue, pose,
+    multipose ranking or statistical result. They are intentionally generic
+    so the same structure can be used by text reports, JSON export and
+    ChimeraX-facing interfaces.
+
+    Parameters
+    ----------
+    explanation_id
+        Stable explanation identifier.
+    title
+        Short human-readable heading.
+    message
+        Complete explanation text.
+    scope
+        Entity scope described by the explanation.
+    severity
+        Informational, successful, warning or error severity.
+    level
+        Summary, standard, detailed or debug verbosity.
+    value
+        Optional numeric value associated with the explanation.
+    reference_value
+        Optional comparison or reference value.
+    unit
+        Optional unit.
+    entity_id
+        Identifier of the associated entity.
+    interaction_type
+        Optional canonical interaction type.
+    component_name
+        Optional score-component name.
+    tags
+        Stable normalized explanation tags.
+    children
+        Nested explanations.
+    metadata
+        Additional immutable metadata.
+    """
+
+    explanation_id: str
+    title: str
+    message: str
+
+    scope: str = EXPLANATION_SCOPE_GENERAL
+    severity: str = EXPLANATION_SEVERITY_INFO
+    level: str = EXPLANATION_LEVEL_STANDARD
+
+    value: Optional[float] = None
+    reference_value: Optional[float] = None
+    unit: str = ""
+
+    entity_id: str = ""
+    interaction_type: str = SCORE_TYPE_UNKNOWN
+    component_name: str = ""
+
+    tags: Tuple[str, ...] = field(
+        default_factory=tuple
+    )
+    children: Tuple["ScoreExplanation", ...] = field(
+        default_factory=tuple
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize and validate the explanation.
+        """
+
+        explanation_id = _coerce_identifier(
+            self.explanation_id
+        )
+
+        if not explanation_id:
+            raise ScoringConfigurationError(
+                "ScoreExplanation.explanation_id cannot be empty."
+            )
+
+        title = _coerce_optional_text(
+            self.title
+        )
+
+        if not title:
+            raise ScoringConfigurationError(
+                "ScoreExplanation.title cannot be empty."
+            )
+
+        message = _coerce_optional_text(
+            self.message
+        )
+
+        if not message:
+            raise ScoringConfigurationError(
+                "ScoreExplanation.message cannot be empty."
+            )
+
+        value = _coerce_finite_score_value(
+            self.value,
+            name="ScoreExplanation.value",
+            allow_none=True,
+        )
+
+        reference_value = _coerce_finite_score_value(
+            self.reference_value,
+            name="ScoreExplanation.reference_value",
+            allow_none=True,
+        )
+
+        normalized_tags: List[str] = []
+
+        for raw_tag in self.tags:
+            tag = _normalize_scoring_name(
+                raw_tag
+            )
+
+            if tag and tag not in normalized_tags:
+                normalized_tags.append(tag)
+
+        normalized_children: List[ScoreExplanation] = []
+
+        for child in self.children:
+            if not isinstance(child, ScoreExplanation):
+                raise ScoringConfigurationError(
+                    "ScoreExplanation.children must contain only "
+                    "ScoreExplanation instances."
+                )
+
+            normalized_children.append(child)
+
+        object.__setattr__(
+            self,
+            "explanation_id",
+            explanation_id,
+        )
+        object.__setattr__(
+            self,
+            "title",
+            title,
+        )
+        object.__setattr__(
+            self,
+            "message",
+            message,
+        )
+        object.__setattr__(
+            self,
+            "scope",
+            _normalize_explanation_scope(
+                self.scope
+            ),
+        )
+        object.__setattr__(
+            self,
+            "severity",
+            _normalize_explanation_severity(
+                self.severity
+            ),
+        )
+        object.__setattr__(
+            self,
+            "level",
+            _normalize_explanation_level(
+                self.level
+            ),
+        )
+        object.__setattr__(
+            self,
+            "value",
+            value,
+        )
+        object.__setattr__(
+            self,
+            "reference_value",
+            reference_value,
+        )
+        object.__setattr__(
+            self,
+            "unit",
+            _coerce_optional_text(
+                self.unit
+            ),
+        )
+        object.__setattr__(
+            self,
+            "entity_id",
+            _coerce_identifier(
+                self.entity_id
+            ),
+        )
+        object.__setattr__(
+            self,
+            "interaction_type",
+            normalize_interaction_type(
+                self.interaction_type,
+                preserve_unknown=True,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "component_name",
+            _normalize_scoring_name(
+                self.component_name
+            ),
+        )
+        object.__setattr__(
+            self,
+            "tags",
+            tuple(normalized_tags),
+        )
+        object.__setattr__(
+            self,
+            "children",
+            tuple(normalized_children),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(
+                self.metadata
+            ),
+        )
+
+    @property
+    def delta(self) -> Optional[float]:
+        """
+        Return value minus reference value.
+        """
+
+        if (
+            self.value is None
+            or self.reference_value is None
+        ):
+            return None
+
+        return float(
+            self.value
+            - self.reference_value
+        )
+
+    @property
+    def child_count(self) -> int:
+        """Return the number of direct child explanations."""
+
+        return len(self.children)
+
+    @property
+    def is_warning(self) -> bool:
+        """Return whether this explanation is a warning."""
+
+        return self.severity == EXPLANATION_SEVERITY_WARNING
+
+    @property
+    def is_error(self) -> bool:
+        """Return whether this explanation is an error."""
+
+        return self.severity == EXPLANATION_SEVERITY_ERROR
+
+    @property
+    def is_positive(self) -> bool:
+        """Return whether this explanation represents a successful result."""
+
+        return self.severity == EXPLANATION_SEVERITY_SUCCESS
+
+    @property
+    def flattened(self) -> Tuple["ScoreExplanation", ...]:
+        """
+        Return this explanation and all descendants.
+        """
+
+        flattened: List[ScoreExplanation] = [
+            self
+        ]
+
+        for child in self.children:
+            flattened.extend(
+                child.flattened
+            )
+
+        return tuple(flattened)
+
+    def with_children(
+        self,
+        children: Iterable["ScoreExplanation"],
+    ) -> "ScoreExplanation":
+        """
+        Return a copy with a replacement child sequence.
+        """
+
+        return replace(
+            self,
+            children=tuple(children),
+        )
+
+    def append_child(
+        self,
+        child: "ScoreExplanation",
+    ) -> "ScoreExplanation":
+        """
+        Return a copy containing one additional child.
+        """
+
+        if not isinstance(child, ScoreExplanation):
+            raise ScoringConfigurationError(
+                "child must be a ScoreExplanation instance."
+            )
+
+        return replace(
+            self,
+            children=self.children + (child,),
+        )
+
+    def with_updates(
+        self,
+        **changes: Any,
+    ) -> "ScoreExplanation":
+        """
+        Return a validated copy with selected fields changed.
+        """
+
+        return replace(
+            self,
+            **changes,
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_children: bool = True,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a mutable dictionary representation.
+        """
+
+        result: Dict[str, Any] = {
+            "explanation_id": self.explanation_id,
+            "title": self.title,
+            "message": self.message,
+            "scope": self.scope,
+            "severity": self.severity,
+            "level": self.level,
+            "value": (
+                None
+                if self.value is None
+                else float(self.value)
+            ),
+            "reference_value": (
+                None
+                if self.reference_value is None
+                else float(self.reference_value)
+            ),
+            "delta": (
+                None
+                if self.delta is None
+                else float(self.delta)
+            ),
+            "unit": self.unit,
+            "entity_id": self.entity_id,
+            "interaction_type": self.interaction_type,
+            "component_name": self.component_name,
+            "tags": list(self.tags),
+            "child_count": int(self.child_count),
+        }
+
+        if include_children:
+            result["children"] = [
+                child.to_dict(
+                    include_children=True,
+                    include_metadata=include_metadata,
+                )
+                for child in self.children
+            ]
+
+        if include_metadata:
+            result["metadata"] = dict(
+                self.metadata
+            )
+
+        return result
+
+    def __bool__(self) -> bool:
+        """Return whether the explanation contains a message."""
+
+        return bool(self.message)
+
+    def __hash__(self) -> int:
+        """
+        Return a stable hash excluding arbitrary metadata.
+        """
+
+        return hash(
+            (
+                self.explanation_id,
+                self.title,
+                self.message,
+                self.scope,
+                self.severity,
+                self.level,
+                self.value,
+                self.reference_value,
+                self.unit,
+                self.entity_id,
+                self.interaction_type,
+                self.component_name,
+                self.tags,
+                self.children,
+            )
+        )
+
+
+# -----------------------------------------------------------------------------
+# 4.3.6. MultiPoseScoreResult
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class MultiPoseScoreResult:
+    """
+    Immutable aggregate result for a collection of scored poses.
+
+    The pose sequence is stored in ranking order. Accepted poses are placed
+    before excluded poses by default. Ranking behavior is controlled by
+    ``score_direction``.
+
+    Parameters
+    ----------
+    result_id
+        Stable multipose-result identifier.
+    poses
+        Pose results included in the collection.
+    score_direction
+        Whether higher or lower ranking scores are preferred.
+    status
+        Complete, partial, empty, invalid or unknown status.
+    ligand_id
+        Optional shared ligand identifier.
+    model_id
+        Optional shared molecular-model identifier.
+    best_pose_id
+        Identifier of the best accepted pose. It is inferred when omitted.
+    consensus_pose_id
+        Optional consensus-pose identifier.
+    consensus_score
+        Optional consensus score.
+    score_statistics
+        Statistics for accepted ranking scores.
+    total_score_statistics
+        Statistics for accepted final pose scores.
+    affinity_statistics
+        Statistics for available docking affinities.
+    score_by_type
+        Aggregate score totals grouped by interaction type.
+    score_by_family
+        Aggregate score totals grouped by interaction family.
+    pose_counts
+        Aggregate counts grouped by pose status.
+    explanations
+        Multipose-level explanations.
+    metadata
+        Additional immutable metadata.
+    """
+
+    result_id: str
+
+    poses: Tuple[PoseScore, ...] = field(
+        default_factory=tuple
+    )
+
+    score_direction: str = SCORE_DIRECTION_HIGHER_IS_BETTER
+    status: str = MULTIPOSE_STATUS_COMPLETE
+
+    ligand_id: str = ""
+    model_id: str = ""
+
+    best_pose_id: str = ""
+    consensus_pose_id: str = ""
+    consensus_score: Optional[float] = None
+
+    score_statistics: Optional[ScoringStatistics] = None
+    total_score_statistics: Optional[ScoringStatistics] = None
+    affinity_statistics: Optional[ScoringStatistics] = None
+
+    score_by_type: Mapping[str, float] = field(
+        default_factory=lambda: _EMPTY_STRING_FLOAT_MAPPING
+    )
+    score_by_family: Mapping[str, float] = field(
+        default_factory=lambda: _EMPTY_STRING_FLOAT_MAPPING
+    )
+    pose_counts: Mapping[str, int] = field(
+        default_factory=lambda: _EMPTY_STRING_INTEGER_MAPPING
+    )
+
+    explanations: Tuple[ScoreExplanation, ...] = field(
+        default_factory=tuple
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize the multipose result and calculate omitted aggregates.
+        """
+
+        result_id = _coerce_identifier(
+            self.result_id
+        )
+
+        if not result_id:
+            raise ScoringConfigurationError(
+                "MultiPoseScoreResult.result_id cannot be empty."
+            )
+
+        score_direction = normalize_score_direction(
+            self.score_direction
+        )
+
+        normalized_poses = _normalize_pose_score_sequence(
+            self.poses,
+            score_direction=score_direction,
+            accepted_first=True,
+        )
+
+        accepted_poses = tuple(
+            pose
+            for pose in normalized_poses
+            if pose.accepted
+        )
+
+        inferred_status = _normalize_multipose_status(
+            self.status
+        )
+
+        if not normalized_poses:
+            inferred_status = MULTIPOSE_STATUS_EMPTY
+        elif not accepted_poses:
+            inferred_status = MULTIPOSE_STATUS_INVALID
+        elif len(accepted_poses) < len(normalized_poses):
+            if inferred_status == MULTIPOSE_STATUS_COMPLETE:
+                inferred_status = MULTIPOSE_STATUS_PARTIAL
+
+        inferred_best_pose_id = (
+            accepted_poses[0].pose_id
+            if accepted_poses
+            else ""
+        )
+
+        best_pose_id = _coerce_identifier(
+            self.best_pose_id,
+            default=inferred_best_pose_id,
+        )
+
+        if (
+            best_pose_id
+            and best_pose_id
+            not in {
+                pose.pose_id
+                for pose in normalized_poses
+            }
+        ):
+            raise ScoringConfigurationError(
+                "MultiPoseScoreResult.best_pose_id does not identify "
+                "a stored pose."
+            )
+
+        consensus_pose_id = _coerce_identifier(
+            self.consensus_pose_id
+        )
+
+        if (
+            consensus_pose_id
+            and consensus_pose_id
+            not in {
+                pose.pose_id
+                for pose in normalized_poses
+            }
+        ):
+            raise ScoringConfigurationError(
+                "MultiPoseScoreResult.consensus_pose_id does not "
+                "identify a stored pose."
+            )
+
+        consensus_score = _coerce_finite_score_value(
+            self.consensus_score,
+            name="MultiPoseScoreResult.consensus_score",
+            allow_none=True,
+        )
+
+        ranking_values = tuple(
+            float(pose.ranking_score)
+            for pose in accepted_poses
+        )
+
+        total_values = tuple(
+            float(pose.total_score)
+            for pose in accepted_poses
+        )
+
+        affinity_values = tuple(
+            float(pose.docking_affinity)
+            for pose in accepted_poses
+            if pose.docking_affinity is not None
+        )
+
+        score_statistics = (
+            ScoringStatistics(
+                values=ranking_values,
+                metadata={
+                    "metric": "ranking_score",
+                },
+            )
+            if self.score_statistics is None
+            else self.score_statistics
+        )
+
+        total_score_statistics = (
+            ScoringStatistics(
+                values=total_values,
+                metadata={
+                    "metric": "total_score",
+                },
+            )
+            if self.total_score_statistics is None
+            else self.total_score_statistics
+        )
+
+        affinity_statistics = (
+            ScoringStatistics(
+                values=affinity_values,
+                metadata={
+                    "metric": "docking_affinity",
+                },
+            )
+            if self.affinity_statistics is None
+            else self.affinity_statistics
+        )
+
+        for statistics_name, statistics_value in (
+            (
+                "score_statistics",
+                score_statistics,
+            ),
+            (
+                "total_score_statistics",
+                total_score_statistics,
+            ),
+            (
+                "affinity_statistics",
+                affinity_statistics,
+            ),
+        ):
+            if not isinstance(
+                statistics_value,
+                ScoringStatistics,
+            ):
+                raise ScoringConfigurationError(
+                    f"MultiPoseScoreResult.{statistics_name} must be "
+                    "a ScoringStatistics instance."
+                )
+
+        calculated_score_by_type: Dict[str, float] = {}
+        calculated_score_by_family: Dict[str, float] = {}
+
+        for pose in accepted_poses:
+            for interaction_type, value in pose.score_by_type.items():
+                calculated_score_by_type[interaction_type] = (
+                    calculated_score_by_type.get(
+                        interaction_type,
+                        0.0,
+                    )
+                    + value
+                )
+
+            for interaction_family, value in pose.score_by_family.items():
+                calculated_score_by_family[interaction_family] = (
+                    calculated_score_by_family.get(
+                        interaction_family,
+                        0.0,
+                    )
+                    + value
+                )
+
+        score_by_type = (
+            calculated_score_by_type
+            if not self.score_by_type
+            else dict(self.score_by_type)
+        )
+
+        score_by_family = (
+            calculated_score_by_family
+            if not self.score_by_family
+            else dict(self.score_by_family)
+        )
+
+        calculated_pose_counts: Dict[str, int] = {}
+
+        for pose in normalized_poses:
+            calculated_pose_counts[pose.status] = (
+                calculated_pose_counts.get(
+                    pose.status,
+                    0,
+                )
+                + 1
+            )
+
+        calculated_pose_counts["accepted"] = len(
+            accepted_poses
+        )
+        calculated_pose_counts["rejected"] = (
+            len(normalized_poses)
+            - len(accepted_poses)
+        )
+        calculated_pose_counts["total"] = len(
+            normalized_poses
+        )
+
+        pose_counts = (
+            calculated_pose_counts
+            if not self.pose_counts
+            else dict(self.pose_counts)
+        )
+
+        normalized_explanations: List[ScoreExplanation] = []
+
+        for explanation in self.explanations:
+            if not isinstance(
+                explanation,
+                ScoreExplanation,
+            ):
+                raise ScoringConfigurationError(
+                    "MultiPoseScoreResult.explanations must contain "
+                    "only ScoreExplanation instances."
+                )
+
+            normalized_explanations.append(
+                explanation
+            )
+
+        object.__setattr__(
+            self,
+            "result_id",
+            result_id,
+        )
+        object.__setattr__(
+            self,
+            "poses",
+            normalized_poses,
+        )
+        object.__setattr__(
+            self,
+            "score_direction",
+            score_direction,
+        )
+        object.__setattr__(
+            self,
+            "status",
+            inferred_status,
+        )
+        object.__setattr__(
+            self,
+            "ligand_id",
+            _coerce_identifier(
+                self.ligand_id
+            ),
+        )
+        object.__setattr__(
+            self,
+            "model_id",
+            _coerce_identifier(
+                self.model_id
+            ),
+        )
+        object.__setattr__(
+            self,
+            "best_pose_id",
+            best_pose_id,
+        )
+        object.__setattr__(
+            self,
+            "consensus_pose_id",
+            consensus_pose_id,
+        )
+        object.__setattr__(
+            self,
+            "consensus_score",
+            consensus_score,
+        )
+        object.__setattr__(
+            self,
+            "score_statistics",
+            score_statistics,
+        )
+        object.__setattr__(
+            self,
+            "total_score_statistics",
+            total_score_statistics,
+        )
+        object.__setattr__(
+            self,
+            "affinity_statistics",
+            affinity_statistics,
+        )
+        object.__setattr__(
+            self,
+            "score_by_type",
+            _freeze_string_float_mapping(
+                score_by_type,
+                name="MultiPoseScoreResult.score_by_type",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "score_by_family",
+            _freeze_string_float_mapping(
+                score_by_family,
+                name="MultiPoseScoreResult.score_by_family",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "pose_counts",
+            _freeze_string_integer_mapping(
+                pose_counts,
+                name="MultiPoseScoreResult.pose_counts",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "explanations",
+            tuple(normalized_explanations),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(
+                self.metadata
+            ),
+        )
+
+    @property
+    def pose_count(self) -> int:
+        """Return the total number of poses."""
+
+        return len(self.poses)
+
+    @property
+    def accepted_poses(self) -> Tuple[PoseScore, ...]:
+        """Return accepted poses in ranking order."""
+
+        return tuple(
+            pose
+            for pose in self.poses
+            if pose.accepted
+        )
+
+    @property
+    def rejected_poses(self) -> Tuple[PoseScore, ...]:
+        """Return excluded poses."""
+
+        return tuple(
+            pose
+            for pose in self.poses
+            if not pose.accepted
+        )
+
+    @property
+    def accepted_pose_count(self) -> int:
+        """Return the number of accepted poses."""
+
+        return len(self.accepted_poses)
+
+    @property
+    def rejected_pose_count(self) -> int:
+        """Return the number of excluded poses."""
+
+        return len(self.rejected_poses)
+
+    @property
+    def is_empty(self) -> bool:
+        """Return whether no pose is stored."""
+
+        return self.pose_count == 0
+
+    @property
+    def best_pose(self) -> Optional[PoseScore]:
+        """
+        Return the best accepted pose.
+        """
+
+        if not self.best_pose_id:
+            return None
+
+        return self.pose(
+            self.best_pose_id
+        )
+
+    @property
+    def consensus_pose(self) -> Optional[PoseScore]:
+        """
+        Return the selected consensus pose.
+        """
+
+        if not self.consensus_pose_id:
+            return None
+
+        return self.pose(
+            self.consensus_pose_id
+        )
+
+    @property
+    def ranking(self) -> Tuple[Tuple[int, str, float], ...]:
+        """
+        Return accepted pose ranking as rank, pose ID and score.
+        """
+
+        return tuple(
+            (
+                rank,
+                pose.pose_id,
+                float(pose.ranking_score),
+            )
+            for rank, pose in enumerate(
+                self.accepted_poses,
+                start=1,
+            )
+        )
+
+    @property
+    def score_span(self) -> Optional[float]:
+        """
+        Return the accepted ranking-score range.
+        """
+
+        return self.score_statistics.range_value
+
+    def pose(
+        self,
+        pose_id: Any,
+        *,
+        default: Optional[PoseScore] = None,
+    ) -> Optional[PoseScore]:
+        """
+        Return a pose by identifier.
+        """
+
+        normalized_id = _coerce_identifier(
+            pose_id
+        )
+
+        for pose in self.poses:
+            if pose.pose_id == normalized_id:
+                return pose
+
+        return default
+
+    def rank_of(
+        self,
+        pose_id: Any,
+    ) -> Optional[int]:
+        """
+        Return the one-based rank of an accepted pose.
+        """
+
+        normalized_id = _coerce_identifier(
+            pose_id
+        )
+
+        for rank, pose in enumerate(
+            self.accepted_poses,
+            start=1,
+        ):
+            if pose.pose_id == normalized_id:
+                return rank
+
+        return None
+
+    def top_poses(
+        self,
+        *,
+        limit: Optional[int] = None,
+    ) -> Tuple[PoseScore, ...]:
+        """
+        Return the highest-ranked accepted poses.
+        """
+
+        if limit is None:
+            return self.accepted_poses
+
+        if isinstance(limit, bool):
+            raise ScoringConfigurationError(
+                "limit must be an integer or None."
+            )
+
+        try:
+            normalized_limit = int(limit)
+        except (
+            TypeError,
+            ValueError,
+            OverflowError,
+        ) as exc:
+            raise ScoringConfigurationError(
+                "limit must be an integer or None."
+            ) from exc
+
+        if normalized_limit < 0:
+            raise ScoringConfigurationError(
+                "limit cannot be negative."
+            )
+
+        return self.accepted_poses[
+            :normalized_limit
+        ]
+
+    def score_for_type(
+        self,
+        interaction_type: Any,
+        *,
+        default: float = 0.0,
+    ) -> float:
+        """
+        Return the aggregate score for an interaction type.
+        """
+
+        canonical_type = normalize_interaction_type(
+            interaction_type,
+            preserve_unknown=True,
+        )
+
+        return float(
+            self.score_by_type.get(
+                canonical_type,
+                default,
+            )
+        )
+
+    def score_for_family(
+        self,
+        interaction_family: Any,
+        *,
+        default: float = 0.0,
+    ) -> float:
+        """
+        Return the aggregate score for an interaction family.
+        """
+
+        canonical_family = canonical_interaction_family(
+            interaction_family
+        )
+
+        return float(
+            self.score_by_family.get(
+                canonical_family,
+                default,
+            )
+        )
+
+    def with_consensus(
+        self,
+        *,
+        pose_id: Any,
+        score: Optional[Number] = None,
+    ) -> "MultiPoseScoreResult":
+        """
+        Return a copy with a selected consensus pose.
+        """
+
+        normalized_pose_id = _coerce_identifier(
+            pose_id
+        )
+
+        if self.pose(normalized_pose_id) is None:
+            raise ScoringConfigurationError(
+                f"Unknown consensus pose: {normalized_pose_id!r}."
+            )
+
+        consensus_score = (
+            None
+            if score is None
+            else _coerce_finite_score_value(
+                score,
+                name="consensus_score",
+            )
+        )
+
+        return replace(
+            self,
+            consensus_pose_id=normalized_pose_id,
+            consensus_score=consensus_score,
+        )
+
+    def with_updates(
+        self,
+        **changes: Any,
+    ) -> "MultiPoseScoreResult":
+        """
+        Return a validated copy with selected fields changed.
+        """
+
+        return replace(
+            self,
+            **changes,
+        )
+
+    def validate_consistency(
+        self,
+        *,
+        tolerance: float = SCORE_COMPARISON_TOLERANCE,
+        validate_poses: bool = False,
+    ) -> bool:
+        """
+        Validate ranking and multipose aggregate consistency.
+        """
+
+        expected_poses = sort_pose_scores(
+            self.poses,
+            score_direction=self.score_direction,
+            accepted_first=True,
+        )
+
+        if self.poses != expected_poses:
+            raise ScoringConfigurationError(
+                "MultiPoseScoreResult.poses are not in canonical "
+                "ranking order."
+            )
+
+        accepted_poses = self.accepted_poses
+
+        expected_best_pose_id = (
+            accepted_poses[0].pose_id
+            if accepted_poses
+            else ""
+        )
+
+        if self.best_pose_id != expected_best_pose_id:
+            raise ScoringConfigurationError(
+                "MultiPoseScoreResult.best_pose_id is inconsistent "
+                "with pose ranking."
+            )
+
+        expected_score_statistics = ScoringStatistics(
+            values=tuple(
+                pose.ranking_score
+                for pose in accepted_poses
+            )
+        )
+
+        expected_total_statistics = ScoringStatistics(
+            values=tuple(
+                pose.total_score
+                for pose in accepted_poses
+            )
+        )
+
+        tolerance_value = _coerce_finite_score_value(
+            tolerance,
+            name="tolerance",
+        )
+
+        for field_name in (
+            "total",
+            "minimum",
+            "maximum",
+            "mean",
+            "median",
+            "standard_deviation",
+        ):
+            observed = getattr(
+                self.score_statistics,
+                field_name,
+            )
+            expected = getattr(
+                expected_score_statistics,
+                field_name,
+            )
+
+            if observed is None and expected is None:
+                continue
+
+            if (
+                observed is None
+                or expected is None
+                or abs(observed - expected)
+                > tolerance_value
+            ):
+                raise ScoringConfigurationError(
+                    "MultiPoseScoreResult.score_statistics are "
+                    "inconsistent with accepted poses."
+                )
+
+            observed_total = getattr(
+                self.total_score_statistics,
+                field_name,
+            )
+            expected_total = getattr(
+                expected_total_statistics,
+                field_name,
+            )
+
+            if (
+                observed_total is None
+                and expected_total is None
+            ):
+                continue
+
+            if (
+                observed_total is None
+                or expected_total is None
+                or abs(
+                    observed_total
+                    - expected_total
+                )
+                > tolerance_value
+            ):
+                raise ScoringConfigurationError(
+                    "MultiPoseScoreResult.total_score_statistics are "
+                    "inconsistent with accepted poses."
+                )
+
+        if validate_poses:
+            for pose in self.poses:
+                pose.validate_consistency(
+                    tolerance=tolerance_value,
+                    validate_breakdown=True,
+                    validate_residues=False,
+                )
+
+        return True
+
+    def without_interaction_references(
+        self,
+    ) -> "MultiPoseScoreResult":
+        """
+        Return a copy without detector-object references.
+        """
+
+        return replace(
+            self,
+            poses=tuple(
+                pose.without_interaction_references()
+                for pose in self.poses
+            ),
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_poses: bool = True,
+        include_interactions: bool = True,
+        include_residues: bool = True,
+        include_components: bool = True,
+        include_statistics_values: bool = True,
+        include_explanations: bool = True,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a mutable dictionary representation.
+        """
+
+        result: Dict[str, Any] = {
+            "result_id": self.result_id,
+            "status": self.status,
+            "score_direction": self.score_direction,
+            "ligand_id": self.ligand_id,
+            "model_id": self.model_id,
+            "pose_count": int(self.pose_count),
+            "accepted_pose_count": int(
+                self.accepted_pose_count
+            ),
+            "rejected_pose_count": int(
+                self.rejected_pose_count
+            ),
+            "best_pose_id": self.best_pose_id,
+            "consensus_pose_id": self.consensus_pose_id,
+            "consensus_score": (
+                None
+                if self.consensus_score is None
+                else float(self.consensus_score)
+            ),
+            "score_span": (
+                None
+                if self.score_span is None
+                else float(self.score_span)
+            ),
+            "ranking": [
+                {
+                    "rank": rank,
+                    "pose_id": pose_id,
+                    "score": score,
+                }
+                for rank, pose_id, score in self.ranking
+            ],
+            "score_by_type": dict(
+                self.score_by_type
+            ),
+            "score_by_family": dict(
+                self.score_by_family
+            ),
+            "pose_counts": dict(
+                self.pose_counts
+            ),
+            "score_statistics": self.score_statistics.to_dict(
+                include_values=include_statistics_values,
+                include_metadata=include_metadata,
+            ),
+            "total_score_statistics": (
+                self.total_score_statistics.to_dict(
+                    include_values=include_statistics_values,
+                    include_metadata=include_metadata,
+                )
+            ),
+            "affinity_statistics": (
+                self.affinity_statistics.to_dict(
+                    include_values=include_statistics_values,
+                    include_metadata=include_metadata,
+                )
+            ),
+        }
+
+        if include_poses:
+            result["poses"] = [
+                pose.to_dict(
+                    include_interactions=include_interactions,
+                    include_residues=include_residues,
+                    include_components=include_components,
+                    include_metadata=include_metadata,
+                )
+                for pose in self.poses
+            ]
+
+        if include_explanations:
+            result["explanations"] = [
+                explanation.to_dict(
+                    include_children=True,
+                    include_metadata=include_metadata,
+                )
+                for explanation in self.explanations
+            ]
+
+        if include_metadata:
+            result["metadata"] = dict(
+                self.metadata
+            )
+
+        return result
+
+    def __len__(self) -> int:
+        """Return the number of stored poses."""
+
+        return self.pose_count
+
+    def __bool__(self) -> bool:
+        """Return whether at least one accepted pose exists."""
+
+        return self.accepted_pose_count > 0
+
+    def __hash__(self) -> int:
+        """
+        Return a stable hash excluding arbitrary metadata.
+        """
+
+        return hash(
+            (
+                self.result_id,
+                self.poses,
+                self.score_direction,
+                self.status,
+                self.ligand_id,
+                self.model_id,
+                self.best_pose_id,
+                self.consensus_pose_id,
+                self.consensus_score,
+                self.score_statistics,
+                self.total_score_statistics,
+                self.affinity_statistics,
+                tuple(sorted(self.score_by_type.items())),
+                tuple(sorted(self.score_by_family.items())),
+                tuple(sorted(self.pose_counts.items())),
+                self.explanations,
+            )
+        )
+
+
+# -----------------------------------------------------------------------------
+# 4.3.7. Statistics factories
+# -----------------------------------------------------------------------------
+
+def create_scoring_statistics(
+    values: Optional[Iterable[Number]] = None,
+    *,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringStatistics:
+    """
+    Create descriptive statistics from numeric values.
+    """
+
+    return ScoringStatistics(
+        values=_normalize_float_sequence(
+            values,
+            name="values",
+        ),
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+def scoring_statistics_from_interactions(
+    interactions: Iterable[InteractionScore],
+    *,
+    accepted_only: bool = True,
+    use_contribution: bool = True,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringStatistics:
+    """
+    Create statistics from interaction scores.
+    """
+
+    values: List[float] = []
+
+    for interaction in interactions:
+        validate_interaction_score(
+            interaction,
+            validate_consistency=False,
+        )
+
+        if (
+            accepted_only
+            and not interaction.contributes
+        ):
+            continue
+
+        values.append(
+            interaction.contribution
+            if use_contribution
+            else float(interaction.final_score)
+        )
+
+    return ScoringStatistics(
+        values=tuple(values),
+        metadata=metadata or {
+            "source": "interactions",
+        },
+    )
+
+
+def scoring_statistics_from_residues(
+    residues: Iterable[ResidueScore],
+    *,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringStatistics:
+    """
+    Create statistics from residue total scores.
+    """
+
+    values: List[float] = []
+
+    for residue in residues:
+        validate_residue_score(
+            residue,
+            validate_consistency=False,
+        )
+
+        values.append(
+            float(residue.total_score)
+        )
+
+    return ScoringStatistics(
+        values=tuple(values),
+        metadata=metadata or {
+            "source": "residues",
+        },
+    )
+
+
+def scoring_statistics_from_poses(
+    poses: Iterable[PoseScore],
+    *,
+    accepted_only: bool = True,
+    metric: str = "ranking_score",
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringStatistics:
+    """
+    Create statistics from a numeric PoseScore field.
+    """
+
+    normalized_metric = _normalize_scoring_name(
+        metric
+    )
+
+    allowed_metrics = {
+        "raw_score",
+        "total_score",
+        "normalized_score",
+        "ranking_score",
+        "docking_affinity",
+        "penalty_score",
+        "bonus_score",
+        "diversity_bonus",
+    }
+
+    if normalized_metric not in allowed_metrics:
+        raise ScoringConfigurationError(
+            f"Unsupported pose statistics metric: {metric!r}."
+        )
+
+    values: List[float] = []
+
+    for pose in poses:
+        validate_pose_score(
+            pose,
+            validate_consistency=False,
+        )
+
+        if accepted_only and not pose.accepted:
+            continue
+
+        value = getattr(
+            pose,
+            normalized_metric,
+        )
+
+        if value is None:
+            continue
+
+        values.append(
+            float(value)
+        )
+
+    return ScoringStatistics(
+        values=tuple(values),
+        metadata=metadata or {
+            "source": "poses",
+            "metric": normalized_metric,
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 4.3.8. Explanation factories
+# -----------------------------------------------------------------------------
+
+def create_score_explanation(
+    *,
+    explanation_id: Any,
+    title: str,
+    message: str,
+    scope: Any = EXPLANATION_SCOPE_GENERAL,
+    severity: Any = EXPLANATION_SEVERITY_INFO,
+    level: Any = EXPLANATION_LEVEL_STANDARD,
+    value: Optional[Number] = None,
+    reference_value: Optional[Number] = None,
+    unit: str = "",
+    entity_id: Any = "",
+    interaction_type: Any = SCORE_TYPE_UNKNOWN,
+    component_name: Any = "",
+    tags: Iterable[Any] = (),
+    children: Iterable[ScoreExplanation] = (),
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoreExplanation:
+    """
+    Create a normalized score explanation.
+    """
+
+    return ScoreExplanation(
+        explanation_id=_coerce_identifier(
+            explanation_id
+        ),
+        title=title,
+        message=message,
+        scope=_normalize_explanation_scope(
+            scope
+        ),
+        severity=_normalize_explanation_severity(
+            severity
+        ),
+        level=_normalize_explanation_level(
+            level
+        ),
+        value=(
+            None
+            if value is None
+            else float(value)
+        ),
+        reference_value=(
+            None
+            if reference_value is None
+            else float(reference_value)
+        ),
+        unit=unit,
+        entity_id=_coerce_identifier(
+            entity_id
+        ),
+        interaction_type=normalize_interaction_type(
+            interaction_type,
+            preserve_unknown=True,
+        ),
+        component_name=_normalize_scoring_name(
+            component_name
+        ),
+        tags=tuple(tags),
+        children=tuple(children),
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+def explain_score_component(
+    component: ScoreComponent,
+    *,
+    explanation_id: Optional[str] = None,
+    level: str = EXPLANATION_LEVEL_DETAILED,
+) -> ScoreExplanation:
+    """
+    Create an explanation for one score component.
+    """
+
+    validate_score_component(
+        component
+    )
+
+    if component.is_penalty:
+        severity = EXPLANATION_SEVERITY_WARNING
+    elif component.is_bonus:
+        severity = EXPLANATION_SEVERITY_SUCCESS
+    else:
+        severity = EXPLANATION_SEVERITY_INFO
+
+    if component.applied:
+        application_text = "was applied"
+    else:
+        application_text = "was not applied"
+
+    message = (
+        f"The component '{component.name}' {application_text} with "
+        f"value {component.value:g} using the "
+        f"'{component.operation}' operation."
+    )
+
+    if component.description:
+        message = (
+            f"{message} {component.description}"
+        )
+
+    return ScoreExplanation(
+        explanation_id=(
+            explanation_id
+            or f"component:{component.name}"
+        ),
+        title=component.name.replace(
+            "_",
+            " ",
+        ).title(),
+        message=message,
+        scope=EXPLANATION_SCOPE_COMPONENT,
+        severity=severity,
+        level=level,
+        value=component.value,
+        unit=component.unit,
+        interaction_type=component.interaction_type,
+        component_name=component.name,
+        tags=(
+            component.component_type,
+            component.operation,
+            "applied"
+            if component.applied
+            else "not_applied",
+        ),
+        metadata={
+            "source": component.source,
+        },
+    )
+
+
+def explain_interaction_score(
+    result: InteractionScore,
+    *,
+    level: str = EXPLANATION_LEVEL_STANDARD,
+    include_components: bool = True,
+) -> ScoreExplanation:
+    """
+    Create a structured explanation for an interaction score.
+    """
+
+    validate_interaction_score(
+        result,
+        validate_consistency=False,
+    )
+
+    if result.is_rejected:
+        severity = EXPLANATION_SEVERITY_WARNING
+        state_text = (
+            f"The interaction was excluded and contributes zero. "
+            f"Reason: {result.rejection_reason or result.status}."
+        )
+    elif result.is_penalty:
+        severity = EXPLANATION_SEVERITY_WARNING
+        state_text = (
+            "The interaction contributes a penalty to the aggregate score."
+        )
+    elif result.is_favorable:
+        severity = EXPLANATION_SEVERITY_SUCCESS
+        state_text = (
+            "The interaction contributes favorably to the aggregate score."
+        )
+    else:
+        severity = EXPLANATION_SEVERITY_INFO
+        state_text = (
+            "The interaction has a neutral or unclassified contribution."
+        )
+
+    message = (
+        f"{interaction_type_display_name(result.interaction_type)} "
+        f"'{result.interaction_id}' has base weight "
+        f"{result.base_weight:g}, multiplier product "
+        f"{result.multiplier_product:g}, raw score "
+        f"{result.raw_score:g}, and final score "
+        f"{result.final_score:g}. {state_text}"
+    )
+
+    children = (
+        tuple(
+            explain_score_component(
+                component,
+                explanation_id=(
+                    f"interaction:{result.interaction_id}:"
+                    f"component:{index}:{component.name}"
+                ),
+                level=EXPLANATION_LEVEL_DETAILED,
+            )
+            for index, component in enumerate(
+                result.components,
+                start=1,
+            )
+        )
+        if include_components
+        else ()
+    )
+
+    return ScoreExplanation(
+        explanation_id=(
+            f"interaction:{result.interaction_id}"
+        ),
+        title=(
+            f"{interaction_type_display_name(result.interaction_type)} "
+            "score"
+        ),
+        message=message,
+        scope=EXPLANATION_SCOPE_INTERACTION,
+        severity=severity,
+        level=level,
+        value=result.final_score,
+        reference_value=result.raw_score,
+        entity_id=result.interaction_id,
+        interaction_type=result.interaction_type,
+        tags=(
+            result.interaction_family,
+            result.strength,
+            result.geometry_quality,
+            result.status,
+        ),
+        children=children,
+        metadata={
+            "pose_id": result.pose_id,
+            "model_id": result.model_id,
+            "accepted": result.accepted,
+        },
+    )
+
+
+def explain_residue_score(
+    result: ResidueScore,
+    *,
+    level: str = EXPLANATION_LEVEL_STANDARD,
+    include_interactions: bool = False,
+) -> ScoreExplanation:
+    """
+    Create a structured explanation for a residue score.
+    """
+
+    validate_residue_score(
+        result,
+        validate_consistency=False,
+    )
+
+    if result.total_score > SCORE_EPSILON:
+        severity = EXPLANATION_SEVERITY_SUCCESS
+    elif result.total_score < -SCORE_EPSILON:
+        severity = EXPLANATION_SEVERITY_WARNING
+    else:
+        severity = EXPLANATION_SEVERITY_INFO
+
+    message = (
+        f"Residue '{result.residue_id}' contributes "
+        f"{result.total_score:g} through "
+        f"{result.accepted_interaction_count} accepted interaction(s) "
+        f"across {result.family_diversity} interaction family or families."
+    )
+
+    children = (
+        tuple(
+            explain_interaction_score(
+                interaction,
+                level=EXPLANATION_LEVEL_DETAILED,
+                include_components=False,
+            )
+            for interaction in result.interactions
+        )
+        if include_interactions
+        else ()
+    )
+
+    return ScoreExplanation(
+        explanation_id=(
+            f"residue:{result.residue_id}"
+        ),
+        title=(
+            f"Residue {result.residue_id}"
+        ),
+        message=message,
+        scope=EXPLANATION_SCOPE_RESIDUE,
+        severity=severity,
+        level=level,
+        value=result.total_score,
+        entity_id=result.residue_id,
+        tags=(
+            result.role,
+            "hotspot"
+            if result.accepted_interaction_count > 0
+            else "inactive",
+        ),
+        children=children,
+        metadata={
+            "residue_name": result.residue_name,
+            "chain_id": result.chain_id,
+            "residue_number": result.residue_number,
+            "pose_id": result.pose_id,
+            "model_id": result.model_id,
+        },
+    )
+
+
+def explain_pose_score(
+    result: PoseScore,
+    *,
+    level: str = EXPLANATION_LEVEL_STANDARD,
+    include_residues: bool = False,
+    include_interactions: bool = False,
+) -> ScoreExplanation:
+    """
+    Create a structured explanation for a pose score.
+    """
+
+    validate_pose_score(
+        result,
+        validate_consistency=False,
+    )
+
+    if result.is_rejected:
+        severity = EXPLANATION_SEVERITY_WARNING
+    elif result.total_score > SCORE_EPSILON:
+        severity = EXPLANATION_SEVERITY_SUCCESS
+    else:
+        severity = EXPLANATION_SEVERITY_INFO
+
+    message = (
+        f"Pose '{result.pose_id}' has raw score {result.raw_score:g}, "
+        f"pose-level adjustment {result.score_delta:g}, final score "
+        f"{result.total_score:g}, and ranking score "
+        f"{result.ranking_score:g}. It contains "
+        f"{result.accepted_interaction_count} accepted interaction(s) "
+        f"and {result.scored_residue_count} scored residue(s)."
+    )
+
+    children: List[ScoreExplanation] = []
+
+    if include_residues:
+        children.extend(
+            explain_residue_score(
+                residue,
+                level=EXPLANATION_LEVEL_DETAILED,
+                include_interactions=False,
+            )
+            for residue in result.residues
+        )
+
+    if include_interactions:
+        children.extend(
+            explain_interaction_score(
+                interaction,
+                level=EXPLANATION_LEVEL_DETAILED,
+                include_components=False,
+            )
+            for interaction in result.interactions
+        )
+
+    return ScoreExplanation(
+        explanation_id=(
+            f"pose:{result.pose_id}"
+        ),
+        title=f"Pose {result.pose_id}",
+        message=message,
+        scope=EXPLANATION_SCOPE_POSE,
+        severity=severity,
+        level=level,
+        value=result.ranking_score,
+        reference_value=result.raw_score,
+        entity_id=result.pose_id,
+        tags=(
+            result.status,
+            "accepted"
+            if result.accepted
+            else "rejected",
+        ),
+        children=tuple(children),
+        metadata={
+            "model_id": result.model_id,
+            "ligand_id": result.ligand_id,
+            "pose_index": result.pose_index,
+            "total_score": result.total_score,
+        },
+    )
+
+
+def explain_multipose_result(
+    result: MultiPoseScoreResult,
+    *,
+    level: str = EXPLANATION_LEVEL_STANDARD,
+    include_poses: bool = False,
+) -> ScoreExplanation:
+    """
+    Create a structured explanation for a multipose result.
+    """
+
+    validate_multipose_score_result(
+        result,
+        validate_consistency=False,
+    )
+
+    if result.status == MULTIPOSE_STATUS_INVALID:
+        severity = EXPLANATION_SEVERITY_ERROR
+    elif result.status == MULTIPOSE_STATUS_PARTIAL:
+        severity = EXPLANATION_SEVERITY_WARNING
+    elif result.accepted_pose_count > 0:
+        severity = EXPLANATION_SEVERITY_SUCCESS
+    else:
+        severity = EXPLANATION_SEVERITY_INFO
+
+    best_pose = result.best_pose
+
+    if best_pose is None:
+        best_text = "No accepted best pose is available."
+        best_value = None
+    else:
+        best_text = (
+            f"The best pose is '{best_pose.pose_id}' with ranking "
+            f"score {best_pose.ranking_score:g}."
+        )
+        best_value = best_pose.ranking_score
+
+    message = (
+        f"The multipose result contains {result.pose_count} pose(s), "
+        f"of which {result.accepted_pose_count} are accepted. "
+        f"{best_text}"
+    )
+
+    children = (
+        tuple(
+            explain_pose_score(
+                pose,
+                level=EXPLANATION_LEVEL_DETAILED,
+                include_residues=False,
+                include_interactions=False,
+            )
+            for pose in result.poses
+        )
+        if include_poses
+        else ()
+    )
+
+    return ScoreExplanation(
+        explanation_id=(
+            f"multipose:{result.result_id}"
+        ),
+        title="Multipose scoring result",
+        message=message,
+        scope=EXPLANATION_SCOPE_MULTIPOSE,
+        severity=severity,
+        level=level,
+        value=best_value,
+        entity_id=result.result_id,
+        tags=(
+            result.status,
+            result.score_direction,
+        ),
+        children=children,
+        metadata={
+            "best_pose_id": result.best_pose_id,
+            "consensus_pose_id": result.consensus_pose_id,
+            "ligand_id": result.ligand_id,
+            "model_id": result.model_id,
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 4.3.9. MultiPoseScoreResult factories
+# -----------------------------------------------------------------------------
+
+def create_multipose_score_result(
+    *,
+    result_id: Any,
+    poses: Optional[Iterable[PoseScore]] = None,
+    score_direction: Any = SCORE_DIRECTION_HIGHER_IS_BETTER,
+    status: Any = MULTIPOSE_STATUS_COMPLETE,
+    ligand_id: Any = "",
+    model_id: Any = "",
+    consensus_pose_id: Any = "",
+    consensus_score: Optional[Number] = None,
+    explanations: Iterable[ScoreExplanation] = (),
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> MultiPoseScoreResult:
+    """
+    Create and rank a multipose scoring result.
+    """
+
+    return MultiPoseScoreResult(
+        result_id=_coerce_identifier(
+            result_id
+        ),
+        poses=tuple(
+            poses or ()
+        ),
+        score_direction=normalize_score_direction(
+            score_direction
+        ),
+        status=_normalize_multipose_status(
+            status
+        ),
+        ligand_id=_coerce_identifier(
+            ligand_id
+        ),
+        model_id=_coerce_identifier(
+            model_id
+        ),
+        consensus_pose_id=_coerce_identifier(
+            consensus_pose_id
+        ),
+        consensus_score=(
+            None
+            if consensus_score is None
+            else float(consensus_score)
+        ),
+        explanations=tuple(
+            explanations
+        ),
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+def create_empty_multipose_score_result(
+    *,
+    result_id: Any,
+    ligand_id: Any = "",
+    model_id: Any = "",
+    reason: str = "No pose results were available.",
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> MultiPoseScoreResult:
+    """
+    Create an empty multipose result.
+    """
+
+    explanation = ScoreExplanation(
+        explanation_id=(
+            f"multipose:{_coerce_identifier(result_id)}:empty"
+        ),
+        title="No scored poses",
+        message=reason,
+        scope=EXPLANATION_SCOPE_MULTIPOSE,
+        severity=EXPLANATION_SEVERITY_WARNING,
+        level=EXPLANATION_LEVEL_STANDARD,
+        entity_id=_coerce_identifier(
+            result_id
+        ),
+        tags=(
+            MULTIPOSE_STATUS_EMPTY,
+        ),
+    )
+
+    return MultiPoseScoreResult(
+        result_id=_coerce_identifier(
+            result_id
+        ),
+        poses=(),
+        status=MULTIPOSE_STATUS_EMPTY,
+        ligand_id=_coerce_identifier(
+            ligand_id
+        ),
+        model_id=_coerce_identifier(
+            model_id
+        ),
+        explanations=(
+            explanation,
+        ),
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 4.3.10. Validation helpers
+# -----------------------------------------------------------------------------
+
+def validate_scoring_statistics(
+    result: ScoringStatistics,
+    *,
+    validate_consistency: bool = True,
+    tolerance: float = SCORE_COMPARISON_TOLERANCE,
+) -> ScoringStatistics:
+    """
+    Validate and return scoring statistics.
+    """
+
+    if not isinstance(
+        result,
+        ScoringStatistics,
+    ):
+        raise ScoringConfigurationError(
+            "Expected a ScoringStatistics instance."
+        )
+
+    if validate_consistency:
+        result.validate_consistency(
+            tolerance=tolerance
+        )
+
+    return result
+
+
+def validate_score_explanation(
+    result: ScoreExplanation,
+    *,
+    recursive: bool = True,
+) -> ScoreExplanation:
+    """
+    Validate and return a score explanation.
+    """
+
+    if not isinstance(
+        result,
+        ScoreExplanation,
+    ):
+        raise ScoringConfigurationError(
+            "Expected a ScoreExplanation instance."
+        )
+
+    if recursive:
+        for child in result.children:
+            validate_score_explanation(
+                child,
+                recursive=True,
+            )
+
+    return result
+
+
+def validate_multipose_score_result(
+    result: MultiPoseScoreResult,
+    *,
+    validate_consistency: bool = True,
+    validate_poses: bool = False,
+    tolerance: float = SCORE_COMPARISON_TOLERANCE,
+) -> MultiPoseScoreResult:
+    """
+    Validate and return a multipose scoring result.
+    """
+
+    if not isinstance(
+        result,
+        MultiPoseScoreResult,
+    ):
+        raise ScoringConfigurationError(
+            "Expected a MultiPoseScoreResult instance."
+        )
+
+    for pose in result.poses:
+        validate_pose_score(
+            pose,
+            validate_consistency=False,
+        )
+
+    validate_scoring_statistics(
+        result.score_statistics,
+        validate_consistency=False,
+    )
+    validate_scoring_statistics(
+        result.total_score_statistics,
+        validate_consistency=False,
+    )
+    validate_scoring_statistics(
+        result.affinity_statistics,
+        validate_consistency=False,
+    )
+
+    for explanation in result.explanations:
+        validate_score_explanation(
+            explanation,
+            recursive=True,
+        )
+
+    if validate_consistency:
+        result.validate_consistency(
+            tolerance=tolerance,
+            validate_poses=validate_poses,
+        )
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 4.3.11. Explanation collection helpers
+# -----------------------------------------------------------------------------
+
+def flatten_score_explanations(
+    explanations: Iterable[ScoreExplanation],
+) -> Tuple[ScoreExplanation, ...]:
+    """
+    Flatten a sequence of explanation trees.
+    """
+
+    flattened: List[ScoreExplanation] = []
+
+    for explanation in explanations:
+        validate_score_explanation(
+            explanation,
+            recursive=False,
+        )
+
+        flattened.extend(
+            explanation.flattened
+        )
+
+    return tuple(flattened)
+
+
+def filter_score_explanations(
+    explanations: Iterable[ScoreExplanation],
+    *,
+    scope: Optional[str] = None,
+    severity: Optional[str] = None,
+    level: Optional[str] = None,
+    tag: Optional[str] = None,
+    recursive: bool = True,
+) -> Tuple[ScoreExplanation, ...]:
+    """
+    Filter score explanations by normalized attributes.
+    """
+
+    source = (
+        flatten_score_explanations(
+            explanations
+        )
+        if recursive
+        else tuple(explanations)
+    )
+
+    canonical_scope = (
+        None
+        if scope is None
+        else _normalize_explanation_scope(
+            scope
+        )
+    )
+
+    canonical_severity = (
+        None
+        if severity is None
+        else _normalize_explanation_severity(
+            severity
+        )
+    )
+
+    canonical_level = (
+        None
+        if level is None
+        else _normalize_explanation_level(
+            level
+        )
+    )
+
+    canonical_tag = (
+        None
+        if tag is None
+        else _normalize_scoring_name(
+            tag
+        )
+    )
+
+    return tuple(
+        explanation
+        for explanation in source
+        if (
+            (
+                canonical_scope is None
+                or explanation.scope == canonical_scope
+            )
+            and (
+                canonical_severity is None
+                or explanation.severity
+                == canonical_severity
+            )
+            and (
+                canonical_level is None
+                or explanation.level
+                == canonical_level
+            )
+            and (
+                canonical_tag is None
+                or canonical_tag
+                in explanation.tags
+            )
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 4.3.12. Generic result-to-dictionary dispatcher
+# -----------------------------------------------------------------------------
+
+def scoring_result_to_dict(
+    result: Any,
+    *,
+    include_metadata: bool = True,
+) -> Dict[str, Any]:
+    """
+    Convert any Section 4 scoring result structure to a dictionary.
+
+    Supported structures are:
+
+    - ``ScoreComponent``;
+    - ``InteractionScore``;
+    - ``ResidueScore``;
+    - ``PoseScore``;
+    - ``ScoringStatistics``;
+    - ``ScoreExplanation``;
+    - ``MultiPoseScoreResult``.
+    """
+
+    if isinstance(result, ScoreComponent):
+        return result.to_dict(
+            include_metadata=include_metadata,
+        )
+
+    if isinstance(result, InteractionScore):
+        return result.to_dict(
+            include_components=True,
+            include_metadata=include_metadata,
+            include_interaction=False,
+        )
+
+    if isinstance(result, ResidueScore):
+        return result.to_dict(
+            include_interactions=True,
+            include_components=True,
+            include_metadata=include_metadata,
+        )
+
+    if isinstance(result, PoseScore):
+        return result.to_dict(
+            include_interactions=True,
+            include_residues=True,
+            include_components=True,
+            include_metadata=include_metadata,
+        )
+
+    if isinstance(result, ScoringStatistics):
+        return result.to_dict(
+            include_values=True,
+            include_metadata=include_metadata,
+        )
+
+    if isinstance(result, ScoreExplanation):
+        return result.to_dict(
+            include_children=True,
+            include_metadata=include_metadata,
+        )
+
+    if isinstance(result, MultiPoseScoreResult):
+        return result.to_dict(
+            include_poses=True,
+            include_interactions=True,
+            include_residues=True,
+            include_components=True,
+            include_statistics_values=True,
+            include_explanations=True,
+            include_metadata=include_metadata,
+        )
+
+    raise ScoringConfigurationError(
+        "Unsupported scoring result type: "
+        f"{type(result).__name__}."
+    )
+
+
+# -----------------------------------------------------------------------------
+# 4.3.13. Section consistency validation
+# -----------------------------------------------------------------------------
+
+def _validate_section_4_3_structures() -> None:
+    """
+    Validate multipose, statistics and explanation structures at import.
+    """
+
+    pose_a = create_pose_score(
+        pose_id="pose_1",
+        interactions=(
+            create_interaction_score(
+                interaction_id="hbond_1",
+                interaction_type=SCORE_TYPE_HYDROGEN_BOND,
+                base_weight=2.0,
+                pose_id="pose_1",
+            ),
+        ),
+        pose_index=1,
+    )
+
+    pose_b = create_pose_score(
+        pose_id="pose_2",
+        interactions=(
+            create_interaction_score(
+                interaction_id="hydrophobic_1",
+                interaction_type=SCORE_TYPE_HYDROPHOBIC,
+                base_weight=1.0,
+                pose_id="pose_2",
+            ),
+        ),
+        pose_index=2,
+    )
+
+    statistics = create_scoring_statistics(
+        (
+            pose_a.ranking_score,
+            pose_b.ranking_score,
+        )
+    )
+
+    if statistics.count != 2:
+        raise RuntimeError(
+            "ScoringStatistics count validation failed."
+        )
+
+    if statistics.maximum != max(
+        pose_a.ranking_score,
+        pose_b.ranking_score,
+    ):
+        raise RuntimeError(
+            "ScoringStatistics maximum validation failed."
+        )
+
+    multipose_result = create_multipose_score_result(
+        result_id="test_multipose",
+        poses=(
+            pose_b,
+            pose_a,
+        ),
+    )
+
+    if multipose_result.best_pose_id != "pose_1":
+        raise RuntimeError(
+            "MultiPoseScoreResult ranking validation failed."
+        )
+
+    if multipose_result.rank_of("pose_1") != 1:
+        raise RuntimeError(
+            "MultiPoseScoreResult rank lookup validation failed."
+        )
+
+    explanation = explain_multipose_result(
+        multipose_result,
+        include_poses=True,
+    )
+
+    if explanation.scope != EXPLANATION_SCOPE_MULTIPOSE:
+        raise RuntimeError(
+            "ScoreExplanation scope validation failed."
+        )
+
+    statistics.validate_consistency()
+    multipose_result.validate_consistency()
+    validate_score_explanation(
+        explanation,
+        recursive=True,
+    )
+
+
+_validate_section_4_3_structures()
+
+
+# -----------------------------------------------------------------------------
+# 4.3.14. Consolidated Section 4 public interface
+# -----------------------------------------------------------------------------
+
+_SECTION_4_3_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    # Multipose statuses
+    "MULTIPOSE_STATUS_COMPLETE",
+    "MULTIPOSE_STATUS_PARTIAL",
+    "MULTIPOSE_STATUS_EMPTY",
+    "MULTIPOSE_STATUS_INVALID",
+    "MULTIPOSE_STATUS_UNKNOWN",
+    "MULTIPOSE_STATUSES",
+
+    # Explanation levels
+    "EXPLANATION_LEVEL_SUMMARY",
+    "EXPLANATION_LEVEL_STANDARD",
+    "EXPLANATION_LEVEL_DETAILED",
+    "EXPLANATION_LEVEL_DEBUG",
+    "EXPLANATION_LEVELS",
+
+    # Explanation severities
+    "EXPLANATION_SEVERITY_INFO",
+    "EXPLANATION_SEVERITY_SUCCESS",
+    "EXPLANATION_SEVERITY_WARNING",
+    "EXPLANATION_SEVERITY_ERROR",
+    "EXPLANATION_SEVERITIES",
+
+    # Explanation scopes
+    "EXPLANATION_SCOPE_COMPONENT",
+    "EXPLANATION_SCOPE_INTERACTION",
+    "EXPLANATION_SCOPE_RESIDUE",
+    "EXPLANATION_SCOPE_POSE",
+    "EXPLANATION_SCOPE_MULTIPOSE",
+    "EXPLANATION_SCOPE_STATISTICS",
+    "EXPLANATION_SCOPE_GENERAL",
+    "EXPLANATION_SCOPES",
+
+    # Dataclasses
+    "ScoringStatistics",
+    "ScoreExplanation",
+    "MultiPoseScoreResult",
+
+    # Statistics factories
+    "create_scoring_statistics",
+    "scoring_statistics_from_interactions",
+    "scoring_statistics_from_residues",
+    "scoring_statistics_from_poses",
+
+    # Explanation factories
+    "create_score_explanation",
+    "explain_score_component",
+    "explain_interaction_score",
+    "explain_residue_score",
+    "explain_pose_score",
+    "explain_multipose_result",
+
+    # Multipose factories
+    "create_multipose_score_result",
+    "create_empty_multipose_score_result",
+
+    # Validation
+    "validate_scoring_statistics",
+    "validate_score_explanation",
+    "validate_multipose_score_result",
+
+    # Explanation collections
+    "flatten_score_explanations",
+    "filter_score_explanations",
+
+    # Generic conversion
+    "scoring_result_to_dict",
+)
+
+for public_name in _SECTION_4_3_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+# -----------------------------------------------------------------------------
+# 4.3.15. Complete Section 4 interface
+# -----------------------------------------------------------------------------
+
+SECTION_4_PUBLIC_NAMES: Final[Tuple[str, ...]] = tuple(
+    dict.fromkeys(
+        (
+            *_SECTION_4_1_PUBLIC_NAMES,
+            *_SECTION_4_2_PUBLIC_NAMES,
+            *_SECTION_4_3_PUBLIC_NAMES,
+        )
+    )
+)
+
+for public_name in SECTION_4_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+# =============================================================================
+# End of Section 4.3
+# End of Section 4 — Scoring result structures
+# =============================================================================
