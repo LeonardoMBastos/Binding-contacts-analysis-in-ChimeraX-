@@ -73167,3 +73167,7109 @@ validate_section_18_public_interface()
 # End of Section 18
 # =============================================================================
 
+
+# =============================================================================
+# DockAnalyzer — Interaction scoring
+# Section 19 — Statistics and summaries
+# =============================================================================
+
+"""
+Section 19 consolidates descriptive statistics generated from the scoring
+objects produced by Sections 13–18.
+
+The section is intentionally descriptive. It does not replace the multipose
+ranking algorithm implemented in Section 20, consensus analysis implemented in
+Section 21, general serialization implemented in Section 25, report integration
+implemented in Section 26, or the complete validation and self-test suites
+implemented in Sections 27 and 30.
+
+Supported inputs include:
+- ``InteractionScore`` objects and interaction-score collections;
+- ``CollectionScoringResult``;
+- the final residue-level ``ResidueScore`` and ``ResidueAggregationResult``;
+- ``PoseScore`` and ``PoseScoringResult``;
+- ``MultiPoseScoreResult``;
+- ``ScoreNormalizationResult``;
+- ``PoseDiversityResult``;
+- ``PoseSetComplementarityResult``;
+- ``PoseSetSelectionResult``;
+- ``DiversityComplementarityAnalysis``;
+- compatible iterables containing the objects listed above.
+"""
+
+# -----------------------------------------------------------------------------
+# 19.1. Constants, statuses and canonical names
+# -----------------------------------------------------------------------------
+
+STATISTICS_REPORT_STATUS_COMPLETE: Final[str] = "complete"
+STATISTICS_REPORT_STATUS_PARTIAL: Final[str] = "partial"
+STATISTICS_REPORT_STATUS_EMPTY: Final[str] = "empty"
+STATISTICS_REPORT_STATUS_INVALID: Final[str] = "invalid"
+
+STATISTICS_REPORT_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        STATISTICS_REPORT_STATUS_COMPLETE,
+        STATISTICS_REPORT_STATUS_PARTIAL,
+        STATISTICS_REPORT_STATUS_EMPTY,
+        STATISTICS_REPORT_STATUS_INVALID,
+    }
+)
+
+STATISTICS_SCOPE_INTERACTION: Final[str] = "interaction"
+STATISTICS_SCOPE_RESIDUE: Final[str] = "residue"
+STATISTICS_SCOPE_POSE: Final[str] = "pose"
+STATISTICS_SCOPE_MULTIPOSE: Final[str] = "multipose"
+STATISTICS_SCOPE_DIVERSITY: Final[str] = "diversity"
+STATISTICS_SCOPE_COMPLEMENTARITY: Final[str] = "complementarity"
+STATISTICS_SCOPE_INTEGRATED: Final[str] = "integrated"
+
+STATISTICS_SCOPES: Final[FrozenSet[str]] = frozenset(
+    {
+        STATISTICS_SCOPE_INTERACTION,
+        STATISTICS_SCOPE_RESIDUE,
+        STATISTICS_SCOPE_POSE,
+        STATISTICS_SCOPE_MULTIPOSE,
+        STATISTICS_SCOPE_DIVERSITY,
+        STATISTICS_SCOPE_COMPLEMENTARITY,
+        STATISTICS_SCOPE_INTEGRATED,
+    }
+)
+
+STATISTICS_OUTLIER_NONE: Final[str] = "none"
+STATISTICS_OUTLIER_IQR: Final[str] = "iqr"
+STATISTICS_OUTLIER_Z_SCORE: Final[str] = "z_score"
+STATISTICS_OUTLIER_MAD: Final[str] = "mad"
+
+STATISTICS_OUTLIER_METHODS: Final[FrozenSet[str]] = frozenset(
+    {
+        STATISTICS_OUTLIER_NONE,
+        STATISTICS_OUTLIER_IQR,
+        STATISTICS_OUTLIER_Z_SCORE,
+        STATISTICS_OUTLIER_MAD,
+    }
+)
+
+STATISTICS_OUTLIER_DIRECTION_LOW: Final[str] = "low"
+STATISTICS_OUTLIER_DIRECTION_HIGH: Final[str] = "high"
+
+STATISTICS_SCHEMA_VERSION: Final[str] = "1.0"
+STATISTICS_SECTION_VERSION: Final[str] = "19.0"
+
+DEFAULT_STATISTICS_TOP_LIMIT: Final[int] = 10
+DEFAULT_STATISTICS_CONCENTRATION_FRACTION: Final[float] = 0.80
+DEFAULT_STATISTICS_OUTLIER_METHOD: Final[str] = STATISTICS_OUTLIER_IQR
+DEFAULT_STATISTICS_OUTLIER_THRESHOLD: Final[float] = 1.50
+DEFAULT_STATISTICS_DECIMAL_PLACES: Final[int] = 6
+
+_STATISTICS_REPORT_STATUS_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "ok": STATISTICS_REPORT_STATUS_COMPLETE,
+        "success": STATISTICS_REPORT_STATUS_COMPLETE,
+        "successful": STATISTICS_REPORT_STATUS_COMPLETE,
+        "complete": STATISTICS_REPORT_STATUS_COMPLETE,
+        "partial": STATISTICS_REPORT_STATUS_PARTIAL,
+        "incomplete": STATISTICS_REPORT_STATUS_PARTIAL,
+        "empty": STATISTICS_REPORT_STATUS_EMPTY,
+        "none": STATISTICS_REPORT_STATUS_EMPTY,
+        "invalid": STATISTICS_REPORT_STATUS_INVALID,
+        "failed": STATISTICS_REPORT_STATUS_INVALID,
+        "error": STATISTICS_REPORT_STATUS_INVALID,
+    }
+)
+
+_STATISTICS_OUTLIER_METHOD_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "none": STATISTICS_OUTLIER_NONE,
+        "off": STATISTICS_OUTLIER_NONE,
+        "disabled": STATISTICS_OUTLIER_NONE,
+        "iqr": STATISTICS_OUTLIER_IQR,
+        "tukey": STATISTICS_OUTLIER_IQR,
+        "tukey_fence": STATISTICS_OUTLIER_IQR,
+        "z": STATISTICS_OUTLIER_Z_SCORE,
+        "z_score": STATISTICS_OUTLIER_Z_SCORE,
+        "standard_score": STATISTICS_OUTLIER_Z_SCORE,
+        "mad": STATISTICS_OUTLIER_MAD,
+        "median_absolute_deviation": STATISTICS_OUTLIER_MAD,
+        "robust_z_score": STATISTICS_OUTLIER_MAD,
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 19.2. Exceptions
+# -----------------------------------------------------------------------------
+
+class ScoringStatisticsSummaryError(ScoringError):
+    """Base exception for Section 19 statistics and summaries."""
+
+
+class ScoringStatisticsInputError(ScoringStatisticsSummaryError):
+    """Raised when a statistics input cannot be adapted safely."""
+
+
+class ScoringStatisticsValidationError(ScoringStatisticsSummaryError):
+    """Raised when a Section 19 result is internally inconsistent."""
+
+
+# -----------------------------------------------------------------------------
+# 19.3. Normalization helpers
+# -----------------------------------------------------------------------------
+
+def normalize_statistics_report_status(
+    value: Any,
+    *,
+    default: str = STATISTICS_REPORT_STATUS_INVALID,
+) -> str:
+    """Return a canonical Section 19 report status."""
+
+    normalized = _normalize_scoring_name(value)
+    if normalized in STATISTICS_REPORT_STATUSES:
+        return normalized
+    return _STATISTICS_REPORT_STATUS_ALIASES.get(normalized, default)
+
+
+def normalize_statistics_scope(
+    value: Any,
+    *,
+    default: str = STATISTICS_SCOPE_INTEGRATED,
+) -> str:
+    """Return a canonical statistics scope."""
+
+    normalized = _normalize_scoring_name(value)
+    if normalized in STATISTICS_SCOPES:
+        return normalized
+    return default
+
+
+def normalize_statistics_outlier_method(
+    value: Any,
+    *,
+    default: str = DEFAULT_STATISTICS_OUTLIER_METHOD,
+) -> str:
+    """Return a canonical outlier-detection method."""
+
+    normalized = _normalize_scoring_name(value)
+    if normalized in STATISTICS_OUTLIER_METHODS:
+        return normalized
+    return _STATISTICS_OUTLIER_METHOD_ALIASES.get(normalized, default)
+
+
+# -----------------------------------------------------------------------------
+# 19.4. Immutable configuration
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class StatisticsSummaryOptions:
+    """Configuration for Section 19 descriptive analyses."""
+
+    accepted_only: bool = False
+    contributing_only: bool = False
+    include_zero_values: bool = True
+    include_raw_values: bool = False
+    include_metadata: bool = True
+
+    top_limit: int = DEFAULT_STATISTICS_TOP_LIMIT
+    concentration_fraction: float = (
+        DEFAULT_STATISTICS_CONCENTRATION_FRACTION
+    )
+
+    outlier_method: str = DEFAULT_STATISTICS_OUTLIER_METHOD
+    outlier_threshold: float = DEFAULT_STATISTICS_OUTLIER_THRESHOLD
+    decimal_places: int = DEFAULT_STATISTICS_DECIMAL_PLACES
+
+    score_direction: str = SCORE_DIRECTION_HIGHER_IS_BETTER
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Normalize and validate summary options."""
+
+        top_limit = int(self.top_limit)
+        if top_limit < 0:
+            raise ScoringStatisticsValidationError(
+                "StatisticsSummaryOptions.top_limit cannot be negative."
+            )
+
+        concentration_fraction = float(
+            _coerce_finite_score_value(
+                self.concentration_fraction,
+                name=(
+                    "StatisticsSummaryOptions."
+                    "concentration_fraction"
+                ),
+            )
+        )
+        if not 0.0 < concentration_fraction <= 1.0:
+            raise ScoringStatisticsValidationError(
+                "concentration_fraction must be in the interval (0, 1]."
+            )
+
+        outlier_threshold = float(
+            _coerce_finite_score_value(
+                self.outlier_threshold,
+                name="StatisticsSummaryOptions.outlier_threshold",
+            )
+        )
+        if outlier_threshold <= 0.0:
+            raise ScoringStatisticsValidationError(
+                "outlier_threshold must be greater than zero."
+            )
+
+        decimal_places = int(self.decimal_places)
+        if decimal_places < 0:
+            raise ScoringStatisticsValidationError(
+                "decimal_places cannot be negative."
+            )
+
+        object.__setattr__(self, "accepted_only", bool(self.accepted_only))
+        object.__setattr__(
+            self,
+            "contributing_only",
+            bool(self.contributing_only),
+        )
+        object.__setattr__(
+            self,
+            "include_zero_values",
+            bool(self.include_zero_values),
+        )
+        object.__setattr__(
+            self,
+            "include_raw_values",
+            bool(self.include_raw_values),
+        )
+        object.__setattr__(
+            self,
+            "include_metadata",
+            bool(self.include_metadata),
+        )
+        object.__setattr__(self, "top_limit", top_limit)
+        object.__setattr__(
+            self,
+            "concentration_fraction",
+            concentration_fraction,
+        )
+        object.__setattr__(
+            self,
+            "outlier_method",
+            normalize_statistics_outlier_method(self.outlier_method),
+        )
+        object.__setattr__(
+            self,
+            "outlier_threshold",
+            outlier_threshold,
+        )
+        object.__setattr__(self, "decimal_places", decimal_places)
+        object.__setattr__(
+            self,
+            "score_direction",
+            normalize_score_direction(self.score_direction),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    def with_updates(self, **changes: Any) -> "StatisticsSummaryOptions":
+        """Return a validated copy with selected fields changed."""
+
+        return replace(self, **changes)
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """Return a mutable representation."""
+
+        result: Dict[str, Any] = {
+            "accepted_only": self.accepted_only,
+            "contributing_only": self.contributing_only,
+            "include_zero_values": self.include_zero_values,
+            "include_raw_values": self.include_raw_values,
+            "include_metadata": self.include_metadata,
+            "top_limit": self.top_limit,
+            "concentration_fraction": self.concentration_fraction,
+            "outlier_method": self.outlier_method,
+            "outlier_threshold": self.outlier_threshold,
+            "decimal_places": self.decimal_places,
+            "score_direction": self.score_direction,
+        }
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+        return result
+
+
+DEFAULT_STATISTICS_SUMMARY_OPTIONS: Final[
+    StatisticsSummaryOptions
+] = StatisticsSummaryOptions()
+
+
+# -----------------------------------------------------------------------------
+# 19.5. Internal freezing and numeric helpers
+# -----------------------------------------------------------------------------
+
+def _freeze_statistics_float_mapping(
+    values: Optional[Mapping[Any, Any]],
+) -> Mapping[str, float]:
+    """Freeze a string-to-float mapping using deterministic key order."""
+
+    normalized: Dict[str, float] = {}
+    for raw_key, raw_value in (values or {}).items():
+        key = _coerce_identifier(raw_key)
+        if not key:
+            continue
+        normalized[key] = float(
+            _coerce_finite_score_value(
+                raw_value,
+                name=f"statistics mapping value for {key!r}",
+            )
+        )
+    return MappingProxyType(dict(sorted(normalized.items())))
+
+
+def _freeze_statistics_integer_mapping(
+    values: Optional[Mapping[Any, Any]],
+) -> Mapping[str, int]:
+    """Freeze a string-to-nonnegative-integer mapping."""
+
+    normalized: Dict[str, int] = {}
+    for raw_key, raw_value in (values or {}).items():
+        key = _coerce_identifier(raw_key)
+        if not key:
+            continue
+        value = int(raw_value)
+        if value < 0:
+            raise ScoringStatisticsValidationError(
+                f"Count for {key!r} cannot be negative."
+            )
+        normalized[key] = value
+    return MappingProxyType(dict(sorted(normalized.items())))
+
+
+def _statistics_finite_float(
+    value: Any,
+    *,
+    default: Optional[float] = None,
+) -> Optional[float]:
+    """Return a finite float or a caller-defined default."""
+
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if not math.isfinite(numeric):
+        return default
+    return numeric
+
+
+def _statistics_numeric_values(
+    values: Iterable[Any],
+    *,
+    include_zero: bool = True,
+) -> Tuple[float, ...]:
+    """Normalize an iterable to finite numeric values."""
+
+    normalized: List[float] = []
+    for value in values:
+        numeric = _statistics_finite_float(value)
+        if numeric is None:
+            continue
+        if not include_zero and abs(numeric) <= SCORE_EPSILON:
+            continue
+        normalized.append(numeric)
+    return tuple(normalized)
+
+
+def _statistics_round(
+    value: Optional[float],
+    decimal_places: Optional[int],
+) -> Optional[float]:
+    """Round an optional finite value."""
+
+    if value is None:
+        return None
+    if decimal_places is None:
+        return float(value)
+    return round(float(value), int(decimal_places))
+
+
+def _statistics_median_absolute_deviation(
+    values: Sequence[float],
+) -> Optional[float]:
+    """Return the unscaled median absolute deviation."""
+
+    if not values:
+        return None
+    center = float(np.median(np.asarray(values, dtype=float)))
+    deviations = np.abs(np.asarray(values, dtype=float) - center)
+    return float(np.median(deviations))
+
+
+def _statistics_coefficient_of_variation(
+    mean_value: Optional[float],
+    standard_deviation: Optional[float],
+) -> Optional[float]:
+    """Return |SD / mean| when the mean is not effectively zero."""
+
+    if mean_value is None or standard_deviation is None:
+        return None
+    if abs(mean_value) <= SCORE_EPSILON:
+        return None
+    return abs(float(standard_deviation) / float(mean_value))
+
+
+def _statistics_robust_coefficient_of_variation(
+    median_value: Optional[float],
+    mad_value: Optional[float],
+) -> Optional[float]:
+    """Return |MAD / median| when the median is not effectively zero."""
+
+    if median_value is None or mad_value is None:
+        return None
+    if abs(median_value) <= SCORE_EPSILON:
+        return None
+    return abs(float(mad_value) / float(median_value))
+
+
+def _statistics_entity_ids(
+    entity_ids: Optional[Iterable[Any]],
+    count: int,
+) -> Tuple[str, ...]:
+    """Return deterministic identifiers aligned to numeric values."""
+
+    if entity_ids is None:
+        return tuple(f"value_{index + 1}" for index in range(count))
+
+    normalized = tuple(
+        _coerce_identifier(value, default=f"value_{index + 1}")
+        for index, value in enumerate(entity_ids)
+    )
+    if len(normalized) != count:
+        raise ScoringStatisticsInputError(
+            "entity_ids must contain exactly one identifier per value."
+        )
+    return normalized
+
+
+def _statistics_safe_ratio(
+    numerator: float,
+    denominator: float,
+) -> float:
+    """Return a finite ratio, using zero for an empty denominator."""
+
+    if abs(float(denominator)) <= SCORE_EPSILON:
+        return 0.0
+    return float(numerator) / float(denominator)
+
+
+# -----------------------------------------------------------------------------
+# 19.6. Categorical distributions
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class CategoricalDistribution:
+    """Immutable counts and proportions for one categorical variable."""
+
+    counts: Mapping[str, int]
+    proportions: Mapping[str, float]
+    total_count: int
+    unique_count: int
+    mode_labels: Tuple[str, ...]
+    dominance_fraction: float
+    entropy: float
+    normalized_entropy: float
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Validate and freeze the distribution."""
+
+        counts = _freeze_statistics_integer_mapping(self.counts)
+        proportions = _freeze_statistics_float_mapping(self.proportions)
+        total_count = int(self.total_count)
+        unique_count = int(self.unique_count)
+
+        if total_count < 0 or unique_count < 0:
+            raise ScoringStatisticsValidationError(
+                "Categorical counts cannot be negative."
+            )
+        if sum(counts.values()) != total_count:
+            raise ScoringStatisticsValidationError(
+                "CategoricalDistribution.total_count is inconsistent."
+            )
+        if len(counts) != unique_count:
+            raise ScoringStatisticsValidationError(
+                "CategoricalDistribution.unique_count is inconsistent."
+            )
+        if set(counts) != set(proportions):
+            raise ScoringStatisticsValidationError(
+                "Categorical counts and proportions use different keys."
+            )
+
+        object.__setattr__(self, "counts", counts)
+        object.__setattr__(self, "proportions", proportions)
+        object.__setattr__(self, "total_count", total_count)
+        object.__setattr__(self, "unique_count", unique_count)
+        object.__setattr__(
+            self,
+            "mode_labels",
+            tuple(
+                sorted(
+                    {
+                        _coerce_identifier(value)
+                        for value in self.mode_labels
+                        if _coerce_identifier(value)
+                    }
+                )
+            ),
+        )
+        for field_name in (
+            "dominance_fraction",
+            "entropy",
+            "normalized_entropy",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                float(
+                    _coerce_finite_score_value(
+                        getattr(self, field_name),
+                        name=f"CategoricalDistribution.{field_name}",
+                    )
+                ),
+            )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def empty(self) -> bool:
+        """Return whether no observations are represented."""
+
+        return self.total_count == 0
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return a mutable representation."""
+
+        result: Dict[str, Any] = {
+            "counts": dict(self.counts),
+            "proportions": {
+                key: _statistics_round(value, decimal_places)
+                for key, value in self.proportions.items()
+            },
+            "total_count": self.total_count,
+            "unique_count": self.unique_count,
+            "mode_labels": list(self.mode_labels),
+            "dominance_fraction": _statistics_round(
+                self.dominance_fraction,
+                decimal_places,
+            ),
+            "entropy": _statistics_round(self.entropy, decimal_places),
+            "normalized_entropy": _statistics_round(
+                self.normalized_entropy,
+                decimal_places,
+            ),
+        }
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+        return result
+
+
+def build_categorical_distribution(
+    values: Iterable[Any],
+    *,
+    unknown_label: str = "unknown",
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> CategoricalDistribution:
+    """Build counts, proportions, mode and entropy for categorical values."""
+
+    fallback = _coerce_identifier(unknown_label, default="unknown")
+    normalized_values = tuple(
+        _coerce_identifier(value, default=fallback) or fallback
+        for value in values
+    )
+    counter = Counter(normalized_values)
+    counts = dict(sorted(counter.items()))
+    total = len(normalized_values)
+    proportions = {
+        key: _statistics_safe_ratio(count, total)
+        for key, count in counts.items()
+    }
+    maximum_count = max(counts.values(), default=0)
+    modes = tuple(
+        key for key, count in counts.items() if count == maximum_count
+    )
+
+    entropy = 0.0
+    for proportion in proportions.values():
+        if proportion > 0.0:
+            entropy -= proportion * math.log(proportion, 2)
+
+    maximum_entropy = (
+        math.log(len(counts), 2)
+        if len(counts) > 1
+        else 0.0
+    )
+    normalized_entropy = (
+        entropy / maximum_entropy
+        if maximum_entropy > 0.0
+        else 0.0
+    )
+
+    return CategoricalDistribution(
+        counts=counts,
+        proportions=proportions,
+        total_count=total,
+        unique_count=len(counts),
+        mode_labels=modes,
+        dominance_fraction=_statistics_safe_ratio(maximum_count, total),
+        entropy=entropy,
+        normalized_entropy=normalized_entropy,
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 19.7. Numeric metric summaries and outliers
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ScoreOutlier:
+    """One observation identified as a low or high statistical outlier."""
+
+    entity_id: str
+    metric: str
+    value: float
+    direction: str
+    method: str
+    threshold: float
+    lower_bound: Optional[float] = None
+    upper_bound: Optional[float] = None
+    standardized_distance: Optional[float] = None
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Normalize an outlier observation."""
+
+        direction = _normalize_scoring_name(self.direction)
+        if direction not in {
+            STATISTICS_OUTLIER_DIRECTION_LOW,
+            STATISTICS_OUTLIER_DIRECTION_HIGH,
+        }:
+            raise ScoringStatisticsValidationError(
+                f"Unsupported outlier direction: {self.direction!r}."
+            )
+
+        object.__setattr__(
+            self,
+            "entity_id",
+            _coerce_identifier(self.entity_id),
+        )
+        object.__setattr__(
+            self,
+            "metric",
+            _normalize_scoring_name(self.metric),
+        )
+        object.__setattr__(self, "direction", direction)
+        object.__setattr__(
+            self,
+            "method",
+            normalize_statistics_outlier_method(self.method),
+        )
+        for field_name in ("value", "threshold"):
+            object.__setattr__(
+                self,
+                field_name,
+                float(
+                    _coerce_finite_score_value(
+                        getattr(self, field_name),
+                        name=f"ScoreOutlier.{field_name}",
+                    )
+                ),
+            )
+        for field_name in (
+            "lower_bound",
+            "upper_bound",
+            "standardized_distance",
+        ):
+            value = getattr(self, field_name)
+            object.__setattr__(
+                self,
+                field_name,
+                None
+                if value is None
+                else float(
+                    _coerce_finite_score_value(
+                        value,
+                        name=f"ScoreOutlier.{field_name}",
+                    )
+                ),
+            )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return a mutable representation."""
+
+        result: Dict[str, Any] = {
+            "entity_id": self.entity_id,
+            "metric": self.metric,
+            "value": _statistics_round(self.value, decimal_places),
+            "direction": self.direction,
+            "method": self.method,
+            "threshold": _statistics_round(
+                self.threshold,
+                decimal_places,
+            ),
+            "lower_bound": _statistics_round(
+                self.lower_bound,
+                decimal_places,
+            ),
+            "upper_bound": _statistics_round(
+                self.upper_bound,
+                decimal_places,
+            ),
+            "standardized_distance": _statistics_round(
+                self.standardized_distance,
+                decimal_places,
+            ),
+        }
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreMetricSummary:
+    """Descriptive and robust statistics for one numeric score metric."""
+
+    metric: str
+    statistics: ScoringStatistics
+    median_absolute_deviation: Optional[float]
+    coefficient_of_variation: Optional[float]
+    robust_coefficient_of_variation: Optional[float]
+    lower_outlier_bound: Optional[float]
+    upper_outlier_bound: Optional[float]
+    outliers: Tuple[ScoreOutlier, ...] = field(default_factory=tuple)
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Validate and freeze a metric summary."""
+
+        if not isinstance(self.statistics, ScoringStatistics):
+            raise ScoringStatisticsValidationError(
+                "statistics must be a ScoringStatistics instance."
+            )
+        outliers = tuple(self.outliers)
+        for outlier in outliers:
+            if not isinstance(outlier, ScoreOutlier):
+                raise ScoringStatisticsValidationError(
+                    "outliers must contain only ScoreOutlier instances."
+                )
+
+        object.__setattr__(
+            self,
+            "metric",
+            _normalize_scoring_name(self.metric),
+        )
+        for field_name in (
+            "median_absolute_deviation",
+            "coefficient_of_variation",
+            "robust_coefficient_of_variation",
+            "lower_outlier_bound",
+            "upper_outlier_bound",
+        ):
+            value = getattr(self, field_name)
+            object.__setattr__(
+                self,
+                field_name,
+                None
+                if value is None
+                else float(
+                    _coerce_finite_score_value(
+                        value,
+                        name=f"ScoreMetricSummary.{field_name}",
+                    )
+                ),
+            )
+        object.__setattr__(self, "outliers", outliers)
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def count(self) -> int:
+        """Return the represented observation count."""
+
+        return int(self.statistics.count)
+
+    @property
+    def empty(self) -> bool:
+        """Return whether no numeric observations are represented."""
+
+        return self.count == 0
+
+    @property
+    def outlier_count(self) -> int:
+        """Return the number of detected outliers."""
+
+        return len(self.outliers)
+
+    def to_dict(
+        self,
+        *,
+        include_values: bool = False,
+        include_metadata: bool = True,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return a mutable representation."""
+
+        result: Dict[str, Any] = {
+            "metric": self.metric,
+            "statistics": self.statistics.to_dict(
+                include_values=include_values,
+                include_metadata=include_metadata,
+                decimal_places=decimal_places,
+            ),
+            "median_absolute_deviation": _statistics_round(
+                self.median_absolute_deviation,
+                decimal_places,
+            ),
+            "coefficient_of_variation": _statistics_round(
+                self.coefficient_of_variation,
+                decimal_places,
+            ),
+            "robust_coefficient_of_variation": _statistics_round(
+                self.robust_coefficient_of_variation,
+                decimal_places,
+            ),
+            "lower_outlier_bound": _statistics_round(
+                self.lower_outlier_bound,
+                decimal_places,
+            ),
+            "upper_outlier_bound": _statistics_round(
+                self.upper_outlier_bound,
+                decimal_places,
+            ),
+            "outlier_count": self.outlier_count,
+            "outliers": [
+                outlier.to_dict(
+                    include_metadata=include_metadata,
+                    decimal_places=decimal_places,
+                )
+                for outlier in self.outliers
+            ],
+        }
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+        return result
+
+
+def build_score_metric_summary(
+    values: Iterable[Any],
+    *,
+    metric: Any,
+    entity_ids: Optional[Iterable[Any]] = None,
+    options: StatisticsSummaryOptions = DEFAULT_STATISTICS_SUMMARY_OPTIONS,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoreMetricSummary:
+    """Build classical, robust and outlier statistics for one metric."""
+
+    if not isinstance(options, StatisticsSummaryOptions):
+        raise ScoringStatisticsInputError(
+            "options must be a StatisticsSummaryOptions instance."
+        )
+
+    raw_values = tuple(values)
+    raw_ids = _statistics_entity_ids(entity_ids, len(raw_values))
+    normalized_value_list: List[float] = []
+    normalized_id_list: List[str] = []
+    for raw_value, raw_id in zip(raw_values, raw_ids):
+        numeric = _statistics_finite_float(raw_value)
+        if numeric is None:
+            continue
+        if (
+            not options.include_zero_values
+            and abs(numeric) <= SCORE_EPSILON
+        ):
+            continue
+        normalized_value_list.append(numeric)
+        normalized_id_list.append(raw_id)
+    normalized_values = tuple(normalized_value_list)
+    normalized_ids = tuple(normalized_id_list)
+    metric_name = _normalize_scoring_name(metric)
+    statistics = ScoringStatistics(
+        values=normalized_values,
+        metadata={
+            "metric": metric_name,
+            "section": "19",
+        },
+    )
+
+    mad = _statistics_median_absolute_deviation(normalized_values)
+    coefficient = _statistics_coefficient_of_variation(
+        statistics.mean,
+        statistics.standard_deviation,
+    )
+    robust_coefficient = _statistics_robust_coefficient_of_variation(
+        statistics.median,
+        mad,
+    )
+
+    method = options.outlier_method
+    threshold = options.outlier_threshold
+    lower_bound: Optional[float] = None
+    upper_bound: Optional[float] = None
+    outliers: List[ScoreOutlier] = []
+
+    if normalized_values and method == STATISTICS_OUTLIER_IQR:
+        if (
+            statistics.first_quartile is not None
+            and statistics.third_quartile is not None
+            and statistics.interquartile_range is not None
+        ):
+            lower_bound = (
+                statistics.first_quartile
+                - threshold * statistics.interquartile_range
+            )
+            upper_bound = (
+                statistics.third_quartile
+                + threshold * statistics.interquartile_range
+            )
+            for entity_id, value in zip(normalized_ids, normalized_values):
+                if value < lower_bound or value > upper_bound:
+                    outliers.append(
+                        ScoreOutlier(
+                            entity_id=entity_id,
+                            metric=metric_name,
+                            value=value,
+                            direction=(
+                                STATISTICS_OUTLIER_DIRECTION_LOW
+                                if value < lower_bound
+                                else STATISTICS_OUTLIER_DIRECTION_HIGH
+                            ),
+                            method=method,
+                            threshold=threshold,
+                            lower_bound=lower_bound,
+                            upper_bound=upper_bound,
+                        )
+                    )
+
+    elif normalized_values and method == STATISTICS_OUTLIER_Z_SCORE:
+        if (
+            statistics.mean is not None
+            and statistics.standard_deviation is not None
+            and statistics.standard_deviation > SCORE_EPSILON
+        ):
+            lower_bound = (
+                statistics.mean
+                - threshold * statistics.standard_deviation
+            )
+            upper_bound = (
+                statistics.mean
+                + threshold * statistics.standard_deviation
+            )
+            for entity_id, value in zip(normalized_ids, normalized_values):
+                distance = (
+                    (value - statistics.mean)
+                    / statistics.standard_deviation
+                )
+                if abs(distance) > threshold:
+                    outliers.append(
+                        ScoreOutlier(
+                            entity_id=entity_id,
+                            metric=metric_name,
+                            value=value,
+                            direction=(
+                                STATISTICS_OUTLIER_DIRECTION_LOW
+                                if distance < 0.0
+                                else STATISTICS_OUTLIER_DIRECTION_HIGH
+                            ),
+                            method=method,
+                            threshold=threshold,
+                            lower_bound=lower_bound,
+                            upper_bound=upper_bound,
+                            standardized_distance=distance,
+                        )
+                    )
+
+    elif normalized_values and method == STATISTICS_OUTLIER_MAD:
+        if (
+            statistics.median is not None
+            and mad is not None
+            and mad > SCORE_EPSILON
+        ):
+            scale = mad / 0.6744897501960817
+            lower_bound = statistics.median - threshold * scale
+            upper_bound = statistics.median + threshold * scale
+            for entity_id, value in zip(normalized_ids, normalized_values):
+                distance = 0.6744897501960817 * (
+                    value - statistics.median
+                ) / mad
+                if abs(distance) > threshold:
+                    outliers.append(
+                        ScoreOutlier(
+                            entity_id=entity_id,
+                            metric=metric_name,
+                            value=value,
+                            direction=(
+                                STATISTICS_OUTLIER_DIRECTION_LOW
+                                if distance < 0.0
+                                else STATISTICS_OUTLIER_DIRECTION_HIGH
+                            ),
+                            method=method,
+                            threshold=threshold,
+                            lower_bound=lower_bound,
+                            upper_bound=upper_bound,
+                            standardized_distance=distance,
+                        )
+                    )
+
+    outliers.sort(key=lambda item: (item.direction, -abs(item.value), item.entity_id))
+
+    return ScoreMetricSummary(
+        metric=metric_name,
+        statistics=statistics,
+        median_absolute_deviation=mad,
+        coefficient_of_variation=coefficient,
+        robust_coefficient_of_variation=robust_coefficient,
+        lower_outlier_bound=lower_bound,
+        upper_outlier_bound=upper_bound,
+        outliers=tuple(outliers),
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 19.8. Input extraction and adaptation
+# -----------------------------------------------------------------------------
+
+def collect_interaction_scores_for_statistics(
+    source: Any,
+) -> Tuple[InteractionScore, ...]:
+    """Extract standardized interaction scores from supported result objects."""
+
+    if source is None:
+        return ()
+    if isinstance(source, InteractionScore):
+        return (source,)
+    if isinstance(source, CollectionScoringResult):
+        return tuple(source.scores)
+    if isinstance(source, PoseScoringResult):
+        return tuple(source.scores)
+    if isinstance(source, PoseScore):
+        return tuple(source.interactions)
+    if isinstance(source, MultiPoseScoreResult):
+        return tuple(
+            score
+            for pose in source.poses
+            for score in pose.interactions
+        )
+    if isinstance(source, ResidueAggregationResult):
+        recovered = []
+        observed_ids: Set[str] = set()
+        for residue in source.residues:
+            for contribution in residue.contributions:
+                score = contribution.score
+                if (
+                    isinstance(score, InteractionScore)
+                    and score.interaction_id not in observed_ids
+                ):
+                    recovered.append(score)
+                    observed_ids.add(score.interaction_id)
+        return tuple(recovered)
+    if isinstance(source, Mapping):
+        for key in ("scores", "interactions", "interaction_scores"):
+            if key in source:
+                return collect_interaction_scores_for_statistics(source[key])
+        return ()
+    if isinstance(source, Iterable) and not isinstance(
+        source,
+        (str, bytes, bytearray),
+    ):
+        collected: List[InteractionScore] = []
+        for value in source:
+            collected.extend(collect_interaction_scores_for_statistics(value))
+        return tuple(collected)
+    return ()
+
+
+def collect_residue_scores_for_statistics(
+    source: Any,
+) -> Tuple[ResidueScore, ...]:
+    """Extract final Section 15 residue-score objects from supported inputs."""
+
+    if source is None:
+        return ()
+    if isinstance(source, ResidueScore):
+        return (source,)
+    if isinstance(source, ResidueAggregationResult):
+        return tuple(source.residues)
+    if isinstance(source, PoseScoringResult):
+        if source.residue_result is None:
+            return ()
+        return tuple(source.residue_result.residues)
+    if isinstance(source, PoseScore):
+        return tuple(
+            residue
+            for residue in source.residues
+            if isinstance(residue, ResidueScore)
+        )
+    if isinstance(source, MultiPoseScoreResult):
+        return tuple(
+            residue
+            for pose in source.poses
+            for residue in pose.residues
+            if isinstance(residue, ResidueScore)
+        )
+    if isinstance(source, Mapping):
+        for key in ("residues", "residue_scores", "hotspots"):
+            if key in source:
+                return collect_residue_scores_for_statistics(source[key])
+        return ()
+    if isinstance(source, Iterable) and not isinstance(
+        source,
+        (str, bytes, bytearray),
+    ):
+        collected: List[ResidueScore] = []
+        for value in source:
+            collected.extend(collect_residue_scores_for_statistics(value))
+        return tuple(collected)
+    return ()
+
+
+def _pose_statistics_record(
+    value: Any,
+    *,
+    index: int,
+) -> Optional[Dict[str, Any]]:
+    """Convert one supported pose result to a common statistical record."""
+
+    if isinstance(value, PoseScore):
+        return {
+            "pose_id": value.pose_id or f"pose_{index + 1}",
+            "model_id": value.model_id,
+            "ligand_id": value.ligand_id,
+            "status": value.status,
+            "accepted": bool(value.accepted),
+            "raw_score": float(value.raw_score),
+            "final_score": float(value.total_score),
+            "normalized_score": _statistics_finite_float(
+                value.normalized_score
+            ),
+            "ranking_score": float(value.ranking_score),
+            "penalty_score": float(value.penalty_score),
+            "bonus_score": float(value.bonus_score),
+            "diversity_bonus": float(value.diversity_bonus),
+            "docking_affinity": _statistics_finite_float(
+                value.docking_affinity
+            ),
+            "interaction_count": len(value.interactions),
+            "residue_count": len(value.residues),
+            "score_by_type": dict(value.score_by_type),
+            "score_by_family": dict(value.score_by_family),
+            "source": value,
+        }
+
+    if isinstance(value, PoseScoringResult):
+        summary = value.summary
+        return {
+            "pose_id": value.pose_id or f"pose_{index + 1}",
+            "model_id": value.model_id,
+            "ligand_id": value.ligand_id,
+            "status": value.status,
+            "accepted": bool(getattr(value, "successful", True)),
+            "raw_score": float(summary.raw_interaction_score),
+            "final_score": float(summary.final_score),
+            "normalized_score": float(summary.normalized_score),
+            "ranking_score": float(summary.final_score),
+            "penalty_score": float(summary.total_penalty_score),
+            "bonus_score": float(summary.total_bonus_score),
+            "diversity_bonus": 0.0,
+            "docking_affinity": _statistics_finite_float(
+                value.metadata.get("docking_affinity")
+            ),
+            "interaction_count": int(summary.interaction_count),
+            "residue_count": int(summary.residue_count),
+            "score_by_type": {
+                key: float(component.final_score)
+                for key, component in value.type_components.items()
+            },
+            "score_by_family": {
+                key: float(component.final_score)
+                for key, component in value.family_components.items()
+            },
+            "source": value,
+        }
+
+    # NormalizedPoseScore is intentionally recognized structurally so that
+    # Section 19 does not rely on an additional nominal type check.
+    required_fields = (
+        "pose_id",
+        "raw_score",
+        "normalized_score",
+        "rank",
+        "direction",
+    )
+    if all(hasattr(value, field_name) for field_name in required_fields):
+        return {
+            "pose_id": _coerce_identifier(
+                getattr(value, "pose_id", ""),
+                default=f"pose_{index + 1}",
+            ),
+            "model_id": _coerce_identifier(
+                getattr(value, "model_id", "")
+            ),
+            "ligand_id": _coerce_identifier(
+                getattr(value, "ligand_id", "")
+            ),
+            "status": "normalized",
+            "accepted": True,
+            "raw_score": _statistics_finite_float(
+                getattr(value, "raw_score", None),
+                default=0.0,
+            ),
+            "final_score": _statistics_finite_float(
+                getattr(value, "raw_score", None),
+                default=0.0,
+            ),
+            "normalized_score": _statistics_finite_float(
+                getattr(value, "normalized_score", None)
+            ),
+            "ranking_score": _statistics_finite_float(
+                getattr(value, "normalized_score", None),
+                default=0.0,
+            ),
+            "penalty_score": 0.0,
+            "bonus_score": 0.0,
+            "diversity_bonus": 0.0,
+            "docking_affinity": None,
+            "interaction_count": 0,
+            "residue_count": 0,
+            "score_by_type": {},
+            "score_by_family": {},
+            "source": value,
+        }
+
+    return None
+
+
+def collect_pose_statistics_records(
+    source: Any,
+) -> Tuple[Mapping[str, Any], ...]:
+    """Extract common pose records from pose and multipose result objects."""
+
+    if source is None:
+        return ()
+    if isinstance(source, MultiPoseScoreResult):
+        values: Iterable[Any] = source.poses
+    elif isinstance(source, ScoreNormalizationResult):
+        values = source.scores
+    elif isinstance(source, (PoseScore, PoseScoringResult)):
+        values = (source,)
+    elif isinstance(source, Mapping):
+        for key in ("poses", "scores", "pose_results"):
+            if key in source:
+                return collect_pose_statistics_records(source[key])
+        return ()
+    elif isinstance(source, Iterable) and not isinstance(
+        source,
+        (str, bytes, bytearray),
+    ):
+        values = source
+    else:
+        values = (source,)
+
+    records: List[Mapping[str, Any]] = []
+    for index, value in enumerate(values):
+        record = _pose_statistics_record(value, index=index)
+        if record is not None:
+            records.append(MappingProxyType(record))
+    return tuple(records)
+
+
+# -----------------------------------------------------------------------------
+# 19.9. Interaction statistics
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class InteractionStatisticsSummary:
+    """Complete descriptive summary for standardized interaction scores."""
+
+    input_count: int
+    selected_count: int
+    accepted_count: int
+    rejected_count: int
+    contributing_count: int
+    noncontributing_count: int
+    favorable_count: int
+    unfavorable_count: int
+    neutral_count: int
+    duplicate_count: int
+
+    unique_atom_pair_count: int
+    unique_residue_pair_count: int
+    unique_residue_count: int
+    unique_pose_count: int
+    unique_model_count: int
+
+    raw_score: ScoreMetricSummary
+    final_score: ScoreMetricSummary
+    contribution_score: ScoreMetricSummary
+    base_weight: ScoreMetricSummary
+    penalty_score: ScoreMetricSummary
+    bonus_score: ScoreMetricSummary
+    multiplier_product: ScoreMetricSummary
+
+    family_distribution: CategoricalDistribution
+    type_distribution: CategoricalDistribution
+    strength_distribution: CategoricalDistribution
+    classification_distribution: CategoricalDistribution
+    geometry_distribution: CategoricalDistribution
+    polarity_distribution: CategoricalDistribution
+    status_distribution: CategoricalDistribution
+    source_distribution: CategoricalDistribution
+
+    score_by_family: Mapping[str, float]
+    score_by_type: Mapping[str, float]
+    count_by_family: Mapping[str, int]
+    count_by_type: Mapping[str, int]
+
+    strongest_favorable_interaction_ids: Tuple[str, ...]
+    strongest_unfavorable_interaction_ids: Tuple[str, ...]
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Validate and freeze the interaction summary."""
+
+        count_fields = (
+            "input_count",
+            "selected_count",
+            "accepted_count",
+            "rejected_count",
+            "contributing_count",
+            "noncontributing_count",
+            "favorable_count",
+            "unfavorable_count",
+            "neutral_count",
+            "duplicate_count",
+            "unique_atom_pair_count",
+            "unique_residue_pair_count",
+            "unique_residue_count",
+            "unique_pose_count",
+            "unique_model_count",
+        )
+        for field_name in count_fields:
+            value = int(getattr(self, field_name))
+            if value < 0:
+                raise ScoringStatisticsValidationError(
+                    f"InteractionStatisticsSummary.{field_name} cannot be negative."
+                )
+            object.__setattr__(self, field_name, value)
+
+        metric_fields = (
+            "raw_score",
+            "final_score",
+            "contribution_score",
+            "base_weight",
+            "penalty_score",
+            "bonus_score",
+            "multiplier_product",
+        )
+        for field_name in metric_fields:
+            if not isinstance(getattr(self, field_name), ScoreMetricSummary):
+                raise ScoringStatisticsValidationError(
+                    f"{field_name} must be a ScoreMetricSummary."
+                )
+
+        distribution_fields = (
+            "family_distribution",
+            "type_distribution",
+            "strength_distribution",
+            "classification_distribution",
+            "geometry_distribution",
+            "polarity_distribution",
+            "status_distribution",
+            "source_distribution",
+        )
+        for field_name in distribution_fields:
+            if not isinstance(
+                getattr(self, field_name),
+                CategoricalDistribution,
+            ):
+                raise ScoringStatisticsValidationError(
+                    f"{field_name} must be a CategoricalDistribution."
+                )
+
+        object.__setattr__(
+            self,
+            "score_by_family",
+            _freeze_statistics_float_mapping(self.score_by_family),
+        )
+        object.__setattr__(
+            self,
+            "score_by_type",
+            _freeze_statistics_float_mapping(self.score_by_type),
+        )
+        object.__setattr__(
+            self,
+            "count_by_family",
+            _freeze_statistics_integer_mapping(self.count_by_family),
+        )
+        object.__setattr__(
+            self,
+            "count_by_type",
+            _freeze_statistics_integer_mapping(self.count_by_type),
+        )
+        object.__setattr__(
+            self,
+            "strongest_favorable_interaction_ids",
+            tuple(self.strongest_favorable_interaction_ids),
+        )
+        object.__setattr__(
+            self,
+            "strongest_unfavorable_interaction_ids",
+            tuple(self.strongest_unfavorable_interaction_ids),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def total_score(self) -> float:
+        """Return the sum of selected interaction contributions."""
+
+        return float(self.contribution_score.statistics.total or 0.0)
+
+    def to_dict(
+        self,
+        *,
+        include_values: bool = False,
+        include_metadata: bool = True,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return a mutable representation."""
+
+        metric_names = (
+            "raw_score",
+            "final_score",
+            "contribution_score",
+            "base_weight",
+            "penalty_score",
+            "bonus_score",
+            "multiplier_product",
+        )
+        distribution_names = (
+            "family_distribution",
+            "type_distribution",
+            "strength_distribution",
+            "classification_distribution",
+            "geometry_distribution",
+            "polarity_distribution",
+            "status_distribution",
+            "source_distribution",
+        )
+        result: Dict[str, Any] = {
+            "input_count": self.input_count,
+            "selected_count": self.selected_count,
+            "accepted_count": self.accepted_count,
+            "rejected_count": self.rejected_count,
+            "contributing_count": self.contributing_count,
+            "noncontributing_count": self.noncontributing_count,
+            "favorable_count": self.favorable_count,
+            "unfavorable_count": self.unfavorable_count,
+            "neutral_count": self.neutral_count,
+            "duplicate_count": self.duplicate_count,
+            "unique_atom_pair_count": self.unique_atom_pair_count,
+            "unique_residue_pair_count": self.unique_residue_pair_count,
+            "unique_residue_count": self.unique_residue_count,
+            "unique_pose_count": self.unique_pose_count,
+            "unique_model_count": self.unique_model_count,
+            "total_score": _statistics_round(
+                self.total_score,
+                decimal_places,
+            ),
+            "score_by_family": {
+                key: _statistics_round(value, decimal_places)
+                for key, value in self.score_by_family.items()
+            },
+            "score_by_type": {
+                key: _statistics_round(value, decimal_places)
+                for key, value in self.score_by_type.items()
+            },
+            "count_by_family": dict(self.count_by_family),
+            "count_by_type": dict(self.count_by_type),
+            "strongest_favorable_interaction_ids": list(
+                self.strongest_favorable_interaction_ids
+            ),
+            "strongest_unfavorable_interaction_ids": list(
+                self.strongest_unfavorable_interaction_ids
+            ),
+        }
+        for field_name in metric_names:
+            result[field_name] = getattr(self, field_name).to_dict(
+                include_values=include_values,
+                include_metadata=include_metadata,
+                decimal_places=decimal_places,
+            )
+        for field_name in distribution_names:
+            result[field_name] = getattr(self, field_name).to_dict(
+                include_metadata=include_metadata,
+                decimal_places=decimal_places,
+            )
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+        return result
+
+
+def summarize_interaction_scores(
+    source: Any,
+    *,
+    options: StatisticsSummaryOptions = DEFAULT_STATISTICS_SUMMARY_OPTIONS,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> InteractionStatisticsSummary:
+    """Calculate interaction-level descriptive statistics."""
+
+    scores = collect_interaction_scores_for_statistics(source)
+    selected = tuple(
+        score
+        for score in scores
+        if (not options.accepted_only or score.accepted)
+        and (not options.contributing_only or score.contributes)
+    )
+
+    identifiers = tuple(
+        score.interaction_id or f"interaction_{index + 1}"
+        for index, score in enumerate(selected)
+    )
+
+    score_by_family: DefaultDict[str, float] = defaultdict(float)
+    score_by_type: DefaultDict[str, float] = defaultdict(float)
+    count_by_family: Counter[str] = Counter()
+    count_by_type: Counter[str] = Counter()
+
+    for score in selected:
+        score_by_family[score.interaction_family] += score.contribution
+        score_by_type[score.interaction_type] += score.contribution
+        count_by_family[score.interaction_family] += 1
+        count_by_type[score.interaction_type] += 1
+
+    favorable_scores = sorted(
+        (
+            score for score in selected
+            if score.is_favorable and score.contributes
+        ),
+        key=lambda item: (-item.contribution, item.interaction_id),
+    )
+    unfavorable_scores = sorted(
+        (
+            score for score in selected
+            if score.is_penalty and score.contributes
+        ),
+        key=lambda item: (item.contribution, item.interaction_id),
+    )
+
+    atom_pairs = {
+        score.atom_pair_key
+        for score in selected
+        if score.atom_pair_key is not None
+    }
+    residue_pairs = {
+        score.residue_pair_key
+        for score in selected
+        if score.residue_pair_key is not None
+    }
+    residues = {
+        residue_id
+        for score in selected
+        for residue_id in (score.residue_pair or ())
+        if residue_id
+    }
+
+    metric = lambda values, name: build_score_metric_summary(
+        values,
+        metric=name,
+        entity_ids=identifiers,
+        options=options,
+    )
+
+    return InteractionStatisticsSummary(
+        input_count=len(scores),
+        selected_count=len(selected),
+        accepted_count=sum(1 for score in scores if score.accepted),
+        rejected_count=sum(1 for score in scores if score.is_rejected),
+        contributing_count=sum(1 for score in scores if score.contributes),
+        noncontributing_count=sum(1 for score in scores if not score.contributes),
+        favorable_count=sum(1 for score in selected if score.is_favorable),
+        unfavorable_count=sum(1 for score in selected if score.is_penalty),
+        neutral_count=sum(1 for score in selected if score.is_neutral),
+        duplicate_count=sum(1 for score in scores if score.is_duplicate),
+        unique_atom_pair_count=len(atom_pairs),
+        unique_residue_pair_count=len(residue_pairs),
+        unique_residue_count=len(residues),
+        unique_pose_count=len({score.pose_id for score in selected if score.pose_id}),
+        unique_model_count=len(
+            {
+                score.model_id
+                for score in selected
+                if score.model_id
+            }
+        ),
+        raw_score=metric((score.raw_score for score in selected), "raw_score"),
+        final_score=metric((score.final_score for score in selected), "final_score"),
+        contribution_score=metric(
+            (score.contribution for score in selected),
+            "contribution_score",
+        ),
+        base_weight=metric((score.base_weight for score in selected), "base_weight"),
+        penalty_score=metric(
+            (score.penalty_score for score in selected),
+            "penalty_score",
+        ),
+        bonus_score=metric((score.bonus_score for score in selected), "bonus_score"),
+        multiplier_product=metric(
+            (score.multiplier_product for score in selected),
+            "multiplier_product",
+        ),
+        family_distribution=build_categorical_distribution(
+            (score.interaction_family for score in selected),
+            metadata={"variable": "interaction_family"},
+        ),
+        type_distribution=build_categorical_distribution(
+            (score.interaction_type for score in selected),
+            metadata={"variable": "interaction_type"},
+        ),
+        strength_distribution=build_categorical_distribution(
+            (score.strength for score in selected),
+            metadata={"variable": "strength"},
+        ),
+        classification_distribution=build_categorical_distribution(
+            (score.classification for score in selected),
+            metadata={"variable": "classification"},
+        ),
+        geometry_distribution=build_categorical_distribution(
+            (score.geometry_quality for score in selected),
+            metadata={"variable": "geometry_quality"},
+        ),
+        polarity_distribution=build_categorical_distribution(
+            (score.polarity for score in selected),
+            metadata={"variable": "polarity"},
+        ),
+        status_distribution=build_categorical_distribution(
+            (score.status for score in selected),
+            metadata={"variable": "status"},
+        ),
+        source_distribution=build_categorical_distribution(
+            (score.source or "unknown" for score in selected),
+            metadata={"variable": "source"},
+        ),
+        score_by_family=score_by_family,
+        score_by_type=score_by_type,
+        count_by_family=count_by_family,
+        count_by_type=count_by_type,
+        strongest_favorable_interaction_ids=tuple(
+            score.interaction_id
+            for score in favorable_scores[: options.top_limit]
+        ),
+        strongest_unfavorable_interaction_ids=tuple(
+            score.interaction_id
+            for score in unfavorable_scores[: options.top_limit]
+        ),
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 19.10. Residue statistics, hotspots and concentration
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ResidueStatisticsSummary:
+    """Complete descriptive summary for final Section 15 residue scores."""
+
+    residue_count: int
+    receptor_residue_count: int
+    ligand_residue_count: int
+    partner_residue_count: int
+    unknown_residue_count: int
+    hotspot_count: int
+    interaction_count: int
+    contribution_count: int
+    unique_pose_count: int
+
+    final_score: ScoreMetricSummary
+    raw_score: ScoreMetricSummary
+    absolute_score: ScoreMetricSummary
+    favorable_score: ScoreMetricSummary
+    unfavorable_score: ScoreMetricSummary
+    interaction_count_statistics: ScoreMetricSummary
+
+    side_distribution: CategoricalDistribution
+    hotspot_distribution: CategoricalDistribution
+
+    score_by_family: Mapping[str, float]
+    score_by_type: Mapping[str, float]
+    contribution_count_by_family: Mapping[str, int]
+    contribution_count_by_type: Mapping[str, int]
+
+    hotspot_residue_ids: Tuple[str, ...]
+    top_residue_ids: Tuple[str, ...]
+    concentration_residue_ids: Tuple[str, ...]
+    concentration_fraction: float
+    concentration_residue_count: int
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Validate and freeze the residue summary."""
+
+        count_fields = (
+            "residue_count",
+            "receptor_residue_count",
+            "ligand_residue_count",
+            "partner_residue_count",
+            "unknown_residue_count",
+            "hotspot_count",
+            "interaction_count",
+            "contribution_count",
+            "unique_pose_count",
+            "concentration_residue_count",
+        )
+        for field_name in count_fields:
+            value = int(getattr(self, field_name))
+            if value < 0:
+                raise ScoringStatisticsValidationError(
+                    f"ResidueStatisticsSummary.{field_name} cannot be negative."
+                )
+            object.__setattr__(self, field_name, value)
+
+        for field_name in (
+            "final_score",
+            "raw_score",
+            "absolute_score",
+            "favorable_score",
+            "unfavorable_score",
+            "interaction_count_statistics",
+        ):
+            if not isinstance(getattr(self, field_name), ScoreMetricSummary):
+                raise ScoringStatisticsValidationError(
+                    f"{field_name} must be a ScoreMetricSummary."
+                )
+
+        for field_name in ("side_distribution", "hotspot_distribution"):
+            if not isinstance(
+                getattr(self, field_name),
+                CategoricalDistribution,
+            ):
+                raise ScoringStatisticsValidationError(
+                    f"{field_name} must be a CategoricalDistribution."
+                )
+
+        object.__setattr__(
+            self,
+            "score_by_family",
+            _freeze_statistics_float_mapping(self.score_by_family),
+        )
+        object.__setattr__(
+            self,
+            "score_by_type",
+            _freeze_statistics_float_mapping(self.score_by_type),
+        )
+        object.__setattr__(
+            self,
+            "contribution_count_by_family",
+            _freeze_statistics_integer_mapping(
+                self.contribution_count_by_family
+            ),
+        )
+        object.__setattr__(
+            self,
+            "contribution_count_by_type",
+            _freeze_statistics_integer_mapping(
+                self.contribution_count_by_type
+            ),
+        )
+        object.__setattr__(
+            self,
+            "hotspot_residue_ids",
+            tuple(self.hotspot_residue_ids),
+        )
+        object.__setattr__(self, "top_residue_ids", tuple(self.top_residue_ids))
+        object.__setattr__(
+            self,
+            "concentration_residue_ids",
+            tuple(self.concentration_residue_ids),
+        )
+        object.__setattr__(
+            self,
+            "concentration_fraction",
+            float(
+                _coerce_finite_score_value(
+                    self.concentration_fraction,
+                    name="ResidueStatisticsSummary.concentration_fraction",
+                )
+            ),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def total_score(self) -> float:
+        """Return the sum of residue final scores."""
+
+        return float(self.final_score.statistics.total or 0.0)
+
+    def to_dict(
+        self,
+        *,
+        include_values: bool = False,
+        include_metadata: bool = True,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return a mutable representation."""
+
+        result: Dict[str, Any] = {
+            "residue_count": self.residue_count,
+            "receptor_residue_count": self.receptor_residue_count,
+            "ligand_residue_count": self.ligand_residue_count,
+            "partner_residue_count": self.partner_residue_count,
+            "unknown_residue_count": self.unknown_residue_count,
+            "hotspot_count": self.hotspot_count,
+            "interaction_count": self.interaction_count,
+            "contribution_count": self.contribution_count,
+            "unique_pose_count": self.unique_pose_count,
+            "total_score": _statistics_round(self.total_score, decimal_places),
+            "score_by_family": {
+                key: _statistics_round(value, decimal_places)
+                for key, value in self.score_by_family.items()
+            },
+            "score_by_type": {
+                key: _statistics_round(value, decimal_places)
+                for key, value in self.score_by_type.items()
+            },
+            "contribution_count_by_family": dict(
+                self.contribution_count_by_family
+            ),
+            "contribution_count_by_type": dict(
+                self.contribution_count_by_type
+            ),
+            "hotspot_residue_ids": list(self.hotspot_residue_ids),
+            "top_residue_ids": list(self.top_residue_ids),
+            "concentration_residue_ids": list(
+                self.concentration_residue_ids
+            ),
+            "concentration_fraction": _statistics_round(
+                self.concentration_fraction,
+                decimal_places,
+            ),
+            "concentration_residue_count": (
+                self.concentration_residue_count
+            ),
+            "side_distribution": self.side_distribution.to_dict(
+                include_metadata=include_metadata,
+                decimal_places=decimal_places,
+            ),
+            "hotspot_distribution": self.hotspot_distribution.to_dict(
+                include_metadata=include_metadata,
+                decimal_places=decimal_places,
+            ),
+        }
+        for field_name in (
+            "final_score",
+            "raw_score",
+            "absolute_score",
+            "favorable_score",
+            "unfavorable_score",
+            "interaction_count_statistics",
+        ):
+            result[field_name] = getattr(self, field_name).to_dict(
+                include_values=include_values,
+                include_metadata=include_metadata,
+                decimal_places=decimal_places,
+            )
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+        return result
+
+
+def _residue_concentration_ids(
+    residues: Sequence[ResidueScore],
+    fraction: float,
+) -> Tuple[str, ...]:
+    """Return the smallest residue set reaching an absolute-score fraction."""
+
+    ordered = sorted(
+        residues,
+        key=lambda residue: (
+            -abs(float(residue.final_score)),
+            residue.residue_id,
+        ),
+    )
+    total = sum(abs(float(residue.final_score)) for residue in ordered)
+    if total <= SCORE_EPSILON:
+        return ()
+
+    selected: List[str] = []
+    accumulated = 0.0
+    for residue in ordered:
+        selected.append(residue.residue_id)
+        accumulated += abs(float(residue.final_score))
+        if accumulated / total >= fraction:
+            break
+    return tuple(selected)
+
+
+def summarize_residue_scores(
+    source: Any,
+    *,
+    options: StatisticsSummaryOptions = DEFAULT_STATISTICS_SUMMARY_OPTIONS,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ResidueStatisticsSummary:
+    """Calculate residue-level descriptive statistics and hotspots."""
+
+    residues = collect_residue_scores_for_statistics(source)
+    identifiers = tuple(residue.residue_id for residue in residues)
+
+    sides = tuple(residue.residue.side for residue in residues)
+    hotspot_ids = tuple(
+        residue.residue_id for residue in residues if residue.hotspot
+    )
+    ordered = sorted(
+        residues,
+        key=lambda residue: (
+            -abs(float(residue.final_score)),
+            residue.residue_id,
+        ),
+    )
+    concentration_ids = _residue_concentration_ids(
+        residues,
+        options.concentration_fraction,
+    )
+
+    score_by_family: DefaultDict[str, float] = defaultdict(float)
+    score_by_type: DefaultDict[str, float] = defaultdict(float)
+    count_by_family: Counter[str] = Counter()
+    count_by_type: Counter[str] = Counter()
+    pose_ids: Set[str] = set()
+
+    for residue in residues:
+        for contribution in residue.contributions:
+            score_by_family[contribution.interaction_family] += (
+                float(contribution.final_score)
+            )
+            score_by_type[contribution.interaction_type] += (
+                float(contribution.final_score)
+            )
+            count_by_family[contribution.interaction_family] += 1
+            count_by_type[contribution.interaction_type] += 1
+            if contribution.pose_id:
+                pose_ids.add(contribution.pose_id)
+
+    metric = lambda values, name: build_score_metric_summary(
+        values,
+        metric=name,
+        entity_ids=identifiers,
+        options=options,
+    )
+
+    return ResidueStatisticsSummary(
+        residue_count=len(residues),
+        receptor_residue_count=sum(1 for side in sides if side == "receptor"),
+        ligand_residue_count=sum(1 for side in sides if side == "ligand"),
+        partner_residue_count=sum(1 for side in sides if side == "partner"),
+        unknown_residue_count=sum(
+            1 for side in sides
+            if side not in {"receptor", "ligand", "partner"}
+        ),
+        hotspot_count=len(hotspot_ids),
+        interaction_count=sum(residue.interaction_count for residue in residues),
+        contribution_count=sum(len(residue.contributions) for residue in residues),
+        unique_pose_count=len(pose_ids),
+        final_score=metric(
+            (residue.final_score for residue in residues),
+            "residue_final_score",
+        ),
+        raw_score=metric(
+            (residue.raw_score for residue in residues),
+            "residue_raw_score",
+        ),
+        absolute_score=metric(
+            (residue.absolute_score for residue in residues),
+            "residue_absolute_score",
+        ),
+        favorable_score=metric(
+            (residue.favorable_score for residue in residues),
+            "residue_favorable_score",
+        ),
+        unfavorable_score=metric(
+            (residue.unfavorable_score for residue in residues),
+            "residue_unfavorable_score",
+        ),
+        interaction_count_statistics=metric(
+            (residue.interaction_count for residue in residues),
+            "residue_interaction_count",
+        ),
+        side_distribution=build_categorical_distribution(
+            sides,
+            metadata={"variable": "residue_side"},
+        ),
+        hotspot_distribution=build_categorical_distribution(
+            ("hotspot" if residue.hotspot else "non_hotspot" for residue in residues),
+            metadata={"variable": "hotspot_status"},
+        ),
+        score_by_family=score_by_family,
+        score_by_type=score_by_type,
+        contribution_count_by_family=count_by_family,
+        contribution_count_by_type=count_by_type,
+        hotspot_residue_ids=hotspot_ids,
+        top_residue_ids=tuple(
+            residue.residue_id for residue in ordered[: options.top_limit]
+        ),
+        concentration_residue_ids=concentration_ids,
+        concentration_fraction=options.concentration_fraction,
+        concentration_residue_count=len(concentration_ids),
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 19.11. Pose and multipose statistics
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PoseCollectionStatisticsSummary:
+    """Descriptive summary for one or more standardized pose records."""
+
+    pose_count: int
+    accepted_pose_count: int
+    rejected_pose_count: int
+    unique_model_count: int
+    unique_ligand_count: int
+
+    raw_score: ScoreMetricSummary
+    final_score: ScoreMetricSummary
+    normalized_score: ScoreMetricSummary
+    ranking_score: ScoreMetricSummary
+    docking_affinity: ScoreMetricSummary
+    penalty_score: ScoreMetricSummary
+    bonus_score: ScoreMetricSummary
+    diversity_bonus: ScoreMetricSummary
+    interaction_count: ScoreMetricSummary
+    residue_count: ScoreMetricSummary
+
+    status_distribution: CategoricalDistribution
+    acceptance_distribution: CategoricalDistribution
+
+    score_by_family: Mapping[str, float]
+    score_by_type: Mapping[str, float]
+
+    highest_final_score_pose_ids: Tuple[str, ...]
+    lowest_final_score_pose_ids: Tuple[str, ...]
+    highest_ranking_score_pose_ids: Tuple[str, ...]
+    lowest_ranking_score_pose_ids: Tuple[str, ...]
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Validate and freeze the pose summary."""
+
+        for field_name in (
+            "pose_count",
+            "accepted_pose_count",
+            "rejected_pose_count",
+            "unique_model_count",
+            "unique_ligand_count",
+        ):
+            value = int(getattr(self, field_name))
+            if value < 0:
+                raise ScoringStatisticsValidationError(
+                    f"PoseCollectionStatisticsSummary.{field_name} cannot be negative."
+                )
+            object.__setattr__(self, field_name, value)
+
+        for field_name in (
+            "raw_score",
+            "final_score",
+            "normalized_score",
+            "ranking_score",
+            "docking_affinity",
+            "penalty_score",
+            "bonus_score",
+            "diversity_bonus",
+            "interaction_count",
+            "residue_count",
+        ):
+            if not isinstance(getattr(self, field_name), ScoreMetricSummary):
+                raise ScoringStatisticsValidationError(
+                    f"{field_name} must be a ScoreMetricSummary."
+                )
+
+        for field_name in ("status_distribution", "acceptance_distribution"):
+            if not isinstance(
+                getattr(self, field_name),
+                CategoricalDistribution,
+            ):
+                raise ScoringStatisticsValidationError(
+                    f"{field_name} must be a CategoricalDistribution."
+                )
+
+        object.__setattr__(
+            self,
+            "score_by_family",
+            _freeze_statistics_float_mapping(self.score_by_family),
+        )
+        object.__setattr__(
+            self,
+            "score_by_type",
+            _freeze_statistics_float_mapping(self.score_by_type),
+        )
+        for field_name in (
+            "highest_final_score_pose_ids",
+            "lowest_final_score_pose_ids",
+            "highest_ranking_score_pose_ids",
+            "lowest_ranking_score_pose_ids",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                tuple(getattr(self, field_name)),
+            )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def empty(self) -> bool:
+        """Return whether no poses are represented."""
+
+        return self.pose_count == 0
+
+    def to_dict(
+        self,
+        *,
+        include_values: bool = False,
+        include_metadata: bool = True,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return a mutable representation."""
+
+        result: Dict[str, Any] = {
+            "pose_count": self.pose_count,
+            "accepted_pose_count": self.accepted_pose_count,
+            "rejected_pose_count": self.rejected_pose_count,
+            "unique_model_count": self.unique_model_count,
+            "unique_ligand_count": self.unique_ligand_count,
+            "status_distribution": self.status_distribution.to_dict(
+                include_metadata=include_metadata,
+                decimal_places=decimal_places,
+            ),
+            "acceptance_distribution": self.acceptance_distribution.to_dict(
+                include_metadata=include_metadata,
+                decimal_places=decimal_places,
+            ),
+            "score_by_family": {
+                key: _statistics_round(value, decimal_places)
+                for key, value in self.score_by_family.items()
+            },
+            "score_by_type": {
+                key: _statistics_round(value, decimal_places)
+                for key, value in self.score_by_type.items()
+            },
+            "highest_final_score_pose_ids": list(
+                self.highest_final_score_pose_ids
+            ),
+            "lowest_final_score_pose_ids": list(
+                self.lowest_final_score_pose_ids
+            ),
+            "highest_ranking_score_pose_ids": list(
+                self.highest_ranking_score_pose_ids
+            ),
+            "lowest_ranking_score_pose_ids": list(
+                self.lowest_ranking_score_pose_ids
+            ),
+        }
+        for field_name in (
+            "raw_score",
+            "final_score",
+            "normalized_score",
+            "ranking_score",
+            "docking_affinity",
+            "penalty_score",
+            "bonus_score",
+            "diversity_bonus",
+            "interaction_count",
+            "residue_count",
+        ):
+            result[field_name] = getattr(self, field_name).to_dict(
+                include_values=include_values,
+                include_metadata=include_metadata,
+                decimal_places=decimal_places,
+            )
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+        return result
+
+
+def _pose_extreme_ids(
+    records: Sequence[Mapping[str, Any]],
+    metric: str,
+    *,
+    highest: bool,
+    limit: int,
+) -> Tuple[str, ...]:
+    """Return identifiers at one descriptive score extreme."""
+
+    available = [
+        record
+        for record in records
+        if _statistics_finite_float(record.get(metric)) is not None
+    ]
+    available.sort(
+        key=lambda record: (
+            -float(record[metric]) if highest else float(record[metric]),
+            str(record["pose_id"]),
+        )
+    )
+    return tuple(
+        str(record["pose_id"])
+        for record in available[:limit]
+    )
+
+
+def summarize_pose_scores(
+    source: Any,
+    *,
+    options: StatisticsSummaryOptions = DEFAULT_STATISTICS_SUMMARY_OPTIONS,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> PoseCollectionStatisticsSummary:
+    """Calculate descriptive statistics for one or multiple poses."""
+
+    records = collect_pose_statistics_records(source)
+    selected = tuple(
+        record
+        for record in records
+        if not options.accepted_only or bool(record["accepted"])
+    )
+    identifiers = tuple(str(record["pose_id"]) for record in selected)
+
+    score_by_family: DefaultDict[str, float] = defaultdict(float)
+    score_by_type: DefaultDict[str, float] = defaultdict(float)
+    for record in selected:
+        for key, value in record["score_by_family"].items():
+            numeric = _statistics_finite_float(value)
+            if numeric is not None:
+                score_by_family[str(key)] += numeric
+        for key, value in record["score_by_type"].items():
+            numeric = _statistics_finite_float(value)
+            if numeric is not None:
+                score_by_type[str(key)] += numeric
+
+    def metric(field_name: str) -> ScoreMetricSummary:
+        values: List[float] = []
+        value_ids: List[str] = []
+        for record in selected:
+            value = _statistics_finite_float(record.get(field_name))
+            if value is None:
+                continue
+            if (
+                not options.include_zero_values
+                and abs(value) <= SCORE_EPSILON
+            ):
+                continue
+            values.append(value)
+            value_ids.append(str(record["pose_id"]))
+        return build_score_metric_summary(
+            values,
+            metric=f"pose_{field_name}",
+            entity_ids=value_ids,
+            options=options.with_updates(include_zero_values=True),
+        )
+
+    return PoseCollectionStatisticsSummary(
+        pose_count=len(selected),
+        accepted_pose_count=sum(
+            1 for record in selected if bool(record["accepted"])
+        ),
+        rejected_pose_count=sum(
+            1 for record in selected if not bool(record["accepted"])
+        ),
+        unique_model_count=len(
+            {record["model_id"] for record in selected if record["model_id"]}
+        ),
+        unique_ligand_count=len(
+            {record["ligand_id"] for record in selected if record["ligand_id"]}
+        ),
+        raw_score=metric("raw_score"),
+        final_score=metric("final_score"),
+        normalized_score=metric("normalized_score"),
+        ranking_score=metric("ranking_score"),
+        docking_affinity=metric("docking_affinity"),
+        penalty_score=metric("penalty_score"),
+        bonus_score=metric("bonus_score"),
+        diversity_bonus=metric("diversity_bonus"),
+        interaction_count=metric("interaction_count"),
+        residue_count=metric("residue_count"),
+        status_distribution=build_categorical_distribution(
+            (record["status"] for record in selected),
+            metadata={"variable": "pose_status"},
+        ),
+        acceptance_distribution=build_categorical_distribution(
+            (
+                "accepted" if record["accepted"] else "rejected"
+                for record in selected
+            ),
+            metadata={"variable": "pose_acceptance"},
+        ),
+        score_by_family=score_by_family,
+        score_by_type=score_by_type,
+        highest_final_score_pose_ids=_pose_extreme_ids(
+            selected,
+            "final_score",
+            highest=True,
+            limit=options.top_limit,
+        ),
+        lowest_final_score_pose_ids=_pose_extreme_ids(
+            selected,
+            "final_score",
+            highest=False,
+            limit=options.top_limit,
+        ),
+        highest_ranking_score_pose_ids=_pose_extreme_ids(
+            selected,
+            "ranking_score",
+            highest=True,
+            limit=options.top_limit,
+        ),
+        lowest_ranking_score_pose_ids=_pose_extreme_ids(
+            selected,
+            "ranking_score",
+            highest=False,
+            limit=options.top_limit,
+        ),
+        metadata=metadata or {
+            "record_count_before_filtering": len(records),
+            "score_direction": options.score_direction,
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 19.12. Diversity, coverage and pose-set statistics
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class DiversityComplementarityStatisticsSummary:
+    """Descriptive statistics derived from Section 18 result objects."""
+
+    pose_count: int
+    pair_count: int
+    unique_fingerprint_count: int
+    identical_pair_count: int
+    feature_count: int
+
+    pairwise_similarity: ScoreMetricSummary
+    pairwise_distance: ScoreMetricSummary
+    per_pose_diversity: ScoreMetricSummary
+
+    selected_pose_count: int
+    available_pose_count: int
+    total_universe_features: int
+    total_covered_features: int
+    total_uncovered_features: int
+
+    overall_coverage_fraction: Optional[float]
+    weighted_coverage_fraction: Optional[float]
+    residue_coverage_fraction: Optional[float]
+    family_coverage_fraction: Optional[float]
+    type_coverage_fraction: Optional[float]
+    hotspot_coverage_fraction: Optional[float]
+
+    selection_method: str
+    selection_objective: str
+    target_reached: Optional[bool]
+    optimality_guaranteed: Optional[bool]
+    evaluated_combination_count: int
+    search_space_size: int
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Validate and freeze the Section 18 statistics summary."""
+
+        for field_name in (
+            "pose_count",
+            "pair_count",
+            "unique_fingerprint_count",
+            "identical_pair_count",
+            "feature_count",
+            "selected_pose_count",
+            "available_pose_count",
+            "total_universe_features",
+            "total_covered_features",
+            "total_uncovered_features",
+            "evaluated_combination_count",
+            "search_space_size",
+        ):
+            value = int(getattr(self, field_name))
+            if value < 0:
+                raise ScoringStatisticsValidationError(
+                    f"{field_name} cannot be negative."
+                )
+            object.__setattr__(self, field_name, value)
+
+        for field_name in (
+            "pairwise_similarity",
+            "pairwise_distance",
+            "per_pose_diversity",
+        ):
+            if not isinstance(getattr(self, field_name), ScoreMetricSummary):
+                raise ScoringStatisticsValidationError(
+                    f"{field_name} must be a ScoreMetricSummary."
+                )
+
+        for field_name in (
+            "overall_coverage_fraction",
+            "weighted_coverage_fraction",
+            "residue_coverage_fraction",
+            "family_coverage_fraction",
+            "type_coverage_fraction",
+            "hotspot_coverage_fraction",
+        ):
+            value = getattr(self, field_name)
+            object.__setattr__(
+                self,
+                field_name,
+                None
+                if value is None
+                else float(
+                    _coerce_finite_score_value(
+                        value,
+                        name=(
+                            "DiversityComplementarityStatisticsSummary."
+                            f"{field_name}"
+                        ),
+                    )
+                ),
+            )
+        object.__setattr__(
+            self,
+            "selection_method",
+            _normalize_scoring_name(self.selection_method),
+        )
+        object.__setattr__(
+            self,
+            "selection_objective",
+            _normalize_scoring_name(self.selection_objective),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_values: bool = False,
+        include_metadata: bool = True,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return a mutable representation."""
+
+        result: Dict[str, Any] = {
+            "pose_count": self.pose_count,
+            "pair_count": self.pair_count,
+            "unique_fingerprint_count": self.unique_fingerprint_count,
+            "identical_pair_count": self.identical_pair_count,
+            "feature_count": self.feature_count,
+            "selected_pose_count": self.selected_pose_count,
+            "available_pose_count": self.available_pose_count,
+            "total_universe_features": self.total_universe_features,
+            "total_covered_features": self.total_covered_features,
+            "total_uncovered_features": self.total_uncovered_features,
+            "overall_coverage_fraction": _statistics_round(
+                self.overall_coverage_fraction,
+                decimal_places,
+            ),
+            "weighted_coverage_fraction": _statistics_round(
+                self.weighted_coverage_fraction,
+                decimal_places,
+            ),
+            "residue_coverage_fraction": _statistics_round(
+                self.residue_coverage_fraction,
+                decimal_places,
+            ),
+            "family_coverage_fraction": _statistics_round(
+                self.family_coverage_fraction,
+                decimal_places,
+            ),
+            "type_coverage_fraction": _statistics_round(
+                self.type_coverage_fraction,
+                decimal_places,
+            ),
+            "hotspot_coverage_fraction": _statistics_round(
+                self.hotspot_coverage_fraction,
+                decimal_places,
+            ),
+            "selection_method": self.selection_method,
+            "selection_objective": self.selection_objective,
+            "target_reached": self.target_reached,
+            "optimality_guaranteed": self.optimality_guaranteed,
+            "evaluated_combination_count": self.evaluated_combination_count,
+            "search_space_size": self.search_space_size,
+            "pairwise_similarity": self.pairwise_similarity.to_dict(
+                include_values=include_values,
+                include_metadata=include_metadata,
+                decimal_places=decimal_places,
+            ),
+            "pairwise_distance": self.pairwise_distance.to_dict(
+                include_values=include_values,
+                include_metadata=include_metadata,
+                decimal_places=decimal_places,
+            ),
+            "per_pose_diversity": self.per_pose_diversity.to_dict(
+                include_values=include_values,
+                include_metadata=include_metadata,
+                decimal_places=decimal_places,
+            ),
+        }
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+        return result
+
+
+def _extract_section_18_results(
+    source: Any,
+) -> Tuple[
+    Optional[PoseDiversityResult],
+    Optional[PoseSetComplementarityResult],
+    Optional[PoseSetSelectionResult],
+]:
+    """Return diversity, complementarity and selection results when present."""
+
+    if isinstance(source, DiversityComplementarityAnalysis):
+        return (
+            source.diversity_result,
+            source.complementarity_result,
+            source.selection_result,
+        )
+    if isinstance(source, PoseDiversityResult):
+        return source, None, None
+    if isinstance(source, PoseSetComplementarityResult):
+        return None, source, None
+    if isinstance(source, PoseSetSelectionResult):
+        complementarity = (
+            None
+            if source.selected_candidate is None
+            else source.selected_candidate.coverage_result
+        )
+        return None, complementarity, source
+    return None, None, None
+
+
+def summarize_diversity_and_complementarity(
+    source: Any,
+    *,
+    options: StatisticsSummaryOptions = DEFAULT_STATISTICS_SUMMARY_OPTIONS,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> DiversityComplementarityStatisticsSummary:
+    """Calculate descriptive statistics from Section 18 outputs."""
+
+    diversity, complementarity, selection = _extract_section_18_results(source)
+
+    pair_ids: List[str] = []
+    similarity_values: List[float] = []
+    distance_values: List[float] = []
+    diversity_ids: List[str] = []
+    diversity_values: List[float] = []
+
+    if diversity is not None:
+        for pair in diversity.pairs:
+            pair_ids.append(f"{pair.pose_id_a}|{pair.pose_id_b}")
+            similarity_values.append(float(pair.similarity))
+            distance_values.append(float(pair.distance))
+        for pose_score in diversity.pose_scores:
+            diversity_ids.append(pose_score.pose_id)
+            diversity_values.append(float(pose_score.mean_distance))
+
+    pairwise_similarity = build_score_metric_summary(
+        similarity_values,
+        metric="pairwise_similarity",
+        entity_ids=pair_ids,
+        options=options,
+    )
+    pairwise_distance = build_score_metric_summary(
+        distance_values,
+        metric="pairwise_distance",
+        entity_ids=pair_ids,
+        options=options,
+    )
+    per_pose_diversity = build_score_metric_summary(
+        diversity_values,
+        metric="per_pose_diversity",
+        entity_ids=diversity_ids,
+        options=options,
+    )
+
+    diversity_summary = None if diversity is None else diversity.summary
+    coverage_summary = (
+        None if complementarity is None else complementarity.summary
+    )
+
+    return DiversityComplementarityStatisticsSummary(
+        pose_count=(0 if diversity_summary is None else diversity_summary.pose_count),
+        pair_count=(0 if diversity_summary is None else diversity_summary.pair_count),
+        unique_fingerprint_count=(
+            0
+            if diversity_summary is None
+            else diversity_summary.unique_fingerprint_count
+        ),
+        identical_pair_count=(
+            0
+            if diversity_summary is None
+            else diversity_summary.identical_pair_count
+        ),
+        feature_count=(
+            0 if diversity_summary is None else diversity_summary.feature_count
+        ),
+        pairwise_similarity=pairwise_similarity,
+        pairwise_distance=pairwise_distance,
+        per_pose_diversity=per_pose_diversity,
+        selected_pose_count=(
+            0
+            if coverage_summary is None
+            else coverage_summary.selected_pose_count
+        ),
+        available_pose_count=(
+            0
+            if coverage_summary is None
+            else coverage_summary.available_pose_count
+        ),
+        total_universe_features=(
+            0
+            if coverage_summary is None
+            else coverage_summary.total_universe_features
+        ),
+        total_covered_features=(
+            0
+            if coverage_summary is None
+            else coverage_summary.total_covered_features
+        ),
+        total_uncovered_features=(
+            0
+            if coverage_summary is None
+            else coverage_summary.total_uncovered_features
+        ),
+        overall_coverage_fraction=(
+            None
+            if coverage_summary is None
+            else coverage_summary.overall_coverage_fraction
+        ),
+        weighted_coverage_fraction=(
+            None
+            if coverage_summary is None
+            else coverage_summary.weighted_coverage_fraction
+        ),
+        residue_coverage_fraction=(
+            None
+            if coverage_summary is None
+            else coverage_summary.residue_coverage_fraction
+        ),
+        family_coverage_fraction=(
+            None
+            if coverage_summary is None
+            else coverage_summary.family_coverage_fraction
+        ),
+        type_coverage_fraction=(
+            None
+            if coverage_summary is None
+            else coverage_summary.type_coverage_fraction
+        ),
+        hotspot_coverage_fraction=(
+            None
+            if coverage_summary is None
+            else coverage_summary.hotspot_coverage_fraction
+        ),
+        selection_method=("" if selection is None else selection.method),
+        selection_objective=("" if selection is None else selection.objective),
+        target_reached=(None if selection is None else selection.target_reached),
+        optimality_guaranteed=(
+            None if selection is None else selection.optimality_guaranteed
+        ),
+        evaluated_combination_count=(
+            0 if selection is None else selection.evaluated_combination_count
+        ),
+        search_space_size=(
+            0 if selection is None else selection.search_space_size
+        ),
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 19.13. Integrated statistics report
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ScoringStatisticsReport:
+    """Integrated, report-ready Section 19 statistical result."""
+
+    status: str
+    scope: str
+    interaction_statistics: Optional[InteractionStatisticsSummary] = None
+    residue_statistics: Optional[ResidueStatisticsSummary] = None
+    pose_statistics: Optional[PoseCollectionStatisticsSummary] = None
+    diversity_complementarity_statistics: Optional[
+        DiversityComplementarityStatisticsSummary
+    ] = None
+    options: StatisticsSummaryOptions = DEFAULT_STATISTICS_SUMMARY_OPTIONS
+    warnings: Tuple[str, ...] = field(default_factory=tuple)
+    message: str = ""
+    schema_version: str = STATISTICS_SCHEMA_VERSION
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Validate and freeze the integrated report."""
+
+        if not isinstance(self.options, StatisticsSummaryOptions):
+            raise ScoringStatisticsValidationError(
+                "options must be a StatisticsSummaryOptions instance."
+            )
+        expected_types = (
+            ("interaction_statistics", InteractionStatisticsSummary),
+            ("residue_statistics", ResidueStatisticsSummary),
+            ("pose_statistics", PoseCollectionStatisticsSummary),
+            (
+                "diversity_complementarity_statistics",
+                DiversityComplementarityStatisticsSummary,
+            ),
+        )
+        for field_name, expected_type in expected_types:
+            value = getattr(self, field_name)
+            if value is not None and not isinstance(value, expected_type):
+                raise ScoringStatisticsValidationError(
+                    f"{field_name} must be {expected_type.__name__} or None."
+                )
+
+        object.__setattr__(
+            self,
+            "status",
+            normalize_statistics_report_status(self.status),
+        )
+        object.__setattr__(
+            self,
+            "scope",
+            normalize_statistics_scope(self.scope),
+        )
+        object.__setattr__(
+            self,
+            "warnings",
+            tuple(
+                _coerce_optional_text(value)
+                for value in self.warnings
+                if _coerce_optional_text(value)
+            ),
+        )
+        object.__setattr__(
+            self,
+            "message",
+            _coerce_optional_text(self.message),
+        )
+        object.__setattr__(
+            self,
+            "schema_version",
+            _coerce_identifier(self.schema_version),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def available_sections(self) -> Tuple[str, ...]:
+        """Return the populated statistical scopes."""
+
+        sections: List[str] = []
+        if self.interaction_statistics is not None:
+            sections.append(STATISTICS_SCOPE_INTERACTION)
+        if self.residue_statistics is not None:
+            sections.append(STATISTICS_SCOPE_RESIDUE)
+        if self.pose_statistics is not None:
+            sections.append(STATISTICS_SCOPE_POSE)
+        if self.diversity_complementarity_statistics is not None:
+            sections.extend(
+                (
+                    STATISTICS_SCOPE_DIVERSITY,
+                    STATISTICS_SCOPE_COMPLEMENTARITY,
+                )
+            )
+        return tuple(sections)
+
+    @property
+    def empty(self) -> bool:
+        """Return whether the report contains no statistical subsection."""
+
+        return not self.available_sections
+
+    def to_dict(
+        self,
+        *,
+        include_values: Optional[bool] = None,
+        include_metadata: Optional[bool] = None,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return a serialization-safe mutable representation."""
+
+        resolved_values = (
+            self.options.include_raw_values
+            if include_values is None
+            else bool(include_values)
+        )
+        resolved_metadata = (
+            self.options.include_metadata
+            if include_metadata is None
+            else bool(include_metadata)
+        )
+        resolved_decimals = (
+            self.options.decimal_places
+            if decimal_places is None
+            else int(decimal_places)
+        )
+
+        result: Dict[str, Any] = {
+            "schema": "dockanalyzer.scoring.statistics",
+            "schema_version": self.schema_version,
+            "section_version": STATISTICS_SECTION_VERSION,
+            "status": self.status,
+            "scope": self.scope,
+            "available_sections": list(self.available_sections),
+            "warnings": list(self.warnings),
+            "message": self.message,
+            "options": self.options.to_dict(
+                include_metadata=resolved_metadata
+            ),
+            "interaction_statistics": (
+                None
+                if self.interaction_statistics is None
+                else self.interaction_statistics.to_dict(
+                    include_values=resolved_values,
+                    include_metadata=resolved_metadata,
+                    decimal_places=resolved_decimals,
+                )
+            ),
+            "residue_statistics": (
+                None
+                if self.residue_statistics is None
+                else self.residue_statistics.to_dict(
+                    include_values=resolved_values,
+                    include_metadata=resolved_metadata,
+                    decimal_places=resolved_decimals,
+                )
+            ),
+            "pose_statistics": (
+                None
+                if self.pose_statistics is None
+                else self.pose_statistics.to_dict(
+                    include_values=resolved_values,
+                    include_metadata=resolved_metadata,
+                    decimal_places=resolved_decimals,
+                )
+            ),
+            "diversity_complementarity_statistics": (
+                None
+                if self.diversity_complementarity_statistics is None
+                else self.diversity_complementarity_statistics.to_dict(
+                    include_values=resolved_values,
+                    include_metadata=resolved_metadata,
+                    decimal_places=resolved_decimals,
+                )
+            ),
+        }
+        if resolved_metadata:
+            result["metadata"] = dict(self.metadata)
+        return result
+
+
+def build_scoring_statistics_report(
+    source: Any,
+    *,
+    residue_source: Any = None,
+    pose_source: Any = None,
+    diversity_source: Any = None,
+    options: StatisticsSummaryOptions = DEFAULT_STATISTICS_SUMMARY_OPTIONS,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringStatisticsReport:
+    """Build the integrated Section 19 report from one or several sources."""
+
+    if not isinstance(options, StatisticsSummaryOptions):
+        raise ScoringStatisticsInputError(
+            "options must be a StatisticsSummaryOptions instance."
+        )
+
+    interaction_scores = collect_interaction_scores_for_statistics(source)
+    residue_scores = collect_residue_scores_for_statistics(
+        source if residue_source is None else residue_source
+    )
+    pose_records = collect_pose_statistics_records(
+        source if pose_source is None else pose_source
+    )
+
+    interaction_statistics = (
+        None
+        if not interaction_scores
+        else summarize_interaction_scores(
+            interaction_scores,
+            options=options,
+        )
+    )
+    residue_statistics = (
+        None
+        if not residue_scores
+        else summarize_residue_scores(
+            residue_scores,
+            options=options,
+        )
+    )
+    pose_statistics = (
+        None
+        if not pose_records
+        else summarize_pose_scores(
+            pose_source if pose_source is not None else source,
+            options=options,
+        )
+    )
+
+    diversity_candidate = (
+        diversity_source
+        if diversity_source is not None
+        else source
+    )
+    diversity, complementarity, selection = _extract_section_18_results(
+        diversity_candidate
+    )
+    diversity_statistics = (
+        None
+        if diversity is None and complementarity is None and selection is None
+        else summarize_diversity_and_complementarity(
+            diversity_candidate,
+            options=options,
+        )
+    )
+
+    populated_count = sum(
+        value is not None
+        for value in (
+            interaction_statistics,
+            residue_statistics,
+            pose_statistics,
+            diversity_statistics,
+        )
+    )
+    if populated_count == 0:
+        status = STATISTICS_REPORT_STATUS_EMPTY
+        message = "No supported scoring results were available."
+    elif populated_count == 4:
+        status = STATISTICS_REPORT_STATUS_COMPLETE
+        message = "All Section 19 statistical scopes were populated."
+    else:
+        status = STATISTICS_REPORT_STATUS_PARTIAL
+        message = "The report contains the statistical scopes available from the input."
+
+    warnings: List[str] = []
+    if interaction_statistics is None:
+        warnings.append("Interaction-level statistics were not available.")
+    if residue_statistics is None:
+        warnings.append("Residue-level statistics were not available.")
+    if pose_statistics is None:
+        warnings.append("Pose-level statistics were not available.")
+    if diversity_statistics is None:
+        warnings.append(
+            "Diversity and complementarity statistics were not available."
+        )
+
+    return ScoringStatisticsReport(
+        status=status,
+        scope=STATISTICS_SCOPE_INTEGRATED,
+        interaction_statistics=interaction_statistics,
+        residue_statistics=residue_statistics,
+        pose_statistics=pose_statistics,
+        diversity_complementarity_statistics=diversity_statistics,
+        options=options,
+        warnings=tuple(warnings),
+        message=message,
+        metadata=metadata or _EMPTY_METADATA,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 19.14. Compact summaries and table rows
+# -----------------------------------------------------------------------------
+
+def summarize_scoring_statistics_report(
+    report: ScoringStatisticsReport,
+) -> Dict[str, Any]:
+    """Return a compact summary intended for logs and higher-level reports."""
+
+    validate_scoring_statistics_report(report)
+
+    interaction = report.interaction_statistics
+    residue = report.residue_statistics
+    pose = report.pose_statistics
+    diversity = report.diversity_complementarity_statistics
+
+    return {
+        "status": report.status,
+        "scope": report.scope,
+        "available_sections": list(report.available_sections),
+        "interaction_count": (
+            0 if interaction is None else interaction.selected_count
+        ),
+        "interaction_total_score": (
+            None if interaction is None else interaction.total_score
+        ),
+        "residue_count": 0 if residue is None else residue.residue_count,
+        "hotspot_count": 0 if residue is None else residue.hotspot_count,
+        "pose_count": 0 if pose is None else pose.pose_count,
+        "mean_pose_score": (
+            None
+            if pose is None
+            else pose.final_score.statistics.mean
+        ),
+        "pose_score_standard_deviation": (
+            None
+            if pose is None
+            else pose.final_score.statistics.standard_deviation
+        ),
+        "mean_pairwise_distance": (
+            None
+            if diversity is None
+            else diversity.pairwise_distance.statistics.mean
+        ),
+        "weighted_coverage_fraction": (
+            None
+            if diversity is None
+            else diversity.weighted_coverage_fraction
+        ),
+        "warning_count": len(report.warnings),
+    }
+
+
+def scoring_statistics_report_to_rows(
+    report: ScoringStatisticsReport,
+) -> Tuple[Dict[str, Any], ...]:
+    """Flatten the main Section 19 metrics to report-friendly rows."""
+
+    validate_scoring_statistics_report(report)
+    rows: List[Dict[str, Any]] = []
+
+    def add_metric(
+        scope: str,
+        metric: str,
+        value: Any,
+        count: Optional[int] = None,
+    ) -> None:
+        rows.append(
+            {
+                "scope": scope,
+                "metric": metric,
+                "value": value,
+                "count": count,
+            }
+        )
+
+    if report.interaction_statistics is not None:
+        summary = report.interaction_statistics
+        add_metric("interaction", "selected_count", summary.selected_count)
+        add_metric("interaction", "accepted_count", summary.accepted_count)
+        add_metric("interaction", "rejected_count", summary.rejected_count)
+        add_metric("interaction", "total_score", summary.total_score)
+        add_metric(
+            "interaction",
+            "mean_final_score",
+            summary.final_score.statistics.mean,
+            summary.final_score.count,
+        )
+
+    if report.residue_statistics is not None:
+        summary = report.residue_statistics
+        add_metric("residue", "residue_count", summary.residue_count)
+        add_metric("residue", "hotspot_count", summary.hotspot_count)
+        add_metric("residue", "total_score", summary.total_score)
+        add_metric(
+            "residue",
+            "concentration_residue_count",
+            summary.concentration_residue_count,
+        )
+
+    if report.pose_statistics is not None:
+        summary = report.pose_statistics
+        add_metric("pose", "pose_count", summary.pose_count)
+        add_metric(
+            "pose",
+            "mean_final_score",
+            summary.final_score.statistics.mean,
+            summary.final_score.count,
+        )
+        add_metric(
+            "pose",
+            "final_score_standard_deviation",
+            summary.final_score.statistics.standard_deviation,
+            summary.final_score.count,
+        )
+        add_metric(
+            "pose",
+            "final_score_outlier_count",
+            summary.final_score.outlier_count,
+        )
+
+    if report.diversity_complementarity_statistics is not None:
+        summary = report.diversity_complementarity_statistics
+        add_metric("diversity", "pose_count", summary.pose_count)
+        add_metric(
+            "diversity",
+            "mean_pairwise_distance",
+            summary.pairwise_distance.statistics.mean,
+            summary.pairwise_distance.count,
+        )
+        add_metric(
+            "complementarity",
+            "weighted_coverage_fraction",
+            summary.weighted_coverage_fraction,
+        )
+        add_metric(
+            "complementarity",
+            "selected_pose_count",
+            summary.selected_pose_count,
+        )
+
+    return tuple(rows)
+
+
+def format_scoring_statistics_summary(
+    report: ScoringStatisticsReport,
+    *,
+    markdown: bool = False,
+    decimal_places: Optional[int] = None,
+) -> str:
+    """Render a concise human-readable Section 19 summary."""
+
+    validate_scoring_statistics_report(report)
+    decimals = (
+        report.options.decimal_places
+        if decimal_places is None
+        else int(decimal_places)
+    )
+
+    def number(value: Optional[float]) -> str:
+        if value is None:
+            return "not available"
+        return f"{float(value):.{decimals}f}"
+
+    lines: List[str] = []
+    if markdown:
+        lines.append("## DockAnalyzer scoring statistics")
+    else:
+        lines.append("DockAnalyzer scoring statistics")
+
+    lines.append(f"Status: {report.status}")
+
+    if report.interaction_statistics is not None:
+        summary = report.interaction_statistics
+        lines.append(
+            "Interactions: "
+            f"{summary.selected_count} selected; "
+            f"{summary.accepted_count} accepted; "
+            f"total contribution {number(summary.total_score)}."
+        )
+
+    if report.residue_statistics is not None:
+        summary = report.residue_statistics
+        lines.append(
+            "Residues: "
+            f"{summary.residue_count} scored; "
+            f"{summary.hotspot_count} hotspots; "
+            f"{summary.concentration_residue_count} residues account for "
+            f"at least {summary.concentration_fraction * 100.0:.1f}% "
+            "of the absolute residue score."
+        )
+
+    if report.pose_statistics is not None:
+        summary = report.pose_statistics
+        lines.append(
+            "Poses: "
+            f"{summary.pose_count}; "
+            f"mean final score {number(summary.final_score.statistics.mean)}; "
+            "standard deviation "
+            f"{number(summary.final_score.statistics.standard_deviation)}; "
+            f"{summary.final_score.outlier_count} final-score outliers."
+        )
+
+    if report.diversity_complementarity_statistics is not None:
+        summary = report.diversity_complementarity_statistics
+        lines.append(
+            "Diversity/complementarity: "
+            "mean pairwise distance "
+            f"{number(summary.pairwise_distance.statistics.mean)}; "
+            "weighted coverage "
+            f"{number(summary.weighted_coverage_fraction)}."
+        )
+
+    if report.warnings:
+        prefix = "- " if markdown else "Warning: "
+        for warning in report.warnings:
+            lines.append(prefix + warning)
+
+    return "\n".join(lines)
+
+
+# -----------------------------------------------------------------------------
+# 19.15. Validation
+# -----------------------------------------------------------------------------
+
+def validate_categorical_distribution(
+    result: CategoricalDistribution,
+) -> CategoricalDistribution:
+    """Validate and return a categorical distribution."""
+
+    if not isinstance(result, CategoricalDistribution):
+        raise ScoringStatisticsValidationError(
+            "Expected a CategoricalDistribution instance."
+        )
+    if result.total_count != sum(result.counts.values()):
+        raise ScoringStatisticsValidationError(
+            "Categorical total count is inconsistent."
+        )
+    if result.total_count:
+        total_proportion = sum(result.proportions.values())
+        if abs(total_proportion - 1.0) > SCORE_COMPARISON_TOLERANCE:
+            raise ScoringStatisticsValidationError(
+                "Categorical proportions do not sum to one."
+            )
+    return result
+
+
+def validate_score_metric_summary(
+    result: ScoreMetricSummary,
+) -> ScoreMetricSummary:
+    """Validate and return a numeric metric summary."""
+
+    if not isinstance(result, ScoreMetricSummary):
+        raise ScoringStatisticsValidationError(
+            "Expected a ScoreMetricSummary instance."
+        )
+    validate_scoring_statistics(result.statistics)
+    for outlier in result.outliers:
+        if outlier.metric != result.metric:
+            raise ScoringStatisticsValidationError(
+                "Outlier metric does not match its parent metric summary."
+            )
+    return result
+
+
+def validate_interaction_statistics_summary(
+    result: InteractionStatisticsSummary,
+) -> InteractionStatisticsSummary:
+    """Validate and return an interaction statistics summary."""
+
+    if not isinstance(result, InteractionStatisticsSummary):
+        raise ScoringStatisticsValidationError(
+            "Expected an InteractionStatisticsSummary instance."
+        )
+    if result.accepted_count > result.input_count:
+        raise ScoringStatisticsValidationError(
+            "accepted_count cannot exceed input_count."
+        )
+    if result.selected_count > result.input_count:
+        raise ScoringStatisticsValidationError(
+            "selected_count cannot exceed input_count."
+        )
+    return result
+
+
+def validate_residue_statistics_summary(
+    result: ResidueStatisticsSummary,
+) -> ResidueStatisticsSummary:
+    """Validate and return a residue statistics summary."""
+
+    if not isinstance(result, ResidueStatisticsSummary):
+        raise ScoringStatisticsValidationError(
+            "Expected a ResidueStatisticsSummary instance."
+        )
+    if result.hotspot_count > result.residue_count:
+        raise ScoringStatisticsValidationError(
+            "hotspot_count cannot exceed residue_count."
+        )
+    if result.concentration_residue_count > result.residue_count:
+        raise ScoringStatisticsValidationError(
+            "concentration_residue_count cannot exceed residue_count."
+        )
+    return result
+
+
+def validate_pose_collection_statistics_summary(
+    result: PoseCollectionStatisticsSummary,
+) -> PoseCollectionStatisticsSummary:
+    """Validate and return a pose statistics summary."""
+
+    if not isinstance(result, PoseCollectionStatisticsSummary):
+        raise ScoringStatisticsValidationError(
+            "Expected a PoseCollectionStatisticsSummary instance."
+        )
+    if (
+        result.accepted_pose_count
+        + result.rejected_pose_count
+        != result.pose_count
+    ):
+        raise ScoringStatisticsValidationError(
+            "Pose acceptance counts are inconsistent."
+        )
+    return result
+
+
+def validate_diversity_complementarity_statistics_summary(
+    result: DiversityComplementarityStatisticsSummary,
+) -> DiversityComplementarityStatisticsSummary:
+    """Validate and return a diversity/complementarity summary."""
+
+    if not isinstance(result, DiversityComplementarityStatisticsSummary):
+        raise ScoringStatisticsValidationError(
+            "Expected a DiversityComplementarityStatisticsSummary instance."
+        )
+    if (
+        result.total_covered_features
+        + result.total_uncovered_features
+        != result.total_universe_features
+    ):
+        raise ScoringStatisticsValidationError(
+            "Coverage feature counts are inconsistent."
+        )
+    return result
+
+
+def validate_scoring_statistics_report(
+    result: ScoringStatisticsReport,
+) -> ScoringStatisticsReport:
+    """Validate and return an integrated Section 19 report."""
+
+    if not isinstance(result, ScoringStatisticsReport):
+        raise ScoringStatisticsValidationError(
+            "Expected a ScoringStatisticsReport instance."
+        )
+    if result.interaction_statistics is not None:
+        validate_interaction_statistics_summary(
+            result.interaction_statistics
+        )
+    if result.residue_statistics is not None:
+        validate_residue_statistics_summary(result.residue_statistics)
+    if result.pose_statistics is not None:
+        validate_pose_collection_statistics_summary(result.pose_statistics)
+    if result.diversity_complementarity_statistics is not None:
+        validate_diversity_complementarity_statistics_summary(
+            result.diversity_complementarity_statistics
+        )
+    if result.empty and result.status != STATISTICS_REPORT_STATUS_EMPTY:
+        raise ScoringStatisticsValidationError(
+            "An empty report must use the empty status."
+        )
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 19.16. Lightweight import-time consistency check
+# -----------------------------------------------------------------------------
+
+def _validate_section_19_definition() -> None:
+    """Validate Section 19 primitives without running the full self-test suite."""
+
+    validate_categorical_distribution(
+        build_categorical_distribution(("a", "a", "b"))
+    )
+    metric = build_score_metric_summary(
+        (1.0, 2.0, 3.0),
+        metric="definition_check",
+        entity_ids=("a", "b", "c"),
+        options=DEFAULT_STATISTICS_SUMMARY_OPTIONS.with_updates(
+            outlier_method=STATISTICS_OUTLIER_NONE
+        ),
+    )
+    validate_score_metric_summary(metric)
+    if metric.statistics.count != 3:
+        raise RuntimeError(
+            "Section 19 metric-summary definition check failed."
+        )
+
+
+_validate_section_19_definition()
+
+
+# -----------------------------------------------------------------------------
+# 19.17. Public interface
+# -----------------------------------------------------------------------------
+
+_SECTION_19_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    # Statuses and scopes
+    "STATISTICS_REPORT_STATUS_COMPLETE",
+    "STATISTICS_REPORT_STATUS_PARTIAL",
+    "STATISTICS_REPORT_STATUS_EMPTY",
+    "STATISTICS_REPORT_STATUS_INVALID",
+    "STATISTICS_REPORT_STATUSES",
+    "STATISTICS_SCOPE_INTERACTION",
+    "STATISTICS_SCOPE_RESIDUE",
+    "STATISTICS_SCOPE_POSE",
+    "STATISTICS_SCOPE_MULTIPOSE",
+    "STATISTICS_SCOPE_DIVERSITY",
+    "STATISTICS_SCOPE_COMPLEMENTARITY",
+    "STATISTICS_SCOPE_INTEGRATED",
+    "STATISTICS_SCOPES",
+    # Outliers and schema
+    "STATISTICS_OUTLIER_NONE",
+    "STATISTICS_OUTLIER_IQR",
+    "STATISTICS_OUTLIER_Z_SCORE",
+    "STATISTICS_OUTLIER_MAD",
+    "STATISTICS_OUTLIER_METHODS",
+    "STATISTICS_OUTLIER_DIRECTION_LOW",
+    "STATISTICS_OUTLIER_DIRECTION_HIGH",
+    "STATISTICS_SCHEMA_VERSION",
+    "STATISTICS_SECTION_VERSION",
+    # Defaults
+    "DEFAULT_STATISTICS_TOP_LIMIT",
+    "DEFAULT_STATISTICS_CONCENTRATION_FRACTION",
+    "DEFAULT_STATISTICS_OUTLIER_METHOD",
+    "DEFAULT_STATISTICS_OUTLIER_THRESHOLD",
+    "DEFAULT_STATISTICS_DECIMAL_PLACES",
+    "DEFAULT_STATISTICS_SUMMARY_OPTIONS",
+    # Exceptions
+    "ScoringStatisticsSummaryError",
+    "ScoringStatisticsInputError",
+    "ScoringStatisticsValidationError",
+    # Dataclasses
+    "StatisticsSummaryOptions",
+    "CategoricalDistribution",
+    "ScoreOutlier",
+    "ScoreMetricSummary",
+    "InteractionStatisticsSummary",
+    "ResidueStatisticsSummary",
+    "PoseCollectionStatisticsSummary",
+    "DiversityComplementarityStatisticsSummary",
+    "ScoringStatisticsReport",
+    # Normalization
+    "normalize_statistics_report_status",
+    "normalize_statistics_scope",
+    "normalize_statistics_outlier_method",
+    # Factories and extractors
+    "build_categorical_distribution",
+    "build_score_metric_summary",
+    "collect_interaction_scores_for_statistics",
+    "collect_residue_scores_for_statistics",
+    "collect_pose_statistics_records",
+    # Main statistics APIs
+    "summarize_interaction_scores",
+    "summarize_residue_scores",
+    "summarize_pose_scores",
+    "summarize_diversity_and_complementarity",
+    "build_scoring_statistics_report",
+    # Compact summaries and rows
+    "summarize_scoring_statistics_report",
+    "scoring_statistics_report_to_rows",
+    "format_scoring_statistics_summary",
+    # Validation
+    "validate_categorical_distribution",
+    "validate_score_metric_summary",
+    "validate_interaction_statistics_summary",
+    "validate_residue_statistics_summary",
+    "validate_pose_collection_statistics_summary",
+    "validate_diversity_complementarity_statistics_summary",
+    "validate_scoring_statistics_report",
+)
+
+for public_name in _SECTION_19_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+def section_19_public_names() -> Tuple[str, ...]:
+    """Return the complete immutable Section 19 public interface."""
+
+    return _SECTION_19_PUBLIC_NAMES
+
+
+def validate_section_19_public_interface() -> None:
+    """Validate that every declared Section 19 public name exists and exports."""
+
+    missing_names = tuple(
+        name for name in _SECTION_19_PUBLIC_NAMES if name not in globals()
+    )
+    if missing_names:
+        raise ScoringStatisticsValidationError(
+            "Missing Section 19 public names: " + ", ".join(missing_names)
+        )
+
+    missing_exports = tuple(
+        name for name in _SECTION_19_PUBLIC_NAMES if name not in __all__
+    )
+    if missing_exports:
+        raise ScoringStatisticsValidationError(
+            "Section 19 names missing from __all__: "
+            + ", ".join(missing_exports)
+        )
+
+
+if "section_19_public_names" not in __all__:
+    __all__.append("section_19_public_names")
+
+if "validate_section_19_public_interface" not in __all__:
+    __all__.append("validate_section_19_public_interface")
+
+validate_section_19_public_interface()
+
+# =============================================================================
+# End of Section 19
+# =============================================================================
+
+
+# =============================================================================
+# DockAnalyzer — Interaction scoring
+# Section 20 — Multipose ranking
+# =============================================================================
+
+"""
+Section 20 ranks docking poses from the score objects produced by the preceding
+sections of ``scoring.py``.
+
+The ranking layer is deliberately independent from consensus and persistence
+(Section 21), DockModel attachment (Section 22), formal external-score fusion
+(Section 23), and explainability (Section 24). It can nevertheless consume
+values already present in ``PoseScore`` or supplied through explicit metric
+mappings.
+
+Supported capabilities include:
+- ranking by one score or by a weighted multicriterion model;
+- Pareto-front ranking and nondominated sorting;
+- ascending or descending criteria with configurable normalization;
+- deterministic missing-value policies and eligibility filtering;
+- competition, dense, ordinal, and average-rank tie strategies;
+- global or ligand/model-specific ranking groups;
+- top-k selection with optional preservation of score ties;
+- enrichment with normalized, diversity, coverage, and custom metrics;
+- comparison of alternative rankings through rank shifts and correlations;
+- compact rows, dictionaries, summaries, validation, and a local self-check.
+"""
+
+# Section-local imports make this fragment safe to inspect independently while
+# remaining harmless when appended to the complete scoring.py module.
+from dataclasses import dataclass, field
+from numbers import Real
+from statistics import fmean, median
+from types import MappingProxyType
+from typing import (
+    Any,
+    Dict,
+    Final,
+    FrozenSet,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
+import math
+
+
+# -----------------------------------------------------------------------------
+# 20.1. Constants, statuses, methods, metrics, and canonical names
+# -----------------------------------------------------------------------------
+
+RANKING_STATUS_COMPLETE: Final[str] = "complete"
+RANKING_STATUS_PARTIAL: Final[str] = "partial"
+RANKING_STATUS_EMPTY: Final[str] = "empty"
+RANKING_STATUS_INVALID: Final[str] = "invalid"
+
+RANKING_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        RANKING_STATUS_COMPLETE,
+        RANKING_STATUS_PARTIAL,
+        RANKING_STATUS_EMPTY,
+        RANKING_STATUS_INVALID,
+    }
+)
+
+RANKING_METHOD_SINGLE_METRIC: Final[str] = "single_metric"
+RANKING_METHOD_WEIGHTED_SUM: Final[str] = "weighted_sum"
+RANKING_METHOD_BORDA: Final[str] = "borda"
+RANKING_METHOD_PARETO: Final[str] = "pareto"
+
+RANKING_METHODS: Final[FrozenSet[str]] = frozenset(
+    {
+        RANKING_METHOD_SINGLE_METRIC,
+        RANKING_METHOD_WEIGHTED_SUM,
+        RANKING_METHOD_BORDA,
+        RANKING_METHOD_PARETO,
+    }
+)
+
+RANKING_DIRECTION_HIGHER: Final[str] = "higher"
+RANKING_DIRECTION_LOWER: Final[str] = "lower"
+RANKING_DIRECTIONS: Final[FrozenSet[str]] = frozenset(
+    {RANKING_DIRECTION_HIGHER, RANKING_DIRECTION_LOWER}
+)
+
+RANKING_NORMALIZATION_NONE: Final[str] = "none"
+RANKING_NORMALIZATION_MINMAX: Final[str] = "minmax"
+RANKING_NORMALIZATION_Z_SCORE: Final[str] = "z_score"
+RANKING_NORMALIZATION_ROBUST_Z: Final[str] = "robust_z"
+RANKING_NORMALIZATION_PERCENTILE: Final[str] = "percentile"
+
+RANKING_NORMALIZATION_METHODS: Final[FrozenSet[str]] = frozenset(
+    {
+        RANKING_NORMALIZATION_NONE,
+        RANKING_NORMALIZATION_MINMAX,
+        RANKING_NORMALIZATION_Z_SCORE,
+        RANKING_NORMALIZATION_ROBUST_Z,
+        RANKING_NORMALIZATION_PERCENTILE,
+    }
+)
+
+RANKING_TIE_COMPETITION: Final[str] = "competition"
+RANKING_TIE_DENSE: Final[str] = "dense"
+RANKING_TIE_ORDINAL: Final[str] = "ordinal"
+RANKING_TIE_AVERAGE: Final[str] = "average"
+
+RANKING_TIE_STRATEGIES: Final[FrozenSet[str]] = frozenset(
+    {
+        RANKING_TIE_COMPETITION,
+        RANKING_TIE_DENSE,
+        RANKING_TIE_ORDINAL,
+        RANKING_TIE_AVERAGE,
+    }
+)
+
+RANKING_MISSING_EXCLUDE: Final[str] = "exclude"
+RANKING_MISSING_ERROR: Final[str] = "error"
+RANKING_MISSING_ZERO: Final[str] = "zero"
+RANKING_MISSING_MEDIAN: Final[str] = "median"
+RANKING_MISSING_WORST: Final[str] = "worst"
+RANKING_MISSING_BEST: Final[str] = "best"
+
+RANKING_MISSING_POLICIES: Final[FrozenSet[str]] = frozenset(
+    {
+        RANKING_MISSING_EXCLUDE,
+        RANKING_MISSING_ERROR,
+        RANKING_MISSING_ZERO,
+        RANKING_MISSING_MEDIAN,
+        RANKING_MISSING_WORST,
+        RANKING_MISSING_BEST,
+    }
+)
+
+RANKING_GROUP_GLOBAL: Final[str] = "global"
+RANKING_GROUP_LIGAND: Final[str] = "ligand"
+RANKING_GROUP_MODEL: Final[str] = "model"
+RANKING_GROUP_LIGAND_MODEL: Final[str] = "ligand_model"
+
+RANKING_GROUP_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        RANKING_GROUP_GLOBAL,
+        RANKING_GROUP_LIGAND,
+        RANKING_GROUP_MODEL,
+        RANKING_GROUP_LIGAND_MODEL,
+    }
+)
+
+RANKING_METRIC_FINAL_SCORE: Final[str] = "final_score"
+RANKING_METRIC_RAW_SCORE: Final[str] = "raw_score"
+RANKING_METRIC_NORMALIZED_SCORE: Final[str] = "normalized_score"
+RANKING_METRIC_RANKING_SCORE: Final[str] = "ranking_score"
+RANKING_METRIC_DOCKING_AFFINITY: Final[str] = "docking_affinity"
+RANKING_METRIC_INTERACTION_COUNT: Final[str] = "interaction_count"
+RANKING_METRIC_RESIDUE_COUNT: Final[str] = "residue_count"
+RANKING_METRIC_HOTSPOT_COUNT: Final[str] = "hotspot_count"
+RANKING_METRIC_FAVORABLE_COUNT: Final[str] = "favorable_count"
+RANKING_METRIC_UNFAVORABLE_COUNT: Final[str] = "unfavorable_count"
+RANKING_METRIC_PENALTY_SCORE: Final[str] = "penalty_score"
+RANKING_METRIC_BONUS_SCORE: Final[str] = "bonus_score"
+RANKING_METRIC_DIVERSITY_SCORE: Final[str] = "diversity_score"
+RANKING_METRIC_COVERAGE_SCORE: Final[str] = "coverage_score"
+
+RANKING_BUILTIN_METRICS: Final[FrozenSet[str]] = frozenset(
+    {
+        RANKING_METRIC_FINAL_SCORE,
+        RANKING_METRIC_RAW_SCORE,
+        RANKING_METRIC_NORMALIZED_SCORE,
+        RANKING_METRIC_RANKING_SCORE,
+        RANKING_METRIC_DOCKING_AFFINITY,
+        RANKING_METRIC_INTERACTION_COUNT,
+        RANKING_METRIC_RESIDUE_COUNT,
+        RANKING_METRIC_HOTSPOT_COUNT,
+        RANKING_METRIC_FAVORABLE_COUNT,
+        RANKING_METRIC_UNFAVORABLE_COUNT,
+        RANKING_METRIC_PENALTY_SCORE,
+        RANKING_METRIC_BONUS_SCORE,
+        RANKING_METRIC_DIVERSITY_SCORE,
+        RANKING_METRIC_COVERAGE_SCORE,
+    }
+)
+
+RANKING_SCHEMA_VERSION: Final[str] = "1.0"
+RANKING_SECTION_VERSION: Final[str] = "20.0"
+DEFAULT_RANKING_EPSILON: Final[float] = 1.0e-9
+DEFAULT_RANKING_METHOD: Final[str] = RANKING_METHOD_WEIGHTED_SUM
+DEFAULT_RANKING_NORMALIZATION: Final[str] = RANKING_NORMALIZATION_MINMAX
+DEFAULT_RANKING_TIE_STRATEGY: Final[str] = RANKING_TIE_COMPETITION
+DEFAULT_RANKING_MISSING_POLICY: Final[str] = RANKING_MISSING_EXCLUDE
+DEFAULT_RANKING_GROUP_MODE: Final[str] = RANKING_GROUP_GLOBAL
+DEFAULT_RANKING_DECIMAL_PLACES: Final[int] = 6
+
+_RANKING_METHOD_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "single": RANKING_METHOD_SINGLE_METRIC,
+        "single_metric": RANKING_METHOD_SINGLE_METRIC,
+        "metric": RANKING_METHOD_SINGLE_METRIC,
+        "weighted": RANKING_METHOD_WEIGHTED_SUM,
+        "weighted_sum": RANKING_METHOD_WEIGHTED_SUM,
+        "linear": RANKING_METHOD_WEIGHTED_SUM,
+        "borda": RANKING_METHOD_BORDA,
+        "rank_sum": RANKING_METHOD_BORDA,
+        "pareto": RANKING_METHOD_PARETO,
+        "nondominated": RANKING_METHOD_PARETO,
+        "non_dominated": RANKING_METHOD_PARETO,
+    }
+)
+
+_RANKING_DIRECTION_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "higher": RANKING_DIRECTION_HIGHER,
+        "higher_is_better": RANKING_DIRECTION_HIGHER,
+        "maximize": RANKING_DIRECTION_HIGHER,
+        "max": RANKING_DIRECTION_HIGHER,
+        "descending": RANKING_DIRECTION_HIGHER,
+        "lower": RANKING_DIRECTION_LOWER,
+        "lower_is_better": RANKING_DIRECTION_LOWER,
+        "minimize": RANKING_DIRECTION_LOWER,
+        "min": RANKING_DIRECTION_LOWER,
+        "ascending": RANKING_DIRECTION_LOWER,
+    }
+)
+
+_RANKING_NORMALIZATION_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "none": RANKING_NORMALIZATION_NONE,
+        "raw": RANKING_NORMALIZATION_NONE,
+        "minmax": RANKING_NORMALIZATION_MINMAX,
+        "min_max": RANKING_NORMALIZATION_MINMAX,
+        "range": RANKING_NORMALIZATION_MINMAX,
+        "z": RANKING_NORMALIZATION_Z_SCORE,
+        "z_score": RANKING_NORMALIZATION_Z_SCORE,
+        "standard": RANKING_NORMALIZATION_Z_SCORE,
+        "robust_z": RANKING_NORMALIZATION_ROBUST_Z,
+        "mad": RANKING_NORMALIZATION_ROBUST_Z,
+        "percentile": RANKING_NORMALIZATION_PERCENTILE,
+        "rank_percentile": RANKING_NORMALIZATION_PERCENTILE,
+    }
+)
+
+_RANKING_TIE_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "competition": RANKING_TIE_COMPETITION,
+        "standard": RANKING_TIE_COMPETITION,
+        "1224": RANKING_TIE_COMPETITION,
+        "dense": RANKING_TIE_DENSE,
+        "1223": RANKING_TIE_DENSE,
+        "ordinal": RANKING_TIE_ORDINAL,
+        "sequential": RANKING_TIE_ORDINAL,
+        "average": RANKING_TIE_AVERAGE,
+        "fractional": RANKING_TIE_AVERAGE,
+    }
+)
+
+_RANKING_MISSING_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "exclude": RANKING_MISSING_EXCLUDE,
+        "drop": RANKING_MISSING_EXCLUDE,
+        "skip": RANKING_MISSING_EXCLUDE,
+        "error": RANKING_MISSING_ERROR,
+        "raise": RANKING_MISSING_ERROR,
+        "zero": RANKING_MISSING_ZERO,
+        "median": RANKING_MISSING_MEDIAN,
+        "worst": RANKING_MISSING_WORST,
+        "best": RANKING_MISSING_BEST,
+    }
+)
+
+_RANKING_GROUP_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "global": RANKING_GROUP_GLOBAL,
+        "all": RANKING_GROUP_GLOBAL,
+        "ligand": RANKING_GROUP_LIGAND,
+        "by_ligand": RANKING_GROUP_LIGAND,
+        "model": RANKING_GROUP_MODEL,
+        "by_model": RANKING_GROUP_MODEL,
+        "ligand_model": RANKING_GROUP_LIGAND_MODEL,
+        "model_ligand": RANKING_GROUP_LIGAND_MODEL,
+        "by_ligand_model": RANKING_GROUP_LIGAND_MODEL,
+    }
+)
+
+_RANKING_METRIC_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "score": RANKING_METRIC_FINAL_SCORE,
+        "total_score": RANKING_METRIC_FINAL_SCORE,
+        "final": RANKING_METRIC_FINAL_SCORE,
+        "final_score": RANKING_METRIC_FINAL_SCORE,
+        "raw": RANKING_METRIC_RAW_SCORE,
+        "raw_score": RANKING_METRIC_RAW_SCORE,
+        "normalized": RANKING_METRIC_NORMALIZED_SCORE,
+        "normalized_score": RANKING_METRIC_NORMALIZED_SCORE,
+        "ranking": RANKING_METRIC_RANKING_SCORE,
+        "ranking_score": RANKING_METRIC_RANKING_SCORE,
+        "affinity": RANKING_METRIC_DOCKING_AFFINITY,
+        "docking_affinity": RANKING_METRIC_DOCKING_AFFINITY,
+        "interaction_count": RANKING_METRIC_INTERACTION_COUNT,
+        "interactions": RANKING_METRIC_INTERACTION_COUNT,
+        "residue_count": RANKING_METRIC_RESIDUE_COUNT,
+        "residues": RANKING_METRIC_RESIDUE_COUNT,
+        "hotspot_count": RANKING_METRIC_HOTSPOT_COUNT,
+        "hotspots": RANKING_METRIC_HOTSPOT_COUNT,
+        "favorable_count": RANKING_METRIC_FAVORABLE_COUNT,
+        "unfavorable_count": RANKING_METRIC_UNFAVORABLE_COUNT,
+        "penalty": RANKING_METRIC_PENALTY_SCORE,
+        "penalty_score": RANKING_METRIC_PENALTY_SCORE,
+        "bonus": RANKING_METRIC_BONUS_SCORE,
+        "bonus_score": RANKING_METRIC_BONUS_SCORE,
+        "diversity": RANKING_METRIC_DIVERSITY_SCORE,
+        "diversity_score": RANKING_METRIC_DIVERSITY_SCORE,
+        "coverage": RANKING_METRIC_COVERAGE_SCORE,
+        "coverage_score": RANKING_METRIC_COVERAGE_SCORE,
+    }
+)
+
+_EMPTY_RANKING_METADATA: Final[Mapping[str, Any]] = MappingProxyType({})
+
+
+# -----------------------------------------------------------------------------
+# 20.2. Exceptions and canonicalization helpers
+# -----------------------------------------------------------------------------
+
+class MultiposeRankingError(ValueError):
+    """Base exception raised by Section 20."""
+
+
+class MultiposeRankingInputError(MultiposeRankingError):
+    """Raised when ranking inputs cannot be adapted safely."""
+
+
+class MultiposeRankingConfigurationError(MultiposeRankingError):
+    """Raised when ranking configuration is internally inconsistent."""
+
+
+class MultiposeRankingValidationError(MultiposeRankingError):
+    """Raised when a ranking result violates Section 20 invariants."""
+
+
+def _ranking_token(value: Any) -> str:
+    """Return a normalized lower-case token."""
+
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _ranking_identifier(value: Any, *, default: str = "") -> str:
+    """Return a stable stripped identifier."""
+
+    token = str(value or "").strip()
+    return token if token else str(default)
+
+
+def _ranking_canonical(
+    value: Any,
+    aliases: Mapping[str, str],
+    allowed: FrozenSet[str],
+    *,
+    name: str,
+) -> str:
+    """Canonicalize an enum-like value and validate membership."""
+
+    token = _ranking_token(value)
+    canonical = aliases.get(token, token)
+    if canonical not in allowed:
+        raise MultiposeRankingConfigurationError(
+            f"Unsupported {name}: {value!r}. Expected one of "
+            f"{', '.join(sorted(allowed))}."
+        )
+    return canonical
+
+
+def normalize_ranking_method(value: Any) -> str:
+    """Return a canonical ranking method."""
+
+    return _ranking_canonical(
+        value,
+        _RANKING_METHOD_ALIASES,
+        RANKING_METHODS,
+        name="ranking method",
+    )
+
+
+def normalize_ranking_direction(value: Any) -> str:
+    """Return a canonical optimization direction."""
+
+    return _ranking_canonical(
+        value,
+        _RANKING_DIRECTION_ALIASES,
+        RANKING_DIRECTIONS,
+        name="ranking direction",
+    )
+
+
+def normalize_ranking_normalization(value: Any) -> str:
+    """Return a canonical metric-normalization method."""
+
+    return _ranking_canonical(
+        value,
+        _RANKING_NORMALIZATION_ALIASES,
+        RANKING_NORMALIZATION_METHODS,
+        name="ranking normalization",
+    )
+
+
+def normalize_ranking_tie_strategy(value: Any) -> str:
+    """Return a canonical tie strategy."""
+
+    return _ranking_canonical(
+        value,
+        _RANKING_TIE_ALIASES,
+        RANKING_TIE_STRATEGIES,
+        name="tie strategy",
+    )
+
+
+def normalize_ranking_missing_policy(value: Any) -> str:
+    """Return a canonical missing-value policy."""
+
+    return _ranking_canonical(
+        value,
+        _RANKING_MISSING_ALIASES,
+        RANKING_MISSING_POLICIES,
+        name="missing-value policy",
+    )
+
+
+def normalize_ranking_group_mode(value: Any) -> str:
+    """Return a canonical grouping mode."""
+
+    return _ranking_canonical(
+        value,
+        _RANKING_GROUP_ALIASES,
+        RANKING_GROUP_MODES,
+        name="ranking group mode",
+    )
+
+
+def normalize_ranking_metric_name(value: Any) -> str:
+    """Return a canonical built-in or custom metric name."""
+
+    token = _ranking_token(value)
+    if not token:
+        raise MultiposeRankingConfigurationError(
+            "Ranking metric names cannot be empty."
+        )
+    return _RANKING_METRIC_ALIASES.get(token, token)
+
+
+def _ranking_finite_optional(value: Any, *, name: str) -> Optional[float]:
+    """Return a finite float or ``None``."""
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise MultiposeRankingInputError(f"{name} must be numeric, not bool.")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise MultiposeRankingInputError(f"{name} must be numeric.") from exc
+    if not math.isfinite(numeric):
+        raise MultiposeRankingInputError(f"{name} must be finite.")
+    return numeric
+
+
+def _ranking_finite(value: Any, *, name: str) -> float:
+    """Return a required finite float."""
+
+    numeric = _ranking_finite_optional(value, name=name)
+    if numeric is None:
+        raise MultiposeRankingInputError(f"{name} cannot be None.")
+    return numeric
+
+
+def _ranking_freeze_metadata(value: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+    """Freeze shallow metadata deterministically."""
+
+    if not value:
+        return _EMPTY_RANKING_METADATA
+    return MappingProxyType({str(key): item for key, item in value.items()})
+
+
+def _ranking_freeze_float_mapping(
+    value: Optional[Mapping[Any, Any]],
+    *,
+    allow_none: bool = False,
+) -> Mapping[str, Optional[float]]:
+    """Freeze a string-to-float mapping."""
+
+    if not value:
+        return MappingProxyType({})
+    result: Dict[str, Optional[float]] = {}
+    for raw_key, raw_value in value.items():
+        key = normalize_ranking_metric_name(raw_key)
+        numeric = _ranking_finite_optional(raw_value, name=f"metric {key}")
+        if numeric is None and not allow_none:
+            continue
+        result[key] = numeric
+    return MappingProxyType(dict(sorted(result.items())))
+
+
+def _ranking_round(value: Optional[float], places: Optional[int]) -> Optional[float]:
+    """Round a numeric value only when requested."""
+
+    if value is None or places is None:
+        return value
+    return round(float(value), int(places))
+
+
+def _ranking_close(left: float, right: float, epsilon: float) -> bool:
+    """Return whether two finite ranking values are effectively equal."""
+
+    return math.isclose(
+        float(left),
+        float(right),
+        rel_tol=float(epsilon),
+        abs_tol=float(epsilon),
+    )
+
+
+def _ranking_orient(value: float, direction: str) -> float:
+    """Orient a value so larger is always better."""
+
+    return float(value) if direction == RANKING_DIRECTION_HIGHER else -float(value)
+
+
+# -----------------------------------------------------------------------------
+# 20.3. Configuration dataclasses
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class RankingCriterion:
+    """Definition of one metric used to rank poses."""
+
+    metric: str
+    weight: float = 1.0
+    direction: str = RANKING_DIRECTION_HIGHER
+    normalization: str = DEFAULT_RANKING_NORMALIZATION
+    missing_policy: str = DEFAULT_RANKING_MISSING_POLICY
+    required: bool = False
+    label: Optional[str] = None
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_RANKING_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        metric = normalize_ranking_metric_name(self.metric)
+        weight = _ranking_finite(self.weight, name=f"weight for {metric}")
+        if weight < 0.0:
+            raise MultiposeRankingConfigurationError(
+                f"Criterion weight cannot be negative: {metric}."
+            )
+        object.__setattr__(self, "metric", metric)
+        object.__setattr__(self, "weight", weight)
+        object.__setattr__(
+            self,
+            "direction",
+            normalize_ranking_direction(self.direction),
+        )
+        object.__setattr__(
+            self,
+            "normalization",
+            normalize_ranking_normalization(self.normalization),
+        )
+        object.__setattr__(
+            self,
+            "missing_policy",
+            normalize_ranking_missing_policy(self.missing_policy),
+        )
+        object.__setattr__(self, "required", bool(self.required))
+        object.__setattr__(
+            self,
+            "label",
+            _ranking_identifier(self.label) or metric.replace("_", " ").title(),
+        )
+        object.__setattr__(self, "metadata", _ranking_freeze_metadata(self.metadata))
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a mutable representation."""
+
+        return {
+            "metric": self.metric,
+            "weight": self.weight,
+            "direction": self.direction,
+            "normalization": self.normalization,
+            "missing_policy": self.missing_policy,
+            "required": self.required,
+            "label": self.label,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class MultiposeRankingOptions:
+    """Complete immutable configuration for a multipose ranking run."""
+
+    method: str = DEFAULT_RANKING_METHOD
+    criteria: Tuple[RankingCriterion, ...] = field(default_factory=tuple)
+    tie_strategy: str = DEFAULT_RANKING_TIE_STRATEGY
+    group_mode: str = DEFAULT_RANKING_GROUP_MODE
+    top_k: Optional[int] = None
+    include_ties_at_cutoff: bool = True
+    accepted_only: bool = True
+    require_successful_pose_results: bool = True
+    normalize_weights: bool = True
+    pareto_secondary_method: str = RANKING_METHOD_WEIGHTED_SUM
+    epsilon: float = DEFAULT_RANKING_EPSILON
+    decimal_places: Optional[int] = DEFAULT_RANKING_DECIMAL_PLACES
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_RANKING_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        method = normalize_ranking_method(self.method)
+        criteria = tuple(
+            criterion
+            if isinstance(criterion, RankingCriterion)
+            else RankingCriterion(**dict(criterion))
+            for criterion in self.criteria
+        )
+        if not criteria:
+            criteria = default_multipose_ranking_criteria()
+        names = tuple(criterion.metric for criterion in criteria)
+        if len(set(names)) != len(names):
+            raise MultiposeRankingConfigurationError(
+                "Each ranking criterion must use a unique metric name."
+            )
+        if method == RANKING_METHOD_SINGLE_METRIC and len(criteria) != 1:
+            raise MultiposeRankingConfigurationError(
+                "single_metric ranking requires exactly one criterion."
+            )
+        if not any(criterion.weight > 0.0 for criterion in criteria):
+            raise MultiposeRankingConfigurationError(
+                "At least one ranking criterion must have positive weight."
+            )
+        top_k = None if self.top_k is None else int(self.top_k)
+        if top_k is not None and top_k < 1:
+            raise MultiposeRankingConfigurationError("top_k must be positive.")
+        epsilon = _ranking_finite(self.epsilon, name="ranking epsilon")
+        if epsilon <= 0.0:
+            raise MultiposeRankingConfigurationError(
+                "ranking epsilon must be positive."
+            )
+        decimal_places = self.decimal_places
+        if decimal_places is not None and int(decimal_places) < 0:
+            raise MultiposeRankingConfigurationError(
+                "decimal_places cannot be negative."
+            )
+        secondary = normalize_ranking_method(self.pareto_secondary_method)
+        if secondary == RANKING_METHOD_PARETO:
+            secondary = RANKING_METHOD_WEIGHTED_SUM
+
+        object.__setattr__(self, "method", method)
+        object.__setattr__(self, "criteria", criteria)
+        object.__setattr__(
+            self,
+            "tie_strategy",
+            normalize_ranking_tie_strategy(self.tie_strategy),
+        )
+        object.__setattr__(
+            self,
+            "group_mode",
+            normalize_ranking_group_mode(self.group_mode),
+        )
+        object.__setattr__(self, "top_k", top_k)
+        object.__setattr__(
+            self,
+            "include_ties_at_cutoff",
+            bool(self.include_ties_at_cutoff),
+        )
+        object.__setattr__(self, "accepted_only", bool(self.accepted_only))
+        object.__setattr__(
+            self,
+            "require_successful_pose_results",
+            bool(self.require_successful_pose_results),
+        )
+        object.__setattr__(self, "normalize_weights", bool(self.normalize_weights))
+        object.__setattr__(self, "pareto_secondary_method", secondary)
+        object.__setattr__(self, "epsilon", epsilon)
+        object.__setattr__(
+            self,
+            "decimal_places",
+            None if decimal_places is None else int(decimal_places),
+        )
+        object.__setattr__(self, "metadata", _ranking_freeze_metadata(self.metadata))
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a mutable representation."""
+
+        return {
+            "method": self.method,
+            "criteria": [criterion.to_dict() for criterion in self.criteria],
+            "tie_strategy": self.tie_strategy,
+            "group_mode": self.group_mode,
+            "top_k": self.top_k,
+            "include_ties_at_cutoff": self.include_ties_at_cutoff,
+            "accepted_only": self.accepted_only,
+            "require_successful_pose_results": self.require_successful_pose_results,
+            "normalize_weights": self.normalize_weights,
+            "pareto_secondary_method": self.pareto_secondary_method,
+            "epsilon": self.epsilon,
+            "decimal_places": self.decimal_places,
+            "metadata": dict(self.metadata),
+        }
+
+
+def default_multipose_ranking_criteria() -> Tuple[RankingCriterion, ...]:
+    """Return the conservative default criterion set."""
+
+    return (
+        RankingCriterion(
+            metric=RANKING_METRIC_FINAL_SCORE,
+            weight=1.0,
+            direction=RANKING_DIRECTION_HIGHER,
+            normalization=RANKING_NORMALIZATION_MINMAX,
+            missing_policy=RANKING_MISSING_EXCLUDE,
+            required=True,
+        ),
+    )
+
+
+DEFAULT_MULTIPOSE_RANKING_OPTIONS: Final[MultiposeRankingOptions] = (
+    MultiposeRankingOptions()
+)
+
+
+# -----------------------------------------------------------------------------
+# 20.4. Ranking records and result dataclasses
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PoseRankingRecord:
+    """Canonical pose-level values consumed by the ranking engine."""
+
+    pose_id: str
+    model_id: Optional[str] = None
+    ligand_id: Optional[str] = None
+    input_index: int = 0
+    accepted: bool = True
+    successful: bool = True
+    metrics: Mapping[str, Optional[float]] = field(default_factory=dict)
+    source: Any = field(default=None, compare=False, hash=False, repr=False)
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_RANKING_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        pose_id = _ranking_identifier(self.pose_id)
+        if not pose_id:
+            raise MultiposeRankingInputError("PoseRankingRecord.pose_id is required.")
+        input_index = int(self.input_index)
+        if input_index < 0:
+            raise MultiposeRankingInputError("input_index cannot be negative.")
+        object.__setattr__(self, "pose_id", pose_id)
+        object.__setattr__(
+            self,
+            "model_id",
+            _ranking_identifier(self.model_id) or None,
+        )
+        object.__setattr__(
+            self,
+            "ligand_id",
+            _ranking_identifier(self.ligand_id) or None,
+        )
+        object.__setattr__(self, "input_index", input_index)
+        object.__setattr__(self, "accepted", bool(self.accepted))
+        object.__setattr__(self, "successful", bool(self.successful))
+        object.__setattr__(
+            self,
+            "metrics",
+            _ranking_freeze_float_mapping(self.metrics, allow_none=True),
+        )
+        object.__setattr__(self, "metadata", _ranking_freeze_metadata(self.metadata))
+
+    def metric(self, name: Any) -> Optional[float]:
+        """Return one metric value by canonical name."""
+
+        return self.metrics.get(normalize_ranking_metric_name(name))
+
+    def with_metrics(
+        self,
+        metrics: Mapping[Any, Any],
+        *,
+        overwrite: bool = True,
+    ) -> "PoseRankingRecord":
+        """Return a copy with additional metric values."""
+
+        merged: Dict[str, Optional[float]] = dict(self.metrics)
+        for raw_name, value in metrics.items():
+            name = normalize_ranking_metric_name(raw_name)
+            if overwrite or name not in merged:
+                merged[name] = _ranking_finite_optional(
+                    value,
+                    name=f"metric {name}",
+                )
+        return PoseRankingRecord(
+            pose_id=self.pose_id,
+            model_id=self.model_id,
+            ligand_id=self.ligand_id,
+            input_index=self.input_index,
+            accepted=self.accepted,
+            successful=self.successful,
+            metrics=merged,
+            source=self.source,
+            metadata=self.metadata,
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return a mutable representation."""
+
+        result: Dict[str, Any] = {
+            "pose_id": self.pose_id,
+            "model_id": self.model_id,
+            "ligand_id": self.ligand_id,
+            "input_index": self.input_index,
+            "accepted": self.accepted,
+            "successful": self.successful,
+            "metrics": {
+                key: _ranking_round(value, decimal_places)
+                for key, value in self.metrics.items()
+            },
+        }
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class RankingCriterionValue:
+    """Evaluation of one criterion for one pose."""
+
+    metric: str
+    raw_value: Optional[float]
+    imputed_value: Optional[float]
+    oriented_value: Optional[float]
+    normalized_value: Optional[float]
+    weighted_value: Optional[float]
+    weight: float
+    direction: str
+    normalization: str
+    missing_policy: str
+    missing: bool
+    imputed: bool
+    eligible: bool
+    message: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "metric",
+            normalize_ranking_metric_name(self.metric),
+        )
+        for name in (
+            "raw_value",
+            "imputed_value",
+            "oriented_value",
+            "normalized_value",
+            "weighted_value",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _ranking_finite_optional(
+                    getattr(self, name),
+                    name=f"RankingCriterionValue.{name}",
+                ),
+            )
+        object.__setattr__(
+            self,
+            "weight",
+            _ranking_finite(self.weight, name="criterion weight"),
+        )
+        object.__setattr__(
+            self,
+            "direction",
+            normalize_ranking_direction(self.direction),
+        )
+        object.__setattr__(
+            self,
+            "normalization",
+            normalize_ranking_normalization(self.normalization),
+        )
+        object.__setattr__(
+            self,
+            "missing_policy",
+            normalize_ranking_missing_policy(self.missing_policy),
+        )
+        object.__setattr__(self, "missing", bool(self.missing))
+        object.__setattr__(self, "imputed", bool(self.imputed))
+        object.__setattr__(self, "eligible", bool(self.eligible))
+        object.__setattr__(
+            self,
+            "message",
+            _ranking_identifier(self.message) or None,
+        )
+
+    def to_dict(
+        self,
+        *,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return a mutable representation."""
+
+        return {
+            "metric": self.metric,
+            "raw_value": _ranking_round(self.raw_value, decimal_places),
+            "imputed_value": _ranking_round(self.imputed_value, decimal_places),
+            "oriented_value": _ranking_round(self.oriented_value, decimal_places),
+            "normalized_value": _ranking_round(
+                self.normalized_value,
+                decimal_places,
+            ),
+            "weighted_value": _ranking_round(self.weighted_value, decimal_places),
+            "weight": _ranking_round(self.weight, decimal_places),
+            "direction": self.direction,
+            "normalization": self.normalization,
+            "missing_policy": self.missing_policy,
+            "missing": self.missing,
+            "imputed": self.imputed,
+            "eligible": self.eligible,
+            "message": self.message,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RankedPose:
+    """One ranked pose and its metric-level audit trail."""
+
+    pose_id: str
+    rank: int
+    tied_rank: float
+    percentile: float
+    ranking_score: float
+    pareto_front: int
+    pareto_dominated_count: int
+    tie_size: int
+    best: bool
+    selected: bool
+    criterion_values: Tuple[RankingCriterionValue, ...]
+    record: PoseRankingRecord = field(compare=False, hash=False, repr=False)
+    group_id: str = "global"
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_RANKING_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        pose_id = _ranking_identifier(self.pose_id)
+        if not pose_id or pose_id != self.record.pose_id:
+            raise MultiposeRankingValidationError(
+                "RankedPose.pose_id must match its record."
+            )
+        rank = int(self.rank)
+        front = int(self.pareto_front)
+        dominated = int(self.pareto_dominated_count)
+        tie_size = int(self.tie_size)
+        if rank < 1 or front < 1 or dominated < 0 or tie_size < 1:
+            raise MultiposeRankingValidationError(
+                "Ranks, Pareto fronts, and tie sizes are invalid."
+            )
+        percentile = _ranking_finite(self.percentile, name="rank percentile")
+        if (
+            percentile < -DEFAULT_RANKING_EPSILON
+            or percentile > 1.0 + DEFAULT_RANKING_EPSILON
+        ):
+            raise MultiposeRankingValidationError(
+                "Rank percentile must remain within [0, 1]."
+            )
+        object.__setattr__(self, "pose_id", pose_id)
+        object.__setattr__(self, "rank", rank)
+        object.__setattr__(
+            self,
+            "tied_rank",
+            _ranking_finite(self.tied_rank, name="tied rank"),
+        )
+        object.__setattr__(self, "percentile", min(1.0, max(0.0, percentile)))
+        object.__setattr__(
+            self,
+            "ranking_score",
+            _ranking_finite(self.ranking_score, name="ranking score"),
+        )
+        object.__setattr__(self, "pareto_front", front)
+        object.__setattr__(self, "pareto_dominated_count", dominated)
+        object.__setattr__(self, "tie_size", tie_size)
+        object.__setattr__(self, "best", bool(self.best))
+        object.__setattr__(self, "selected", bool(self.selected))
+        object.__setattr__(self, "criterion_values", tuple(self.criterion_values))
+        object.__setattr__(
+            self,
+            "group_id",
+            _ranking_identifier(self.group_id, default="global"),
+        )
+        object.__setattr__(self, "metadata", _ranking_freeze_metadata(self.metadata))
+
+    def criterion(self, metric: Any) -> Optional[RankingCriterionValue]:
+        """Return one evaluated criterion by metric name."""
+
+        name = normalize_ranking_metric_name(metric)
+        return next(
+            (item for item in self.criterion_values if item.metric == name),
+            None,
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_record: bool = True,
+        include_metadata: bool = True,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return a mutable representation."""
+
+        result: Dict[str, Any] = {
+            "pose_id": self.pose_id,
+            "rank": self.rank,
+            "tied_rank": _ranking_round(self.tied_rank, decimal_places),
+            "percentile": _ranking_round(self.percentile, decimal_places),
+            "ranking_score": _ranking_round(self.ranking_score, decimal_places),
+            "pareto_front": self.pareto_front,
+            "pareto_dominated_count": self.pareto_dominated_count,
+            "tie_size": self.tie_size,
+            "best": self.best,
+            "selected": self.selected,
+            "group_id": self.group_id,
+            "criteria": [
+                value.to_dict(decimal_places=decimal_places)
+                for value in self.criterion_values
+            ],
+        }
+        if include_record:
+            result["record"] = self.record.to_dict(
+                include_metadata=include_metadata,
+                decimal_places=decimal_places,
+            )
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class RankingGroupResult:
+    """Ranking result for one global, ligand, model, or ligand/model group."""
+
+    group_id: str
+    entries: Tuple[RankedPose, ...]
+    excluded_records: Tuple[PoseRankingRecord, ...] = field(default_factory=tuple)
+    exclusion_reasons: Mapping[str, str] = field(default_factory=dict)
+    status: str = RANKING_STATUS_COMPLETE
+    method: str = DEFAULT_RANKING_METHOD
+    tie_strategy: str = DEFAULT_RANKING_TIE_STRATEGY
+    criteria: Tuple[RankingCriterion, ...] = field(default_factory=tuple)
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_RANKING_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        group_id = _ranking_identifier(self.group_id, default="global")
+        entries = tuple(self.entries)
+        excluded = tuple(self.excluded_records)
+        entry_ids = tuple(entry.pose_id for entry in entries)
+        excluded_ids = tuple(record.pose_id for record in excluded)
+        if len(set(entry_ids)) != len(entry_ids):
+            raise MultiposeRankingValidationError(
+                f"Duplicate ranked pose IDs in group {group_id}."
+            )
+        if len(set(excluded_ids)) != len(excluded_ids):
+            raise MultiposeRankingValidationError(
+                f"Duplicate excluded pose IDs in group {group_id}."
+            )
+        if set(entry_ids) & set(excluded_ids):
+            raise MultiposeRankingValidationError(
+                f"A pose cannot be both ranked and excluded in group {group_id}."
+            )
+        status = _ranking_canonical(
+            self.status,
+            {
+                "complete": RANKING_STATUS_COMPLETE,
+                "partial": RANKING_STATUS_PARTIAL,
+                "empty": RANKING_STATUS_EMPTY,
+                "invalid": RANKING_STATUS_INVALID,
+            },
+            RANKING_STATUSES,
+            name="ranking status",
+        )
+        object.__setattr__(self, "group_id", group_id)
+        object.__setattr__(self, "entries", entries)
+        object.__setattr__(self, "excluded_records", excluded)
+        object.__setattr__(
+            self,
+            "exclusion_reasons",
+            MappingProxyType(
+                {
+                    _ranking_identifier(key): _ranking_identifier(value)
+                    for key, value in self.exclusion_reasons.items()
+                }
+            ),
+        )
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "method", normalize_ranking_method(self.method))
+        object.__setattr__(
+            self,
+            "tie_strategy",
+            normalize_ranking_tie_strategy(self.tie_strategy),
+        )
+        object.__setattr__(self, "criteria", tuple(self.criteria))
+        object.__setattr__(self, "metadata", _ranking_freeze_metadata(self.metadata))
+
+    @property
+    def best(self) -> Tuple[RankedPose, ...]:
+        """Return all poses tied at the best ranking value."""
+
+        return tuple(entry for entry in self.entries if entry.best)
+
+    @property
+    def selected(self) -> Tuple[RankedPose, ...]:
+        """Return top-k selected poses in ranking order."""
+
+        return tuple(entry for entry in self.entries if entry.selected)
+
+    @property
+    def pose_ids(self) -> Tuple[str, ...]:
+        """Return ranked pose IDs in deterministic order."""
+
+        return tuple(entry.pose_id for entry in self.entries)
+
+    def pose(self, pose_id: Any) -> Optional[RankedPose]:
+        """Return a ranked pose by identifier."""
+
+        target = _ranking_identifier(pose_id)
+        return next((entry for entry in self.entries if entry.pose_id == target), None)
+
+    def to_dict(
+        self,
+        *,
+        include_records: bool = True,
+        include_metadata: bool = True,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return a mutable representation."""
+
+        result: Dict[str, Any] = {
+            "group_id": self.group_id,
+            "status": self.status,
+            "method": self.method,
+            "tie_strategy": self.tie_strategy,
+            "criteria": [criterion.to_dict() for criterion in self.criteria],
+            "entries": [
+                entry.to_dict(
+                    include_record=include_records,
+                    include_metadata=include_metadata,
+                    decimal_places=decimal_places,
+                )
+                for entry in self.entries
+            ],
+            "excluded_records": [
+                record.to_dict(
+                    include_metadata=include_metadata,
+                    decimal_places=decimal_places,
+                )
+                for record in self.excluded_records
+            ],
+            "exclusion_reasons": dict(self.exclusion_reasons),
+        }
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class MultiposeRankingResult:
+    """Complete result for one multipose-ranking operation."""
+
+    groups: Tuple[RankingGroupResult, ...]
+    options: MultiposeRankingOptions
+    status: str = RANKING_STATUS_COMPLETE
+    message: Optional[str] = None
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_RANKING_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        groups = tuple(self.groups)
+        group_ids = tuple(group.group_id for group in groups)
+        if len(set(group_ids)) != len(group_ids):
+            raise MultiposeRankingValidationError(
+                "Multipose ranking group IDs must be unique."
+            )
+        status = _ranking_canonical(
+            self.status,
+            {
+                "complete": RANKING_STATUS_COMPLETE,
+                "partial": RANKING_STATUS_PARTIAL,
+                "empty": RANKING_STATUS_EMPTY,
+                "invalid": RANKING_STATUS_INVALID,
+            },
+            RANKING_STATUSES,
+            name="ranking status",
+        )
+        object.__setattr__(self, "groups", groups)
+        object.__setattr__(self, "status", status)
+        object.__setattr__(
+            self,
+            "message",
+            _ranking_identifier(self.message) or None,
+        )
+        object.__setattr__(self, "metadata", _ranking_freeze_metadata(self.metadata))
+
+    @property
+    def entries(self) -> Tuple[RankedPose, ...]:
+        """Return all ranked poses in group order."""
+
+        return tuple(entry for group in self.groups for entry in group.entries)
+
+    @property
+    def best(self) -> Tuple[RankedPose, ...]:
+        """Return best pose or poses from every group."""
+
+        return tuple(entry for group in self.groups for entry in group.best)
+
+    @property
+    def selected(self) -> Tuple[RankedPose, ...]:
+        """Return selected pose or poses from every group."""
+
+        return tuple(entry for group in self.groups for entry in group.selected)
+
+    @property
+    def excluded_records(self) -> Tuple[PoseRankingRecord, ...]:
+        """Return all excluded records."""
+
+        return tuple(
+            record for group in self.groups for record in group.excluded_records
+        )
+
+    def group(self, group_id: Any) -> Optional[RankingGroupResult]:
+        """Return one group by identifier."""
+
+        target = _ranking_identifier(group_id, default="global")
+        return next((group for group in self.groups if group.group_id == target), None)
+
+    def pose(self, pose_id: Any) -> Optional[RankedPose]:
+        """Return one ranked pose across all groups."""
+
+        target = _ranking_identifier(pose_id)
+        return next((entry for entry in self.entries if entry.pose_id == target), None)
+
+    def to_dict(
+        self,
+        *,
+        include_records: bool = True,
+        include_metadata: bool = True,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return a mutable representation."""
+
+        places = (
+            self.options.decimal_places
+            if decimal_places is None
+            else decimal_places
+        )
+        result: Dict[str, Any] = {
+            "schema_version": RANKING_SCHEMA_VERSION,
+            "section_version": RANKING_SECTION_VERSION,
+            "status": self.status,
+            "message": self.message,
+            "options": self.options.to_dict(),
+            "group_count": len(self.groups),
+            "ranked_pose_count": len(self.entries),
+            "excluded_pose_count": len(self.excluded_records),
+            "groups": [
+                group.to_dict(
+                    include_records=include_records,
+                    include_metadata=include_metadata,
+                    decimal_places=places,
+                )
+                for group in self.groups
+            ],
+        }
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class PoseRankChange:
+    """Rank displacement for one pose between two ranking results."""
+
+    pose_id: str
+    rank_a: float
+    rank_b: float
+    delta: float
+    absolute_delta: float
+    improved: bool
+    worsened: bool
+    unchanged: bool
+    group_a: Optional[str] = None
+    group_b: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "pose_id", _ranking_identifier(self.pose_id))
+        for name in ("rank_a", "rank_b", "delta", "absolute_delta"):
+            object.__setattr__(
+                self,
+                name,
+                _ranking_finite(getattr(self, name), name=name),
+            )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a mutable representation."""
+
+        return {
+            "pose_id": self.pose_id,
+            "rank_a": self.rank_a,
+            "rank_b": self.rank_b,
+            "delta": self.delta,
+            "absolute_delta": self.absolute_delta,
+            "improved": self.improved,
+            "worsened": self.worsened,
+            "unchanged": self.unchanged,
+            "group_a": self.group_a,
+            "group_b": self.group_b,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RankingAgreementResult:
+    """Agreement statistics between two rankings over shared poses."""
+
+    shared_pose_ids: Tuple[str, ...]
+    changes: Tuple[PoseRankChange, ...]
+    spearman_rho: Optional[float]
+    kendall_tau_b: Optional[float]
+    mean_absolute_rank_change: Optional[float]
+    maximum_absolute_rank_change: Optional[float]
+    top_pose_agreement: bool
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_RANKING_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "shared_pose_ids", tuple(self.shared_pose_ids))
+        object.__setattr__(self, "changes", tuple(self.changes))
+        for name in (
+            "spearman_rho",
+            "kendall_tau_b",
+            "mean_absolute_rank_change",
+            "maximum_absolute_rank_change",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _ranking_finite_optional(getattr(self, name), name=name),
+            )
+        object.__setattr__(self, "top_pose_agreement", bool(self.top_pose_agreement))
+        object.__setattr__(self, "metadata", _ranking_freeze_metadata(self.metadata))
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a mutable representation."""
+
+        return {
+            "shared_pose_ids": list(self.shared_pose_ids),
+            "changes": [change.to_dict() for change in self.changes],
+            "spearman_rho": self.spearman_rho,
+            "kendall_tau_b": self.kendall_tau_b,
+            "mean_absolute_rank_change": self.mean_absolute_rank_change,
+            "maximum_absolute_rank_change": self.maximum_absolute_rank_change,
+            "top_pose_agreement": self.top_pose_agreement,
+            "metadata": dict(self.metadata),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 20.5. Adaptation from preceding scoring structures
+# -----------------------------------------------------------------------------
+
+def _ranking_pose_score_metrics(pose: Any) -> Dict[str, Optional[float]]:
+    """Extract canonical metrics from a PoseScore-like object."""
+
+    interactions = tuple(getattr(pose, "interactions", ()) or ())
+    residues = tuple(getattr(pose, "residues", ()) or ())
+    ranking_score = getattr(pose, "ranking_score", None)
+    total_score = getattr(pose, "total_score", None)
+    if ranking_score is None:
+        ranking_score = getattr(pose, "normalized_score", None)
+    if ranking_score is None:
+        ranking_score = total_score
+
+    favorable = 0
+    unfavorable = 0
+    for interaction in interactions:
+        value = getattr(interaction, "final_score", None)
+        if value is None:
+            value = getattr(interaction, "score", None)
+        if value is None:
+            continue
+        if float(value) >= 0.0:
+            favorable += 1
+        else:
+            unfavorable += 1
+
+    return {
+        RANKING_METRIC_FINAL_SCORE: total_score,
+        RANKING_METRIC_RAW_SCORE: getattr(pose, "raw_score", None),
+        RANKING_METRIC_NORMALIZED_SCORE: getattr(
+            pose,
+            "normalized_score",
+            None,
+        ),
+        RANKING_METRIC_RANKING_SCORE: ranking_score,
+        RANKING_METRIC_DOCKING_AFFINITY: getattr(
+            pose,
+            "docking_affinity",
+            None,
+        ),
+        RANKING_METRIC_INTERACTION_COUNT: len(interactions),
+        RANKING_METRIC_RESIDUE_COUNT: len(residues),
+        RANKING_METRIC_FAVORABLE_COUNT: favorable,
+        RANKING_METRIC_UNFAVORABLE_COUNT: unfavorable,
+        RANKING_METRIC_PENALTY_SCORE: getattr(pose, "penalty_score", 0.0),
+        RANKING_METRIC_BONUS_SCORE: (
+            float(getattr(pose, "bonus_score", 0.0) or 0.0)
+            + float(getattr(pose, "diversity_bonus", 0.0) or 0.0)
+        ),
+    }
+
+
+def pose_score_to_ranking_record(
+    pose: Any,
+    *,
+    input_index: int = 0,
+) -> PoseRankingRecord:
+    """Adapt one PoseScore-like object to ``PoseRankingRecord``."""
+
+    pose_id = _ranking_identifier(getattr(pose, "pose_id", None))
+    if not pose_id:
+        raise MultiposeRankingInputError("PoseScore-like object has no pose_id.")
+    status = _ranking_token(getattr(pose, "status", "complete"))
+    successful = status not in {"invalid", "failed", "error", "empty"}
+    metadata = dict(getattr(pose, "metadata", {}) or {})
+    metadata["ranking_source_type"] = type(pose).__name__
+    return PoseRankingRecord(
+        pose_id=pose_id,
+        model_id=getattr(pose, "model_id", None),
+        ligand_id=getattr(pose, "ligand_id", None),
+        input_index=input_index,
+        accepted=bool(getattr(pose, "accepted", True)),
+        successful=successful,
+        metrics=_ranking_pose_score_metrics(pose),
+        source=pose,
+        metadata=metadata,
+    )
+
+
+def pose_scoring_result_to_ranking_record(
+    pose: Any,
+    *,
+    input_index: int = 0,
+) -> PoseRankingRecord:
+    """Adapt one PoseScoringResult-like object to a ranking record."""
+
+    pose_id = _ranking_identifier(getattr(pose, "pose_id", None))
+    if not pose_id:
+        raise MultiposeRankingInputError(
+            "PoseScoringResult-like object has no pose_id."
+        )
+    successful = bool(getattr(pose, "successful", False))
+    scores = tuple(getattr(pose, "scores", ()) or ())
+    residue_result = getattr(pose, "residue_result", None)
+    residues = tuple(getattr(residue_result, "residues", ()) or ())
+    hotspots = tuple(getattr(pose, "hotspots", ()) or ())
+    summary = getattr(pose, "summary", None)
+
+    final_score = getattr(pose, "final_score", None)
+    raw_score = getattr(pose, "raw_score", None)
+    penalty_score = getattr(summary, "penalty_score", None)
+    if penalty_score is None:
+        penalty_score = getattr(summary, "total_penalty", 0.0)
+    bonus_score = getattr(summary, "bonus_score", None)
+    if bonus_score is None:
+        bonus_score = getattr(summary, "total_bonus", 0.0)
+
+    normalized_score = None
+    metadata = dict(getattr(pose, "metadata", {}) or {})
+    for key in ("normalized_score", "ranking_score", "docking_affinity"):
+        if key in metadata:
+            metadata_value = _ranking_finite_optional(
+                metadata.get(key),
+                name=f"metadata {key}",
+            )
+            if key == "normalized_score":
+                normalized_score = metadata_value
+
+    favorable = sum(
+        1
+        for item in scores
+        if float(getattr(item, "final_score", 0.0) or 0.0) >= 0.0
+    )
+    unfavorable = len(scores) - favorable
+    ranking_score = normalized_score if normalized_score is not None else final_score
+    metrics: Dict[str, Optional[float]] = {
+        RANKING_METRIC_FINAL_SCORE: final_score,
+        RANKING_METRIC_RAW_SCORE: raw_score,
+        RANKING_METRIC_NORMALIZED_SCORE: normalized_score,
+        RANKING_METRIC_RANKING_SCORE: ranking_score,
+        RANKING_METRIC_DOCKING_AFFINITY: metadata.get("docking_affinity"),
+        RANKING_METRIC_INTERACTION_COUNT: len(scores),
+        RANKING_METRIC_RESIDUE_COUNT: len(residues),
+        RANKING_METRIC_HOTSPOT_COUNT: len(hotspots),
+        RANKING_METRIC_FAVORABLE_COUNT: favorable,
+        RANKING_METRIC_UNFAVORABLE_COUNT: unfavorable,
+        RANKING_METRIC_PENALTY_SCORE: penalty_score,
+        RANKING_METRIC_BONUS_SCORE: bonus_score,
+    }
+    metadata["ranking_source_type"] = type(pose).__name__
+    return PoseRankingRecord(
+        pose_id=pose_id,
+        model_id=getattr(pose, "model_id", None),
+        ligand_id=getattr(pose, "ligand_id", None),
+        input_index=input_index,
+        accepted=successful,
+        successful=successful,
+        metrics=metrics,
+        source=pose,
+        metadata=metadata,
+    )
+
+
+def normalized_pose_score_to_ranking_record(
+    pose: Any,
+    *,
+    input_index: int = 0,
+) -> PoseRankingRecord:
+    """Adapt one NormalizedPoseScore-like object to a ranking record."""
+
+    pose_id = _ranking_identifier(getattr(pose, "pose_id", None))
+    if not pose_id:
+        raise MultiposeRankingInputError(
+            "NormalizedPoseScore-like object has no pose_id."
+        )
+    metrics = {
+        RANKING_METRIC_FINAL_SCORE: getattr(pose, "raw_score", None),
+        RANKING_METRIC_RAW_SCORE: getattr(pose, "raw_score", None),
+        RANKING_METRIC_NORMALIZED_SCORE: getattr(
+            pose,
+            "normalized_score",
+            None,
+        ),
+        RANKING_METRIC_RANKING_SCORE: getattr(
+            pose,
+            "normalized_score",
+            None,
+        ),
+    }
+    metadata = dict(getattr(pose, "metadata", {}) or {})
+    metadata.update(
+        {
+            "ranking_source_type": type(pose).__name__,
+            "previous_rank": getattr(pose, "rank", None),
+            "previous_tied_rank": getattr(pose, "tied_rank", None),
+            "previous_percentile": getattr(pose, "percentile", None),
+        }
+    )
+    return PoseRankingRecord(
+        pose_id=pose_id,
+        model_id=getattr(pose, "model_id", None),
+        ligand_id=getattr(pose, "ligand_id", None),
+        input_index=input_index,
+        accepted=True,
+        successful=True,
+        metrics=metrics,
+        source=pose,
+        metadata=metadata,
+    )
+
+
+def mapping_to_ranking_record(
+    value: Mapping[str, Any],
+    *,
+    input_index: int = 0,
+) -> PoseRankingRecord:
+    """Adapt a mapping with pose identifiers and metric columns."""
+
+    pose_id = _ranking_identifier(
+        value.get("pose_id", value.get("id", value.get("name")))
+    )
+    if not pose_id:
+        raise MultiposeRankingInputError(
+            "A ranking mapping must define pose_id, id, or name."
+        )
+    metrics: Dict[str, Optional[float]] = {}
+    supplied_metrics = value.get("metrics")
+    if isinstance(supplied_metrics, Mapping):
+        metrics.update(supplied_metrics)
+
+    protected = {
+        "pose_id",
+        "id",
+        "name",
+        "model_id",
+        "ligand_id",
+        "input_index",
+        "accepted",
+        "successful",
+        "status",
+        "metrics",
+        "metadata",
+        "source",
+    }
+    for key, observed in value.items():
+        canonical = normalize_ranking_metric_name(key)
+        if key in protected or canonical in protected:
+            continue
+        if observed is None or (
+            isinstance(observed, Real) and not isinstance(observed, bool)
+        ):
+            metrics[canonical] = observed
+
+    status = _ranking_token(value.get("status", "complete"))
+    successful = bool(
+        value.get(
+            "successful",
+            status not in {"invalid", "failed", "error", "empty"},
+        )
+    )
+    return PoseRankingRecord(
+        pose_id=pose_id,
+        model_id=value.get("model_id"),
+        ligand_id=value.get("ligand_id"),
+        input_index=int(value.get("input_index", input_index)),
+        accepted=bool(value.get("accepted", successful)),
+        successful=successful,
+        metrics=metrics,
+        source=value.get("source", value),
+        metadata=value.get("metadata", {}),
+    )
+
+
+def _ranking_expand_source(value: Any) -> Tuple[Any, ...]:
+    """Expand known collection result objects without importing their classes."""
+
+    class_name = type(value).__name__
+    if class_name == "MultiPoseScoreResult":
+        return tuple(getattr(value, "poses", ()) or ())
+    if class_name == "ScoreNormalizationResult":
+        return tuple(getattr(value, "scores", ()) or ())
+    if isinstance(value, Mapping):
+        return (value,)
+    if isinstance(value, (str, bytes)):
+        raise MultiposeRankingInputError(
+            "String-like values cannot be adapted as poses."
+        )
+    if isinstance(value, Iterable):
+        return tuple(value)
+    return (value,)
+
+
+def _ranking_adapt_one(value: Any, input_index: int) -> PoseRankingRecord:
+    """Adapt one supported pose representation."""
+
+    if isinstance(value, PoseRankingRecord):
+        if value.input_index == input_index:
+            return value
+        return PoseRankingRecord(
+            pose_id=value.pose_id,
+            model_id=value.model_id,
+            ligand_id=value.ligand_id,
+            input_index=input_index,
+            accepted=value.accepted,
+            successful=value.successful,
+            metrics=value.metrics,
+            source=value.source,
+            metadata=value.metadata,
+        )
+    if isinstance(value, Mapping):
+        return mapping_to_ranking_record(value, input_index=input_index)
+
+    class_name = type(value).__name__
+    if class_name == "PoseScoringResult":
+        return pose_scoring_result_to_ranking_record(
+            value,
+            input_index=input_index,
+        )
+    if class_name == "NormalizedPoseScore":
+        return normalized_pose_score_to_ranking_record(
+            value,
+            input_index=input_index,
+        )
+    if class_name == "PoseScore":
+        return pose_score_to_ranking_record(value, input_index=input_index)
+
+    if hasattr(value, "final_score") and hasattr(value, "scores"):
+        return pose_scoring_result_to_ranking_record(
+            value,
+            input_index=input_index,
+        )
+    if hasattr(value, "total_score") and hasattr(value, "pose_id"):
+        return pose_score_to_ranking_record(value, input_index=input_index)
+
+    raise MultiposeRankingInputError(
+        f"Unsupported pose-ranking input: {type(value).__name__}."
+    )
+
+
+def materialize_pose_ranking_records(value: Any) -> Tuple[PoseRankingRecord, ...]:
+    """Materialize and validate canonical ranking records."""
+
+    expanded = _ranking_expand_source(value)
+    records = tuple(
+        _ranking_adapt_one(item, index) for index, item in enumerate(expanded)
+    )
+    pose_ids = tuple(record.pose_id for record in records)
+    if len(set(pose_ids)) != len(pose_ids):
+        duplicates = sorted(
+            pose_id for pose_id in set(pose_ids) if pose_ids.count(pose_id) > 1
+        )
+        raise MultiposeRankingInputError(
+            "Pose IDs must be globally unique for ranking: "
+            + ", ".join(duplicates)
+        )
+    return records
+
+
+# -----------------------------------------------------------------------------
+# 20.6. Optional metric enrichment
+# -----------------------------------------------------------------------------
+
+def _ranking_metric_map_by_pose(
+    values: Optional[Mapping[Any, Any]],
+    *,
+    metric_name: str,
+) -> Mapping[str, float]:
+    """Normalize one pose-to-value mapping."""
+
+    if not values:
+        return MappingProxyType({})
+    result: Dict[str, float] = {}
+    for raw_pose_id, raw_value in values.items():
+        pose_id = _ranking_identifier(raw_pose_id)
+        if not pose_id:
+            continue
+        result[pose_id] = _ranking_finite(
+            raw_value,
+            name=f"{metric_name} for {pose_id}",
+        )
+    return MappingProxyType(result)
+
+
+def extract_diversity_metric_by_pose(value: Any) -> Mapping[str, float]:
+    """Extract a pose-level diversity score from Section 18 results."""
+
+    if value is None:
+        return MappingProxyType({})
+    pose_scores = getattr(value, "pose_scores", value)
+    result: Dict[str, float] = {}
+    for item in tuple(pose_scores or ()):
+        pose_id = _ranking_identifier(getattr(item, "pose_id", None))
+        if not pose_id:
+            continue
+        observed = getattr(item, "mean_distance", None)
+        if observed is None:
+            similarity = getattr(item, "mean_similarity", None)
+            if similarity is not None:
+                observed = 1.0 - float(similarity)
+        if observed is not None:
+            result[pose_id] = _ranking_finite(
+                observed,
+                name=f"diversity score for {pose_id}",
+            )
+    return MappingProxyType(result)
+
+
+def extract_coverage_metric_by_pose(value: Any) -> Mapping[str, float]:
+    """Extract a compact coverage count from Section 18 coverage profiles."""
+
+    if value is None:
+        return MappingProxyType({})
+    profiles = getattr(value, "profiles", None)
+    if profiles is None:
+        profiles = getattr(value, "coverage_profiles", value)
+    result: Dict[str, float] = {}
+    for item in tuple(profiles or ()):
+        pose_id = _ranking_identifier(getattr(item, "pose_id", None))
+        if not pose_id:
+            continue
+        features = getattr(item, "features", None)
+        if features is not None:
+            result[pose_id] = float(len(tuple(features)))
+            continue
+        total = 0
+        for attribute in (
+            "residues",
+            "families",
+            "types",
+            "hotspots",
+            "residue_features",
+            "family_features",
+            "type_features",
+            "hotspot_features",
+        ):
+            observed = getattr(item, attribute, None)
+            if observed is not None:
+                total += len(observed)
+        result[pose_id] = float(total)
+    return MappingProxyType(result)
+
+
+def enrich_pose_ranking_records(
+    records: Any,
+    *,
+    normalized_scores: Optional[Any] = None,
+    diversity_result: Optional[Any] = None,
+    coverage_result: Optional[Any] = None,
+    custom_metrics: Optional[Mapping[Any, Mapping[Any, Any]]] = None,
+    overwrite: bool = True,
+) -> Tuple[PoseRankingRecord, ...]:
+    """Return records enriched with optional Section 17/18/custom metrics."""
+
+    materialized = materialize_pose_ranking_records(records)
+    per_pose: Dict[str, Dict[str, Optional[float]]] = {
+        record.pose_id: {} for record in materialized
+    }
+
+    if normalized_scores is not None:
+        normalized_records = materialize_pose_ranking_records(normalized_scores)
+        for record in normalized_records:
+            if record.pose_id not in per_pose:
+                continue
+            per_pose[record.pose_id][RANKING_METRIC_NORMALIZED_SCORE] = record.metric(
+                RANKING_METRIC_NORMALIZED_SCORE
+            )
+            per_pose[record.pose_id][RANKING_METRIC_RANKING_SCORE] = record.metric(
+                RANKING_METRIC_RANKING_SCORE
+            )
+
+    for pose_id, score in extract_diversity_metric_by_pose(
+        diversity_result
+    ).items():
+        if pose_id in per_pose:
+            per_pose[pose_id][RANKING_METRIC_DIVERSITY_SCORE] = score
+
+    for pose_id, score in extract_coverage_metric_by_pose(coverage_result).items():
+        if pose_id in per_pose:
+            per_pose[pose_id][RANKING_METRIC_COVERAGE_SCORE] = score
+
+    if custom_metrics:
+        for raw_metric, raw_mapping in custom_metrics.items():
+            metric = normalize_ranking_metric_name(raw_metric)
+            mapping = _ranking_metric_map_by_pose(
+                raw_mapping,
+                metric_name=metric,
+            )
+            for pose_id, score in mapping.items():
+                if pose_id in per_pose:
+                    per_pose[pose_id][metric] = score
+
+    return tuple(
+        record.with_metrics(per_pose[record.pose_id], overwrite=overwrite)
+        for record in materialized
+    )
+
+
+# -----------------------------------------------------------------------------
+# 20.7. Grouping, eligibility, missing values, and normalization
+# -----------------------------------------------------------------------------
+
+def ranking_group_id(record: PoseRankingRecord, group_mode: Any) -> str:
+    """Return the deterministic group ID for one pose record."""
+
+    mode = normalize_ranking_group_mode(group_mode)
+    if mode == RANKING_GROUP_GLOBAL:
+        return "global"
+    if mode == RANKING_GROUP_LIGAND:
+        return record.ligand_id or "ligand:unknown"
+    if mode == RANKING_GROUP_MODEL:
+        return record.model_id or "model:unknown"
+    ligand = record.ligand_id or "unknown"
+    model = record.model_id or "unknown"
+    return f"ligand:{ligand}|model:{model}"
+
+
+def group_pose_ranking_records(
+    records: Any,
+    *,
+    group_mode: Any = DEFAULT_RANKING_GROUP_MODE,
+) -> Mapping[str, Tuple[PoseRankingRecord, ...]]:
+    """Group pose records while preserving deterministic input order."""
+
+    materialized = materialize_pose_ranking_records(records)
+    mode = normalize_ranking_group_mode(group_mode)
+    groups: Dict[str, List[PoseRankingRecord]] = {}
+    for record in materialized:
+        group_id = ranking_group_id(record, mode)
+        groups.setdefault(group_id, []).append(record)
+    return MappingProxyType(
+        {
+            group_id: tuple(group_records)
+            for group_id, group_records in sorted(groups.items())
+        }
+    )
+
+
+def _ranking_initial_eligibility_reason(
+    record: PoseRankingRecord,
+    options: MultiposeRankingOptions,
+) -> Optional[str]:
+    """Return a pre-metric exclusion reason, if any."""
+
+    if options.accepted_only and not record.accepted:
+        return "pose is not accepted"
+    if options.require_successful_pose_results and not record.successful:
+        return "pose scoring result is not successful"
+    return None
+
+
+def _ranking_observed_values(
+    records: Sequence[PoseRankingRecord],
+    criterion: RankingCriterion,
+) -> Tuple[float, ...]:
+    """Collect finite observed values for one criterion."""
+
+    return tuple(
+        value
+        for record in records
+        for value in (record.metric(criterion.metric),)
+        if value is not None
+    )
+
+
+def _ranking_imputation_value(
+    observed_values: Sequence[float],
+    criterion: RankingCriterion,
+) -> Optional[float]:
+    """Return the configured replacement for a missing criterion value."""
+
+    policy = criterion.missing_policy
+    if policy in {RANKING_MISSING_EXCLUDE, RANKING_MISSING_ERROR}:
+        return None
+    if policy == RANKING_MISSING_ZERO:
+        return 0.0
+    if not observed_values:
+        return 0.0
+    if policy == RANKING_MISSING_MEDIAN:
+        return float(median(observed_values))
+
+    oriented = tuple(
+        _ranking_orient(value, criterion.direction) for value in observed_values
+    )
+    selected = min(oriented) if policy == RANKING_MISSING_WORST else max(oriented)
+    return selected if criterion.direction == RANKING_DIRECTION_HIGHER else -selected
+
+
+def _ranking_percentile_values(
+    values: Sequence[float],
+    *,
+    epsilon: float,
+) -> Tuple[float, ...]:
+    """Return midrank percentiles in [0, 1] for oriented values."""
+
+    count = len(values)
+    if count <= 1:
+        return tuple(1.0 for _ in values)
+    order = sorted(range(count), key=lambda index: (values[index], index))
+    percentiles = [0.0] * count
+    cursor = 0
+    while cursor < count:
+        end = cursor + 1
+        while end < count and _ranking_close(
+            values[order[cursor]],
+            values[order[end]],
+            epsilon,
+        ):
+            end += 1
+        average_position = (cursor + end - 1) / 2.0
+        percentile = average_position / float(count - 1)
+        for position in range(cursor, end):
+            percentiles[order[position]] = percentile
+        cursor = end
+    return tuple(percentiles)
+
+
+def normalize_ranking_metric_values(
+    values: Sequence[float],
+    *,
+    method: Any = DEFAULT_RANKING_NORMALIZATION,
+    epsilon: float = DEFAULT_RANKING_EPSILON,
+) -> Tuple[float, ...]:
+    """Normalize already oriented metric values."""
+
+    normalized_method = normalize_ranking_normalization(method)
+    numeric = tuple(
+        _ranking_finite(value, name="ranking metric value") for value in values
+    )
+    if not numeric:
+        return ()
+    if normalized_method == RANKING_NORMALIZATION_NONE:
+        return numeric
+    if normalized_method == RANKING_NORMALIZATION_PERCENTILE:
+        return _ranking_percentile_values(numeric, epsilon=epsilon)
+
+    minimum = min(numeric)
+    maximum = max(numeric)
+    if normalized_method == RANKING_NORMALIZATION_MINMAX:
+        span = maximum - minimum
+        if abs(span) <= epsilon:
+            return tuple(1.0 for _ in numeric)
+        return tuple((value - minimum) / span for value in numeric)
+
+    center = float(fmean(numeric))
+    if normalized_method == RANKING_NORMALIZATION_Z_SCORE:
+        variance = fmean((value - center) ** 2 for value in numeric)
+        standard_deviation = math.sqrt(max(0.0, variance))
+        if standard_deviation <= epsilon:
+            return tuple(0.0 for _ in numeric)
+        return tuple((value - center) / standard_deviation for value in numeric)
+
+    robust_center = float(median(numeric))
+    absolute_deviations = tuple(abs(value - robust_center) for value in numeric)
+    mad = float(median(absolute_deviations))
+    if mad <= epsilon:
+        return tuple(0.0 for _ in numeric)
+    scale = 1.4826 * mad
+    return tuple((value - robust_center) / scale for value in numeric)
+
+
+def _ranking_partition_group(
+    records: Sequence[PoseRankingRecord],
+    options: MultiposeRankingOptions,
+) -> Tuple[
+    Tuple[PoseRankingRecord, ...],
+    Tuple[PoseRankingRecord, ...],
+    Mapping[str, str],
+]:
+    """Partition one group into eligible and excluded records."""
+
+    eligible: List[PoseRankingRecord] = []
+    excluded: List[PoseRankingRecord] = []
+    reasons: Dict[str, str] = {}
+
+    for record in records:
+        reason = _ranking_initial_eligibility_reason(record, options)
+        if reason is None:
+            for criterion in options.criteria:
+                if record.metric(criterion.metric) is not None:
+                    continue
+                if criterion.missing_policy == RANKING_MISSING_ERROR:
+                    raise MultiposeRankingInputError(
+                        f"Pose {record.pose_id} is missing required ranking "
+                        f"metric {criterion.metric}."
+                    )
+                if criterion.required or (
+                    criterion.missing_policy == RANKING_MISSING_EXCLUDE
+                ):
+                    reason = f"missing metric: {criterion.metric}"
+                    break
+        if reason is None:
+            eligible.append(record)
+        else:
+            excluded.append(record)
+            reasons[record.pose_id] = reason
+
+    return tuple(eligible), tuple(excluded), MappingProxyType(reasons)
+
+
+def _ranking_evaluate_criteria(
+    records: Sequence[PoseRankingRecord],
+    options: MultiposeRankingOptions,
+) -> Tuple[Tuple[RankingCriterionValue, ...], ...]:
+    """Evaluate, orient, normalize, and weight all criteria."""
+
+    if not records:
+        return ()
+    criterion_columns: List[Tuple[RankingCriterionValue, ...]] = []
+    positive_weight_total = sum(
+        criterion.weight for criterion in options.criteria if criterion.weight > 0.0
+    )
+
+    for criterion in options.criteria:
+        observed = _ranking_observed_values(records, criterion)
+        imputation = _ranking_imputation_value(observed, criterion)
+        raw_values: List[Optional[float]] = []
+        imputed_values: List[float] = []
+        missing_flags: List[bool] = []
+        imputed_flags: List[bool] = []
+
+        for record in records:
+            raw_value = record.metric(criterion.metric)
+            missing = raw_value is None
+            if missing:
+                if imputation is None:
+                    raise MultiposeRankingValidationError(
+                        "An excluded missing value reached criterion evaluation."
+                    )
+                value = imputation
+            else:
+                value = float(raw_value)
+            raw_values.append(raw_value)
+            imputed_values.append(value)
+            missing_flags.append(missing)
+            imputed_flags.append(missing)
+
+        oriented = tuple(
+            _ranking_orient(value, criterion.direction)
+            for value in imputed_values
+        )
+        normalized = normalize_ranking_metric_values(
+            oriented,
+            method=criterion.normalization,
+            epsilon=options.epsilon,
+        )
+        effective_weight = criterion.weight
+        if options.normalize_weights and positive_weight_total > options.epsilon:
+            effective_weight /= positive_weight_total
+
+        evaluations = tuple(
+            RankingCriterionValue(
+                metric=criterion.metric,
+                raw_value=raw_values[index],
+                imputed_value=imputed_values[index],
+                oriented_value=oriented[index],
+                normalized_value=normalized[index],
+                weighted_value=normalized[index] * effective_weight,
+                weight=effective_weight,
+                direction=criterion.direction,
+                normalization=criterion.normalization,
+                missing_policy=criterion.missing_policy,
+                missing=missing_flags[index],
+                imputed=imputed_flags[index],
+                eligible=True,
+                message=("value imputed" if imputed_flags[index] else None),
+            )
+            for index in range(len(records))
+        )
+        criterion_columns.append(evaluations)
+
+    return tuple(
+        tuple(column[row] for column in criterion_columns)
+        for row in range(len(records))
+    )
+
+
+# -----------------------------------------------------------------------------
+# 20.8. Composite scores and Pareto fronts
+# -----------------------------------------------------------------------------
+
+def _ranking_weighted_scores(
+    evaluations: Sequence[Sequence[RankingCriterionValue]],
+) -> Tuple[float, ...]:
+    """Return weighted normalized sums."""
+
+    return tuple(
+        float(
+            sum(
+                value.weighted_value or 0.0
+                for value in pose_evaluations
+            )
+        )
+        for pose_evaluations in evaluations
+    )
+
+
+def _ranking_borda_scores(
+    evaluations: Sequence[Sequence[RankingCriterionValue]],
+    *,
+    epsilon: float,
+) -> Tuple[float, ...]:
+    """Return weighted Borda-like scores from per-criterion midranks."""
+
+    count = len(evaluations)
+    if count == 0:
+        return ()
+    if count == 1:
+        return (1.0,)
+
+    criterion_count = len(evaluations[0])
+    totals = [0.0] * count
+    for criterion_index in range(criterion_count):
+        values = tuple(
+            float(evaluations[pose_index][criterion_index].normalized_value or 0.0)
+            for pose_index in range(count)
+        )
+        percentiles = _ranking_percentile_values(values, epsilon=epsilon)
+        weight = float(evaluations[0][criterion_index].weight)
+        for pose_index, percentile in enumerate(percentiles):
+            totals[pose_index] += percentile * weight
+    return tuple(totals)
+
+
+def _ranking_dominates(
+    left: Sequence[RankingCriterionValue],
+    right: Sequence[RankingCriterionValue],
+    *,
+    epsilon: float,
+) -> bool:
+    """Return whether left weakly dominates right and is strictly better once."""
+
+    at_least_as_good = True
+    strictly_better = False
+    for left_value, right_value in zip(left, right):
+        if left_value.weight <= 0.0:
+            continue
+        left_numeric = float(left_value.normalized_value or 0.0)
+        right_numeric = float(right_value.normalized_value or 0.0)
+        if left_numeric < right_numeric - epsilon:
+            at_least_as_good = False
+            break
+        if left_numeric > right_numeric + epsilon:
+            strictly_better = True
+    return at_least_as_good and strictly_better
+
+
+def assign_pareto_fronts(
+    evaluations: Sequence[Sequence[RankingCriterionValue]],
+    *,
+    epsilon: float = DEFAULT_RANKING_EPSILON,
+) -> Tuple[Tuple[int, ...], Tuple[int, ...]]:
+    """Assign nondominated fronts and direct domination counts."""
+
+    count = len(evaluations)
+    if count == 0:
+        return (), ()
+
+    dominates: List[Set[int]] = [set() for _ in range(count)]
+    dominated_by_count = [0] * count
+    direct_dominated_count = [0] * count
+
+    for left_index in range(count):
+        for right_index in range(left_index + 1, count):
+            left_dominates = _ranking_dominates(
+                evaluations[left_index],
+                evaluations[right_index],
+                epsilon=epsilon,
+            )
+            right_dominates = _ranking_dominates(
+                evaluations[right_index],
+                evaluations[left_index],
+                epsilon=epsilon,
+            )
+            if left_dominates:
+                dominates[left_index].add(right_index)
+                dominated_by_count[right_index] += 1
+                direct_dominated_count[left_index] += 1
+            elif right_dominates:
+                dominates[right_index].add(left_index)
+                dominated_by_count[left_index] += 1
+                direct_dominated_count[right_index] += 1
+
+    fronts = [0] * count
+    current = sorted(
+        index for index, dominated_count in enumerate(dominated_by_count)
+        if dominated_count == 0
+    )
+    front_number = 1
+    assigned = 0
+    mutable_counts = list(dominated_by_count)
+
+    while current:
+        next_front: Set[int] = set()
+        for index in current:
+            if fronts[index] != 0:
+                continue
+            fronts[index] = front_number
+            assigned += 1
+            for dominated_index in dominates[index]:
+                mutable_counts[dominated_index] -= 1
+                if mutable_counts[dominated_index] == 0:
+                    next_front.add(dominated_index)
+        current = sorted(next_front)
+        front_number += 1
+
+    if assigned != count:
+        raise MultiposeRankingValidationError(
+            "Pareto-front assignment did not cover all poses."
+        )
+    return tuple(fronts), tuple(direct_dominated_count)
+
+
+def _ranking_primary_scores(
+    evaluations: Sequence[Sequence[RankingCriterionValue]],
+    options: MultiposeRankingOptions,
+) -> Tuple[float, ...]:
+    """Return scalar scores for single, weighted, or Borda methods."""
+
+    if not evaluations:
+        return ()
+    if options.method == RANKING_METHOD_SINGLE_METRIC:
+        return tuple(
+            float(pose_values[0].normalized_value or 0.0)
+            for pose_values in evaluations
+        )
+    if options.method == RANKING_METHOD_BORDA:
+        return _ranking_borda_scores(
+            evaluations,
+            epsilon=options.epsilon,
+        )
+    return _ranking_weighted_scores(evaluations)
+
+
+def _ranking_secondary_scores(
+    evaluations: Sequence[Sequence[RankingCriterionValue]],
+    options: MultiposeRankingOptions,
+) -> Tuple[float, ...]:
+    """Return the scalar tie-breaker used inside Pareto fronts."""
+
+    if options.pareto_secondary_method == RANKING_METHOD_BORDA:
+        return _ranking_borda_scores(
+            evaluations,
+            epsilon=options.epsilon,
+        )
+    if options.pareto_secondary_method == RANKING_METHOD_SINGLE_METRIC:
+        return tuple(
+            float(pose_values[0].normalized_value or 0.0)
+            for pose_values in evaluations
+        )
+    return _ranking_weighted_scores(evaluations)
+
+
+def _ranking_order_indices(
+    records: Sequence[PoseRankingRecord],
+    scores: Sequence[float],
+    fronts: Sequence[int],
+    options: MultiposeRankingOptions,
+) -> Tuple[int, ...]:
+    """Return deterministic best-to-worst pose indices."""
+
+    if options.method == RANKING_METHOD_PARETO:
+        return tuple(
+            sorted(
+                range(len(records)),
+                key=lambda index: (
+                    int(fronts[index]),
+                    -float(scores[index]),
+                    records[index].input_index,
+                    records[index].pose_id,
+                ),
+            )
+        )
+    return tuple(
+        sorted(
+            range(len(records)),
+            key=lambda index: (
+                -float(scores[index]),
+                records[index].input_index,
+                records[index].pose_id,
+            ),
+        )
+    )
+
+
+def _ranking_values_tied(
+    left_index: int,
+    right_index: int,
+    scores: Sequence[float],
+    fronts: Sequence[int],
+    options: MultiposeRankingOptions,
+) -> bool:
+    """Return whether two poses belong to the same ranking tie block."""
+
+    if options.method == RANKING_METHOD_PARETO and (
+        fronts[left_index] != fronts[right_index]
+    ):
+        return False
+    return _ranking_close(
+        float(scores[left_index]),
+        float(scores[right_index]),
+        options.epsilon,
+    )
+
+
+def _ranking_tie_blocks(
+    ordered_indices: Sequence[int],
+    scores: Sequence[float],
+    fronts: Sequence[int],
+    options: MultiposeRankingOptions,
+) -> Tuple[Tuple[int, ...], ...]:
+    """Partition ordered indices into score-equivalent tie blocks."""
+
+    blocks: List[Tuple[int, ...]] = []
+    cursor = 0
+    while cursor < len(ordered_indices):
+        end = cursor + 1
+        while end < len(ordered_indices) and _ranking_values_tied(
+            ordered_indices[cursor],
+            ordered_indices[end],
+            scores,
+            fronts,
+            options,
+        ):
+            end += 1
+        blocks.append(tuple(ordered_indices[cursor:end]))
+        cursor = end
+    return tuple(blocks)
+
+
+def _ranking_assign_rank_data(
+    ordered_indices: Sequence[int],
+    scores: Sequence[float],
+    fronts: Sequence[int],
+    options: MultiposeRankingOptions,
+) -> Mapping[int, Tuple[int, float, int]]:
+    """Return rank, average tied rank, and tie size for every pose index."""
+
+    result: Dict[int, Tuple[int, float, int]] = {}
+    blocks = _ranking_tie_blocks(
+        ordered_indices,
+        scores,
+        fronts,
+        options,
+    )
+    dense_rank = 1
+    ordinal_rank = 1
+    competition_position = 1
+
+    for block in blocks:
+        tie_size = len(block)
+        average_rank = competition_position + (tie_size - 1) / 2.0
+        for offset, index in enumerate(block):
+            if options.tie_strategy == RANKING_TIE_DENSE:
+                rank = dense_rank
+                tied_rank = average_rank
+            elif options.tie_strategy == RANKING_TIE_ORDINAL:
+                rank = ordinal_rank + offset
+                tied_rank = float(rank)
+            elif options.tie_strategy == RANKING_TIE_AVERAGE:
+                rank = competition_position
+                tied_rank = average_rank
+            else:
+                rank = competition_position
+                tied_rank = average_rank
+            result[index] = (rank, tied_rank, tie_size)
+        competition_position += tie_size
+        ordinal_rank += tie_size
+        dense_rank += 1
+
+    return MappingProxyType(result)
+
+
+def _ranking_selected_indices(
+    ordered_indices: Sequence[int],
+    scores: Sequence[float],
+    fronts: Sequence[int],
+    options: MultiposeRankingOptions,
+) -> FrozenSet[int]:
+    """Return top-k indices, optionally preserving cutoff ties."""
+
+    if options.top_k is None or options.top_k >= len(ordered_indices):
+        return frozenset(ordered_indices)
+    selected = list(ordered_indices[: options.top_k])
+    if not options.include_ties_at_cutoff or not selected:
+        return frozenset(selected)
+    cutoff = selected[-1]
+    for index in ordered_indices[options.top_k :]:
+        if not _ranking_values_tied(cutoff, index, scores, fronts, options):
+            break
+        selected.append(index)
+    return frozenset(selected)
+
+
+# -----------------------------------------------------------------------------
+# 20.9. Main ranking engine
+# -----------------------------------------------------------------------------
+
+def rank_pose_record_group(
+    records: Sequence[PoseRankingRecord],
+    *,
+    group_id: str = "global",
+    options: MultiposeRankingOptions = DEFAULT_MULTIPOSE_RANKING_OPTIONS,
+) -> RankingGroupResult:
+    """Rank one already materialized group of pose records."""
+
+    materialized = tuple(records)
+    if not all(isinstance(record, PoseRankingRecord) for record in materialized):
+        materialized = materialize_pose_ranking_records(materialized)
+
+    eligible, excluded, exclusion_reasons = _ranking_partition_group(
+        materialized,
+        options,
+    )
+    if not eligible:
+        status = RANKING_STATUS_EMPTY if not materialized else RANKING_STATUS_PARTIAL
+        return RankingGroupResult(
+            group_id=group_id,
+            entries=(),
+            excluded_records=excluded,
+            exclusion_reasons=exclusion_reasons,
+            status=status,
+            method=options.method,
+            tie_strategy=options.tie_strategy,
+            criteria=options.criteria,
+            metadata={
+                "input_pose_count": len(materialized),
+                "eligible_pose_count": 0,
+            },
+        )
+
+    evaluations = _ranking_evaluate_criteria(eligible, options)
+    fronts, dominated_counts = assign_pareto_fronts(
+        evaluations,
+        epsilon=options.epsilon,
+    )
+    if options.method == RANKING_METHOD_PARETO:
+        scores = _ranking_secondary_scores(evaluations, options)
+    else:
+        scores = _ranking_primary_scores(evaluations, options)
+
+    order = _ranking_order_indices(
+        eligible,
+        scores,
+        fronts,
+        options,
+    )
+    rank_data = _ranking_assign_rank_data(
+        order,
+        scores,
+        fronts,
+        options,
+    )
+    selected_indices = _ranking_selected_indices(
+        order,
+        scores,
+        fronts,
+        options,
+    )
+    first_index = order[0]
+    count = len(order)
+
+    entries: List[RankedPose] = []
+    for index in order:
+        rank, tied_rank, tie_size = rank_data[index]
+        percentile = (
+            1.0
+            if count == 1
+            else 1.0 - ((tied_rank - 1.0) / float(count - 1))
+        )
+        best = _ranking_values_tied(
+            first_index,
+            index,
+            scores,
+            fronts,
+            options,
+        )
+        entries.append(
+            RankedPose(
+                pose_id=eligible[index].pose_id,
+                rank=rank,
+                tied_rank=tied_rank,
+                percentile=percentile,
+                ranking_score=scores[index],
+                pareto_front=fronts[index],
+                pareto_dominated_count=dominated_counts[index],
+                tie_size=tie_size,
+                best=best,
+                selected=index in selected_indices,
+                criterion_values=evaluations[index],
+                record=eligible[index],
+                group_id=group_id,
+                metadata={
+                    "ranking_method": options.method,
+                    "input_index": eligible[index].input_index,
+                },
+            )
+        )
+
+    status = RANKING_STATUS_PARTIAL if excluded else RANKING_STATUS_COMPLETE
+    result = RankingGroupResult(
+        group_id=group_id,
+        entries=tuple(entries),
+        excluded_records=excluded,
+        exclusion_reasons=exclusion_reasons,
+        status=status,
+        method=options.method,
+        tie_strategy=options.tie_strategy,
+        criteria=options.criteria,
+        metadata={
+            "input_pose_count": len(materialized),
+            "eligible_pose_count": len(eligible),
+            "excluded_pose_count": len(excluded),
+            "pareto_front_count": max(fronts, default=0),
+        },
+    )
+    validate_ranking_group_result(result, epsilon=options.epsilon)
+    return result
+
+
+def rank_multiple_poses(
+    poses: Any,
+    *,
+    options: Optional[MultiposeRankingOptions] = None,
+    method: Optional[Any] = None,
+    criteria: Optional[Sequence[Any]] = None,
+    tie_strategy: Optional[Any] = None,
+    group_mode: Optional[Any] = None,
+    top_k: Optional[int] = None,
+    include_ties_at_cutoff: Optional[bool] = None,
+    normalized_scores: Optional[Any] = None,
+    diversity_result: Optional[Any] = None,
+    coverage_result: Optional[Any] = None,
+    custom_metrics: Optional[Mapping[Any, Mapping[Any, Any]]] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> MultiposeRankingResult:
+    """Rank multiple poses using a single, weighted, Borda, or Pareto model."""
+
+    if options is None:
+        resolved_criteria = (
+            tuple(
+                item
+                if isinstance(item, RankingCriterion)
+                else RankingCriterion(**dict(item))
+                for item in criteria
+            )
+            if criteria is not None
+            else default_multipose_ranking_criteria()
+        )
+        options = MultiposeRankingOptions(
+            method=method or DEFAULT_RANKING_METHOD,
+            criteria=resolved_criteria,
+            tie_strategy=tie_strategy or DEFAULT_RANKING_TIE_STRATEGY,
+            group_mode=group_mode or DEFAULT_RANKING_GROUP_MODE,
+            top_k=top_k,
+            include_ties_at_cutoff=(
+                True
+                if include_ties_at_cutoff is None
+                else include_ties_at_cutoff
+            ),
+            metadata=metadata or {},
+        )
+    elif any(
+        value is not None
+        for value in (
+            method,
+            criteria,
+            tie_strategy,
+            group_mode,
+            top_k,
+            include_ties_at_cutoff,
+        )
+    ):
+        raise MultiposeRankingConfigurationError(
+            "Pass either options or individual ranking arguments, not both."
+        )
+
+    records = enrich_pose_ranking_records(
+        poses,
+        normalized_scores=normalized_scores,
+        diversity_result=diversity_result,
+        coverage_result=coverage_result,
+        custom_metrics=custom_metrics,
+    )
+    grouped = group_pose_ranking_records(
+        records,
+        group_mode=options.group_mode,
+    )
+
+    groups = tuple(
+        rank_pose_record_group(
+            group_records,
+            group_id=group_id,
+            options=options,
+        )
+        for group_id, group_records in grouped.items()
+    )
+    if not groups:
+        status = RANKING_STATUS_EMPTY
+        message = "No poses were supplied for ranking."
+    elif all(not group.entries for group in groups):
+        status = RANKING_STATUS_EMPTY
+        message = "No poses were eligible for ranking."
+    elif any(group.status != RANKING_STATUS_COMPLETE for group in groups):
+        status = RANKING_STATUS_PARTIAL
+        message = "One or more poses were excluded from ranking."
+    else:
+        status = RANKING_STATUS_COMPLETE
+        message = None
+
+    result = MultiposeRankingResult(
+        groups=groups,
+        options=options,
+        status=status,
+        message=message,
+        metadata={
+            **dict(metadata or {}),
+            "input_pose_count": len(records),
+            "group_count": len(groups),
+        },
+    )
+    validate_multipose_ranking_result(result)
+    return result
+
+
+def rank_poses_by_metric(
+    poses: Any,
+    metric: Any = RANKING_METRIC_FINAL_SCORE,
+    *,
+    direction: Any = RANKING_DIRECTION_HIGHER,
+    normalization: Any = RANKING_NORMALIZATION_NONE,
+    missing_policy: Any = RANKING_MISSING_EXCLUDE,
+    tie_strategy: Any = DEFAULT_RANKING_TIE_STRATEGY,
+    group_mode: Any = DEFAULT_RANKING_GROUP_MODE,
+    top_k: Optional[int] = None,
+    include_ties_at_cutoff: bool = True,
+    custom_metrics: Optional[Mapping[Any, Mapping[Any, Any]]] = None,
+) -> MultiposeRankingResult:
+    """Convenience API for one-metric ranking."""
+
+    criterion = RankingCriterion(
+        metric=metric,
+        weight=1.0,
+        direction=direction,
+        normalization=normalization,
+        missing_policy=missing_policy,
+        required=(
+            normalize_ranking_missing_policy(missing_policy)
+            == RANKING_MISSING_EXCLUDE
+        ),
+    )
+    options = MultiposeRankingOptions(
+        method=RANKING_METHOD_SINGLE_METRIC,
+        criteria=(criterion,),
+        tie_strategy=tie_strategy,
+        group_mode=group_mode,
+        top_k=top_k,
+        include_ties_at_cutoff=include_ties_at_cutoff,
+    )
+    return rank_multiple_poses(
+        poses,
+        options=options,
+        custom_metrics=custom_metrics,
+    )
+
+
+def rank_poses_by_docking_affinity(
+    poses: Any,
+    *,
+    normalization: Any = RANKING_NORMALIZATION_NONE,
+    tie_strategy: Any = DEFAULT_RANKING_TIE_STRATEGY,
+    group_mode: Any = DEFAULT_RANKING_GROUP_MODE,
+    top_k: Optional[int] = None,
+) -> MultiposeRankingResult:
+    """Rank poses by docking affinity, where more negative is better."""
+
+    return rank_poses_by_metric(
+        poses,
+        RANKING_METRIC_DOCKING_AFFINITY,
+        direction=RANKING_DIRECTION_LOWER,
+        normalization=normalization,
+        tie_strategy=tie_strategy,
+        group_mode=group_mode,
+        top_k=top_k,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 20.10. Lookups, rows, compact summaries, and alternative-ranking agreement
+# -----------------------------------------------------------------------------
+
+def multipose_ranking_to_rows(
+    result: MultiposeRankingResult,
+    *,
+    include_criteria: bool = True,
+    selected_only: bool = False,
+    decimal_places: Optional[int] = None,
+) -> Tuple[Dict[str, Any], ...]:
+    """Convert a ranking result into flat table-ready rows."""
+
+    places = result.options.decimal_places if decimal_places is None else decimal_places
+    rows: List[Dict[str, Any]] = []
+    for group in result.groups:
+        for entry in group.entries:
+            if selected_only and not entry.selected:
+                continue
+            row: Dict[str, Any] = {
+                "group_id": group.group_id,
+                "pose_id": entry.pose_id,
+                "model_id": entry.record.model_id,
+                "ligand_id": entry.record.ligand_id,
+                "rank": entry.rank,
+                "tied_rank": _ranking_round(entry.tied_rank, places),
+                "percentile": _ranking_round(entry.percentile, places),
+                "ranking_score": _ranking_round(entry.ranking_score, places),
+                "pareto_front": entry.pareto_front,
+                "pareto_dominated_count": entry.pareto_dominated_count,
+                "tie_size": entry.tie_size,
+                "best": entry.best,
+                "selected": entry.selected,
+            }
+            if include_criteria:
+                for criterion_value in entry.criterion_values:
+                    prefix = criterion_value.metric
+                    row[f"{prefix}_raw"] = _ranking_round(
+                        criterion_value.raw_value,
+                        places,
+                    )
+                    row[f"{prefix}_normalized"] = _ranking_round(
+                        criterion_value.normalized_value,
+                        places,
+                    )
+                    row[f"{prefix}_weighted"] = _ranking_round(
+                        criterion_value.weighted_value,
+                        places,
+                    )
+                    row[f"{prefix}_imputed"] = criterion_value.imputed
+            rows.append(row)
+    return tuple(rows)
+
+
+def summarize_multipose_ranking(
+    result: MultiposeRankingResult,
+) -> Dict[str, Any]:
+    """Return a compact programmatic summary."""
+
+    return {
+        "status": result.status,
+        "method": result.options.method,
+        "group_mode": result.options.group_mode,
+        "group_count": len(result.groups),
+        "ranked_pose_count": len(result.entries),
+        "excluded_pose_count": len(result.excluded_records),
+        "selected_pose_ids": [entry.pose_id for entry in result.selected],
+        "best_pose_ids": [entry.pose_id for entry in result.best],
+        "groups": {
+            group.group_id: {
+                "status": group.status,
+                "ranked_pose_count": len(group.entries),
+                "excluded_pose_count": len(group.excluded_records),
+                "best_pose_ids": [entry.pose_id for entry in group.best],
+                "selected_pose_ids": [entry.pose_id for entry in group.selected],
+            }
+            for group in result.groups
+        },
+    }
+
+
+def format_multipose_ranking_summary(
+    result: MultiposeRankingResult,
+    *,
+    top_n: int = 5,
+    decimal_places: int = 4,
+) -> str:
+    """Return a concise human-readable ranking summary."""
+
+    top_n = max(1, int(top_n))
+    lines = [
+        "Multipose ranking",
+        f"Status: {result.status}",
+        f"Method: {result.options.method}",
+        f"Grouping: {result.options.group_mode}",
+        f"Ranked poses: {len(result.entries)}",
+        f"Excluded poses: {len(result.excluded_records)}",
+    ]
+    for group in result.groups:
+        lines.append("")
+        lines.append(f"Group: {group.group_id}")
+        if not group.entries:
+            lines.append("  No eligible poses.")
+            continue
+        for entry in group.entries[:top_n]:
+            flags = []
+            if entry.best:
+                flags.append("best")
+            if entry.selected:
+                flags.append("selected")
+            suffix = f" [{', '.join(flags)}]" if flags else ""
+            lines.append(
+                f"  {entry.rank}. {entry.pose_id}: "
+                f"{entry.ranking_score:.{decimal_places}f}"
+                f"; front={entry.pareto_front}{suffix}"
+            )
+        if group.excluded_records:
+            lines.append(
+                f"  Excluded: {len(group.excluded_records)} pose(s)."
+            )
+    return "\n".join(lines)
+
+
+def _ranking_entry_map(
+    result: MultiposeRankingResult,
+) -> Mapping[str, RankedPose]:
+    """Return a unique pose-ID lookup across all groups."""
+
+    entries: Dict[str, RankedPose] = {}
+    for entry in result.entries:
+        if entry.pose_id in entries:
+            raise MultiposeRankingValidationError(
+                "Ranking comparison requires globally unique pose IDs."
+            )
+        entries[entry.pose_id] = entry
+    return MappingProxyType(entries)
+
+
+def _ranking_pearson(
+    left: Sequence[float],
+    right: Sequence[float],
+) -> Optional[float]:
+    """Return Pearson correlation or None for degenerate vectors."""
+
+    if len(left) != len(right) or len(left) < 2:
+        return None
+    left_mean = float(fmean(left))
+    right_mean = float(fmean(right))
+    numerator = sum(
+        (left_value - left_mean) * (right_value - right_mean)
+        for left_value, right_value in zip(left, right)
+    )
+    left_scale = math.sqrt(
+        sum((value - left_mean) ** 2 for value in left)
+    )
+    right_scale = math.sqrt(
+        sum((value - right_mean) ** 2 for value in right)
+    )
+    denominator = left_scale * right_scale
+    if denominator <= DEFAULT_RANKING_EPSILON:
+        return None
+    return max(-1.0, min(1.0, numerator / denominator))
+
+
+def _ranking_kendall_tau_b(
+    left: Sequence[float],
+    right: Sequence[float],
+    *,
+    epsilon: float = DEFAULT_RANKING_EPSILON,
+) -> Optional[float]:
+    """Return Kendall tau-b with explicit tie correction."""
+
+    if len(left) != len(right) or len(left) < 2:
+        return None
+    concordant = 0
+    discordant = 0
+    left_ties = 0
+    right_ties = 0
+    for first in range(len(left)):
+        for second in range(first + 1, len(left)):
+            left_delta = left[first] - left[second]
+            right_delta = right[first] - right[second]
+            left_tied = abs(left_delta) <= epsilon
+            right_tied = abs(right_delta) <= epsilon
+            if left_tied and right_tied:
+                continue
+            if left_tied:
+                left_ties += 1
+                continue
+            if right_tied:
+                right_ties += 1
+                continue
+            if left_delta * right_delta > 0.0:
+                concordant += 1
+            else:
+                discordant += 1
+    denominator = math.sqrt(
+        (concordant + discordant + left_ties)
+        * (concordant + discordant + right_ties)
+    )
+    if denominator <= epsilon:
+        return None
+    return (concordant - discordant) / denominator
+
+
+def compare_multipose_rankings(
+    ranking_a: MultiposeRankingResult,
+    ranking_b: MultiposeRankingResult,
+) -> RankingAgreementResult:
+    """Compare two rankings over their shared pose identifiers."""
+
+    entries_a = _ranking_entry_map(ranking_a)
+    entries_b = _ranking_entry_map(ranking_b)
+    shared = tuple(sorted(set(entries_a) & set(entries_b)))
+    ranks_a = tuple(entries_a[pose_id].tied_rank for pose_id in shared)
+    ranks_b = tuple(entries_b[pose_id].tied_rank for pose_id in shared)
+
+    changes: List[PoseRankChange] = []
+    for pose_id, rank_a, rank_b in zip(shared, ranks_a, ranks_b):
+        delta = rank_b - rank_a
+        changes.append(
+            PoseRankChange(
+                pose_id=pose_id,
+                rank_a=rank_a,
+                rank_b=rank_b,
+                delta=delta,
+                absolute_delta=abs(delta),
+                improved=delta < -DEFAULT_RANKING_EPSILON,
+                worsened=delta > DEFAULT_RANKING_EPSILON,
+                unchanged=abs(delta) <= DEFAULT_RANKING_EPSILON,
+                group_a=entries_a[pose_id].group_id,
+                group_b=entries_b[pose_id].group_id,
+            )
+        )
+
+    absolute_changes = tuple(change.absolute_delta for change in changes)
+    best_a = {entry.pose_id for entry in ranking_a.best}
+    best_b = {entry.pose_id for entry in ranking_b.best}
+    return RankingAgreementResult(
+        shared_pose_ids=shared,
+        changes=tuple(
+            sorted(
+                changes,
+                key=lambda change: (-change.absolute_delta, change.pose_id),
+            )
+        ),
+        spearman_rho=_ranking_pearson(ranks_a, ranks_b),
+        kendall_tau_b=_ranking_kendall_tau_b(ranks_a, ranks_b),
+        mean_absolute_rank_change=(
+            float(fmean(absolute_changes)) if absolute_changes else None
+        ),
+        maximum_absolute_rank_change=(
+            max(absolute_changes) if absolute_changes else None
+        ),
+        top_pose_agreement=bool(best_a and best_b and best_a == best_b),
+        metadata={
+            "ranking_a_method": ranking_a.options.method,
+            "ranking_b_method": ranking_b.options.method,
+            "shared_pose_count": len(shared),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 20.11. Validation
+# -----------------------------------------------------------------------------
+
+def validate_ranking_criterion(criterion: RankingCriterion) -> None:
+    """Validate one ranking criterion."""
+
+    if not isinstance(criterion, RankingCriterion):
+        raise MultiposeRankingValidationError(
+            "Expected a RankingCriterion instance."
+        )
+    if criterion.weight < 0.0 or not math.isfinite(criterion.weight):
+        raise MultiposeRankingValidationError(
+            f"Invalid weight for criterion {criterion.metric}."
+        )
+
+
+def validate_multipose_ranking_options(
+    options: MultiposeRankingOptions,
+) -> None:
+    """Validate one multipose-ranking configuration."""
+
+    if not isinstance(options, MultiposeRankingOptions):
+        raise MultiposeRankingValidationError(
+            "Expected MultiposeRankingOptions."
+        )
+    for criterion in options.criteria:
+        validate_ranking_criterion(criterion)
+    names = tuple(criterion.metric for criterion in options.criteria)
+    if len(names) != len(set(names)):
+        raise MultiposeRankingValidationError(
+            "Ranking criterion metric names must be unique."
+        )
+
+
+def validate_pose_ranking_record(record: PoseRankingRecord) -> None:
+    """Validate one canonical ranking record."""
+
+    if not isinstance(record, PoseRankingRecord):
+        raise MultiposeRankingValidationError(
+            "Expected a PoseRankingRecord instance."
+        )
+    if not record.pose_id:
+        raise MultiposeRankingValidationError("Ranking record pose_id is empty.")
+    for metric, value in record.metrics.items():
+        if value is not None and not math.isfinite(float(value)):
+            raise MultiposeRankingValidationError(
+                f"Non-finite metric {metric} for pose {record.pose_id}."
+            )
+
+
+def validate_ranked_pose(entry: RankedPose) -> None:
+    """Validate one ranked pose."""
+
+    if not isinstance(entry, RankedPose):
+        raise MultiposeRankingValidationError("Expected a RankedPose instance.")
+    validate_pose_ranking_record(entry.record)
+    if entry.pose_id != entry.record.pose_id:
+        raise MultiposeRankingValidationError(
+            "Ranked pose and record identifiers differ."
+        )
+    if not entry.criterion_values:
+        raise MultiposeRankingValidationError(
+            f"Ranked pose {entry.pose_id} has no criterion evaluations."
+        )
+
+
+def validate_ranking_group_result(
+    result: RankingGroupResult,
+    *,
+    epsilon: float = DEFAULT_RANKING_EPSILON,
+) -> None:
+    """Validate ranking order, uniqueness, best flags, and selection flags."""
+
+    if not isinstance(result, RankingGroupResult):
+        raise MultiposeRankingValidationError(
+            "Expected a RankingGroupResult instance."
+        )
+    for criterion in result.criteria:
+        validate_ranking_criterion(criterion)
+    for entry in result.entries:
+        validate_ranked_pose(entry)
+        if entry.group_id != result.group_id:
+            raise MultiposeRankingValidationError(
+                f"Pose {entry.pose_id} uses the wrong group ID."
+            )
+    for record in result.excluded_records:
+        validate_pose_ranking_record(record)
+
+    pose_ids = tuple(entry.pose_id for entry in result.entries)
+    excluded_ids = tuple(record.pose_id for record in result.excluded_records)
+    if len(pose_ids) != len(set(pose_ids)):
+        raise MultiposeRankingValidationError(
+            f"Duplicate ranked poses in group {result.group_id}."
+        )
+    if set(pose_ids) & set(excluded_ids):
+        raise MultiposeRankingValidationError(
+            f"Ranked and excluded poses overlap in group {result.group_id}."
+        )
+    if set(result.exclusion_reasons) != set(excluded_ids):
+        raise MultiposeRankingValidationError(
+            f"Exclusion reasons are incomplete in group {result.group_id}."
+        )
+
+    for previous, current in zip(result.entries, result.entries[1:]):
+        if result.method == RANKING_METHOD_PARETO:
+            if current.pareto_front < previous.pareto_front:
+                raise MultiposeRankingValidationError(
+                    "Pareto fronts are not ordered increasingly."
+                )
+            if (
+                current.pareto_front == previous.pareto_front
+                and current.ranking_score > previous.ranking_score + epsilon
+            ):
+                raise MultiposeRankingValidationError(
+                    "Scores inside a Pareto front are not ordered decreasingly."
+                )
+        elif current.ranking_score > previous.ranking_score + epsilon:
+            raise MultiposeRankingValidationError(
+                "Ranking scores are not ordered decreasingly."
+            )
+
+    if result.entries:
+        first = result.entries[0]
+        expected_best = {
+            entry.pose_id
+            for entry in result.entries
+            if (
+                entry.pareto_front == first.pareto_front
+                and _ranking_close(
+                    entry.ranking_score,
+                    first.ranking_score,
+                    epsilon,
+                )
+            )
+        }
+        observed_best = {entry.pose_id for entry in result.entries if entry.best}
+        if expected_best != observed_best:
+            raise MultiposeRankingValidationError(
+                f"Best-pose flags are inconsistent in group {result.group_id}."
+            )
+
+
+def validate_multipose_ranking_result(
+    result: MultiposeRankingResult,
+) -> None:
+    """Validate a complete multipose-ranking result."""
+
+    if not isinstance(result, MultiposeRankingResult):
+        raise MultiposeRankingValidationError(
+            "Expected a MultiposeRankingResult instance."
+        )
+    validate_multipose_ranking_options(result.options)
+    group_ids = tuple(group.group_id for group in result.groups)
+    if len(group_ids) != len(set(group_ids)):
+        raise MultiposeRankingValidationError(
+            "Multipose ranking group IDs are not unique."
+        )
+    all_pose_ids: List[str] = []
+    for group in result.groups:
+        validate_ranking_group_result(
+            group,
+            epsilon=result.options.epsilon,
+        )
+        all_pose_ids.extend(group.pose_ids)
+        all_pose_ids.extend(record.pose_id for record in group.excluded_records)
+    if len(all_pose_ids) != len(set(all_pose_ids)):
+        raise MultiposeRankingValidationError(
+            "Pose IDs occur in more than one ranking group."
+        )
+
+
+# -----------------------------------------------------------------------------
+# 20.12. Local self-check and public interface
+# -----------------------------------------------------------------------------
+
+def run_section_20_self_check() -> Mapping[str, bool]:
+    """Run lightweight deterministic checks without external docking objects."""
+
+    records = (
+        PoseRankingRecord(
+            pose_id="pose_1",
+            ligand_id="ligand_a",
+            model_id="model_a",
+            input_index=0,
+            metrics={
+                RANKING_METRIC_FINAL_SCORE: 10.0,
+                RANKING_METRIC_DOCKING_AFFINITY: -7.0,
+                RANKING_METRIC_COVERAGE_SCORE: 4.0,
+            },
+        ),
+        PoseRankingRecord(
+            pose_id="pose_2",
+            ligand_id="ligand_a",
+            model_id="model_a",
+            input_index=1,
+            metrics={
+                RANKING_METRIC_FINAL_SCORE: 8.0,
+                RANKING_METRIC_DOCKING_AFFINITY: -8.0,
+                RANKING_METRIC_COVERAGE_SCORE: 6.0,
+            },
+        ),
+        PoseRankingRecord(
+            pose_id="pose_3",
+            ligand_id="ligand_a",
+            model_id="model_a",
+            input_index=2,
+            metrics={
+                RANKING_METRIC_FINAL_SCORE: 8.0,
+                RANKING_METRIC_DOCKING_AFFINITY: -6.0,
+                RANKING_METRIC_COVERAGE_SCORE: 5.0,
+            },
+        ),
+    )
+
+    single = rank_poses_by_metric(
+        records,
+        RANKING_METRIC_FINAL_SCORE,
+        normalization=RANKING_NORMALIZATION_NONE,
+        top_k=2,
+    )
+    affinity = rank_poses_by_docking_affinity(records)
+    pareto = rank_multiple_poses(
+        records,
+        options=MultiposeRankingOptions(
+            method=RANKING_METHOD_PARETO,
+            criteria=(
+                RankingCriterion(
+                    RANKING_METRIC_FINAL_SCORE,
+                    weight=0.5,
+                    normalization=RANKING_NORMALIZATION_MINMAX,
+                ),
+                RankingCriterion(
+                    RANKING_METRIC_DOCKING_AFFINITY,
+                    weight=0.3,
+                    direction=RANKING_DIRECTION_LOWER,
+                    normalization=RANKING_NORMALIZATION_MINMAX,
+                ),
+                RankingCriterion(
+                    RANKING_METRIC_COVERAGE_SCORE,
+                    weight=0.2,
+                    normalization=RANKING_NORMALIZATION_MINMAX,
+                ),
+            ),
+        ),
+    )
+    agreement = compare_multipose_rankings(single, affinity)
+
+    checks = {
+        "single_best": single.best[0].pose_id == "pose_1",
+        "affinity_best": affinity.best[0].pose_id == "pose_2",
+        "tie_preserved_at_cutoff": {
+            entry.pose_id for entry in single.selected
+        } == {"pose_1", "pose_2", "pose_3"},
+        "pareto_complete": len(pareto.entries) == 3,
+        "rows_complete": len(multipose_ranking_to_rows(pareto)) == 3,
+        "agreement_complete": len(agreement.shared_pose_ids) == 3,
+    }
+    if not all(checks.values()):
+        failures = ", ".join(
+            name for name, successful in checks.items() if not successful
+        )
+        raise MultiposeRankingValidationError(
+            "Section 20 self-check failed: " + failures
+        )
+    return MappingProxyType(checks)
+
+
+_SECTION_20_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    # Statuses, methods, directions, and policies
+    "RANKING_STATUS_COMPLETE",
+    "RANKING_STATUS_PARTIAL",
+    "RANKING_STATUS_EMPTY",
+    "RANKING_STATUS_INVALID",
+    "RANKING_STATUSES",
+    "RANKING_METHOD_SINGLE_METRIC",
+    "RANKING_METHOD_WEIGHTED_SUM",
+    "RANKING_METHOD_BORDA",
+    "RANKING_METHOD_PARETO",
+    "RANKING_METHODS",
+    "RANKING_DIRECTION_HIGHER",
+    "RANKING_DIRECTION_LOWER",
+    "RANKING_DIRECTIONS",
+    "RANKING_NORMALIZATION_NONE",
+    "RANKING_NORMALIZATION_MINMAX",
+    "RANKING_NORMALIZATION_Z_SCORE",
+    "RANKING_NORMALIZATION_ROBUST_Z",
+    "RANKING_NORMALIZATION_PERCENTILE",
+    "RANKING_NORMALIZATION_METHODS",
+    "RANKING_TIE_COMPETITION",
+    "RANKING_TIE_DENSE",
+    "RANKING_TIE_ORDINAL",
+    "RANKING_TIE_AVERAGE",
+    "RANKING_TIE_STRATEGIES",
+    "RANKING_MISSING_EXCLUDE",
+    "RANKING_MISSING_ERROR",
+    "RANKING_MISSING_ZERO",
+    "RANKING_MISSING_MEDIAN",
+    "RANKING_MISSING_WORST",
+    "RANKING_MISSING_BEST",
+    "RANKING_MISSING_POLICIES",
+    "RANKING_GROUP_GLOBAL",
+    "RANKING_GROUP_LIGAND",
+    "RANKING_GROUP_MODEL",
+    "RANKING_GROUP_LIGAND_MODEL",
+    "RANKING_GROUP_MODES",
+    # Built-in metrics and defaults
+    "RANKING_METRIC_FINAL_SCORE",
+    "RANKING_METRIC_RAW_SCORE",
+    "RANKING_METRIC_NORMALIZED_SCORE",
+    "RANKING_METRIC_RANKING_SCORE",
+    "RANKING_METRIC_DOCKING_AFFINITY",
+    "RANKING_METRIC_INTERACTION_COUNT",
+    "RANKING_METRIC_RESIDUE_COUNT",
+    "RANKING_METRIC_HOTSPOT_COUNT",
+    "RANKING_METRIC_FAVORABLE_COUNT",
+    "RANKING_METRIC_UNFAVORABLE_COUNT",
+    "RANKING_METRIC_PENALTY_SCORE",
+    "RANKING_METRIC_BONUS_SCORE",
+    "RANKING_METRIC_DIVERSITY_SCORE",
+    "RANKING_METRIC_COVERAGE_SCORE",
+    "RANKING_BUILTIN_METRICS",
+    "RANKING_SCHEMA_VERSION",
+    "RANKING_SECTION_VERSION",
+    "DEFAULT_RANKING_EPSILON",
+    "DEFAULT_RANKING_METHOD",
+    "DEFAULT_RANKING_NORMALIZATION",
+    "DEFAULT_RANKING_TIE_STRATEGY",
+    "DEFAULT_RANKING_MISSING_POLICY",
+    "DEFAULT_RANKING_GROUP_MODE",
+    "DEFAULT_RANKING_DECIMAL_PLACES",
+    "DEFAULT_MULTIPOSE_RANKING_OPTIONS",
+    # Exceptions
+    "MultiposeRankingError",
+    "MultiposeRankingInputError",
+    "MultiposeRankingConfigurationError",
+    "MultiposeRankingValidationError",
+    # Dataclasses
+    "RankingCriterion",
+    "MultiposeRankingOptions",
+    "PoseRankingRecord",
+    "RankingCriterionValue",
+    "RankedPose",
+    "RankingGroupResult",
+    "MultiposeRankingResult",
+    "PoseRankChange",
+    "RankingAgreementResult",
+    # Canonicalization and configuration
+    "normalize_ranking_method",
+    "normalize_ranking_direction",
+    "normalize_ranking_normalization",
+    "normalize_ranking_tie_strategy",
+    "normalize_ranking_missing_policy",
+    "normalize_ranking_group_mode",
+    "normalize_ranking_metric_name",
+    "default_multipose_ranking_criteria",
+    # Adaptation and enrichment
+    "pose_score_to_ranking_record",
+    "pose_scoring_result_to_ranking_record",
+    "normalized_pose_score_to_ranking_record",
+    "mapping_to_ranking_record",
+    "materialize_pose_ranking_records",
+    "extract_diversity_metric_by_pose",
+    "extract_coverage_metric_by_pose",
+    "enrich_pose_ranking_records",
+    # Ranking engine
+    "ranking_group_id",
+    "group_pose_ranking_records",
+    "normalize_ranking_metric_values",
+    "assign_pareto_fronts",
+    "rank_pose_record_group",
+    "rank_multiple_poses",
+    "rank_poses_by_metric",
+    "rank_poses_by_docking_affinity",
+    # Summaries and comparison
+    "multipose_ranking_to_rows",
+    "summarize_multipose_ranking",
+    "format_multipose_ranking_summary",
+    "compare_multipose_rankings",
+    # Validation and self-check
+    "validate_ranking_criterion",
+    "validate_multipose_ranking_options",
+    "validate_pose_ranking_record",
+    "validate_ranked_pose",
+    "validate_ranking_group_result",
+    "validate_multipose_ranking_result",
+    "run_section_20_self_check",
+)
+
+if "__all__" not in globals():
+    __all__: List[str] = []
+
+for public_name in _SECTION_20_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+def section_20_public_names() -> Tuple[str, ...]:
+    """Return the complete immutable Section 20 public interface."""
+
+    return _SECTION_20_PUBLIC_NAMES
+
+
+def validate_section_20_public_interface() -> None:
+    """Validate that every declared Section 20 public name exists and exports."""
+
+    missing_names = tuple(
+        name for name in _SECTION_20_PUBLIC_NAMES if name not in globals()
+    )
+    if missing_names:
+        raise MultiposeRankingValidationError(
+            "Missing Section 20 public names: " + ", ".join(missing_names)
+        )
+    missing_exports = tuple(
+        name for name in _SECTION_20_PUBLIC_NAMES if name not in __all__
+    )
+    if missing_exports:
+        raise MultiposeRankingValidationError(
+            "Section 20 names missing from __all__: "
+            + ", ".join(missing_exports)
+        )
+
+
+if "section_20_public_names" not in __all__:
+    __all__.append("section_20_public_names")
+if "validate_section_20_public_interface" not in __all__:
+    __all__.append("validate_section_20_public_interface")
+
+validate_section_20_public_interface()
+
+# =============================================================================
+# End of Section 20
+# =============================================================================
+
+
+
