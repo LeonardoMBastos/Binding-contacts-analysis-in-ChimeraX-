@@ -73167,7 +73167,6 @@ validate_section_18_public_interface()
 # End of Section 18
 # =============================================================================
 
-
 # =============================================================================
 # DockAnalyzer — Interaction scoring
 # Section 19 — Statistics and summaries
@@ -80270,6 +80269,17490 @@ validate_section_20_public_interface()
 # =============================================================================
 # End of Section 20
 # =============================================================================
+
+
+
+# =============================================================================
+# DockAnalyzer — Interaction scoring
+# Section 21 — Consensus and persistence
+# =============================================================================
+
+"""
+Section 21 measures how consistently interaction features recur across docking
+poses and converts that recurrence into transparent consensus descriptions.
+
+The section consumes pose-level score objects, mappings, or the multipose
+ranking structures produced by Section 20. It does not redetect interactions,
+change pose scores, or serialize the complete scoring model. Those concerns
+remain assigned to the specialized interaction modules, Section 23, and
+Section 25, respectively.
+
+Supported capabilities include:
+- pose-level interaction persistence with duplicate collapse inside each pose;
+- consensus at interaction, residue-pair, residue, family, type, and hotspot
+  levels;
+- uniform, rank-based, ranking-score, percentile, and custom pose weights;
+- global, ligand, model, ligand-model, and ranking-group consensus;
+- configurable denominator policies and consensus thresholds;
+- representative interaction selection and score summaries;
+- pose support scores against the consensus and core signatures;
+- comparison of consensus signatures between groups;
+- ranked-prefix persistence curves;
+- tabular rows, compact summaries, validation, and a deterministic self-check.
+
+Persistence is defined at the pose level. Multiple matching interactions inside
+one pose increase the occurrence and score summaries but count only once in the
+persistence numerator. This prevents a pose containing duplicated atom-level
+contacts from artificially inflating cross-pose recurrence.
+"""
+
+# Section-local imports are harmless when this fragment is appended to the
+# complete scoring.py module and make the file easier to inspect independently.
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field, replace
+from statistics import fmean, median
+from types import MappingProxyType
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Final,
+    FrozenSet,
+    Hashable,
+    Iterable,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
+import math
+
+
+# -----------------------------------------------------------------------------
+# 21.1. Constants, levels, policies, and canonical names
+# -----------------------------------------------------------------------------
+
+CONSENSUS_STATUS_COMPLETE: Final[str] = "complete"
+CONSENSUS_STATUS_PARTIAL: Final[str] = "partial"
+CONSENSUS_STATUS_EMPTY: Final[str] = "empty"
+CONSENSUS_STATUS_INVALID: Final[str] = "invalid"
+
+CONSENSUS_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        CONSENSUS_STATUS_COMPLETE,
+        CONSENSUS_STATUS_PARTIAL,
+        CONSENSUS_STATUS_EMPTY,
+        CONSENSUS_STATUS_INVALID,
+    }
+)
+
+CONSENSUS_LEVEL_INTERACTION: Final[str] = "interaction"
+CONSENSUS_LEVEL_RESIDUE_PAIR: Final[str] = "residue_pair"
+CONSENSUS_LEVEL_RECEPTOR_RESIDUE: Final[str] = "receptor_residue"
+CONSENSUS_LEVEL_LIGAND_RESIDUE: Final[str] = "ligand_residue"
+CONSENSUS_LEVEL_FAMILY: Final[str] = "family"
+CONSENSUS_LEVEL_TYPE: Final[str] = "type"
+CONSENSUS_LEVEL_HOTSPOT: Final[str] = "hotspot"
+
+CONSENSUS_LEVELS: Final[FrozenSet[str]] = frozenset(
+    {
+        CONSENSUS_LEVEL_INTERACTION,
+        CONSENSUS_LEVEL_RESIDUE_PAIR,
+        CONSENSUS_LEVEL_RECEPTOR_RESIDUE,
+        CONSENSUS_LEVEL_LIGAND_RESIDUE,
+        CONSENSUS_LEVEL_FAMILY,
+        CONSENSUS_LEVEL_TYPE,
+        CONSENSUS_LEVEL_HOTSPOT,
+    }
+)
+
+PERSISTENCE_ID_INTERACTION: Final[str] = "interaction_id"
+PERSISTENCE_ID_ATOM_PAIR: Final[str] = "atom_pair"
+PERSISTENCE_ID_RESIDUE_PAIR: Final[str] = "residue_pair"
+PERSISTENCE_ID_FAMILY_RESIDUE_PAIR: Final[str] = "family_residue_pair"
+PERSISTENCE_ID_TYPE_RESIDUE_PAIR: Final[str] = "type_residue_pair"
+PERSISTENCE_ID_FAMILY_TYPE: Final[str] = "family_type"
+PERSISTENCE_ID_CUSTOM: Final[str] = "custom"
+
+PERSISTENCE_IDENTITY_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        PERSISTENCE_ID_INTERACTION,
+        PERSISTENCE_ID_ATOM_PAIR,
+        PERSISTENCE_ID_RESIDUE_PAIR,
+        PERSISTENCE_ID_FAMILY_RESIDUE_PAIR,
+        PERSISTENCE_ID_TYPE_RESIDUE_PAIR,
+        PERSISTENCE_ID_FAMILY_TYPE,
+        PERSISTENCE_ID_CUSTOM,
+    }
+)
+
+PERSISTENCE_DENOMINATOR_ALL: Final[str] = "all_poses"
+PERSISTENCE_DENOMINATOR_ELIGIBLE: Final[str] = "eligible_poses"
+PERSISTENCE_DENOMINATOR_SELECTED: Final[str] = "selected_poses"
+
+PERSISTENCE_DENOMINATOR_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        PERSISTENCE_DENOMINATOR_ALL,
+        PERSISTENCE_DENOMINATOR_ELIGIBLE,
+        PERSISTENCE_DENOMINATOR_SELECTED,
+    }
+)
+
+PERSISTENCE_WEIGHT_UNIFORM: Final[str] = "uniform"
+PERSISTENCE_WEIGHT_INVERSE_RANK: Final[str] = "inverse_rank"
+PERSISTENCE_WEIGHT_RANKING_SCORE: Final[str] = "ranking_score"
+PERSISTENCE_WEIGHT_PERCENTILE: Final[str] = "percentile"
+PERSISTENCE_WEIGHT_CUSTOM: Final[str] = "custom"
+
+PERSISTENCE_WEIGHT_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        PERSISTENCE_WEIGHT_UNIFORM,
+        PERSISTENCE_WEIGHT_INVERSE_RANK,
+        PERSISTENCE_WEIGHT_RANKING_SCORE,
+        PERSISTENCE_WEIGHT_PERCENTILE,
+        PERSISTENCE_WEIGHT_CUSTOM,
+    }
+)
+
+CONSENSUS_GROUP_GLOBAL: Final[str] = "global"
+CONSENSUS_GROUP_LIGAND: Final[str] = "ligand"
+CONSENSUS_GROUP_MODEL: Final[str] = "model"
+CONSENSUS_GROUP_LIGAND_MODEL: Final[str] = "ligand_model"
+CONSENSUS_GROUP_RANKING: Final[str] = "ranking_group"
+
+CONSENSUS_GROUP_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        CONSENSUS_GROUP_GLOBAL,
+        CONSENSUS_GROUP_LIGAND,
+        CONSENSUS_GROUP_MODEL,
+        CONSENSUS_GROUP_LIGAND_MODEL,
+        CONSENSUS_GROUP_RANKING,
+    }
+)
+
+CONSENSUS_REPRESENTATIVE_BEST_SCORE: Final[str] = "best_score"
+CONSENSUS_REPRESENTATIVE_MEDIAN_SCORE: Final[str] = "median_score"
+CONSENSUS_REPRESENTATIVE_FIRST: Final[str] = "first"
+
+CONSENSUS_REPRESENTATIVE_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        CONSENSUS_REPRESENTATIVE_BEST_SCORE,
+        CONSENSUS_REPRESENTATIVE_MEDIAN_SCORE,
+        CONSENSUS_REPRESENTATIVE_FIRST,
+    }
+)
+
+CONSENSUS_CLASS_UBIQUITOUS: Final[str] = "ubiquitous"
+CONSENSUS_CLASS_CORE: Final[str] = "core"
+CONSENSUS_CLASS_MAJOR: Final[str] = "major"
+CONSENSUS_CLASS_SUPPORTING: Final[str] = "supporting"
+CONSENSUS_CLASS_RARE: Final[str] = "rare"
+CONSENSUS_CLASS_SINGLETON: Final[str] = "singleton"
+
+CONSENSUS_CLASSES: Final[FrozenSet[str]] = frozenset(
+    {
+        CONSENSUS_CLASS_UBIQUITOUS,
+        CONSENSUS_CLASS_CORE,
+        CONSENSUS_CLASS_MAJOR,
+        CONSENSUS_CLASS_SUPPORTING,
+        CONSENSUS_CLASS_RARE,
+        CONSENSUS_CLASS_SINGLETON,
+    }
+)
+
+CONSENSUS_SCHEMA_VERSION: Final[str] = "1.0"
+CONSENSUS_SECTION_VERSION: Final[str] = "21.0"
+DEFAULT_CONSENSUS_THRESHOLD: Final[float] = 0.50
+DEFAULT_CORE_THRESHOLD: Final[float] = 0.80
+DEFAULT_UBIQUITOUS_THRESHOLD: Final[float] = 1.00
+DEFAULT_SUPPORTING_THRESHOLD: Final[float] = 0.25
+DEFAULT_CONSENSUS_EPSILON: Final[float] = 1.0e-9
+DEFAULT_CONSENSUS_IDENTITY_MODE: Final[str] = (
+    PERSISTENCE_ID_TYPE_RESIDUE_PAIR
+)
+DEFAULT_PERSISTENCE_DENOMINATOR: Final[str] = (
+    PERSISTENCE_DENOMINATOR_ELIGIBLE
+)
+DEFAULT_PERSISTENCE_WEIGHT_MODE: Final[str] = PERSISTENCE_WEIGHT_UNIFORM
+DEFAULT_CONSENSUS_GROUP_MODE: Final[str] = CONSENSUS_GROUP_GLOBAL
+DEFAULT_CONSENSUS_REPRESENTATIVE_MODE: Final[str] = (
+    CONSENSUS_REPRESENTATIVE_BEST_SCORE
+)
+DEFAULT_CONSENSUS_LEVELS: Final[Tuple[str, ...]] = (
+    CONSENSUS_LEVEL_INTERACTION,
+    CONSENSUS_LEVEL_RESIDUE_PAIR,
+    CONSENSUS_LEVEL_RECEPTOR_RESIDUE,
+    CONSENSUS_LEVEL_FAMILY,
+    CONSENSUS_LEVEL_TYPE,
+    CONSENSUS_LEVEL_HOTSPOT,
+)
+
+_CONSENSUS_LEVEL_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "interaction": CONSENSUS_LEVEL_INTERACTION,
+        "interactions": CONSENSUS_LEVEL_INTERACTION,
+        "feature": CONSENSUS_LEVEL_INTERACTION,
+        "residue_pair": CONSENSUS_LEVEL_RESIDUE_PAIR,
+        "residue_pairs": CONSENSUS_LEVEL_RESIDUE_PAIR,
+        "pair": CONSENSUS_LEVEL_RESIDUE_PAIR,
+        "receptor_residue": CONSENSUS_LEVEL_RECEPTOR_RESIDUE,
+        "receptor": CONSENSUS_LEVEL_RECEPTOR_RESIDUE,
+        "protein_residue": CONSENSUS_LEVEL_RECEPTOR_RESIDUE,
+        "ligand_residue": CONSENSUS_LEVEL_LIGAND_RESIDUE,
+        "ligand": CONSENSUS_LEVEL_LIGAND_RESIDUE,
+        "family": CONSENSUS_LEVEL_FAMILY,
+        "families": CONSENSUS_LEVEL_FAMILY,
+        "type": CONSENSUS_LEVEL_TYPE,
+        "types": CONSENSUS_LEVEL_TYPE,
+        "hotspot": CONSENSUS_LEVEL_HOTSPOT,
+        "hotspots": CONSENSUS_LEVEL_HOTSPOT,
+    }
+)
+
+_PERSISTENCE_IDENTITY_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "id": PERSISTENCE_ID_INTERACTION,
+        "interaction": PERSISTENCE_ID_INTERACTION,
+        "interaction_id": PERSISTENCE_ID_INTERACTION,
+        "atom": PERSISTENCE_ID_ATOM_PAIR,
+        "atoms": PERSISTENCE_ID_ATOM_PAIR,
+        "atom_pair": PERSISTENCE_ID_ATOM_PAIR,
+        "residue": PERSISTENCE_ID_RESIDUE_PAIR,
+        "residues": PERSISTENCE_ID_RESIDUE_PAIR,
+        "residue_pair": PERSISTENCE_ID_RESIDUE_PAIR,
+        "family_residue": PERSISTENCE_ID_FAMILY_RESIDUE_PAIR,
+        "family_residue_pair": PERSISTENCE_ID_FAMILY_RESIDUE_PAIR,
+        "type_residue": PERSISTENCE_ID_TYPE_RESIDUE_PAIR,
+        "type_residue_pair": PERSISTENCE_ID_TYPE_RESIDUE_PAIR,
+        "family_type": PERSISTENCE_ID_FAMILY_TYPE,
+        "custom": PERSISTENCE_ID_CUSTOM,
+    }
+)
+
+_PERSISTENCE_DENOMINATOR_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "all": PERSISTENCE_DENOMINATOR_ALL,
+        "all_poses": PERSISTENCE_DENOMINATOR_ALL,
+        "input": PERSISTENCE_DENOMINATOR_ALL,
+        "eligible": PERSISTENCE_DENOMINATOR_ELIGIBLE,
+        "eligible_poses": PERSISTENCE_DENOMINATOR_ELIGIBLE,
+        "included": PERSISTENCE_DENOMINATOR_ELIGIBLE,
+        "selected": PERSISTENCE_DENOMINATOR_SELECTED,
+        "selected_poses": PERSISTENCE_DENOMINATOR_SELECTED,
+        "top": PERSISTENCE_DENOMINATOR_SELECTED,
+    }
+)
+
+_PERSISTENCE_WEIGHT_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "uniform": PERSISTENCE_WEIGHT_UNIFORM,
+        "equal": PERSISTENCE_WEIGHT_UNIFORM,
+        "inverse_rank": PERSISTENCE_WEIGHT_INVERSE_RANK,
+        "rank": PERSISTENCE_WEIGHT_INVERSE_RANK,
+        "ranking_score": PERSISTENCE_WEIGHT_RANKING_SCORE,
+        "score": PERSISTENCE_WEIGHT_RANKING_SCORE,
+        "percentile": PERSISTENCE_WEIGHT_PERCENTILE,
+        "custom": PERSISTENCE_WEIGHT_CUSTOM,
+    }
+)
+
+_CONSENSUS_GROUP_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "global": CONSENSUS_GROUP_GLOBAL,
+        "all": CONSENSUS_GROUP_GLOBAL,
+        "ligand": CONSENSUS_GROUP_LIGAND,
+        "model": CONSENSUS_GROUP_MODEL,
+        "ligand_model": CONSENSUS_GROUP_LIGAND_MODEL,
+        "model_ligand": CONSENSUS_GROUP_LIGAND_MODEL,
+        "ranking": CONSENSUS_GROUP_RANKING,
+        "ranking_group": CONSENSUS_GROUP_RANKING,
+        "group": CONSENSUS_GROUP_RANKING,
+    }
+)
+
+_CONSENSUS_REPRESENTATIVE_ALIASES: Final[Mapping[str, str]] = (
+    MappingProxyType(
+        {
+            "best": CONSENSUS_REPRESENTATIVE_BEST_SCORE,
+            "best_score": CONSENSUS_REPRESENTATIVE_BEST_SCORE,
+            "maximum": CONSENSUS_REPRESENTATIVE_BEST_SCORE,
+            "median": CONSENSUS_REPRESENTATIVE_MEDIAN_SCORE,
+            "median_score": CONSENSUS_REPRESENTATIVE_MEDIAN_SCORE,
+            "first": CONSENSUS_REPRESENTATIVE_FIRST,
+        }
+    )
+)
+
+
+# -----------------------------------------------------------------------------
+# 21.2. Exceptions and normalization helpers
+# -----------------------------------------------------------------------------
+
+class ConsensusPersistenceError(RuntimeError):
+    """Base exception for Section 21 failures."""
+
+
+class ConsensusPersistenceInputError(ConsensusPersistenceError, ValueError):
+    """Raised when pose or interaction input cannot be adapted."""
+
+
+class ConsensusPersistenceConfigurationError(
+    ConsensusPersistenceError,
+    ValueError,
+):
+    """Raised when consensus options are invalid."""
+
+
+class ConsensusPersistenceValidationError(
+    ConsensusPersistenceError,
+    ValueError,
+):
+    """Raised when a Section 21 result is internally inconsistent."""
+
+
+def _consensus_token(value: Any) -> str:
+    """Return a stable lowercase token."""
+
+    if value is None:
+        return ""
+    text = str(value).strip().lower()
+    for character in ("-", " ", "/", ":", "."):
+        text = text.replace(character, "_")
+    while "__" in text:
+        text = text.replace("__", "_")
+    return text.strip("_")
+
+
+def _consensus_identifier(value: Any, *, default: str = "") -> str:
+    """Return a stripped identifier."""
+
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text or default
+
+
+def _consensus_canonical(
+    value: Any,
+    aliases: Mapping[str, str],
+    allowed: FrozenSet[str],
+    *,
+    name: str,
+) -> str:
+    """Normalize a canonical option value or raise."""
+
+    token = _consensus_token(value)
+    normalized = aliases.get(token, token)
+    if normalized not in allowed:
+        choices = ", ".join(sorted(allowed))
+        raise ConsensusPersistenceConfigurationError(
+            f"Unsupported {name}: {value!r}. Expected one of: {choices}."
+        )
+    return normalized
+
+
+def normalize_consensus_level(value: Any) -> str:
+    """Normalize a consensus aggregation level."""
+
+    return _consensus_canonical(
+        value,
+        _CONSENSUS_LEVEL_ALIASES,
+        CONSENSUS_LEVELS,
+        name="consensus level",
+    )
+
+
+def normalize_persistence_identity_mode(value: Any) -> str:
+    """Normalize an interaction identity mode."""
+
+    return _consensus_canonical(
+        value,
+        _PERSISTENCE_IDENTITY_ALIASES,
+        PERSISTENCE_IDENTITY_MODES,
+        name="persistence identity mode",
+    )
+
+
+def normalize_persistence_denominator(value: Any) -> str:
+    """Normalize a persistence denominator mode."""
+
+    return _consensus_canonical(
+        value,
+        _PERSISTENCE_DENOMINATOR_ALIASES,
+        PERSISTENCE_DENOMINATOR_MODES,
+        name="persistence denominator",
+    )
+
+
+def normalize_persistence_weight_mode(value: Any) -> str:
+    """Normalize a pose-weighting mode."""
+
+    return _consensus_canonical(
+        value,
+        _PERSISTENCE_WEIGHT_ALIASES,
+        PERSISTENCE_WEIGHT_MODES,
+        name="persistence weight mode",
+    )
+
+
+def normalize_consensus_group_mode(value: Any) -> str:
+    """Normalize a consensus grouping mode."""
+
+    return _consensus_canonical(
+        value,
+        _CONSENSUS_GROUP_ALIASES,
+        CONSENSUS_GROUP_MODES,
+        name="consensus group mode",
+    )
+
+
+def normalize_consensus_representative_mode(value: Any) -> str:
+    """Normalize a representative-selection mode."""
+
+    return _consensus_canonical(
+        value,
+        _CONSENSUS_REPRESENTATIVE_ALIASES,
+        CONSENSUS_REPRESENTATIVE_MODES,
+        name="representative mode",
+    )
+
+
+def _consensus_finite_optional(
+    value: Any,
+    *,
+    name: str,
+) -> Optional[float]:
+    """Convert a finite numeric value or return None."""
+
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return numeric
+
+
+def _consensus_finite(value: Any, *, name: str) -> float:
+    """Convert a required finite numeric value."""
+
+    numeric = _consensus_finite_optional(value, name=name)
+    if numeric is None:
+        raise ConsensusPersistenceConfigurationError(
+            f"{name} must be a finite numeric value."
+        )
+    return numeric
+
+
+def _consensus_freeze_metadata(
+    value: Optional[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    """Return an immutable shallow metadata mapping."""
+
+    if not value:
+        return MappingProxyType({})
+    return MappingProxyType(dict(value))
+
+
+def _consensus_freeze_float_mapping(
+    value: Optional[Mapping[Any, Any]],
+) -> Mapping[str, float]:
+    """Return an immutable string-to-float mapping."""
+
+    if not value:
+        return MappingProxyType({})
+    result: Dict[str, float] = {}
+    for key, item in value.items():
+        identifier = _consensus_identifier(key)
+        numeric = _consensus_finite_optional(
+            item,
+            name=f"mapping[{identifier!r}]",
+        )
+        if identifier and numeric is not None:
+            result[identifier] = numeric
+    return MappingProxyType(result)
+
+
+def _consensus_get(
+    value: Any,
+    names: Sequence[str],
+    *,
+    default: Any = None,
+) -> Any:
+    """Read the first available mapping key or attribute."""
+
+    if value is None:
+        return default
+    if isinstance(value, Mapping):
+        for name in names:
+            if name in value:
+                return value[name]
+        return default
+    for name in names:
+        try:
+            result = getattr(value, name)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if result is not None:
+            return result
+    return default
+
+
+def _consensus_sequence(value: Any) -> Tuple[Any, ...]:
+    """Materialize a safe object sequence."""
+
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes, bytearray)):
+        return ()
+    if isinstance(value, Mapping):
+        return tuple(value.values())
+    try:
+        return tuple(value)
+    except TypeError:
+        return (value,)
+
+
+def _consensus_string_tuple(value: Any) -> Tuple[str, ...]:
+    """Convert scalar or iterable identifiers into a stable tuple."""
+
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes, bytearray)):
+        identifier = _consensus_identifier(value)
+        return (identifier,) if identifier else ()
+    identifiers = []
+    for item in _consensus_sequence(value):
+        identifier = _consensus_identifier(item)
+        if identifier and identifier not in identifiers:
+            identifiers.append(identifier)
+    return tuple(identifiers)
+
+
+def _consensus_safe_ratio(numerator: float, denominator: float) -> float:
+    """Return a bounded ratio with a zero-denominator fallback."""
+
+    if denominator <= DEFAULT_CONSENSUS_EPSILON:
+        return 0.0
+    value = numerator / denominator
+    return min(1.0, max(0.0, float(value)))
+
+
+def _consensus_feature_id(level: str, parts: Sequence[Any]) -> str:
+    """Build a stable human-readable feature identifier."""
+
+    normalized = [
+        _consensus_identifier(part, default="unknown") for part in parts
+    ]
+    return f"{level}:" + "|".join(normalized)
+
+
+# -----------------------------------------------------------------------------
+# 21.3. Configuration
+# -----------------------------------------------------------------------------
+
+ConsensusKeyFunction = Callable[[Any], Hashable]
+
+
+@dataclass(frozen=True, slots=True)
+class ConsensusPersistenceOptions:
+    """Configuration for cross-pose consensus and persistence."""
+
+    levels: Tuple[str, ...] = DEFAULT_CONSENSUS_LEVELS
+    interaction_identity_mode: str = DEFAULT_CONSENSUS_IDENTITY_MODE
+    denominator_mode: str = DEFAULT_PERSISTENCE_DENOMINATOR
+    weight_mode: str = DEFAULT_PERSISTENCE_WEIGHT_MODE
+    group_mode: str = DEFAULT_CONSENSUS_GROUP_MODE
+    representative_mode: str = DEFAULT_CONSENSUS_REPRESENTATIVE_MODE
+
+    consensus_threshold: float = DEFAULT_CONSENSUS_THRESHOLD
+    core_threshold: float = DEFAULT_CORE_THRESHOLD
+    ubiquitous_threshold: float = DEFAULT_UBIQUITOUS_THRESHOLD
+    supporting_threshold: float = DEFAULT_SUPPORTING_THRESHOLD
+    minimum_pose_count: int = 1
+
+    accepted_only: bool = True
+    contributing_only: bool = True
+    successful_only: bool = True
+    selected_only: bool = False
+    include_zero_scores: bool = True
+    collapse_within_pose: bool = True
+
+    rank_decay: float = 1.0
+    score_field: str = "final_score"
+    epsilon: float = DEFAULT_CONSENSUS_EPSILON
+
+    custom_key_function: Optional[ConsensusKeyFunction] = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        normalized_levels: List[str] = []
+        for level in self.levels:
+            normalized = normalize_consensus_level(level)
+            if normalized not in normalized_levels:
+                normalized_levels.append(normalized)
+        if not normalized_levels:
+            raise ConsensusPersistenceConfigurationError(
+                "At least one consensus level is required."
+            )
+
+        identity_mode = normalize_persistence_identity_mode(
+            self.interaction_identity_mode
+        )
+        if (
+            identity_mode == PERSISTENCE_ID_CUSTOM
+            and self.custom_key_function is None
+        ):
+            raise ConsensusPersistenceConfigurationError(
+                "custom_key_function is required for custom identity mode."
+            )
+
+        thresholds = {
+            "supporting_threshold": _consensus_finite(
+                self.supporting_threshold,
+                name="supporting_threshold",
+            ),
+            "consensus_threshold": _consensus_finite(
+                self.consensus_threshold,
+                name="consensus_threshold",
+            ),
+            "core_threshold": _consensus_finite(
+                self.core_threshold,
+                name="core_threshold",
+            ),
+            "ubiquitous_threshold": _consensus_finite(
+                self.ubiquitous_threshold,
+                name="ubiquitous_threshold",
+            ),
+        }
+        if not (
+            0.0
+            <= thresholds["supporting_threshold"]
+            <= thresholds["consensus_threshold"]
+            <= thresholds["core_threshold"]
+            <= thresholds["ubiquitous_threshold"]
+            <= 1.0
+        ):
+            raise ConsensusPersistenceConfigurationError(
+                "Thresholds must satisfy 0 <= supporting <= consensus <= "
+                "core <= ubiquitous <= 1."
+            )
+
+        minimum_pose_count = int(self.minimum_pose_count)
+        if minimum_pose_count < 1:
+            raise ConsensusPersistenceConfigurationError(
+                "minimum_pose_count must be at least one."
+            )
+        rank_decay = _consensus_finite(
+            self.rank_decay,
+            name="rank_decay",
+        )
+        if rank_decay <= 0.0:
+            raise ConsensusPersistenceConfigurationError(
+                "rank_decay must be greater than zero."
+            )
+        epsilon = _consensus_finite(self.epsilon, name="epsilon")
+        if epsilon <= 0.0:
+            raise ConsensusPersistenceConfigurationError(
+                "epsilon must be greater than zero."
+            )
+
+        object.__setattr__(self, "levels", tuple(normalized_levels))
+        object.__setattr__(self, "interaction_identity_mode", identity_mode)
+        object.__setattr__(
+            self,
+            "denominator_mode",
+            normalize_persistence_denominator(self.denominator_mode),
+        )
+        object.__setattr__(
+            self,
+            "weight_mode",
+            normalize_persistence_weight_mode(self.weight_mode),
+        )
+        object.__setattr__(
+            self,
+            "group_mode",
+            normalize_consensus_group_mode(self.group_mode),
+        )
+        object.__setattr__(
+            self,
+            "representative_mode",
+            normalize_consensus_representative_mode(
+                self.representative_mode
+            ),
+        )
+        for name, numeric in thresholds.items():
+            object.__setattr__(self, name, numeric)
+        object.__setattr__(self, "minimum_pose_count", minimum_pose_count)
+        object.__setattr__(self, "accepted_only", bool(self.accepted_only))
+        object.__setattr__(
+            self,
+            "contributing_only",
+            bool(self.contributing_only),
+        )
+        object.__setattr__(
+            self,
+            "successful_only",
+            bool(self.successful_only),
+        )
+        object.__setattr__(self, "selected_only", bool(self.selected_only))
+        object.__setattr__(
+            self,
+            "include_zero_scores",
+            bool(self.include_zero_scores),
+        )
+        object.__setattr__(
+            self,
+            "collapse_within_pose",
+            bool(self.collapse_within_pose),
+        )
+        object.__setattr__(self, "rank_decay", rank_decay)
+        object.__setattr__(
+            self,
+            "score_field",
+            _consensus_identifier(self.score_field, default="final_score"),
+        )
+        object.__setattr__(self, "epsilon", epsilon)
+        object.__setattr__(
+            self,
+            "metadata",
+            _consensus_freeze_metadata(self.metadata),
+        )
+
+    @property
+    def primary_level(self) -> str:
+        """Return the first configured aggregation level."""
+
+        return self.levels[0]
+
+
+DEFAULT_CONSENSUS_PERSISTENCE_OPTIONS: Final[
+    ConsensusPersistenceOptions
+] = ConsensusPersistenceOptions()
+
+
+# -----------------------------------------------------------------------------
+# 21.4. Pose, observation, persistence, and result dataclasses
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ConsensusPoseRecord:
+    """Pose adapted for consensus analysis."""
+
+    pose_id: str
+    model_id: Optional[str] = None
+    ligand_id: Optional[str] = None
+    ranking_group_id: Optional[str] = None
+    input_index: int = 0
+    rank: Optional[int] = None
+    tied_rank: Optional[float] = None
+    ranking_score: Optional[float] = None
+    percentile: Optional[float] = None
+    selected: bool = True
+    accepted: bool = True
+    successful: bool = True
+    weight: float = 1.0
+    interactions: Tuple[Any, ...] = field(default_factory=tuple)
+    hotspots: Tuple[str, ...] = field(default_factory=tuple)
+    source: Any = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        pose_id = _consensus_identifier(self.pose_id)
+        if not pose_id:
+            raise ConsensusPersistenceInputError(
+                "ConsensusPoseRecord.pose_id cannot be empty."
+            )
+        weight = _consensus_finite(self.weight, name="pose weight")
+        if weight < 0.0:
+            raise ConsensusPersistenceInputError(
+                "ConsensusPoseRecord.weight cannot be negative."
+            )
+        rank = None if self.rank is None else int(self.rank)
+        if rank is not None and rank < 1:
+            raise ConsensusPersistenceInputError(
+                "ConsensusPoseRecord.rank must be positive or None."
+            )
+        object.__setattr__(self, "pose_id", pose_id)
+        object.__setattr__(
+            self,
+            "model_id",
+            _consensus_identifier(self.model_id) or None,
+        )
+        object.__setattr__(
+            self,
+            "ligand_id",
+            _consensus_identifier(self.ligand_id) or None,
+        )
+        object.__setattr__(
+            self,
+            "ranking_group_id",
+            _consensus_identifier(self.ranking_group_id) or None,
+        )
+        object.__setattr__(self, "input_index", int(self.input_index))
+        object.__setattr__(self, "rank", rank)
+        object.__setattr__(
+            self,
+            "tied_rank",
+            _consensus_finite_optional(self.tied_rank, name="tied_rank"),
+        )
+        object.__setattr__(
+            self,
+            "ranking_score",
+            _consensus_finite_optional(
+                self.ranking_score,
+                name="ranking_score",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "percentile",
+            _consensus_finite_optional(self.percentile, name="percentile"),
+        )
+        object.__setattr__(self, "selected", bool(self.selected))
+        object.__setattr__(self, "accepted", bool(self.accepted))
+        object.__setattr__(self, "successful", bool(self.successful))
+        object.__setattr__(self, "weight", weight)
+        object.__setattr__(self, "interactions", tuple(self.interactions))
+        object.__setattr__(self, "hotspots", _consensus_string_tuple(self.hotspots))
+        object.__setattr__(
+            self,
+            "metadata",
+            _consensus_freeze_metadata(self.metadata),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PoseFeatureObservation:
+    """One collapsed feature occurrence inside one pose."""
+
+    feature_id: str
+    level: str
+    key_parts: Tuple[str, ...]
+    pose_id: str
+    group_id: str
+    family: Optional[str] = None
+    interaction_type: Optional[str] = None
+    residue_ids: Tuple[str, ...] = field(default_factory=tuple)
+    atom_ids: Tuple[str, ...] = field(default_factory=tuple)
+    occurrence_count: int = 1
+    scores: Tuple[float, ...] = field(default_factory=tuple)
+    representative: Any = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        level = normalize_consensus_level(self.level)
+        feature_id = _consensus_identifier(self.feature_id)
+        if not feature_id:
+            raise ConsensusPersistenceInputError(
+                "PoseFeatureObservation.feature_id cannot be empty."
+            )
+        occurrence_count = int(self.occurrence_count)
+        if occurrence_count < 1:
+            raise ConsensusPersistenceInputError(
+                "PoseFeatureObservation.occurrence_count must be positive."
+            )
+        scores = tuple(
+            numeric
+            for numeric in (
+                _consensus_finite_optional(item, name="observation score")
+                for item in self.scores
+            )
+            if numeric is not None
+        )
+        object.__setattr__(self, "feature_id", feature_id)
+        object.__setattr__(self, "level", level)
+        object.__setattr__(
+            self,
+            "key_parts",
+            _consensus_string_tuple(self.key_parts),
+        )
+        object.__setattr__(
+            self,
+            "pose_id",
+            _consensus_identifier(self.pose_id),
+        )
+        object.__setattr__(
+            self,
+            "group_id",
+            _consensus_identifier(self.group_id, default="global"),
+        )
+        object.__setattr__(
+            self,
+            "family",
+            _consensus_identifier(self.family) or None,
+        )
+        object.__setattr__(
+            self,
+            "interaction_type",
+            _consensus_identifier(self.interaction_type) or None,
+        )
+        object.__setattr__(
+            self,
+            "residue_ids",
+            _consensus_string_tuple(self.residue_ids),
+        )
+        object.__setattr__(
+            self,
+            "atom_ids",
+            _consensus_string_tuple(self.atom_ids),
+        )
+        object.__setattr__(self, "occurrence_count", occurrence_count)
+        object.__setattr__(self, "scores", scores)
+        object.__setattr__(
+            self,
+            "metadata",
+            _consensus_freeze_metadata(self.metadata),
+        )
+
+    @property
+    def total_score(self) -> float:
+        """Return the sum of observation scores."""
+
+        return float(sum(self.scores))
+
+    @property
+    def mean_score(self) -> Optional[float]:
+        """Return the mean score or None."""
+
+        return float(fmean(self.scores)) if self.scores else None
+
+
+@dataclass(frozen=True, slots=True)
+class PersistentFeatureRecord:
+    """Cross-pose persistence statistics for one canonical feature."""
+
+    feature_id: str
+    level: str
+    key_parts: Tuple[str, ...]
+    label: str
+    family: Optional[str]
+    interaction_type: Optional[str]
+    residue_ids: Tuple[str, ...]
+    atom_ids: Tuple[str, ...]
+
+    pose_ids: Tuple[str, ...]
+    pose_count: int
+    denominator_pose_count: int
+    persistence_fraction: float
+
+    support_weight: float
+    denominator_weight: float
+    weighted_persistence_fraction: float
+
+    occurrence_count: int
+    mean_occurrences_per_supporting_pose: float
+    score_count: int
+    score_total: float
+    score_mean: Optional[float]
+    score_median: Optional[float]
+    score_minimum: Optional[float]
+    score_maximum: Optional[float]
+
+    consensus_class: str
+    is_consensus: bool
+    is_core: bool
+    is_ubiquitous: bool
+
+    representative_pose_id: Optional[str]
+    representative: Any = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "level",
+            normalize_consensus_level(self.level),
+        )
+        object.__setattr__(
+            self,
+            "key_parts",
+            _consensus_string_tuple(self.key_parts),
+        )
+        object.__setattr__(
+            self,
+            "pose_ids",
+            _consensus_string_tuple(self.pose_ids),
+        )
+        object.__setattr__(
+            self,
+            "residue_ids",
+            _consensus_string_tuple(self.residue_ids),
+        )
+        object.__setattr__(
+            self,
+            "atom_ids",
+            _consensus_string_tuple(self.atom_ids),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _consensus_freeze_metadata(self.metadata),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PoseConsensusSupport:
+    """How strongly one pose supports a group's consensus signature."""
+
+    pose_id: str
+    group_id: str
+    rank: Optional[int]
+    selected: bool
+    feature_count: int
+    consensus_feature_count: int
+    core_feature_count: int
+    consensus_precision: float
+    consensus_recall: float
+    core_recall: float
+    mean_feature_persistence: float
+    persistence_support_score: float
+    consensus_score: float
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ConsensusLevelResult:
+    """Persistence result for one aggregation level."""
+
+    level: str
+    records: Tuple[PersistentFeatureRecord, ...]
+    consensus_records: Tuple[PersistentFeatureRecord, ...]
+    core_records: Tuple[PersistentFeatureRecord, ...]
+    ubiquitous_records: Tuple[PersistentFeatureRecord, ...]
+    feature_count: int
+    consensus_feature_count: int
+    core_feature_count: int
+    ubiquitous_feature_count: int
+    mean_persistence: float
+    mean_weighted_persistence: float
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "level",
+            normalize_consensus_level(self.level),
+        )
+        object.__setattr__(self, "records", tuple(self.records))
+        object.__setattr__(
+            self,
+            "consensus_records",
+            tuple(self.consensus_records),
+        )
+        object.__setattr__(self, "core_records", tuple(self.core_records))
+        object.__setattr__(
+            self,
+            "ubiquitous_records",
+            tuple(self.ubiquitous_records),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _consensus_freeze_metadata(self.metadata),
+        )
+
+    @property
+    def consensus_feature_ids(self) -> Tuple[str, ...]:
+        """Return consensus feature IDs in persistence order."""
+
+        return tuple(record.feature_id for record in self.consensus_records)
+
+    @property
+    def core_feature_ids(self) -> Tuple[str, ...]:
+        """Return core feature IDs in persistence order."""
+
+        return tuple(record.feature_id for record in self.core_records)
+
+
+@dataclass(frozen=True, slots=True)
+class ConsensusGroupResult:
+    """Consensus result for one pose group."""
+
+    group_id: str
+    pose_records: Tuple[ConsensusPoseRecord, ...]
+    included_pose_ids: Tuple[str, ...]
+    excluded_pose_ids: Tuple[str, ...]
+    exclusion_reasons: Mapping[str, str]
+    denominator_pose_ids: Tuple[str, ...]
+    denominator_pose_count: int
+    denominator_weight: float
+    level_results: Mapping[str, ConsensusLevelResult]
+    pose_support: Tuple[PoseConsensusSupport, ...]
+    status: str
+    primary_level: str
+    message: Optional[str] = None
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "group_id",
+            _consensus_identifier(self.group_id, default="global"),
+        )
+        object.__setattr__(self, "pose_records", tuple(self.pose_records))
+        object.__setattr__(
+            self,
+            "included_pose_ids",
+            _consensus_string_tuple(self.included_pose_ids),
+        )
+        object.__setattr__(
+            self,
+            "excluded_pose_ids",
+            _consensus_string_tuple(self.excluded_pose_ids),
+        )
+        object.__setattr__(
+            self,
+            "exclusion_reasons",
+            MappingProxyType(dict(self.exclusion_reasons)),
+        )
+        object.__setattr__(
+            self,
+            "denominator_pose_ids",
+            _consensus_string_tuple(self.denominator_pose_ids),
+        )
+        object.__setattr__(
+            self,
+            "level_results",
+            MappingProxyType(dict(self.level_results)),
+        )
+        object.__setattr__(self, "pose_support", tuple(self.pose_support))
+        object.__setattr__(
+            self,
+            "primary_level",
+            normalize_consensus_level(self.primary_level),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _consensus_freeze_metadata(self.metadata),
+        )
+
+    @property
+    def primary_result(self) -> ConsensusLevelResult:
+        """Return the configured primary-level result."""
+
+        return self.level_results[self.primary_level]
+
+    @property
+    def records(self) -> Tuple[PersistentFeatureRecord, ...]:
+        """Return primary-level persistence records."""
+
+        return self.primary_result.records
+
+    @property
+    def consensus_records(self) -> Tuple[PersistentFeatureRecord, ...]:
+        """Return primary-level consensus records."""
+
+        return self.primary_result.consensus_records
+
+    @property
+    def core_records(self) -> Tuple[PersistentFeatureRecord, ...]:
+        """Return primary-level core records."""
+
+        return self.primary_result.core_records
+
+
+@dataclass(frozen=True, slots=True)
+class ConsensusPersistenceResult:
+    """Complete Section 21 output."""
+
+    groups: Tuple[ConsensusGroupResult, ...]
+    options: ConsensusPersistenceOptions
+    status: str
+    message: Optional[str] = None
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "groups", tuple(self.groups))
+        object.__setattr__(
+            self,
+            "metadata",
+            _consensus_freeze_metadata(self.metadata),
+        )
+
+    @property
+    def pose_count(self) -> int:
+        """Return the number of unique input poses."""
+
+        return len(
+            {
+                pose.pose_id
+                for group in self.groups
+                for pose in group.pose_records
+            }
+        )
+
+    @property
+    def records(self) -> Tuple[PersistentFeatureRecord, ...]:
+        """Return all primary-level persistence records."""
+
+        return tuple(
+            record for group in self.groups for record in group.records
+        )
+
+    @property
+    def consensus_records(self) -> Tuple[PersistentFeatureRecord, ...]:
+        """Return all primary-level consensus records."""
+
+        return tuple(
+            record
+            for group in self.groups
+            for record in group.consensus_records
+        )
+
+    @property
+    def core_records(self) -> Tuple[PersistentFeatureRecord, ...]:
+        """Return all primary-level core records."""
+
+        return tuple(
+            record for group in self.groups for record in group.core_records
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ConsensusComparisonResult:
+    """Signature overlap between two consensus groups."""
+
+    group_a: str
+    group_b: str
+    level: str
+    feature_ids_a: Tuple[str, ...]
+    feature_ids_b: Tuple[str, ...]
+    shared_feature_ids: Tuple[str, ...]
+    unique_to_a: Tuple[str, ...]
+    unique_to_b: Tuple[str, ...]
+    union_feature_count: int
+    jaccard_similarity: float
+    overlap_coefficient: float
+    weighted_jaccard_similarity: float
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class PersistenceCutoffPoint:
+    """Persistence statistics for a ranked pose prefix."""
+
+    top_n: int
+    pose_ids: Tuple[str, ...]
+    feature_count: int
+    consensus_feature_count: int
+    core_feature_count: int
+    mean_persistence: float
+    signature_jaccard_to_full: float
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 21.5. Pose and ranking adaptation
+# -----------------------------------------------------------------------------
+
+_POSE_INTERACTION_FIELDS: Final[Tuple[str, ...]] = (
+    "scores",
+    "interactions",
+    "interaction_scores",
+    "scored_interactions",
+)
+
+
+def _extract_pose_interactions(value: Any) -> Tuple[Any, ...]:
+    """Extract interaction-score objects from a pose-like value."""
+
+    if value is None:
+        return ()
+    for field_name in _POSE_INTERACTION_FIELDS:
+        candidate = _consensus_get(value, (field_name,))
+        if candidate is not None:
+            return _consensus_sequence(candidate)
+
+    pose_score = _consensus_get(value, ("pose_score", "score_result"))
+    if pose_score is not None and pose_score is not value:
+        interactions = _extract_pose_interactions(pose_score)
+        if interactions:
+            return interactions
+
+    collection = _consensus_get(value, ("collection_result",))
+    if collection is not None:
+        interactions = _consensus_get(
+            collection,
+            ("scores", "interaction_scores", "interactions"),
+        )
+        if interactions is not None:
+            return _consensus_sequence(interactions)
+
+    source = _consensus_get(value, ("source",))
+    if source is not None and source is not value:
+        return _extract_pose_interactions(source)
+    return ()
+
+
+def _extract_pose_hotspots(value: Any) -> Tuple[str, ...]:
+    """Extract hotspot residue IDs from a pose-like value."""
+
+    direct = _consensus_get(value, ("hotspots", "hotspot_residues"))
+    residues = _consensus_sequence(direct)
+    if not residues:
+        residue_result = _consensus_get(value, ("residue_result",))
+        residues = _consensus_sequence(
+            _consensus_get(residue_result, ("hotspots",))
+        )
+    result: List[str] = []
+    for residue in residues:
+        identifier = _consensus_identifier(
+            _consensus_get(
+                residue,
+                ("residue_id", "identifier", "id"),
+                default=residue,
+            )
+        )
+        if identifier and identifier not in result:
+            result.append(identifier)
+    return tuple(result)
+
+
+def _pose_successful(value: Any) -> bool:
+    """Infer whether a pose contains a usable scoring result."""
+
+    successful = _consensus_get(value, ("successful", "success"))
+    if successful is not None:
+        return bool(successful)
+    status = _consensus_token(_consensus_get(value, ("status",)))
+    if status in {"failed", "error", "invalid", "rejected"}:
+        return False
+    return True
+
+
+def _pose_accepted(value: Any) -> bool:
+    """Infer whether a pose is accepted for downstream analysis."""
+
+    accepted = _consensus_get(value, ("accepted", "eligible"))
+    if accepted is not None:
+        return bool(accepted)
+    status = _consensus_token(_consensus_get(value, ("status",)))
+    return status not in {"failed", "error", "invalid", "rejected"}
+
+
+def _pose_record_from_value(
+    value: Any,
+    *,
+    input_index: int,
+    pose_id_hint: Optional[str] = None,
+) -> ConsensusPoseRecord:
+    """Adapt one pose-like object without ranking information."""
+
+    pose_id = _consensus_identifier(
+        _consensus_get(
+            value,
+            ("pose_id", "identifier", "id", "name"),
+            default=pose_id_hint,
+        ),
+        default=pose_id_hint or f"pose_{input_index + 1}",
+    )
+    metadata = _consensus_get(value, ("metadata",), default={})
+    if not isinstance(metadata, Mapping):
+        metadata = {}
+    return ConsensusPoseRecord(
+        pose_id=pose_id,
+        model_id=_consensus_get(value, ("model_id", "structure_id")),
+        ligand_id=_consensus_get(value, ("ligand_id", "compound_id")),
+        input_index=input_index,
+        accepted=_pose_accepted(value),
+        successful=_pose_successful(value),
+        interactions=_extract_pose_interactions(value),
+        hotspots=_extract_pose_hotspots(value),
+        source=value,
+        metadata=metadata,
+    )
+
+
+def _ranking_result_to_pose_records(value: Any) -> Tuple[ConsensusPoseRecord, ...]:
+    """Adapt a Section 20 ranking result through structural attributes."""
+
+    groups = _consensus_sequence(_consensus_get(value, ("groups",)))
+    records: List[ConsensusPoseRecord] = []
+    input_index = 0
+    for group in groups:
+        group_id = _consensus_identifier(
+            _consensus_get(group, ("group_id",)),
+            default="global",
+        )
+        entries = _consensus_sequence(_consensus_get(group, ("entries",)))
+        for entry in entries:
+            ranking_record = _consensus_get(entry, ("record",), default=entry)
+            source = _consensus_get(
+                ranking_record,
+                ("source",),
+                default=ranking_record,
+            )
+            pose_id = _consensus_identifier(
+                _consensus_get(entry, ("pose_id",)),
+                default=_consensus_identifier(
+                    _consensus_get(ranking_record, ("pose_id",)),
+                    default=f"pose_{input_index + 1}",
+                ),
+            )
+            metadata = _consensus_get(
+                ranking_record,
+                ("metadata",),
+                default={},
+            )
+            if not isinstance(metadata, Mapping):
+                metadata = {}
+            records.append(
+                ConsensusPoseRecord(
+                    pose_id=pose_id,
+                    model_id=_consensus_get(
+                        ranking_record,
+                        ("model_id",),
+                    ),
+                    ligand_id=_consensus_get(
+                        ranking_record,
+                        ("ligand_id",),
+                    ),
+                    ranking_group_id=group_id,
+                    input_index=int(
+                        _consensus_get(
+                            ranking_record,
+                            ("input_index",),
+                            default=input_index,
+                        )
+                    ),
+                    rank=_consensus_get(entry, ("rank",)),
+                    tied_rank=_consensus_get(entry, ("tied_rank",)),
+                    ranking_score=_consensus_get(
+                        entry,
+                        ("ranking_score",),
+                    ),
+                    percentile=_consensus_get(entry, ("percentile",)),
+                    selected=bool(
+                        _consensus_get(
+                            entry,
+                            ("selected",),
+                            default=True,
+                        )
+                    ),
+                    accepted=bool(
+                        _consensus_get(
+                            ranking_record,
+                            ("accepted",),
+                            default=True,
+                        )
+                    ),
+                    successful=bool(
+                        _consensus_get(
+                            ranking_record,
+                            ("successful",),
+                            default=True,
+                        )
+                    ),
+                    interactions=_extract_pose_interactions(source),
+                    hotspots=_extract_pose_hotspots(source),
+                    source=source,
+                    metadata=metadata,
+                )
+            )
+            input_index += 1
+    return tuple(records)
+
+
+def materialize_consensus_pose_records(
+    source: Any,
+    *,
+    ranking: Optional[Any] = None,
+) -> Tuple[ConsensusPoseRecord, ...]:
+    """Materialize unique pose records from mappings, sequences, or rankings."""
+
+    ranking_source = ranking
+    if ranking_source is None:
+        groups = _consensus_get(source, ("groups",))
+        if groups is not None:
+            ranking_source = source
+    if ranking_source is not None:
+        records = _ranking_result_to_pose_records(ranking_source)
+    elif isinstance(source, ConsensusPoseRecord):
+        records = (source,)
+    elif isinstance(source, Mapping):
+        if any(
+            key in source
+            for key in (
+                "pose_id",
+                "interactions",
+                "scores",
+                "interaction_scores",
+            )
+        ):
+            records = (_pose_record_from_value(source, input_index=0),)
+        else:
+            records = tuple(
+                _pose_record_from_value(
+                    value,
+                    input_index=index,
+                    pose_id_hint=_consensus_identifier(key),
+                )
+                for index, (key, value) in enumerate(source.items())
+            )
+    else:
+        values = _consensus_sequence(source)
+        if values and all(
+            _consensus_get(item, ("interaction_type", "interaction_id"))
+            is not None
+            for item in values
+        ):
+            records = (
+                ConsensusPoseRecord(
+                    pose_id="pose_1",
+                    interactions=values,
+                    source=source,
+                ),
+            )
+        else:
+            records = tuple(
+                item
+                if isinstance(item, ConsensusPoseRecord)
+                else _pose_record_from_value(item, input_index=index)
+                for index, item in enumerate(values)
+            )
+
+    pose_ids = tuple(record.pose_id for record in records)
+    if len(pose_ids) != len(set(pose_ids)):
+        duplicates = sorted(
+            pose_id
+            for pose_id, count in Counter(pose_ids).items()
+            if count > 1
+        )
+        raise ConsensusPersistenceInputError(
+            "Duplicate pose identifiers: " + ", ".join(duplicates)
+        )
+    return records
+
+
+def _normalize_positive_weights(
+    values: Mapping[str, float],
+    *,
+    epsilon: float,
+) -> Mapping[str, float]:
+    """Normalize nonnegative pose weights to mean one."""
+
+    if not values:
+        return MappingProxyType({})
+    cleaned = {key: max(0.0, float(value)) for key, value in values.items()}
+    total = sum(cleaned.values())
+    if total <= epsilon:
+        return MappingProxyType({key: 1.0 for key in cleaned})
+    scale = len(cleaned) / total
+    return MappingProxyType(
+        {key: float(value * scale) for key, value in cleaned.items()}
+    )
+
+
+def assign_consensus_pose_weights(
+    records: Sequence[ConsensusPoseRecord],
+    *,
+    options: ConsensusPersistenceOptions,
+    custom_pose_weights: Optional[Mapping[Any, Any]] = None,
+) -> Tuple[ConsensusPoseRecord, ...]:
+    """Assign normalized nonnegative weights to pose records."""
+
+    custom_weights = _consensus_freeze_float_mapping(custom_pose_weights)
+    raw: Dict[str, float] = {}
+    ranking_scores = [
+        record.ranking_score
+        for record in records
+        if record.ranking_score is not None
+    ]
+    minimum_score = min(ranking_scores) if ranking_scores else 0.0
+
+    for record in records:
+        if options.weight_mode == PERSISTENCE_WEIGHT_UNIFORM:
+            weight = 1.0
+        elif options.weight_mode == PERSISTENCE_WEIGHT_INVERSE_RANK:
+            rank = record.rank or (record.input_index + 1)
+            weight = 1.0 / (float(rank) ** options.rank_decay)
+        elif options.weight_mode == PERSISTENCE_WEIGHT_RANKING_SCORE:
+            if record.ranking_score is None:
+                weight = 0.0
+            else:
+                weight = max(
+                    0.0,
+                    record.ranking_score - minimum_score + options.epsilon,
+                )
+        elif options.weight_mode == PERSISTENCE_WEIGHT_PERCENTILE:
+            weight = max(0.0, record.percentile or 0.0)
+        else:
+            weight = custom_weights.get(record.pose_id, 0.0)
+        raw[record.pose_id] = weight
+
+    normalized = _normalize_positive_weights(raw, epsilon=options.epsilon)
+    return tuple(
+        replace(record, weight=normalized.get(record.pose_id, 1.0))
+        for record in records
+    )
+
+
+# -----------------------------------------------------------------------------
+# 21.6. Interaction identity and feature extraction
+# -----------------------------------------------------------------------------
+
+
+def _interaction_score(value: Any, field_name: str) -> Optional[float]:
+    """Extract the requested interaction score with common fallbacks."""
+
+    candidates = [field_name]
+    if field_name != "final_score":
+        candidates.append("final_score")
+    candidates.extend(("contribution", "score", "raw_score"))
+    for candidate in candidates:
+        numeric = _consensus_finite_optional(
+            _consensus_get(value, (candidate,)),
+            name=f"interaction {candidate}",
+        )
+        if numeric is not None:
+            return numeric
+    return None
+
+
+def _interaction_family(value: Any) -> str:
+    """Extract a canonical interaction-family label."""
+
+    family = _consensus_identifier(
+        _consensus_get(
+            value,
+            ("interaction_family", "family", "category"),
+        )
+    )
+    if family:
+        return _consensus_token(family) or "unknown"
+    interaction_type = _interaction_type(value)
+    resolver = globals().get("canonical_interaction_family")
+    if callable(resolver):
+        try:
+            resolved = resolver(interaction_type)
+        except Exception:
+            resolved = None
+        if resolved:
+            return _consensus_token(resolved)
+    return "unknown"
+
+
+def _interaction_type(value: Any) -> str:
+    """Extract a canonical interaction-type label."""
+
+    interaction_type = _consensus_identifier(
+        _consensus_get(
+            value,
+            ("interaction_type", "type", "subtype", "classification"),
+        )
+    )
+    return _consensus_token(interaction_type) or "unknown"
+
+
+def _interaction_pair(
+    value: Any,
+    field_name: str,
+    nested_names: Sequence[str],
+) -> Tuple[str, ...]:
+    """Extract an atom or residue pair from direct and metadata fields."""
+
+    direct = _consensus_get(value, (field_name,))
+    pair = _consensus_string_tuple(direct)
+    if pair:
+        return pair
+
+    metadata = _consensus_get(value, ("metadata",), default={})
+    if isinstance(metadata, Mapping):
+        direct = _consensus_get(metadata, (field_name,))
+        pair = _consensus_string_tuple(direct)
+        if pair:
+            return pair
+        parts = [
+            _consensus_identifier(_consensus_get(metadata, (name,)))
+            for name in nested_names
+        ]
+        pair = tuple(part for part in parts if part)
+        if pair:
+            return pair
+
+    original = _consensus_get(value, ("interaction",))
+    if original is not None and original is not value:
+        direct = _consensus_get(original, (field_name,))
+        pair = _consensus_string_tuple(direct)
+        if pair:
+            return pair
+        parts = [
+            _consensus_identifier(_consensus_get(original, (name,)))
+            for name in nested_names
+        ]
+        pair = tuple(part for part in parts if part)
+        if pair:
+            return pair
+    return ()
+
+
+def _interaction_residue_pair(value: Any) -> Tuple[str, ...]:
+    """Extract receptor/ligand residue identifiers."""
+
+    return _interaction_pair(
+        value,
+        "residue_pair",
+        (
+            "receptor_residue_id",
+            "ligand_residue_id",
+            "residue_id",
+            "partner_residue_id",
+        ),
+    )
+
+
+def _interaction_atom_pair(value: Any) -> Tuple[str, ...]:
+    """Extract receptor/ligand atom identifiers."""
+
+    return _interaction_pair(
+        value,
+        "atom_pair",
+        (
+            "receptor_atom_id",
+            "ligand_atom_id",
+            "atom_id",
+            "partner_atom_id",
+        ),
+    )
+
+
+def interaction_persistence_key(
+    interaction: Any,
+    *,
+    mode: Any = DEFAULT_CONSENSUS_IDENTITY_MODE,
+    custom_key_function: Optional[ConsensusKeyFunction] = None,
+) -> Tuple[str, ...]:
+    """Build a pose-independent interaction persistence key."""
+
+    normalized_mode = normalize_persistence_identity_mode(mode)
+    interaction_id = _consensus_identifier(
+        _consensus_get(interaction, ("interaction_id", "id", "identifier"))
+    )
+    family = _interaction_family(interaction)
+    interaction_type = _interaction_type(interaction)
+    residue_pair = _interaction_residue_pair(interaction)
+    atom_pair = _interaction_atom_pair(interaction)
+
+    if normalized_mode == PERSISTENCE_ID_INTERACTION:
+        return (interaction_id or interaction_type,)
+    if normalized_mode == PERSISTENCE_ID_ATOM_PAIR:
+        return atom_pair or residue_pair or (interaction_id or interaction_type,)
+    if normalized_mode == PERSISTENCE_ID_RESIDUE_PAIR:
+        return residue_pair or atom_pair or (interaction_id or interaction_type,)
+    if normalized_mode == PERSISTENCE_ID_FAMILY_RESIDUE_PAIR:
+        return (family, *(residue_pair or atom_pair or ("unknown",)))
+    if normalized_mode == PERSISTENCE_ID_TYPE_RESIDUE_PAIR:
+        return (
+            interaction_type,
+            *(residue_pair or atom_pair or (interaction_id or "unknown",)),
+        )
+    if normalized_mode == PERSISTENCE_ID_FAMILY_TYPE:
+        return (family, interaction_type)
+    if custom_key_function is None:
+        raise ConsensusPersistenceConfigurationError(
+            "A custom key function is required for custom identity mode."
+        )
+    custom = custom_key_function(interaction)
+    if isinstance(custom, tuple):
+        return tuple(_consensus_identifier(part) for part in custom)
+    if isinstance(custom, (str, bytes, bytearray)):
+        return (_consensus_identifier(custom),)
+    try:
+        return tuple(_consensus_identifier(part) for part in custom)
+    except TypeError:
+        return (_consensus_identifier(custom),)
+
+
+def _interaction_is_accepted(value: Any) -> bool:
+    """Return whether an interaction is accepted."""
+
+    accepted = _consensus_get(value, ("accepted",))
+    if accepted is not None:
+        return bool(accepted)
+    status = _consensus_token(_consensus_get(value, ("status",)))
+    return status not in {"rejected", "invalid", "ignored", "duplicate"}
+
+
+def _interaction_contributes(value: Any, score: Optional[float]) -> bool:
+    """Return whether an interaction contributes to scoring."""
+
+    contributes = _consensus_get(value, ("contributes", "contributing"))
+    if contributes is not None:
+        return bool(contributes)
+    if not _interaction_is_accepted(value):
+        return False
+    return score is None or abs(score) > DEFAULT_CONSENSUS_EPSILON
+
+
+def _feature_parts_for_level(
+    interaction: Any,
+    *,
+    level: str,
+    options: ConsensusPersistenceOptions,
+) -> Optional[Tuple[str, ...]]:
+    """Return feature-key parts for one interaction and aggregation level."""
+
+    family = _interaction_family(interaction)
+    interaction_type = _interaction_type(interaction)
+    residue_pair = _interaction_residue_pair(interaction)
+
+    if level == CONSENSUS_LEVEL_INTERACTION:
+        return interaction_persistence_key(
+            interaction,
+            mode=options.interaction_identity_mode,
+            custom_key_function=options.custom_key_function,
+        )
+    if level == CONSENSUS_LEVEL_RESIDUE_PAIR:
+        return residue_pair or None
+    if level == CONSENSUS_LEVEL_RECEPTOR_RESIDUE:
+        return (residue_pair[0],) if residue_pair else None
+    if level == CONSENSUS_LEVEL_LIGAND_RESIDUE:
+        if len(residue_pair) >= 2:
+            return (residue_pair[1],)
+        return None
+    if level == CONSENSUS_LEVEL_FAMILY:
+        return (family,)
+    if level == CONSENSUS_LEVEL_TYPE:
+        return (interaction_type,)
+    return None
+
+
+def _choose_observation_representative(
+    observations: Sequence[Tuple[Any, Optional[float]]],
+    *,
+    mode: str,
+) -> Any:
+    """Choose a representative interaction from within one pose."""
+
+    if not observations:
+        return None
+    if mode == CONSENSUS_REPRESENTATIVE_FIRST:
+        return observations[0][0]
+    numeric = [
+        (index, item, score)
+        for index, (item, score) in enumerate(observations)
+        if score is not None
+    ]
+    if not numeric:
+        return observations[0][0]
+    if mode == CONSENSUS_REPRESENTATIVE_BEST_SCORE:
+        return max(numeric, key=lambda item: (abs(item[2]), -item[0]))[1]
+    target = median([item[2] for item in numeric])
+    return min(numeric, key=lambda item: (abs(item[2] - target), item[0]))[1]
+
+
+def build_pose_feature_observations(
+    pose: ConsensusPoseRecord,
+    *,
+    group_id: str,
+    options: ConsensusPersistenceOptions,
+) -> Tuple[PoseFeatureObservation, ...]:
+    """Build and collapse all requested feature observations for one pose."""
+
+    buckets: MutableMapping[
+        Tuple[str, str],
+        List[Tuple[Any, Optional[float], Tuple[str, ...], Tuple[str, ...]]],
+    ] = defaultdict(list)
+
+    for interaction in pose.interactions:
+        score = _interaction_score(interaction, options.score_field)
+        if options.accepted_only and not _interaction_is_accepted(interaction):
+            continue
+        if (
+            options.contributing_only
+            and not _interaction_contributes(interaction, score)
+        ):
+            continue
+        if (
+            not options.include_zero_scores
+            and score is not None
+            and abs(score) <= options.epsilon
+        ):
+            continue
+
+        residue_pair = _interaction_residue_pair(interaction)
+        atom_pair = _interaction_atom_pair(interaction)
+        for level in options.levels:
+            if level == CONSENSUS_LEVEL_HOTSPOT:
+                continue
+            parts = _feature_parts_for_level(
+                interaction,
+                level=level,
+                options=options,
+            )
+            if not parts:
+                continue
+            feature_id = _consensus_feature_id(level, parts)
+            buckets[(level, feature_id)].append(
+                (interaction, score, residue_pair, atom_pair)
+            )
+
+    if CONSENSUS_LEVEL_HOTSPOT in options.levels:
+        for hotspot in pose.hotspots:
+            feature_id = _consensus_feature_id(
+                CONSENSUS_LEVEL_HOTSPOT,
+                (hotspot,),
+            )
+            buckets[(CONSENSUS_LEVEL_HOTSPOT, feature_id)].append(
+                (None, None, (hotspot,), ())
+            )
+
+    observations: List[PoseFeatureObservation] = []
+    for (level, feature_id), items in buckets.items():
+        if options.collapse_within_pose:
+            grouped_items = (items,)
+        else:
+            grouped_items = tuple((item,) for item in items)
+        for index, grouped in enumerate(grouped_items):
+            first = grouped[0]
+            interaction = first[0]
+            scores = tuple(
+                score for _, score, _, _ in grouped if score is not None
+            )
+            residue_ids = tuple(
+                dict.fromkeys(
+                    residue
+                    for _, _, residues, _ in grouped
+                    for residue in residues
+                )
+            )
+            atom_ids = tuple(
+                dict.fromkeys(
+                    atom
+                    for _, _, _, atoms in grouped
+                    for atom in atoms
+                )
+            )
+            representative = _choose_observation_representative(
+                [(item, score) for item, score, _, _ in grouped],
+                mode=options.representative_mode,
+            )
+            identifier = feature_id
+            if not options.collapse_within_pose:
+                identifier = f"{feature_id}#{index + 1}"
+            observations.append(
+                PoseFeatureObservation(
+                    feature_id=identifier,
+                    level=level,
+                    key_parts=tuple(feature_id.split(":", 1)[-1].split("|")),
+                    pose_id=pose.pose_id,
+                    group_id=group_id,
+                    family=(
+                        _interaction_family(interaction)
+                        if interaction is not None
+                        else None
+                    ),
+                    interaction_type=(
+                        _interaction_type(interaction)
+                        if interaction is not None
+                        else None
+                    ),
+                    residue_ids=residue_ids,
+                    atom_ids=atom_ids,
+                    occurrence_count=len(grouped),
+                    scores=scores,
+                    representative=representative,
+                    metadata={"collapsed": options.collapse_within_pose},
+                )
+            )
+    observations.sort(key=lambda item: (item.level, item.feature_id))
+    return tuple(observations)
+
+
+# -----------------------------------------------------------------------------
+# 21.7. Grouping, eligibility, and denominator handling
+# -----------------------------------------------------------------------------
+
+
+def consensus_group_id(
+    record: ConsensusPoseRecord,
+    group_mode: Any = DEFAULT_CONSENSUS_GROUP_MODE,
+) -> str:
+    """Return the consensus group ID for a pose record."""
+
+    mode = normalize_consensus_group_mode(group_mode)
+    if mode == CONSENSUS_GROUP_GLOBAL:
+        return "global"
+    if mode == CONSENSUS_GROUP_LIGAND:
+        return record.ligand_id or "unknown_ligand"
+    if mode == CONSENSUS_GROUP_MODEL:
+        return record.model_id or "unknown_model"
+    if mode == CONSENSUS_GROUP_LIGAND_MODEL:
+        return "|".join(
+            (
+                record.ligand_id or "unknown_ligand",
+                record.model_id or "unknown_model",
+            )
+        )
+    return record.ranking_group_id or "global"
+
+
+def group_consensus_pose_records(
+    records: Sequence[ConsensusPoseRecord],
+    *,
+    group_mode: Any = DEFAULT_CONSENSUS_GROUP_MODE,
+) -> Mapping[str, Tuple[ConsensusPoseRecord, ...]]:
+    """Group pose records deterministically."""
+
+    grouped: MutableMapping[str, List[ConsensusPoseRecord]] = defaultdict(list)
+    for record in records:
+        grouped[consensus_group_id(record, group_mode)].append(record)
+    return MappingProxyType(
+        {
+            group_id: tuple(
+                sorted(
+                    values,
+                    key=lambda item: (
+                        item.rank if item.rank is not None else math.inf,
+                        item.input_index,
+                        item.pose_id,
+                    ),
+                )
+            )
+            for group_id, values in sorted(grouped.items())
+        }
+    )
+
+
+def _pose_exclusion_reason(
+    record: ConsensusPoseRecord,
+    options: ConsensusPersistenceOptions,
+) -> Optional[str]:
+    """Return a deterministic eligibility exclusion reason."""
+
+    if options.successful_only and not record.successful:
+        return "unsuccessful_pose"
+    if options.accepted_only and not record.accepted:
+        return "rejected_pose"
+    if options.selected_only and not record.selected:
+        return "not_selected"
+    return None
+
+
+def _denominator_records(
+    all_records: Sequence[ConsensusPoseRecord],
+    included_records: Sequence[ConsensusPoseRecord],
+    options: ConsensusPersistenceOptions,
+) -> Tuple[ConsensusPoseRecord, ...]:
+    """Resolve the persistence denominator record set."""
+
+    if options.denominator_mode == PERSISTENCE_DENOMINATOR_ALL:
+        return tuple(all_records)
+    if options.denominator_mode == PERSISTENCE_DENOMINATOR_SELECTED:
+        return tuple(record for record in all_records if record.selected)
+    return tuple(included_records)
+
+
+# -----------------------------------------------------------------------------
+# 21.8. Persistence engine
+# -----------------------------------------------------------------------------
+
+
+def classify_consensus_persistence(
+    persistence_fraction: float,
+    pose_count: int,
+    *,
+    options: ConsensusPersistenceOptions,
+) -> str:
+    """Classify a persistence fraction into an interpretable tier."""
+
+    if pose_count <= 1:
+        return CONSENSUS_CLASS_SINGLETON
+    if persistence_fraction + options.epsilon >= options.ubiquitous_threshold:
+        return CONSENSUS_CLASS_UBIQUITOUS
+    if persistence_fraction + options.epsilon >= options.core_threshold:
+        return CONSENSUS_CLASS_CORE
+    if persistence_fraction + options.epsilon >= options.consensus_threshold:
+        return CONSENSUS_CLASS_MAJOR
+    if persistence_fraction + options.epsilon >= options.supporting_threshold:
+        return CONSENSUS_CLASS_SUPPORTING
+    return CONSENSUS_CLASS_RARE
+
+
+def _representative_across_poses(
+    observations: Sequence[PoseFeatureObservation],
+    *,
+    mode: str,
+) -> Tuple[Optional[str], Any]:
+    """Choose a representative observation across supporting poses."""
+
+    if not observations:
+        return None, None
+    if mode == CONSENSUS_REPRESENTATIVE_FIRST:
+        chosen = observations[0]
+    else:
+        scored = [item for item in observations if item.mean_score is not None]
+        if not scored:
+            chosen = observations[0]
+        elif mode == CONSENSUS_REPRESENTATIVE_BEST_SCORE:
+            chosen = max(
+                scored,
+                key=lambda item: (
+                    abs(item.mean_score or 0.0),
+                    -observations.index(item),
+                ),
+            )
+        else:
+            target = median(
+                [item.mean_score for item in scored if item.mean_score is not None]
+            )
+            chosen = min(
+                scored,
+                key=lambda item: abs((item.mean_score or 0.0) - target),
+            )
+    return chosen.pose_id, chosen.representative
+
+
+def _build_persistent_feature_record(
+    observations: Sequence[PoseFeatureObservation],
+    *,
+    denominator_records: Sequence[ConsensusPoseRecord],
+    options: ConsensusPersistenceOptions,
+) -> PersistentFeatureRecord:
+    """Aggregate same-feature observations across poses."""
+
+    first = observations[0]
+    pose_ids = tuple(dict.fromkeys(item.pose_id for item in observations))
+    pose_count = len(pose_ids)
+    denominator_pose_count = len(denominator_records)
+    persistence = _consensus_safe_ratio(pose_count, denominator_pose_count)
+
+    weight_by_pose = {record.pose_id: record.weight for record in denominator_records}
+    denominator_weight = float(sum(weight_by_pose.values()))
+    support_weight = float(
+        sum(weight_by_pose.get(pose_id, 0.0) for pose_id in pose_ids)
+    )
+    weighted_persistence = _consensus_safe_ratio(
+        support_weight,
+        denominator_weight,
+    )
+
+    scores = tuple(score for item in observations for score in item.scores)
+    occurrence_count = sum(item.occurrence_count for item in observations)
+    representative_pose_id, representative = _representative_across_poses(
+        observations,
+        mode=options.representative_mode,
+    )
+    consensus_class = classify_consensus_persistence(
+        persistence,
+        pose_count,
+        options=options,
+    )
+    eligible_by_count = pose_count >= options.minimum_pose_count
+    is_consensus = (
+        eligible_by_count
+        and persistence + options.epsilon >= options.consensus_threshold
+    )
+    is_core = (
+        eligible_by_count
+        and persistence + options.epsilon >= options.core_threshold
+    )
+    is_ubiquitous = (
+        eligible_by_count
+        and persistence + options.epsilon >= options.ubiquitous_threshold
+    )
+
+    family_values = [item.family for item in observations if item.family]
+    type_values = [
+        item.interaction_type
+        for item in observations
+        if item.interaction_type
+    ]
+    family = Counter(family_values).most_common(1)[0][0] if family_values else None
+    interaction_type = (
+        Counter(type_values).most_common(1)[0][0] if type_values else None
+    )
+    residue_ids = tuple(
+        dict.fromkeys(
+            residue for item in observations for residue in item.residue_ids
+        )
+    )
+    atom_ids = tuple(
+        dict.fromkeys(atom for item in observations for atom in item.atom_ids)
+    )
+
+    return PersistentFeatureRecord(
+        feature_id=first.feature_id,
+        level=first.level,
+        key_parts=first.key_parts,
+        label=" / ".join(first.key_parts),
+        family=family,
+        interaction_type=interaction_type,
+        residue_ids=residue_ids,
+        atom_ids=atom_ids,
+        pose_ids=pose_ids,
+        pose_count=pose_count,
+        denominator_pose_count=denominator_pose_count,
+        persistence_fraction=persistence,
+        support_weight=support_weight,
+        denominator_weight=denominator_weight,
+        weighted_persistence_fraction=weighted_persistence,
+        occurrence_count=occurrence_count,
+        mean_occurrences_per_supporting_pose=(
+            occurrence_count / pose_count if pose_count else 0.0
+        ),
+        score_count=len(scores),
+        score_total=float(sum(scores)),
+        score_mean=float(fmean(scores)) if scores else None,
+        score_median=float(median(scores)) if scores else None,
+        score_minimum=float(min(scores)) if scores else None,
+        score_maximum=float(max(scores)) if scores else None,
+        consensus_class=consensus_class,
+        is_consensus=is_consensus,
+        is_core=is_core,
+        is_ubiquitous=is_ubiquitous,
+        representative_pose_id=representative_pose_id,
+        representative=representative,
+        metadata={
+            "weighted_classification_fraction": weighted_persistence,
+        },
+    )
+
+
+def build_consensus_level_result(
+    level: Any,
+    observations: Sequence[PoseFeatureObservation],
+    *,
+    denominator_records: Sequence[ConsensusPoseRecord],
+    options: ConsensusPersistenceOptions,
+) -> ConsensusLevelResult:
+    """Aggregate all observations for one level."""
+
+    normalized_level = normalize_consensus_level(level)
+    buckets: MutableMapping[str, List[PoseFeatureObservation]] = defaultdict(list)
+    for observation in observations:
+        if observation.level == normalized_level:
+            buckets[observation.feature_id].append(observation)
+
+    records = tuple(
+        sorted(
+            (
+                _build_persistent_feature_record(
+                    values,
+                    denominator_records=denominator_records,
+                    options=options,
+                )
+                for values in buckets.values()
+            ),
+            key=lambda item: (
+                -item.persistence_fraction,
+                -item.weighted_persistence_fraction,
+                -abs(item.score_total),
+                item.feature_id,
+            ),
+        )
+    )
+    consensus_records = tuple(item for item in records if item.is_consensus)
+    core_records = tuple(item for item in records if item.is_core)
+    ubiquitous_records = tuple(item for item in records if item.is_ubiquitous)
+    return ConsensusLevelResult(
+        level=normalized_level,
+        records=records,
+        consensus_records=consensus_records,
+        core_records=core_records,
+        ubiquitous_records=ubiquitous_records,
+        feature_count=len(records),
+        consensus_feature_count=len(consensus_records),
+        core_feature_count=len(core_records),
+        ubiquitous_feature_count=len(ubiquitous_records),
+        mean_persistence=(
+            float(fmean(item.persistence_fraction for item in records))
+            if records
+            else 0.0
+        ),
+        mean_weighted_persistence=(
+            float(
+                fmean(item.weighted_persistence_fraction for item in records)
+            )
+            if records
+            else 0.0
+        ),
+        metadata={"denominator_pose_count": len(denominator_records)},
+    )
+
+
+def _build_pose_consensus_support(
+    pose: ConsensusPoseRecord,
+    observations: Sequence[PoseFeatureObservation],
+    level_result: ConsensusLevelResult,
+    *,
+    group_id: str,
+) -> PoseConsensusSupport:
+    """Calculate support of one pose for a level consensus signature."""
+
+    pose_features = {
+        item.feature_id
+        for item in observations
+        if item.pose_id == pose.pose_id and item.level == level_result.level
+    }
+    consensus_map = {
+        item.feature_id: item for item in level_result.consensus_records
+    }
+    all_map = {item.feature_id: item for item in level_result.records}
+    core_ids = set(level_result.core_feature_ids)
+    consensus_ids = set(level_result.consensus_feature_ids)
+    supported_consensus = pose_features & consensus_ids
+    supported_core = pose_features & core_ids
+    persistence_values = [
+        all_map[feature_id].persistence_fraction
+        for feature_id in pose_features
+        if feature_id in all_map
+    ]
+    persistence_support_score = sum(
+        consensus_map[feature_id].weighted_persistence_fraction
+        for feature_id in supported_consensus
+    )
+    consensus_score = sum(
+        abs(consensus_map[feature_id].score_mean or 0.0)
+        * consensus_map[feature_id].weighted_persistence_fraction
+        for feature_id in supported_consensus
+    )
+    return PoseConsensusSupport(
+        pose_id=pose.pose_id,
+        group_id=group_id,
+        rank=pose.rank,
+        selected=pose.selected,
+        feature_count=len(pose_features),
+        consensus_feature_count=len(supported_consensus),
+        core_feature_count=len(supported_core),
+        consensus_precision=_consensus_safe_ratio(
+            len(supported_consensus),
+            len(pose_features),
+        ),
+        consensus_recall=_consensus_safe_ratio(
+            len(supported_consensus),
+            len(consensus_ids),
+        ),
+        core_recall=_consensus_safe_ratio(len(supported_core), len(core_ids)),
+        mean_feature_persistence=(
+            float(fmean(persistence_values)) if persistence_values else 0.0
+        ),
+        persistence_support_score=float(persistence_support_score),
+        consensus_score=float(consensus_score),
+        metadata={"primary_level": level_result.level},
+    )
+
+
+def build_consensus_group_result(
+    group_id: str,
+    records: Sequence[ConsensusPoseRecord],
+    *,
+    options: ConsensusPersistenceOptions,
+) -> ConsensusGroupResult:
+    """Build persistence and consensus for one pose group."""
+
+    included: List[ConsensusPoseRecord] = []
+    excluded: List[ConsensusPoseRecord] = []
+    reasons: Dict[str, str] = {}
+    for record in records:
+        reason = _pose_exclusion_reason(record, options)
+        if reason is None:
+            included.append(record)
+        else:
+            excluded.append(record)
+            reasons[record.pose_id] = reason
+
+    denominator = _denominator_records(records, included, options)
+    observations = tuple(
+        observation
+        for record in included
+        for observation in build_pose_feature_observations(
+            record,
+            group_id=group_id,
+            options=options,
+        )
+    )
+    level_results = {
+        level: build_consensus_level_result(
+            level,
+            observations,
+            denominator_records=denominator,
+            options=options,
+        )
+        for level in options.levels
+    }
+    primary_result = level_results[options.primary_level]
+    pose_support = tuple(
+        _build_pose_consensus_support(
+            pose,
+            observations,
+            primary_result,
+            group_id=group_id,
+        )
+        for pose in included
+    )
+
+    if not records:
+        status = CONSENSUS_STATUS_EMPTY
+        message = "The consensus group contains no poses."
+    elif not included:
+        status = CONSENSUS_STATUS_INVALID
+        message = "No poses were eligible for consensus analysis."
+    elif excluded:
+        status = CONSENSUS_STATUS_PARTIAL
+        message = f"{len(excluded)} pose(s) were excluded."
+    else:
+        status = CONSENSUS_STATUS_COMPLETE
+        message = None
+
+    return ConsensusGroupResult(
+        group_id=group_id,
+        pose_records=tuple(records),
+        included_pose_ids=tuple(record.pose_id for record in included),
+        excluded_pose_ids=tuple(record.pose_id for record in excluded),
+        exclusion_reasons=reasons,
+        denominator_pose_ids=tuple(record.pose_id for record in denominator),
+        denominator_pose_count=len(denominator),
+        denominator_weight=float(sum(record.weight for record in denominator)),
+        level_results=level_results,
+        pose_support=pose_support,
+        status=status,
+        primary_level=options.primary_level,
+        message=message,
+        metadata={"observation_count": len(observations)},
+    )
+
+
+def build_consensus_persistence(
+    source: Any,
+    *,
+    ranking: Optional[Any] = None,
+    options: Optional[ConsensusPersistenceOptions] = None,
+    custom_pose_weights: Optional[Mapping[Any, Any]] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ConsensusPersistenceResult:
+    """Run the complete Section 21 consensus and persistence engine."""
+
+    resolved_options = options or DEFAULT_CONSENSUS_PERSISTENCE_OPTIONS
+    validate_consensus_persistence_options(resolved_options)
+    records = materialize_consensus_pose_records(source, ranking=ranking)
+    weighted_records = assign_consensus_pose_weights(
+        records,
+        options=resolved_options,
+        custom_pose_weights=custom_pose_weights,
+    )
+    grouped = group_consensus_pose_records(
+        weighted_records,
+        group_mode=resolved_options.group_mode,
+    )
+    groups = tuple(
+        build_consensus_group_result(
+            group_id,
+            group_records,
+            options=resolved_options,
+        )
+        for group_id, group_records in grouped.items()
+    )
+
+    if not groups:
+        status = CONSENSUS_STATUS_EMPTY
+        message = "No poses were supplied for consensus analysis."
+    elif all(group.status == CONSENSUS_STATUS_INVALID for group in groups):
+        status = CONSENSUS_STATUS_INVALID
+        message = "No consensus group contained an eligible pose."
+    elif any(
+        group.status in {CONSENSUS_STATUS_PARTIAL, CONSENSUS_STATUS_INVALID}
+        for group in groups
+    ):
+        status = CONSENSUS_STATUS_PARTIAL
+        message = "Consensus analysis completed with excluded or invalid poses."
+    else:
+        status = CONSENSUS_STATUS_COMPLETE
+        message = None
+
+    result = ConsensusPersistenceResult(
+        groups=groups,
+        options=resolved_options,
+        status=status,
+        message=message,
+        metadata=metadata or {},
+    )
+    validate_consensus_persistence_result(result)
+    return result
+
+
+def calculate_interaction_persistence(
+    source: Any,
+    *,
+    ranking: Optional[Any] = None,
+    identity_mode: Any = DEFAULT_CONSENSUS_IDENTITY_MODE,
+    denominator_mode: Any = DEFAULT_PERSISTENCE_DENOMINATOR,
+    weight_mode: Any = DEFAULT_PERSISTENCE_WEIGHT_MODE,
+    accepted_only: bool = True,
+    contributing_only: bool = True,
+    minimum_pose_count: int = 1,
+) -> Tuple[PersistentFeatureRecord, ...]:
+    """Convenience wrapper returning interaction-level persistence records."""
+
+    result = build_consensus_persistence(
+        source,
+        ranking=ranking,
+        options=ConsensusPersistenceOptions(
+            levels=(CONSENSUS_LEVEL_INTERACTION,),
+            interaction_identity_mode=identity_mode,
+            denominator_mode=denominator_mode,
+            weight_mode=weight_mode,
+            accepted_only=accepted_only,
+            contributing_only=contributing_only,
+            minimum_pose_count=minimum_pose_count,
+        ),
+    )
+    return result.records
+
+
+def identify_consensus_interactions(
+    source: Any,
+    *,
+    ranking: Optional[Any] = None,
+    threshold: float = DEFAULT_CONSENSUS_THRESHOLD,
+    identity_mode: Any = DEFAULT_CONSENSUS_IDENTITY_MODE,
+    minimum_pose_count: int = 1,
+) -> Tuple[PersistentFeatureRecord, ...]:
+    """Return interaction features meeting a cross-pose consensus threshold."""
+
+    threshold_value = _consensus_finite(threshold, name="threshold")
+    if not 0.0 <= threshold_value <= 1.0:
+        raise ConsensusPersistenceConfigurationError(
+            "threshold must lie between zero and one."
+        )
+    core_threshold = max(DEFAULT_CORE_THRESHOLD, threshold_value)
+    result = build_consensus_persistence(
+        source,
+        ranking=ranking,
+        options=ConsensusPersistenceOptions(
+            levels=(CONSENSUS_LEVEL_INTERACTION,),
+            interaction_identity_mode=identity_mode,
+            consensus_threshold=threshold_value,
+            core_threshold=core_threshold,
+            ubiquitous_threshold=max(
+                DEFAULT_UBIQUITOUS_THRESHOLD,
+                core_threshold,
+            ),
+            supporting_threshold=min(
+                DEFAULT_SUPPORTING_THRESHOLD,
+                threshold_value,
+            ),
+            minimum_pose_count=minimum_pose_count,
+        ),
+    )
+    return result.consensus_records
+
+
+# -----------------------------------------------------------------------------
+# 21.9. Group comparison and ranked-prefix persistence
+# -----------------------------------------------------------------------------
+
+
+def compare_consensus_groups(
+    group_a: ConsensusGroupResult,
+    group_b: ConsensusGroupResult,
+    *,
+    level: Optional[Any] = None,
+    consensus_only: bool = True,
+) -> ConsensusComparisonResult:
+    """Compare persistent feature signatures between two groups."""
+
+    normalized_level = normalize_consensus_level(
+        level or group_a.primary_level
+    )
+    if normalized_level not in group_a.level_results:
+        raise ConsensusPersistenceInputError(
+            f"Level {normalized_level!r} is absent from group {group_a.group_id}."
+        )
+    if normalized_level not in group_b.level_results:
+        raise ConsensusPersistenceInputError(
+            f"Level {normalized_level!r} is absent from group {group_b.group_id}."
+        )
+    result_a = group_a.level_results[normalized_level]
+    result_b = group_b.level_results[normalized_level]
+    records_a = (
+        result_a.consensus_records if consensus_only else result_a.records
+    )
+    records_b = (
+        result_b.consensus_records if consensus_only else result_b.records
+    )
+    mapping_a = {record.feature_id: record for record in records_a}
+    mapping_b = {record.feature_id: record for record in records_b}
+    ids_a = set(mapping_a)
+    ids_b = set(mapping_b)
+    shared = ids_a & ids_b
+    union = ids_a | ids_b
+    minimum_size = min(len(ids_a), len(ids_b))
+
+    weighted_numerator = sum(
+        min(
+            mapping_a[feature_id].weighted_persistence_fraction,
+            mapping_b[feature_id].weighted_persistence_fraction,
+        )
+        for feature_id in shared
+    )
+    weighted_denominator = sum(
+        max(
+            mapping_a.get(feature_id).weighted_persistence_fraction
+            if feature_id in mapping_a
+            else 0.0,
+            mapping_b.get(feature_id).weighted_persistence_fraction
+            if feature_id in mapping_b
+            else 0.0,
+        )
+        for feature_id in union
+    )
+
+    return ConsensusComparisonResult(
+        group_a=group_a.group_id,
+        group_b=group_b.group_id,
+        level=normalized_level,
+        feature_ids_a=tuple(sorted(ids_a)),
+        feature_ids_b=tuple(sorted(ids_b)),
+        shared_feature_ids=tuple(sorted(shared)),
+        unique_to_a=tuple(sorted(ids_a - ids_b)),
+        unique_to_b=tuple(sorted(ids_b - ids_a)),
+        union_feature_count=len(union),
+        jaccard_similarity=(len(shared) / len(union) if union else 1.0),
+        overlap_coefficient=(
+            len(shared) / minimum_size if minimum_size else 1.0
+        ),
+        weighted_jaccard_similarity=(
+            weighted_numerator / weighted_denominator
+            if weighted_denominator > DEFAULT_CONSENSUS_EPSILON
+            else 1.0
+        ),
+        metadata={"consensus_only": consensus_only},
+    )
+
+
+def build_ranked_persistence_curve(
+    source: Any,
+    *,
+    ranking: Optional[Any] = None,
+    cutoffs: Optional[Iterable[int]] = None,
+    options: Optional[ConsensusPersistenceOptions] = None,
+) -> Tuple[PersistenceCutoffPoint, ...]:
+    """Measure consensus stability as progressively lower-ranked poses enter."""
+
+    resolved = options or DEFAULT_CONSENSUS_PERSISTENCE_OPTIONS
+    records = materialize_consensus_pose_records(source, ranking=ranking)
+    records = tuple(
+        sorted(
+            records,
+            key=lambda item: (
+                item.rank if item.rank is not None else math.inf,
+                item.input_index,
+                item.pose_id,
+            ),
+        )
+    )
+    if not records:
+        return ()
+    if cutoffs is None:
+        cutoff_values = tuple(range(1, len(records) + 1))
+    else:
+        cutoff_values = tuple(
+            sorted(
+                {
+                    min(len(records), max(1, int(value)))
+                    for value in cutoffs
+                }
+            )
+        )
+    full_options = replace(
+        resolved,
+        group_mode=CONSENSUS_GROUP_GLOBAL,
+    )
+    full = build_consensus_persistence(records, options=full_options)
+    full_ids = set(full.groups[0].primary_result.consensus_feature_ids)
+    points: List[PersistenceCutoffPoint] = []
+    for top_n in cutoff_values:
+        prefix = records[:top_n]
+        result = build_consensus_persistence(prefix, options=full_options)
+        level_result = result.groups[0].primary_result
+        ids = set(level_result.consensus_feature_ids)
+        union = ids | full_ids
+        points.append(
+            PersistenceCutoffPoint(
+                top_n=top_n,
+                pose_ids=tuple(record.pose_id for record in prefix),
+                feature_count=level_result.feature_count,
+                consensus_feature_count=level_result.consensus_feature_count,
+                core_feature_count=level_result.core_feature_count,
+                mean_persistence=level_result.mean_persistence,
+                signature_jaccard_to_full=(
+                    len(ids & full_ids) / len(union) if union else 1.0
+                ),
+                metadata={"primary_level": full_options.primary_level},
+            )
+        )
+    return tuple(points)
+
+
+# -----------------------------------------------------------------------------
+# 21.10. Rows, summaries, and formatting
+# -----------------------------------------------------------------------------
+
+
+def consensus_persistence_to_rows(
+    result: ConsensusPersistenceResult,
+    *,
+    level: Optional[Any] = None,
+    consensus_only: bool = False,
+    core_only: bool = False,
+) -> List[Dict[str, Any]]:
+    """Convert persistence records to flat tabular rows."""
+
+    rows: List[Dict[str, Any]] = []
+    for group in result.groups:
+        levels = (
+            (normalize_consensus_level(level),)
+            if level is not None
+            else tuple(group.level_results)
+        )
+        for level_name in levels:
+            level_result = group.level_results[level_name]
+            if core_only:
+                records = level_result.core_records
+            elif consensus_only:
+                records = level_result.consensus_records
+            else:
+                records = level_result.records
+            for record in records:
+                rows.append(
+                    {
+                        "group_id": group.group_id,
+                        "level": record.level,
+                        "feature_id": record.feature_id,
+                        "label": record.label,
+                        "family": record.family,
+                        "interaction_type": record.interaction_type,
+                        "residue_ids": ";".join(record.residue_ids),
+                        "atom_ids": ";".join(record.atom_ids),
+                        "pose_count": record.pose_count,
+                        "denominator_pose_count": (
+                            record.denominator_pose_count
+                        ),
+                        "persistence_fraction": (
+                            record.persistence_fraction
+                        ),
+                        "weighted_persistence_fraction": (
+                            record.weighted_persistence_fraction
+                        ),
+                        "occurrence_count": record.occurrence_count,
+                        "mean_occurrences_per_supporting_pose": (
+                            record.mean_occurrences_per_supporting_pose
+                        ),
+                        "score_count": record.score_count,
+                        "score_total": record.score_total,
+                        "score_mean": record.score_mean,
+                        "score_median": record.score_median,
+                        "score_minimum": record.score_minimum,
+                        "score_maximum": record.score_maximum,
+                        "consensus_class": record.consensus_class,
+                        "is_consensus": record.is_consensus,
+                        "is_core": record.is_core,
+                        "is_ubiquitous": record.is_ubiquitous,
+                        "representative_pose_id": (
+                            record.representative_pose_id
+                        ),
+                        "pose_ids": ";".join(record.pose_ids),
+                    }
+                )
+    return rows
+
+
+def pose_consensus_support_to_rows(
+    result: ConsensusPersistenceResult,
+) -> List[Dict[str, Any]]:
+    """Convert pose consensus-support results to flat rows."""
+
+    return [
+        {
+            "group_id": group.group_id,
+            "pose_id": support.pose_id,
+            "rank": support.rank,
+            "selected": support.selected,
+            "feature_count": support.feature_count,
+            "consensus_feature_count": support.consensus_feature_count,
+            "core_feature_count": support.core_feature_count,
+            "consensus_precision": support.consensus_precision,
+            "consensus_recall": support.consensus_recall,
+            "core_recall": support.core_recall,
+            "mean_feature_persistence": support.mean_feature_persistence,
+            "persistence_support_score": support.persistence_support_score,
+            "consensus_score": support.consensus_score,
+        }
+        for group in result.groups
+        for support in group.pose_support
+    ]
+
+
+def summarize_consensus_persistence(
+    result: ConsensusPersistenceResult,
+) -> Dict[str, Any]:
+    """Return a compact nested Section 21 summary."""
+
+    return {
+        "status": result.status,
+        "pose_count": result.pose_count,
+        "group_count": len(result.groups),
+        "primary_level": result.options.primary_level,
+        "interaction_identity_mode": (
+            result.options.interaction_identity_mode
+        ),
+        "consensus_threshold": result.options.consensus_threshold,
+        "core_threshold": result.options.core_threshold,
+        "groups": [
+            {
+                "group_id": group.group_id,
+                "status": group.status,
+                "pose_count": len(group.pose_records),
+                "included_pose_count": len(group.included_pose_ids),
+                "excluded_pose_count": len(group.excluded_pose_ids),
+                "denominator_pose_count": group.denominator_pose_count,
+                "feature_count": group.primary_result.feature_count,
+                "consensus_feature_count": (
+                    group.primary_result.consensus_feature_count
+                ),
+                "core_feature_count": (
+                    group.primary_result.core_feature_count
+                ),
+                "ubiquitous_feature_count": (
+                    group.primary_result.ubiquitous_feature_count
+                ),
+                "mean_persistence": group.primary_result.mean_persistence,
+                "top_consensus_feature_id": (
+                    group.consensus_records[0].feature_id
+                    if group.consensus_records
+                    else None
+                ),
+            }
+            for group in result.groups
+        ],
+    }
+
+
+def format_consensus_persistence_summary(
+    result: ConsensusPersistenceResult,
+    *,
+    top_n: int = 5,
+    decimal_places: int = 1,
+) -> str:
+    """Build a concise human-readable consensus summary."""
+
+    lines = [
+        (
+            f"Consensus status: {result.status}; {result.pose_count} pose(s); "
+            f"{len(result.groups)} group(s); primary level "
+            f"{result.options.primary_level}."
+        )
+    ]
+    for group in result.groups:
+        primary = group.primary_result
+        lines.append(
+            (
+                f"{group.group_id}: {len(group.included_pose_ids)}/"
+                f"{len(group.pose_records)} eligible pose(s), "
+                f"{primary.consensus_feature_count}/"
+                f"{primary.feature_count} consensus feature(s), "
+                f"{primary.core_feature_count} core."
+            )
+        )
+        for record in primary.consensus_records[: max(0, int(top_n))]:
+            percentage = 100.0 * record.persistence_fraction
+            weighted = 100.0 * record.weighted_persistence_fraction
+            lines.append(
+                (
+                    f"  - {record.label}: {percentage:.{decimal_places}f}% "
+                    f"persistence, {weighted:.{decimal_places}f}% weighted, "
+                    f"{record.consensus_class}."
+                )
+            )
+    return "\n".join(lines)
+
+
+# -----------------------------------------------------------------------------
+# 21.11. Validation
+# -----------------------------------------------------------------------------
+
+
+def validate_consensus_persistence_options(
+    options: ConsensusPersistenceOptions,
+) -> None:
+    """Validate a Section 21 configuration object."""
+
+    if not isinstance(options, ConsensusPersistenceOptions):
+        raise ConsensusPersistenceValidationError(
+            "Expected ConsensusPersistenceOptions."
+        )
+    for level in options.levels:
+        normalize_consensus_level(level)
+    normalize_persistence_identity_mode(options.interaction_identity_mode)
+    normalize_persistence_denominator(options.denominator_mode)
+    normalize_persistence_weight_mode(options.weight_mode)
+    normalize_consensus_group_mode(options.group_mode)
+    normalize_consensus_representative_mode(options.representative_mode)
+
+
+def validate_consensus_pose_record(record: ConsensusPoseRecord) -> None:
+    """Validate an adapted consensus pose record."""
+
+    if not isinstance(record, ConsensusPoseRecord):
+        raise ConsensusPersistenceValidationError(
+            "Expected ConsensusPoseRecord."
+        )
+    if not record.pose_id:
+        raise ConsensusPersistenceValidationError("Pose ID cannot be empty.")
+    if record.weight < 0.0 or not math.isfinite(record.weight):
+        raise ConsensusPersistenceValidationError(
+            f"Invalid pose weight for {record.pose_id}."
+        )
+
+
+def validate_persistent_feature_record(
+    record: PersistentFeatureRecord,
+    *,
+    epsilon: float = DEFAULT_CONSENSUS_EPSILON,
+) -> None:
+    """Validate one cross-pose persistence record."""
+
+    if not isinstance(record, PersistentFeatureRecord):
+        raise ConsensusPersistenceValidationError(
+            "Expected PersistentFeatureRecord."
+        )
+    normalize_consensus_level(record.level)
+    if record.pose_count != len(record.pose_ids):
+        raise ConsensusPersistenceValidationError(
+            f"Pose-count mismatch for feature {record.feature_id}."
+        )
+    if record.pose_count > record.denominator_pose_count:
+        raise ConsensusPersistenceValidationError(
+            f"Feature {record.feature_id} exceeds its denominator."
+        )
+    for name, value in (
+        ("persistence_fraction", record.persistence_fraction),
+        (
+            "weighted_persistence_fraction",
+            record.weighted_persistence_fraction,
+        ),
+    ):
+        if not -epsilon <= value <= 1.0 + epsilon:
+            raise ConsensusPersistenceValidationError(
+                f"{name} is outside [0, 1] for {record.feature_id}."
+            )
+    if record.consensus_class not in CONSENSUS_CLASSES:
+        raise ConsensusPersistenceValidationError(
+            f"Unknown consensus class: {record.consensus_class}."
+        )
+    if record.is_ubiquitous and not record.is_core:
+        raise ConsensusPersistenceValidationError(
+            "Ubiquitous features must also be core features."
+        )
+    if record.is_core and not record.is_consensus:
+        raise ConsensusPersistenceValidationError(
+            "Core features must also be consensus features."
+        )
+
+
+def validate_consensus_level_result(result: ConsensusLevelResult) -> None:
+    """Validate one level result."""
+
+    if not isinstance(result, ConsensusLevelResult):
+        raise ConsensusPersistenceValidationError(
+            "Expected ConsensusLevelResult."
+        )
+    if result.feature_count != len(result.records):
+        raise ConsensusPersistenceValidationError(
+            f"Feature-count mismatch at level {result.level}."
+        )
+    if result.consensus_feature_count != len(result.consensus_records):
+        raise ConsensusPersistenceValidationError(
+            f"Consensus-count mismatch at level {result.level}."
+        )
+    if result.core_feature_count != len(result.core_records):
+        raise ConsensusPersistenceValidationError(
+            f"Core-count mismatch at level {result.level}."
+        )
+    record_ids = {record.feature_id for record in result.records}
+    if len(record_ids) != len(result.records):
+        raise ConsensusPersistenceValidationError(
+            f"Duplicate feature IDs at level {result.level}."
+        )
+    if not set(result.consensus_feature_ids).issubset(record_ids):
+        raise ConsensusPersistenceValidationError(
+            "Consensus records are not a subset of all records."
+        )
+    if not set(result.core_feature_ids).issubset(
+        set(result.consensus_feature_ids)
+    ):
+        raise ConsensusPersistenceValidationError(
+            "Core records are not a subset of consensus records."
+        )
+    for record in result.records:
+        validate_persistent_feature_record(record)
+
+
+def validate_consensus_group_result(result: ConsensusGroupResult) -> None:
+    """Validate a complete consensus group."""
+
+    if not isinstance(result, ConsensusGroupResult):
+        raise ConsensusPersistenceValidationError(
+            "Expected ConsensusGroupResult."
+        )
+    pose_ids = tuple(record.pose_id for record in result.pose_records)
+    if len(pose_ids) != len(set(pose_ids)):
+        raise ConsensusPersistenceValidationError(
+            f"Duplicate poses in consensus group {result.group_id}."
+        )
+    if set(result.included_pose_ids) & set(result.excluded_pose_ids):
+        raise ConsensusPersistenceValidationError(
+            f"Included and excluded poses overlap in {result.group_id}."
+        )
+    if set(result.included_pose_ids) | set(result.excluded_pose_ids) != set(
+        pose_ids
+    ):
+        raise ConsensusPersistenceValidationError(
+            f"Pose partition is incomplete in {result.group_id}."
+        )
+    if set(result.exclusion_reasons) != set(result.excluded_pose_ids):
+        raise ConsensusPersistenceValidationError(
+            f"Exclusion reasons are incomplete in {result.group_id}."
+        )
+    if result.denominator_pose_count != len(result.denominator_pose_ids):
+        raise ConsensusPersistenceValidationError(
+            f"Denominator mismatch in {result.group_id}."
+        )
+    if result.primary_level not in result.level_results:
+        raise ConsensusPersistenceValidationError(
+            f"Primary level is absent in {result.group_id}."
+        )
+    for level_name, level_result in result.level_results.items():
+        if level_name != level_result.level:
+            raise ConsensusPersistenceValidationError(
+                f"Level mapping key mismatch in {result.group_id}."
+            )
+        validate_consensus_level_result(level_result)
+    support_ids = tuple(item.pose_id for item in result.pose_support)
+    if set(support_ids) != set(result.included_pose_ids):
+        raise ConsensusPersistenceValidationError(
+            f"Pose support is incomplete in {result.group_id}."
+        )
+
+
+def validate_consensus_persistence_result(
+    result: ConsensusPersistenceResult,
+) -> None:
+    """Validate a complete Section 21 result."""
+
+    if not isinstance(result, ConsensusPersistenceResult):
+        raise ConsensusPersistenceValidationError(
+            "Expected ConsensusPersistenceResult."
+        )
+    validate_consensus_persistence_options(result.options)
+    if result.status not in CONSENSUS_STATUSES:
+        raise ConsensusPersistenceValidationError(
+            f"Unknown consensus result status: {result.status}."
+        )
+    group_ids = tuple(group.group_id for group in result.groups)
+    if len(group_ids) != len(set(group_ids)):
+        raise ConsensusPersistenceValidationError(
+            "Consensus group identifiers are not unique."
+        )
+    all_pose_ids: List[str] = []
+    for group in result.groups:
+        validate_consensus_group_result(group)
+        all_pose_ids.extend(record.pose_id for record in group.pose_records)
+    if len(all_pose_ids) != len(set(all_pose_ids)):
+        raise ConsensusPersistenceValidationError(
+            "A pose occurs in more than one consensus group."
+        )
+
+
+# -----------------------------------------------------------------------------
+# 21.12. Local self-check and public interface
+# -----------------------------------------------------------------------------
+
+
+def run_section_21_self_check() -> Mapping[str, bool]:
+    """Run deterministic consensus checks using mapping-only synthetic data."""
+
+    source = (
+        {
+            "pose_id": "pose_1",
+            "model_id": "model_a",
+            "ligand_id": "ligand_a",
+            "interactions": (
+                {
+                    "interaction_id": "i1_p1",
+                    "interaction_family": "hydrogen_bond",
+                    "interaction_type": "hydrogen_bond_direct",
+                    "residue_pair": ("A:TYR10", "L:LIG1"),
+                    "atom_pair": ("A:TYR10:OH", "L:LIG1:O1"),
+                    "final_score": 3.0,
+                    "accepted": True,
+                },
+                {
+                    "interaction_id": "i2_p1",
+                    "interaction_family": "hydrophobic",
+                    "interaction_type": "hydrophobic_atomic",
+                    "residue_pair": ("A:PHE20", "L:LIG1"),
+                    "final_score": 1.0,
+                    "accepted": True,
+                },
+            ),
+            "hotspots": ("A:TYR10",),
+        },
+        {
+            "pose_id": "pose_2",
+            "model_id": "model_a",
+            "ligand_id": "ligand_a",
+            "interactions": (
+                {
+                    "interaction_id": "i1_p2",
+                    "interaction_family": "hydrogen_bond",
+                    "interaction_type": "hydrogen_bond_direct",
+                    "residue_pair": ("A:TYR10", "L:LIG1"),
+                    "final_score": 2.5,
+                    "accepted": True,
+                },
+                {
+                    "interaction_id": "i3_p2",
+                    "interaction_family": "salt_bridge",
+                    "interaction_type": "salt_bridge",
+                    "residue_pair": ("A:ASP30", "L:LIG1"),
+                    "final_score": 4.0,
+                    "accepted": True,
+                },
+            ),
+            "hotspots": ("A:TYR10",),
+        },
+        {
+            "pose_id": "pose_3",
+            "model_id": "model_a",
+            "ligand_id": "ligand_a",
+            "interactions": (
+                {
+                    "interaction_id": "i1_p3",
+                    "interaction_family": "hydrogen_bond",
+                    "interaction_type": "hydrogen_bond_direct",
+                    "residue_pair": ("A:TYR10", "L:LIG1"),
+                    "final_score": 2.0,
+                    "accepted": True,
+                },
+            ),
+            "hotspots": ("A:TYR10",),
+        },
+    )
+    result = build_consensus_persistence(source)
+    group = result.groups[0]
+    interaction_result = group.level_results[CONSENSUS_LEVEL_INTERACTION]
+    receptor_result = group.level_results[CONSENSUS_LEVEL_RECEPTOR_RESIDUE]
+    tyrosine = next(
+        record
+        for record in receptor_result.records
+        if "A:TYR10" in record.residue_ids
+        or "A:TYR10" in record.key_parts
+    )
+    curve = build_ranked_persistence_curve(
+        source,
+        cutoffs=(1, 2, 3),
+    )
+    rows = consensus_persistence_to_rows(
+        result,
+        level=CONSENSUS_LEVEL_INTERACTION,
+    )
+    checks = {
+        "status_complete": result.status == CONSENSUS_STATUS_COMPLETE,
+        "pose_count": result.pose_count == 3,
+        "interaction_features": interaction_result.feature_count == 3,
+        "persistent_tyrosine": math.isclose(
+            tyrosine.persistence_fraction,
+            1.0,
+            abs_tol=1.0e-9,
+        ),
+        "tyrosine_core": tyrosine.is_core,
+        "pose_support_complete": len(group.pose_support) == 3,
+        "rows_complete": len(rows) == 3,
+        "curve_complete": len(curve) == 3,
+    }
+    if not all(checks.values()):
+        failures = ", ".join(
+            name for name, successful in checks.items() if not successful
+        )
+        raise ConsensusPersistenceValidationError(
+            "Section 21 self-check failed: " + failures
+        )
+    return MappingProxyType(checks)
+
+
+_SECTION_21_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    # Statuses and canonical levels
+    "CONSENSUS_STATUS_COMPLETE",
+    "CONSENSUS_STATUS_PARTIAL",
+    "CONSENSUS_STATUS_EMPTY",
+    "CONSENSUS_STATUS_INVALID",
+    "CONSENSUS_STATUSES",
+    "CONSENSUS_LEVEL_INTERACTION",
+    "CONSENSUS_LEVEL_RESIDUE_PAIR",
+    "CONSENSUS_LEVEL_RECEPTOR_RESIDUE",
+    "CONSENSUS_LEVEL_LIGAND_RESIDUE",
+    "CONSENSUS_LEVEL_FAMILY",
+    "CONSENSUS_LEVEL_TYPE",
+    "CONSENSUS_LEVEL_HOTSPOT",
+    "CONSENSUS_LEVELS",
+    # Identity, denominator, weight, group, and representative modes
+    "PERSISTENCE_ID_INTERACTION",
+    "PERSISTENCE_ID_ATOM_PAIR",
+    "PERSISTENCE_ID_RESIDUE_PAIR",
+    "PERSISTENCE_ID_FAMILY_RESIDUE_PAIR",
+    "PERSISTENCE_ID_TYPE_RESIDUE_PAIR",
+    "PERSISTENCE_ID_FAMILY_TYPE",
+    "PERSISTENCE_ID_CUSTOM",
+    "PERSISTENCE_IDENTITY_MODES",
+    "PERSISTENCE_DENOMINATOR_ALL",
+    "PERSISTENCE_DENOMINATOR_ELIGIBLE",
+    "PERSISTENCE_DENOMINATOR_SELECTED",
+    "PERSISTENCE_DENOMINATOR_MODES",
+    "PERSISTENCE_WEIGHT_UNIFORM",
+    "PERSISTENCE_WEIGHT_INVERSE_RANK",
+    "PERSISTENCE_WEIGHT_RANKING_SCORE",
+    "PERSISTENCE_WEIGHT_PERCENTILE",
+    "PERSISTENCE_WEIGHT_CUSTOM",
+    "PERSISTENCE_WEIGHT_MODES",
+    "CONSENSUS_GROUP_GLOBAL",
+    "CONSENSUS_GROUP_LIGAND",
+    "CONSENSUS_GROUP_MODEL",
+    "CONSENSUS_GROUP_LIGAND_MODEL",
+    "CONSENSUS_GROUP_RANKING",
+    "CONSENSUS_GROUP_MODES",
+    "CONSENSUS_REPRESENTATIVE_BEST_SCORE",
+    "CONSENSUS_REPRESENTATIVE_MEDIAN_SCORE",
+    "CONSENSUS_REPRESENTATIVE_FIRST",
+    "CONSENSUS_REPRESENTATIVE_MODES",
+    # Classes and defaults
+    "CONSENSUS_CLASS_UBIQUITOUS",
+    "CONSENSUS_CLASS_CORE",
+    "CONSENSUS_CLASS_MAJOR",
+    "CONSENSUS_CLASS_SUPPORTING",
+    "CONSENSUS_CLASS_RARE",
+    "CONSENSUS_CLASS_SINGLETON",
+    "CONSENSUS_CLASSES",
+    "CONSENSUS_SCHEMA_VERSION",
+    "CONSENSUS_SECTION_VERSION",
+    "DEFAULT_CONSENSUS_THRESHOLD",
+    "DEFAULT_CORE_THRESHOLD",
+    "DEFAULT_UBIQUITOUS_THRESHOLD",
+    "DEFAULT_SUPPORTING_THRESHOLD",
+    "DEFAULT_CONSENSUS_EPSILON",
+    "DEFAULT_CONSENSUS_IDENTITY_MODE",
+    "DEFAULT_PERSISTENCE_DENOMINATOR",
+    "DEFAULT_PERSISTENCE_WEIGHT_MODE",
+    "DEFAULT_CONSENSUS_GROUP_MODE",
+    "DEFAULT_CONSENSUS_REPRESENTATIVE_MODE",
+    "DEFAULT_CONSENSUS_LEVELS",
+    "DEFAULT_CONSENSUS_PERSISTENCE_OPTIONS",
+    # Exceptions
+    "ConsensusPersistenceError",
+    "ConsensusPersistenceInputError",
+    "ConsensusPersistenceConfigurationError",
+    "ConsensusPersistenceValidationError",
+    # Dataclasses
+    "ConsensusPersistenceOptions",
+    "ConsensusPoseRecord",
+    "PoseFeatureObservation",
+    "PersistentFeatureRecord",
+    "PoseConsensusSupport",
+    "ConsensusLevelResult",
+    "ConsensusGroupResult",
+    "ConsensusPersistenceResult",
+    "ConsensusComparisonResult",
+    "PersistenceCutoffPoint",
+    # Normalization and adaptation
+    "normalize_consensus_level",
+    "normalize_persistence_identity_mode",
+    "normalize_persistence_denominator",
+    "normalize_persistence_weight_mode",
+    "normalize_consensus_group_mode",
+    "normalize_consensus_representative_mode",
+    "materialize_consensus_pose_records",
+    "assign_consensus_pose_weights",
+    # Identity and engine
+    "interaction_persistence_key",
+    "build_pose_feature_observations",
+    "consensus_group_id",
+    "group_consensus_pose_records",
+    "classify_consensus_persistence",
+    "build_consensus_level_result",
+    "build_consensus_group_result",
+    "build_consensus_persistence",
+    "calculate_interaction_persistence",
+    "identify_consensus_interactions",
+    # Comparison and curves
+    "compare_consensus_groups",
+    "build_ranked_persistence_curve",
+    # Rows and summaries
+    "consensus_persistence_to_rows",
+    "pose_consensus_support_to_rows",
+    "summarize_consensus_persistence",
+    "format_consensus_persistence_summary",
+    # Validation and self-check
+    "validate_consensus_persistence_options",
+    "validate_consensus_pose_record",
+    "validate_persistent_feature_record",
+    "validate_consensus_level_result",
+    "validate_consensus_group_result",
+    "validate_consensus_persistence_result",
+    "run_section_21_self_check",
+)
+
+if "__all__" not in globals():
+    __all__: List[str] = []
+
+for public_name in _SECTION_21_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+def section_21_public_names() -> Tuple[str, ...]:
+    """Return the complete immutable Section 21 public interface."""
+
+    return _SECTION_21_PUBLIC_NAMES
+
+
+def validate_section_21_public_interface() -> None:
+    """Validate that every declared Section 21 public name exists and exports."""
+
+    missing_names = tuple(
+        name for name in _SECTION_21_PUBLIC_NAMES if name not in globals()
+    )
+    if missing_names:
+        raise ConsensusPersistenceValidationError(
+            "Missing Section 21 public names: " + ", ".join(missing_names)
+        )
+    missing_exports = tuple(
+        name for name in _SECTION_21_PUBLIC_NAMES if name not in __all__
+    )
+    if missing_exports:
+        raise ConsensusPersistenceValidationError(
+            "Section 21 names missing from __all__: "
+            + ", ".join(missing_exports)
+        )
+
+
+if "section_21_public_names" not in __all__:
+    __all__.append("section_21_public_names")
+if "validate_section_21_public_interface" not in __all__:
+    __all__.append("validate_section_21_public_interface")
+
+validate_section_21_public_interface()
+
+# =============================================================================
+# End of Section 21
+# =============================================================================
+
+
+# =============================================================================
+# DockAnalyzer — Interaction scoring
+# Section 22 — DockModel integration
+# =============================================================================
+
+"""
+Section 22 connects the scoring engine to ``DockModel`` without changing the
+internal implementation of the central data container.
+
+The integration layer is intentionally conservative. It reads interaction
+collections already attached by the specialized modules, calculates one
+``PoseScoringResult`` per docking pose, and optionally writes a compact active
+state back to the model. Existing values can be preserved in bounded history
+collections, and attachment operations can be rolled back when an update
+fails.
+
+Supported capabilities include:
+- validation and adaptation of ``DockModel``-like objects and mappings;
+- extraction of contacts, hydrogen bonds, hydrophobic interactions,
+  pi interactions, salt bridges, clashes, and custom interaction collections;
+- safe expansion of live result objects and serialized analysis wrappers;
+- single-pose scoring through the Section 16 public API;
+- multipose scoring, Section 20 ranking, and Section 21 consensus integration;
+- synchronized updates of ``score``, ``statistics``, and ``metadata``;
+- active-result and history management without modifying ``DockModel``;
+- transactional snapshots and rollback;
+- compact rows, summaries, validation, and a deterministic self-check.
+
+This section does not redefine ``DockModel`` and does not implement general
+serialization. Complete serialization remains the responsibility of Section 25.
+External docking affinities and score fusion remain the responsibility of
+Section 23.
+"""
+
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import (
+    Any,
+    Dict,
+    Final,
+    FrozenSet,
+    Iterable,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
+import math
+
+
+# -----------------------------------------------------------------------------
+# 22.1. Statuses, modes, attribute names, and defaults
+# -----------------------------------------------------------------------------
+
+DOCK_MODEL_SCORING_STATUS_COMPLETE: Final[str] = "complete"
+DOCK_MODEL_SCORING_STATUS_PARTIAL: Final[str] = "partial"
+DOCK_MODEL_SCORING_STATUS_EMPTY: Final[str] = "empty"
+DOCK_MODEL_SCORING_STATUS_FAILED: Final[str] = "failed"
+
+DOCK_MODEL_SCORING_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        DOCK_MODEL_SCORING_STATUS_COMPLETE,
+        DOCK_MODEL_SCORING_STATUS_PARTIAL,
+        DOCK_MODEL_SCORING_STATUS_EMPTY,
+        DOCK_MODEL_SCORING_STATUS_FAILED,
+    }
+)
+
+DOCK_MODEL_ATTACHMENT_STATUS_ATTACHED: Final[str] = "attached"
+DOCK_MODEL_ATTACHMENT_STATUS_PARTIAL: Final[str] = "partial"
+DOCK_MODEL_ATTACHMENT_STATUS_SKIPPED: Final[str] = "skipped"
+DOCK_MODEL_ATTACHMENT_STATUS_ROLLED_BACK: Final[str] = "rolled_back"
+DOCK_MODEL_ATTACHMENT_STATUS_FAILED: Final[str] = "failed"
+
+DOCK_MODEL_ATTACHMENT_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        DOCK_MODEL_ATTACHMENT_STATUS_ATTACHED,
+        DOCK_MODEL_ATTACHMENT_STATUS_PARTIAL,
+        DOCK_MODEL_ATTACHMENT_STATUS_SKIPPED,
+        DOCK_MODEL_ATTACHMENT_STATUS_ROLLED_BACK,
+        DOCK_MODEL_ATTACHMENT_STATUS_FAILED,
+    }
+)
+
+DOCK_MODEL_ATTACHMENT_REPLACE: Final[str] = "replace"
+DOCK_MODEL_ATTACHMENT_PRESERVE: Final[str] = "preserve"
+DOCK_MODEL_ATTACHMENT_HISTORY_ONLY: Final[str] = "history_only"
+
+DOCK_MODEL_ATTACHMENT_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        DOCK_MODEL_ATTACHMENT_REPLACE,
+        DOCK_MODEL_ATTACHMENT_PRESERVE,
+        DOCK_MODEL_ATTACHMENT_HISTORY_ONLY,
+    }
+)
+
+DOCK_MODEL_SOURCE_CONTACT: Final[str] = "contact"
+DOCK_MODEL_SOURCE_HBOND: Final[str] = "hydrogen_bond"
+DOCK_MODEL_SOURCE_HYDROPHOBIC: Final[str] = "hydrophobic"
+DOCK_MODEL_SOURCE_PI: Final[str] = "pi"
+DOCK_MODEL_SOURCE_SALT_BRIDGE: Final[str] = "salt_bridge"
+DOCK_MODEL_SOURCE_CLASH: Final[str] = "clash"
+DOCK_MODEL_SOURCE_CUSTOM: Final[str] = "custom"
+
+DOCK_MODEL_INTERACTION_SOURCES: Final[Tuple[str, ...]] = (
+    DOCK_MODEL_SOURCE_CONTACT,
+    DOCK_MODEL_SOURCE_HBOND,
+    DOCK_MODEL_SOURCE_HYDROPHOBIC,
+    DOCK_MODEL_SOURCE_PI,
+    DOCK_MODEL_SOURCE_SALT_BRIDGE,
+    DOCK_MODEL_SOURCE_CLASH,
+    DOCK_MODEL_SOURCE_CUSTOM,
+)
+
+DOCK_MODEL_SCORING_RESULT_ATTRIBUTE: Final[str] = "scoring_result"
+DOCK_MODEL_SCORING_HISTORY_ATTRIBUTE: Final[str] = "scoring_history"
+DOCK_MODEL_SCORING_RANKING_ATTRIBUTE: Final[str] = "scoring_ranking"
+DOCK_MODEL_SCORING_RANK_ATTRIBUTE: Final[str] = "scoring_rank"
+DOCK_MODEL_SCORING_CONSENSUS_ATTRIBUTE: Final[str] = "scoring_consensus"
+DOCK_MODEL_SCORING_SUPPORT_ATTRIBUTE: Final[str] = "scoring_consensus_support"
+DOCK_MODEL_SCORING_STATISTICS_KEY: Final[str] = "scoring"
+DOCK_MODEL_SCORING_METADATA_KEY: Final[str] = "scoring"
+
+DOCK_MODEL_SCORING_SCHEMA: Final[str] = "dockanalyzer.scoring.dock_model"
+DOCK_MODEL_SCORING_SCHEMA_VERSION: Final[str] = "1.0"
+DOCK_MODEL_SCORING_SECTION_VERSION: Final[str] = "22.0"
+
+DEFAULT_DOCK_MODEL_SCORING_HISTORY_LIMIT: Final[int] = 10
+DEFAULT_DOCK_MODEL_ATTACHMENT_MODE: Final[str] = (
+    DOCK_MODEL_ATTACHMENT_REPLACE
+)
+DEFAULT_DOCK_MODEL_ROLLBACK_ON_ERROR: Final[bool] = True
+DEFAULT_DOCK_MODEL_STRICT_IDENTITY: Final[bool] = False
+DEFAULT_DOCK_MODEL_MAX_SOURCE_DEPTH: Final[int] = 8
+DEFAULT_DOCK_MODEL_INCLUDE_EMPTY_SOURCES: Final[bool] = False
+
+_DOCK_MODEL_EMPTY_METADATA: Final[Mapping[str, Any]] = MappingProxyType({})
+
+_DOCK_MODEL_ATTACHMENT_MODE_ALIASES: Final[Mapping[str, str]] = (
+    MappingProxyType(
+        {
+            "replace": DOCK_MODEL_ATTACHMENT_REPLACE,
+            "overwrite": DOCK_MODEL_ATTACHMENT_REPLACE,
+            "active": DOCK_MODEL_ATTACHMENT_REPLACE,
+            "preserve": DOCK_MODEL_ATTACHMENT_PRESERVE,
+            "keep": DOCK_MODEL_ATTACHMENT_PRESERVE,
+            "keep_existing": DOCK_MODEL_ATTACHMENT_PRESERVE,
+            "history": DOCK_MODEL_ATTACHMENT_HISTORY_ONLY,
+            "history_only": DOCK_MODEL_ATTACHMENT_HISTORY_ONLY,
+            "archive_only": DOCK_MODEL_ATTACHMENT_HISTORY_ONLY,
+        }
+    )
+)
+
+_DOCK_MODEL_SOURCE_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "contact": DOCK_MODEL_SOURCE_CONTACT,
+        "contacts": DOCK_MODEL_SOURCE_CONTACT,
+        "general_contact": DOCK_MODEL_SOURCE_CONTACT,
+        "hbond": DOCK_MODEL_SOURCE_HBOND,
+        "hbonds": DOCK_MODEL_SOURCE_HBOND,
+        "hydrogen_bond": DOCK_MODEL_SOURCE_HBOND,
+        "hydrogen_bonds": DOCK_MODEL_SOURCE_HBOND,
+        "hydrophobic": DOCK_MODEL_SOURCE_HYDROPHOBIC,
+        "hydrophobic_contact": DOCK_MODEL_SOURCE_HYDROPHOBIC,
+        "hydrophobic_interaction": DOCK_MODEL_SOURCE_HYDROPHOBIC,
+        "pi": DOCK_MODEL_SOURCE_PI,
+        "pi_interaction": DOCK_MODEL_SOURCE_PI,
+        "pi_interactions": DOCK_MODEL_SOURCE_PI,
+        "saltbridge": DOCK_MODEL_SOURCE_SALT_BRIDGE,
+        "saltbridges": DOCK_MODEL_SOURCE_SALT_BRIDGE,
+        "salt_bridge": DOCK_MODEL_SOURCE_SALT_BRIDGE,
+        "salt_bridges": DOCK_MODEL_SOURCE_SALT_BRIDGE,
+        "clash": DOCK_MODEL_SOURCE_CLASH,
+        "clashes": DOCK_MODEL_SOURCE_CLASH,
+        "steric_clash": DOCK_MODEL_SOURCE_CLASH,
+        "steric_clashes": DOCK_MODEL_SOURCE_CLASH,
+        "custom": DOCK_MODEL_SOURCE_CUSTOM,
+        "interaction": DOCK_MODEL_SOURCE_CUSTOM,
+        "interactions": DOCK_MODEL_SOURCE_CUSTOM,
+    }
+)
+
+_DOCK_MODEL_SOURCE_ATTRIBUTES: Final[Mapping[str, Tuple[str, ...]]] = (
+    MappingProxyType(
+        {
+            DOCK_MODEL_SOURCE_CONTACT: (
+                "contacts",
+                "contact_results",
+                "contact_interactions",
+            ),
+            DOCK_MODEL_SOURCE_HBOND: (
+                "hbonds",
+                "hydrogen_bonds",
+                "hbond_results",
+                "hydrogen_bond_results",
+            ),
+            DOCK_MODEL_SOURCE_HYDROPHOBIC: (
+                "hydrophobic",
+                "hydrophobic_interactions",
+                "hydrophobic_results",
+            ),
+            DOCK_MODEL_SOURCE_PI: (
+                "pi",
+                "pi_interactions",
+                "pi_results",
+            ),
+            DOCK_MODEL_SOURCE_SALT_BRIDGE: (
+                "saltbridge",
+                "saltbridges",
+                "salt_bridge",
+                "salt_bridges",
+                "saltbridge_results",
+                "salt_bridge_results",
+            ),
+            DOCK_MODEL_SOURCE_CLASH: (
+                "clashes",
+                "steric_clashes",
+                "clash_results",
+            ),
+            DOCK_MODEL_SOURCE_CUSTOM: (
+                "interactions",
+                "custom_interactions",
+            ),
+        }
+    )
+)
+
+_DOCK_MODEL_WRAPPER_KEYS: Final[FrozenSet[str]] = frozenset(
+    {
+        "analysis_result",
+        "result",
+        "results",
+        "interactions",
+        "interaction_results",
+        "items",
+        "entries",
+        "records",
+        "scores",
+        "data",
+    }
+)
+
+_DOCK_MODEL_INTERACTION_HINT_KEYS: Final[FrozenSet[str]] = frozenset(
+    {
+        "interaction_id",
+        "interaction_type",
+        "interaction_family",
+        "family",
+        "type",
+        "subtype",
+        "distance",
+        "angle",
+        "atom1",
+        "atom2",
+        "atom_a",
+        "atom_b",
+        "donor",
+        "acceptor",
+        "receptor_atom",
+        "ligand_atom",
+        "receptor_residue",
+        "ligand_residue",
+        "positive_group",
+        "negative_group",
+        "ring",
+        "classification",
+        "strength",
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 22.2. Exceptions and canonicalization helpers
+# -----------------------------------------------------------------------------
+
+class DockModelScoringError(RuntimeError):
+    """Base exception raised by Section 22."""
+
+
+class DockModelScoringInputError(DockModelScoringError, ValueError):
+    """Raised when a DockModel-like input cannot be adapted safely."""
+
+
+class DockModelScoringAttachmentError(DockModelScoringError):
+    """Raised when scoring information cannot be attached safely."""
+
+
+class DockModelScoringValidationError(DockModelScoringError):
+    """Raised when a Section 22 object violates an invariant."""
+
+
+def _dock_model_token(value: Any) -> str:
+    """Return a normalized lower-case token."""
+
+    return (
+        str(value or "")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+
+
+def _dock_model_identifier(value: Any, *, default: str = "") -> str:
+    """Return a stable non-empty identifier when possible."""
+
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text if text else default
+
+
+def normalize_dock_model_attachment_mode(value: Any) -> str:
+    """Return a canonical DockModel attachment mode."""
+
+    token = _dock_model_token(value)
+    normalized = _DOCK_MODEL_ATTACHMENT_MODE_ALIASES.get(token)
+    if normalized is None:
+        raise DockModelScoringInputError(
+            f"Unsupported DockModel attachment mode: {value!r}."
+        )
+    return normalized
+
+
+def normalize_dock_model_interaction_source(value: Any) -> str:
+    """Return a canonical DockModel interaction-source name."""
+
+    token = _dock_model_token(value)
+    normalized = _DOCK_MODEL_SOURCE_ALIASES.get(token)
+    if normalized is None:
+        raise DockModelScoringInputError(
+            f"Unsupported DockModel interaction source: {value!r}."
+        )
+    return normalized
+
+
+def _dock_model_finite_optional(
+    value: Any,
+    *,
+    name: str,
+) -> Optional[float]:
+    """Convert an optional number to a finite float."""
+
+    if value is None:
+        return None
+    try:
+        converted = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise DockModelScoringInputError(
+            f"{name} must be a finite number or None."
+        ) from exc
+    if not math.isfinite(converted):
+        raise DockModelScoringInputError(
+            f"{name} must be a finite number or None."
+        )
+    return converted
+
+
+def _dock_model_freeze_metadata(
+    value: Optional[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    """Return an immutable shallow metadata mapping."""
+
+    if value is None:
+        return _DOCK_MODEL_EMPTY_METADATA
+    if not isinstance(value, Mapping):
+        raise DockModelScoringInputError("metadata must be a mapping.")
+    return MappingProxyType(dict(value))
+
+
+def _dock_model_string_tuple(value: Any) -> Tuple[str, ...]:
+    """Convert a scalar or iterable into unique non-empty strings."""
+
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        values = (value,)
+    else:
+        try:
+            values = tuple(value)
+        except TypeError:
+            values = (value,)
+    normalized: List[str] = []
+    for item in values:
+        text = _dock_model_identifier(item)
+        if text and text not in normalized:
+            normalized.append(text)
+    return tuple(normalized)
+
+
+def _dock_model_get(
+    dock_model: Any,
+    name: str,
+    default: Any = None,
+) -> Any:
+    """Read one field from an object or mapping."""
+
+    if isinstance(dock_model, Mapping):
+        return dock_model.get(name, default)
+    return getattr(dock_model, name, default)
+
+
+def _dock_model_has(dock_model: Any, name: str) -> bool:
+    """Return whether an object or mapping exposes one field."""
+
+    if isinstance(dock_model, Mapping):
+        return name in dock_model
+    return hasattr(dock_model, name)
+
+
+def _dock_model_set(dock_model: Any, name: str, value: Any) -> None:
+    """Write one field to a mutable mapping or ordinary object."""
+
+    if isinstance(dock_model, MutableMapping):
+        dock_model[name] = value
+        return
+    try:
+        setattr(dock_model, name, value)
+    except Exception as exc:
+        raise DockModelScoringAttachmentError(
+            f"Could not assign DockModel field {name!r}."
+        ) from exc
+
+
+def _dock_model_delete(dock_model: Any, name: str) -> None:
+    """Delete one field when it exists."""
+
+    if isinstance(dock_model, MutableMapping):
+        dock_model.pop(name, None)
+        return
+    if hasattr(dock_model, name):
+        try:
+            delattr(dock_model, name)
+        except Exception as exc:
+            raise DockModelScoringAttachmentError(
+                f"Could not delete DockModel field {name!r}."
+            ) from exc
+
+
+def is_dock_model_like(value: Any) -> bool:
+    """Return whether a value exposes the minimum DockModel interface."""
+
+    if value is None:
+        return False
+    if isinstance(value, Mapping):
+        return bool(
+            "name" in value
+            or "pose" in value
+            or any(name in value for name in _DOCK_MODEL_SOURCE_ATTRIBUTES)
+        )
+    return bool(
+        hasattr(value, "name")
+        or hasattr(value, "pose")
+        or hasattr(value, "get_all_interactions")
+        or any(
+            hasattr(value, attribute)
+            for names in _DOCK_MODEL_SOURCE_ATTRIBUTES.values()
+            for attribute in names
+        )
+    )
+
+
+def validate_dock_model_like(value: Any) -> None:
+    """Validate the minimum structure required by Section 22."""
+
+    if not is_dock_model_like(value):
+        raise DockModelScoringInputError(
+            "Expected a DockModel-like object or mutable mapping."
+        )
+    if isinstance(value, Mapping) and not isinstance(value, MutableMapping):
+        return
+    name = _dock_model_get(value, "name")
+    if name is not None and not _dock_model_identifier(name):
+        raise DockModelScoringInputError(
+            "DockModel.name cannot be blank when present."
+        )
+
+
+# -----------------------------------------------------------------------------
+# 22.3. Immutable configuration and result dataclasses
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class DockModelScoringIntegrationOptions:
+    """Configuration for DockModel scoring and attachment."""
+
+    attachment_mode: str = DEFAULT_DOCK_MODEL_ATTACHMENT_MODE
+    attach_result: bool = True
+    attach_score: bool = True
+    attach_statistics: bool = True
+    attach_metadata: bool = True
+    preserve_previous: bool = True
+    history_limit: int = DEFAULT_DOCK_MODEL_SCORING_HISTORY_LIMIT
+    rollback_on_error: bool = DEFAULT_DOCK_MODEL_ROLLBACK_ON_ERROR
+    strict_identity: bool = DEFAULT_DOCK_MODEL_STRICT_IDENTITY
+    validate_result: bool = True
+    include_empty_sources: bool = DEFAULT_DOCK_MODEL_INCLUDE_EMPTY_SOURCES
+    max_source_depth: int = DEFAULT_DOCK_MODEL_MAX_SOURCE_DEPTH
+    result_attribute: str = DOCK_MODEL_SCORING_RESULT_ATTRIBUTE
+    history_attribute: str = DOCK_MODEL_SCORING_HISTORY_ATTRIBUTE
+    ranking_attribute: str = DOCK_MODEL_SCORING_RANKING_ATTRIBUTE
+    rank_attribute: str = DOCK_MODEL_SCORING_RANK_ATTRIBUTE
+    consensus_attribute: str = DOCK_MODEL_SCORING_CONSENSUS_ATTRIBUTE
+    support_attribute: str = DOCK_MODEL_SCORING_SUPPORT_ATTRIBUTE
+    statistics_key: str = DOCK_MODEL_SCORING_STATISTICS_KEY
+    metadata_key: str = DOCK_MODEL_SCORING_METADATA_KEY
+    interaction_sources: Tuple[str, ...] = DOCK_MODEL_INTERACTION_SOURCES
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _DOCK_MODEL_EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "attachment_mode",
+            normalize_dock_model_attachment_mode(self.attachment_mode),
+        )
+        history_limit = int(self.history_limit)
+        if history_limit < 0:
+            raise DockModelScoringInputError(
+                "history_limit cannot be negative."
+            )
+        max_depth = int(self.max_source_depth)
+        if max_depth < 1:
+            raise DockModelScoringInputError(
+                "max_source_depth must be at least one."
+            )
+        normalized_sources = tuple(
+            dict.fromkeys(
+                normalize_dock_model_interaction_source(source)
+                for source in self.interaction_sources
+            )
+        )
+        if not normalized_sources:
+            raise DockModelScoringInputError(
+                "At least one interaction source must be enabled."
+            )
+        for field_name in (
+            "result_attribute",
+            "history_attribute",
+            "ranking_attribute",
+            "rank_attribute",
+            "consensus_attribute",
+            "support_attribute",
+            "statistics_key",
+            "metadata_key",
+        ):
+            text = _dock_model_identifier(getattr(self, field_name))
+            if not text:
+                raise DockModelScoringInputError(
+                    f"{field_name} cannot be blank."
+                )
+            object.__setattr__(self, field_name, text)
+        object.__setattr__(self, "history_limit", history_limit)
+        object.__setattr__(self, "max_source_depth", max_depth)
+        object.__setattr__(self, "interaction_sources", normalized_sources)
+        object.__setattr__(
+            self,
+            "metadata",
+            _dock_model_freeze_metadata(self.metadata),
+        )
+
+
+DEFAULT_DOCK_MODEL_SCORING_INTEGRATION_OPTIONS: Final[
+    DockModelScoringIntegrationOptions
+] = DockModelScoringIntegrationOptions()
+
+
+@dataclass(frozen=True, slots=True)
+class DockModelInteractionBundle:
+    """Canonical interactions and identifiers extracted from one DockModel."""
+
+    pose_id: str
+    model_id: str
+    ligand_id: str
+    interactions: Tuple[Any, ...]
+    interactions_by_source: Mapping[str, Tuple[Any, ...]]
+    source_attributes: Mapping[str, Tuple[str, ...]]
+    warnings: Tuple[str, ...] = ()
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _DOCK_MODEL_EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        pose_id = _dock_model_identifier(self.pose_id)
+        if not pose_id:
+            raise DockModelScoringValidationError(
+                "DockModelInteractionBundle.pose_id is required."
+            )
+        object.__setattr__(self, "pose_id", pose_id)
+        object.__setattr__(
+            self,
+            "model_id",
+            _dock_model_identifier(self.model_id),
+        )
+        object.__setattr__(
+            self,
+            "ligand_id",
+            _dock_model_identifier(self.ligand_id),
+        )
+        object.__setattr__(self, "interactions", tuple(self.interactions))
+        object.__setattr__(
+            self,
+            "interactions_by_source",
+            MappingProxyType(
+                {
+                    normalize_dock_model_interaction_source(key): tuple(value)
+                    for key, value in self.interactions_by_source.items()
+                }
+            ),
+        )
+        object.__setattr__(
+            self,
+            "source_attributes",
+            MappingProxyType(
+                {
+                    normalize_dock_model_interaction_source(key): (
+                        _dock_model_string_tuple(value)
+                    )
+                    for key, value in self.source_attributes.items()
+                }
+            ),
+        )
+        object.__setattr__(
+            self,
+            "warnings",
+            _dock_model_string_tuple(self.warnings),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _dock_model_freeze_metadata(self.metadata),
+        )
+
+    @property
+    def interaction_count(self) -> int:
+        """Return the total number of extracted interactions."""
+
+        return len(self.interactions)
+
+    @property
+    def nonempty_source_count(self) -> int:
+        """Return the number of sources containing at least one item."""
+
+        return sum(bool(items) for items in self.interactions_by_source.values())
+
+    @property
+    def counts_by_source(self) -> Mapping[str, int]:
+        """Return immutable interaction counts by source."""
+
+        return MappingProxyType(
+            {
+                source: len(items)
+                for source, items in self.interactions_by_source.items()
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DockModelScoringSnapshot:
+    """Mutable DockModel state captured before an attachment transaction."""
+
+    score: Any
+    statistics: Any
+    metadata: Any
+    attributes: Mapping[str, Any]
+    existing_attributes: FrozenSet[str]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "attributes",
+            MappingProxyType(dict(self.attributes)),
+        )
+        object.__setattr__(
+            self,
+            "existing_attributes",
+            frozenset(self.existing_attributes),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DockModelScoringAttachment:
+    """Audit record describing one DockModel attachment operation."""
+
+    status: str
+    pose_id: str
+    model_name: str
+    scoring_result: Any = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+    previous_result: Any = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+    score_before: Optional[float] = None
+    score_after: Optional[float] = None
+    result_attached: bool = False
+    score_updated: bool = False
+    statistics_updated: bool = False
+    metadata_updated: bool = False
+    history_updated: bool = False
+    rolled_back: bool = False
+    warnings: Tuple[str, ...] = ()
+    message: Optional[str] = None
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _DOCK_MODEL_EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        if self.status not in DOCK_MODEL_ATTACHMENT_STATUSES:
+            raise DockModelScoringValidationError(
+                f"Invalid attachment status: {self.status!r}."
+            )
+        object.__setattr__(
+            self,
+            "warnings",
+            _dock_model_string_tuple(self.warnings),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _dock_model_freeze_metadata(self.metadata),
+        )
+
+    @property
+    def successful(self) -> bool:
+        """Return whether attachment completed without rollback or failure."""
+
+        return self.status in {
+            DOCK_MODEL_ATTACHMENT_STATUS_ATTACHED,
+            DOCK_MODEL_ATTACHMENT_STATUS_PARTIAL,
+            DOCK_MODEL_ATTACHMENT_STATUS_SKIPPED,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DockModelScoringIntegrationResult:
+    """Complete scoring and attachment outcome for one DockModel."""
+
+    status: str
+    dock_model: Any = field(compare=False, hash=False, repr=False)
+    bundle: Optional[DockModelInteractionBundle] = None
+    scoring_result: Any = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+    attachment: Optional[DockModelScoringAttachment] = None
+    errors: Tuple[str, ...] = ()
+    warnings: Tuple[str, ...] = ()
+    message: Optional[str] = None
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _DOCK_MODEL_EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        if self.status not in DOCK_MODEL_SCORING_STATUSES:
+            raise DockModelScoringValidationError(
+                f"Invalid integration status: {self.status!r}."
+            )
+        object.__setattr__(
+            self,
+            "errors",
+            _dock_model_string_tuple(self.errors),
+        )
+        object.__setattr__(
+            self,
+            "warnings",
+            _dock_model_string_tuple(self.warnings),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _dock_model_freeze_metadata(self.metadata),
+        )
+
+    @property
+    def successful(self) -> bool:
+        """Return whether a scoring result was produced."""
+
+        return (
+            self.scoring_result is not None
+            and self.status
+            in {
+                DOCK_MODEL_SCORING_STATUS_COMPLETE,
+                DOCK_MODEL_SCORING_STATUS_PARTIAL,
+                DOCK_MODEL_SCORING_STATUS_EMPTY,
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DockModelMultiposeScoringResult:
+    """Section 22 output for a collection of DockModel objects."""
+
+    integrations: Tuple[DockModelScoringIntegrationResult, ...]
+    pose_results: Tuple[Any, ...]
+    ranking_result: Any = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+    consensus_result: Any = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+    status: str = DOCK_MODEL_SCORING_STATUS_COMPLETE
+    message: Optional[str] = None
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _DOCK_MODEL_EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        if self.status not in DOCK_MODEL_SCORING_STATUSES:
+            raise DockModelScoringValidationError(
+                f"Invalid multipose status: {self.status!r}."
+            )
+        object.__setattr__(self, "integrations", tuple(self.integrations))
+        object.__setattr__(self, "pose_results", tuple(self.pose_results))
+        object.__setattr__(
+            self,
+            "metadata",
+            _dock_model_freeze_metadata(self.metadata),
+        )
+
+    @property
+    def model_count(self) -> int:
+        """Return the number of input DockModel objects."""
+
+        return len(self.integrations)
+
+    @property
+    def successful_count(self) -> int:
+        """Return the number of successfully scored DockModel objects."""
+
+        return sum(integration.successful for integration in self.integrations)
+
+    @property
+    def failed_count(self) -> int:
+        """Return the number of failed DockModel objects."""
+
+        return self.model_count - self.successful_count
+
+    @property
+    def dock_models(self) -> Tuple[Any, ...]:
+        """Return input DockModel objects in their original order."""
+
+        return tuple(integration.dock_model for integration in self.integrations)
+
+
+# -----------------------------------------------------------------------------
+# 22.4. DockModel identity resolution
+# -----------------------------------------------------------------------------
+
+def resolve_dock_model_name(dock_model: Any) -> str:
+    """Return a human-readable DockModel name."""
+
+    validate_dock_model_like(dock_model)
+    for candidate in (
+        _dock_model_get(dock_model, "name"),
+        _dock_model_get(dock_model, "pose_id"),
+        _dock_model_get(dock_model, "model_id"),
+    ):
+        resolved = _dock_model_identifier(candidate)
+        if resolved:
+            return resolved
+    return f"dock_model_{id(dock_model)}"
+
+
+def _resolve_identifier_from_object(
+    value: Any,
+    attributes: Sequence[str],
+) -> str:
+    """Resolve the first useful identifier from an arbitrary object."""
+
+    if value is None:
+        return ""
+    for attribute in attributes:
+        candidate = _dock_model_get(value, attribute)
+        if callable(candidate):
+            try:
+                candidate = candidate()
+            except Exception:
+                continue
+        resolved = _dock_model_identifier(candidate)
+        if resolved:
+            return resolved
+    return ""
+
+
+def resolve_dock_model_pose_id(
+    dock_model: Any,
+    *,
+    override: Optional[Any] = None,
+) -> str:
+    """Return the stable pose identifier used by the scoring engine."""
+
+    validate_dock_model_like(dock_model)
+    explicit = _dock_model_identifier(override)
+    if explicit:
+        return explicit
+    metadata = _dock_model_get(dock_model, "metadata", {})
+    if isinstance(metadata, Mapping):
+        for key in ("pose_id", "pose_identifier", "pose_name"):
+            resolved = _dock_model_identifier(metadata.get(key))
+            if resolved:
+                return resolved
+    for attribute in ("pose_id", "pose_identifier"):
+        resolved = _dock_model_identifier(
+            _dock_model_get(dock_model, attribute)
+        )
+        if resolved:
+            return resolved
+    pose = _dock_model_get(dock_model, "pose")
+    resolved = _resolve_identifier_from_object(
+        pose,
+        ("id_string", "name", "id", "model_id"),
+    )
+    if resolved:
+        return resolved
+    return resolve_dock_model_name(dock_model)
+
+
+def resolve_dock_model_model_id(
+    dock_model: Any,
+    *,
+    override: Optional[Any] = None,
+) -> str:
+    """Return the receptor or ChimeraX model identifier."""
+
+    validate_dock_model_like(dock_model)
+    explicit = _dock_model_identifier(override)
+    if explicit:
+        return explicit
+    for attribute in ("model_id", "receptor_id", "structure_id"):
+        candidate = _dock_model_get(dock_model, attribute)
+        if callable(candidate):
+            try:
+                candidate = candidate()
+            except Exception:
+                candidate = None
+        resolved = _dock_model_identifier(candidate)
+        if resolved:
+            return resolved
+    metadata = _dock_model_get(dock_model, "metadata", {})
+    if isinstance(metadata, Mapping):
+        for key in ("model_id", "receptor_id", "structure_id"):
+            resolved = _dock_model_identifier(metadata.get(key))
+            if resolved:
+                return resolved
+    for parent_name in ("receptor", "pose"):
+        parent = _dock_model_get(dock_model, parent_name)
+        resolved = _resolve_identifier_from_object(
+            parent,
+            ("id_string", "name", "id", "model_id"),
+        )
+        if resolved:
+            return resolved
+    return ""
+
+
+def resolve_dock_model_ligand_id(
+    dock_model: Any,
+    *,
+    override: Optional[Any] = None,
+) -> str:
+    """Return the ligand identifier associated with one DockModel."""
+
+    validate_dock_model_like(dock_model)
+    explicit = _dock_model_identifier(override)
+    if explicit:
+        return explicit
+    for attribute in ("ligand_id", "ligand_identifier"):
+        resolved = _dock_model_identifier(
+            _dock_model_get(dock_model, attribute)
+        )
+        if resolved:
+            return resolved
+    metadata = _dock_model_get(dock_model, "metadata", {})
+    if isinstance(metadata, Mapping):
+        for key in ("ligand_id", "ligand_identifier", "ligand_name"):
+            resolved = _dock_model_identifier(metadata.get(key))
+            if resolved:
+                return resolved
+    ligand = _dock_model_get(dock_model, "ligand")
+    resolved = _resolve_identifier_from_object(
+        ligand,
+        ("name", "id_string", "id", "residue_id", "identifier"),
+    )
+    return resolved
+
+
+# -----------------------------------------------------------------------------
+# 22.5. Interaction-source recognition and expansion
+# -----------------------------------------------------------------------------
+
+def _dock_model_iterable(value: Any) -> Optional[Tuple[Any, ...]]:
+    """Return an immutable sequence for non-scalar iterable values."""
+
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes, bytearray)):
+        return None
+    if isinstance(value, Mapping):
+        return None
+    try:
+        return tuple(value)
+    except TypeError:
+        return None
+
+
+def _looks_like_interaction_mapping(value: Mapping[str, Any]) -> bool:
+    """Return whether a mapping appears to describe one interaction."""
+
+    keys = {_dock_model_token(key) for key in value}
+    if not keys:
+        return False
+    if keys & _DOCK_MODEL_INTERACTION_HINT_KEYS:
+        wrapper_only = keys <= (
+            _DOCK_MODEL_WRAPPER_KEYS
+            | {
+                "schema",
+                "schema_version",
+                "status",
+                "statistics",
+                "summary",
+                "metadata",
+                "message",
+                "pose_id",
+                "model_id",
+                "ligand_id",
+            }
+        )
+        return not wrapper_only
+    class_name = _dock_model_token(value.get("class_name"))
+    return any(
+        token in class_name
+        for token in (
+            "interaction",
+            "contact",
+            "hbond",
+            "hydrogen_bond",
+            "salt_bridge",
+            "clash",
+        )
+    )
+
+
+def _looks_like_interaction_object(value: Any) -> bool:
+    """Return whether an object appears to represent one interaction."""
+
+    if value is None:
+        return False
+    if isinstance(value, Mapping):
+        return _looks_like_interaction_mapping(value)
+    class_name = _dock_model_token(type(value).__name__)
+    if any(
+        token in class_name
+        for token in (
+            "interaction",
+            "contact",
+            "hbond",
+            "hydrogen_bond",
+            "salt_bridge",
+            "clash",
+        )
+    ):
+        return True
+    has_type = any(
+        hasattr(value, attribute)
+        for attribute in (
+            "interaction_type",
+            "interaction_family",
+            "classification",
+            "strength",
+        )
+    )
+    has_participant = any(
+        hasattr(value, attribute)
+        for attribute in (
+            "atom1",
+            "atom2",
+            "donor",
+            "acceptor",
+            "receptor_atom",
+            "ligand_atom",
+            "receptor_residue",
+            "ligand_residue",
+            "positive_group",
+            "negative_group",
+            "ring",
+        )
+    )
+    return has_type and has_participant
+
+
+def _mapping_with_source_hint(
+    value: Mapping[str, Any],
+    source: str,
+) -> Mapping[str, Any]:
+    """Return a shallow mapping carrying a family hint when needed."""
+
+    if any(
+        key in value
+        for key in (
+            "interaction_family",
+            "family",
+            "interaction_type",
+            "type",
+        )
+    ):
+        return value
+    enriched = dict(value)
+    enriched["interaction_family"] = source
+    enriched.setdefault("source", source)
+    return enriched
+
+
+def _wrapper_children(value: Any) -> Tuple[Tuple[str, Any], ...]:
+    """Return likely nested result collections from one wrapper."""
+
+    children: List[Tuple[str, Any]] = []
+    if isinstance(value, Mapping):
+        for key in _DOCK_MODEL_WRAPPER_KEYS:
+            if key in value:
+                children.append((key, value[key]))
+        if not children:
+            for key, item in value.items():
+                token = _dock_model_token(key)
+                if token in _DOCK_MODEL_SOURCE_ALIASES:
+                    children.append((token, item))
+        return tuple(children)
+    for attribute in _DOCK_MODEL_WRAPPER_KEYS:
+        if not hasattr(value, attribute):
+            continue
+        try:
+            child = getattr(value, attribute)
+        except Exception:
+            continue
+        if callable(child):
+            continue
+        children.append((attribute, child))
+    return tuple(children)
+
+
+def _expand_dock_model_source(
+    value: Any,
+    *,
+    source: str,
+    max_depth: int,
+    _depth: int = 0,
+    _visited: Optional[Set[int]] = None,
+) -> Tuple[Any, ...]:
+    """Expand live or serialized analysis wrappers into interaction objects."""
+
+    if value is None:
+        return ()
+    if _depth > max_depth:
+        raise DockModelScoringInputError(
+            "Maximum DockModel interaction-source depth was exceeded."
+        )
+    visited = _visited if _visited is not None else set()
+    track_identity = not isinstance(
+        value,
+        (str, bytes, bytearray, int, float, bool),
+    )
+    if track_identity:
+        marker = id(value)
+        if marker in visited:
+            return ()
+        visited.add(marker)
+    if isinstance(value, Mapping):
+        if _looks_like_interaction_mapping(value):
+            return (_mapping_with_source_hint(value, source),)
+        expanded: List[Any] = []
+        children = _wrapper_children(value)
+        if children:
+            for child_name, child in children:
+                child_source = _DOCK_MODEL_SOURCE_ALIASES.get(
+                    _dock_model_token(child_name),
+                    source,
+                )
+                expanded.extend(
+                    _expand_dock_model_source(
+                        child,
+                        source=child_source,
+                        max_depth=max_depth,
+                        _depth=_depth + 1,
+                        _visited=visited,
+                    )
+                )
+            return tuple(expanded)
+        for key, item in value.items():
+            child_source = _DOCK_MODEL_SOURCE_ALIASES.get(
+                _dock_model_token(key),
+                source,
+            )
+            expanded.extend(
+                _expand_dock_model_source(
+                    item,
+                    source=child_source,
+                    max_depth=max_depth,
+                    _depth=_depth + 1,
+                    _visited=visited,
+                )
+            )
+        return tuple(expanded)
+    if _looks_like_interaction_object(value):
+        return (value,)
+    sequence = _dock_model_iterable(value)
+    if sequence is not None:
+        expanded = []
+        for item in sequence:
+            expanded.extend(
+                _expand_dock_model_source(
+                    item,
+                    source=source,
+                    max_depth=max_depth,
+                    _depth=_depth + 1,
+                    _visited=visited,
+                )
+            )
+        return tuple(expanded)
+    children = _wrapper_children(value)
+    if children:
+        expanded = []
+        for child_name, child in children:
+            child_source = _DOCK_MODEL_SOURCE_ALIASES.get(
+                _dock_model_token(child_name),
+                source,
+            )
+            expanded.extend(
+                _expand_dock_model_source(
+                    child,
+                    source=child_source,
+                    max_depth=max_depth,
+                    _depth=_depth + 1,
+                    _visited=visited,
+                )
+            )
+        return tuple(expanded)
+    return ()
+
+
+def _deduplicate_extracted_interactions(
+    interactions: Iterable[Any],
+) -> Tuple[Any, ...]:
+    """Remove repeated object references while preserving mapping entries."""
+
+    result: List[Any] = []
+    seen_objects: Set[int] = set()
+    seen_mapping_keys: Set[Tuple[Any, ...]] = set()
+    for interaction in interactions:
+        if isinstance(interaction, Mapping):
+            identifier = _dock_model_identifier(
+                interaction.get("interaction_id")
+                or interaction.get("id")
+            )
+            if identifier:
+                key = (
+                    identifier,
+                    _dock_model_token(
+                        interaction.get("interaction_type")
+                        or interaction.get("type")
+                    ),
+                )
+                if key in seen_mapping_keys:
+                    continue
+                seen_mapping_keys.add(key)
+            result.append(interaction)
+            continue
+        marker = id(interaction)
+        if marker in seen_objects:
+            continue
+        seen_objects.add(marker)
+        result.append(interaction)
+    return tuple(result)
+
+
+def extract_dock_model_interactions(
+    dock_model: Any,
+    *,
+    options: Optional[DockModelScoringIntegrationOptions] = None,
+    interaction_sources: Optional[Mapping[Any, Any]] = None,
+    pose_id: Optional[Any] = None,
+    model_id: Optional[Any] = None,
+    ligand_id: Optional[Any] = None,
+) -> DockModelInteractionBundle:
+    """Extract and standardize all enabled interaction sources."""
+
+    validate_dock_model_like(dock_model)
+    resolved_options = (
+        options or DEFAULT_DOCK_MODEL_SCORING_INTEGRATION_OPTIONS
+    )
+    validate_dock_model_scoring_options(resolved_options)
+    explicit_sources: Dict[str, Any] = {}
+    if interaction_sources is not None:
+        if not isinstance(interaction_sources, Mapping):
+            raise DockModelScoringInputError(
+                "interaction_sources must be a mapping when supplied."
+            )
+        explicit_sources = {
+            normalize_dock_model_interaction_source(key): value
+            for key, value in interaction_sources.items()
+        }
+    interactions_by_source: Dict[str, Tuple[Any, ...]] = {}
+    source_attributes: Dict[str, Tuple[str, ...]] = {}
+    warnings: List[str] = []
+    global_seen: Set[int] = set()
+    for source in resolved_options.interaction_sources:
+        source_values: List[Any] = []
+        used_attributes: List[str] = []
+        if source in explicit_sources:
+            source_values.append(explicit_sources[source])
+            used_attributes.append("explicit")
+        else:
+            for attribute in _DOCK_MODEL_SOURCE_ATTRIBUTES[source]:
+                if not _dock_model_has(dock_model, attribute):
+                    continue
+                candidate = _dock_model_get(dock_model, attribute)
+                if candidate is None:
+                    continue
+                source_values.append(candidate)
+                used_attributes.append(attribute)
+        expanded: List[Any] = []
+        for source_value in source_values:
+            try:
+                expanded.extend(
+                    _expand_dock_model_source(
+                        source_value,
+                        source=source,
+                        max_depth=resolved_options.max_source_depth,
+                        _visited=global_seen,
+                    )
+                )
+            except DockModelScoringInputError as exc:
+                warnings.append(f"{source}: {exc}")
+        normalized = _deduplicate_extracted_interactions(expanded)
+        if normalized or resolved_options.include_empty_sources:
+            interactions_by_source[source] = normalized
+            source_attributes[source] = tuple(used_attributes)
+    interactions = _deduplicate_extracted_interactions(
+        interaction
+        for source in resolved_options.interaction_sources
+        for interaction in interactions_by_source.get(source, ())
+    )
+    return DockModelInteractionBundle(
+        pose_id=resolve_dock_model_pose_id(
+            dock_model,
+            override=pose_id,
+        ),
+        model_id=resolve_dock_model_model_id(
+            dock_model,
+            override=model_id,
+        ),
+        ligand_id=resolve_dock_model_ligand_id(
+            dock_model,
+            override=ligand_id,
+        ),
+        interactions=interactions,
+        interactions_by_source=interactions_by_source,
+        source_attributes=source_attributes,
+        warnings=tuple(warnings),
+        metadata={
+            "dock_model_name": resolve_dock_model_name(dock_model),
+            "schema": DOCK_MODEL_SCORING_SCHEMA,
+            "schema_version": DOCK_MODEL_SCORING_SCHEMA_VERSION,
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 22.6. Snapshot, rollback, and active-result access
+# -----------------------------------------------------------------------------
+
+def capture_dock_model_scoring_snapshot(
+    dock_model: Any,
+    *,
+    options: Optional[DockModelScoringIntegrationOptions] = None,
+) -> DockModelScoringSnapshot:
+    """Capture all state that Section 22 may modify."""
+
+    validate_dock_model_like(dock_model)
+    resolved_options = (
+        options or DEFAULT_DOCK_MODEL_SCORING_INTEGRATION_OPTIONS
+    )
+    attribute_names = (
+        resolved_options.result_attribute,
+        resolved_options.history_attribute,
+        resolved_options.ranking_attribute,
+        resolved_options.rank_attribute,
+        resolved_options.consensus_attribute,
+        resolved_options.support_attribute,
+    )
+    existing = frozenset(
+        name for name in attribute_names if _dock_model_has(dock_model, name)
+    )
+    attributes = {
+        name: _dock_model_get(dock_model, name)
+        for name in existing
+    }
+    statistics = _dock_model_get(dock_model, "statistics")
+    metadata = _dock_model_get(dock_model, "metadata")
+    return DockModelScoringSnapshot(
+        score=_dock_model_get(dock_model, "score"),
+        statistics=(
+            dict(statistics) if isinstance(statistics, Mapping) else statistics
+        ),
+        metadata=(dict(metadata) if isinstance(metadata, Mapping) else metadata),
+        attributes=attributes,
+        existing_attributes=existing,
+    )
+
+
+def restore_dock_model_scoring_snapshot(
+    dock_model: Any,
+    snapshot: DockModelScoringSnapshot,
+    *,
+    options: Optional[DockModelScoringIntegrationOptions] = None,
+) -> None:
+    """Restore a snapshot captured before a Section 22 transaction."""
+
+    if not isinstance(snapshot, DockModelScoringSnapshot):
+        raise DockModelScoringInputError(
+            "snapshot must be a DockModelScoringSnapshot."
+        )
+    resolved_options = (
+        options or DEFAULT_DOCK_MODEL_SCORING_INTEGRATION_OPTIONS
+    )
+    _dock_model_set(dock_model, "score", snapshot.score)
+    _dock_model_set(
+        dock_model,
+        "statistics",
+        (
+            dict(snapshot.statistics)
+            if isinstance(snapshot.statistics, Mapping)
+            else snapshot.statistics
+        ),
+    )
+    _dock_model_set(
+        dock_model,
+        "metadata",
+        (
+            dict(snapshot.metadata)
+            if isinstance(snapshot.metadata, Mapping)
+            else snapshot.metadata
+        ),
+    )
+    attribute_names = (
+        resolved_options.result_attribute,
+        resolved_options.history_attribute,
+        resolved_options.ranking_attribute,
+        resolved_options.rank_attribute,
+        resolved_options.consensus_attribute,
+        resolved_options.support_attribute,
+    )
+    for name in attribute_names:
+        if name in snapshot.existing_attributes:
+            _dock_model_set(dock_model, name, snapshot.attributes[name])
+        else:
+            _dock_model_delete(dock_model, name)
+
+
+def get_dock_model_scoring_result(
+    dock_model: Any,
+    *,
+    options: Optional[DockModelScoringIntegrationOptions] = None,
+) -> Any:
+    """Return the active pose-scoring result or None."""
+
+    validate_dock_model_like(dock_model)
+    resolved_options = (
+        options or DEFAULT_DOCK_MODEL_SCORING_INTEGRATION_OPTIONS
+    )
+    return _dock_model_get(dock_model, resolved_options.result_attribute)
+
+
+def get_dock_model_scoring_history(
+    dock_model: Any,
+    *,
+    options: Optional[DockModelScoringIntegrationOptions] = None,
+) -> Tuple[Any, ...]:
+    """Return the immutable scoring-result history."""
+
+    validate_dock_model_like(dock_model)
+    resolved_options = (
+        options or DEFAULT_DOCK_MODEL_SCORING_INTEGRATION_OPTIONS
+    )
+    history = _dock_model_get(dock_model, resolved_options.history_attribute)
+    if history is None:
+        return ()
+    if isinstance(history, tuple):
+        return history
+    if isinstance(history, list):
+        return tuple(history)
+    return (history,)
+
+
+def clear_dock_model_scoring(
+    dock_model: Any,
+    *,
+    options: Optional[DockModelScoringIntegrationOptions] = None,
+    preserve_history: bool = True,
+    clear_ranking: bool = True,
+    clear_consensus: bool = True,
+    clear_score: bool = True,
+    clear_statistics: bool = True,
+    clear_metadata: bool = True,
+) -> Any:
+    """Clear active scoring state while optionally preserving history."""
+
+    validate_dock_model_like(dock_model)
+    resolved_options = (
+        options or DEFAULT_DOCK_MODEL_SCORING_INTEGRATION_OPTIONS
+    )
+    active = get_dock_model_scoring_result(
+        dock_model,
+        options=resolved_options,
+    )
+    if preserve_history and active is not None:
+        history = list(
+            get_dock_model_scoring_history(
+                dock_model,
+                options=resolved_options,
+            )
+        )
+        if not history or history[-1] is not active:
+            history.append(active)
+        if resolved_options.history_limit:
+            history = history[-resolved_options.history_limit :]
+        _dock_model_set(
+            dock_model,
+            resolved_options.history_attribute,
+            history,
+        )
+    _dock_model_delete(dock_model, resolved_options.result_attribute)
+    if not preserve_history:
+        _dock_model_delete(dock_model, resolved_options.history_attribute)
+    if clear_ranking:
+        _dock_model_delete(dock_model, resolved_options.ranking_attribute)
+        _dock_model_delete(dock_model, resolved_options.rank_attribute)
+    if clear_consensus:
+        _dock_model_delete(dock_model, resolved_options.consensus_attribute)
+        _dock_model_delete(dock_model, resolved_options.support_attribute)
+    if clear_score:
+        setter = _dock_model_get(dock_model, "set_score")
+        if callable(setter):
+            setter(None)
+        else:
+            _dock_model_set(dock_model, "score", None)
+    if clear_statistics:
+        statistics = _dock_model_get(dock_model, "statistics")
+        if isinstance(statistics, MutableMapping):
+            statistics.pop(resolved_options.statistics_key, None)
+            for key in tuple(statistics):
+                if str(key).startswith("scoring_"):
+                    statistics.pop(key, None)
+    if clear_metadata:
+        metadata = _dock_model_get(dock_model, "metadata")
+        if isinstance(metadata, MutableMapping):
+            metadata.pop(resolved_options.metadata_key, None)
+    return dock_model
+
+
+# -----------------------------------------------------------------------------
+# 22.7. Scoring-result statistics and compact attachment metadata
+# -----------------------------------------------------------------------------
+
+def _pose_result_final_score(result: Any) -> Optional[float]:
+    """Resolve the final score from a pose-scoring result."""
+
+    for candidate in (
+        _dock_model_get(result, "final_score"),
+        _dock_model_get(_dock_model_get(result, "summary"), "final_score"),
+        _dock_model_get(result, "total_score"),
+        _dock_model_get(result, "score"),
+    ):
+        if candidate is None:
+            continue
+        try:
+            converted = float(candidate)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(converted):
+            return converted
+    return None
+
+
+def _pose_result_identifier(result: Any, name: str) -> str:
+    """Resolve a text identifier from a pose-scoring result."""
+
+    return _dock_model_identifier(_dock_model_get(result, name))
+
+
+def _pose_result_summary_value(result: Any, name: str) -> Any:
+    """Read a metric from the result summary and then the result itself."""
+
+    summary = _dock_model_get(result, "summary")
+    value = _dock_model_get(summary, name)
+    if value is not None:
+        return value
+    return _dock_model_get(result, name)
+
+
+def dock_model_scoring_statistics(result: Any) -> Dict[str, Any]:
+    """Build the standardized statistics payload for one scoring result."""
+
+    if result is None:
+        raise DockModelScoringInputError("A scoring result is required.")
+    final_score = _pose_result_final_score(result)
+    field_names = (
+        "interaction_count",
+        "residue_count",
+        "hotspot_count",
+        "favorable_interaction_count",
+        "unfavorable_interaction_count",
+        "neutral_interaction_count",
+        "raw_interaction_score",
+        "weighted_interaction_score",
+        "aggregated_score",
+        "normalized_score",
+        "correction_score",
+        "total_penalty_score",
+        "total_bonus_score",
+        "mean_interaction_score",
+        "median_interaction_score",
+        "minimum_interaction_score",
+        "maximum_interaction_score",
+        "pose_polarity",
+    )
+    statistics: Dict[str, Any] = {
+        "schema": DOCK_MODEL_SCORING_SCHEMA,
+        "schema_version": DOCK_MODEL_SCORING_SCHEMA_VERSION,
+        "section_version": DOCK_MODEL_SCORING_SECTION_VERSION,
+        "status": _dock_model_identifier(
+            _dock_model_get(result, "status"),
+            default="unknown",
+        ),
+        "pose_id": _pose_result_identifier(result, "pose_id"),
+        "model_id": _pose_result_identifier(result, "model_id"),
+        "ligand_id": _pose_result_identifier(result, "ligand_id"),
+        "final_score": final_score,
+    }
+    for field_name in field_names:
+        value = _pose_result_summary_value(result, field_name)
+        if value is not None:
+            statistics[field_name] = value
+    family_components = _dock_model_get(result, "family_components", {})
+    if isinstance(family_components, Mapping):
+        statistics["score_by_family"] = {
+            str(key): _pose_result_final_score(component)
+            for key, component in family_components.items()
+        }
+    type_components = _dock_model_get(result, "type_components", {})
+    if isinstance(type_components, Mapping):
+        statistics["score_by_type"] = {
+            str(key): _pose_result_final_score(component)
+            for key, component in type_components.items()
+        }
+    return statistics
+
+
+def _dock_model_compact_scoring_metadata(
+    result: Any,
+    *,
+    history_count: int,
+    options: DockModelScoringIntegrationOptions,
+) -> Dict[str, Any]:
+    """Build compact metadata without serializing the complete result."""
+
+    statistics = dock_model_scoring_statistics(result)
+    return {
+        "schema": DOCK_MODEL_SCORING_SCHEMA,
+        "schema_version": DOCK_MODEL_SCORING_SCHEMA_VERSION,
+        "section_version": DOCK_MODEL_SCORING_SECTION_VERSION,
+        "pose_id": statistics.get("pose_id"),
+        "model_id": statistics.get("model_id"),
+        "ligand_id": statistics.get("ligand_id"),
+        "status": statistics.get("status"),
+        "final_score": statistics.get("final_score"),
+        "interaction_count": statistics.get("interaction_count", 0),
+        "residue_count": statistics.get("residue_count", 0),
+        "hotspot_count": statistics.get("hotspot_count", 0),
+        "history_count": history_count,
+        "result_attribute": options.result_attribute,
+        "history_attribute": options.history_attribute,
+        "integration_metadata": dict(options.metadata),
+    }
+
+
+def _set_dock_model_score(dock_model: Any, score: Optional[float]) -> None:
+    """Update DockModel.score through its public setter when available."""
+
+    setter = _dock_model_get(dock_model, "set_score")
+    if callable(setter):
+        setter(score)
+    else:
+        _dock_model_set(dock_model, "score", score)
+
+
+def _update_dock_model_statistics(
+    dock_model: Any,
+    result: Any,
+    *,
+    options: DockModelScoringIntegrationOptions,
+) -> None:
+    """Merge scoring statistics into DockModel.statistics."""
+
+    payload = dock_model_scoring_statistics(result)
+    statistics = _dock_model_get(dock_model, "statistics")
+    if statistics is None:
+        statistics = {}
+        _dock_model_set(dock_model, "statistics", statistics)
+    if not isinstance(statistics, MutableMapping):
+        raise DockModelScoringAttachmentError(
+            "DockModel.statistics must be mutable for scoring attachment."
+        )
+    updater = _dock_model_get(dock_model, "update_statistics")
+    if callable(updater):
+        try:
+            updater()
+        except TypeError:
+            updater(None)
+    statistics[options.statistics_key] = payload
+    flat_values = {
+        "scoring_status": payload.get("status"),
+        "scoring_final_score": payload.get("final_score"),
+        "scoring_interaction_count": payload.get("interaction_count", 0),
+        "scoring_residue_count": payload.get("residue_count", 0),
+        "scoring_hotspot_count": payload.get("hotspot_count", 0),
+        "scoring_penalty_score": payload.get("total_penalty_score", 0.0),
+        "scoring_bonus_score": payload.get("total_bonus_score", 0.0),
+    }
+    statistics.update(flat_values)
+
+
+def _update_dock_model_metadata(
+    dock_model: Any,
+    result: Any,
+    *,
+    history_count: int,
+    options: DockModelScoringIntegrationOptions,
+) -> None:
+    """Merge compact scoring metadata into DockModel.metadata."""
+
+    metadata = _dock_model_get(dock_model, "metadata")
+    if metadata is None:
+        metadata = {}
+        _dock_model_set(dock_model, "metadata", metadata)
+    if not isinstance(metadata, MutableMapping):
+        raise DockModelScoringAttachmentError(
+            "DockModel.metadata must be mutable for scoring attachment."
+        )
+    metadata[options.metadata_key] = _dock_model_compact_scoring_metadata(
+        result,
+        history_count=history_count,
+        options=options,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 22.8. Pose-scoring result attachment
+# -----------------------------------------------------------------------------
+
+def _validate_pose_result_if_available(
+    result: Any,
+    *,
+    enabled: bool,
+) -> None:
+    """Call the Section 16 validator when present and requested."""
+
+    if not enabled:
+        return
+    validator = globals().get("validate_pose_scoring_result")
+    if callable(validator):
+        validator(result)
+        return
+    if _pose_result_final_score(result) is None:
+        raise DockModelScoringValidationError(
+            "The scoring result does not expose a finite final score."
+        )
+
+
+def _validate_result_identity(
+    dock_model: Any,
+    result: Any,
+    *,
+    options: DockModelScoringIntegrationOptions,
+) -> None:
+    """Validate pose identity before attachment when strict mode is active."""
+
+    if not options.strict_identity:
+        return
+    expected_pose_id = resolve_dock_model_pose_id(dock_model)
+    result_pose_id = _pose_result_identifier(result, "pose_id")
+    if result_pose_id and result_pose_id != expected_pose_id:
+        raise DockModelScoringAttachmentError(
+            "Pose-scoring result identity does not match the DockModel: "
+            f"{result_pose_id!r} != {expected_pose_id!r}."
+        )
+
+
+def attach_pose_scoring_result_to_dock_model(
+    dock_model: Any,
+    result: Any,
+    *,
+    options: Optional[DockModelScoringIntegrationOptions] = None,
+) -> DockModelScoringAttachment:
+    """Attach one pose-scoring result using a rollback-capable transaction."""
+
+    validate_dock_model_like(dock_model)
+    resolved_options = (
+        options or DEFAULT_DOCK_MODEL_SCORING_INTEGRATION_OPTIONS
+    )
+    validate_dock_model_scoring_options(resolved_options)
+    _validate_pose_result_if_available(
+        result,
+        enabled=resolved_options.validate_result,
+    )
+    _validate_result_identity(
+        dock_model,
+        result,
+        options=resolved_options,
+    )
+    snapshot = capture_dock_model_scoring_snapshot(
+        dock_model,
+        options=resolved_options,
+    )
+    previous_result = _dock_model_get(
+        dock_model,
+        resolved_options.result_attribute,
+    )
+    score_before = _dock_model_finite_optional(
+        _dock_model_get(dock_model, "score"),
+        name="DockModel.score",
+    )
+    warnings: List[str] = []
+    result_attached = False
+    score_updated = False
+    statistics_updated = False
+    metadata_updated = False
+    history_updated = False
+    try:
+        history = list(
+            get_dock_model_scoring_history(
+                dock_model,
+                options=resolved_options,
+            )
+        )
+        if (
+            resolved_options.preserve_previous
+            and previous_result is not None
+            and previous_result is not result
+        ):
+            if not history or history[-1] is not previous_result:
+                history.append(previous_result)
+                history_updated = True
+        if resolved_options.history_limit:
+            history = history[-resolved_options.history_limit :]
+        elif resolved_options.history_limit == 0:
+            history = []
+        if history_updated or _dock_model_has(
+            dock_model,
+            resolved_options.history_attribute,
+        ):
+            _dock_model_set(
+                dock_model,
+                resolved_options.history_attribute,
+                history,
+            )
+        if resolved_options.attach_result:
+            mode = resolved_options.attachment_mode
+            if mode == DOCK_MODEL_ATTACHMENT_HISTORY_ONLY:
+                history.append(result)
+                if resolved_options.history_limit:
+                    history = history[-resolved_options.history_limit :]
+                _dock_model_set(
+                    dock_model,
+                    resolved_options.history_attribute,
+                    history,
+                )
+                history_updated = True
+            elif (
+                mode == DOCK_MODEL_ATTACHMENT_PRESERVE
+                and previous_result is not None
+            ):
+                warnings.append(
+                    "The active scoring result was preserved by configuration."
+                )
+            else:
+                _dock_model_set(
+                    dock_model,
+                    resolved_options.result_attribute,
+                    result,
+                )
+                result_attached = True
+        final_score = _pose_result_final_score(result)
+        if resolved_options.attach_score:
+            _set_dock_model_score(dock_model, final_score)
+            score_updated = True
+        if resolved_options.attach_statistics:
+            _update_dock_model_statistics(
+                dock_model,
+                result,
+                options=resolved_options,
+            )
+            statistics_updated = True
+        if resolved_options.attach_metadata:
+            _update_dock_model_metadata(
+                dock_model,
+                result,
+                history_count=len(history),
+                options=resolved_options,
+            )
+            metadata_updated = True
+        if not any(
+            (
+                result_attached,
+                score_updated,
+                statistics_updated,
+                metadata_updated,
+                history_updated,
+            )
+        ):
+            status = DOCK_MODEL_ATTACHMENT_STATUS_SKIPPED
+            message = "No DockModel field was changed by configuration."
+        elif warnings:
+            status = DOCK_MODEL_ATTACHMENT_STATUS_PARTIAL
+            message = "Scoring attachment completed with warnings."
+        else:
+            status = DOCK_MODEL_ATTACHMENT_STATUS_ATTACHED
+            message = "Scoring result attached successfully."
+        return DockModelScoringAttachment(
+            status=status,
+            pose_id=(
+                _pose_result_identifier(result, "pose_id")
+                or resolve_dock_model_pose_id(dock_model)
+            ),
+            model_name=resolve_dock_model_name(dock_model),
+            scoring_result=result,
+            previous_result=previous_result,
+            score_before=score_before,
+            score_after=_pose_result_final_score(result),
+            result_attached=result_attached,
+            score_updated=score_updated,
+            statistics_updated=statistics_updated,
+            metadata_updated=metadata_updated,
+            history_updated=history_updated,
+            warnings=tuple(warnings),
+            message=message,
+            metadata={
+                "attachment_mode": resolved_options.attachment_mode,
+                "history_limit": resolved_options.history_limit,
+            },
+        )
+    except Exception as exc:
+        if resolved_options.rollback_on_error:
+            try:
+                restore_dock_model_scoring_snapshot(
+                    dock_model,
+                    snapshot,
+                    options=resolved_options,
+                )
+            except Exception as rollback_exc:
+                raise DockModelScoringAttachmentError(
+                    "Scoring attachment and rollback both failed."
+                ) from rollback_exc
+            raise DockModelScoringAttachmentError(
+                "Scoring attachment failed and the DockModel was rolled back."
+            ) from exc
+        raise DockModelScoringAttachmentError(
+            "Scoring attachment failed."
+        ) from exc
+
+
+# -----------------------------------------------------------------------------
+# 22.9. Single-DockModel scoring APIs
+# -----------------------------------------------------------------------------
+
+def _resolve_pose_scoring_profile(profile: Any) -> Any:
+    """Return an explicit or module-default pose-scoring profile."""
+
+    if profile is not None:
+        return profile
+    default_profile = globals().get("DEFAULT_POSE_SCORING_PROFILE")
+    if default_profile is None:
+        raise DockModelScoringInputError(
+            "DEFAULT_POSE_SCORING_PROFILE is not available."
+        )
+    return default_profile
+
+
+def _integration_status_from_pose_result(
+    result: Any,
+    *,
+    interaction_count: int,
+) -> str:
+    """Map a Section 16 pose status to a Section 22 integration status."""
+
+    status = _dock_model_token(_dock_model_get(result, "status"))
+    if not interaction_count or status == "empty":
+        return DOCK_MODEL_SCORING_STATUS_EMPTY
+    if status in {"failed", "invalid", "error"}:
+        return DOCK_MODEL_SCORING_STATUS_FAILED
+    if status in {"partial", "incomplete"}:
+        return DOCK_MODEL_SCORING_STATUS_PARTIAL
+    return DOCK_MODEL_SCORING_STATUS_COMPLETE
+
+
+def score_dock_model(
+    dock_model: Any,
+    *,
+    profile: Any = None,
+    integration_options: Optional[
+        DockModelScoringIntegrationOptions
+    ] = None,
+    interaction_sources: Optional[Mapping[Any, Any]] = None,
+    pose_id: Optional[Any] = None,
+    model_id: Optional[Any] = None,
+    ligand_id: Optional[Any] = None,
+    container_name: Optional[str] = None,
+    attach: bool = True,
+) -> Any:
+    """Score one DockModel and optionally attach the result."""
+
+    resolved_options = (
+        integration_options
+        or DEFAULT_DOCK_MODEL_SCORING_INTEGRATION_OPTIONS
+    )
+    validate_dock_model_scoring_options(resolved_options)
+    bundle = extract_dock_model_interactions(
+        dock_model,
+        options=resolved_options,
+        interaction_sources=interaction_sources,
+        pose_id=pose_id,
+        model_id=model_id,
+        ligand_id=ligand_id,
+    )
+    scorer = globals().get("score_pose")
+    if not callable(scorer):
+        raise DockModelScoringError(
+            "The Section 16 score_pose API is not available."
+        )
+    result = scorer(
+        bundle.interactions,
+        profile=_resolve_pose_scoring_profile(profile),
+        pose_id=bundle.pose_id,
+        model_id=bundle.model_id or None,
+        ligand_id=bundle.ligand_id or None,
+        container_name=(container_name or resolve_dock_model_name(dock_model)),
+    )
+    if attach:
+        attach_pose_scoring_result_to_dock_model(
+            dock_model,
+            result,
+            options=resolved_options,
+        )
+    return result
+
+
+def integrate_dock_model_scoring(
+    dock_model: Any,
+    *,
+    profile: Any = None,
+    integration_options: Optional[
+        DockModelScoringIntegrationOptions
+    ] = None,
+    interaction_sources: Optional[Mapping[Any, Any]] = None,
+    pose_id: Optional[Any] = None,
+    model_id: Optional[Any] = None,
+    ligand_id: Optional[Any] = None,
+    container_name: Optional[str] = None,
+    attach: bool = True,
+    raise_errors: bool = False,
+) -> DockModelScoringIntegrationResult:
+    """Run extraction, scoring, attachment, and error capture for one model."""
+
+    resolved_options = (
+        integration_options
+        or DEFAULT_DOCK_MODEL_SCORING_INTEGRATION_OPTIONS
+    )
+    bundle: Optional[DockModelInteractionBundle] = None
+    result: Any = None
+    attachment: Optional[DockModelScoringAttachment] = None
+    warnings: List[str] = []
+    try:
+        bundle = extract_dock_model_interactions(
+            dock_model,
+            options=resolved_options,
+            interaction_sources=interaction_sources,
+            pose_id=pose_id,
+            model_id=model_id,
+            ligand_id=ligand_id,
+        )
+        warnings.extend(bundle.warnings)
+        scorer = globals().get("score_pose")
+        if not callable(scorer):
+            raise DockModelScoringError(
+                "The Section 16 score_pose API is not available."
+            )
+        result = scorer(
+            bundle.interactions,
+            profile=_resolve_pose_scoring_profile(profile),
+            pose_id=bundle.pose_id,
+            model_id=bundle.model_id or None,
+            ligand_id=bundle.ligand_id or None,
+            container_name=(
+                container_name or resolve_dock_model_name(dock_model)
+            ),
+        )
+        if attach:
+            attachment = attach_pose_scoring_result_to_dock_model(
+                dock_model,
+                result,
+                options=resolved_options,
+            )
+            warnings.extend(attachment.warnings)
+        status = _integration_status_from_pose_result(
+            result,
+            interaction_count=bundle.interaction_count,
+        )
+        if attachment is not None and not attachment.successful:
+            status = DOCK_MODEL_SCORING_STATUS_FAILED
+        elif warnings and status == DOCK_MODEL_SCORING_STATUS_COMPLETE:
+            status = DOCK_MODEL_SCORING_STATUS_PARTIAL
+        message = (
+            "DockModel scoring completed successfully."
+            if status == DOCK_MODEL_SCORING_STATUS_COMPLETE
+            else "DockModel scoring completed with a non-complete status."
+        )
+        return DockModelScoringIntegrationResult(
+            status=status,
+            dock_model=dock_model,
+            bundle=bundle,
+            scoring_result=result,
+            attachment=attachment,
+            warnings=tuple(warnings),
+            message=message,
+            metadata={
+                "attached": bool(attach),
+                "dock_model_name": resolve_dock_model_name(dock_model),
+            },
+        )
+    except Exception as exc:
+        if raise_errors:
+            raise
+        return DockModelScoringIntegrationResult(
+            status=DOCK_MODEL_SCORING_STATUS_FAILED,
+            dock_model=dock_model,
+            bundle=bundle,
+            scoring_result=result,
+            attachment=attachment,
+            errors=(f"{type(exc).__name__}: {exc}",),
+            warnings=tuple(warnings),
+            message="DockModel scoring failed.",
+            metadata={
+                "attached": bool(attach),
+                "dock_model_name": (
+                    resolve_dock_model_name(dock_model)
+                    if is_dock_model_like(dock_model)
+                    else ""
+                ),
+            },
+        )
+
+
+def analyze_dock_model_scoring(
+    dock_model: Any,
+    **kwargs: Any,
+) -> DockModelScoringIntegrationResult:
+    """Alias for :func:`integrate_dock_model_scoring`."""
+
+    return integrate_dock_model_scoring(dock_model, **kwargs)
+
+
+def refresh_dock_model_scoring(
+    dock_model: Any,
+    *,
+    preserve_previous: bool = True,
+    **kwargs: Any,
+) -> DockModelScoringIntegrationResult:
+    """Recalculate and replace the active DockModel scoring result."""
+
+    options = kwargs.pop("integration_options", None)
+    base = options or DEFAULT_DOCK_MODEL_SCORING_INTEGRATION_OPTIONS
+    refreshed_options = DockModelScoringIntegrationOptions(
+        attachment_mode=DOCK_MODEL_ATTACHMENT_REPLACE,
+        attach_result=base.attach_result,
+        attach_score=base.attach_score,
+        attach_statistics=base.attach_statistics,
+        attach_metadata=base.attach_metadata,
+        preserve_previous=preserve_previous,
+        history_limit=base.history_limit,
+        rollback_on_error=base.rollback_on_error,
+        strict_identity=base.strict_identity,
+        validate_result=base.validate_result,
+        include_empty_sources=base.include_empty_sources,
+        max_source_depth=base.max_source_depth,
+        result_attribute=base.result_attribute,
+        history_attribute=base.history_attribute,
+        ranking_attribute=base.ranking_attribute,
+        rank_attribute=base.rank_attribute,
+        consensus_attribute=base.consensus_attribute,
+        support_attribute=base.support_attribute,
+        statistics_key=base.statistics_key,
+        metadata_key=base.metadata_key,
+        interaction_sources=base.interaction_sources,
+        metadata=base.metadata,
+    )
+    return integrate_dock_model_scoring(
+        dock_model,
+        integration_options=refreshed_options,
+        **kwargs,
+    )
+
+
+def synchronize_dock_model_scoring(
+    dock_model: Any,
+    *,
+    result: Any = None,
+    options: Optional[DockModelScoringIntegrationOptions] = None,
+) -> DockModelScoringAttachment:
+    """Reapply score, statistics, and metadata from an existing result."""
+
+    resolved_options = (
+        options or DEFAULT_DOCK_MODEL_SCORING_INTEGRATION_OPTIONS
+    )
+    active_result = result or get_dock_model_scoring_result(
+        dock_model,
+        options=resolved_options,
+    )
+    if active_result is None:
+        raise DockModelScoringInputError(
+            "DockModel does not contain an active scoring result."
+        )
+    synchronization_options = DockModelScoringIntegrationOptions(
+        attachment_mode=DOCK_MODEL_ATTACHMENT_REPLACE,
+        attach_result=True,
+        attach_score=resolved_options.attach_score,
+        attach_statistics=resolved_options.attach_statistics,
+        attach_metadata=resolved_options.attach_metadata,
+        preserve_previous=False,
+        history_limit=resolved_options.history_limit,
+        rollback_on_error=resolved_options.rollback_on_error,
+        strict_identity=resolved_options.strict_identity,
+        validate_result=resolved_options.validate_result,
+        include_empty_sources=resolved_options.include_empty_sources,
+        max_source_depth=resolved_options.max_source_depth,
+        result_attribute=resolved_options.result_attribute,
+        history_attribute=resolved_options.history_attribute,
+        ranking_attribute=resolved_options.ranking_attribute,
+        rank_attribute=resolved_options.rank_attribute,
+        consensus_attribute=resolved_options.consensus_attribute,
+        support_attribute=resolved_options.support_attribute,
+        statistics_key=resolved_options.statistics_key,
+        metadata_key=resolved_options.metadata_key,
+        interaction_sources=resolved_options.interaction_sources,
+        metadata=resolved_options.metadata,
+    )
+    return attach_pose_scoring_result_to_dock_model(
+        dock_model,
+        active_result,
+        options=synchronization_options,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 22.10. Ranking and consensus links for DockModel collections
+# -----------------------------------------------------------------------------
+
+def _ranking_entries_by_pose(ranking_result: Any) -> Mapping[str, Any]:
+    """Return ranked-pose entries indexed by pose identifier."""
+
+    entries: Dict[str, Any] = {}
+    groups = _dock_model_get(ranking_result, "groups", ())
+    for group in groups or ():
+        for entry in _dock_model_get(group, "entries", ()) or ():
+            pose_id = _dock_model_identifier(
+                _dock_model_get(entry, "pose_id")
+            )
+            if pose_id and pose_id not in entries:
+                entries[pose_id] = entry
+    return MappingProxyType(entries)
+
+
+def _consensus_support_by_pose(consensus_result: Any) -> Mapping[str, Any]:
+    """Return pose-consensus support records indexed by pose identifier."""
+
+    support: Dict[str, Any] = {}
+    groups = _dock_model_get(consensus_result, "groups", ())
+    for group in groups or ():
+        for record in _dock_model_get(group, "pose_support", ()) or ():
+            pose_id = _dock_model_identifier(
+                _dock_model_get(record, "pose_id")
+            )
+            if pose_id and pose_id not in support:
+                support[pose_id] = record
+    return MappingProxyType(support)
+
+
+def _ensure_mutable_nested_mapping(
+    dock_model: Any,
+    field_name: str,
+    nested_key: str,
+) -> MutableMapping[str, Any]:
+    """Return a mutable nested mapping, creating it when needed."""
+
+    root = _dock_model_get(dock_model, field_name)
+    if root is None:
+        root = {}
+        _dock_model_set(dock_model, field_name, root)
+    if not isinstance(root, MutableMapping):
+        raise DockModelScoringAttachmentError(
+            f"DockModel.{field_name} must be mutable."
+        )
+    nested = root.get(nested_key)
+    if nested is None:
+        nested = {}
+        root[nested_key] = nested
+    if not isinstance(nested, MutableMapping):
+        nested = dict(nested) if isinstance(nested, Mapping) else {}
+        root[nested_key] = nested
+    return nested
+
+
+def attach_multipose_ranking_to_dock_models(
+    dock_models: Iterable[Any],
+    ranking_result: Any,
+    *,
+    options: Optional[DockModelScoringIntegrationOptions] = None,
+    strict: bool = False,
+) -> Mapping[str, Any]:
+    """Attach a global ranking result and pose-specific rank entries."""
+
+    resolved_options = (
+        options or DEFAULT_DOCK_MODEL_SCORING_INTEGRATION_OPTIONS
+    )
+    entries = _ranking_entries_by_pose(ranking_result)
+    attached: Dict[str, Any] = {}
+    for dock_model in tuple(dock_models):
+        validate_dock_model_like(dock_model)
+        pose_id = resolve_dock_model_pose_id(dock_model)
+        entry = entries.get(pose_id)
+        if entry is None:
+            if strict:
+                raise DockModelScoringAttachmentError(
+                    f"No ranking entry was found for pose {pose_id!r}."
+                )
+            continue
+        _dock_model_set(
+            dock_model,
+            resolved_options.ranking_attribute,
+            ranking_result,
+        )
+        _dock_model_set(
+            dock_model,
+            resolved_options.rank_attribute,
+            entry,
+        )
+        metadata = _ensure_mutable_nested_mapping(
+            dock_model,
+            "metadata",
+            resolved_options.metadata_key,
+        )
+        metadata["ranking"] = {
+            "pose_id": pose_id,
+            "rank": _dock_model_get(entry, "rank"),
+            "tied_rank": _dock_model_get(entry, "tied_rank"),
+            "percentile": _dock_model_get(entry, "percentile"),
+            "ranking_score": _dock_model_get(entry, "ranking_score"),
+            "selected": bool(_dock_model_get(entry, "selected", False)),
+            "best": bool(_dock_model_get(entry, "best", False)),
+            "group_id": _dock_model_get(entry, "group_id"),
+        }
+        statistics = _ensure_mutable_nested_mapping(
+            dock_model,
+            "statistics",
+            resolved_options.statistics_key,
+        )
+        statistics["rank"] = _dock_model_get(entry, "rank")
+        statistics["ranking_score"] = _dock_model_get(
+            entry,
+            "ranking_score",
+        )
+        statistics["rank_percentile"] = _dock_model_get(
+            entry,
+            "percentile",
+        )
+        attached[pose_id] = entry
+    return MappingProxyType(attached)
+
+
+def attach_consensus_to_dock_models(
+    dock_models: Iterable[Any],
+    consensus_result: Any,
+    *,
+    options: Optional[DockModelScoringIntegrationOptions] = None,
+    strict: bool = False,
+) -> Mapping[str, Any]:
+    """Attach a global consensus result and pose-specific support records."""
+
+    resolved_options = (
+        options or DEFAULT_DOCK_MODEL_SCORING_INTEGRATION_OPTIONS
+    )
+    support_by_pose = _consensus_support_by_pose(consensus_result)
+    attached: Dict[str, Any] = {}
+    for dock_model in tuple(dock_models):
+        validate_dock_model_like(dock_model)
+        pose_id = resolve_dock_model_pose_id(dock_model)
+        support = support_by_pose.get(pose_id)
+        if support is None:
+            if strict:
+                raise DockModelScoringAttachmentError(
+                    f"No consensus support was found for pose {pose_id!r}."
+                )
+            continue
+        _dock_model_set(
+            dock_model,
+            resolved_options.consensus_attribute,
+            consensus_result,
+        )
+        _dock_model_set(
+            dock_model,
+            resolved_options.support_attribute,
+            support,
+        )
+        metadata = _ensure_mutable_nested_mapping(
+            dock_model,
+            "metadata",
+            resolved_options.metadata_key,
+        )
+        metadata["consensus"] = {
+            "pose_id": pose_id,
+            "group_id": _dock_model_get(support, "group_id"),
+            "consensus_score": _dock_model_get(
+                support,
+                "consensus_score",
+            ),
+            "persistence_support_score": _dock_model_get(
+                support,
+                "persistence_support_score",
+            ),
+            "consensus_precision": _dock_model_get(
+                support,
+                "consensus_precision",
+            ),
+            "consensus_recall": _dock_model_get(
+                support,
+                "consensus_recall",
+            ),
+            "core_recall": _dock_model_get(support, "core_recall"),
+        }
+        statistics = _ensure_mutable_nested_mapping(
+            dock_model,
+            "statistics",
+            resolved_options.statistics_key,
+        )
+        statistics["consensus_score"] = _dock_model_get(
+            support,
+            "consensus_score",
+        )
+        statistics["consensus_precision"] = _dock_model_get(
+            support,
+            "consensus_precision",
+        )
+        statistics["consensus_recall"] = _dock_model_get(
+            support,
+            "consensus_recall",
+        )
+        statistics["core_recall"] = _dock_model_get(
+            support,
+            "core_recall",
+        )
+        attached[pose_id] = support
+    return MappingProxyType(attached)
+
+
+# -----------------------------------------------------------------------------
+# 22.11. Multipose DockModel scoring
+# -----------------------------------------------------------------------------
+
+def _materialize_dock_models(values: Any) -> Tuple[Any, ...]:
+    """Convert one DockModel or iterable into an immutable tuple."""
+
+    if values is None:
+        return ()
+    if is_dock_model_like(values):
+        return (values,)
+    if isinstance(values, (str, bytes, bytearray, Mapping)):
+        raise DockModelScoringInputError(
+            "Expected a DockModel-like object or iterable of DockModels."
+        )
+    try:
+        materialized = tuple(values)
+    except TypeError as exc:
+        raise DockModelScoringInputError(
+            "Expected a DockModel-like object or iterable of DockModels."
+        ) from exc
+    for dock_model in materialized:
+        validate_dock_model_like(dock_model)
+    return materialized
+
+
+def _resolve_multipose_status(
+    integrations: Sequence[DockModelScoringIntegrationResult],
+) -> str:
+    """Resolve the aggregate status for a DockModel collection."""
+
+    if not integrations:
+        return DOCK_MODEL_SCORING_STATUS_EMPTY
+    successful = sum(integration.successful for integration in integrations)
+    if successful == 0:
+        return DOCK_MODEL_SCORING_STATUS_FAILED
+    if successful < len(integrations):
+        return DOCK_MODEL_SCORING_STATUS_PARTIAL
+    if any(
+        integration.status
+        in {
+            DOCK_MODEL_SCORING_STATUS_PARTIAL,
+            DOCK_MODEL_SCORING_STATUS_EMPTY,
+        }
+        for integration in integrations
+    ):
+        return DOCK_MODEL_SCORING_STATUS_PARTIAL
+    return DOCK_MODEL_SCORING_STATUS_COMPLETE
+
+
+def score_multiple_dock_models(
+    dock_models: Any,
+    *,
+    profile: Any = None,
+    integration_options: Optional[
+        DockModelScoringIntegrationOptions
+    ] = None,
+    interaction_sources_by_pose: Optional[
+        Mapping[Any, Mapping[Any, Any]]
+    ] = None,
+    attach: bool = True,
+    continue_on_error: bool = True,
+    build_ranking: bool = True,
+    ranking_options: Any = None,
+    build_consensus: bool = True,
+    consensus_options: Any = None,
+    attach_ranking: bool = True,
+    attach_consensus: bool = True,
+    ranking_kwargs: Optional[Mapping[str, Any]] = None,
+    consensus_kwargs: Optional[Mapping[str, Any]] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> DockModelMultiposeScoringResult:
+    """Score, rank, and optionally build consensus for multiple DockModels."""
+
+    models = _materialize_dock_models(dock_models)
+    resolved_options = (
+        integration_options
+        or DEFAULT_DOCK_MODEL_SCORING_INTEGRATION_OPTIONS
+    )
+    validate_dock_model_scoring_options(resolved_options)
+    sources_by_pose = interaction_sources_by_pose or {}
+    integrations: List[DockModelScoringIntegrationResult] = []
+    pose_results: List[Any] = []
+    for index, dock_model in enumerate(models):
+        pose_id = resolve_dock_model_pose_id(dock_model)
+        source_override = None
+        for key in (pose_id, index, str(index)):
+            if key in sources_by_pose:
+                source_override = sources_by_pose[key]
+                break
+        integration = integrate_dock_model_scoring(
+            dock_model,
+            profile=profile,
+            integration_options=resolved_options,
+            interaction_sources=source_override,
+            pose_id=pose_id,
+            attach=attach,
+            raise_errors=not continue_on_error,
+        )
+        integrations.append(integration)
+        if integration.scoring_result is not None:
+            pose_results.append(integration.scoring_result)
+    ranking_result: Any = None
+    consensus_result: Any = None
+    warnings: List[str] = []
+    if build_ranking and pose_results:
+        ranker = globals().get("rank_multiple_poses")
+        if not callable(ranker):
+            warnings.append("Section 20 ranking API is unavailable.")
+        else:
+            kwargs = dict(ranking_kwargs or {})
+            if ranking_options is not None:
+                kwargs["options"] = ranking_options
+            ranking_result = ranker(tuple(pose_results), **kwargs)
+            if attach and attach_ranking:
+                attach_multipose_ranking_to_dock_models(
+                    models,
+                    ranking_result,
+                    options=resolved_options,
+                    strict=False,
+                )
+    if build_consensus and pose_results:
+        builder = globals().get("build_consensus_persistence")
+        if not callable(builder):
+            warnings.append("Section 21 consensus API is unavailable.")
+        else:
+            kwargs = dict(consensus_kwargs or {})
+            if consensus_options is not None:
+                kwargs["options"] = consensus_options
+            consensus_result = builder(
+                tuple(pose_results),
+                ranking=ranking_result,
+                **kwargs,
+            )
+            if attach and attach_consensus:
+                attach_consensus_to_dock_models(
+                    models,
+                    consensus_result,
+                    options=resolved_options,
+                    strict=False,
+                )
+    status = _resolve_multipose_status(integrations)
+    if warnings and status == DOCK_MODEL_SCORING_STATUS_COMPLETE:
+        status = DOCK_MODEL_SCORING_STATUS_PARTIAL
+    if status == DOCK_MODEL_SCORING_STATUS_COMPLETE:
+        message = "All DockModel objects were scored successfully."
+    elif status == DOCK_MODEL_SCORING_STATUS_EMPTY:
+        message = "No DockModel objects were supplied."
+    elif status == DOCK_MODEL_SCORING_STATUS_FAILED:
+        message = "No DockModel object could be scored successfully."
+    else:
+        message = "Multipose DockModel scoring completed partially."
+    aggregate_metadata = {
+        **dict(metadata or {}),
+        "schema": DOCK_MODEL_SCORING_SCHEMA,
+        "schema_version": DOCK_MODEL_SCORING_SCHEMA_VERSION,
+        "input_model_count": len(models),
+        "successful_model_count": sum(
+            integration.successful for integration in integrations
+        ),
+        "failed_model_count": sum(
+            not integration.successful for integration in integrations
+        ),
+        "ranking_created": ranking_result is not None,
+        "consensus_created": consensus_result is not None,
+        "warnings": tuple(warnings),
+    }
+    result = DockModelMultiposeScoringResult(
+        integrations=tuple(integrations),
+        pose_results=tuple(pose_results),
+        ranking_result=ranking_result,
+        consensus_result=consensus_result,
+        status=status,
+        message=message,
+        metadata=aggregate_metadata,
+    )
+    validate_dock_model_multipose_scoring_result(result)
+    return result
+
+
+def analyze_multiple_dock_models_scoring(
+    dock_models: Any,
+    **kwargs: Any,
+) -> DockModelMultiposeScoringResult:
+    """Alias for :func:`score_multiple_dock_models`."""
+
+    return score_multiple_dock_models(dock_models, **kwargs)
+
+
+# -----------------------------------------------------------------------------
+# 22.12. Rows and summaries
+# -----------------------------------------------------------------------------
+
+def dock_model_scoring_to_rows(
+    value: Any,
+    *,
+    include_failed: bool = True,
+) -> Tuple[Dict[str, Any], ...]:
+    """Convert one integration or multipose result into table-ready rows."""
+
+    if isinstance(value, DockModelScoringIntegrationResult):
+        integrations = (value,)
+    elif isinstance(value, DockModelMultiposeScoringResult):
+        integrations = value.integrations
+    else:
+        integrations = tuple(value)
+        if not all(
+            isinstance(item, DockModelScoringIntegrationResult)
+            for item in integrations
+        ):
+            raise DockModelScoringInputError(
+                "Rows require Section 22 integration results."
+            )
+    rows: List[Dict[str, Any]] = []
+    for integration in integrations:
+        if not include_failed and not integration.successful:
+            continue
+        result = integration.scoring_result
+        bundle = integration.bundle
+        statistics = (
+            dock_model_scoring_statistics(result) if result is not None else {}
+        )
+        attachment = integration.attachment
+        row: Dict[str, Any] = {
+            "dock_model_name": resolve_dock_model_name(
+                integration.dock_model
+            ),
+            "pose_id": (
+                bundle.pose_id
+                if bundle is not None
+                else _pose_result_identifier(result, "pose_id")
+            ),
+            "model_id": (
+                bundle.model_id
+                if bundle is not None
+                else _pose_result_identifier(result, "model_id")
+            ),
+            "ligand_id": (
+                bundle.ligand_id
+                if bundle is not None
+                else _pose_result_identifier(result, "ligand_id")
+            ),
+            "integration_status": integration.status,
+            "successful": integration.successful,
+            "interaction_count": (
+                bundle.interaction_count if bundle is not None else 0
+            ),
+            "source_count": (
+                bundle.nonempty_source_count if bundle is not None else 0
+            ),
+            "final_score": statistics.get("final_score"),
+            "residue_count": statistics.get("residue_count"),
+            "hotspot_count": statistics.get("hotspot_count"),
+            "penalty_score": statistics.get("total_penalty_score"),
+            "bonus_score": statistics.get("total_bonus_score"),
+            "attachment_status": (
+                attachment.status if attachment is not None else None
+            ),
+            "score_updated": (
+                attachment.score_updated if attachment is not None else False
+            ),
+            "statistics_updated": (
+                attachment.statistics_updated
+                if attachment is not None
+                else False
+            ),
+            "history_updated": (
+                attachment.history_updated
+                if attachment is not None
+                else False
+            ),
+            "error_count": len(integration.errors),
+            "warning_count": len(integration.warnings),
+            "message": integration.message,
+        }
+        if bundle is not None:
+            for source, count in bundle.counts_by_source.items():
+                row[f"{source}_count"] = count
+        rows.append(row)
+    return tuple(rows)
+
+
+def summarize_dock_model_scoring(value: Any) -> Dict[str, Any]:
+    """Return a compact numerical summary of Section 22 results."""
+
+    rows = dock_model_scoring_to_rows(value, include_failed=True)
+    status_counts = Counter(row["integration_status"] for row in rows)
+    final_scores = tuple(
+        float(row["final_score"])
+        for row in rows
+        if row["final_score"] is not None
+        and math.isfinite(float(row["final_score"]))
+    )
+    source_totals: Dict[str, int] = defaultdict(int)
+    for row in rows:
+        for source in DOCK_MODEL_INTERACTION_SOURCES:
+            source_totals[source] += int(row.get(f"{source}_count", 0) or 0)
+    summary: Dict[str, Any] = {
+        "model_count": len(rows),
+        "successful_count": sum(bool(row["successful"]) for row in rows),
+        "failed_count": sum(not bool(row["successful"]) for row in rows),
+        "status_counts": dict(status_counts),
+        "total_interaction_count": sum(
+            int(row["interaction_count"] or 0) for row in rows
+        ),
+        "source_totals": dict(source_totals),
+        "score_count": len(final_scores),
+        "minimum_score": min(final_scores) if final_scores else None,
+        "maximum_score": max(final_scores) if final_scores else None,
+        "mean_score": (
+            float(sum(final_scores) / len(final_scores))
+            if final_scores
+            else None
+        ),
+    }
+    if isinstance(value, DockModelMultiposeScoringResult):
+        summary["ranking_available"] = value.ranking_result is not None
+        summary["consensus_available"] = value.consensus_result is not None
+        summary["status"] = value.status
+    return summary
+
+
+def format_dock_model_scoring_summary(
+    value: Any,
+    *,
+    title: str = "DockAnalyzer DockModel Scoring Summary",
+) -> str:
+    """Return a human-readable Section 22 summary."""
+
+    summary = summarize_dock_model_scoring(value)
+    lines = [
+        str(title),
+        "=" * len(str(title)),
+        f"DockModel objects: {summary['model_count']}",
+        f"Successful: {summary['successful_count']}",
+        f"Failed: {summary['failed_count']}",
+        (
+            "Total extracted interactions: "
+            f"{summary['total_interaction_count']}"
+        ),
+    ]
+    if summary["score_count"]:
+        lines.extend(
+            [
+                f"Minimum score: {summary['minimum_score']:.6g}",
+                f"Maximum score: {summary['maximum_score']:.6g}",
+                f"Mean score: {summary['mean_score']:.6g}",
+            ]
+        )
+    else:
+        lines.append("No finite pose scores were available.")
+    source_totals = summary["source_totals"]
+    nonzero_sources = [
+        f"{source}={count}"
+        for source, count in source_totals.items()
+        if count
+    ]
+    if nonzero_sources:
+        lines.append("Sources: " + ", ".join(nonzero_sources))
+    if "ranking_available" in summary:
+        lines.append(
+            "Ranking: "
+            + ("available" if summary["ranking_available"] else "not built")
+        )
+        lines.append(
+            "Consensus: "
+            + (
+                "available"
+                if summary["consensus_available"]
+                else "not built"
+            )
+        )
+    return "\n".join(lines)
+
+
+# -----------------------------------------------------------------------------
+# 22.13. Validation
+# -----------------------------------------------------------------------------
+
+def validate_dock_model_scoring_options(
+    options: DockModelScoringIntegrationOptions,
+) -> None:
+    """Validate DockModel scoring integration options."""
+
+    if not isinstance(options, DockModelScoringIntegrationOptions):
+        raise DockModelScoringValidationError(
+            "options must be DockModelScoringIntegrationOptions."
+        )
+    if options.attachment_mode not in DOCK_MODEL_ATTACHMENT_MODES:
+        raise DockModelScoringValidationError(
+            "Invalid DockModel attachment mode."
+        )
+    if options.history_limit < 0:
+        raise DockModelScoringValidationError(
+            "history_limit cannot be negative."
+        )
+    if options.max_source_depth < 1:
+        raise DockModelScoringValidationError(
+            "max_source_depth must be positive."
+        )
+    if not options.interaction_sources:
+        raise DockModelScoringValidationError(
+            "At least one interaction source is required."
+        )
+
+
+def validate_dock_model_interaction_bundle(
+    bundle: DockModelInteractionBundle,
+) -> None:
+    """Validate an extracted DockModel interaction bundle."""
+
+    if not isinstance(bundle, DockModelInteractionBundle):
+        raise DockModelScoringValidationError(
+            "bundle must be DockModelInteractionBundle."
+        )
+    if not bundle.pose_id:
+        raise DockModelScoringValidationError("bundle.pose_id is required.")
+    flattened = tuple(
+        interaction
+        for source in bundle.interactions_by_source.values()
+        for interaction in source
+    )
+    if len(flattened) < len(bundle.interactions):
+        raise DockModelScoringValidationError(
+            "Bundle source collections cannot contain fewer total entries "
+            "than the deduplicated interaction collection."
+        )
+
+
+def validate_dock_model_scoring_attachment(
+    attachment: DockModelScoringAttachment,
+) -> None:
+    """Validate an attachment audit record."""
+
+    if not isinstance(attachment, DockModelScoringAttachment):
+        raise DockModelScoringValidationError(
+            "attachment must be DockModelScoringAttachment."
+        )
+    if attachment.status not in DOCK_MODEL_ATTACHMENT_STATUSES:
+        raise DockModelScoringValidationError(
+            "Invalid DockModel attachment status."
+        )
+    if attachment.rolled_back and attachment.status != (
+        DOCK_MODEL_ATTACHMENT_STATUS_ROLLED_BACK
+    ):
+        raise DockModelScoringValidationError(
+            "rolled_back requires the rolled_back attachment status."
+        )
+
+
+def validate_dock_model_scoring_integration_result(
+    result: DockModelScoringIntegrationResult,
+) -> None:
+    """Validate one complete DockModel integration result."""
+
+    if not isinstance(result, DockModelScoringIntegrationResult):
+        raise DockModelScoringValidationError(
+            "result must be DockModelScoringIntegrationResult."
+        )
+    validate_dock_model_like(result.dock_model)
+    if result.bundle is not None:
+        validate_dock_model_interaction_bundle(result.bundle)
+    if result.attachment is not None:
+        validate_dock_model_scoring_attachment(result.attachment)
+    if result.status == DOCK_MODEL_SCORING_STATUS_FAILED:
+        if result.successful:
+            raise DockModelScoringValidationError(
+                "Failed integrations cannot be successful."
+            )
+    elif result.scoring_result is None:
+        raise DockModelScoringValidationError(
+            "Non-failed integrations require a scoring result."
+        )
+
+
+def validate_dock_model_multipose_scoring_result(
+    result: DockModelMultiposeScoringResult,
+) -> None:
+    """Validate a multipose DockModel scoring result."""
+
+    if not isinstance(result, DockModelMultiposeScoringResult):
+        raise DockModelScoringValidationError(
+            "result must be DockModelMultiposeScoringResult."
+        )
+    for integration in result.integrations:
+        validate_dock_model_scoring_integration_result(integration)
+    expected_pose_results = tuple(
+        integration.scoring_result
+        for integration in result.integrations
+        if integration.scoring_result is not None
+    )
+    if len(expected_pose_results) != len(result.pose_results):
+        raise DockModelScoringValidationError(
+            "pose_results must match successful integration outputs."
+        )
+    expected_status = _resolve_multipose_status(result.integrations)
+    if result.status == DOCK_MODEL_SCORING_STATUS_COMPLETE:
+        if expected_status != DOCK_MODEL_SCORING_STATUS_COMPLETE:
+            raise DockModelScoringValidationError(
+                "Complete multipose status is inconsistent."
+            )
+
+
+# -----------------------------------------------------------------------------
+# 22.14. Deterministic self-check
+# -----------------------------------------------------------------------------
+
+@dataclass
+class _Section22TestDockModel:
+    """Minimal mutable DockModel used only by the Section 22 self-check."""
+
+    name: str
+    contacts: List[Any] = field(default_factory=list)
+    hbonds: List[Any] = field(default_factory=list)
+    hydrophobic: List[Any] = field(default_factory=list)
+    pi: Dict[str, List[Any]] = field(default_factory=dict)
+    saltbridges: List[Any] = field(default_factory=list)
+    score: Optional[float] = None
+    statistics: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    pose: Any = None
+    receptor: Any = None
+    ligand: Any = None
+
+    def set_score(self, value: Optional[float]) -> None:
+        """Assign the test DockModel score."""
+
+        self.score = None if value is None else float(value)
+
+    def update_statistics(self, additional: Any = None) -> Dict[str, Any]:
+        """Mimic the central DockModel statistics method."""
+
+        self.statistics["score"] = self.score
+        if additional:
+            self.statistics.update(additional)
+        return self.statistics
+
+
+@dataclass(frozen=True)
+class _Section22TestSummary:
+    """Minimal pose-score summary used by the self-check."""
+
+    interaction_count: int
+    residue_count: int
+    hotspot_count: int
+    final_score: float
+    total_penalty_score: float = 0.0
+    total_bonus_score: float = 0.0
+
+
+@dataclass(frozen=True)
+class _Section22TestPoseResult:
+    """Minimal pose-scoring result used by the self-check."""
+
+    pose_id: str
+    model_id: str
+    ligand_id: str
+    status: str
+    summary: _Section22TestSummary
+    scores: Tuple[Any, ...] = ()
+    family_components: Mapping[str, Any] = field(default_factory=dict)
+    type_components: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def final_score(self) -> float:
+        """Return the final score."""
+
+        return self.summary.final_score
+
+
+def run_section_22_self_check() -> Mapping[str, bool]:
+    """Run deterministic extraction, attachment, history, and clearing checks."""
+
+    contact = {
+        "interaction_id": "contact-1",
+        "interaction_type": "close_contact",
+        "distance": 3.2,
+    }
+    hbond = {
+        "interaction_id": "hbond-1",
+        "interaction_type": "hydrogen_bond",
+        "distance": 2.9,
+    }
+    model = _Section22TestDockModel(
+        name="pose-1",
+        contacts=[contact],
+        hbonds=[{"interactions": [hbond]}],
+        pi={"stacking": []},
+        metadata={"ligand_id": "LIG"},
+    )
+    options = DockModelScoringIntegrationOptions(
+        validate_result=False,
+        strict_identity=False,
+        history_limit=2,
+    )
+    bundle = extract_dock_model_interactions(model, options=options)
+    first_result = _Section22TestPoseResult(
+        pose_id="pose-1",
+        model_id="model-1",
+        ligand_id="LIG",
+        status="scored",
+        summary=_Section22TestSummary(
+            interaction_count=2,
+            residue_count=2,
+            hotspot_count=1,
+            final_score=4.5,
+        ),
+    )
+    first_attachment = attach_pose_scoring_result_to_dock_model(
+        model,
+        first_result,
+        options=options,
+    )
+    second_result = _Section22TestPoseResult(
+        pose_id="pose-1",
+        model_id="model-1",
+        ligand_id="LIG",
+        status="scored",
+        summary=_Section22TestSummary(
+            interaction_count=2,
+            residue_count=2,
+            hotspot_count=1,
+            final_score=5.0,
+        ),
+    )
+    second_attachment = attach_pose_scoring_result_to_dock_model(
+        model,
+        second_result,
+        options=options,
+    )
+    history = get_dock_model_scoring_history(model, options=options)
+    rows = dock_model_scoring_to_rows(
+        DockModelScoringIntegrationResult(
+            status=DOCK_MODEL_SCORING_STATUS_COMPLETE,
+            dock_model=model,
+            bundle=bundle,
+            scoring_result=second_result,
+            attachment=second_attachment,
+        )
+    )
+    checks = {
+        "bundle_pose_id": bundle.pose_id == "pose-1",
+        "bundle_interaction_count": bundle.interaction_count == 2,
+        "first_attached": first_attachment.successful,
+        "second_attached": second_attachment.successful,
+        "score_updated": math.isclose(model.score or 0.0, 5.0),
+        "history_preserved": len(history) == 1 and history[0] is first_result,
+        "statistics_nested": "scoring" in model.statistics,
+        "metadata_nested": "scoring" in model.metadata,
+        "row_created": len(rows) == 1 and rows[0]["final_score"] == 5.0,
+    }
+    if not all(checks.values()):
+        failures = ", ".join(
+            name for name, successful in checks.items() if not successful
+        )
+        raise DockModelScoringValidationError(
+            "Section 22 self-check failed: " + failures
+        )
+    clear_dock_model_scoring(
+        model,
+        options=options,
+        preserve_history=True,
+    )
+    if get_dock_model_scoring_result(model, options=options) is not None:
+        raise DockModelScoringValidationError(
+            "Section 22 clear operation failed."
+        )
+    return MappingProxyType(checks)
+
+
+# -----------------------------------------------------------------------------
+# 22.15. Public interface closure
+# -----------------------------------------------------------------------------
+
+_SECTION_22_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    # Statuses and modes
+    "DOCK_MODEL_SCORING_STATUS_COMPLETE",
+    "DOCK_MODEL_SCORING_STATUS_PARTIAL",
+    "DOCK_MODEL_SCORING_STATUS_EMPTY",
+    "DOCK_MODEL_SCORING_STATUS_FAILED",
+    "DOCK_MODEL_SCORING_STATUSES",
+    "DOCK_MODEL_ATTACHMENT_STATUS_ATTACHED",
+    "DOCK_MODEL_ATTACHMENT_STATUS_PARTIAL",
+    "DOCK_MODEL_ATTACHMENT_STATUS_SKIPPED",
+    "DOCK_MODEL_ATTACHMENT_STATUS_ROLLED_BACK",
+    "DOCK_MODEL_ATTACHMENT_STATUS_FAILED",
+    "DOCK_MODEL_ATTACHMENT_STATUSES",
+    "DOCK_MODEL_ATTACHMENT_REPLACE",
+    "DOCK_MODEL_ATTACHMENT_PRESERVE",
+    "DOCK_MODEL_ATTACHMENT_HISTORY_ONLY",
+    "DOCK_MODEL_ATTACHMENT_MODES",
+    # Sources
+    "DOCK_MODEL_SOURCE_CONTACT",
+    "DOCK_MODEL_SOURCE_HBOND",
+    "DOCK_MODEL_SOURCE_HYDROPHOBIC",
+    "DOCK_MODEL_SOURCE_PI",
+    "DOCK_MODEL_SOURCE_SALT_BRIDGE",
+    "DOCK_MODEL_SOURCE_CLASH",
+    "DOCK_MODEL_SOURCE_CUSTOM",
+    "DOCK_MODEL_INTERACTION_SOURCES",
+    # Storage names and versions
+    "DOCK_MODEL_SCORING_RESULT_ATTRIBUTE",
+    "DOCK_MODEL_SCORING_HISTORY_ATTRIBUTE",
+    "DOCK_MODEL_SCORING_RANKING_ATTRIBUTE",
+    "DOCK_MODEL_SCORING_RANK_ATTRIBUTE",
+    "DOCK_MODEL_SCORING_CONSENSUS_ATTRIBUTE",
+    "DOCK_MODEL_SCORING_SUPPORT_ATTRIBUTE",
+    "DOCK_MODEL_SCORING_STATISTICS_KEY",
+    "DOCK_MODEL_SCORING_METADATA_KEY",
+    "DOCK_MODEL_SCORING_SCHEMA",
+    "DOCK_MODEL_SCORING_SCHEMA_VERSION",
+    "DOCK_MODEL_SCORING_SECTION_VERSION",
+    # Defaults
+    "DEFAULT_DOCK_MODEL_SCORING_HISTORY_LIMIT",
+    "DEFAULT_DOCK_MODEL_ATTACHMENT_MODE",
+    "DEFAULT_DOCK_MODEL_ROLLBACK_ON_ERROR",
+    "DEFAULT_DOCK_MODEL_STRICT_IDENTITY",
+    "DEFAULT_DOCK_MODEL_MAX_SOURCE_DEPTH",
+    "DEFAULT_DOCK_MODEL_INCLUDE_EMPTY_SOURCES",
+    "DEFAULT_DOCK_MODEL_SCORING_INTEGRATION_OPTIONS",
+    # Exceptions
+    "DockModelScoringError",
+    "DockModelScoringInputError",
+    "DockModelScoringAttachmentError",
+    "DockModelScoringValidationError",
+    # Dataclasses
+    "DockModelScoringIntegrationOptions",
+    "DockModelInteractionBundle",
+    "DockModelScoringSnapshot",
+    "DockModelScoringAttachment",
+    "DockModelScoringIntegrationResult",
+    "DockModelMultiposeScoringResult",
+    # Normalization and validation of DockModel-like objects
+    "normalize_dock_model_attachment_mode",
+    "normalize_dock_model_interaction_source",
+    "is_dock_model_like",
+    "validate_dock_model_like",
+    # Identity
+    "resolve_dock_model_name",
+    "resolve_dock_model_pose_id",
+    "resolve_dock_model_model_id",
+    "resolve_dock_model_ligand_id",
+    # Extraction
+    "extract_dock_model_interactions",
+    # Snapshot and active state
+    "capture_dock_model_scoring_snapshot",
+    "restore_dock_model_scoring_snapshot",
+    "get_dock_model_scoring_result",
+    "get_dock_model_scoring_history",
+    "clear_dock_model_scoring",
+    # Statistics and attachment
+    "dock_model_scoring_statistics",
+    "attach_pose_scoring_result_to_dock_model",
+    "synchronize_dock_model_scoring",
+    # Single-model scoring
+    "score_dock_model",
+    "integrate_dock_model_scoring",
+    "analyze_dock_model_scoring",
+    "refresh_dock_model_scoring",
+    # Multipose links and scoring
+    "attach_multipose_ranking_to_dock_models",
+    "attach_consensus_to_dock_models",
+    "score_multiple_dock_models",
+    "analyze_multiple_dock_models_scoring",
+    # Rows and summaries
+    "dock_model_scoring_to_rows",
+    "summarize_dock_model_scoring",
+    "format_dock_model_scoring_summary",
+    # Validation and self-check
+    "validate_dock_model_scoring_options",
+    "validate_dock_model_interaction_bundle",
+    "validate_dock_model_scoring_attachment",
+    "validate_dock_model_scoring_integration_result",
+    "validate_dock_model_multipose_scoring_result",
+    "run_section_22_self_check",
+)
+
+if "__all__" not in globals():
+    __all__: List[str] = []
+
+for public_name in _SECTION_22_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+def section_22_public_names() -> Tuple[str, ...]:
+    """Return the complete immutable Section 22 public interface."""
+
+    return _SECTION_22_PUBLIC_NAMES
+
+
+def validate_section_22_public_interface() -> None:
+    """Validate that every declared Section 22 public name exists and exports."""
+
+    missing_names = tuple(
+        name for name in _SECTION_22_PUBLIC_NAMES if name not in globals()
+    )
+    if missing_names:
+        raise DockModelScoringValidationError(
+            "Missing Section 22 public names: " + ", ".join(missing_names)
+        )
+    missing_exports = tuple(
+        name for name in _SECTION_22_PUBLIC_NAMES if name not in __all__
+    )
+    if missing_exports:
+        raise DockModelScoringValidationError(
+            "Section 22 names missing from __all__: "
+            + ", ".join(missing_exports)
+        )
+
+
+if "section_22_public_names" not in __all__:
+    __all__.append("section_22_public_names")
+if "validate_section_22_public_interface" not in __all__:
+    __all__.append("validate_section_22_public_interface")
+
+validate_section_22_public_interface()
+
+# =============================================================================
+# End of Section 22
+# =============================================================================
+
+
+# =============================================================================
+# DockAnalyzer — Interaction scoring
+# Section 23 — Docking affinity and external scores
+# =============================================================================
+
+"""
+Section 23 integrates docking affinities and arbitrary external pose scores
+without conflating them with the DockAnalyzer interaction score.
+
+Raw external values, their units, optimization directions, and provenance are
+preserved. Optional score fusion occurs only after each channel has been
+oriented and normalized to a comparable dimensionless scale. A value reported
+in kcal/mol is therefore never added directly to the heuristic DockAnalyzer
+score.
+
+The section provides:
+- canonical definitions for common docking and rescoring outputs;
+- adapters for mappings, objects, tables, and DockModel-like containers;
+- parsers for Vina/smina PDBQT remarks and console tables;
+- parsers for AutoDock4 energy lines and numeric SDF properties;
+- replicate aggregation, unit conversion, and missing-value handling;
+- direction-aware normalization and confidence-aware score fusion;
+- Section 20 ranking enrichment and Section 22 DockModel attachment;
+- agreement diagnostics, summaries, validation, and a self-check.
+
+General serialization and report generation remain the responsibilities of
+Sections 25 and 26.
+"""
+
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from statistics import fmean, median
+from types import MappingProxyType
+from typing import (
+    Any,
+    Dict,
+    Final,
+    FrozenSet,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
+import math
+import re
+
+
+# -----------------------------------------------------------------------------
+# 23.1. Constants, canonical names, and defaults
+# -----------------------------------------------------------------------------
+
+EXTERNAL_SCORE_STATUS_COMPLETE: Final[str] = "complete"
+EXTERNAL_SCORE_STATUS_PARTIAL: Final[str] = "partial"
+EXTERNAL_SCORE_STATUS_EMPTY: Final[str] = "empty"
+EXTERNAL_SCORE_STATUS_INVALID: Final[str] = "invalid"
+EXTERNAL_SCORE_STATUS_FAILED: Final[str] = "failed"
+EXTERNAL_SCORE_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        EXTERNAL_SCORE_STATUS_COMPLETE,
+        EXTERNAL_SCORE_STATUS_PARTIAL,
+        EXTERNAL_SCORE_STATUS_EMPTY,
+        EXTERNAL_SCORE_STATUS_INVALID,
+        EXTERNAL_SCORE_STATUS_FAILED,
+    }
+)
+
+EXTERNAL_SCORE_COMPONENT_USED: Final[str] = "used"
+EXTERNAL_SCORE_COMPONENT_MISSING: Final[str] = "missing"
+EXTERNAL_SCORE_COMPONENT_EXCLUDED: Final[str] = "excluded"
+EXTERNAL_SCORE_COMPONENT_IMPUTED: Final[str] = "imputed"
+EXTERNAL_SCORE_COMPONENT_INVALID: Final[str] = "invalid"
+EXTERNAL_SCORE_COMPONENT_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        EXTERNAL_SCORE_COMPONENT_USED,
+        EXTERNAL_SCORE_COMPONENT_MISSING,
+        EXTERNAL_SCORE_COMPONENT_EXCLUDED,
+        EXTERNAL_SCORE_COMPONENT_IMPUTED,
+        EXTERNAL_SCORE_COMPONENT_INVALID,
+    }
+)
+
+EXTERNAL_SCORE_KIND_AFFINITY: Final[str] = "affinity"
+EXTERNAL_SCORE_KIND_ENERGY: Final[str] = "energy"
+EXTERNAL_SCORE_KIND_PROBABILITY: Final[str] = "probability"
+EXTERNAL_SCORE_KIND_CONFIDENCE: Final[str] = "confidence"
+EXTERNAL_SCORE_KIND_PK: Final[str] = "pk"
+EXTERNAL_SCORE_KIND_RANK: Final[str] = "rank"
+EXTERNAL_SCORE_KIND_DISTANCE: Final[str] = "distance"
+EXTERNAL_SCORE_KIND_CUSTOM: Final[str] = "custom"
+EXTERNAL_SCORE_KINDS: Final[FrozenSet[str]] = frozenset(
+    {
+        EXTERNAL_SCORE_KIND_AFFINITY,
+        EXTERNAL_SCORE_KIND_ENERGY,
+        EXTERNAL_SCORE_KIND_PROBABILITY,
+        EXTERNAL_SCORE_KIND_CONFIDENCE,
+        EXTERNAL_SCORE_KIND_PK,
+        EXTERNAL_SCORE_KIND_RANK,
+        EXTERNAL_SCORE_KIND_DISTANCE,
+        EXTERNAL_SCORE_KIND_CUSTOM,
+    }
+)
+
+EXTERNAL_SCORE_DIRECTION_HIGHER: Final[str] = "higher_is_better"
+EXTERNAL_SCORE_DIRECTION_LOWER: Final[str] = "lower_is_better"
+EXTERNAL_SCORE_DIRECTIONS: Final[FrozenSet[str]] = frozenset(
+    {
+        EXTERNAL_SCORE_DIRECTION_HIGHER,
+        EXTERNAL_SCORE_DIRECTION_LOWER,
+    }
+)
+
+EXTERNAL_SCORE_UNIT_KCAL_MOL: Final[str] = "kcal/mol"
+EXTERNAL_SCORE_UNIT_KJ_MOL: Final[str] = "kJ/mol"
+EXTERNAL_SCORE_UNIT_PK: Final[str] = "pK"
+EXTERNAL_SCORE_UNIT_PROBABILITY: Final[str] = "probability"
+EXTERNAL_SCORE_UNIT_ANGSTROM: Final[str] = "angstrom"
+EXTERNAL_SCORE_UNIT_RANK: Final[str] = "rank"
+EXTERNAL_SCORE_UNIT_DIMENSIONLESS: Final[str] = "dimensionless"
+EXTERNAL_SCORE_UNIT_ARBITRARY: Final[str] = "arbitrary"
+EXTERNAL_SCORE_UNIT_UNKNOWN: Final[str] = "unknown"
+EXTERNAL_SCORE_UNITS: Final[FrozenSet[str]] = frozenset(
+    {
+        EXTERNAL_SCORE_UNIT_KCAL_MOL,
+        EXTERNAL_SCORE_UNIT_KJ_MOL,
+        EXTERNAL_SCORE_UNIT_PK,
+        EXTERNAL_SCORE_UNIT_PROBABILITY,
+        EXTERNAL_SCORE_UNIT_ANGSTROM,
+        EXTERNAL_SCORE_UNIT_RANK,
+        EXTERNAL_SCORE_UNIT_DIMENSIONLESS,
+        EXTERNAL_SCORE_UNIT_ARBITRARY,
+        EXTERNAL_SCORE_UNIT_UNKNOWN,
+    }
+)
+
+EXTERNAL_SCORE_NORMALIZATION_NONE: Final[str] = "none"
+EXTERNAL_SCORE_NORMALIZATION_MINMAX: Final[str] = "minmax"
+EXTERNAL_SCORE_NORMALIZATION_ZSCORE: Final[str] = "zscore"
+EXTERNAL_SCORE_NORMALIZATION_ROBUST_ZSCORE: Final[str] = "robust_zscore"
+EXTERNAL_SCORE_NORMALIZATION_PERCENTILE: Final[str] = "percentile"
+EXTERNAL_SCORE_NORMALIZATION_EXPECTED_RANGE: Final[str] = "expected_range"
+EXTERNAL_SCORE_NORMALIZATIONS: Final[FrozenSet[str]] = frozenset(
+    {
+        EXTERNAL_SCORE_NORMALIZATION_NONE,
+        EXTERNAL_SCORE_NORMALIZATION_MINMAX,
+        EXTERNAL_SCORE_NORMALIZATION_ZSCORE,
+        EXTERNAL_SCORE_NORMALIZATION_ROBUST_ZSCORE,
+        EXTERNAL_SCORE_NORMALIZATION_PERCENTILE,
+        EXTERNAL_SCORE_NORMALIZATION_EXPECTED_RANGE,
+    }
+)
+
+EXTERNAL_SCORE_MISSING_EXCLUDE_POSE: Final[str] = "exclude_pose"
+EXTERNAL_SCORE_MISSING_IGNORE_COMPONENT: Final[str] = "ignore_component"
+EXTERNAL_SCORE_MISSING_NEUTRAL: Final[str] = "neutral"
+EXTERNAL_SCORE_MISSING_WORST: Final[str] = "worst"
+EXTERNAL_SCORE_MISSING_MEDIAN: Final[str] = "median"
+EXTERNAL_SCORE_MISSING_POLICIES: Final[FrozenSet[str]] = frozenset(
+    {
+        EXTERNAL_SCORE_MISSING_EXCLUDE_POSE,
+        EXTERNAL_SCORE_MISSING_IGNORE_COMPONENT,
+        EXTERNAL_SCORE_MISSING_NEUTRAL,
+        EXTERNAL_SCORE_MISSING_WORST,
+        EXTERNAL_SCORE_MISSING_MEDIAN,
+    }
+)
+
+EXTERNAL_SCORE_REPLICATE_MEAN: Final[str] = "mean"
+EXTERNAL_SCORE_REPLICATE_MEDIAN: Final[str] = "median"
+EXTERNAL_SCORE_REPLICATE_BEST: Final[str] = "best"
+EXTERNAL_SCORE_REPLICATE_WORST: Final[str] = "worst"
+EXTERNAL_SCORE_REPLICATE_MINIMUM: Final[str] = "minimum"
+EXTERNAL_SCORE_REPLICATE_MAXIMUM: Final[str] = "maximum"
+EXTERNAL_SCORE_REPLICATE_FIRST: Final[str] = "first"
+EXTERNAL_SCORE_REPLICATE_LAST: Final[str] = "last"
+EXTERNAL_SCORE_REPLICATE_AGGREGATIONS: Final[FrozenSet[str]] = frozenset(
+    {
+        EXTERNAL_SCORE_REPLICATE_MEAN,
+        EXTERNAL_SCORE_REPLICATE_MEDIAN,
+        EXTERNAL_SCORE_REPLICATE_BEST,
+        EXTERNAL_SCORE_REPLICATE_WORST,
+        EXTERNAL_SCORE_REPLICATE_MINIMUM,
+        EXTERNAL_SCORE_REPLICATE_MAXIMUM,
+        EXTERNAL_SCORE_REPLICATE_FIRST,
+        EXTERNAL_SCORE_REPLICATE_LAST,
+    }
+)
+
+EXTERNAL_SCORE_FUSION_WEIGHTED_MEAN: Final[str] = "weighted_mean"
+EXTERNAL_SCORE_FUSION_WEIGHTED_SUM: Final[str] = "weighted_sum"
+EXTERNAL_SCORE_FUSION_GEOMETRIC_MEAN: Final[str] = "geometric_mean"
+EXTERNAL_SCORE_FUSION_HARMONIC_MEAN: Final[str] = "harmonic_mean"
+EXTERNAL_SCORE_FUSION_MINIMUM: Final[str] = "minimum"
+EXTERNAL_SCORE_FUSION_MAXIMUM: Final[str] = "maximum"
+EXTERNAL_SCORE_FUSION_METHODS: Final[FrozenSet[str]] = frozenset(
+    {
+        EXTERNAL_SCORE_FUSION_WEIGHTED_MEAN,
+        EXTERNAL_SCORE_FUSION_WEIGHTED_SUM,
+        EXTERNAL_SCORE_FUSION_GEOMETRIC_MEAN,
+        EXTERNAL_SCORE_FUSION_HARMONIC_MEAN,
+        EXTERNAL_SCORE_FUSION_MINIMUM,
+        EXTERNAL_SCORE_FUSION_MAXIMUM,
+    }
+)
+
+EXTERNAL_SCORE_GROUP_GLOBAL: Final[str] = "global"
+EXTERNAL_SCORE_GROUP_LIGAND: Final[str] = "ligand"
+EXTERNAL_SCORE_GROUP_MODEL: Final[str] = "model"
+EXTERNAL_SCORE_GROUP_LIGAND_MODEL: Final[str] = "ligand_model"
+EXTERNAL_SCORE_GROUP_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        EXTERNAL_SCORE_GROUP_GLOBAL,
+        EXTERNAL_SCORE_GROUP_LIGAND,
+        EXTERNAL_SCORE_GROUP_MODEL,
+        EXTERNAL_SCORE_GROUP_LIGAND_MODEL,
+    }
+)
+
+EXTERNAL_SCORE_SOURCE_VINA: Final[str] = "autodock_vina"
+EXTERNAL_SCORE_SOURCE_SMINA: Final[str] = "smina"
+EXTERNAL_SCORE_SOURCE_GNINA: Final[str] = "gnina"
+EXTERNAL_SCORE_SOURCE_AUTODOCK4: Final[str] = "autodock4"
+EXTERNAL_SCORE_SOURCE_GLIDE: Final[str] = "glide"
+EXTERNAL_SCORE_SOURCE_GOLD: Final[str] = "gold"
+EXTERNAL_SCORE_SOURCE_PLANTS: Final[str] = "plants"
+EXTERNAL_SCORE_SOURCE_DOCK: Final[str] = "dock"
+EXTERNAL_SCORE_SOURCE_RDOCK: Final[str] = "rdock"
+EXTERNAL_SCORE_SOURCE_CUSTOM: Final[str] = "custom"
+EXTERNAL_SCORE_SOURCES: Final[FrozenSet[str]] = frozenset(
+    {
+        EXTERNAL_SCORE_SOURCE_VINA,
+        EXTERNAL_SCORE_SOURCE_SMINA,
+        EXTERNAL_SCORE_SOURCE_GNINA,
+        EXTERNAL_SCORE_SOURCE_AUTODOCK4,
+        EXTERNAL_SCORE_SOURCE_GLIDE,
+        EXTERNAL_SCORE_SOURCE_GOLD,
+        EXTERNAL_SCORE_SOURCE_PLANTS,
+        EXTERNAL_SCORE_SOURCE_DOCK,
+        EXTERNAL_SCORE_SOURCE_RDOCK,
+        EXTERNAL_SCORE_SOURCE_CUSTOM,
+    }
+)
+
+EXTERNAL_SCORE_NAME_DOCKANALYZER: Final[str] = "dockanalyzer_score"
+EXTERNAL_SCORE_NAME_VINA_AFFINITY: Final[str] = "vina_affinity"
+EXTERNAL_SCORE_NAME_SMINA_AFFINITY: Final[str] = "smina_affinity"
+EXTERNAL_SCORE_NAME_GNINA_AFFINITY: Final[str] = "gnina_affinity"
+EXTERNAL_SCORE_NAME_GNINA_CNNSCORE: Final[str] = "gnina_cnnscore"
+EXTERNAL_SCORE_NAME_GNINA_CNNAFFINITY: Final[str] = "gnina_cnnaffinity"
+EXTERNAL_SCORE_NAME_AUTODOCK4_ENERGY: Final[str] = (
+    "autodock4_binding_energy"
+)
+EXTERNAL_SCORE_NAME_GLIDE_SCORE: Final[str] = "glide_score"
+EXTERNAL_SCORE_NAME_GOLD_SCORE: Final[str] = "gold_score"
+EXTERNAL_SCORE_NAME_PLANTS_SCORE: Final[str] = "plants_score"
+EXTERNAL_SCORE_NAME_DOCK_SCORE: Final[str] = "dock_score"
+EXTERNAL_SCORE_NAME_RDOCK_SCORE: Final[str] = "rdock_score"
+EXTERNAL_SCORE_NAME_POSE_RMSD: Final[str] = "pose_rmsd"
+EXTERNAL_SCORE_NAME_DOCKING_RANK: Final[str] = "docking_rank"
+EXTERNAL_SCORE_NAME_EXTERNAL_COMPOSITE: Final[str] = (
+    "external_composite_score"
+)
+EXTERNAL_SCORE_NAME_FUSED: Final[str] = "fused_pose_score"
+
+EXTERNAL_SCORE_SCHEMA: Final[str] = "dockanalyzer.scoring.external_scores"
+EXTERNAL_SCORE_SCHEMA_VERSION: Final[str] = "1.0"
+EXTERNAL_SCORE_SECTION_VERSION: Final[str] = "23.0"
+EXTERNAL_SCORE_DOCK_MODEL_ATTRIBUTE: Final[str] = "external_scores"
+EXTERNAL_SCORE_RESULT_DOCK_MODEL_ATTRIBUTE: Final[str] = (
+    "external_score_result"
+)
+EXTERNAL_SCORE_AFFINITY_DOCK_MODEL_ATTRIBUTE: Final[str] = (
+    "docking_affinity"
+)
+EXTERNAL_SCORE_FUSED_DOCK_MODEL_ATTRIBUTE: Final[str] = "fused_score"
+EXTERNAL_SCORE_METADATA_KEY: Final[str] = "external_scores"
+EXTERNAL_SCORE_STATISTICS_KEY: Final[str] = "external_scores"
+
+DEFAULT_EXTERNAL_SCORE_NORMALIZATION: Final[str] = (
+    EXTERNAL_SCORE_NORMALIZATION_MINMAX
+)
+DEFAULT_EXTERNAL_SCORE_MISSING_POLICY: Final[str] = (
+    EXTERNAL_SCORE_MISSING_IGNORE_COMPONENT
+)
+DEFAULT_EXTERNAL_SCORE_REPLICATE_AGGREGATION: Final[str] = (
+    EXTERNAL_SCORE_REPLICATE_MEAN
+)
+DEFAULT_EXTERNAL_SCORE_FUSION_METHOD: Final[str] = (
+    EXTERNAL_SCORE_FUSION_WEIGHTED_MEAN
+)
+DEFAULT_EXTERNAL_SCORE_GROUP_MODE: Final[str] = EXTERNAL_SCORE_GROUP_GLOBAL
+DEFAULT_EXTERNAL_SCORE_INTERNAL_WEIGHT: Final[float] = 1.0
+DEFAULT_EXTERNAL_SCORE_EXTERNAL_WEIGHT: Final[float] = 1.0
+DEFAULT_EXTERNAL_SCORE_CONFIDENCE: Final[float] = 1.0
+DEFAULT_EXTERNAL_SCORE_MIN_COMPONENTS: Final[int] = 1
+DEFAULT_EXTERNAL_SCORE_DECIMAL_PLACES: Final[int] = 8
+DEFAULT_EXTERNAL_SCORE_EPSILON: Final[float] = 1.0e-12
+DEFAULT_EXTERNAL_SCORE_NEUTRAL_VALUE: Final[float] = 0.5
+
+_EXTERNAL_SCORE_EMPTY_METADATA: Final[Mapping[str, Any]] = MappingProxyType({})
+
+
+# -----------------------------------------------------------------------------
+# 23.2. Exceptions and canonicalization helpers
+# -----------------------------------------------------------------------------
+
+class ExternalScoreError(RuntimeError):
+    """Base exception raised by Section 23."""
+
+
+class ExternalScoreInputError(ExternalScoreError, ValueError):
+    """Raised when external-score input cannot be interpreted."""
+
+
+class ExternalScoreConfigurationError(ExternalScoreError, ValueError):
+    """Raised when an external-score configuration is inconsistent."""
+
+
+class ExternalScoreNormalizationError(ExternalScoreError, ValueError):
+    """Raised when external scores cannot be normalized."""
+
+
+class ExternalScoreFusionError(ExternalScoreError, ValueError):
+    """Raised when normalized components cannot be fused."""
+
+
+class ExternalScoreValidationError(ExternalScoreError):
+    """Raised when a Section 23 object fails validation."""
+
+
+def _external_score_token(value: Any) -> str:
+    text = "" if value is None else str(value).strip().lower()
+    text = re.sub(r"[^a-z0-9.+/-]+", "_", text)
+    return text.strip("_")
+
+
+def _external_score_identifier(value: Any, *, default: str = "") -> str:
+    text = "" if value is None else str(value).strip()
+    return text or default
+
+
+def _external_score_canonical(
+    value: Any,
+    *,
+    aliases: Mapping[str, str],
+    allowed: FrozenSet[str],
+    name: str,
+) -> str:
+    token = _external_score_token(value)
+    canonical = aliases.get(token, token)
+    if canonical not in allowed:
+        raise ExternalScoreConfigurationError(
+            f"Unsupported {name}: {value!r}."
+        )
+    return canonical
+
+
+_KIND_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "affinity": EXTERNAL_SCORE_KIND_AFFINITY,
+        "binding_affinity": EXTERNAL_SCORE_KIND_AFFINITY,
+        "docking_affinity": EXTERNAL_SCORE_KIND_AFFINITY,
+        "energy": EXTERNAL_SCORE_KIND_ENERGY,
+        "binding_energy": EXTERNAL_SCORE_KIND_ENERGY,
+        "free_energy": EXTERNAL_SCORE_KIND_ENERGY,
+        "probability": EXTERNAL_SCORE_KIND_PROBABILITY,
+        "confidence": EXTERNAL_SCORE_KIND_CONFIDENCE,
+        "pk": EXTERNAL_SCORE_KIND_PK,
+        "pkd": EXTERNAL_SCORE_KIND_PK,
+        "pki": EXTERNAL_SCORE_KIND_PK,
+        "pic50": EXTERNAL_SCORE_KIND_PK,
+        "rank": EXTERNAL_SCORE_KIND_RANK,
+        "rmsd": EXTERNAL_SCORE_KIND_DISTANCE,
+        "distance": EXTERNAL_SCORE_KIND_DISTANCE,
+        "score": EXTERNAL_SCORE_KIND_CUSTOM,
+        "custom": EXTERNAL_SCORE_KIND_CUSTOM,
+    }
+)
+_DIRECTION_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "higher": EXTERNAL_SCORE_DIRECTION_HIGHER,
+        "higher_is_better": EXTERNAL_SCORE_DIRECTION_HIGHER,
+        "maximize": EXTERNAL_SCORE_DIRECTION_HIGHER,
+        "max": EXTERNAL_SCORE_DIRECTION_HIGHER,
+        "lower": EXTERNAL_SCORE_DIRECTION_LOWER,
+        "lower_is_better": EXTERNAL_SCORE_DIRECTION_LOWER,
+        "minimize": EXTERNAL_SCORE_DIRECTION_LOWER,
+        "min": EXTERNAL_SCORE_DIRECTION_LOWER,
+    }
+)
+_NORMALIZATION_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "none": EXTERNAL_SCORE_NORMALIZATION_NONE,
+        "raw": EXTERNAL_SCORE_NORMALIZATION_NONE,
+        "minmax": EXTERNAL_SCORE_NORMALIZATION_MINMAX,
+        "min_max": EXTERNAL_SCORE_NORMALIZATION_MINMAX,
+        "zscore": EXTERNAL_SCORE_NORMALIZATION_ZSCORE,
+        "z_score": EXTERNAL_SCORE_NORMALIZATION_ZSCORE,
+        "robust_zscore": EXTERNAL_SCORE_NORMALIZATION_ROBUST_ZSCORE,
+        "mad": EXTERNAL_SCORE_NORMALIZATION_ROBUST_ZSCORE,
+        "percentile": EXTERNAL_SCORE_NORMALIZATION_PERCENTILE,
+        "expected_range": EXTERNAL_SCORE_NORMALIZATION_EXPECTED_RANGE,
+        "reference_range": EXTERNAL_SCORE_NORMALIZATION_EXPECTED_RANGE,
+    }
+)
+_MISSING_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "exclude": EXTERNAL_SCORE_MISSING_EXCLUDE_POSE,
+        "exclude_pose": EXTERNAL_SCORE_MISSING_EXCLUDE_POSE,
+        "ignore": EXTERNAL_SCORE_MISSING_IGNORE_COMPONENT,
+        "ignore_component": EXTERNAL_SCORE_MISSING_IGNORE_COMPONENT,
+        "neutral": EXTERNAL_SCORE_MISSING_NEUTRAL,
+        "worst": EXTERNAL_SCORE_MISSING_WORST,
+        "median": EXTERNAL_SCORE_MISSING_MEDIAN,
+    }
+)
+_REPLICATE_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "mean": EXTERNAL_SCORE_REPLICATE_MEAN,
+        "average": EXTERNAL_SCORE_REPLICATE_MEAN,
+        "median": EXTERNAL_SCORE_REPLICATE_MEDIAN,
+        "best": EXTERNAL_SCORE_REPLICATE_BEST,
+        "worst": EXTERNAL_SCORE_REPLICATE_WORST,
+        "minimum": EXTERNAL_SCORE_REPLICATE_MINIMUM,
+        "min": EXTERNAL_SCORE_REPLICATE_MINIMUM,
+        "maximum": EXTERNAL_SCORE_REPLICATE_MAXIMUM,
+        "max": EXTERNAL_SCORE_REPLICATE_MAXIMUM,
+        "first": EXTERNAL_SCORE_REPLICATE_FIRST,
+        "last": EXTERNAL_SCORE_REPLICATE_LAST,
+    }
+)
+_FUSION_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "weighted_mean": EXTERNAL_SCORE_FUSION_WEIGHTED_MEAN,
+        "mean": EXTERNAL_SCORE_FUSION_WEIGHTED_MEAN,
+        "weighted_sum": EXTERNAL_SCORE_FUSION_WEIGHTED_SUM,
+        "sum": EXTERNAL_SCORE_FUSION_WEIGHTED_SUM,
+        "geometric_mean": EXTERNAL_SCORE_FUSION_GEOMETRIC_MEAN,
+        "geometric": EXTERNAL_SCORE_FUSION_GEOMETRIC_MEAN,
+        "harmonic_mean": EXTERNAL_SCORE_FUSION_HARMONIC_MEAN,
+        "harmonic": EXTERNAL_SCORE_FUSION_HARMONIC_MEAN,
+        "minimum": EXTERNAL_SCORE_FUSION_MINIMUM,
+        "min": EXTERNAL_SCORE_FUSION_MINIMUM,
+        "maximum": EXTERNAL_SCORE_FUSION_MAXIMUM,
+        "max": EXTERNAL_SCORE_FUSION_MAXIMUM,
+    }
+)
+_GROUP_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "global": EXTERNAL_SCORE_GROUP_GLOBAL,
+        "all": EXTERNAL_SCORE_GROUP_GLOBAL,
+        "ligand": EXTERNAL_SCORE_GROUP_LIGAND,
+        "model": EXTERNAL_SCORE_GROUP_MODEL,
+        "receptor": EXTERNAL_SCORE_GROUP_MODEL,
+        "ligand_model": EXTERNAL_SCORE_GROUP_LIGAND_MODEL,
+        "pair": EXTERNAL_SCORE_GROUP_LIGAND_MODEL,
+    }
+)
+_SOURCE_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "vina": EXTERNAL_SCORE_SOURCE_VINA,
+        "autodock_vina": EXTERNAL_SCORE_SOURCE_VINA,
+        "smina": EXTERNAL_SCORE_SOURCE_SMINA,
+        "gnina": EXTERNAL_SCORE_SOURCE_GNINA,
+        "autodock4": EXTERNAL_SCORE_SOURCE_AUTODOCK4,
+        "ad4": EXTERNAL_SCORE_SOURCE_AUTODOCK4,
+        "glide": EXTERNAL_SCORE_SOURCE_GLIDE,
+        "gold": EXTERNAL_SCORE_SOURCE_GOLD,
+        "plants": EXTERNAL_SCORE_SOURCE_PLANTS,
+        "dock": EXTERNAL_SCORE_SOURCE_DOCK,
+        "dock6": EXTERNAL_SCORE_SOURCE_DOCK,
+        "rdock": EXTERNAL_SCORE_SOURCE_RDOCK,
+        "custom": EXTERNAL_SCORE_SOURCE_CUSTOM,
+        "external": EXTERNAL_SCORE_SOURCE_CUSTOM,
+    }
+)
+_NAME_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "dockanalyzer": EXTERNAL_SCORE_NAME_DOCKANALYZER,
+        "dockanalyzer_score": EXTERNAL_SCORE_NAME_DOCKANALYZER,
+        "vina": EXTERNAL_SCORE_NAME_VINA_AFFINITY,
+        "vina_score": EXTERNAL_SCORE_NAME_VINA_AFFINITY,
+        "vina_affinity": EXTERNAL_SCORE_NAME_VINA_AFFINITY,
+        "affinity": EXTERNAL_SCORE_NAME_VINA_AFFINITY,
+        "smina": EXTERNAL_SCORE_NAME_SMINA_AFFINITY,
+        "smina_score": EXTERNAL_SCORE_NAME_SMINA_AFFINITY,
+        "smina_affinity": EXTERNAL_SCORE_NAME_SMINA_AFFINITY,
+        "minimizedaffinity": EXTERNAL_SCORE_NAME_GNINA_AFFINITY,
+        "minimized_affinity": EXTERNAL_SCORE_NAME_GNINA_AFFINITY,
+        "gnina_affinity": EXTERNAL_SCORE_NAME_GNINA_AFFINITY,
+        "cnnscore": EXTERNAL_SCORE_NAME_GNINA_CNNSCORE,
+        "cnn_score": EXTERNAL_SCORE_NAME_GNINA_CNNSCORE,
+        "gnina_cnnscore": EXTERNAL_SCORE_NAME_GNINA_CNNSCORE,
+        "cnnaffinity": EXTERNAL_SCORE_NAME_GNINA_CNNAFFINITY,
+        "cnn_affinity": EXTERNAL_SCORE_NAME_GNINA_CNNAFFINITY,
+        "gnina_cnnaffinity": EXTERNAL_SCORE_NAME_GNINA_CNNAFFINITY,
+        "autodock4": EXTERNAL_SCORE_NAME_AUTODOCK4_ENERGY,
+        "autodock4_binding_energy": EXTERNAL_SCORE_NAME_AUTODOCK4_ENERGY,
+        "glide": EXTERNAL_SCORE_NAME_GLIDE_SCORE,
+        "glide_score": EXTERNAL_SCORE_NAME_GLIDE_SCORE,
+        "gold": EXTERNAL_SCORE_NAME_GOLD_SCORE,
+        "gold_score": EXTERNAL_SCORE_NAME_GOLD_SCORE,
+        "plants": EXTERNAL_SCORE_NAME_PLANTS_SCORE,
+        "plants_score": EXTERNAL_SCORE_NAME_PLANTS_SCORE,
+        "dock": EXTERNAL_SCORE_NAME_DOCK_SCORE,
+        "dock_score": EXTERNAL_SCORE_NAME_DOCK_SCORE,
+        "rdock": EXTERNAL_SCORE_NAME_RDOCK_SCORE,
+        "rdock_score": EXTERNAL_SCORE_NAME_RDOCK_SCORE,
+        "rmsd": EXTERNAL_SCORE_NAME_POSE_RMSD,
+        "pose_rmsd": EXTERNAL_SCORE_NAME_POSE_RMSD,
+        "rank": EXTERNAL_SCORE_NAME_DOCKING_RANK,
+        "docking_rank": EXTERNAL_SCORE_NAME_DOCKING_RANK,
+        "external_composite": EXTERNAL_SCORE_NAME_EXTERNAL_COMPOSITE,
+        "external_composite_score": EXTERNAL_SCORE_NAME_EXTERNAL_COMPOSITE,
+        "fused": EXTERNAL_SCORE_NAME_FUSED,
+        "fused_score": EXTERNAL_SCORE_NAME_FUSED,
+        "fused_pose_score": EXTERNAL_SCORE_NAME_FUSED,
+    }
+)
+_UNIT_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "kcal/mol": EXTERNAL_SCORE_UNIT_KCAL_MOL,
+        "kcal_mol": EXTERNAL_SCORE_UNIT_KCAL_MOL,
+        "kcal": EXTERNAL_SCORE_UNIT_KCAL_MOL,
+        "kj/mol": EXTERNAL_SCORE_UNIT_KJ_MOL,
+        "kj_mol": EXTERNAL_SCORE_UNIT_KJ_MOL,
+        "kj": EXTERNAL_SCORE_UNIT_KJ_MOL,
+        "pk": EXTERNAL_SCORE_UNIT_PK,
+        "pkd": EXTERNAL_SCORE_UNIT_PK,
+        "pki": EXTERNAL_SCORE_UNIT_PK,
+        "probability": EXTERNAL_SCORE_UNIT_PROBABILITY,
+        "angstrom": EXTERNAL_SCORE_UNIT_ANGSTROM,
+        "angstroms": EXTERNAL_SCORE_UNIT_ANGSTROM,
+        "rank": EXTERNAL_SCORE_UNIT_RANK,
+        "dimensionless": EXTERNAL_SCORE_UNIT_DIMENSIONLESS,
+        "unitless": EXTERNAL_SCORE_UNIT_DIMENSIONLESS,
+        "arbitrary": EXTERNAL_SCORE_UNIT_ARBITRARY,
+        "unknown": EXTERNAL_SCORE_UNIT_UNKNOWN,
+        "": EXTERNAL_SCORE_UNIT_UNKNOWN,
+    }
+)
+
+
+def normalize_external_score_kind(value: Any) -> str:
+    return _external_score_canonical(
+        value,
+        aliases=_KIND_ALIASES,
+        allowed=EXTERNAL_SCORE_KINDS,
+        name="external-score kind",
+    )
+
+
+def normalize_external_score_direction(value: Any) -> str:
+    return _external_score_canonical(
+        value,
+        aliases=_DIRECTION_ALIASES,
+        allowed=EXTERNAL_SCORE_DIRECTIONS,
+        name="external-score direction",
+    )
+
+
+def normalize_external_score_unit(value: Any) -> str:
+    token = _external_score_token(value)
+    return _UNIT_ALIASES.get(token, str(value).strip() if value else "unknown")
+
+
+def normalize_external_score_normalization(value: Any) -> str:
+    return _external_score_canonical(
+        value,
+        aliases=_NORMALIZATION_ALIASES,
+        allowed=EXTERNAL_SCORE_NORMALIZATIONS,
+        name="external-score normalization",
+    )
+
+
+def normalize_external_score_missing_policy(value: Any) -> str:
+    return _external_score_canonical(
+        value,
+        aliases=_MISSING_ALIASES,
+        allowed=EXTERNAL_SCORE_MISSING_POLICIES,
+        name="external-score missing policy",
+    )
+
+
+def normalize_external_score_replicate_aggregation(value: Any) -> str:
+    return _external_score_canonical(
+        value,
+        aliases=_REPLICATE_ALIASES,
+        allowed=EXTERNAL_SCORE_REPLICATE_AGGREGATIONS,
+        name="replicate aggregation",
+    )
+
+
+def normalize_external_score_fusion_method(value: Any) -> str:
+    return _external_score_canonical(
+        value,
+        aliases=_FUSION_ALIASES,
+        allowed=EXTERNAL_SCORE_FUSION_METHODS,
+        name="external-score fusion method",
+    )
+
+
+def normalize_external_score_group_mode(value: Any) -> str:
+    return _external_score_canonical(
+        value,
+        aliases=_GROUP_ALIASES,
+        allowed=EXTERNAL_SCORE_GROUP_MODES,
+        name="external-score group mode",
+    )
+
+
+def normalize_external_score_source(value: Any) -> str:
+    token = _external_score_token(value)
+    return _SOURCE_ALIASES.get(token, token or EXTERNAL_SCORE_SOURCE_CUSTOM)
+
+
+def normalize_external_score_name(value: Any) -> str:
+    token = _external_score_token(value)
+    if not token:
+        raise ExternalScoreInputError("An external score name is required.")
+    return _NAME_ALIASES.get(token, token)
+
+
+def _external_score_finite_optional(
+    value: Any,
+    *,
+    name: str,
+) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ExternalScoreInputError(f"{name} cannot be boolean.")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ExternalScoreInputError(
+            f"{name} must be numeric, received {value!r}."
+        ) from exc
+    if not math.isfinite(numeric):
+        raise ExternalScoreInputError(f"{name} must be finite.")
+    return numeric
+
+
+def _external_score_finite(value: Any, *, name: str) -> float:
+    numeric = _external_score_finite_optional(value, name=name)
+    if numeric is None:
+        raise ExternalScoreInputError(f"{name} is required.")
+    return numeric
+
+
+def _external_score_freeze_metadata(
+    value: Optional[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    if not value:
+        return _EXTERNAL_SCORE_EMPTY_METADATA
+    return MappingProxyType(dict(value))
+
+
+def _external_score_get(
+    value: Any,
+    *names: str,
+    default: Any = None,
+) -> Any:
+    if isinstance(value, Mapping):
+        for name in names:
+            if name in value:
+                return value[name]
+    elif value is not None:
+        for name in names:
+            if hasattr(value, name):
+                try:
+                    return getattr(value, name)
+                except Exception:
+                    continue
+    return default
+
+
+def _external_score_set(value: Any, name: str, item: Any) -> None:
+    if isinstance(value, MutableMapping):
+        value[name] = item
+        return
+    try:
+        setattr(value, name, item)
+    except Exception as exc:
+        raise ExternalScoreInputError(
+            f"Cannot set attribute {name!r} on DockModel-like object."
+        ) from exc
+
+
+def _external_score_sequence(value: Any) -> Tuple[Any, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, tuple):
+        return value
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        return (value,)
+    try:
+        return tuple(value)
+    except TypeError:
+        return (value,)
+
+
+def _external_score_close(
+    left: float,
+    right: float,
+    epsilon: float = DEFAULT_EXTERNAL_SCORE_EPSILON,
+) -> bool:
+    return math.isclose(
+        float(left),
+        float(right),
+        rel_tol=epsilon,
+        abs_tol=epsilon,
+    )
+
+
+def orient_external_score_value(value: float, direction: Any) -> float:
+    numeric = _external_score_finite(value, name="external score value")
+    canonical = normalize_external_score_direction(direction)
+    return numeric if canonical == EXTERNAL_SCORE_DIRECTION_HIGHER else -numeric
+
+
+def convert_external_energy_unit(
+    value: float,
+    from_unit: Any,
+    to_unit: Any,
+) -> float:
+    numeric = _external_score_finite(value, name="energy value")
+    source = normalize_external_score_unit(from_unit)
+    target = normalize_external_score_unit(to_unit)
+    if source == target:
+        return numeric
+    if source == EXTERNAL_SCORE_UNIT_KCAL_MOL:
+        if target == EXTERNAL_SCORE_UNIT_KJ_MOL:
+            return numeric * 4.184
+    if source == EXTERNAL_SCORE_UNIT_KJ_MOL:
+        if target == EXTERNAL_SCORE_UNIT_KCAL_MOL:
+            return numeric / 4.184
+    raise ExternalScoreInputError(
+        f"Unsupported conversion from {source!r} to {target!r}."
+    )
+
+
+# -----------------------------------------------------------------------------
+# 23.3. External-score definitions
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ExternalScoreDefinition:
+    """Semantic definition of one external score channel."""
+
+    name: str
+    source: str = EXTERNAL_SCORE_SOURCE_CUSTOM
+    kind: str = EXTERNAL_SCORE_KIND_CUSTOM
+    direction: str = EXTERNAL_SCORE_DIRECTION_HIGHER
+    unit: str = EXTERNAL_SCORE_UNIT_UNKNOWN
+    weight: float = 1.0
+    required: bool = False
+    expected_min: Optional[float] = None
+    expected_max: Optional[float] = None
+    normalization: Optional[str] = None
+    missing_policy: Optional[str] = None
+    label: Optional[str] = None
+    description: str = ""
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EXTERNAL_SCORE_EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        name = normalize_external_score_name(self.name)
+        weight = _external_score_finite(
+            self.weight,
+            name=f"weight for {name}",
+        )
+        if weight < 0.0:
+            raise ExternalScoreConfigurationError(
+                f"Weight cannot be negative for {name}."
+            )
+        minimum = _external_score_finite_optional(
+            self.expected_min,
+            name=f"expected minimum for {name}",
+        )
+        maximum = _external_score_finite_optional(
+            self.expected_max,
+            name=f"expected maximum for {name}",
+        )
+        if minimum is not None and maximum is not None:
+            if minimum >= maximum:
+                raise ExternalScoreConfigurationError(
+                    f"Expected range is invalid for {name}."
+                )
+        normalization = self.normalization
+        if normalization is not None:
+            normalization = normalize_external_score_normalization(
+                normalization
+            )
+        missing_policy = self.missing_policy
+        if missing_policy is not None:
+            missing_policy = normalize_external_score_missing_policy(
+                missing_policy
+            )
+        label = _external_score_identifier(self.label)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(
+            self,
+            "source",
+            normalize_external_score_source(self.source),
+        )
+        object.__setattr__(
+            self,
+            "kind",
+            normalize_external_score_kind(self.kind),
+        )
+        object.__setattr__(
+            self,
+            "direction",
+            normalize_external_score_direction(self.direction),
+        )
+        object.__setattr__(
+            self,
+            "unit",
+            normalize_external_score_unit(self.unit),
+        )
+        object.__setattr__(self, "weight", weight)
+        object.__setattr__(self, "required", bool(self.required))
+        object.__setattr__(self, "expected_min", minimum)
+        object.__setattr__(self, "expected_max", maximum)
+        object.__setattr__(self, "normalization", normalization)
+        object.__setattr__(self, "missing_policy", missing_policy)
+        object.__setattr__(
+            self,
+            "label",
+            label or name.replace("_", " ").title(),
+        )
+        object.__setattr__(
+            self,
+            "description",
+            _external_score_identifier(self.description),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _external_score_freeze_metadata(self.metadata),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "source": self.source,
+            "kind": self.kind,
+            "direction": self.direction,
+            "unit": self.unit,
+            "weight": self.weight,
+            "required": self.required,
+            "expected_min": self.expected_min,
+            "expected_max": self.expected_max,
+            "normalization": self.normalization,
+            "missing_policy": self.missing_policy,
+            "label": self.label,
+            "description": self.description,
+            "metadata": dict(self.metadata),
+        }
+
+
+_BUILTIN_EXTERNAL_SCORE_DEFINITIONS: Final[
+    Mapping[str, ExternalScoreDefinition]
+] = MappingProxyType(
+    {
+        EXTERNAL_SCORE_NAME_DOCKANALYZER: ExternalScoreDefinition(
+            name=EXTERNAL_SCORE_NAME_DOCKANALYZER,
+            source="dockanalyzer",
+            direction=EXTERNAL_SCORE_DIRECTION_HIGHER,
+            unit=EXTERNAL_SCORE_UNIT_ARBITRARY,
+            description=(
+                "DockAnalyzer heuristic interaction score; not an energy."
+            ),
+        ),
+        EXTERNAL_SCORE_NAME_VINA_AFFINITY: ExternalScoreDefinition(
+            name=EXTERNAL_SCORE_NAME_VINA_AFFINITY,
+            source=EXTERNAL_SCORE_SOURCE_VINA,
+            kind=EXTERNAL_SCORE_KIND_AFFINITY,
+            direction=EXTERNAL_SCORE_DIRECTION_LOWER,
+            unit=EXTERNAL_SCORE_UNIT_KCAL_MOL,
+        ),
+        EXTERNAL_SCORE_NAME_SMINA_AFFINITY: ExternalScoreDefinition(
+            name=EXTERNAL_SCORE_NAME_SMINA_AFFINITY,
+            source=EXTERNAL_SCORE_SOURCE_SMINA,
+            kind=EXTERNAL_SCORE_KIND_AFFINITY,
+            direction=EXTERNAL_SCORE_DIRECTION_LOWER,
+            unit=EXTERNAL_SCORE_UNIT_KCAL_MOL,
+        ),
+        EXTERNAL_SCORE_NAME_GNINA_AFFINITY: ExternalScoreDefinition(
+            name=EXTERNAL_SCORE_NAME_GNINA_AFFINITY,
+            source=EXTERNAL_SCORE_SOURCE_GNINA,
+            kind=EXTERNAL_SCORE_KIND_AFFINITY,
+            direction=EXTERNAL_SCORE_DIRECTION_LOWER,
+            unit=EXTERNAL_SCORE_UNIT_KCAL_MOL,
+        ),
+        EXTERNAL_SCORE_NAME_GNINA_CNNSCORE: ExternalScoreDefinition(
+            name=EXTERNAL_SCORE_NAME_GNINA_CNNSCORE,
+            source=EXTERNAL_SCORE_SOURCE_GNINA,
+            kind=EXTERNAL_SCORE_KIND_PROBABILITY,
+            direction=EXTERNAL_SCORE_DIRECTION_HIGHER,
+            unit=EXTERNAL_SCORE_UNIT_PROBABILITY,
+            expected_min=0.0,
+            expected_max=1.0,
+            normalization=EXTERNAL_SCORE_NORMALIZATION_EXPECTED_RANGE,
+        ),
+        EXTERNAL_SCORE_NAME_GNINA_CNNAFFINITY: ExternalScoreDefinition(
+            name=EXTERNAL_SCORE_NAME_GNINA_CNNAFFINITY,
+            source=EXTERNAL_SCORE_SOURCE_GNINA,
+            kind=EXTERNAL_SCORE_KIND_PK,
+            direction=EXTERNAL_SCORE_DIRECTION_HIGHER,
+            unit=EXTERNAL_SCORE_UNIT_PK,
+        ),
+        EXTERNAL_SCORE_NAME_AUTODOCK4_ENERGY: ExternalScoreDefinition(
+            name=EXTERNAL_SCORE_NAME_AUTODOCK4_ENERGY,
+            source=EXTERNAL_SCORE_SOURCE_AUTODOCK4,
+            kind=EXTERNAL_SCORE_KIND_ENERGY,
+            direction=EXTERNAL_SCORE_DIRECTION_LOWER,
+            unit=EXTERNAL_SCORE_UNIT_KCAL_MOL,
+        ),
+        EXTERNAL_SCORE_NAME_GLIDE_SCORE: ExternalScoreDefinition(
+            name=EXTERNAL_SCORE_NAME_GLIDE_SCORE,
+            source=EXTERNAL_SCORE_SOURCE_GLIDE,
+            direction=EXTERNAL_SCORE_DIRECTION_LOWER,
+            unit=EXTERNAL_SCORE_UNIT_ARBITRARY,
+        ),
+        EXTERNAL_SCORE_NAME_GOLD_SCORE: ExternalScoreDefinition(
+            name=EXTERNAL_SCORE_NAME_GOLD_SCORE,
+            source=EXTERNAL_SCORE_SOURCE_GOLD,
+            direction=EXTERNAL_SCORE_DIRECTION_HIGHER,
+            unit=EXTERNAL_SCORE_UNIT_ARBITRARY,
+        ),
+        EXTERNAL_SCORE_NAME_PLANTS_SCORE: ExternalScoreDefinition(
+            name=EXTERNAL_SCORE_NAME_PLANTS_SCORE,
+            source=EXTERNAL_SCORE_SOURCE_PLANTS,
+            direction=EXTERNAL_SCORE_DIRECTION_LOWER,
+            unit=EXTERNAL_SCORE_UNIT_ARBITRARY,
+        ),
+        EXTERNAL_SCORE_NAME_DOCK_SCORE: ExternalScoreDefinition(
+            name=EXTERNAL_SCORE_NAME_DOCK_SCORE,
+            source=EXTERNAL_SCORE_SOURCE_DOCK,
+            direction=EXTERNAL_SCORE_DIRECTION_LOWER,
+            unit=EXTERNAL_SCORE_UNIT_ARBITRARY,
+        ),
+        EXTERNAL_SCORE_NAME_RDOCK_SCORE: ExternalScoreDefinition(
+            name=EXTERNAL_SCORE_NAME_RDOCK_SCORE,
+            source=EXTERNAL_SCORE_SOURCE_RDOCK,
+            direction=EXTERNAL_SCORE_DIRECTION_LOWER,
+            unit=EXTERNAL_SCORE_UNIT_ARBITRARY,
+        ),
+        EXTERNAL_SCORE_NAME_POSE_RMSD: ExternalScoreDefinition(
+            name=EXTERNAL_SCORE_NAME_POSE_RMSD,
+            kind=EXTERNAL_SCORE_KIND_DISTANCE,
+            direction=EXTERNAL_SCORE_DIRECTION_LOWER,
+            unit=EXTERNAL_SCORE_UNIT_ANGSTROM,
+            expected_min=0.0,
+        ),
+        EXTERNAL_SCORE_NAME_DOCKING_RANK: ExternalScoreDefinition(
+            name=EXTERNAL_SCORE_NAME_DOCKING_RANK,
+            kind=EXTERNAL_SCORE_KIND_RANK,
+            direction=EXTERNAL_SCORE_DIRECTION_LOWER,
+            unit=EXTERNAL_SCORE_UNIT_RANK,
+            expected_min=1.0,
+        ),
+    }
+)
+
+
+def builtin_external_score_definitions() -> Mapping[str, ExternalScoreDefinition]:
+    """Return the immutable built-in score-definition registry."""
+
+    return _BUILTIN_EXTERNAL_SCORE_DEFINITIONS
+
+
+def get_external_score_definition(
+    name: Any,
+    *,
+    fallback_source: Any = EXTERNAL_SCORE_SOURCE_CUSTOM,
+    fallback_direction: Any = EXTERNAL_SCORE_DIRECTION_HIGHER,
+    fallback_unit: Any = EXTERNAL_SCORE_UNIT_UNKNOWN,
+) -> ExternalScoreDefinition:
+    canonical = normalize_external_score_name(name)
+    existing = _BUILTIN_EXTERNAL_SCORE_DEFINITIONS.get(canonical)
+    if existing is not None:
+        return existing
+    return ExternalScoreDefinition(
+        name=canonical,
+        source=fallback_source,
+        direction=fallback_direction,
+        unit=fallback_unit,
+    )
+
+
+def merge_external_score_definitions(
+    definitions: Iterable[Any],
+) -> Mapping[str, ExternalScoreDefinition]:
+    result = dict(_BUILTIN_EXTERNAL_SCORE_DEFINITIONS)
+    for value in definitions:
+        if isinstance(value, ExternalScoreDefinition):
+            definition = value
+        elif isinstance(value, Mapping):
+            definition = ExternalScoreDefinition(**dict(value))
+        else:
+            raise ExternalScoreConfigurationError(
+                "Definitions must be ExternalScoreDefinition or mappings."
+            )
+        result[definition.name] = definition
+    return MappingProxyType(result)
+
+
+# -----------------------------------------------------------------------------
+# 23.4. Observations, aggregated values, and fusion results
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ExternalScoreObservation:
+    """One raw external score assigned to one docking pose."""
+
+    pose_id: str
+    name: str
+    value: float
+    source: str = EXTERNAL_SCORE_SOURCE_CUSTOM
+    unit: str = EXTERNAL_SCORE_UNIT_UNKNOWN
+    direction: str = EXTERNAL_SCORE_DIRECTION_HIGHER
+    kind: str = EXTERNAL_SCORE_KIND_CUSTOM
+    ligand_id: str = ""
+    model_id: str = ""
+    replicate_id: str = ""
+    confidence: float = DEFAULT_EXTERNAL_SCORE_CONFIDENCE
+    weight: Optional[float] = None
+    provenance: str = ""
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EXTERNAL_SCORE_EMPTY_METADATA
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "pose_id",
+            _external_score_identifier(self.pose_id, default="pose"),
+        )
+        object.__setattr__(self, "name", normalize_external_score_name(self.name))
+        object.__setattr__(self, "value", _external_score_finite(
+            self.value,
+            name="observation value",
+        ))
+        object.__setattr__(
+            self,
+            "source",
+            normalize_external_score_source(self.source),
+        )
+        object.__setattr__(self, "unit", normalize_external_score_unit(self.unit))
+        object.__setattr__(
+            self,
+            "direction",
+            normalize_external_score_direction(self.direction),
+        )
+        object.__setattr__(
+            self,
+            "kind",
+            normalize_external_score_kind(self.kind),
+        )
+        object.__setattr__(
+            self,
+            "ligand_id",
+            _external_score_identifier(self.ligand_id),
+        )
+        object.__setattr__(
+            self,
+            "model_id",
+            _external_score_identifier(self.model_id),
+        )
+        object.__setattr__(
+            self,
+            "replicate_id",
+            _external_score_identifier(self.replicate_id),
+        )
+        confidence = _external_score_finite(
+            self.confidence,
+            name="observation confidence",
+        )
+        if confidence < 0.0:
+            raise ExternalScoreInputError(
+                "Observation confidence cannot be negative."
+            )
+        object.__setattr__(self, "confidence", confidence)
+        if self.weight is not None:
+            weight = _external_score_finite(
+                self.weight,
+                name="observation weight",
+            )
+            if weight < 0.0:
+                raise ExternalScoreInputError(
+                    "Observation weight cannot be negative."
+                )
+            object.__setattr__(self, "weight", weight)
+        object.__setattr__(
+            self,
+            "provenance",
+            _external_score_identifier(self.provenance),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _external_score_freeze_metadata(self.metadata),
+        )
+
+    @property
+    def oriented_value(self) -> float:
+        return orient_external_score_value(self.value, self.direction)
+
+
+@dataclass(frozen=True, slots=True)
+class AggregatedExternalScore:
+    """Replicate-collapsed external score for one pose and channel."""
+
+    pose_id: str
+    name: str
+    value: float
+    oriented_value: float
+    source: str
+    unit: str
+    direction: str
+    kind: str
+    ligand_id: str = ""
+    model_id: str = ""
+    replicate_count: int = 1
+    aggregation: str = DEFAULT_EXTERNAL_SCORE_REPLICATE_AGGREGATION
+    confidence: float = DEFAULT_EXTERNAL_SCORE_CONFIDENCE
+    weight: float = 1.0
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
+    standard_deviation: Optional[float] = None
+    observations: Tuple[ExternalScoreObservation, ...] = ()
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EXTERNAL_SCORE_EMPTY_METADATA
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "pose_id",
+            _external_score_identifier(self.pose_id, default="pose"),
+        )
+        object.__setattr__(self, "name", normalize_external_score_name(self.name))
+        value = _external_score_finite(self.value, name="aggregated value")
+        oriented = _external_score_finite(
+            self.oriented_value,
+            name="aggregated oriented value",
+        )
+        object.__setattr__(self, "value", value)
+        object.__setattr__(self, "oriented_value", oriented)
+        object.__setattr__(
+            self,
+            "source",
+            normalize_external_score_source(self.source),
+        )
+        object.__setattr__(self, "unit", normalize_external_score_unit(self.unit))
+        object.__setattr__(
+            self,
+            "direction",
+            normalize_external_score_direction(self.direction),
+        )
+        object.__setattr__(
+            self,
+            "kind",
+            normalize_external_score_kind(self.kind),
+        )
+        object.__setattr__(
+            self,
+            "aggregation",
+            normalize_external_score_replicate_aggregation(self.aggregation),
+        )
+        count = int(self.replicate_count)
+        if count < 1:
+            raise ExternalScoreInputError(
+                "Aggregated replicate_count must be at least one."
+            )
+        object.__setattr__(self, "replicate_count", count)
+        confidence = _external_score_finite(
+            self.confidence,
+            name="aggregated confidence",
+        )
+        weight = _external_score_finite(self.weight, name="aggregated weight")
+        if confidence < 0.0 or weight < 0.0:
+            raise ExternalScoreInputError(
+                "Aggregated confidence and weight cannot be negative."
+            )
+        object.__setattr__(self, "confidence", confidence)
+        object.__setattr__(self, "weight", weight)
+        for attribute in ("minimum", "maximum", "standard_deviation"):
+            value_optional = _external_score_finite_optional(
+                getattr(self, attribute),
+                name=attribute,
+            )
+            object.__setattr__(self, attribute, value_optional)
+        object.__setattr__(self, "observations", tuple(self.observations))
+        object.__setattr__(
+            self,
+            "metadata",
+            _external_score_freeze_metadata(self.metadata),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalScoreFusionOptions:
+    """Configuration for external-score normalization and fusion."""
+
+    definitions: Mapping[str, ExternalScoreDefinition] = field(
+        default_factory=builtin_external_score_definitions
+    )
+    normalization: str = DEFAULT_EXTERNAL_SCORE_NORMALIZATION
+    missing_policy: str = DEFAULT_EXTERNAL_SCORE_MISSING_POLICY
+    replicate_aggregation: str = (
+        DEFAULT_EXTERNAL_SCORE_REPLICATE_AGGREGATION
+    )
+    fusion_method: str = DEFAULT_EXTERNAL_SCORE_FUSION_METHOD
+    group_mode: str = DEFAULT_EXTERNAL_SCORE_GROUP_MODE
+    internal_weight: float = DEFAULT_EXTERNAL_SCORE_INTERNAL_WEIGHT
+    external_weight: float = DEFAULT_EXTERNAL_SCORE_EXTERNAL_WEIGHT
+    include_internal_score: bool = True
+    include_external_composite: bool = True
+    normalize_internal_score: bool = True
+    minimum_components: int = DEFAULT_EXTERNAL_SCORE_MIN_COMPONENTS
+    neutral_value: float = DEFAULT_EXTERNAL_SCORE_NEUTRAL_VALUE
+    clip_normalized: bool = True
+    confidence_weighting: bool = True
+    strict_definitions: bool = False
+    decimal_places: int = DEFAULT_EXTERNAL_SCORE_DECIMAL_PLACES
+    epsilon: float = DEFAULT_EXTERNAL_SCORE_EPSILON
+
+    def __post_init__(self) -> None:
+        definitions: Dict[str, ExternalScoreDefinition] = {}
+        for name, value in dict(self.definitions).items():
+            if isinstance(value, ExternalScoreDefinition):
+                definition = value
+            elif isinstance(value, Mapping):
+                payload = dict(value)
+                payload.setdefault("name", name)
+                definition = ExternalScoreDefinition(**payload)
+            else:
+                raise ExternalScoreConfigurationError(
+                    "Fusion definitions must contain score definitions."
+                )
+            definitions[definition.name] = definition
+        object.__setattr__(
+            self,
+            "definitions",
+            MappingProxyType(definitions),
+        )
+        object.__setattr__(
+            self,
+            "normalization",
+            normalize_external_score_normalization(self.normalization),
+        )
+        object.__setattr__(
+            self,
+            "missing_policy",
+            normalize_external_score_missing_policy(self.missing_policy),
+        )
+        object.__setattr__(
+            self,
+            "replicate_aggregation",
+            normalize_external_score_replicate_aggregation(
+                self.replicate_aggregation
+            ),
+        )
+        object.__setattr__(
+            self,
+            "fusion_method",
+            normalize_external_score_fusion_method(self.fusion_method),
+        )
+        object.__setattr__(
+            self,
+            "group_mode",
+            normalize_external_score_group_mode(self.group_mode),
+        )
+        internal_weight = _external_score_finite(
+            self.internal_weight,
+            name="internal weight",
+        )
+        external_weight = _external_score_finite(
+            self.external_weight,
+            name="external weight",
+        )
+        if internal_weight < 0.0 or external_weight < 0.0:
+            raise ExternalScoreConfigurationError(
+                "Fusion weights cannot be negative."
+            )
+        object.__setattr__(self, "internal_weight", internal_weight)
+        object.__setattr__(self, "external_weight", external_weight)
+        minimum_components = int(self.minimum_components)
+        if minimum_components < 1:
+            raise ExternalScoreConfigurationError(
+                "minimum_components must be at least one."
+            )
+        object.__setattr__(self, "minimum_components", minimum_components)
+        neutral = _external_score_finite(
+            self.neutral_value,
+            name="neutral value",
+        )
+        object.__setattr__(self, "neutral_value", neutral)
+        decimal_places = int(self.decimal_places)
+        if decimal_places < 0:
+            raise ExternalScoreConfigurationError(
+                "decimal_places cannot be negative."
+            )
+        object.__setattr__(self, "decimal_places", decimal_places)
+        epsilon = _external_score_finite(self.epsilon, name="epsilon")
+        if epsilon <= 0.0:
+            raise ExternalScoreConfigurationError(
+                "epsilon must be positive."
+            )
+        object.__setattr__(self, "epsilon", epsilon)
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalScoreComponent:
+    """One oriented and normalized component used for a pose."""
+
+    pose_id: str
+    name: str
+    raw_value: Optional[float]
+    oriented_value: Optional[float]
+    normalized_value: Optional[float]
+    weighted_value: Optional[float]
+    weight: float
+    confidence: float
+    direction: str
+    unit: str
+    source: str
+    status: str = EXTERNAL_SCORE_COMPONENT_USED
+    imputed: bool = False
+    replicate_count: int = 0
+    message: str = ""
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EXTERNAL_SCORE_EMPTY_METADATA
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "pose_id",
+            _external_score_identifier(self.pose_id, default="pose"),
+        )
+        object.__setattr__(self, "name", normalize_external_score_name(self.name))
+        for attribute in (
+            "raw_value",
+            "oriented_value",
+            "normalized_value",
+            "weighted_value",
+        ):
+            object.__setattr__(
+                self,
+                attribute,
+                _external_score_finite_optional(
+                    getattr(self, attribute),
+                    name=attribute,
+                ),
+            )
+        weight = _external_score_finite(self.weight, name="component weight")
+        confidence = _external_score_finite(
+            self.confidence,
+            name="component confidence",
+        )
+        if weight < 0.0 or confidence < 0.0:
+            raise ExternalScoreInputError(
+                "Component weight and confidence cannot be negative."
+            )
+        object.__setattr__(self, "weight", weight)
+        object.__setattr__(self, "confidence", confidence)
+        object.__setattr__(
+            self,
+            "direction",
+            normalize_external_score_direction(self.direction),
+        )
+        object.__setattr__(self, "unit", normalize_external_score_unit(self.unit))
+        object.__setattr__(
+            self,
+            "source",
+            normalize_external_score_source(self.source),
+        )
+        status = _external_score_token(self.status)
+        if status not in EXTERNAL_SCORE_COMPONENT_STATUSES:
+            raise ExternalScoreInputError(
+                f"Unsupported component status: {self.status!r}."
+            )
+        object.__setattr__(self, "status", status)
+        count = int(self.replicate_count)
+        if count < 0:
+            raise ExternalScoreInputError(
+                "component replicate_count cannot be negative."
+            )
+        object.__setattr__(self, "replicate_count", count)
+        object.__setattr__(
+            self,
+            "message",
+            _external_score_identifier(self.message),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _external_score_freeze_metadata(self.metadata),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PoseExternalScoreResult:
+    """External and fused score result for one pose."""
+
+    pose_id: str
+    ligand_id: str = ""
+    model_id: str = ""
+    group_id: str = "global"
+    status: str = EXTERNAL_SCORE_STATUS_EMPTY
+    internal_score: Optional[float] = None
+    normalized_internal_score: Optional[float] = None
+    external_composite_score: Optional[float] = None
+    fused_score: Optional[float] = None
+    primary_affinity: Optional[float] = None
+    primary_affinity_name: str = ""
+    primary_affinity_unit: str = ""
+    components: Tuple[ExternalScoreComponent, ...] = ()
+    used_component_count: int = 0
+    missing_component_count: int = 0
+    excluded_component_count: int = 0
+    warnings: Tuple[str, ...] = ()
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EXTERNAL_SCORE_EMPTY_METADATA
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "pose_id",
+            _external_score_identifier(self.pose_id, default="pose"),
+        )
+        for attribute in (
+            "ligand_id",
+            "model_id",
+            "group_id",
+            "primary_affinity_name",
+            "primary_affinity_unit",
+        ):
+            object.__setattr__(
+                self,
+                attribute,
+                _external_score_identifier(getattr(self, attribute)),
+            )
+        status = _external_score_token(self.status)
+        if status not in EXTERNAL_SCORE_STATUSES:
+            raise ExternalScoreInputError(
+                f"Unsupported pose-result status: {self.status!r}."
+            )
+        object.__setattr__(self, "status", status)
+        for attribute in (
+            "internal_score",
+            "normalized_internal_score",
+            "external_composite_score",
+            "fused_score",
+            "primary_affinity",
+        ):
+            object.__setattr__(
+                self,
+                attribute,
+                _external_score_finite_optional(
+                    getattr(self, attribute),
+                    name=attribute,
+                ),
+            )
+        object.__setattr__(self, "components", tuple(self.components))
+        for attribute in (
+            "used_component_count",
+            "missing_component_count",
+            "excluded_component_count",
+        ):
+            count = int(getattr(self, attribute))
+            if count < 0:
+                raise ExternalScoreInputError(
+                    f"{attribute} cannot be negative."
+                )
+            object.__setattr__(self, attribute, count)
+        object.__setattr__(
+            self,
+            "warnings",
+            tuple(str(item) for item in self.warnings),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _external_score_freeze_metadata(self.metadata),
+        )
+
+    @property
+    def metrics(self) -> Mapping[str, float]:
+        values: Dict[str, float] = {}
+        if self.internal_score is not None:
+            values[EXTERNAL_SCORE_NAME_DOCKANALYZER] = self.internal_score
+        if self.normalized_internal_score is not None:
+            values["normalized_dockanalyzer_score"] = (
+                self.normalized_internal_score
+            )
+        if self.external_composite_score is not None:
+            values[EXTERNAL_SCORE_NAME_EXTERNAL_COMPOSITE] = (
+                self.external_composite_score
+            )
+        if self.fused_score is not None:
+            values[EXTERNAL_SCORE_NAME_FUSED] = self.fused_score
+        for component in self.components:
+            if component.raw_value is not None:
+                values[component.name] = component.raw_value
+            if component.normalized_value is not None:
+                values[f"normalized_{component.name}"] = (
+                    component.normalized_value
+                )
+        return MappingProxyType(values)
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalScoreGroupResult:
+    """Normalization context and pose results for one comparison group."""
+
+    group_id: str
+    pose_ids: Tuple[str, ...]
+    channel_names: Tuple[str, ...]
+    results: Tuple[PoseExternalScoreResult, ...]
+    normalization: str
+    status: str = EXTERNAL_SCORE_STATUS_COMPLETE
+    channel_statistics: Mapping[str, Mapping[str, float]] = field(
+        default_factory=lambda: _EXTERNAL_SCORE_EMPTY_METADATA
+    )
+    warnings: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "group_id",
+            _external_score_identifier(self.group_id, default="global"),
+        )
+        object.__setattr__(
+            self,
+            "pose_ids",
+            tuple(str(item) for item in self.pose_ids),
+        )
+        object.__setattr__(
+            self,
+            "channel_names",
+            tuple(normalize_external_score_name(item)
+                  for item in self.channel_names),
+        )
+        object.__setattr__(self, "results", tuple(self.results))
+        object.__setattr__(
+            self,
+            "normalization",
+            normalize_external_score_normalization(self.normalization),
+        )
+        status = _external_score_token(self.status)
+        if status not in EXTERNAL_SCORE_STATUSES:
+            raise ExternalScoreInputError(
+                f"Unsupported group-result status: {self.status!r}."
+            )
+        object.__setattr__(self, "status", status)
+        statistics = {
+            str(name): MappingProxyType(dict(values))
+            for name, values in dict(self.channel_statistics).items()
+        }
+        object.__setattr__(
+            self,
+            "channel_statistics",
+            MappingProxyType(statistics),
+        )
+        object.__setattr__(
+            self,
+            "warnings",
+            tuple(str(item) for item in self.warnings),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MultiPoseExternalScoreResult:
+    """Complete Section 23 result for one multipose collection."""
+
+    pose_results: Tuple[PoseExternalScoreResult, ...]
+    groups: Tuple[ExternalScoreGroupResult, ...]
+    observations: Tuple[ExternalScoreObservation, ...]
+    aggregated_scores: Tuple[AggregatedExternalScore, ...]
+    options: ExternalScoreFusionOptions
+    status: str = EXTERNAL_SCORE_STATUS_COMPLETE
+    warnings: Tuple[str, ...] = ()
+    schema: str = EXTERNAL_SCORE_SCHEMA
+    schema_version: str = EXTERNAL_SCORE_SCHEMA_VERSION
+    section_version: str = EXTERNAL_SCORE_SECTION_VERSION
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EXTERNAL_SCORE_EMPTY_METADATA
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "pose_results", tuple(self.pose_results))
+        object.__setattr__(self, "groups", tuple(self.groups))
+        object.__setattr__(self, "observations", tuple(self.observations))
+        object.__setattr__(
+            self,
+            "aggregated_scores",
+            tuple(self.aggregated_scores),
+        )
+        status = _external_score_token(self.status)
+        if status not in EXTERNAL_SCORE_STATUSES:
+            raise ExternalScoreInputError(
+                f"Unsupported multipose-result status: {self.status!r}."
+            )
+        object.__setattr__(self, "status", status)
+        object.__setattr__(
+            self,
+            "warnings",
+            tuple(str(item) for item in self.warnings),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _external_score_freeze_metadata(self.metadata),
+        )
+
+    @property
+    def by_pose(self) -> Mapping[str, PoseExternalScoreResult]:
+        return MappingProxyType(
+            {result.pose_id: result for result in self.pose_results}
+        )
+
+    @property
+    def best_pose(self) -> Optional[PoseExternalScoreResult]:
+        values = [
+            result
+            for result in self.pose_results
+            if result.fused_score is not None
+        ]
+        if not values:
+            return None
+        return max(values, key=lambda item: item.fused_score or -math.inf)
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalScoreCorrelation:
+    """Association between two score channels."""
+
+    left_name: str
+    right_name: str
+    sample_size: int
+    pearson_r: Optional[float]
+    spearman_rho: Optional[float]
+    mean_absolute_rank_difference: Optional[float]
+    common_pose_ids: Tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalScoreAgreementResult:
+    """Pairwise agreement diagnostics among score channels."""
+
+    correlations: Tuple[ExternalScoreCorrelation, ...]
+    channel_names: Tuple[str, ...]
+    pose_count: int
+    warnings: Tuple[str, ...] = ()
+
+
+# -----------------------------------------------------------------------------
+# 23.5. Input adaptation and observation extraction
+# -----------------------------------------------------------------------------
+
+_EXTERNAL_SCORE_RESERVED_KEYS: Final[FrozenSet[str]] = frozenset(
+    {
+        "pose_id",
+        "pose",
+        "id",
+        "name",
+        "score_name",
+        "value",
+        "score",
+        "source",
+        "unit",
+        "direction",
+        "kind",
+        "ligand_id",
+        "ligand",
+        "model_id",
+        "model",
+        "receptor_id",
+        "replicate_id",
+        "replicate",
+        "confidence",
+        "weight",
+        "provenance",
+        "metadata",
+    }
+)
+
+
+def external_score_observation_from_mapping(
+    value: Mapping[str, Any],
+    *,
+    default_pose_id: str = "pose",
+    default_name: Optional[str] = None,
+    definitions: Optional[Mapping[str, ExternalScoreDefinition]] = None,
+) -> ExternalScoreObservation:
+    """Adapt a row-like mapping into an external-score observation."""
+
+    pose_id = _external_score_get(
+        value,
+        "pose_id",
+        "pose",
+        "id",
+        default=default_pose_id,
+    )
+    name = _external_score_get(
+        value,
+        "name",
+        "score_name",
+        default=default_name,
+    )
+    if name is None:
+        raise ExternalScoreInputError(
+            "A mapping observation requires name or score_name."
+        )
+    canonical_name = normalize_external_score_name(name)
+    registry = definitions or builtin_external_score_definitions()
+    definition = registry.get(canonical_name)
+    if definition is None:
+        definition = get_external_score_definition(canonical_name)
+    numeric = _external_score_get(value, "value", "score", default=None)
+    if numeric is None and canonical_name in value:
+        numeric = value[canonical_name]
+    if numeric is None:
+        raise ExternalScoreInputError(
+            f"Observation {canonical_name!r} has no numeric value."
+        )
+    metadata = dict(_external_score_get(value, "metadata", default={}) or {})
+    for key, item in value.items():
+        if key not in _EXTERNAL_SCORE_RESERVED_KEYS and key != canonical_name:
+            metadata.setdefault(str(key), item)
+    return ExternalScoreObservation(
+        pose_id=pose_id,
+        name=canonical_name,
+        value=numeric,
+        source=_external_score_get(
+            value,
+            "source",
+            default=definition.source,
+        ),
+        unit=_external_score_get(value, "unit", default=definition.unit),
+        direction=_external_score_get(
+            value,
+            "direction",
+            default=definition.direction,
+        ),
+        kind=_external_score_get(value, "kind", default=definition.kind),
+        ligand_id=_external_score_get(
+            value,
+            "ligand_id",
+            "ligand",
+            default="",
+        ),
+        model_id=_external_score_get(
+            value,
+            "model_id",
+            "model",
+            "receptor_id",
+            default="",
+        ),
+        replicate_id=_external_score_get(
+            value,
+            "replicate_id",
+            "replicate",
+            default="",
+        ),
+        confidence=_external_score_get(
+            value,
+            "confidence",
+            default=DEFAULT_EXTERNAL_SCORE_CONFIDENCE,
+        ),
+        weight=_external_score_get(value, "weight", default=None),
+        provenance=_external_score_get(value, "provenance", default=""),
+        metadata=metadata,
+    )
+
+
+def external_score_observation_from_object(
+    value: Any,
+    *,
+    default_pose_id: str = "pose",
+    default_name: Optional[str] = None,
+    definitions: Optional[Mapping[str, ExternalScoreDefinition]] = None,
+) -> ExternalScoreObservation:
+    """Adapt an attribute-based object into an observation."""
+
+    if isinstance(value, ExternalScoreObservation):
+        return value
+    if isinstance(value, Mapping):
+        return external_score_observation_from_mapping(
+            value,
+            default_pose_id=default_pose_id,
+            default_name=default_name,
+            definitions=definitions,
+        )
+    payload = {
+        "pose_id": _external_score_get(
+            value,
+            "pose_id",
+            "pose",
+            "id",
+            default=default_pose_id,
+        ),
+        "name": _external_score_get(
+            value,
+            "name",
+            "score_name",
+            default=default_name,
+        ),
+        "value": _external_score_get(value, "value", "score", default=None),
+        "source": _external_score_get(value, "source", default=None),
+        "unit": _external_score_get(value, "unit", default=None),
+        "direction": _external_score_get(value, "direction", default=None),
+        "kind": _external_score_get(value, "kind", default=None),
+        "ligand_id": _external_score_get(
+            value,
+            "ligand_id",
+            "ligand",
+            default="",
+        ),
+        "model_id": _external_score_get(
+            value,
+            "model_id",
+            "model",
+            default="",
+        ),
+        "replicate_id": _external_score_get(
+            value,
+            "replicate_id",
+            "replicate",
+            default="",
+        ),
+        "confidence": _external_score_get(
+            value,
+            "confidence",
+            default=DEFAULT_EXTERNAL_SCORE_CONFIDENCE,
+        ),
+        "weight": _external_score_get(value, "weight", default=None),
+        "provenance": _external_score_get(
+            value,
+            "provenance",
+            default="",
+        ),
+        "metadata": _external_score_get(value, "metadata", default={}),
+    }
+    payload = {key: item for key, item in payload.items() if item is not None}
+    return external_score_observation_from_mapping(
+        payload,
+        default_pose_id=default_pose_id,
+        default_name=default_name,
+        definitions=definitions,
+    )
+
+
+def _external_score_looks_like_observation(value: Mapping[str, Any]) -> bool:
+    has_value = "value" in value or "score" in value
+    has_name = "name" in value or "score_name" in value
+    return has_value and has_name
+
+
+def _external_score_expand_wide_mapping(
+    value: Mapping[str, Any],
+    *,
+    definitions: Mapping[str, ExternalScoreDefinition],
+    default_pose_id: str,
+) -> List[ExternalScoreObservation]:
+    pose_id = _external_score_get(
+        value,
+        "pose_id",
+        "pose",
+        "id",
+        default=default_pose_id,
+    )
+    ligand_id = _external_score_get(
+        value,
+        "ligand_id",
+        "ligand",
+        default="",
+    )
+    model_id = _external_score_get(
+        value,
+        "model_id",
+        "model",
+        "receptor_id",
+        default="",
+    )
+    replicate_id = _external_score_get(
+        value,
+        "replicate_id",
+        "replicate",
+        default="",
+    )
+    metadata = dict(_external_score_get(value, "metadata", default={}) or {})
+    observations: List[ExternalScoreObservation] = []
+    for raw_name, raw_value in value.items():
+        if raw_name in _EXTERNAL_SCORE_RESERVED_KEYS:
+            continue
+        if raw_value is None or isinstance(raw_value, bool):
+            continue
+        try:
+            numeric = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(numeric):
+            continue
+        name = normalize_external_score_name(raw_name)
+        definition = definitions.get(name)
+        if definition is None:
+            definition = get_external_score_definition(name)
+        observations.append(
+            ExternalScoreObservation(
+                pose_id=pose_id,
+                name=name,
+                value=numeric,
+                source=definition.source,
+                unit=definition.unit,
+                direction=definition.direction,
+                kind=definition.kind,
+                ligand_id=ligand_id,
+                model_id=model_id,
+                replicate_id=replicate_id,
+                confidence=DEFAULT_EXTERNAL_SCORE_CONFIDENCE,
+                weight=definition.weight,
+                metadata=metadata,
+            )
+        )
+    return observations
+
+
+def materialize_external_score_observations(
+    values: Any,
+    *,
+    definitions: Optional[Mapping[str, ExternalScoreDefinition]] = None,
+    default_pose_id: str = "pose",
+    default_name: Optional[str] = None,
+    strict: bool = True,
+) -> Tuple[ExternalScoreObservation, ...]:
+    """Recursively materialize supported external-score input forms."""
+
+    registry = definitions or builtin_external_score_definitions()
+    observations: List[ExternalScoreObservation] = []
+
+    def visit(item: Any, inherited_pose_id: str) -> None:
+        if item is None:
+            return
+        if isinstance(item, ExternalScoreObservation):
+            observations.append(item)
+            return
+        if isinstance(item, AggregatedExternalScore):
+            observations.extend(item.observations)
+            if not item.observations:
+                observations.append(
+                    ExternalScoreObservation(
+                        pose_id=item.pose_id,
+                        name=item.name,
+                        value=item.value,
+                        source=item.source,
+                        unit=item.unit,
+                        direction=item.direction,
+                        kind=item.kind,
+                        ligand_id=item.ligand_id,
+                        model_id=item.model_id,
+                        confidence=item.confidence,
+                        weight=item.weight,
+                    )
+                )
+            return
+        if isinstance(item, Mapping):
+            if _external_score_looks_like_observation(item):
+                observations.append(
+                    external_score_observation_from_mapping(
+                        item,
+                        default_pose_id=inherited_pose_id,
+                        default_name=default_name,
+                        definitions=registry,
+                    )
+                )
+                return
+            nested = _external_score_get(
+                item,
+                "observations",
+                "external_scores",
+                "scores",
+                default=None,
+            )
+            if nested is not None and nested is not item:
+                pose_id = _external_score_get(
+                    item,
+                    "pose_id",
+                    "pose",
+                    "id",
+                    default=inherited_pose_id,
+                )
+                visit(nested, str(pose_id))
+                wide = _external_score_expand_wide_mapping(
+                    item,
+                    definitions=registry,
+                    default_pose_id=str(pose_id),
+                )
+                observations.extend(wide)
+                return
+            observations.extend(
+                _external_score_expand_wide_mapping(
+                    item,
+                    definitions=registry,
+                    default_pose_id=inherited_pose_id,
+                )
+            )
+            return
+        if isinstance(item, (str, bytes, bytearray)):
+            if strict:
+                raise ExternalScoreInputError(
+                    "Text input requires an explicit Section 23 parser."
+                )
+            return
+        try:
+            iterator = iter(item)
+        except TypeError:
+            try:
+                observations.append(
+                    external_score_observation_from_object(
+                        item,
+                        default_pose_id=inherited_pose_id,
+                        default_name=default_name,
+                        definitions=registry,
+                    )
+                )
+            except ExternalScoreError:
+                if strict:
+                    raise
+            return
+        for index, child in enumerate(iterator, start=1):
+            visit(child, f"{inherited_pose_id}_{index}")
+
+    visit(values, default_pose_id)
+    return tuple(observations)
+
+
+# -----------------------------------------------------------------------------
+# 23.6. Parsers for common docking outputs
+# -----------------------------------------------------------------------------
+
+_VINA_RESULT_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^\s*REMARK\s+VINA\s+RESULT:\s*"
+    r"(?P<affinity>[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?)"
+    r"(?:\s+(?P<rmsd_lb>[+-]?(?:\d+(?:\.\d*)?|\.\d+)))?"
+    r"(?:\s+(?P<rmsd_ub>[+-]?(?:\d+(?:\.\d*)?|\.\d+)))?",
+    re.IGNORECASE,
+)
+_VINA_TABLE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?P<mode>\d+)\s+"
+    r"(?P<affinity>[+-]?(?:\d+(?:\.\d*)?|\.\d+))\s+"
+    r"(?P<rmsd_lb>[+-]?(?:\d+(?:\.\d*)?|\.\d+))\s+"
+    r"(?P<rmsd_ub>[+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*$"
+)
+_AUTODOCK4_ENERGY_PATTERNS: Final[Tuple[re.Pattern[str], ...]] = (
+    re.compile(
+        r"Estimated\s+Free\s+Energy\s+of\s+Binding\s*=\s*"
+        r"(?P<value>[+-]?(?:\d+(?:\.\d*)?|\.\d+))",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"USER\s+Estimated\s+Free\s+Energy\s+of\s+Binding\s*=\s*"
+        r"(?P<value>[+-]?(?:\d+(?:\.\d*)?|\.\d+))",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"DOCKED:\s+USER\s+Estimated\s+Free\s+Energy\s+of\s+Binding"
+        r"\s*=\s*(?P<value>[+-]?(?:\d+(?:\.\d*)?|\.\d+))",
+        re.IGNORECASE,
+    ),
+)
+_SDF_PROPERTY_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^>\s*<(?P<name>[^>]+)>\s*$"
+)
+
+
+def parse_vina_pdbqt_scores(
+    text: str,
+    *,
+    pose_prefix: str = "pose",
+    ligand_id: str = "",
+    model_id: str = "",
+    source: str = EXTERNAL_SCORE_SOURCE_VINA,
+    include_rmsd: bool = True,
+) -> Tuple[ExternalScoreObservation, ...]:
+    """Parse Vina-style PDBQT result remarks."""
+
+    observations: List[ExternalScoreObservation] = []
+    pose_index = 0
+    canonical_source = normalize_external_score_source(source)
+    affinity_name = (
+        EXTERNAL_SCORE_NAME_SMINA_AFFINITY
+        if canonical_source == EXTERNAL_SCORE_SOURCE_SMINA
+        else EXTERNAL_SCORE_NAME_GNINA_AFFINITY
+        if canonical_source == EXTERNAL_SCORE_SOURCE_GNINA
+        else EXTERNAL_SCORE_NAME_VINA_AFFINITY
+    )
+    for line_number, line in enumerate(str(text).splitlines(), start=1):
+        match = _VINA_RESULT_PATTERN.search(line)
+        if match is None:
+            continue
+        pose_index += 1
+        pose_id = f"{pose_prefix}_{pose_index}"
+        observations.append(
+            ExternalScoreObservation(
+                pose_id=pose_id,
+                name=affinity_name,
+                value=float(match.group("affinity")),
+                source=canonical_source,
+                unit=EXTERNAL_SCORE_UNIT_KCAL_MOL,
+                direction=EXTERNAL_SCORE_DIRECTION_LOWER,
+                kind=EXTERNAL_SCORE_KIND_AFFINITY,
+                ligand_id=ligand_id,
+                model_id=model_id,
+                provenance=f"PDBQT line {line_number}",
+            )
+        )
+        if include_rmsd:
+            rmsd_lb = match.group("rmsd_lb")
+            rmsd_ub = match.group("rmsd_ub")
+            if rmsd_lb is not None:
+                observations.append(
+                    ExternalScoreObservation(
+                        pose_id=pose_id,
+                        name="vina_rmsd_lower_bound",
+                        value=float(rmsd_lb),
+                        source=canonical_source,
+                        unit=EXTERNAL_SCORE_UNIT_ANGSTROM,
+                        direction=EXTERNAL_SCORE_DIRECTION_LOWER,
+                        kind=EXTERNAL_SCORE_KIND_DISTANCE,
+                        ligand_id=ligand_id,
+                        model_id=model_id,
+                        provenance=f"PDBQT line {line_number}",
+                    )
+                )
+            if rmsd_ub is not None:
+                observations.append(
+                    ExternalScoreObservation(
+                        pose_id=pose_id,
+                        name="vina_rmsd_upper_bound",
+                        value=float(rmsd_ub),
+                        source=canonical_source,
+                        unit=EXTERNAL_SCORE_UNIT_ANGSTROM,
+                        direction=EXTERNAL_SCORE_DIRECTION_LOWER,
+                        kind=EXTERNAL_SCORE_KIND_DISTANCE,
+                        ligand_id=ligand_id,
+                        model_id=model_id,
+                        provenance=f"PDBQT line {line_number}",
+                    )
+                )
+    return tuple(observations)
+
+
+def parse_vina_table_scores(
+    text: str,
+    *,
+    pose_prefix: str = "pose",
+    ligand_id: str = "",
+    model_id: str = "",
+    source: str = EXTERNAL_SCORE_SOURCE_VINA,
+    include_rmsd: bool = True,
+) -> Tuple[ExternalScoreObservation, ...]:
+    """Parse the whitespace table emitted by Vina-compatible programs."""
+
+    observations: List[ExternalScoreObservation] = []
+    canonical_source = normalize_external_score_source(source)
+    affinity_name = (
+        EXTERNAL_SCORE_NAME_SMINA_AFFINITY
+        if canonical_source == EXTERNAL_SCORE_SOURCE_SMINA
+        else EXTERNAL_SCORE_NAME_GNINA_AFFINITY
+        if canonical_source == EXTERNAL_SCORE_SOURCE_GNINA
+        else EXTERNAL_SCORE_NAME_VINA_AFFINITY
+    )
+    for line_number, line in enumerate(str(text).splitlines(), start=1):
+        match = _VINA_TABLE_PATTERN.match(line)
+        if match is None:
+            continue
+        mode = int(match.group("mode"))
+        pose_id = f"{pose_prefix}_{mode}"
+        observations.append(
+            ExternalScoreObservation(
+                pose_id=pose_id,
+                name=affinity_name,
+                value=float(match.group("affinity")),
+                source=canonical_source,
+                unit=EXTERNAL_SCORE_UNIT_KCAL_MOL,
+                direction=EXTERNAL_SCORE_DIRECTION_LOWER,
+                kind=EXTERNAL_SCORE_KIND_AFFINITY,
+                ligand_id=ligand_id,
+                model_id=model_id,
+                provenance=f"table line {line_number}",
+                metadata={"mode": mode},
+            )
+        )
+        if include_rmsd:
+            for name, group in (
+                ("vina_rmsd_lower_bound", "rmsd_lb"),
+                ("vina_rmsd_upper_bound", "rmsd_ub"),
+            ):
+                observations.append(
+                    ExternalScoreObservation(
+                        pose_id=pose_id,
+                        name=name,
+                        value=float(match.group(group)),
+                        source=canonical_source,
+                        unit=EXTERNAL_SCORE_UNIT_ANGSTROM,
+                        direction=EXTERNAL_SCORE_DIRECTION_LOWER,
+                        kind=EXTERNAL_SCORE_KIND_DISTANCE,
+                        ligand_id=ligand_id,
+                        model_id=model_id,
+                        provenance=f"table line {line_number}",
+                        metadata={"mode": mode},
+                    )
+                )
+    return tuple(observations)
+
+
+def parse_autodock4_scores(
+    text: str,
+    *,
+    pose_prefix: str = "pose",
+    ligand_id: str = "",
+    model_id: str = "",
+) -> Tuple[ExternalScoreObservation, ...]:
+    """Parse AutoDock4 estimated binding-energy lines."""
+
+    observations: List[ExternalScoreObservation] = []
+    pose_index = 0
+    for line_number, line in enumerate(str(text).splitlines(), start=1):
+        match = None
+        for pattern in _AUTODOCK4_ENERGY_PATTERNS:
+            match = pattern.search(line)
+            if match is not None:
+                break
+        if match is None:
+            continue
+        pose_index += 1
+        observations.append(
+            ExternalScoreObservation(
+                pose_id=f"{pose_prefix}_{pose_index}",
+                name=EXTERNAL_SCORE_NAME_AUTODOCK4_ENERGY,
+                value=float(match.group("value")),
+                source=EXTERNAL_SCORE_SOURCE_AUTODOCK4,
+                unit=EXTERNAL_SCORE_UNIT_KCAL_MOL,
+                direction=EXTERNAL_SCORE_DIRECTION_LOWER,
+                kind=EXTERNAL_SCORE_KIND_ENERGY,
+                ligand_id=ligand_id,
+                model_id=model_id,
+                provenance=f"AutoDock4 line {line_number}",
+            )
+        )
+    return tuple(observations)
+
+
+def parse_sdf_numeric_properties(
+    text: str,
+    *,
+    pose_prefix: str = "pose",
+    ligand_id: str = "",
+    model_id: str = "",
+    property_names: Optional[Iterable[str]] = None,
+    definitions: Optional[Mapping[str, ExternalScoreDefinition]] = None,
+) -> Tuple[ExternalScoreObservation, ...]:
+    """Parse numeric SDF properties into external-score observations."""
+
+    registry = definitions or builtin_external_score_definitions()
+    selected = None
+    if property_names is not None:
+        selected = {
+            normalize_external_score_name(name) for name in property_names
+        }
+    observations: List[ExternalScoreObservation] = []
+    records = re.split(r"^\$\$\$\$\s*$", str(text), flags=re.MULTILINE)
+    for record_index, record in enumerate(records, start=1):
+        lines = record.splitlines()
+        if not any(line.strip() for line in lines):
+            continue
+        pose_id = f"{pose_prefix}_{record_index}"
+        index = 0
+        while index < len(lines):
+            match = _SDF_PROPERTY_PATTERN.match(lines[index].strip())
+            if match is None:
+                index += 1
+                continue
+            raw_name = match.group("name").strip()
+            index += 1
+            values: List[str] = []
+            while index < len(lines) and lines[index].strip():
+                values.append(lines[index].strip())
+                index += 1
+            if not values:
+                continue
+            canonical_name = normalize_external_score_name(raw_name)
+            if selected is not None and canonical_name not in selected:
+                continue
+            try:
+                numeric = float(values[0].split()[0])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if not math.isfinite(numeric):
+                continue
+            definition = registry.get(canonical_name)
+            if definition is None:
+                definition = get_external_score_definition(canonical_name)
+            observations.append(
+                ExternalScoreObservation(
+                    pose_id=pose_id,
+                    name=canonical_name,
+                    value=numeric,
+                    source=definition.source,
+                    unit=definition.unit,
+                    direction=definition.direction,
+                    kind=definition.kind,
+                    ligand_id=ligand_id,
+                    model_id=model_id,
+                    provenance=(
+                        f"SDF record {record_index}, property {raw_name}"
+                    ),
+                )
+            )
+    return tuple(observations)
+
+
+def parse_gnina_sdf_scores(
+    text: str,
+    *,
+    pose_prefix: str = "pose",
+    ligand_id: str = "",
+    model_id: str = "",
+) -> Tuple[ExternalScoreObservation, ...]:
+    """Parse the principal GNINA numeric SDF score properties."""
+
+    return parse_sdf_numeric_properties(
+        text,
+        pose_prefix=pose_prefix,
+        ligand_id=ligand_id,
+        model_id=model_id,
+        property_names=(
+            EXTERNAL_SCORE_NAME_GNINA_AFFINITY,
+            EXTERNAL_SCORE_NAME_GNINA_CNNSCORE,
+            EXTERNAL_SCORE_NAME_GNINA_CNNAFFINITY,
+            "minimizedAffinity",
+            "CNNscore",
+            "CNNaffinity",
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 23.7. Replicate aggregation and normalization
+# -----------------------------------------------------------------------------
+
+
+def _external_score_standard_deviation(values: Sequence[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    center = fmean(values)
+    variance = sum((value - center) ** 2 for value in values) / (
+        len(values) - 1
+    )
+    return math.sqrt(max(variance, 0.0))
+
+
+def aggregate_external_score_replicates(
+    observations: Any,
+    *,
+    method: str = DEFAULT_EXTERNAL_SCORE_REPLICATE_AGGREGATION,
+    definitions: Optional[Mapping[str, ExternalScoreDefinition]] = None,
+) -> Tuple[AggregatedExternalScore, ...]:
+    """Collapse repeated observations for each pose and score channel."""
+
+    registry = definitions or builtin_external_score_definitions()
+    canonical_method = normalize_external_score_replicate_aggregation(method)
+    materialized = materialize_external_score_observations(
+        observations,
+        definitions=registry,
+    )
+    grouped: Dict[
+        Tuple[str, str, str, str],
+        List[ExternalScoreObservation],
+    ] = defaultdict(list)
+    for observation in materialized:
+        key = (
+            observation.pose_id,
+            observation.name,
+            observation.ligand_id,
+            observation.model_id,
+        )
+        grouped[key].append(observation)
+
+    results: List[AggregatedExternalScore] = []
+    for key in sorted(grouped):
+        items = grouped[key]
+        reference = items[0]
+        for item in items[1:]:
+            if item.direction != reference.direction:
+                raise ExternalScoreInputError(
+                    f"Mixed directions for {reference.name!r} in "
+                    f"pose {reference.pose_id!r}."
+                )
+            if item.unit != reference.unit:
+                if {
+                    item.unit,
+                    reference.unit,
+                } <= {
+                    EXTERNAL_SCORE_UNIT_KCAL_MOL,
+                    EXTERNAL_SCORE_UNIT_KJ_MOL,
+                }:
+                    continue
+                raise ExternalScoreInputError(
+                    f"Mixed units for {reference.name!r} in "
+                    f"pose {reference.pose_id!r}."
+                )
+        values = []
+        for item in items:
+            numeric = item.value
+            if item.unit != reference.unit:
+                numeric = convert_external_energy_unit(
+                    numeric,
+                    item.unit,
+                    reference.unit,
+                )
+            values.append(numeric)
+        if canonical_method == EXTERNAL_SCORE_REPLICATE_MEAN:
+            value = fmean(values)
+        elif canonical_method == EXTERNAL_SCORE_REPLICATE_MEDIAN:
+            value = median(values)
+        elif canonical_method == EXTERNAL_SCORE_REPLICATE_MINIMUM:
+            value = min(values)
+        elif canonical_method == EXTERNAL_SCORE_REPLICATE_MAXIMUM:
+            value = max(values)
+        elif canonical_method == EXTERNAL_SCORE_REPLICATE_FIRST:
+            value = values[0]
+        elif canonical_method == EXTERNAL_SCORE_REPLICATE_LAST:
+            value = values[-1]
+        elif canonical_method == EXTERNAL_SCORE_REPLICATE_BEST:
+            value = (
+                max(values)
+                if reference.direction == EXTERNAL_SCORE_DIRECTION_HIGHER
+                else min(values)
+            )
+        elif canonical_method == EXTERNAL_SCORE_REPLICATE_WORST:
+            value = (
+                min(values)
+                if reference.direction == EXTERNAL_SCORE_DIRECTION_HIGHER
+                else max(values)
+            )
+        else:
+            raise ExternalScoreConfigurationError(
+                f"Unsupported replicate aggregation: {canonical_method!r}."
+            )
+        definition = registry.get(reference.name)
+        base_weight = definition.weight if definition is not None else 1.0
+        explicit_weights = [
+            item.weight for item in items if item.weight is not None
+        ]
+        weight = fmean(explicit_weights) if explicit_weights else base_weight
+        confidence = fmean(item.confidence for item in items)
+        results.append(
+            AggregatedExternalScore(
+                pose_id=reference.pose_id,
+                name=reference.name,
+                value=value,
+                oriented_value=orient_external_score_value(
+                    value,
+                    reference.direction,
+                ),
+                source=reference.source,
+                unit=reference.unit,
+                direction=reference.direction,
+                kind=reference.kind,
+                ligand_id=reference.ligand_id,
+                model_id=reference.model_id,
+                replicate_count=len(items),
+                aggregation=canonical_method,
+                confidence=confidence,
+                weight=weight,
+                minimum=min(values),
+                maximum=max(values),
+                standard_deviation=_external_score_standard_deviation(values),
+                observations=tuple(items),
+            )
+        )
+    return tuple(results)
+
+
+def _external_score_average_ranks(values: Sequence[float]) -> List[float]:
+    order = sorted(range(len(values)), key=lambda index: values[index])
+    ranks = [0.0] * len(values)
+    cursor = 0
+    while cursor < len(order):
+        end = cursor + 1
+        while end < len(order):
+            left = values[order[cursor]]
+            right = values[order[end]]
+            if not _external_score_close(left, right):
+                break
+            end += 1
+        average_rank = ((cursor + 1) + end) / 2.0
+        for position in range(cursor, end):
+            ranks[order[position]] = average_rank
+        cursor = end
+    return ranks
+
+
+def _external_score_percentile_values(
+    values: Sequence[float],
+) -> List[float]:
+    if not values:
+        return []
+    if len(values) == 1:
+        return [1.0]
+    ranks = _external_score_average_ranks(values)
+    denominator = float(len(values) - 1)
+    return [(rank - 1.0) / denominator for rank in ranks]
+
+
+def normalize_external_score_values(
+    values: Sequence[float],
+    *,
+    method: str = DEFAULT_EXTERNAL_SCORE_NORMALIZATION,
+    expected_min: Optional[float] = None,
+    expected_max: Optional[float] = None,
+    clip: bool = True,
+    neutral_value: float = DEFAULT_EXTERNAL_SCORE_NEUTRAL_VALUE,
+    epsilon: float = DEFAULT_EXTERNAL_SCORE_EPSILON,
+) -> Tuple[Tuple[float, ...], Mapping[str, float]]:
+    """Normalize already oriented values so larger remains better."""
+
+    canonical_method = normalize_external_score_normalization(method)
+    numeric_values = [
+        _external_score_finite(value, name="normalization value")
+        for value in values
+    ]
+    if not numeric_values:
+        return (), MappingProxyType({})
+    minimum = min(numeric_values)
+    maximum = max(numeric_values)
+    center = fmean(numeric_values)
+    std = _external_score_standard_deviation(numeric_values)
+    med = median(numeric_values)
+    absolute_deviations = [abs(value - med) for value in numeric_values]
+    mad = median(absolute_deviations)
+    statistics = {
+        "count": float(len(numeric_values)),
+        "minimum": minimum,
+        "maximum": maximum,
+        "mean": center,
+        "median": med,
+        "standard_deviation": std,
+        "mad": mad,
+    }
+    if canonical_method == EXTERNAL_SCORE_NORMALIZATION_NONE:
+        normalized = list(numeric_values)
+    elif canonical_method == EXTERNAL_SCORE_NORMALIZATION_MINMAX:
+        span = maximum - minimum
+        if abs(span) <= epsilon:
+            normalized = [neutral_value] * len(numeric_values)
+        else:
+            normalized = [
+                (value - minimum) / span for value in numeric_values
+            ]
+    elif canonical_method == EXTERNAL_SCORE_NORMALIZATION_ZSCORE:
+        if std <= epsilon:
+            normalized = [0.0] * len(numeric_values)
+        else:
+            normalized = [(value - center) / std for value in numeric_values]
+    elif canonical_method == EXTERNAL_SCORE_NORMALIZATION_ROBUST_ZSCORE:
+        scale = 1.4826 * mad
+        if scale <= epsilon:
+            normalized = [0.0] * len(numeric_values)
+        else:
+            normalized = [(value - med) / scale for value in numeric_values]
+    elif canonical_method == EXTERNAL_SCORE_NORMALIZATION_PERCENTILE:
+        normalized = _external_score_percentile_values(numeric_values)
+    elif canonical_method == EXTERNAL_SCORE_NORMALIZATION_EXPECTED_RANGE:
+        lower = _external_score_finite_optional(
+            expected_min,
+            name="expected minimum",
+        )
+        upper = _external_score_finite_optional(
+            expected_max,
+            name="expected maximum",
+        )
+        if lower is None or upper is None or upper <= lower:
+            raise ExternalScoreNormalizationError(
+                "expected_range normalization requires a valid range."
+            )
+        normalized = [
+            (value - lower) / (upper - lower) for value in numeric_values
+        ]
+        statistics["expected_minimum"] = lower
+        statistics["expected_maximum"] = upper
+    else:
+        raise ExternalScoreNormalizationError(
+            f"Unsupported normalization method: {canonical_method!r}."
+        )
+    if clip and canonical_method in {
+        EXTERNAL_SCORE_NORMALIZATION_MINMAX,
+        EXTERNAL_SCORE_NORMALIZATION_PERCENTILE,
+        EXTERNAL_SCORE_NORMALIZATION_EXPECTED_RANGE,
+    }:
+        normalized = [min(max(value, 0.0), 1.0) for value in normalized]
+    return tuple(normalized), MappingProxyType(statistics)
+
+
+def _external_score_fuse_values(
+    values: Sequence[float],
+    weights: Sequence[float],
+    *,
+    method: str,
+    epsilon: float,
+) -> float:
+    if not values:
+        raise ExternalScoreFusionError("No values are available for fusion.")
+    if len(values) != len(weights):
+        raise ExternalScoreFusionError(
+            "Fusion values and weights must have equal length."
+        )
+    canonical_method = normalize_external_score_fusion_method(method)
+    usable = [
+        (float(value), float(weight))
+        for value, weight in zip(values, weights)
+        if weight > 0.0
+    ]
+    if not usable:
+        raise ExternalScoreFusionError(
+            "At least one positive fusion weight is required."
+        )
+    usable_values = [value for value, _ in usable]
+    usable_weights = [weight for _, weight in usable]
+    weight_sum = sum(usable_weights)
+    if canonical_method == EXTERNAL_SCORE_FUSION_WEIGHTED_SUM:
+        return sum(
+            value * weight for value, weight in usable
+        )
+    if canonical_method == EXTERNAL_SCORE_FUSION_WEIGHTED_MEAN:
+        return sum(
+            value * weight for value, weight in usable
+        ) / weight_sum
+    if canonical_method == EXTERNAL_SCORE_FUSION_MINIMUM:
+        return min(usable_values)
+    if canonical_method == EXTERNAL_SCORE_FUSION_MAXIMUM:
+        return max(usable_values)
+    if canonical_method == EXTERNAL_SCORE_FUSION_GEOMETRIC_MEAN:
+        if any(value < 0.0 for value in usable_values):
+            raise ExternalScoreFusionError(
+                "Geometric fusion requires non-negative normalized values."
+            )
+        logarithmic = sum(
+            weight * math.log(max(value, epsilon))
+            for value, weight in usable
+        ) / weight_sum
+        return math.exp(logarithmic)
+    if canonical_method == EXTERNAL_SCORE_FUSION_HARMONIC_MEAN:
+        if any(value < 0.0 for value in usable_values):
+            raise ExternalScoreFusionError(
+                "Harmonic fusion requires non-negative normalized values."
+            )
+        denominator = sum(
+            weight / max(value, epsilon) for value, weight in usable
+        )
+        return weight_sum / denominator
+    raise ExternalScoreFusionError(
+        f"Unsupported fusion method: {canonical_method!r}."
+    )
+
+
+# -----------------------------------------------------------------------------
+# 23.8. Multipose score integration
+# -----------------------------------------------------------------------------
+
+
+def _external_score_group_id(
+    ligand_id: str,
+    model_id: str,
+    mode: str,
+) -> str:
+    canonical = normalize_external_score_group_mode(mode)
+    if canonical == EXTERNAL_SCORE_GROUP_GLOBAL:
+        return "global"
+    if canonical == EXTERNAL_SCORE_GROUP_LIGAND:
+        return ligand_id or "unknown_ligand"
+    if canonical == EXTERNAL_SCORE_GROUP_MODEL:
+        return model_id or "unknown_model"
+    return (
+        f"{ligand_id or 'unknown_ligand'}::"
+        f"{model_id or 'unknown_model'}"
+    )
+
+
+def _external_score_pose_identity(value: Any, index: int) -> Tuple[str, str, str]:
+    pose_id = _external_score_identifier(
+        _external_score_get(
+            value,
+            "pose_id",
+            "id",
+            "name",
+            "model_name",
+            default=f"pose_{index}",
+        ),
+        default=f"pose_{index}",
+    )
+    ligand_id = _external_score_identifier(
+        _external_score_get(
+            value,
+            "ligand_id",
+            "ligand",
+            "ligand_name",
+            default="",
+        )
+    )
+    model_id = _external_score_identifier(
+        _external_score_get(
+            value,
+            "model_id",
+            "receptor_id",
+            "receptor",
+            "target_id",
+            default="",
+        )
+    )
+    metadata = _external_score_get(value, "metadata", default={})
+    if isinstance(metadata, Mapping):
+        if not ligand_id:
+            ligand_id = _external_score_identifier(
+                _external_score_get(
+                    metadata,
+                    "ligand_id",
+                    "ligand",
+                    "ligand_name",
+                    default="",
+                )
+            )
+        if not model_id:
+            model_id = _external_score_identifier(
+                _external_score_get(
+                    metadata,
+                    "model_id",
+                    "receptor_id",
+                    "receptor",
+                    "target_id",
+                    default="",
+                )
+            )
+    return pose_id, ligand_id, model_id
+
+
+def extract_internal_pose_score(value: Any) -> Optional[float]:
+    """Extract the DockAnalyzer pose score without interpreting its units."""
+
+    candidates = (
+        "total_score",
+        "pose_score",
+        "score",
+        "raw_score",
+        "normalized_score",
+    )
+    for name in candidates:
+        candidate = _external_score_get(value, name, default=None)
+        if candidate is None:
+            continue
+        if isinstance(candidate, Mapping):
+            nested = _external_score_get(
+                candidate,
+                "total_score",
+                "pose_score",
+                "score",
+                "value",
+                default=None,
+            )
+            candidate = nested
+        elif not isinstance(candidate, (int, float)):
+            nested = _external_score_get(
+                candidate,
+                "total_score",
+                "pose_score",
+                "score",
+                "value",
+                default=None,
+            )
+            if nested is not None:
+                candidate = nested
+        try:
+            return _external_score_finite_optional(
+                candidate,
+                name="DockAnalyzer pose score",
+            )
+        except ExternalScoreInputError:
+            continue
+    statistics = _external_score_get(value, "statistics", default={})
+    if isinstance(statistics, Mapping):
+        for name in ("total_score", "pose_score", "score"):
+            if name in statistics:
+                try:
+                    return _external_score_finite_optional(
+                        statistics[name],
+                        name="DockAnalyzer pose score",
+                    )
+                except ExternalScoreInputError:
+                    continue
+    return None
+
+
+def _external_score_collect_pose_context(
+    poses: Any,
+) -> Tuple[
+    Tuple[str, ...],
+    Mapping[str, Tuple[str, str]],
+    Mapping[str, Optional[float]],
+    Mapping[str, Any],
+]:
+    values = _external_score_sequence(poses)
+    pose_ids: List[str] = []
+    identities: Dict[str, Tuple[str, str]] = {}
+    internal_scores: Dict[str, Optional[float]] = {}
+    objects: Dict[str, Any] = {}
+    for index, value in enumerate(values, start=1):
+        pose_id, ligand_id, model_id = _external_score_pose_identity(
+            value,
+            index,
+        )
+        if pose_id in objects:
+            suffix = 2
+            candidate = f"{pose_id}_{suffix}"
+            while candidate in objects:
+                suffix += 1
+                candidate = f"{pose_id}_{suffix}"
+            pose_id = candidate
+        pose_ids.append(pose_id)
+        identities[pose_id] = (ligand_id, model_id)
+        internal_scores[pose_id] = extract_internal_pose_score(value)
+        objects[pose_id] = value
+    return (
+        tuple(pose_ids),
+        MappingProxyType(identities),
+        MappingProxyType(internal_scores),
+        MappingProxyType(objects),
+    )
+
+
+def _external_score_enrich_observation_identity(
+    observation: ExternalScoreObservation,
+    identities: Mapping[str, Tuple[str, str]],
+) -> ExternalScoreObservation:
+    ligand_id, model_id = identities.get(observation.pose_id, ("", ""))
+    if observation.ligand_id and observation.model_id:
+        return observation
+    return ExternalScoreObservation(
+        pose_id=observation.pose_id,
+        name=observation.name,
+        value=observation.value,
+        source=observation.source,
+        unit=observation.unit,
+        direction=observation.direction,
+        kind=observation.kind,
+        ligand_id=observation.ligand_id or ligand_id,
+        model_id=observation.model_id or model_id,
+        replicate_id=observation.replicate_id,
+        confidence=observation.confidence,
+        weight=observation.weight,
+        provenance=observation.provenance,
+        metadata=observation.metadata,
+    )
+
+
+def _external_score_definition_for_aggregate(
+    aggregate: AggregatedExternalScore,
+    options: ExternalScoreFusionOptions,
+) -> ExternalScoreDefinition:
+    definition = options.definitions.get(aggregate.name)
+    if definition is not None:
+        return definition
+    if options.strict_definitions:
+        raise ExternalScoreConfigurationError(
+            f"No definition is registered for {aggregate.name!r}."
+        )
+    return ExternalScoreDefinition(
+        name=aggregate.name,
+        source=aggregate.source,
+        kind=aggregate.kind,
+        direction=aggregate.direction,
+        unit=aggregate.unit,
+        weight=aggregate.weight,
+    )
+
+
+def _external_score_normalization_method(
+    definition: ExternalScoreDefinition,
+    options: ExternalScoreFusionOptions,
+) -> str:
+    return definition.normalization or options.normalization
+
+
+def _external_score_missing_policy_for_definition(
+    definition: ExternalScoreDefinition,
+    options: ExternalScoreFusionOptions,
+) -> str:
+    return definition.missing_policy or options.missing_policy
+
+
+def _external_score_primary_affinity(
+    aggregates: Sequence[AggregatedExternalScore],
+) -> Tuple[Optional[float], str, str]:
+    preference = (
+        EXTERNAL_SCORE_NAME_VINA_AFFINITY,
+        EXTERNAL_SCORE_NAME_SMINA_AFFINITY,
+        EXTERNAL_SCORE_NAME_GNINA_AFFINITY,
+        EXTERNAL_SCORE_NAME_AUTODOCK4_ENERGY,
+    )
+    by_name = {item.name: item for item in aggregates}
+    for name in preference:
+        item = by_name.get(name)
+        if item is not None:
+            return item.value, item.name, item.unit
+    affinity_items = [
+        item
+        for item in aggregates
+        if item.kind in {
+            EXTERNAL_SCORE_KIND_AFFINITY,
+            EXTERNAL_SCORE_KIND_ENERGY,
+        }
+    ]
+    if affinity_items:
+        item = affinity_items[0]
+        return item.value, item.name, item.unit
+    return None, "", ""
+
+
+def _external_score_imputed_value(
+    policy: str,
+    available: Sequence[float],
+    options: ExternalScoreFusionOptions,
+) -> Optional[float]:
+    canonical = normalize_external_score_missing_policy(policy)
+    if canonical in {
+        EXTERNAL_SCORE_MISSING_EXCLUDE_POSE,
+        EXTERNAL_SCORE_MISSING_IGNORE_COMPONENT,
+    }:
+        return None
+    if canonical == EXTERNAL_SCORE_MISSING_NEUTRAL:
+        return options.neutral_value
+    if canonical == EXTERNAL_SCORE_MISSING_WORST:
+        return min(available) if available else 0.0
+    if canonical == EXTERNAL_SCORE_MISSING_MEDIAN:
+        return median(available) if available else options.neutral_value
+    raise ExternalScoreConfigurationError(
+        f"Unsupported missing policy: {canonical!r}."
+    )
+
+
+def integrate_external_scores(
+    poses: Any,
+    external_scores: Any,
+    *,
+    options: Optional[ExternalScoreFusionOptions] = None,
+) -> MultiPoseExternalScoreResult:
+    """Normalize and fuse external channels with DockAnalyzer pose scores."""
+
+    resolved_options = options or ExternalScoreFusionOptions()
+    (
+        pose_ids,
+        identities,
+        internal_scores,
+        _pose_objects,
+    ) = _external_score_collect_pose_context(poses)
+    raw_observations = materialize_external_score_observations(
+        external_scores,
+        definitions=resolved_options.definitions,
+        strict=True,
+    )
+    if not pose_ids:
+        pose_ids = tuple(
+            dict.fromkeys(item.pose_id for item in raw_observations)
+        )
+        identities = MappingProxyType(
+            {
+                pose_id: next(
+                    (
+                        item.ligand_id,
+                        item.model_id,
+                    )
+                    for item in raw_observations
+                    if item.pose_id == pose_id
+                )
+                for pose_id in pose_ids
+            }
+        )
+        internal_scores = MappingProxyType(
+            {pose_id: None for pose_id in pose_ids}
+        )
+    observations = tuple(
+        _external_score_enrich_observation_identity(item, identities)
+        for item in raw_observations
+    )
+    unknown_pose_ids = sorted(
+        {item.pose_id for item in observations} - set(pose_ids)
+    )
+    if unknown_pose_ids:
+        pose_ids = tuple(list(pose_ids) + unknown_pose_ids)
+        mutable_identities = dict(identities)
+        mutable_internal = dict(internal_scores)
+        for pose_id in unknown_pose_ids:
+            sample = next(
+                item for item in observations if item.pose_id == pose_id
+            )
+            mutable_identities[pose_id] = (
+                sample.ligand_id,
+                sample.model_id,
+            )
+            mutable_internal[pose_id] = None
+        identities = MappingProxyType(mutable_identities)
+        internal_scores = MappingProxyType(mutable_internal)
+    aggregates = aggregate_external_score_replicates(
+        observations,
+        method=resolved_options.replicate_aggregation,
+        definitions=resolved_options.definitions,
+    )
+    aggregates_by_pose: Dict[str, List[AggregatedExternalScore]] = defaultdict(
+        list
+    )
+    for aggregate in aggregates:
+        aggregates_by_pose[aggregate.pose_id].append(aggregate)
+
+    pose_groups: Dict[str, List[str]] = defaultdict(list)
+    for pose_id in pose_ids:
+        ligand_id, model_id = identities.get(pose_id, ("", ""))
+        group_id = _external_score_group_id(
+            ligand_id,
+            model_id,
+            resolved_options.group_mode,
+        )
+        pose_groups[group_id].append(pose_id)
+
+    group_results: List[ExternalScoreGroupResult] = []
+    all_pose_results: List[PoseExternalScoreResult] = []
+    global_warnings: List[str] = []
+
+    for group_id in sorted(pose_groups):
+        group_pose_ids = tuple(pose_groups[group_id])
+        channel_names = sorted(
+            {
+                item.name
+                for pose_id in group_pose_ids
+                for item in aggregates_by_pose.get(pose_id, ())
+            }
+        )
+        channel_normalized: Dict[str, Dict[str, float]] = defaultdict(dict)
+        channel_statistics: Dict[str, Mapping[str, float]] = {}
+        channel_definitions: Dict[str, ExternalScoreDefinition] = {}
+        group_warnings: List[str] = []
+
+        for channel_name in channel_names:
+            channel_items = [
+                item
+                for pose_id in group_pose_ids
+                for item in aggregates_by_pose.get(pose_id, ())
+                if item.name == channel_name
+            ]
+            if not channel_items:
+                continue
+            definition = _external_score_definition_for_aggregate(
+                channel_items[0],
+                resolved_options,
+            )
+            channel_definitions[channel_name] = definition
+            oriented_values = [item.oriented_value for item in channel_items]
+            expected_min = definition.expected_min
+            expected_max = definition.expected_max
+            if definition.direction == EXTERNAL_SCORE_DIRECTION_LOWER:
+                if expected_min is not None and expected_max is not None:
+                    expected_min, expected_max = -expected_max, -expected_min
+            method = _external_score_normalization_method(
+                definition,
+                resolved_options,
+            )
+            try:
+                normalized, statistics = normalize_external_score_values(
+                    oriented_values,
+                    method=method,
+                    expected_min=expected_min,
+                    expected_max=expected_max,
+                    clip=resolved_options.clip_normalized,
+                    neutral_value=resolved_options.neutral_value,
+                    epsilon=resolved_options.epsilon,
+                )
+            except ExternalScoreNormalizationError as exc:
+                group_warnings.append(
+                    f"{channel_name}: {exc}; minmax was used instead."
+                )
+                normalized, statistics = normalize_external_score_values(
+                    oriented_values,
+                    method=EXTERNAL_SCORE_NORMALIZATION_MINMAX,
+                    clip=resolved_options.clip_normalized,
+                    neutral_value=resolved_options.neutral_value,
+                    epsilon=resolved_options.epsilon,
+                )
+            channel_statistics[channel_name] = statistics
+            for item, normalized_value in zip(channel_items, normalized):
+                channel_normalized[channel_name][item.pose_id] = (
+                    normalized_value
+                )
+
+        normalized_internal: Dict[str, float] = {}
+        internal_available = [
+            (pose_id, score)
+            for pose_id, score in internal_scores.items()
+            if pose_id in group_pose_ids and score is not None
+        ]
+        if internal_available and resolved_options.include_internal_score:
+            internal_pose_ids = [item[0] for item in internal_available]
+            internal_values = [float(item[1]) for item in internal_available]
+            if resolved_options.normalize_internal_score:
+                normalized_values, internal_statistics = (
+                    normalize_external_score_values(
+                        internal_values,
+                        method=resolved_options.normalization,
+                        clip=resolved_options.clip_normalized,
+                        neutral_value=resolved_options.neutral_value,
+                        epsilon=resolved_options.epsilon,
+                    )
+                )
+            else:
+                normalized_values = tuple(internal_values)
+                internal_statistics = MappingProxyType(
+                    {
+                        "count": float(len(internal_values)),
+                        "minimum": min(internal_values),
+                        "maximum": max(internal_values),
+                    }
+                )
+            channel_statistics[
+                EXTERNAL_SCORE_NAME_DOCKANALYZER
+            ] = internal_statistics
+            normalized_internal.update(
+                zip(internal_pose_ids, normalized_values)
+            )
+
+        group_pose_results: List[PoseExternalScoreResult] = []
+        for pose_id in group_pose_ids:
+            ligand_id, model_id = identities.get(pose_id, ("", ""))
+            pose_aggregates = aggregates_by_pose.get(pose_id, [])
+            aggregates_by_name = {
+                item.name: item for item in pose_aggregates
+            }
+            components: List[ExternalScoreComponent] = []
+            used_values: List[float] = []
+            used_weights: List[float] = []
+            warnings: List[str] = []
+            exclude_pose = False
+
+            for channel_name in channel_names:
+                definition = channel_definitions[channel_name]
+                aggregate = aggregates_by_name.get(channel_name)
+                normalized_value = channel_normalized[channel_name].get(
+                    pose_id
+                )
+                if aggregate is not None and normalized_value is not None:
+                    weight = definition.weight
+                    if aggregate.weight != 1.0:
+                        weight = aggregate.weight
+                    confidence = aggregate.confidence
+                    effective_weight = weight
+                    if resolved_options.confidence_weighting:
+                        effective_weight *= confidence
+                    weighted_value = normalized_value * effective_weight
+                    components.append(
+                        ExternalScoreComponent(
+                            pose_id=pose_id,
+                            name=channel_name,
+                            raw_value=aggregate.value,
+                            oriented_value=aggregate.oriented_value,
+                            normalized_value=normalized_value,
+                            weighted_value=weighted_value,
+                            weight=effective_weight,
+                            confidence=confidence,
+                            direction=aggregate.direction,
+                            unit=aggregate.unit,
+                            source=aggregate.source,
+                            status=EXTERNAL_SCORE_COMPONENT_USED,
+                            replicate_count=aggregate.replicate_count,
+                        )
+                    )
+                    used_values.append(normalized_value)
+                    used_weights.append(effective_weight)
+                    continue
+
+                policy = _external_score_missing_policy_for_definition(
+                    definition,
+                    resolved_options,
+                )
+                available = list(channel_normalized[channel_name].values())
+                imputed_value = _external_score_imputed_value(
+                    policy,
+                    available,
+                    resolved_options,
+                )
+                if policy == EXTERNAL_SCORE_MISSING_EXCLUDE_POSE:
+                    exclude_pose = True
+                    components.append(
+                        ExternalScoreComponent(
+                            pose_id=pose_id,
+                            name=channel_name,
+                            raw_value=None,
+                            oriented_value=None,
+                            normalized_value=None,
+                            weighted_value=None,
+                            weight=definition.weight,
+                            confidence=0.0,
+                            direction=definition.direction,
+                            unit=definition.unit,
+                            source=definition.source,
+                            status=EXTERNAL_SCORE_COMPONENT_EXCLUDED,
+                            message="Pose excluded because the score is missing.",
+                        )
+                    )
+                elif imputed_value is None:
+                    status = EXTERNAL_SCORE_COMPONENT_MISSING
+                    if definition.required:
+                        warnings.append(
+                            f"Required channel {channel_name!r} is missing."
+                        )
+                    components.append(
+                        ExternalScoreComponent(
+                            pose_id=pose_id,
+                            name=channel_name,
+                            raw_value=None,
+                            oriented_value=None,
+                            normalized_value=None,
+                            weighted_value=None,
+                            weight=definition.weight,
+                            confidence=0.0,
+                            direction=definition.direction,
+                            unit=definition.unit,
+                            source=definition.source,
+                            status=status,
+                            message="Missing component was ignored.",
+                        )
+                    )
+                else:
+                    effective_weight = definition.weight
+                    weighted_value = imputed_value * effective_weight
+                    components.append(
+                        ExternalScoreComponent(
+                            pose_id=pose_id,
+                            name=channel_name,
+                            raw_value=None,
+                            oriented_value=None,
+                            normalized_value=imputed_value,
+                            weighted_value=weighted_value,
+                            weight=effective_weight,
+                            confidence=1.0,
+                            direction=definition.direction,
+                            unit=definition.unit,
+                            source=definition.source,
+                            status=EXTERNAL_SCORE_COMPONENT_IMPUTED,
+                            imputed=True,
+                            message=f"Imputed using policy {policy}.",
+                        )
+                    )
+                    used_values.append(imputed_value)
+                    used_weights.append(effective_weight)
+
+            external_composite: Optional[float] = None
+            if (
+                resolved_options.include_external_composite
+                and not exclude_pose
+                and len(used_values) >= resolved_options.minimum_components
+            ):
+                external_composite = _external_score_fuse_values(
+                    used_values,
+                    used_weights,
+                    method=resolved_options.fusion_method,
+                    epsilon=resolved_options.epsilon,
+                )
+
+            internal_score = internal_scores.get(pose_id)
+            normalized_internal_score = normalized_internal.get(pose_id)
+            fused_score: Optional[float] = None
+            fusion_values: List[float] = []
+            fusion_weights: List[float] = []
+            if (
+                resolved_options.include_internal_score
+                and normalized_internal_score is not None
+            ):
+                fusion_values.append(normalized_internal_score)
+                fusion_weights.append(resolved_options.internal_weight)
+            if external_composite is not None:
+                fusion_values.append(external_composite)
+                fusion_weights.append(resolved_options.external_weight)
+            if fusion_values and not exclude_pose:
+                fused_score = _external_score_fuse_values(
+                    fusion_values,
+                    fusion_weights,
+                    method=resolved_options.fusion_method,
+                    epsilon=resolved_options.epsilon,
+                )
+
+            used_count = sum(
+                item.status
+                in {
+                    EXTERNAL_SCORE_COMPONENT_USED,
+                    EXTERNAL_SCORE_COMPONENT_IMPUTED,
+                }
+                for item in components
+            )
+            missing_count = sum(
+                item.status == EXTERNAL_SCORE_COMPONENT_MISSING
+                for item in components
+            )
+            excluded_count = sum(
+                item.status == EXTERNAL_SCORE_COMPONENT_EXCLUDED
+                for item in components
+            )
+            if exclude_pose:
+                status = EXTERNAL_SCORE_STATUS_INVALID
+            elif fused_score is not None:
+                status = (
+                    EXTERNAL_SCORE_STATUS_COMPLETE
+                    if missing_count == 0
+                    else EXTERNAL_SCORE_STATUS_PARTIAL
+                )
+            elif components or internal_score is not None:
+                status = EXTERNAL_SCORE_STATUS_PARTIAL
+            else:
+                status = EXTERNAL_SCORE_STATUS_EMPTY
+            affinity, affinity_name, affinity_unit = (
+                _external_score_primary_affinity(pose_aggregates)
+            )
+            result = PoseExternalScoreResult(
+                pose_id=pose_id,
+                ligand_id=ligand_id,
+                model_id=model_id,
+                group_id=group_id,
+                status=status,
+                internal_score=internal_score,
+                normalized_internal_score=normalized_internal_score,
+                external_composite_score=external_composite,
+                fused_score=fused_score,
+                primary_affinity=affinity,
+                primary_affinity_name=affinity_name,
+                primary_affinity_unit=affinity_unit,
+                components=tuple(components),
+                used_component_count=used_count,
+                missing_component_count=missing_count,
+                excluded_component_count=excluded_count,
+                warnings=tuple(warnings),
+            )
+            group_pose_results.append(result)
+            all_pose_results.append(result)
+
+        group_status = (
+            EXTERNAL_SCORE_STATUS_COMPLETE
+            if all(
+                item.status == EXTERNAL_SCORE_STATUS_COMPLETE
+                for item in group_pose_results
+            )
+            else EXTERNAL_SCORE_STATUS_PARTIAL
+            if group_pose_results
+            else EXTERNAL_SCORE_STATUS_EMPTY
+        )
+        group_results.append(
+            ExternalScoreGroupResult(
+                group_id=group_id,
+                pose_ids=group_pose_ids,
+                channel_names=tuple(channel_names),
+                results=tuple(group_pose_results),
+                normalization=resolved_options.normalization,
+                status=group_status,
+                channel_statistics=channel_statistics,
+                warnings=tuple(group_warnings),
+            )
+        )
+        global_warnings.extend(group_warnings)
+
+    all_pose_results.sort(key=lambda item: pose_ids.index(item.pose_id))
+    if not all_pose_results:
+        status = EXTERNAL_SCORE_STATUS_EMPTY
+    elif all(
+        item.status == EXTERNAL_SCORE_STATUS_COMPLETE
+        for item in all_pose_results
+    ):
+        status = EXTERNAL_SCORE_STATUS_COMPLETE
+    elif any(
+        item.status in {
+            EXTERNAL_SCORE_STATUS_COMPLETE,
+            EXTERNAL_SCORE_STATUS_PARTIAL,
+        }
+        for item in all_pose_results
+    ):
+        status = EXTERNAL_SCORE_STATUS_PARTIAL
+    else:
+        status = EXTERNAL_SCORE_STATUS_INVALID
+    return MultiPoseExternalScoreResult(
+        pose_results=tuple(all_pose_results),
+        groups=tuple(group_results),
+        observations=observations,
+        aggregated_scores=aggregates,
+        options=resolved_options,
+        status=status,
+        warnings=tuple(global_warnings),
+        metadata={
+            "pose_count": len(all_pose_results),
+            "observation_count": len(observations),
+            "aggregated_score_count": len(aggregates),
+            "group_count": len(group_results),
+        },
+    )
+
+
+def combine_pose_scores_with_external_scores(
+    poses: Any,
+    external_scores: Any,
+    *,
+    options: Optional[ExternalScoreFusionOptions] = None,
+) -> MultiPoseExternalScoreResult:
+    """Public alias emphasizing score fusion semantics."""
+
+    return integrate_external_scores(
+        poses,
+        external_scores,
+        options=options,
+    )
+
+
+def external_score_metrics_by_pose(
+    result: MultiPoseExternalScoreResult,
+) -> Mapping[str, Mapping[str, float]]:
+    """Return Section 20-compatible metric mappings for every pose."""
+
+    return MappingProxyType(
+        {
+            item.pose_id: item.metrics
+            for item in result.pose_results
+        }
+    )
+
+
+# -----------------------------------------------------------------------------
+# 23.9. Integration with Section 20 ranking
+# -----------------------------------------------------------------------------
+
+
+def enrich_pose_ranking_metrics_with_external_scores(
+    custom_metrics: Optional[Mapping[Any, Mapping[Any, Any]]],
+    result: MultiPoseExternalScoreResult,
+) -> Mapping[str, Mapping[str, float]]:
+    """Merge Section 20 metric-to-pose mappings with Section 23 metrics."""
+
+    merged: Dict[str, Dict[str, float]] = {}
+    if custom_metrics:
+        for raw_metric, raw_values in custom_metrics.items():
+            metric = str(raw_metric)
+            merged[metric] = {
+                str(pose_id): float(value)
+                for pose_id, value in dict(raw_values).items()
+                if value is not None
+            }
+    for pose_id, metrics in external_score_metrics_by_pose(result).items():
+        for metric, value in metrics.items():
+            merged.setdefault(metric, {})[pose_id] = float(value)
+    return MappingProxyType(
+        {
+            metric: MappingProxyType(values)
+            for metric, values in merged.items()
+        }
+    )
+
+
+def default_external_score_ranking_criteria(
+    *,
+    prefer_fused: bool = True,
+) -> Tuple[Any, ...]:
+    """Create Section 20 criteria when its public classes are available."""
+
+    criterion_class = globals().get("RankingCriterion")
+    if criterion_class is None:
+        metric = (
+            EXTERNAL_SCORE_NAME_FUSED
+            if prefer_fused
+            else EXTERNAL_SCORE_NAME_EXTERNAL_COMPOSITE
+        )
+        return (
+            {
+                "metric": metric,
+                "weight": 1.0,
+                "direction": EXTERNAL_SCORE_DIRECTION_HIGHER,
+            },
+        )
+    higher = globals().get(
+        "RANKING_DIRECTION_HIGHER",
+        EXTERNAL_SCORE_DIRECTION_HIGHER,
+    )
+    metric = (
+        EXTERNAL_SCORE_NAME_FUSED
+        if prefer_fused
+        else EXTERNAL_SCORE_NAME_EXTERNAL_COMPOSITE
+    )
+    return (
+        criterion_class(
+            metric=metric,
+            weight=1.0,
+            direction=higher,
+            required=True,
+            label=(
+                "Fused pose score"
+                if prefer_fused
+                else "External composite score"
+            ),
+        ),
+    )
+
+
+def rank_poses_with_external_scores(
+    poses: Any,
+    external_result: MultiPoseExternalScoreResult,
+    *,
+    ranking_options: Optional[Any] = None,
+    criteria: Optional[Sequence[Any]] = None,
+    custom_metrics: Optional[Mapping[Any, Mapping[Any, Any]]] = None,
+    prefer_fused: bool = True,
+    **ranking_arguments: Any,
+) -> Any:
+    """Call Section 20 ranking with Section 23 metrics attached."""
+
+    rank_function = globals().get("rank_multiple_poses")
+    if not callable(rank_function):
+        raise ExternalScoreInputError(
+            "Section 20 rank_multiple_poses() is not available."
+        )
+    metrics = enrich_pose_ranking_metrics_with_external_scores(
+        custom_metrics,
+        external_result,
+    )
+    if ranking_options is not None:
+        return rank_function(
+            poses,
+            options=ranking_options,
+            custom_metrics=metrics,
+            **ranking_arguments,
+        )
+    resolved_criteria = tuple(criteria or default_external_score_ranking_criteria(
+        prefer_fused=prefer_fused
+    ))
+    return rank_function(
+        poses,
+        criteria=resolved_criteria,
+        custom_metrics=metrics,
+        **ranking_arguments,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 23.10. DockModel extraction and attachment
+# -----------------------------------------------------------------------------
+
+_EXTERNAL_SCORE_COMMON_DOCK_MODEL_FIELDS: Final[Tuple[str, ...]] = (
+    EXTERNAL_SCORE_DOCK_MODEL_ATTRIBUTE,
+    "docking_scores",
+    "external_affinities",
+    "affinities",
+    "docking_results",
+)
+_EXTERNAL_SCORE_DIRECT_DOCK_MODEL_FIELDS: Final[Mapping[str, str]] = (
+    MappingProxyType(
+        {
+            "docking_affinity": EXTERNAL_SCORE_NAME_VINA_AFFINITY,
+            "affinity": EXTERNAL_SCORE_NAME_VINA_AFFINITY,
+            "vina_affinity": EXTERNAL_SCORE_NAME_VINA_AFFINITY,
+            "vina_score": EXTERNAL_SCORE_NAME_VINA_AFFINITY,
+            "smina_affinity": EXTERNAL_SCORE_NAME_SMINA_AFFINITY,
+            "gnina_affinity": EXTERNAL_SCORE_NAME_GNINA_AFFINITY,
+            "cnnscore": EXTERNAL_SCORE_NAME_GNINA_CNNSCORE,
+            "cnn_score": EXTERNAL_SCORE_NAME_GNINA_CNNSCORE,
+            "cnnaffinity": EXTERNAL_SCORE_NAME_GNINA_CNNAFFINITY,
+            "cnn_affinity": EXTERNAL_SCORE_NAME_GNINA_CNNAFFINITY,
+            "autodock4_binding_energy": (
+                EXTERNAL_SCORE_NAME_AUTODOCK4_ENERGY
+            ),
+            "glide_score": EXTERNAL_SCORE_NAME_GLIDE_SCORE,
+            "gold_score": EXTERNAL_SCORE_NAME_GOLD_SCORE,
+            "plants_score": EXTERNAL_SCORE_NAME_PLANTS_SCORE,
+            "dock_score": EXTERNAL_SCORE_NAME_DOCK_SCORE,
+            "rdock_score": EXTERNAL_SCORE_NAME_RDOCK_SCORE,
+        }
+    )
+)
+
+
+def extract_external_scores_from_dock_model(
+    dock_model: Any,
+    *,
+    definitions: Optional[Mapping[str, ExternalScoreDefinition]] = None,
+    include_metadata: bool = True,
+) -> Tuple[ExternalScoreObservation, ...]:
+    """Extract external-score candidates from a DockModel-like object."""
+
+    registry = definitions or builtin_external_score_definitions()
+    pose_id, ligand_id, model_id = _external_score_pose_identity(dock_model, 1)
+    observations: List[ExternalScoreObservation] = []
+    seen_payload_ids: Set[int] = set()
+
+    def consume(payload: Any) -> None:
+        if payload is None:
+            return
+        payload_id = id(payload)
+        if payload_id in seen_payload_ids:
+            return
+        seen_payload_ids.add(payload_id)
+        try:
+            extracted = materialize_external_score_observations(
+                payload,
+                definitions=registry,
+                default_pose_id=pose_id,
+                strict=False,
+            )
+        except ExternalScoreError:
+            return
+        for item in extracted:
+            observations.append(
+                ExternalScoreObservation(
+                    pose_id=pose_id,
+                    name=item.name,
+                    value=item.value,
+                    source=item.source,
+                    unit=item.unit,
+                    direction=item.direction,
+                    kind=item.kind,
+                    ligand_id=item.ligand_id or ligand_id,
+                    model_id=item.model_id or model_id,
+                    replicate_id=item.replicate_id,
+                    confidence=item.confidence,
+                    weight=item.weight,
+                    provenance=item.provenance,
+                    metadata=item.metadata,
+                )
+            )
+
+    for field_name in _EXTERNAL_SCORE_COMMON_DOCK_MODEL_FIELDS:
+        consume(_external_score_get(dock_model, field_name, default=None))
+
+    for field_name, score_name in _EXTERNAL_SCORE_DIRECT_DOCK_MODEL_FIELDS.items():
+        raw_value = _external_score_get(dock_model, field_name, default=None)
+        if raw_value is None:
+            continue
+        definition = registry.get(score_name)
+        if definition is None:
+            definition = get_external_score_definition(score_name)
+        try:
+            observations.append(
+                ExternalScoreObservation(
+                    pose_id=pose_id,
+                    name=score_name,
+                    value=raw_value,
+                    source=definition.source,
+                    unit=definition.unit,
+                    direction=definition.direction,
+                    kind=definition.kind,
+                    ligand_id=ligand_id,
+                    model_id=model_id,
+                    provenance=f"DockModel.{field_name}",
+                )
+            )
+        except ExternalScoreError:
+            continue
+
+    if include_metadata:
+        metadata = _external_score_get(dock_model, "metadata", default={})
+        if isinstance(metadata, Mapping):
+            for field_name in _EXTERNAL_SCORE_COMMON_DOCK_MODEL_FIELDS:
+                consume(metadata.get(field_name))
+            direct_payload: Dict[str, Any] = {
+                "pose_id": pose_id,
+                "ligand_id": ligand_id,
+                "model_id": model_id,
+            }
+            for field_name, score_name in (
+                _EXTERNAL_SCORE_DIRECT_DOCK_MODEL_FIELDS.items()
+            ):
+                if field_name in metadata:
+                    direct_payload[score_name] = metadata[field_name]
+            consume(direct_payload)
+
+    unique: Dict[
+        Tuple[str, str, float, str, str],
+        ExternalScoreObservation,
+    ] = {}
+    for item in observations:
+        key = (
+            item.pose_id,
+            item.name,
+            item.value,
+            item.replicate_id,
+            item.provenance,
+        )
+        unique.setdefault(key, item)
+    return tuple(unique.values())
+
+
+def extract_external_scores_from_dock_models(
+    dock_models: Any,
+    *,
+    definitions: Optional[Mapping[str, ExternalScoreDefinition]] = None,
+    include_metadata: bool = True,
+) -> Tuple[ExternalScoreObservation, ...]:
+    """Extract external scores from multiple DockModel-like objects."""
+
+    observations: List[ExternalScoreObservation] = []
+    for dock_model in _external_score_sequence(dock_models):
+        observations.extend(
+            extract_external_scores_from_dock_model(
+                dock_model,
+                definitions=definitions,
+                include_metadata=include_metadata,
+            )
+        )
+    return tuple(observations)
+
+
+def _external_score_update_mapping_attribute(
+    dock_model: Any,
+    attribute: str,
+    key: str,
+    payload: Mapping[str, Any],
+) -> None:
+    current = _external_score_get(dock_model, attribute, default={})
+    updated = dict(current) if isinstance(current, Mapping) else {}
+    updated[key] = dict(payload)
+    _external_score_set(dock_model, attribute, updated)
+
+
+def attach_external_score_result_to_dock_model(
+    dock_model: Any,
+    result: PoseExternalScoreResult,
+    *,
+    update_metadata: bool = True,
+    update_statistics: bool = True,
+    preserve_internal_score: bool = True,
+) -> Any:
+    """Attach one Section 23 result without replacing interaction scoring."""
+
+    _external_score_set(
+        dock_model,
+        EXTERNAL_SCORE_RESULT_DOCK_MODEL_ATTRIBUTE,
+        result,
+    )
+    _external_score_set(
+        dock_model,
+        EXTERNAL_SCORE_AFFINITY_DOCK_MODEL_ATTRIBUTE,
+        result.primary_affinity,
+    )
+    _external_score_set(
+        dock_model,
+        EXTERNAL_SCORE_FUSED_DOCK_MODEL_ATTRIBUTE,
+        result.fused_score,
+    )
+    if not preserve_internal_score and result.fused_score is not None:
+        _external_score_set(dock_model, "score", result.fused_score)
+    if update_metadata:
+        _external_score_update_mapping_attribute(
+            dock_model,
+            "metadata",
+            EXTERNAL_SCORE_METADATA_KEY,
+            {
+                "status": result.status,
+                "primary_affinity": result.primary_affinity,
+                "primary_affinity_name": result.primary_affinity_name,
+                "primary_affinity_unit": result.primary_affinity_unit,
+                "external_composite_score": result.external_composite_score,
+                "fused_score": result.fused_score,
+                "component_count": len(result.components),
+                "section_version": EXTERNAL_SCORE_SECTION_VERSION,
+            },
+        )
+    if update_statistics:
+        _external_score_update_mapping_attribute(
+            dock_model,
+            "statistics",
+            EXTERNAL_SCORE_STATISTICS_KEY,
+            {
+                "used_component_count": result.used_component_count,
+                "missing_component_count": result.missing_component_count,
+                "excluded_component_count": result.excluded_component_count,
+                "external_composite_score": result.external_composite_score,
+                "fused_score": result.fused_score,
+            },
+        )
+    return dock_model
+
+
+def attach_external_scores_to_dock_models(
+    dock_models: Any,
+    result: MultiPoseExternalScoreResult,
+    *,
+    update_metadata: bool = True,
+    update_statistics: bool = True,
+    preserve_internal_score: bool = True,
+    strict: bool = False,
+) -> Tuple[Any, ...]:
+    """Attach pose-specific Section 23 results to matching DockModels."""
+
+    values = _external_score_sequence(dock_models)
+    by_pose = result.by_pose
+    attached: List[Any] = []
+    for index, dock_model in enumerate(values, start=1):
+        pose_id, _, _ = _external_score_pose_identity(dock_model, index)
+        pose_result = by_pose.get(pose_id)
+        if pose_result is None:
+            if strict:
+                raise ExternalScoreInputError(
+                    f"No external-score result exists for pose {pose_id!r}."
+                )
+            attached.append(dock_model)
+            continue
+        attached.append(
+            attach_external_score_result_to_dock_model(
+                dock_model,
+                pose_result,
+                update_metadata=update_metadata,
+                update_statistics=update_statistics,
+                preserve_internal_score=preserve_internal_score,
+            )
+        )
+    return tuple(attached)
+
+
+def analyze_dock_models_external_scores(
+    dock_models: Any,
+    *,
+    external_scores: Any = None,
+    options: Optional[ExternalScoreFusionOptions] = None,
+    attach: bool = True,
+    preserve_internal_score: bool = True,
+) -> MultiPoseExternalScoreResult:
+    """Extract, integrate, and optionally attach external docking scores."""
+
+    values = _external_score_sequence(dock_models)
+    resolved_options = options or ExternalScoreFusionOptions()
+    observations = (
+        materialize_external_score_observations(
+            external_scores,
+            definitions=resolved_options.definitions,
+        )
+        if external_scores is not None
+        else extract_external_scores_from_dock_models(
+            values,
+            definitions=resolved_options.definitions,
+        )
+    )
+    result = integrate_external_scores(
+        values,
+        observations,
+        options=resolved_options,
+    )
+    if attach:
+        attach_external_scores_to_dock_models(
+            values,
+            result,
+            preserve_internal_score=preserve_internal_score,
+        )
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 23.11. Agreement diagnostics
+# -----------------------------------------------------------------------------
+
+
+def _external_score_pearson(
+    left: Sequence[float],
+    right: Sequence[float],
+    *,
+    epsilon: float = DEFAULT_EXTERNAL_SCORE_EPSILON,
+) -> Optional[float]:
+    if len(left) != len(right) or len(left) < 2:
+        return None
+    left_mean = fmean(left)
+    right_mean = fmean(right)
+    numerator = sum(
+        (x - left_mean) * (y - right_mean)
+        for x, y in zip(left, right)
+    )
+    left_ss = sum((x - left_mean) ** 2 for x in left)
+    right_ss = sum((y - right_mean) ** 2 for y in right)
+    denominator = math.sqrt(left_ss * right_ss)
+    if denominator <= epsilon:
+        return None
+    return numerator / denominator
+
+
+def _external_score_spearman(
+    left: Sequence[float],
+    right: Sequence[float],
+) -> Optional[float]:
+    if len(left) != len(right) or len(left) < 2:
+        return None
+    return _external_score_pearson(
+        _external_score_average_ranks(left),
+        _external_score_average_ranks(right),
+    )
+
+
+def analyze_external_score_agreement(
+    result: MultiPoseExternalScoreResult,
+    *,
+    normalized: bool = True,
+) -> ExternalScoreAgreementResult:
+    """Calculate pairwise score and rank agreement across poses."""
+
+    channel_values: Dict[str, Dict[str, float]] = defaultdict(dict)
+    for pose_result in result.pose_results:
+        for component in pose_result.components:
+            value = (
+                component.normalized_value
+                if normalized
+                else component.oriented_value
+            )
+            if value is not None:
+                channel_values[component.name][pose_result.pose_id] = value
+        if pose_result.normalized_internal_score is not None:
+            channel_values[
+                EXTERNAL_SCORE_NAME_DOCKANALYZER
+            ][pose_result.pose_id] = pose_result.normalized_internal_score
+        if pose_result.external_composite_score is not None:
+            channel_values[
+                EXTERNAL_SCORE_NAME_EXTERNAL_COMPOSITE
+            ][pose_result.pose_id] = pose_result.external_composite_score
+        if pose_result.fused_score is not None:
+            channel_values[
+                EXTERNAL_SCORE_NAME_FUSED
+            ][pose_result.pose_id] = pose_result.fused_score
+
+    names = tuple(sorted(channel_values))
+    correlations: List[ExternalScoreCorrelation] = []
+    for left_index, left_name in enumerate(names):
+        for right_name in names[left_index + 1:]:
+            common = tuple(
+                sorted(
+                    set(channel_values[left_name])
+                    & set(channel_values[right_name])
+                )
+            )
+            left_values = [
+                channel_values[left_name][pose_id] for pose_id in common
+            ]
+            right_values = [
+                channel_values[right_name][pose_id] for pose_id in common
+            ]
+            if len(common) >= 2:
+                left_ranks = _external_score_average_ranks(left_values)
+                right_ranks = _external_score_average_ranks(right_values)
+                mean_rank_difference = fmean(
+                    abs(left - right)
+                    for left, right in zip(left_ranks, right_ranks)
+                )
+            else:
+                mean_rank_difference = None
+            correlations.append(
+                ExternalScoreCorrelation(
+                    left_name=left_name,
+                    right_name=right_name,
+                    sample_size=len(common),
+                    pearson_r=_external_score_pearson(
+                        left_values,
+                        right_values,
+                    ),
+                    spearman_rho=_external_score_spearman(
+                        left_values,
+                        right_values,
+                    ),
+                    mean_absolute_rank_difference=mean_rank_difference,
+                    common_pose_ids=common,
+                )
+            )
+    warnings: List[str] = []
+    if len(names) < 2:
+        warnings.append(
+            "At least two populated channels are required for agreement."
+        )
+    return ExternalScoreAgreementResult(
+        correlations=tuple(correlations),
+        channel_names=names,
+        pose_count=len(result.pose_results),
+        warnings=tuple(warnings),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 23.12. Rows, dictionaries, and human-readable summaries
+# -----------------------------------------------------------------------------
+
+
+def external_score_observation_to_dict(
+    observation: ExternalScoreObservation,
+) -> Dict[str, Any]:
+    return {
+        "pose_id": observation.pose_id,
+        "name": observation.name,
+        "value": observation.value,
+        "source": observation.source,
+        "unit": observation.unit,
+        "direction": observation.direction,
+        "kind": observation.kind,
+        "ligand_id": observation.ligand_id,
+        "model_id": observation.model_id,
+        "replicate_id": observation.replicate_id,
+        "confidence": observation.confidence,
+        "weight": observation.weight,
+        "provenance": observation.provenance,
+        "metadata": dict(observation.metadata),
+    }
+
+
+def aggregated_external_score_to_dict(
+    score: AggregatedExternalScore,
+    *,
+    include_observations: bool = False,
+) -> Dict[str, Any]:
+    payload = {
+        "pose_id": score.pose_id,
+        "name": score.name,
+        "value": score.value,
+        "oriented_value": score.oriented_value,
+        "source": score.source,
+        "unit": score.unit,
+        "direction": score.direction,
+        "kind": score.kind,
+        "ligand_id": score.ligand_id,
+        "model_id": score.model_id,
+        "replicate_count": score.replicate_count,
+        "aggregation": score.aggregation,
+        "confidence": score.confidence,
+        "weight": score.weight,
+        "minimum": score.minimum,
+        "maximum": score.maximum,
+        "standard_deviation": score.standard_deviation,
+        "metadata": dict(score.metadata),
+    }
+    if include_observations:
+        payload["observations"] = [
+            external_score_observation_to_dict(item)
+            for item in score.observations
+        ]
+    return payload
+
+
+def external_score_component_to_dict(
+    component: ExternalScoreComponent,
+) -> Dict[str, Any]:
+    return {
+        "pose_id": component.pose_id,
+        "name": component.name,
+        "raw_value": component.raw_value,
+        "oriented_value": component.oriented_value,
+        "normalized_value": component.normalized_value,
+        "weighted_value": component.weighted_value,
+        "weight": component.weight,
+        "confidence": component.confidence,
+        "direction": component.direction,
+        "unit": component.unit,
+        "source": component.source,
+        "status": component.status,
+        "imputed": component.imputed,
+        "replicate_count": component.replicate_count,
+        "message": component.message,
+        "metadata": dict(component.metadata),
+    }
+
+
+def pose_external_score_result_to_dict(
+    result: PoseExternalScoreResult,
+    *,
+    include_components: bool = True,
+) -> Dict[str, Any]:
+    payload = {
+        "pose_id": result.pose_id,
+        "ligand_id": result.ligand_id,
+        "model_id": result.model_id,
+        "group_id": result.group_id,
+        "status": result.status,
+        "internal_score": result.internal_score,
+        "normalized_internal_score": result.normalized_internal_score,
+        "external_composite_score": result.external_composite_score,
+        "fused_score": result.fused_score,
+        "primary_affinity": result.primary_affinity,
+        "primary_affinity_name": result.primary_affinity_name,
+        "primary_affinity_unit": result.primary_affinity_unit,
+        "used_component_count": result.used_component_count,
+        "missing_component_count": result.missing_component_count,
+        "excluded_component_count": result.excluded_component_count,
+        "warnings": list(result.warnings),
+        "metadata": dict(result.metadata),
+    }
+    if include_components:
+        payload["components"] = [
+            external_score_component_to_dict(item)
+            for item in result.components
+        ]
+    return payload
+
+
+def external_score_result_to_rows(
+    result: MultiPoseExternalScoreResult,
+    *,
+    wide: bool = True,
+) -> List[Dict[str, Any]]:
+    """Convert a result into pose-level or component-level table rows."""
+
+    rows: List[Dict[str, Any]] = []
+    for pose_result in result.pose_results:
+        base = {
+            "pose_id": pose_result.pose_id,
+            "ligand_id": pose_result.ligand_id,
+            "model_id": pose_result.model_id,
+            "group_id": pose_result.group_id,
+            "status": pose_result.status,
+            "dockanalyzer_score": pose_result.internal_score,
+            "normalized_dockanalyzer_score": (
+                pose_result.normalized_internal_score
+            ),
+            "external_composite_score": (
+                pose_result.external_composite_score
+            ),
+            "fused_pose_score": pose_result.fused_score,
+            "primary_affinity": pose_result.primary_affinity,
+            "primary_affinity_name": pose_result.primary_affinity_name,
+            "primary_affinity_unit": pose_result.primary_affinity_unit,
+            "used_component_count": pose_result.used_component_count,
+            "missing_component_count": pose_result.missing_component_count,
+            "excluded_component_count": pose_result.excluded_component_count,
+        }
+        if wide:
+            row = dict(base)
+            for component in pose_result.components:
+                row[component.name] = component.raw_value
+                row[f"normalized_{component.name}"] = (
+                    component.normalized_value
+                )
+                row[f"status_{component.name}"] = component.status
+            rows.append(row)
+        elif pose_result.components:
+            for component in pose_result.components:
+                row = dict(base)
+                row.update(external_score_component_to_dict(component))
+                rows.append(row)
+        else:
+            rows.append(base)
+    return rows
+
+
+def summarize_external_scores(
+    result: MultiPoseExternalScoreResult,
+) -> Mapping[str, Any]:
+    statuses = Counter(item.status for item in result.pose_results)
+    channel_counts = Counter(
+        component.name
+        for item in result.pose_results
+        for component in item.components
+        if component.status == EXTERNAL_SCORE_COMPONENT_USED
+    )
+    affinities = [
+        item.primary_affinity
+        for item in result.pose_results
+        if item.primary_affinity is not None
+    ]
+    fused_scores = [
+        item.fused_score
+        for item in result.pose_results
+        if item.fused_score is not None
+    ]
+    best = result.best_pose
+    return MappingProxyType(
+        {
+            "status": result.status,
+            "pose_count": len(result.pose_results),
+            "group_count": len(result.groups),
+            "observation_count": len(result.observations),
+            "aggregated_score_count": len(result.aggregated_scores),
+            "status_counts": dict(statuses),
+            "channel_counts": dict(channel_counts),
+            "affinity_count": len(affinities),
+            "affinity_minimum": min(affinities) if affinities else None,
+            "affinity_maximum": max(affinities) if affinities else None,
+            "affinity_mean": fmean(affinities) if affinities else None,
+            "fused_score_count": len(fused_scores),
+            "fused_score_minimum": min(fused_scores)
+            if fused_scores else None,
+            "fused_score_maximum": max(fused_scores)
+            if fused_scores else None,
+            "fused_score_mean": fmean(fused_scores)
+            if fused_scores else None,
+            "best_pose_id": best.pose_id if best is not None else None,
+            "best_fused_score": best.fused_score if best is not None else None,
+            "warning_count": len(result.warnings),
+        }
+    )
+
+
+def format_external_score_summary(
+    result: MultiPoseExternalScoreResult,
+    *,
+    decimal_places: int = 3,
+) -> str:
+    summary = summarize_external_scores(result)
+    lines = [
+        "DockAnalyzer external-score summary",
+        f"Status: {summary['status']}",
+        f"Poses: {summary['pose_count']}",
+        f"Groups: {summary['group_count']}",
+        f"Raw observations: {summary['observation_count']}",
+        f"Aggregated channels: {summary['aggregated_score_count']}",
+    ]
+    if summary["best_pose_id"] is not None:
+        score = summary["best_fused_score"]
+        score_text = (
+            f"{score:.{decimal_places}f}"
+            if score is not None
+            else "n/a"
+        )
+        lines.append(
+            f"Best fused pose: {summary['best_pose_id']} ({score_text})"
+        )
+    if summary["affinity_mean"] is not None:
+        lines.append(
+            "Mean primary affinity: "
+            f"{summary['affinity_mean']:.{decimal_places}f}"
+        )
+    channel_counts = summary["channel_counts"]
+    if channel_counts:
+        channel_text = ", ".join(
+            f"{name}={count}"
+            for name, count in sorted(channel_counts.items())
+        )
+        lines.append("Channels: " + channel_text)
+    if result.warnings:
+        lines.append(f"Warnings: {len(result.warnings)}")
+    return "\n".join(lines)
+
+
+# -----------------------------------------------------------------------------
+# 23.13. Validation and deterministic self-check
+# -----------------------------------------------------------------------------
+
+
+def validate_external_score_definition(
+    definition: ExternalScoreDefinition,
+) -> None:
+    if not isinstance(definition, ExternalScoreDefinition):
+        raise ExternalScoreValidationError(
+            "Expected ExternalScoreDefinition."
+        )
+    if definition.expected_min is not None:
+        if definition.expected_max is None:
+            raise ExternalScoreValidationError(
+                "Expected-range minimum requires a maximum."
+            )
+
+
+def validate_external_score_observation(
+    observation: ExternalScoreObservation,
+) -> None:
+    if not isinstance(observation, ExternalScoreObservation):
+        raise ExternalScoreValidationError(
+            "Expected ExternalScoreObservation."
+        )
+    if not observation.pose_id or not observation.name:
+        raise ExternalScoreValidationError(
+            "Observation pose_id and name cannot be empty."
+        )
+
+
+def validate_aggregated_external_score(
+    score: AggregatedExternalScore,
+    *,
+    epsilon: float = DEFAULT_EXTERNAL_SCORE_EPSILON,
+) -> None:
+    if not isinstance(score, AggregatedExternalScore):
+        raise ExternalScoreValidationError(
+            "Expected AggregatedExternalScore."
+        )
+    expected_oriented = orient_external_score_value(
+        score.value,
+        score.direction,
+    )
+    if not _external_score_close(
+        expected_oriented,
+        score.oriented_value,
+        epsilon,
+    ):
+        raise ExternalScoreValidationError(
+            f"Oriented value is inconsistent for {score.name!r}."
+        )
+    if score.minimum is not None and score.maximum is not None:
+        if score.minimum > score.maximum:
+            raise ExternalScoreValidationError(
+                "Aggregated minimum cannot exceed maximum."
+            )
+
+
+def validate_pose_external_score_result(
+    result: PoseExternalScoreResult,
+) -> None:
+    if not isinstance(result, PoseExternalScoreResult):
+        raise ExternalScoreValidationError(
+            "Expected PoseExternalScoreResult."
+        )
+    if len({item.name for item in result.components}) != len(
+        result.components
+    ):
+        raise ExternalScoreValidationError(
+            f"Pose {result.pose_id!r} has duplicate components."
+        )
+    used = sum(
+        item.status
+        in {
+            EXTERNAL_SCORE_COMPONENT_USED,
+            EXTERNAL_SCORE_COMPONENT_IMPUTED,
+        }
+        for item in result.components
+    )
+    missing = sum(
+        item.status == EXTERNAL_SCORE_COMPONENT_MISSING
+        for item in result.components
+    )
+    excluded = sum(
+        item.status == EXTERNAL_SCORE_COMPONENT_EXCLUDED
+        for item in result.components
+    )
+    if used != result.used_component_count:
+        raise ExternalScoreValidationError(
+            f"Used-component count mismatch for {result.pose_id!r}."
+        )
+    if missing != result.missing_component_count:
+        raise ExternalScoreValidationError(
+            f"Missing-component count mismatch for {result.pose_id!r}."
+        )
+    if excluded != result.excluded_component_count:
+        raise ExternalScoreValidationError(
+            f"Excluded-component count mismatch for {result.pose_id!r}."
+        )
+
+
+def validate_multi_pose_external_score_result(
+    result: MultiPoseExternalScoreResult,
+) -> None:
+    if not isinstance(result, MultiPoseExternalScoreResult):
+        raise ExternalScoreValidationError(
+            "Expected MultiPoseExternalScoreResult."
+        )
+    pose_ids = [item.pose_id for item in result.pose_results]
+    if len(set(pose_ids)) != len(pose_ids):
+        raise ExternalScoreValidationError(
+            "Multipose external-score result has duplicate pose IDs."
+        )
+    grouped_pose_ids: List[str] = []
+    for group in result.groups:
+        grouped_pose_ids.extend(group.pose_ids)
+        result_ids = tuple(item.pose_id for item in group.results)
+        if result_ids != group.pose_ids:
+            raise ExternalScoreValidationError(
+                f"Group {group.group_id!r} has inconsistent result order."
+            )
+    if sorted(grouped_pose_ids) != sorted(pose_ids):
+        raise ExternalScoreValidationError(
+            "Group membership does not cover every pose exactly once."
+        )
+    for observation in result.observations:
+        validate_external_score_observation(observation)
+    for aggregate in result.aggregated_scores:
+        validate_aggregated_external_score(aggregate)
+    for pose_result in result.pose_results:
+        validate_pose_external_score_result(pose_result)
+
+
+def run_section_23_self_check() -> Mapping[str, bool]:
+    """Execute a deterministic Section 23 smoke and invariant test."""
+
+    poses = [
+        {
+            "pose_id": "pose_1",
+            "ligand_id": "ligand_A",
+            "model_id": "target_1",
+            "score": 10.0,
+        },
+        {
+            "pose_id": "pose_2",
+            "ligand_id": "ligand_A",
+            "model_id": "target_1",
+            "score": 7.0,
+        },
+        {
+            "pose_id": "pose_3",
+            "ligand_id": "ligand_A",
+            "model_id": "target_1",
+            "score": 3.0,
+        },
+    ]
+    observations = [
+        {
+            "pose_id": "pose_1",
+            "name": "vina_affinity",
+            "value": -8.0,
+        },
+        {
+            "pose_id": "pose_1",
+            "name": "vina_affinity",
+            "value": -7.8,
+            "replicate_id": "replicate_2",
+        },
+        {
+            "pose_id": "pose_2",
+            "name": "vina_affinity",
+            "value": -7.0,
+        },
+        {
+            "pose_id": "pose_3",
+            "name": "vina_affinity",
+            "value": -6.0,
+        },
+        {
+            "pose_id": "pose_1",
+            "name": "gnina_cnnscore",
+            "value": 0.90,
+        },
+        {
+            "pose_id": "pose_2",
+            "name": "gnina_cnnscore",
+            "value": 0.60,
+        },
+        {
+            "pose_id": "pose_3",
+            "name": "gnina_cnnscore",
+            "value": 0.20,
+        },
+    ]
+    options = ExternalScoreFusionOptions(
+        normalization=EXTERNAL_SCORE_NORMALIZATION_MINMAX,
+        fusion_method=EXTERNAL_SCORE_FUSION_WEIGHTED_MEAN,
+        missing_policy=EXTERNAL_SCORE_MISSING_IGNORE_COMPONENT,
+    )
+    result = integrate_external_scores(
+        poses,
+        observations,
+        options=options,
+    )
+    validate_multi_pose_external_score_result(result)
+    by_pose = result.by_pose
+    parsed = parse_vina_pdbqt_scores(
+        "REMARK VINA RESULT: -8.2 0.0 0.0\n"
+        "REMARK VINA RESULT: -7.1 1.0 2.0\n"
+    )
+    sdf = (
+        "molecule\n  test\n\n"
+        "> <CNNscore>\n0.82\n\n"
+        "> <CNNaffinity>\n7.1\n\n$$$$\n"
+    )
+    parsed_sdf = parse_gnina_sdf_scores(sdf)
+    rows = external_score_result_to_rows(result)
+    agreement = analyze_external_score_agreement(result)
+    checks = {
+        "pose_count": len(result.pose_results) == 3,
+        "replicate_aggregation": any(
+            item.pose_id == "pose_1"
+            and item.name == EXTERNAL_SCORE_NAME_VINA_AFFINITY
+            and item.replicate_count == 2
+            for item in result.aggregated_scores
+        ),
+        "lower_is_better_oriented": (
+            by_pose["pose_1"].components[0].normalized_value
+            is not None
+        ),
+        "best_pose": (
+            result.best_pose is not None
+            and result.best_pose.pose_id == "pose_1"
+        ),
+        "raw_affinity_preserved": math.isclose(
+            by_pose["pose_1"].primary_affinity or 0.0,
+            -7.9,
+        ),
+        "fused_score_available": all(
+            item.fused_score is not None for item in result.pose_results
+        ),
+        "vina_parser": len(parsed) == 6,
+        "sdf_parser": len(parsed_sdf) == 2,
+        "rows_created": len(rows) == 3,
+        "agreement_created": len(agreement.channel_names) >= 2,
+        "energy_conversion": math.isclose(
+            convert_external_energy_unit(
+                1.0,
+                EXTERNAL_SCORE_UNIT_KCAL_MOL,
+                EXTERNAL_SCORE_UNIT_KJ_MOL,
+            ),
+            4.184,
+        ),
+    }
+    if not all(checks.values()):
+        failures = ", ".join(
+            name for name, successful in checks.items() if not successful
+        )
+        raise ExternalScoreValidationError(
+            "Section 23 self-check failed: " + failures
+        )
+    return MappingProxyType(checks)
+
+
+# -----------------------------------------------------------------------------
+# 23.14. Public interface closure
+# -----------------------------------------------------------------------------
+
+_SECTION_23_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    # Statuses, kinds, directions, units, and methods
+    "EXTERNAL_SCORE_STATUS_COMPLETE",
+    "EXTERNAL_SCORE_STATUS_PARTIAL",
+    "EXTERNAL_SCORE_STATUS_EMPTY",
+    "EXTERNAL_SCORE_STATUS_INVALID",
+    "EXTERNAL_SCORE_STATUS_FAILED",
+    "EXTERNAL_SCORE_STATUSES",
+    "EXTERNAL_SCORE_COMPONENT_USED",
+    "EXTERNAL_SCORE_COMPONENT_MISSING",
+    "EXTERNAL_SCORE_COMPONENT_EXCLUDED",
+    "EXTERNAL_SCORE_COMPONENT_IMPUTED",
+    "EXTERNAL_SCORE_COMPONENT_INVALID",
+    "EXTERNAL_SCORE_COMPONENT_STATUSES",
+    "EXTERNAL_SCORE_KIND_AFFINITY",
+    "EXTERNAL_SCORE_KIND_ENERGY",
+    "EXTERNAL_SCORE_KIND_PROBABILITY",
+    "EXTERNAL_SCORE_KIND_CONFIDENCE",
+    "EXTERNAL_SCORE_KIND_PK",
+    "EXTERNAL_SCORE_KIND_RANK",
+    "EXTERNAL_SCORE_KIND_DISTANCE",
+    "EXTERNAL_SCORE_KIND_CUSTOM",
+    "EXTERNAL_SCORE_KINDS",
+    "EXTERNAL_SCORE_DIRECTION_HIGHER",
+    "EXTERNAL_SCORE_DIRECTION_LOWER",
+    "EXTERNAL_SCORE_DIRECTIONS",
+    "EXTERNAL_SCORE_UNIT_KCAL_MOL",
+    "EXTERNAL_SCORE_UNIT_KJ_MOL",
+    "EXTERNAL_SCORE_UNIT_PK",
+    "EXTERNAL_SCORE_UNIT_PROBABILITY",
+    "EXTERNAL_SCORE_UNIT_ANGSTROM",
+    "EXTERNAL_SCORE_UNIT_RANK",
+    "EXTERNAL_SCORE_UNIT_DIMENSIONLESS",
+    "EXTERNAL_SCORE_UNIT_ARBITRARY",
+    "EXTERNAL_SCORE_UNIT_UNKNOWN",
+    "EXTERNAL_SCORE_UNITS",
+    "EXTERNAL_SCORE_NORMALIZATION_NONE",
+    "EXTERNAL_SCORE_NORMALIZATION_MINMAX",
+    "EXTERNAL_SCORE_NORMALIZATION_ZSCORE",
+    "EXTERNAL_SCORE_NORMALIZATION_ROBUST_ZSCORE",
+    "EXTERNAL_SCORE_NORMALIZATION_PERCENTILE",
+    "EXTERNAL_SCORE_NORMALIZATION_EXPECTED_RANGE",
+    "EXTERNAL_SCORE_NORMALIZATIONS",
+    "EXTERNAL_SCORE_MISSING_EXCLUDE_POSE",
+    "EXTERNAL_SCORE_MISSING_IGNORE_COMPONENT",
+    "EXTERNAL_SCORE_MISSING_NEUTRAL",
+    "EXTERNAL_SCORE_MISSING_WORST",
+    "EXTERNAL_SCORE_MISSING_MEDIAN",
+    "EXTERNAL_SCORE_MISSING_POLICIES",
+    "EXTERNAL_SCORE_REPLICATE_MEAN",
+    "EXTERNAL_SCORE_REPLICATE_MEDIAN",
+    "EXTERNAL_SCORE_REPLICATE_BEST",
+    "EXTERNAL_SCORE_REPLICATE_WORST",
+    "EXTERNAL_SCORE_REPLICATE_MINIMUM",
+    "EXTERNAL_SCORE_REPLICATE_MAXIMUM",
+    "EXTERNAL_SCORE_REPLICATE_FIRST",
+    "EXTERNAL_SCORE_REPLICATE_LAST",
+    "EXTERNAL_SCORE_REPLICATE_AGGREGATIONS",
+    "EXTERNAL_SCORE_FUSION_WEIGHTED_MEAN",
+    "EXTERNAL_SCORE_FUSION_WEIGHTED_SUM",
+    "EXTERNAL_SCORE_FUSION_GEOMETRIC_MEAN",
+    "EXTERNAL_SCORE_FUSION_HARMONIC_MEAN",
+    "EXTERNAL_SCORE_FUSION_MINIMUM",
+    "EXTERNAL_SCORE_FUSION_MAXIMUM",
+    "EXTERNAL_SCORE_FUSION_METHODS",
+    "EXTERNAL_SCORE_GROUP_GLOBAL",
+    "EXTERNAL_SCORE_GROUP_LIGAND",
+    "EXTERNAL_SCORE_GROUP_MODEL",
+    "EXTERNAL_SCORE_GROUP_LIGAND_MODEL",
+    "EXTERNAL_SCORE_GROUP_MODES",
+    # Sources and canonical names
+    "EXTERNAL_SCORE_SOURCE_VINA",
+    "EXTERNAL_SCORE_SOURCE_SMINA",
+    "EXTERNAL_SCORE_SOURCE_GNINA",
+    "EXTERNAL_SCORE_SOURCE_AUTODOCK4",
+    "EXTERNAL_SCORE_SOURCE_GLIDE",
+    "EXTERNAL_SCORE_SOURCE_GOLD",
+    "EXTERNAL_SCORE_SOURCE_PLANTS",
+    "EXTERNAL_SCORE_SOURCE_DOCK",
+    "EXTERNAL_SCORE_SOURCE_RDOCK",
+    "EXTERNAL_SCORE_SOURCE_CUSTOM",
+    "EXTERNAL_SCORE_SOURCES",
+    "EXTERNAL_SCORE_NAME_DOCKANALYZER",
+    "EXTERNAL_SCORE_NAME_VINA_AFFINITY",
+    "EXTERNAL_SCORE_NAME_SMINA_AFFINITY",
+    "EXTERNAL_SCORE_NAME_GNINA_AFFINITY",
+    "EXTERNAL_SCORE_NAME_GNINA_CNNSCORE",
+    "EXTERNAL_SCORE_NAME_GNINA_CNNAFFINITY",
+    "EXTERNAL_SCORE_NAME_AUTODOCK4_ENERGY",
+    "EXTERNAL_SCORE_NAME_GLIDE_SCORE",
+    "EXTERNAL_SCORE_NAME_GOLD_SCORE",
+    "EXTERNAL_SCORE_NAME_PLANTS_SCORE",
+    "EXTERNAL_SCORE_NAME_DOCK_SCORE",
+    "EXTERNAL_SCORE_NAME_RDOCK_SCORE",
+    "EXTERNAL_SCORE_NAME_POSE_RMSD",
+    "EXTERNAL_SCORE_NAME_DOCKING_RANK",
+    "EXTERNAL_SCORE_NAME_EXTERNAL_COMPOSITE",
+    "EXTERNAL_SCORE_NAME_FUSED",
+    # Versions and storage names
+    "EXTERNAL_SCORE_SCHEMA",
+    "EXTERNAL_SCORE_SCHEMA_VERSION",
+    "EXTERNAL_SCORE_SECTION_VERSION",
+    "EXTERNAL_SCORE_DOCK_MODEL_ATTRIBUTE",
+    "EXTERNAL_SCORE_RESULT_DOCK_MODEL_ATTRIBUTE",
+    "EXTERNAL_SCORE_AFFINITY_DOCK_MODEL_ATTRIBUTE",
+    "EXTERNAL_SCORE_FUSED_DOCK_MODEL_ATTRIBUTE",
+    "EXTERNAL_SCORE_METADATA_KEY",
+    "EXTERNAL_SCORE_STATISTICS_KEY",
+    # Exceptions and dataclasses
+    "ExternalScoreError",
+    "ExternalScoreInputError",
+    "ExternalScoreConfigurationError",
+    "ExternalScoreNormalizationError",
+    "ExternalScoreFusionError",
+    "ExternalScoreValidationError",
+    "ExternalScoreDefinition",
+    "ExternalScoreObservation",
+    "AggregatedExternalScore",
+    "ExternalScoreFusionOptions",
+    "ExternalScoreComponent",
+    "PoseExternalScoreResult",
+    "ExternalScoreGroupResult",
+    "MultiPoseExternalScoreResult",
+    "ExternalScoreCorrelation",
+    "ExternalScoreAgreementResult",
+    # Canonicalization and definitions
+    "normalize_external_score_kind",
+    "normalize_external_score_direction",
+    "normalize_external_score_unit",
+    "normalize_external_score_normalization",
+    "normalize_external_score_missing_policy",
+    "normalize_external_score_replicate_aggregation",
+    "normalize_external_score_fusion_method",
+    "normalize_external_score_group_mode",
+    "normalize_external_score_source",
+    "normalize_external_score_name",
+    "orient_external_score_value",
+    "convert_external_energy_unit",
+    "builtin_external_score_definitions",
+    "get_external_score_definition",
+    "merge_external_score_definitions",
+    # Adaptation and parsers
+    "external_score_observation_from_mapping",
+    "external_score_observation_from_object",
+    "materialize_external_score_observations",
+    "parse_vina_pdbqt_scores",
+    "parse_vina_table_scores",
+    "parse_autodock4_scores",
+    "parse_sdf_numeric_properties",
+    "parse_gnina_sdf_scores",
+    # Aggregation, normalization, and fusion
+    "aggregate_external_score_replicates",
+    "normalize_external_score_values",
+    "extract_internal_pose_score",
+    "integrate_external_scores",
+    "combine_pose_scores_with_external_scores",
+    "external_score_metrics_by_pose",
+    # Ranking and DockModel integration
+    "enrich_pose_ranking_metrics_with_external_scores",
+    "default_external_score_ranking_criteria",
+    "rank_poses_with_external_scores",
+    "extract_external_scores_from_dock_model",
+    "extract_external_scores_from_dock_models",
+    "attach_external_score_result_to_dock_model",
+    "attach_external_scores_to_dock_models",
+    "analyze_dock_models_external_scores",
+    # Diagnostics and summaries
+    "analyze_external_score_agreement",
+    "external_score_observation_to_dict",
+    "aggregated_external_score_to_dict",
+    "external_score_component_to_dict",
+    "pose_external_score_result_to_dict",
+    "external_score_result_to_rows",
+    "summarize_external_scores",
+    "format_external_score_summary",
+    # Validation and self-check
+    "validate_external_score_definition",
+    "validate_external_score_observation",
+    "validate_aggregated_external_score",
+    "validate_pose_external_score_result",
+    "validate_multi_pose_external_score_result",
+    "run_section_23_self_check",
+)
+
+if "__all__" not in globals():
+    __all__: List[str] = []
+
+for public_name in _SECTION_23_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+def section_23_public_names() -> Tuple[str, ...]:
+    """Return the complete immutable Section 23 public interface."""
+
+    return _SECTION_23_PUBLIC_NAMES
+
+
+def validate_section_23_public_interface() -> None:
+    """Validate that every declared Section 23 public name exists and exports."""
+
+    missing_names = tuple(
+        name for name in _SECTION_23_PUBLIC_NAMES if name not in globals()
+    )
+    if missing_names:
+        raise ExternalScoreValidationError(
+            "Missing Section 23 public names: " + ", ".join(missing_names)
+        )
+    missing_exports = tuple(
+        name for name in _SECTION_23_PUBLIC_NAMES if name not in __all__
+    )
+    if missing_exports:
+        raise ExternalScoreValidationError(
+            "Section 23 names missing from __all__: "
+            + ", ".join(missing_exports)
+        )
+
+
+if "section_23_public_names" not in __all__:
+    __all__.append("section_23_public_names")
+if "validate_section_23_public_interface" not in __all__:
+    __all__.append("validate_section_23_public_interface")
+
+validate_section_23_public_interface()
+
+# =============================================================================
+# End of Section 23
+# =============================================================================
+
+
+
+# =============================================================================
+# DockAnalyzer — Interaction scoring
+# Section 24 — Explainability
+# =============================================================================
+
+"""
+Section 24 provides traceable explanations for DockAnalyzer scoring decisions.
+
+The implementation explains interaction, residue, pose, multipose ranking,
+consensus/persistence, external-score fusion, and DockModel integration results.
+Each explanation records the factors that affected a result, the evidence used,
+the estimated contribution of each factor, optional leave-one-factor-out
+counterfactuals, processing trace steps, confidence, and limitations.
+
+This section is intentionally read-only. It does not change scores, rankings,
+consensus results, external values, or DockModel objects. General serialization
+and report assembly remain the responsibilities of Sections 25 and 26.
+"""
+
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from statistics import fmean
+from types import MappingProxyType
+from typing import (
+    Any,
+    Dict,
+    Final,
+    FrozenSet,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
+import math
+
+
+# -----------------------------------------------------------------------------
+# 24.1. Constants, canonical names, and defaults
+# -----------------------------------------------------------------------------
+
+SCORING_EXPLANATION_STATUS_COMPLETE: Final[str] = "complete"
+SCORING_EXPLANATION_STATUS_PARTIAL: Final[str] = "partial"
+SCORING_EXPLANATION_STATUS_EMPTY: Final[str] = "empty"
+SCORING_EXPLANATION_STATUS_INVALID: Final[str] = "invalid"
+SCORING_EXPLANATION_STATUS_FAILED: Final[str] = "failed"
+SCORING_EXPLANATION_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_EXPLANATION_STATUS_COMPLETE,
+        SCORING_EXPLANATION_STATUS_PARTIAL,
+        SCORING_EXPLANATION_STATUS_EMPTY,
+        SCORING_EXPLANATION_STATUS_INVALID,
+        SCORING_EXPLANATION_STATUS_FAILED,
+    }
+)
+
+SCORING_EXPLANATION_SCOPE_INTERACTION: Final[str] = "interaction"
+SCORING_EXPLANATION_SCOPE_RESIDUE: Final[str] = "residue"
+SCORING_EXPLANATION_SCOPE_POSE: Final[str] = "pose"
+SCORING_EXPLANATION_SCOPE_RANKING: Final[str] = "ranking"
+SCORING_EXPLANATION_SCOPE_CONSENSUS: Final[str] = "consensus"
+SCORING_EXPLANATION_SCOPE_EXTERNAL: Final[str] = "external_score"
+SCORING_EXPLANATION_SCOPE_DOCK_MODEL: Final[str] = "dock_model"
+SCORING_EXPLANATION_SCOPE_INTEGRATED: Final[str] = "integrated"
+SCORING_EXPLANATION_SCOPES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_EXPLANATION_SCOPE_INTERACTION,
+        SCORING_EXPLANATION_SCOPE_RESIDUE,
+        SCORING_EXPLANATION_SCOPE_POSE,
+        SCORING_EXPLANATION_SCOPE_RANKING,
+        SCORING_EXPLANATION_SCOPE_CONSENSUS,
+        SCORING_EXPLANATION_SCOPE_EXTERNAL,
+        SCORING_EXPLANATION_SCOPE_DOCK_MODEL,
+        SCORING_EXPLANATION_SCOPE_INTEGRATED,
+    }
+)
+
+SCORING_EXPLANATION_LEVEL_SUMMARY: Final[str] = "summary"
+SCORING_EXPLANATION_LEVEL_STANDARD: Final[str] = "standard"
+SCORING_EXPLANATION_LEVEL_DETAILED: Final[str] = "detailed"
+SCORING_EXPLANATION_LEVEL_DEBUG: Final[str] = "debug"
+SCORING_EXPLANATION_LEVELS: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_EXPLANATION_LEVEL_SUMMARY,
+        SCORING_EXPLANATION_LEVEL_STANDARD,
+        SCORING_EXPLANATION_LEVEL_DETAILED,
+        SCORING_EXPLANATION_LEVEL_DEBUG,
+    }
+)
+
+SCORING_EXPLANATION_IMPACT_POSITIVE: Final[str] = "positive"
+SCORING_EXPLANATION_IMPACT_NEGATIVE: Final[str] = "negative"
+SCORING_EXPLANATION_IMPACT_NEUTRAL: Final[str] = "neutral"
+SCORING_EXPLANATION_IMPACT_UNKNOWN: Final[str] = "unknown"
+SCORING_EXPLANATION_IMPACTS: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_EXPLANATION_IMPACT_POSITIVE,
+        SCORING_EXPLANATION_IMPACT_NEGATIVE,
+        SCORING_EXPLANATION_IMPACT_NEUTRAL,
+        SCORING_EXPLANATION_IMPACT_UNKNOWN,
+    }
+)
+
+SCORING_EXPLANATION_CONFIDENCE_HIGH: Final[str] = "high"
+SCORING_EXPLANATION_CONFIDENCE_MODERATE: Final[str] = "moderate"
+SCORING_EXPLANATION_CONFIDENCE_LOW: Final[str] = "low"
+SCORING_EXPLANATION_CONFIDENCE_UNKNOWN: Final[str] = "unknown"
+SCORING_EXPLANATION_CONFIDENCES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_EXPLANATION_CONFIDENCE_HIGH,
+        SCORING_EXPLANATION_CONFIDENCE_MODERATE,
+        SCORING_EXPLANATION_CONFIDENCE_LOW,
+        SCORING_EXPLANATION_CONFIDENCE_UNKNOWN,
+    }
+)
+
+SCORING_EXPLANATION_FACTOR_BASE_WEIGHT: Final[str] = "base_weight"
+SCORING_EXPLANATION_FACTOR_STRENGTH: Final[str] = "strength"
+SCORING_EXPLANATION_FACTOR_CLASSIFICATION: Final[str] = "classification"
+SCORING_EXPLANATION_FACTOR_GEOMETRY: Final[str] = "geometry"
+SCORING_EXPLANATION_FACTOR_PENALTY: Final[str] = "penalty"
+SCORING_EXPLANATION_FACTOR_BONUS: Final[str] = "bonus"
+SCORING_EXPLANATION_FACTOR_CORRECTION: Final[str] = "correction"
+SCORING_EXPLANATION_FACTOR_INTERACTION: Final[str] = "interaction"
+SCORING_EXPLANATION_FACTOR_RESIDUE: Final[str] = "residue"
+SCORING_EXPLANATION_FACTOR_DIVERSITY: Final[str] = "diversity"
+SCORING_EXPLANATION_FACTOR_NORMALIZATION: Final[str] = "normalization"
+SCORING_EXPLANATION_FACTOR_RANKING: Final[str] = "ranking_criterion"
+SCORING_EXPLANATION_FACTOR_CONSENSUS: Final[str] = "consensus"
+SCORING_EXPLANATION_FACTOR_PERSISTENCE: Final[str] = "persistence"
+SCORING_EXPLANATION_FACTOR_EXTERNAL: Final[str] = "external_score"
+SCORING_EXPLANATION_FACTOR_INTERNAL: Final[str] = "internal_score"
+SCORING_EXPLANATION_FACTOR_FUSION: Final[str] = "fusion"
+SCORING_EXPLANATION_FACTOR_ATTACHMENT: Final[str] = "attachment"
+SCORING_EXPLANATION_FACTOR_RESIDUAL: Final[str] = "residual"
+SCORING_EXPLANATION_FACTOR_LIMITATION: Final[str] = "limitation"
+SCORING_EXPLANATION_FACTOR_CATEGORIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_EXPLANATION_FACTOR_BASE_WEIGHT,
+        SCORING_EXPLANATION_FACTOR_STRENGTH,
+        SCORING_EXPLANATION_FACTOR_CLASSIFICATION,
+        SCORING_EXPLANATION_FACTOR_GEOMETRY,
+        SCORING_EXPLANATION_FACTOR_PENALTY,
+        SCORING_EXPLANATION_FACTOR_BONUS,
+        SCORING_EXPLANATION_FACTOR_CORRECTION,
+        SCORING_EXPLANATION_FACTOR_INTERACTION,
+        SCORING_EXPLANATION_FACTOR_RESIDUE,
+        SCORING_EXPLANATION_FACTOR_DIVERSITY,
+        SCORING_EXPLANATION_FACTOR_NORMALIZATION,
+        SCORING_EXPLANATION_FACTOR_RANKING,
+        SCORING_EXPLANATION_FACTOR_CONSENSUS,
+        SCORING_EXPLANATION_FACTOR_PERSISTENCE,
+        SCORING_EXPLANATION_FACTOR_EXTERNAL,
+        SCORING_EXPLANATION_FACTOR_INTERNAL,
+        SCORING_EXPLANATION_FACTOR_FUSION,
+        SCORING_EXPLANATION_FACTOR_ATTACHMENT,
+        SCORING_EXPLANATION_FACTOR_RESIDUAL,
+        SCORING_EXPLANATION_FACTOR_LIMITATION,
+    }
+)
+
+SCORING_EXPLANATION_STAGE_INPUT: Final[str] = "input"
+SCORING_EXPLANATION_STAGE_RECOGNITION: Final[str] = "recognition"
+SCORING_EXPLANATION_STAGE_WEIGHTING: Final[str] = "weighting"
+SCORING_EXPLANATION_STAGE_MULTIPLIERS: Final[str] = "multipliers"
+SCORING_EXPLANATION_STAGE_GEOMETRY: Final[str] = "geometry"
+SCORING_EXPLANATION_STAGE_CORRECTIONS: Final[str] = "corrections"
+SCORING_EXPLANATION_STAGE_AGGREGATION: Final[str] = "aggregation"
+SCORING_EXPLANATION_STAGE_NORMALIZATION: Final[str] = "normalization"
+SCORING_EXPLANATION_STAGE_RANKING: Final[str] = "ranking"
+SCORING_EXPLANATION_STAGE_CONSENSUS: Final[str] = "consensus"
+SCORING_EXPLANATION_STAGE_FUSION: Final[str] = "fusion"
+SCORING_EXPLANATION_STAGE_ATTACHMENT: Final[str] = "attachment"
+SCORING_EXPLANATION_STAGES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_EXPLANATION_STAGE_INPUT,
+        SCORING_EXPLANATION_STAGE_RECOGNITION,
+        SCORING_EXPLANATION_STAGE_WEIGHTING,
+        SCORING_EXPLANATION_STAGE_MULTIPLIERS,
+        SCORING_EXPLANATION_STAGE_GEOMETRY,
+        SCORING_EXPLANATION_STAGE_CORRECTIONS,
+        SCORING_EXPLANATION_STAGE_AGGREGATION,
+        SCORING_EXPLANATION_STAGE_NORMALIZATION,
+        SCORING_EXPLANATION_STAGE_RANKING,
+        SCORING_EXPLANATION_STAGE_CONSENSUS,
+        SCORING_EXPLANATION_STAGE_FUSION,
+        SCORING_EXPLANATION_STAGE_ATTACHMENT,
+    }
+)
+
+SCORING_EXPLANATION_SCHEMA: Final[str] = (
+    "dockanalyzer.scoring.explainability"
+)
+SCORING_EXPLANATION_SCHEMA_VERSION: Final[str] = "1.0"
+SCORING_EXPLANATION_SECTION_VERSION: Final[str] = "24.0"
+SCORING_EXPLANATION_METADATA_KEY: Final[str] = "scoring_explainability"
+SCORING_EXPLANATION_DOCK_MODEL_ATTRIBUTE: Final[str] = (
+    "scoring_explanation"
+)
+DEFAULT_SCORING_EXPLANATION_LEVEL: Final[str] = (
+    SCORING_EXPLANATION_LEVEL_STANDARD
+)
+DEFAULT_SCORING_EXPLANATION_TOP_FACTORS: Final[int] = 10
+DEFAULT_SCORING_EXPLANATION_TOP_CHILDREN: Final[int] = 10
+DEFAULT_SCORING_EXPLANATION_EPSILON: Final[float] = 1.0e-12
+
+_EMPTY_SCORING_EXPLANATION_METADATA: Final[Mapping[str, Any]] = (
+    MappingProxyType({})
+)
+
+
+# -----------------------------------------------------------------------------
+# 24.2. Exceptions and low-level helpers
+# -----------------------------------------------------------------------------
+
+class ScoringExplainabilityError(RuntimeError):
+    """Base exception for Section 24."""
+
+
+class ScoringExplainabilityInputError(ScoringExplainabilityError):
+    """Raised when an explanation input cannot be adapted."""
+
+
+class ScoringExplainabilityConfigurationError(ScoringExplainabilityError):
+    """Raised when explanation options are inconsistent."""
+
+
+class ScoringExplainabilityValidationError(ScoringExplainabilityError):
+    """Raised when a Section 24 result is structurally invalid."""
+
+
+def _explain_token(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    return "_".join(part for part in text.split() if part)
+
+
+def _explain_identifier(value: Any, *, default: str = "") -> str:
+    text = str(value or "").strip()
+    return text or default
+
+
+def _explain_optional_float(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _explain_float(value: Any, *, default: float = 0.0) -> float:
+    number = _explain_optional_float(value)
+    return default if number is None else number
+
+
+def _explain_int(value: Any, *, default: int = 0) -> int:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _explain_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    token = _explain_token(value)
+    if token in {"true", "yes", "y", "1", "on"}:
+        return True
+    if token in {"false", "no", "n", "0", "off"}:
+        return False
+    return bool(value)
+
+
+def _explain_get(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, Mapping):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _explain_first(
+    value: Any,
+    names: Sequence[str],
+    default: Any = None,
+) -> Any:
+    for name in names:
+        candidate = _explain_get(value, name, None)
+        if candidate is not None:
+            return candidate
+    return default
+
+
+def _explain_mapping(value: Any) -> Mapping[str, Any]:
+    if value is None:
+        return _EMPTY_SCORING_EXPLANATION_METADATA
+    if isinstance(value, Mapping):
+        return value
+    return _EMPTY_SCORING_EXPLANATION_METADATA
+
+
+def _explain_sequence(value: Any) -> Tuple[Any, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, Mapping):
+        return tuple(value.values())
+    if isinstance(value, (str, bytes, bytearray)):
+        return (value,)
+    if isinstance(value, Sequence):
+        return tuple(value)
+    try:
+        return tuple(value)
+    except TypeError:
+        return (value,)
+
+
+def _explain_unique_strings(values: Iterable[Any]) -> Tuple[str, ...]:
+    result: List[str] = []
+    seen: Set[str] = set()
+    for value in values:
+        text = _explain_identifier(value)
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return tuple(result)
+
+
+def _explain_freeze_metadata(value: Any) -> Mapping[str, Any]:
+    if value is None:
+        return _EMPTY_SCORING_EXPLANATION_METADATA
+    if isinstance(value, Mapping):
+        return MappingProxyType(dict(value))
+    return MappingProxyType({"value": value})
+
+
+def _explain_round(
+    value: Optional[float],
+    decimal_places: Optional[int],
+) -> Optional[float]:
+    if value is None or decimal_places is None:
+        return value
+    return round(value, int(decimal_places))
+
+
+def _explain_impact_from_value(
+    value: Optional[float],
+    *,
+    epsilon: float = DEFAULT_SCORING_EXPLANATION_EPSILON,
+) -> str:
+    if value is None:
+        return SCORING_EXPLANATION_IMPACT_UNKNOWN
+    if value > epsilon:
+        return SCORING_EXPLANATION_IMPACT_POSITIVE
+    if value < -epsilon:
+        return SCORING_EXPLANATION_IMPACT_NEGATIVE
+    return SCORING_EXPLANATION_IMPACT_NEUTRAL
+
+
+def _explain_safe_ratio(
+    numerator: Optional[float],
+    denominator: Optional[float],
+) -> Optional[float]:
+    if numerator is None or denominator is None:
+        return None
+    if abs(denominator) <= DEFAULT_SCORING_EXPLANATION_EPSILON:
+        return None
+    value = numerator / denominator
+    return value if math.isfinite(value) else None
+
+
+def _explain_class_name(value: Any) -> str:
+    return value.__class__.__name__ if value is not None else "NoneType"
+
+
+def normalize_scoring_explanation_status(value: Any) -> str:
+    """Return a canonical explanation status."""
+
+    token = _explain_token(value)
+    aliases = {
+        "ok": SCORING_EXPLANATION_STATUS_COMPLETE,
+        "success": SCORING_EXPLANATION_STATUS_COMPLETE,
+        "complete": SCORING_EXPLANATION_STATUS_COMPLETE,
+        "partial": SCORING_EXPLANATION_STATUS_PARTIAL,
+        "warning": SCORING_EXPLANATION_STATUS_PARTIAL,
+        "empty": SCORING_EXPLANATION_STATUS_EMPTY,
+        "none": SCORING_EXPLANATION_STATUS_EMPTY,
+        "invalid": SCORING_EXPLANATION_STATUS_INVALID,
+        "failed": SCORING_EXPLANATION_STATUS_FAILED,
+        "error": SCORING_EXPLANATION_STATUS_FAILED,
+    }
+    result = aliases.get(token, token)
+    if result not in SCORING_EXPLANATION_STATUSES:
+        raise ScoringExplainabilityConfigurationError(
+            f"Unsupported explanation status: {value!r}."
+        )
+    return result
+
+
+def normalize_scoring_explanation_scope(value: Any) -> str:
+    """Return a canonical explanation scope."""
+
+    token = _explain_token(value)
+    aliases = {
+        "interaction_score": SCORING_EXPLANATION_SCOPE_INTERACTION,
+        "interaction": SCORING_EXPLANATION_SCOPE_INTERACTION,
+        "residue_score": SCORING_EXPLANATION_SCOPE_RESIDUE,
+        "residue": SCORING_EXPLANATION_SCOPE_RESIDUE,
+        "pose_score": SCORING_EXPLANATION_SCOPE_POSE,
+        "pose_scoring": SCORING_EXPLANATION_SCOPE_POSE,
+        "pose": SCORING_EXPLANATION_SCOPE_POSE,
+        "multipose_ranking": SCORING_EXPLANATION_SCOPE_RANKING,
+        "rank": SCORING_EXPLANATION_SCOPE_RANKING,
+        "ranking": SCORING_EXPLANATION_SCOPE_RANKING,
+        "consensus_persistence": SCORING_EXPLANATION_SCOPE_CONSENSUS,
+        "persistence": SCORING_EXPLANATION_SCOPE_CONSENSUS,
+        "consensus": SCORING_EXPLANATION_SCOPE_CONSENSUS,
+        "external": SCORING_EXPLANATION_SCOPE_EXTERNAL,
+        "external_scores": SCORING_EXPLANATION_SCOPE_EXTERNAL,
+        "external_score": SCORING_EXPLANATION_SCOPE_EXTERNAL,
+        "dockmodel": SCORING_EXPLANATION_SCOPE_DOCK_MODEL,
+        "dock_model": SCORING_EXPLANATION_SCOPE_DOCK_MODEL,
+        "all": SCORING_EXPLANATION_SCOPE_INTEGRATED,
+        "integrated": SCORING_EXPLANATION_SCOPE_INTEGRATED,
+    }
+    result = aliases.get(token, token)
+    if result not in SCORING_EXPLANATION_SCOPES:
+        raise ScoringExplainabilityConfigurationError(
+            f"Unsupported explanation scope: {value!r}."
+        )
+    return result
+
+
+def normalize_scoring_explanation_level(value: Any) -> str:
+    """Return a canonical explanation detail level."""
+
+    token = _explain_token(value)
+    aliases = {
+        "brief": SCORING_EXPLANATION_LEVEL_SUMMARY,
+        "summary": SCORING_EXPLANATION_LEVEL_SUMMARY,
+        "normal": SCORING_EXPLANATION_LEVEL_STANDARD,
+        "standard": SCORING_EXPLANATION_LEVEL_STANDARD,
+        "full": SCORING_EXPLANATION_LEVEL_DETAILED,
+        "detailed": SCORING_EXPLANATION_LEVEL_DETAILED,
+        "verbose": SCORING_EXPLANATION_LEVEL_DEBUG,
+        "debug": SCORING_EXPLANATION_LEVEL_DEBUG,
+    }
+    result = aliases.get(token, token)
+    if result not in SCORING_EXPLANATION_LEVELS:
+        raise ScoringExplainabilityConfigurationError(
+            f"Unsupported explanation level: {value!r}."
+        )
+    return result
+
+
+def normalize_scoring_explanation_impact(value: Any) -> str:
+    """Return a canonical factor-impact label."""
+
+    token = _explain_token(value)
+    aliases = {
+        "+": SCORING_EXPLANATION_IMPACT_POSITIVE,
+        "favorable": SCORING_EXPLANATION_IMPACT_POSITIVE,
+        "positive": SCORING_EXPLANATION_IMPACT_POSITIVE,
+        "-": SCORING_EXPLANATION_IMPACT_NEGATIVE,
+        "unfavorable": SCORING_EXPLANATION_IMPACT_NEGATIVE,
+        "negative": SCORING_EXPLANATION_IMPACT_NEGATIVE,
+        "zero": SCORING_EXPLANATION_IMPACT_NEUTRAL,
+        "neutral": SCORING_EXPLANATION_IMPACT_NEUTRAL,
+        "unknown": SCORING_EXPLANATION_IMPACT_UNKNOWN,
+        "na": SCORING_EXPLANATION_IMPACT_UNKNOWN,
+    }
+    result = aliases.get(token, token)
+    if result not in SCORING_EXPLANATION_IMPACTS:
+        raise ScoringExplainabilityConfigurationError(
+            f"Unsupported explanation impact: {value!r}."
+        )
+    return result
+
+
+def normalize_scoring_explanation_confidence(value: Any) -> str:
+    """Return a canonical explanation-confidence label."""
+
+    token = _explain_token(value)
+    aliases = {
+        "high": SCORING_EXPLANATION_CONFIDENCE_HIGH,
+        "strong": SCORING_EXPLANATION_CONFIDENCE_HIGH,
+        "medium": SCORING_EXPLANATION_CONFIDENCE_MODERATE,
+        "moderate": SCORING_EXPLANATION_CONFIDENCE_MODERATE,
+        "low": SCORING_EXPLANATION_CONFIDENCE_LOW,
+        "weak": SCORING_EXPLANATION_CONFIDENCE_LOW,
+        "unknown": SCORING_EXPLANATION_CONFIDENCE_UNKNOWN,
+        "na": SCORING_EXPLANATION_CONFIDENCE_UNKNOWN,
+    }
+    result = aliases.get(token, token)
+    if result not in SCORING_EXPLANATION_CONFIDENCES:
+        raise ScoringExplainabilityConfigurationError(
+            f"Unsupported explanation confidence: {value!r}."
+        )
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 24.3. Configuration and result structures
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ScoringExplainabilityOptions:
+    """Configuration shared by all Section 24 explanation builders."""
+
+    level: str = DEFAULT_SCORING_EXPLANATION_LEVEL
+    top_factors: int = DEFAULT_SCORING_EXPLANATION_TOP_FACTORS
+    top_children: int = DEFAULT_SCORING_EXPLANATION_TOP_CHILDREN
+    include_evidence: bool = True
+    include_trace: bool = True
+    include_counterfactuals: bool = True
+    include_limitations: bool = True
+    include_zero_contributions: bool = False
+    include_metadata: bool = True
+    include_children: bool = True
+    recursive_validation: bool = True
+    strict: bool = False
+    epsilon: float = DEFAULT_SCORING_EXPLANATION_EPSILON
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "level",
+            normalize_scoring_explanation_level(self.level),
+        )
+        top_factors = int(self.top_factors)
+        top_children = int(self.top_children)
+        if top_factors < 0 or top_children < 0:
+            raise ScoringExplainabilityConfigurationError(
+                "top_factors and top_children cannot be negative."
+            )
+        epsilon = _explain_float(self.epsilon, default=-1.0)
+        if epsilon < 0.0:
+            raise ScoringExplainabilityConfigurationError(
+                "explanation epsilon cannot be negative."
+            )
+        object.__setattr__(self, "top_factors", top_factors)
+        object.__setattr__(self, "top_children", top_children)
+        object.__setattr__(self, "epsilon", epsilon)
+        for attribute in (
+            "include_evidence",
+            "include_trace",
+            "include_counterfactuals",
+            "include_limitations",
+            "include_zero_contributions",
+            "include_metadata",
+            "include_children",
+            "recursive_validation",
+            "strict",
+        ):
+            object.__setattr__(
+                self,
+                attribute,
+                bool(getattr(self, attribute)),
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringExplanationEvidence:
+    """One source value supporting an explanation factor."""
+
+    name: str
+    value: Any
+    source: str = ""
+    unit: str = ""
+    description: str = ""
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_SCORING_EXPLANATION_METADATA
+    )
+
+    def __post_init__(self) -> None:
+        name = _explain_identifier(self.name)
+        if not name:
+            raise ScoringExplainabilityValidationError(
+                "Explanation evidence requires a name."
+            )
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "source", _explain_identifier(self.source))
+        object.__setattr__(self, "unit", _explain_identifier(self.unit))
+        object.__setattr__(
+            self,
+            "description",
+            _explain_identifier(self.description),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _explain_freeze_metadata(self.metadata),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a mutable representation for downstream serialization."""
+
+        return {
+            "name": self.name,
+            "value": self.value,
+            "source": self.source,
+            "unit": self.unit,
+            "description": self.description,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringExplanationTraceStep:
+    """One deterministic processing step in the score audit trail."""
+
+    order: int
+    stage: str
+    operation: str
+    input_value: Optional[float] = None
+    output_value: Optional[float] = None
+    multiplier: Optional[float] = None
+    delta: Optional[float] = None
+    message: str = ""
+    evidence: Tuple[ScoringExplanationEvidence, ...] = ()
+
+    def __post_init__(self) -> None:
+        order = int(self.order)
+        if order < 0:
+            raise ScoringExplainabilityValidationError(
+                "Trace-step order cannot be negative."
+            )
+        stage = _explain_token(self.stage)
+        if stage not in SCORING_EXPLANATION_STAGES:
+            raise ScoringExplainabilityValidationError(
+                f"Unsupported explanation trace stage: {self.stage!r}."
+            )
+        operation = _explain_identifier(self.operation)
+        if not operation:
+            raise ScoringExplainabilityValidationError(
+                "Trace steps require an operation."
+            )
+        object.__setattr__(self, "order", order)
+        object.__setattr__(self, "stage", stage)
+        object.__setattr__(self, "operation", operation)
+        for attribute in (
+            "input_value",
+            "output_value",
+            "multiplier",
+            "delta",
+        ):
+            object.__setattr__(
+                self,
+                attribute,
+                _explain_optional_float(getattr(self, attribute)),
+            )
+        object.__setattr__(self, "message", _explain_identifier(self.message))
+        object.__setattr__(self, "evidence", tuple(self.evidence))
+
+    def to_dict(
+        self,
+        *,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return a mutable trace-step representation."""
+
+        return {
+            "order": self.order,
+            "stage": self.stage,
+            "operation": self.operation,
+            "input_value": _explain_round(
+                self.input_value,
+                decimal_places,
+            ),
+            "output_value": _explain_round(
+                self.output_value,
+                decimal_places,
+            ),
+            "multiplier": _explain_round(
+                self.multiplier,
+                decimal_places,
+            ),
+            "delta": _explain_round(self.delta, decimal_places),
+            "message": self.message,
+            "evidence": [item.to_dict() for item in self.evidence],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringExplanationFactor:
+    """One additive, multiplicative, ordinal, or qualitative score driver."""
+
+    factor_id: str
+    category: str
+    label: str
+    impact: str
+    contribution: Optional[float] = None
+    raw_value: Optional[float] = None
+    normalized_value: Optional[float] = None
+    weight: Optional[float] = None
+    confidence: str = SCORING_EXPLANATION_CONFIDENCE_UNKNOWN
+    rank: Optional[int] = None
+    baseline_score: Optional[float] = None
+    score_without_factor: Optional[float] = None
+    counterfactual_delta: Optional[float] = None
+    evidence: Tuple[ScoringExplanationEvidence, ...] = ()
+    description: str = ""
+    limitations: Tuple[str, ...] = ()
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_SCORING_EXPLANATION_METADATA
+    )
+
+    def __post_init__(self) -> None:
+        factor_id = _explain_identifier(self.factor_id)
+        label = _explain_identifier(self.label)
+        category = _explain_token(self.category)
+        if not factor_id or not label:
+            raise ScoringExplainabilityValidationError(
+                "Explanation factors require factor_id and label."
+            )
+        if category not in SCORING_EXPLANATION_FACTOR_CATEGORIES:
+            raise ScoringExplainabilityValidationError(
+                f"Unsupported explanation factor category: {self.category!r}."
+            )
+        object.__setattr__(self, "factor_id", factor_id)
+        object.__setattr__(self, "category", category)
+        object.__setattr__(
+            self,
+            "impact",
+            normalize_scoring_explanation_impact(self.impact),
+        )
+        object.__setattr__(self, "label", label)
+        for attribute in (
+            "contribution",
+            "raw_value",
+            "normalized_value",
+            "weight",
+            "baseline_score",
+            "score_without_factor",
+            "counterfactual_delta",
+        ):
+            object.__setattr__(
+                self,
+                attribute,
+                _explain_optional_float(getattr(self, attribute)),
+            )
+        object.__setattr__(
+            self,
+            "confidence",
+            normalize_scoring_explanation_confidence(self.confidence),
+        )
+        rank = None if self.rank is None else int(self.rank)
+        if rank is not None and rank < 1:
+            raise ScoringExplainabilityValidationError(
+                "Factor rank must be positive when provided."
+            )
+        object.__setattr__(self, "rank", rank)
+        object.__setattr__(self, "evidence", tuple(self.evidence))
+        object.__setattr__(
+            self,
+            "description",
+            _explain_identifier(self.description),
+        )
+        object.__setattr__(
+            self,
+            "limitations",
+            _explain_unique_strings(self.limitations),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _explain_freeze_metadata(self.metadata),
+        )
+
+    @property
+    def absolute_contribution(self) -> float:
+        """Return the absolute numeric contribution, or zero if unavailable."""
+
+        return abs(self.contribution or 0.0)
+
+    def to_dict(
+        self,
+        *,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return a mutable factor representation."""
+
+        return {
+            "factor_id": self.factor_id,
+            "category": self.category,
+            "label": self.label,
+            "impact": self.impact,
+            "contribution": _explain_round(
+                self.contribution,
+                decimal_places,
+            ),
+            "raw_value": _explain_round(self.raw_value, decimal_places),
+            "normalized_value": _explain_round(
+                self.normalized_value,
+                decimal_places,
+            ),
+            "weight": _explain_round(self.weight, decimal_places),
+            "confidence": self.confidence,
+            "rank": self.rank,
+            "baseline_score": _explain_round(
+                self.baseline_score,
+                decimal_places,
+            ),
+            "score_without_factor": _explain_round(
+                self.score_without_factor,
+                decimal_places,
+            ),
+            "counterfactual_delta": _explain_round(
+                self.counterfactual_delta,
+                decimal_places,
+            ),
+            "evidence": [item.to_dict() for item in self.evidence],
+            "description": self.description,
+            "limitations": list(self.limitations),
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringEntityExplanation:
+    """Complete explanation for one interaction, residue, pose, or aggregate."""
+
+    entity_id: str
+    scope: str
+    title: str
+    summary: str
+    status: str = SCORING_EXPLANATION_STATUS_COMPLETE
+    score: Optional[float] = None
+    baseline_score: Optional[float] = None
+    explained_score: Optional[float] = None
+    residual: Optional[float] = None
+    confidence: str = SCORING_EXPLANATION_CONFIDENCE_UNKNOWN
+    factors: Tuple[ScoringExplanationFactor, ...] = ()
+    trace: Tuple[ScoringExplanationTraceStep, ...] = ()
+    children: Tuple["ScoringEntityExplanation", ...] = ()
+    key_findings: Tuple[str, ...] = ()
+    limitations: Tuple[str, ...] = ()
+    source_type: str = ""
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_SCORING_EXPLANATION_METADATA
+    )
+
+    def __post_init__(self) -> None:
+        entity_id = _explain_identifier(self.entity_id)
+        title = _explain_identifier(self.title)
+        if not entity_id or not title:
+            raise ScoringExplainabilityValidationError(
+                "Entity explanations require entity_id and title."
+            )
+        object.__setattr__(self, "entity_id", entity_id)
+        object.__setattr__(
+            self,
+            "scope",
+            normalize_scoring_explanation_scope(self.scope),
+        )
+        object.__setattr__(self, "title", title)
+        object.__setattr__(self, "summary", _explain_identifier(self.summary))
+        object.__setattr__(
+            self,
+            "status",
+            normalize_scoring_explanation_status(self.status),
+        )
+        for attribute in (
+            "score",
+            "baseline_score",
+            "explained_score",
+            "residual",
+        ):
+            object.__setattr__(
+                self,
+                attribute,
+                _explain_optional_float(getattr(self, attribute)),
+            )
+        object.__setattr__(
+            self,
+            "confidence",
+            normalize_scoring_explanation_confidence(self.confidence),
+        )
+        object.__setattr__(self, "factors", tuple(self.factors))
+        object.__setattr__(self, "trace", tuple(self.trace))
+        object.__setattr__(self, "children", tuple(self.children))
+        object.__setattr__(
+            self,
+            "key_findings",
+            _explain_unique_strings(self.key_findings),
+        )
+        object.__setattr__(
+            self,
+            "limitations",
+            _explain_unique_strings(self.limitations),
+        )
+        object.__setattr__(
+            self,
+            "source_type",
+            _explain_identifier(self.source_type),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _explain_freeze_metadata(self.metadata),
+        )
+
+    @property
+    def positive_factors(self) -> Tuple[ScoringExplanationFactor, ...]:
+        """Return factors with favorable impact."""
+
+        return tuple(
+            factor
+            for factor in self.factors
+            if factor.impact == SCORING_EXPLANATION_IMPACT_POSITIVE
+        )
+
+    @property
+    def negative_factors(self) -> Tuple[ScoringExplanationFactor, ...]:
+        """Return factors with unfavorable impact."""
+
+        return tuple(
+            factor
+            for factor in self.factors
+            if factor.impact == SCORING_EXPLANATION_IMPACT_NEGATIVE
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_children: bool = True,
+        include_metadata: bool = True,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return a mutable entity-explanation representation."""
+
+        result: Dict[str, Any] = {
+            "entity_id": self.entity_id,
+            "scope": self.scope,
+            "title": self.title,
+            "summary": self.summary,
+            "status": self.status,
+            "score": _explain_round(self.score, decimal_places),
+            "baseline_score": _explain_round(
+                self.baseline_score,
+                decimal_places,
+            ),
+            "explained_score": _explain_round(
+                self.explained_score,
+                decimal_places,
+            ),
+            "residual": _explain_round(self.residual, decimal_places),
+            "confidence": self.confidence,
+            "factors": [
+                factor.to_dict(decimal_places=decimal_places)
+                for factor in self.factors
+            ],
+            "trace": [
+                step.to_dict(decimal_places=decimal_places)
+                for step in self.trace
+            ],
+            "key_findings": list(self.key_findings),
+            "limitations": list(self.limitations),
+            "source_type": self.source_type,
+        }
+        if include_children:
+            result["children"] = [
+                child.to_dict(
+                    include_children=True,
+                    include_metadata=include_metadata,
+                    decimal_places=decimal_places,
+                )
+                for child in self.children
+            ]
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringExplainabilityCoverage:
+    """Coverage diagnostics for one explanation build."""
+
+    requested_count: int
+    explained_count: int
+    partial_count: int
+    failed_count: int
+    factor_count: int
+    evidence_count: int
+    counterfactual_count: int
+    trace_step_count: int
+    limitation_count: int
+
+    def __post_init__(self) -> None:
+        for attribute in (
+            "requested_count",
+            "explained_count",
+            "partial_count",
+            "failed_count",
+            "factor_count",
+            "evidence_count",
+            "counterfactual_count",
+            "trace_step_count",
+            "limitation_count",
+        ):
+            value = int(getattr(self, attribute))
+            if value < 0:
+                raise ScoringExplainabilityValidationError(
+                    f"{attribute} cannot be negative."
+                )
+            object.__setattr__(self, attribute, value)
+
+    @property
+    def coverage_fraction(self) -> float:
+        """Return the explained fraction of requested entities."""
+
+        if self.requested_count == 0:
+            return 0.0
+        return self.explained_count / self.requested_count
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a mutable coverage representation."""
+
+        return {
+            "requested_count": self.requested_count,
+            "explained_count": self.explained_count,
+            "partial_count": self.partial_count,
+            "failed_count": self.failed_count,
+            "factor_count": self.factor_count,
+            "evidence_count": self.evidence_count,
+            "counterfactual_count": self.counterfactual_count,
+            "trace_step_count": self.trace_step_count,
+            "limitation_count": self.limitation_count,
+            "coverage_fraction": self.coverage_fraction,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringExplainabilityResult:
+    """Integrated Section 24 result for one or more explained objects."""
+
+    explanations: Tuple[ScoringEntityExplanation, ...]
+    options: ScoringExplainabilityOptions
+    coverage: ScoringExplainabilityCoverage
+    status: str = SCORING_EXPLANATION_STATUS_COMPLETE
+    warnings: Tuple[str, ...] = ()
+    schema: str = SCORING_EXPLANATION_SCHEMA
+    schema_version: str = SCORING_EXPLANATION_SCHEMA_VERSION
+    section_version: str = SCORING_EXPLANATION_SECTION_VERSION
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_SCORING_EXPLANATION_METADATA
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "explanations", tuple(self.explanations))
+        object.__setattr__(
+            self,
+            "status",
+            normalize_scoring_explanation_status(self.status),
+        )
+        object.__setattr__(
+            self,
+            "warnings",
+            _explain_unique_strings(self.warnings),
+        )
+        object.__setattr__(self, "schema", _explain_identifier(self.schema))
+        object.__setattr__(
+            self,
+            "schema_version",
+            _explain_identifier(self.schema_version),
+        )
+        object.__setattr__(
+            self,
+            "section_version",
+            _explain_identifier(self.section_version),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _explain_freeze_metadata(self.metadata),
+        )
+
+    @property
+    def by_entity_id(self) -> Mapping[str, ScoringEntityExplanation]:
+        """Return explanations indexed by entity identifier."""
+
+        return MappingProxyType(
+            {item.entity_id: item for item in self.explanations}
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_children: bool = True,
+        include_metadata: bool = True,
+        decimal_places: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return a mutable result representation."""
+
+        result: Dict[str, Any] = {
+            "status": self.status,
+            "schema": self.schema,
+            "schema_version": self.schema_version,
+            "section_version": self.section_version,
+            "coverage": self.coverage.to_dict(),
+            "warnings": list(self.warnings),
+            "explanations": [
+                item.to_dict(
+                    include_children=include_children,
+                    include_metadata=include_metadata,
+                    decimal_places=decimal_places,
+                )
+                for item in self.explanations
+            ],
+        }
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+        return result
+
+
+# -----------------------------------------------------------------------------
+# 24.4. Generic extraction, factor ordering, and audit helpers
+# -----------------------------------------------------------------------------
+
+def _explain_metadata_value(source: Any, key: str) -> Any:
+    metadata = _explain_mapping(_explain_get(source, "metadata", None))
+    return metadata.get(key)
+
+
+def _explain_entity_id(
+    source: Any,
+    scope: str,
+    *,
+    fallback_index: Optional[int] = None,
+) -> str:
+    """Extract a stable entity identifier from a supported source object."""
+
+    scope = normalize_scoring_explanation_scope(scope)
+    candidates: Dict[str, Tuple[str, ...]] = {
+        SCORING_EXPLANATION_SCOPE_INTERACTION: (
+            "interaction_id",
+            "identity",
+            "interaction_key",
+            "key",
+            "id",
+        ),
+        SCORING_EXPLANATION_SCOPE_RESIDUE: (
+            "residue_id",
+            "residue_key",
+            "residue",
+            "key",
+            "id",
+        ),
+        SCORING_EXPLANATION_SCOPE_POSE: (
+            "pose_id",
+            "id",
+            "name",
+        ),
+        SCORING_EXPLANATION_SCOPE_RANKING: (
+            "group_id",
+            "ranking_id",
+            "pose_id",
+            "id",
+        ),
+        SCORING_EXPLANATION_SCOPE_CONSENSUS: (
+            "group_id",
+            "consensus_id",
+            "feature_id",
+            "id",
+        ),
+        SCORING_EXPLANATION_SCOPE_EXTERNAL: (
+            "pose_id",
+            "group_id",
+            "id",
+        ),
+        SCORING_EXPLANATION_SCOPE_DOCK_MODEL: (
+            "model_id",
+            "pose_id",
+            "name",
+            "id",
+        ),
+        SCORING_EXPLANATION_SCOPE_INTEGRATED: (
+            "entity_id",
+            "id",
+            "name",
+        ),
+    }
+    direct = _explain_first(source, candidates[scope], None)
+    if direct is None:
+        for name in candidates[scope]:
+            direct = _explain_metadata_value(source, name)
+            if direct is not None:
+                break
+    text = _explain_identifier(direct)
+    if text:
+        return text
+    suffix = "" if fallback_index is None else f"_{fallback_index}"
+    return f"{scope}{suffix}"
+
+
+def _explain_score_value(source: Any, scope: str) -> Optional[float]:
+    """Extract the principal numeric result for one explanation scope."""
+
+    scope = normalize_scoring_explanation_scope(scope)
+    names: Dict[str, Tuple[str, ...]] = {
+        SCORING_EXPLANATION_SCOPE_INTERACTION: (
+            "final_score",
+            "score",
+            "raw_score",
+        ),
+        SCORING_EXPLANATION_SCOPE_RESIDUE: (
+            "final_score",
+            "score",
+            "raw_score",
+        ),
+        SCORING_EXPLANATION_SCOPE_POSE: (
+            "final_score",
+            "total_score",
+            "score",
+            "normalized_score",
+        ),
+        SCORING_EXPLANATION_SCOPE_RANKING: (
+            "ranking_score",
+            "score",
+        ),
+        SCORING_EXPLANATION_SCOPE_CONSENSUS: (
+            "persistence",
+            "weighted_persistence",
+            "support_score",
+            "consensus_score",
+            "score",
+        ),
+        SCORING_EXPLANATION_SCOPE_EXTERNAL: (
+            "fused_score",
+            "external_composite_score",
+            "internal_score",
+            "score",
+        ),
+        SCORING_EXPLANATION_SCOPE_DOCK_MODEL: (
+            "score",
+            "fused_score",
+        ),
+        SCORING_EXPLANATION_SCOPE_INTEGRATED: (
+            "score",
+            "final_score",
+        ),
+    }
+    value = _explain_first(source, names[scope], None)
+    if value is None and scope == SCORING_EXPLANATION_SCOPE_POSE:
+        summary = _explain_get(source, "summary", None)
+        value = _explain_first(
+            summary,
+            ("final_score", "total_score", "score"),
+            None,
+        )
+    return _explain_optional_float(value)
+
+
+def _explain_numeric_sum(value: Any) -> float:
+    """Sum finite numbers from a scalar, mapping, or sequence."""
+
+    direct = _explain_optional_float(value)
+    if direct is not None:
+        return direct
+    items = value.values() if isinstance(value, Mapping) else _explain_sequence(value)
+    total = 0.0
+    found = False
+    for item in items:
+        candidate = _explain_first(
+            item,
+            ("value", "score", "delta", "contribution", "amount"),
+            item,
+        )
+        number = _explain_optional_float(candidate)
+        if number is not None:
+            total += number
+            found = True
+    return total if found else 0.0
+
+
+def _explain_confidence_from_geometry(value: Any) -> str:
+    geometry = _explain_optional_float(value)
+    if geometry is None:
+        return SCORING_EXPLANATION_CONFIDENCE_UNKNOWN
+    if geometry >= 0.8:
+        return SCORING_EXPLANATION_CONFIDENCE_HIGH
+    if geometry >= 0.5:
+        return SCORING_EXPLANATION_CONFIDENCE_MODERATE
+    return SCORING_EXPLANATION_CONFIDENCE_LOW
+
+
+def _explain_confidence_from_fraction(value: Any) -> str:
+    fraction = _explain_optional_float(value)
+    if fraction is None:
+        return SCORING_EXPLANATION_CONFIDENCE_UNKNOWN
+    if fraction >= 0.75:
+        return SCORING_EXPLANATION_CONFIDENCE_HIGH
+    if fraction >= 0.4:
+        return SCORING_EXPLANATION_CONFIDENCE_MODERATE
+    return SCORING_EXPLANATION_CONFIDENCE_LOW
+
+
+def _explain_factor(
+    factor_id: str,
+    category: str,
+    label: str,
+    contribution: Optional[float],
+    *,
+    raw_value: Optional[float] = None,
+    normalized_value: Optional[float] = None,
+    weight: Optional[float] = None,
+    confidence: str = SCORING_EXPLANATION_CONFIDENCE_UNKNOWN,
+    baseline_score: Optional[float] = None,
+    final_score: Optional[float] = None,
+    evidence: Iterable[ScoringExplanationEvidence] = (),
+    description: str = "",
+    limitations: Iterable[str] = (),
+    metadata: Optional[Mapping[str, Any]] = None,
+    options: Optional[ScoringExplainabilityOptions] = None,
+) -> ScoringExplanationFactor:
+    """Create one factor with a consistent additive counterfactual."""
+
+    configuration = options or ScoringExplainabilityOptions()
+    numeric_contribution = _explain_optional_float(contribution)
+    score_without = None
+    counterfactual_delta = None
+    if (
+        configuration.include_counterfactuals
+        and final_score is not None
+        and numeric_contribution is not None
+    ):
+        score_without = final_score - numeric_contribution
+        counterfactual_delta = final_score - score_without
+    return ScoringExplanationFactor(
+        factor_id=factor_id,
+        category=category,
+        label=label,
+        impact=_explain_impact_from_value(
+            numeric_contribution,
+            epsilon=configuration.epsilon,
+        ),
+        contribution=numeric_contribution,
+        raw_value=raw_value,
+        normalized_value=normalized_value,
+        weight=weight,
+        confidence=confidence,
+        baseline_score=baseline_score,
+        score_without_factor=score_without,
+        counterfactual_delta=counterfactual_delta,
+        evidence=tuple(evidence) if configuration.include_evidence else (),
+        description=description,
+        limitations=(
+            tuple(limitations)
+            if configuration.include_limitations
+            else ()
+        ),
+        metadata=metadata or _EMPTY_SCORING_EXPLANATION_METADATA,
+    )
+
+
+def _explain_finalize_factors(
+    factors: Iterable[ScoringExplanationFactor],
+    options: ScoringExplainabilityOptions,
+) -> Tuple[ScoringExplanationFactor, ...]:
+    """Filter, sort, limit, and rank explanation factors."""
+
+    retained = []
+    for factor in factors:
+        if (
+            not options.include_zero_contributions
+            and factor.contribution is not None
+            and abs(factor.contribution) <= options.epsilon
+        ):
+            continue
+        retained.append(factor)
+    retained.sort(
+        key=lambda item: (
+            -item.absolute_contribution,
+            item.category,
+            item.factor_id,
+        )
+    )
+    if options.top_factors:
+        retained = retained[: options.top_factors]
+    ranked: List[ScoringExplanationFactor] = []
+    for rank, factor in enumerate(retained, start=1):
+        ranked.append(
+            ScoringExplanationFactor(
+                factor_id=factor.factor_id,
+                category=factor.category,
+                label=factor.label,
+                impact=factor.impact,
+                contribution=factor.contribution,
+                raw_value=factor.raw_value,
+                normalized_value=factor.normalized_value,
+                weight=factor.weight,
+                confidence=factor.confidence,
+                rank=rank,
+                baseline_score=factor.baseline_score,
+                score_without_factor=factor.score_without_factor,
+                counterfactual_delta=factor.counterfactual_delta,
+                evidence=factor.evidence,
+                description=factor.description,
+                limitations=factor.limitations,
+                metadata=factor.metadata,
+            )
+        )
+    return tuple(ranked)
+
+
+def _explain_score_accounting(
+    score: Optional[float],
+    baseline: Optional[float],
+    factors: Sequence[ScoringExplanationFactor],
+) -> Tuple[Optional[float], Optional[float]]:
+    """Return explained score and residual using additive factor accounting."""
+
+    if score is None:
+        return None, None
+    additive = sum(
+        factor.contribution or 0.0
+        for factor in factors
+        if factor.contribution is not None
+    )
+    explained = (baseline or 0.0) + additive
+    residual = score - explained
+    return explained, residual
+
+
+def _explain_residual_factor(
+    entity_id: str,
+    score: Optional[float],
+    baseline: Optional[float],
+    factors: Sequence[ScoringExplanationFactor],
+    options: ScoringExplainabilityOptions,
+) -> Optional[ScoringExplanationFactor]:
+    """Create a residual factor when extracted fields do not close the score."""
+
+    explained, residual = _explain_score_accounting(score, baseline, factors)
+    if residual is None or abs(residual) <= options.epsilon:
+        return None
+    return _explain_factor(
+        f"{entity_id}:residual",
+        SCORING_EXPLANATION_FACTOR_RESIDUAL,
+        "Unattributed score remainder",
+        residual,
+        raw_value=explained,
+        baseline_score=baseline,
+        final_score=score,
+        confidence=SCORING_EXPLANATION_CONFIDENCE_LOW,
+        description=(
+            "Difference between the reported score and the additive values "
+            "available through the public result interface."
+        ),
+        limitations=(
+            "Some family-specific multipliers or corrections were not "
+            "exposed as independent numeric fields.",
+        ),
+        options=options,
+    )
+
+
+def _explain_top_findings(
+    factors: Sequence[ScoringExplanationFactor],
+    *,
+    score: Optional[float] = None,
+    extra: Iterable[str] = (),
+) -> Tuple[str, ...]:
+    """Generate concise findings from the strongest factors."""
+
+    findings: List[str] = list(_explain_unique_strings(extra))
+    if score is not None:
+        findings.append(f"Reported score: {score:.4f}.")
+    positive = next(
+        (
+            item
+            for item in factors
+            if item.impact == SCORING_EXPLANATION_IMPACT_POSITIVE
+        ),
+        None,
+    )
+    negative = next(
+        (
+            item
+            for item in factors
+            if item.impact == SCORING_EXPLANATION_IMPACT_NEGATIVE
+        ),
+        None,
+    )
+    if positive is not None:
+        findings.append(
+            f"Largest favorable driver: {positive.label} "
+            f"({positive.contribution:+.4f})."
+        )
+    if negative is not None:
+        findings.append(
+            f"Largest unfavorable driver: {negative.label} "
+            f"({negative.contribution:+.4f})."
+        )
+    return _explain_unique_strings(findings)
+
+
+def _explain_trace_step(
+    order: int,
+    stage: str,
+    operation: str,
+    *,
+    input_value: Optional[float] = None,
+    output_value: Optional[float] = None,
+    multiplier: Optional[float] = None,
+    message: str = "",
+    evidence: Iterable[ScoringExplanationEvidence] = (),
+    options: Optional[ScoringExplainabilityOptions] = None,
+) -> Optional[ScoringExplanationTraceStep]:
+    """Create a trace step only when tracing is enabled."""
+
+    configuration = options or ScoringExplainabilityOptions()
+    if not configuration.include_trace:
+        return None
+    delta = None
+    if input_value is not None and output_value is not None:
+        delta = output_value - input_value
+    return ScoringExplanationTraceStep(
+        order=order,
+        stage=stage,
+        operation=operation,
+        input_value=input_value,
+        output_value=output_value,
+        multiplier=multiplier,
+        delta=delta,
+        message=message,
+        evidence=tuple(evidence) if configuration.include_evidence else (),
+    )
+
+
+def _explain_remove_none(
+    values: Iterable[Optional[Any]],
+) -> Tuple[Any, ...]:
+    return tuple(value for value in values if value is not None)
+
+
+def _explain_title_token(value: Any) -> str:
+    token = _explain_identifier(value)
+    return token.replace("_", " ").strip().title() if token else "Unknown"
+
+
+# -----------------------------------------------------------------------------
+# 24.5. Interaction-level explanations
+# -----------------------------------------------------------------------------
+
+def explain_interaction_score(
+    interaction_score: Any,
+    *,
+    options: Optional[ScoringExplainabilityOptions] = None,
+    entity_id: Optional[str] = None,
+) -> ScoringEntityExplanation:
+    """Explain one InteractionScore-like object or equivalent mapping."""
+
+    configuration = options or ScoringExplainabilityOptions()
+    if interaction_score is None:
+        raise ScoringExplainabilityInputError(
+            "interaction_score cannot be None."
+        )
+    resolved_id = entity_id or _explain_entity_id(
+        interaction_score,
+        SCORING_EXPLANATION_SCOPE_INTERACTION,
+    )
+    family = _explain_identifier(
+        _explain_first(
+            interaction_score,
+            ("interaction_family", "family", "category"),
+            "unknown",
+        )
+    )
+    interaction_type = _explain_identifier(
+        _explain_first(
+            interaction_score,
+            ("interaction_type", "type", "kind"),
+            "unknown",
+        )
+    )
+    strength = _explain_identifier(
+        _explain_first(
+            interaction_score,
+            ("strength", "force", "strength_class"),
+            "unknown",
+        )
+    )
+    classification = _explain_identifier(
+        _explain_first(
+            interaction_score,
+            ("classification", "class_name", "geometry_class"),
+            "unknown",
+        )
+    )
+    final_score = _explain_score_value(
+        interaction_score,
+        SCORING_EXPLANATION_SCOPE_INTERACTION,
+    )
+    base_weight = _explain_optional_float(
+        _explain_first(
+            interaction_score,
+            ("base_weight", "type_weight", "weight"),
+            None,
+        )
+    )
+    raw_score = _explain_optional_float(
+        _explain_get(interaction_score, "raw_score", None)
+    )
+    geometry_quality = _explain_optional_float(
+        _explain_first(
+            interaction_score,
+            ("geometry_quality", "quality", "geometric_quality"),
+            None,
+        )
+    )
+    strength_multiplier = _explain_optional_float(
+        _explain_first(
+            interaction_score,
+            ("strength_multiplier", "force_multiplier"),
+            None,
+        )
+    )
+    classification_multiplier = _explain_optional_float(
+        _explain_first(
+            interaction_score,
+            ("classification_multiplier", "class_multiplier"),
+            None,
+        )
+    )
+    geometry_multiplier = _explain_optional_float(
+        _explain_first(
+            interaction_score,
+            ("geometry_multiplier", "quality_multiplier"),
+            None,
+        )
+    )
+    penalty_score = _explain_optional_float(
+        _explain_first(
+            interaction_score,
+            ("penalty_score", "penalties", "total_penalty"),
+            None,
+        )
+    )
+    if penalty_score is None:
+        penalty_score = _explain_numeric_sum(
+            _explain_get(interaction_score, "penalty_components", None)
+        )
+    bonus_score = _explain_optional_float(
+        _explain_first(
+            interaction_score,
+            ("bonus_score", "bonuses", "total_bonus"),
+            None,
+        )
+    )
+    if bonus_score is None:
+        bonus_score = _explain_numeric_sum(
+            _explain_get(interaction_score, "bonus_components", None)
+        )
+
+    confidence = _explain_confidence_from_geometry(geometry_quality)
+    factors: List[ScoringExplanationFactor] = []
+    trace: List[ScoringExplanationTraceStep] = []
+    current = 0.0
+
+    if base_weight is not None:
+        factors.append(
+            _explain_factor(
+                f"{resolved_id}:base_weight",
+                SCORING_EXPLANATION_FACTOR_BASE_WEIGHT,
+                f"Base weight for {interaction_type or family}",
+                base_weight,
+                raw_value=base_weight,
+                baseline_score=0.0,
+                final_score=final_score,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_HIGH,
+                evidence=(
+                    ScoringExplanationEvidence(
+                        "interaction_family",
+                        family,
+                        source="interaction_score",
+                    ),
+                    ScoringExplanationEvidence(
+                        "interaction_type",
+                        interaction_type,
+                        source="interaction_score",
+                    ),
+                ),
+                description=(
+                    "Canonical family/type weight before force, geometric, "
+                    "and correction terms."
+                ),
+                options=configuration,
+            )
+        )
+        step = _explain_trace_step(
+            1,
+            SCORING_EXPLANATION_STAGE_WEIGHTING,
+            "apply_base_weight",
+            input_value=0.0,
+            output_value=base_weight,
+            message=f"Applied the canonical {interaction_type} base weight.",
+            options=configuration,
+        )
+        if step is not None:
+            trace.append(step)
+        current = base_weight
+
+    for order, multiplier, category, label, evidence_name in (
+        (
+            2,
+            strength_multiplier,
+            SCORING_EXPLANATION_FACTOR_STRENGTH,
+            f"Strength class: {strength}",
+            "strength_multiplier",
+        ),
+        (
+            3,
+            classification_multiplier,
+            SCORING_EXPLANATION_FACTOR_CLASSIFICATION,
+            f"Geometric classification: {classification}",
+            "classification_multiplier",
+        ),
+        (
+            4,
+            geometry_multiplier,
+            SCORING_EXPLANATION_FACTOR_GEOMETRY,
+            "Geometry-quality multiplier",
+            "geometry_multiplier",
+        ),
+    ):
+        if multiplier is None:
+            continue
+        before = current
+        after = before * multiplier
+        delta = after - before
+        factors.append(
+            _explain_factor(
+                f"{resolved_id}:{evidence_name}",
+                category,
+                label,
+                delta,
+                raw_value=multiplier,
+                normalized_value=(
+                    geometry_quality
+                    if category == SCORING_EXPLANATION_FACTOR_GEOMETRY
+                    else None
+                ),
+                weight=multiplier,
+                baseline_score=before,
+                final_score=final_score,
+                confidence=confidence,
+                evidence=(
+                    ScoringExplanationEvidence(
+                        evidence_name,
+                        multiplier,
+                        source="interaction_score",
+                    ),
+                ),
+                description=(
+                    "Additive equivalent of a multiplicative scoring step."
+                ),
+                limitations=(
+                    "The leave-one-factor-out score is an additive local "
+                    "approximation of a multiplicative pipeline.",
+                ),
+                options=configuration,
+            )
+        )
+        step = _explain_trace_step(
+            order,
+            (
+                SCORING_EXPLANATION_STAGE_GEOMETRY
+                if category == SCORING_EXPLANATION_FACTOR_GEOMETRY
+                else SCORING_EXPLANATION_STAGE_MULTIPLIERS
+            ),
+            evidence_name,
+            input_value=before,
+            output_value=after,
+            multiplier=multiplier,
+            message=label,
+            options=configuration,
+        )
+        if step is not None:
+            trace.append(step)
+        current = after
+
+    if raw_score is not None:
+        raw_delta = raw_score - current
+        if abs(raw_delta) > configuration.epsilon:
+            factors.append(
+                _explain_factor(
+                    f"{resolved_id}:family_specific",
+                    SCORING_EXPLANATION_FACTOR_CORRECTION,
+                    "Family-specific scoring adjustment",
+                    raw_delta,
+                    raw_value=raw_score,
+                    baseline_score=current,
+                    final_score=final_score,
+                    confidence=SCORING_EXPLANATION_CONFIDENCE_MODERATE,
+                    evidence=(
+                        ScoringExplanationEvidence(
+                            "raw_score",
+                            raw_score,
+                            source="interaction_score",
+                        ),
+                    ),
+                    description=(
+                        "Adjustment required to reproduce the reported raw "
+                        "interaction score after exposed multipliers."
+                    ),
+                    options=configuration,
+                )
+            )
+        step = _explain_trace_step(
+            5,
+            SCORING_EXPLANATION_STAGE_AGGREGATION,
+            "resolve_raw_interaction_score",
+            input_value=current,
+            output_value=raw_score,
+            message="Resolved the family-specific raw interaction score.",
+            options=configuration,
+        )
+        if step is not None:
+            trace.append(step)
+        current = raw_score
+
+    if penalty_score:
+        contribution = -abs(penalty_score)
+        factors.append(
+            _explain_factor(
+                f"{resolved_id}:penalty",
+                SCORING_EXPLANATION_FACTOR_PENALTY,
+                "Interaction penalties",
+                contribution,
+                raw_value=penalty_score,
+                baseline_score=current,
+                final_score=final_score,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_HIGH,
+                description="Explicit unfavorable corrections.",
+                options=configuration,
+            )
+        )
+        before = current
+        current += contribution
+        step = _explain_trace_step(
+            6,
+            SCORING_EXPLANATION_STAGE_CORRECTIONS,
+            "apply_penalties",
+            input_value=before,
+            output_value=current,
+            message="Applied unfavorable interaction corrections.",
+            options=configuration,
+        )
+        if step is not None:
+            trace.append(step)
+
+    if bonus_score:
+        contribution = abs(bonus_score)
+        factors.append(
+            _explain_factor(
+                f"{resolved_id}:bonus",
+                SCORING_EXPLANATION_FACTOR_BONUS,
+                "Interaction bonuses",
+                contribution,
+                raw_value=bonus_score,
+                baseline_score=current,
+                final_score=final_score,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_HIGH,
+                description="Explicit favorable corrections.",
+                options=configuration,
+            )
+        )
+        before = current
+        current += contribution
+        step = _explain_trace_step(
+            7,
+            SCORING_EXPLANATION_STAGE_CORRECTIONS,
+            "apply_bonuses",
+            input_value=before,
+            output_value=current,
+            message="Applied favorable interaction corrections.",
+            options=configuration,
+        )
+        if step is not None:
+            trace.append(step)
+
+    if final_score is not None and abs(final_score - current) > configuration.epsilon:
+        correction = final_score - current
+        factors.append(
+            _explain_factor(
+                f"{resolved_id}:final_correction",
+                SCORING_EXPLANATION_FACTOR_CORRECTION,
+                "Final interaction correction",
+                correction,
+                raw_value=final_score,
+                baseline_score=current,
+                final_score=final_score,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_MODERATE,
+                description=(
+                    "Remaining explicit or family-specific correction needed "
+                    "to match the reported final score."
+                ),
+                options=configuration,
+            )
+        )
+        step = _explain_trace_step(
+            8,
+            SCORING_EXPLANATION_STAGE_CORRECTIONS,
+            "resolve_final_interaction_score",
+            input_value=current,
+            output_value=final_score,
+            message="Matched the reported final interaction score.",
+            options=configuration,
+        )
+        if step is not None:
+            trace.append(step)
+
+    factors = list(_explain_finalize_factors(factors, configuration))
+    explained_score, residual = _explain_score_accounting(
+        final_score,
+        0.0,
+        factors,
+    )
+    limitations: List[str] = []
+    if geometry_quality is None:
+        limitations.append(
+            "No explicit geometry-quality value was available."
+        )
+    if final_score is None:
+        limitations.append("No finite final interaction score was available.")
+    summary = (
+        f"{_explain_title_token(family)} / "
+        f"{_explain_title_token(interaction_type)} interaction"
+    )
+    if final_score is not None:
+        summary += f" contributed {final_score:+.4f} to the pose score."
+    else:
+        summary += " was recognized but had no finite reported score."
+    return ScoringEntityExplanation(
+        entity_id=resolved_id,
+        scope=SCORING_EXPLANATION_SCOPE_INTERACTION,
+        title=f"Interaction {resolved_id}",
+        summary=summary,
+        status=(
+            SCORING_EXPLANATION_STATUS_COMPLETE
+            if final_score is not None
+            else SCORING_EXPLANATION_STATUS_PARTIAL
+        ),
+        score=final_score,
+        baseline_score=0.0,
+        explained_score=explained_score,
+        residual=residual,
+        confidence=confidence,
+        factors=tuple(factors),
+        trace=tuple(trace),
+        key_findings=_explain_top_findings(
+            factors,
+            score=final_score,
+            extra=(
+                f"Family: {family}.",
+                f"Type: {interaction_type}.",
+                f"Strength: {strength}.",
+                f"Classification: {classification}.",
+            ),
+        ),
+        limitations=tuple(limitations),
+        source_type=_explain_class_name(interaction_score),
+        metadata=(
+            {
+                "interaction_family": family,
+                "interaction_type": interaction_type,
+                "strength": strength,
+                "classification": classification,
+                "geometry_quality": geometry_quality,
+            }
+            if configuration.include_metadata
+            else {}
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 24.6. Residue-level explanations
+# -----------------------------------------------------------------------------
+
+def _explain_residue_contributions(source: Any) -> Tuple[Any, ...]:
+    return _explain_sequence(
+        _explain_first(
+            source,
+            ("contributions", "interaction_scores", "scores"),
+            (),
+        )
+    )
+
+
+def explain_residue_score(
+    residue_score: Any,
+    *,
+    options: Optional[ScoringExplainabilityOptions] = None,
+    entity_id: Optional[str] = None,
+) -> ScoringEntityExplanation:
+    """Explain one ResidueScore-like object or equivalent mapping."""
+
+    configuration = options or ScoringExplainabilityOptions()
+    if residue_score is None:
+        raise ScoringExplainabilityInputError("residue_score cannot be None.")
+    resolved_id = entity_id or _explain_entity_id(
+        residue_score,
+        SCORING_EXPLANATION_SCOPE_RESIDUE,
+    )
+    final_score = _explain_score_value(
+        residue_score,
+        SCORING_EXPLANATION_SCOPE_RESIDUE,
+    )
+    raw_score = _explain_optional_float(
+        _explain_get(residue_score, "raw_score", None)
+    )
+    penalty_score = _explain_float(
+        _explain_get(residue_score, "penalty_score", 0.0)
+    )
+    bonus_score = _explain_float(
+        _explain_get(residue_score, "bonus_score", 0.0)
+    )
+    interaction_count = _explain_int(
+        _explain_get(residue_score, "interaction_count", 0)
+    )
+    hotspot = _explain_bool(_explain_get(residue_score, "hotspot", False))
+    rank = _explain_int(_explain_get(residue_score, "rank", 0))
+    contributions = _explain_residue_contributions(residue_score)
+
+    factors: List[ScoringExplanationFactor] = []
+    children: List[ScoringEntityExplanation] = []
+    trace: List[ScoringExplanationTraceStep] = []
+    contribution_total = 0.0
+
+    for index, contribution in enumerate(contributions, start=1):
+        child_id = _explain_entity_id(
+            contribution,
+            SCORING_EXPLANATION_SCOPE_INTERACTION,
+            fallback_index=index,
+        )
+        value = _explain_score_value(
+            contribution,
+            SCORING_EXPLANATION_SCOPE_INTERACTION,
+        )
+        if value is None:
+            value = _explain_optional_float(
+                _explain_first(
+                    contribution,
+                    ("contribution", "value", "score"),
+                    None,
+                )
+            )
+        if value is None:
+            continue
+        contribution_total += value
+        family = _explain_identifier(
+            _explain_first(
+                contribution,
+                ("interaction_family", "family", "type"),
+                "interaction",
+            )
+        )
+        factors.append(
+            _explain_factor(
+                f"{resolved_id}:interaction:{child_id}",
+                SCORING_EXPLANATION_FACTOR_INTERACTION,
+                f"{_explain_title_token(family)} interaction {child_id}",
+                value,
+                raw_value=value,
+                final_score=final_score,
+                confidence=_explain_confidence_from_geometry(
+                    _explain_first(
+                        contribution,
+                        ("geometry_quality", "quality"),
+                        None,
+                    )
+                ),
+                description=(
+                    "Atomic or grouped interaction contribution assigned to "
+                    "this receptor residue."
+                ),
+                options=configuration,
+            )
+        )
+        if configuration.include_children:
+            try:
+                child = explain_interaction_score(
+                    contribution,
+                    options=configuration,
+                    entity_id=child_id,
+                )
+            except ScoringExplainabilityError:
+                child = ScoringEntityExplanation(
+                    entity_id=child_id,
+                    scope=SCORING_EXPLANATION_SCOPE_INTERACTION,
+                    title=f"Interaction {child_id}",
+                    summary=f"Interaction contributed {value:+.4f}.",
+                    status=SCORING_EXPLANATION_STATUS_PARTIAL,
+                    score=value,
+                    baseline_score=0.0,
+                    explained_score=value,
+                    residual=0.0,
+                    confidence=SCORING_EXPLANATION_CONFIDENCE_UNKNOWN,
+                    source_type=_explain_class_name(contribution),
+                )
+            children.append(child)
+
+    if not contributions and raw_score is not None:
+        contribution_total = raw_score
+        factors.append(
+            _explain_factor(
+                f"{resolved_id}:raw_score",
+                SCORING_EXPLANATION_FACTOR_INTERACTION,
+                "Aggregated interaction contribution",
+                raw_score,
+                raw_value=raw_score,
+                final_score=final_score,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_MODERATE,
+                description=(
+                    "Residue interaction total; individual interaction "
+                    "components were not available."
+                ),
+                limitations=(
+                    "Individual atomic interactions could not be separated.",
+                ),
+                options=configuration,
+            )
+        )
+
+    step = _explain_trace_step(
+        1,
+        SCORING_EXPLANATION_STAGE_AGGREGATION,
+        "sum_residue_interactions",
+        input_value=0.0,
+        output_value=contribution_total,
+        message=(
+            f"Aggregated {interaction_count or len(contributions)} "
+            "interaction contributions."
+        ),
+        options=configuration,
+    )
+    if step is not None:
+        trace.append(step)
+
+    current = raw_score if raw_score is not None else contribution_total
+    if penalty_score:
+        contribution = -abs(penalty_score)
+        factors.append(
+            _explain_factor(
+                f"{resolved_id}:penalty",
+                SCORING_EXPLANATION_FACTOR_PENALTY,
+                "Residue penalties",
+                contribution,
+                raw_value=penalty_score,
+                baseline_score=current,
+                final_score=final_score,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_HIGH,
+                options=configuration,
+            )
+        )
+        before = current
+        current += contribution
+        step = _explain_trace_step(
+            2,
+            SCORING_EXPLANATION_STAGE_CORRECTIONS,
+            "apply_residue_penalties",
+            input_value=before,
+            output_value=current,
+            options=configuration,
+        )
+        if step is not None:
+            trace.append(step)
+    if bonus_score:
+        contribution = abs(bonus_score)
+        factors.append(
+            _explain_factor(
+                f"{resolved_id}:bonus",
+                SCORING_EXPLANATION_FACTOR_BONUS,
+                "Residue bonuses",
+                contribution,
+                raw_value=bonus_score,
+                baseline_score=current,
+                final_score=final_score,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_HIGH,
+                options=configuration,
+            )
+        )
+        before = current
+        current += contribution
+        step = _explain_trace_step(
+            3,
+            SCORING_EXPLANATION_STAGE_CORRECTIONS,
+            "apply_residue_bonuses",
+            input_value=before,
+            output_value=current,
+            options=configuration,
+        )
+        if step is not None:
+            trace.append(step)
+    if final_score is not None and abs(final_score - current) > configuration.epsilon:
+        correction = final_score - current
+        factors.append(
+            _explain_factor(
+                f"{resolved_id}:aggregation_correction",
+                SCORING_EXPLANATION_FACTOR_CORRECTION,
+                "Residue aggregation correction",
+                correction,
+                raw_value=final_score,
+                baseline_score=current,
+                final_score=final_score,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_MODERATE,
+                options=configuration,
+            )
+        )
+
+    factors = list(_explain_finalize_factors(factors, configuration))
+    explained_score, residual = _explain_score_accounting(
+        final_score,
+        0.0,
+        factors,
+    )
+    if configuration.top_children:
+        children = children[: configuration.top_children]
+    limitations: List[str] = []
+    if not contributions:
+        limitations.append(
+            "No individual interaction contributions were exposed."
+        )
+    confidence = (
+        SCORING_EXPLANATION_CONFIDENCE_HIGH
+        if contributions
+        else SCORING_EXPLANATION_CONFIDENCE_MODERATE
+    )
+    summary = f"Residue {resolved_id}"
+    if final_score is not None:
+        summary += f" contributed {final_score:+.4f}"
+    else:
+        summary += " had no finite score"
+    summary += f" across {interaction_count or len(contributions)} interactions."
+    if hotspot:
+        summary += " It was classified as a hotspot."
+    return ScoringEntityExplanation(
+        entity_id=resolved_id,
+        scope=SCORING_EXPLANATION_SCOPE_RESIDUE,
+        title=f"Residue {resolved_id}",
+        summary=summary,
+        status=(
+            SCORING_EXPLANATION_STATUS_COMPLETE
+            if final_score is not None
+            else SCORING_EXPLANATION_STATUS_PARTIAL
+        ),
+        score=final_score,
+        baseline_score=0.0,
+        explained_score=explained_score,
+        residual=residual,
+        confidence=confidence,
+        factors=tuple(factors),
+        trace=tuple(trace),
+        children=tuple(children),
+        key_findings=_explain_top_findings(
+            factors,
+            score=final_score,
+            extra=(
+                f"Interaction count: {interaction_count or len(contributions)}.",
+                f"Hotspot: {hotspot}.",
+                f"Residue rank: {rank}." if rank else "",
+            ),
+        ),
+        limitations=tuple(limitations),
+        source_type=_explain_class_name(residue_score),
+        metadata=(
+            {
+                "interaction_count": interaction_count,
+                "hotspot": hotspot,
+                "rank": rank or None,
+                "interaction_types": list(
+                    _explain_sequence(
+                        _explain_get(
+                            residue_score,
+                            "interaction_types",
+                            (),
+                        )
+                    )
+                ),
+                "interaction_families": list(
+                    _explain_sequence(
+                        _explain_get(
+                            residue_score,
+                            "interaction_families",
+                            (),
+                        )
+                    )
+                ),
+            }
+            if configuration.include_metadata
+            else {}
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 24.7. Pose-level explanations
+# -----------------------------------------------------------------------------
+
+def _explain_pose_interactions(source: Any) -> Tuple[Any, ...]:
+    direct = _explain_first(
+        source,
+        ("scores", "interaction_scores", "interactions"),
+        None,
+    )
+    if direct is not None:
+        return _explain_sequence(direct)
+    collection = _explain_get(source, "collection_result", None)
+    return _explain_sequence(
+        _explain_first(
+            collection,
+            ("scores", "interaction_scores", "interactions"),
+            (),
+        )
+    )
+
+
+def _explain_pose_residues(source: Any) -> Tuple[Any, ...]:
+    direct = _explain_first(
+        source,
+        ("residue_scores", "residues"),
+        None,
+    )
+    if direct is not None:
+        return _explain_sequence(direct)
+    residue_result = _explain_get(source, "residue_result", None)
+    if residue_result is None:
+        return ()
+    return _explain_sequence(
+        _explain_first(
+            residue_result,
+            ("scores", "residue_scores", "residues", "items"),
+            residue_result if isinstance(residue_result, Mapping) else (),
+        )
+    )
+
+
+def _explain_named_components(source: Any, names: Sequence[str]) -> Mapping[str, float]:
+    value = _explain_first(source, names, None)
+    if not isinstance(value, Mapping):
+        return _EMPTY_SCORING_EXPLANATION_METADATA
+    result: Dict[str, float] = {}
+    for key, item in value.items():
+        number = _explain_optional_float(
+            _explain_first(item, ("score", "value", "contribution"), item)
+        )
+        if number is not None:
+            result[_explain_identifier(key)] = number
+    return MappingProxyType(result)
+
+
+def _explain_pose_summary_value(source: Any, names: Sequence[str]) -> Any:
+    direct = _explain_first(source, names, None)
+    if direct is not None:
+        return direct
+    summary = _explain_get(source, "summary", None)
+    return _explain_first(summary, names, None)
+
+
+def explain_pose_scoring_result(
+    pose_result: Any,
+    *,
+    options: Optional[ScoringExplainabilityOptions] = None,
+    entity_id: Optional[str] = None,
+) -> ScoringEntityExplanation:
+    """Explain one PoseScoringResult-like object or equivalent mapping."""
+
+    configuration = options or ScoringExplainabilityOptions()
+    if pose_result is None:
+        raise ScoringExplainabilityInputError("pose_result cannot be None.")
+    pose_id = entity_id or _explain_entity_id(
+        pose_result,
+        SCORING_EXPLANATION_SCOPE_POSE,
+    )
+    final_score = _explain_score_value(
+        pose_result,
+        SCORING_EXPLANATION_SCOPE_POSE,
+    )
+    raw_score = _explain_optional_float(
+        _explain_pose_summary_value(
+            pose_result,
+            ("raw_score", "interaction_score", "base_score"),
+        )
+    )
+    normalized_score = _explain_optional_float(
+        _explain_pose_summary_value(
+            pose_result,
+            ("normalized_score", "normalization_score"),
+        )
+    )
+    interactions = _explain_pose_interactions(pose_result)
+    residues = _explain_pose_residues(pose_result)
+    family_components = _explain_named_components(
+        pose_result,
+        ("family_components", "family_scores", "scores_by_family"),
+    )
+    type_components = _explain_named_components(
+        pose_result,
+        ("type_components", "type_scores", "scores_by_type"),
+    )
+    corrections = _explain_first(
+        pose_result,
+        ("corrections", "score_corrections", "correction_components"),
+        (),
+    )
+    penalty_score = _explain_optional_float(
+        _explain_pose_summary_value(
+            pose_result,
+            ("penalty_score", "total_penalty", "penalties"),
+        )
+    )
+    bonus_score = _explain_optional_float(
+        _explain_pose_summary_value(
+            pose_result,
+            (
+                "bonus_score",
+                "total_bonus",
+                "bonuses",
+                "diversity_bonus",
+            ),
+        )
+    )
+
+    factors: List[ScoringExplanationFactor] = []
+    children: List[ScoringEntityExplanation] = []
+    trace: List[ScoringExplanationTraceStep] = []
+
+    interaction_total = 0.0
+    for index, interaction in enumerate(interactions, start=1):
+        interaction_id = _explain_entity_id(
+            interaction,
+            SCORING_EXPLANATION_SCOPE_INTERACTION,
+            fallback_index=index,
+        )
+        value = _explain_score_value(
+            interaction,
+            SCORING_EXPLANATION_SCOPE_INTERACTION,
+        )
+        if value is None:
+            continue
+        interaction_total += value
+        family = _explain_identifier(
+            _explain_first(
+                interaction,
+                ("interaction_family", "family", "type"),
+                "interaction",
+            )
+        )
+        factors.append(
+            _explain_factor(
+                f"{pose_id}:interaction:{interaction_id}",
+                SCORING_EXPLANATION_FACTOR_INTERACTION,
+                f"{_explain_title_token(family)} interaction {interaction_id}",
+                value,
+                raw_value=value,
+                final_score=final_score,
+                confidence=_explain_confidence_from_geometry(
+                    _explain_first(
+                        interaction,
+                        ("geometry_quality", "quality"),
+                        None,
+                    )
+                ),
+                description="Individual interaction contribution to the pose.",
+                options=configuration,
+            )
+        )
+
+    if not interactions and family_components:
+        for family, value in family_components.items():
+            interaction_total += value
+            factors.append(
+                _explain_factor(
+                    f"{pose_id}:family:{family}",
+                    SCORING_EXPLANATION_FACTOR_INTERACTION,
+                    f"{_explain_title_token(family)} family contribution",
+                    value,
+                    raw_value=value,
+                    final_score=final_score,
+                    confidence=SCORING_EXPLANATION_CONFIDENCE_MODERATE,
+                    description=(
+                        "Aggregated interaction-family contribution; "
+                        "individual interactions were not exposed."
+                    ),
+                    options=configuration,
+                )
+            )
+
+    if configuration.include_children:
+        child_sources = residues if residues else interactions
+        child_scope = (
+            SCORING_EXPLANATION_SCOPE_RESIDUE
+            if residues
+            else SCORING_EXPLANATION_SCOPE_INTERACTION
+        )
+        for index, child_source in enumerate(child_sources, start=1):
+            try:
+                if child_scope == SCORING_EXPLANATION_SCOPE_RESIDUE:
+                    child = explain_residue_score(
+                        child_source,
+                        options=configuration,
+                    )
+                else:
+                    child = explain_interaction_score(
+                        child_source,
+                        options=configuration,
+                    )
+            except ScoringExplainabilityError:
+                child_id = _explain_entity_id(
+                    child_source,
+                    child_scope,
+                    fallback_index=index,
+                )
+                child = ScoringEntityExplanation(
+                    entity_id=child_id,
+                    scope=child_scope,
+                    title=f"{_explain_title_token(child_scope)} {child_id}",
+                    summary="Detailed child explanation was unavailable.",
+                    status=SCORING_EXPLANATION_STATUS_PARTIAL,
+                    source_type=_explain_class_name(child_source),
+                    limitations=(
+                        "The child object did not expose a supported public "
+                        "score interface.",
+                    ),
+                )
+            children.append(child)
+
+    starting_score = raw_score if raw_score is not None else interaction_total
+    step = _explain_trace_step(
+        1,
+        SCORING_EXPLANATION_STAGE_AGGREGATION,
+        "aggregate_pose_interactions",
+        input_value=0.0,
+        output_value=starting_score,
+        message=(
+            f"Aggregated {len(interactions)} interactions and "
+            f"{len(residues)} residue summaries."
+        ),
+        options=configuration,
+    )
+    if step is not None:
+        trace.append(step)
+
+    current = starting_score
+    for index, correction in enumerate(_explain_sequence(corrections), start=1):
+        name = _explain_identifier(
+            _explain_first(
+                correction,
+                ("name", "kind", "type", "label"),
+                f"correction_{index}",
+            )
+        )
+        value = _explain_optional_float(
+            _explain_first(
+                correction,
+                ("contribution", "delta", "value", "score"),
+                correction,
+            )
+        )
+        if value is None:
+            continue
+        category = (
+            SCORING_EXPLANATION_FACTOR_PENALTY
+            if value < 0.0
+            else SCORING_EXPLANATION_FACTOR_BONUS
+        )
+        factors.append(
+            _explain_factor(
+                f"{pose_id}:correction:{index}:{name}",
+                category,
+                _explain_title_token(name),
+                value,
+                raw_value=value,
+                baseline_score=current,
+                final_score=final_score,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_HIGH,
+                description="Explicit pose-level score correction.",
+                options=configuration,
+            )
+        )
+        before = current
+        current += value
+        step = _explain_trace_step(
+            index + 1,
+            SCORING_EXPLANATION_STAGE_CORRECTIONS,
+            name,
+            input_value=before,
+            output_value=current,
+            message=f"Applied pose correction {name}.",
+            options=configuration,
+        )
+        if step is not None:
+            trace.append(step)
+
+    if not _explain_sequence(corrections):
+        if penalty_score:
+            contribution = -abs(penalty_score)
+            factors.append(
+                _explain_factor(
+                    f"{pose_id}:penalty",
+                    SCORING_EXPLANATION_FACTOR_PENALTY,
+                    "Pose penalties",
+                    contribution,
+                    raw_value=penalty_score,
+                    baseline_score=current,
+                    final_score=final_score,
+                    confidence=SCORING_EXPLANATION_CONFIDENCE_HIGH,
+                    options=configuration,
+                )
+            )
+            current += contribution
+        if bonus_score:
+            contribution = abs(bonus_score)
+            factors.append(
+                _explain_factor(
+                    f"{pose_id}:bonus",
+                    SCORING_EXPLANATION_FACTOR_BONUS,
+                    "Pose bonuses and diversity",
+                    contribution,
+                    raw_value=bonus_score,
+                    baseline_score=current,
+                    final_score=final_score,
+                    confidence=SCORING_EXPLANATION_CONFIDENCE_HIGH,
+                    options=configuration,
+                )
+            )
+            current += contribution
+
+    if normalized_score is not None and final_score == normalized_score:
+        factors.append(
+            _explain_factor(
+                f"{pose_id}:normalization",
+                SCORING_EXPLANATION_FACTOR_NORMALIZATION,
+                "Pose-score normalization",
+                normalized_score - current,
+                raw_value=current,
+                normalized_value=normalized_score,
+                baseline_score=current,
+                final_score=final_score,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_HIGH,
+                description=(
+                    "Transformation from the unnormalized pose score to the "
+                    "reported normalized scale."
+                ),
+                options=configuration,
+            )
+        )
+
+    if final_score is not None and abs(final_score - current) > configuration.epsilon:
+        factors.append(
+            _explain_factor(
+                f"{pose_id}:final_adjustment",
+                SCORING_EXPLANATION_FACTOR_CORRECTION,
+                "Final pose-score adjustment",
+                final_score - current,
+                raw_value=final_score,
+                baseline_score=current,
+                final_score=final_score,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_MODERATE,
+                description=(
+                    "Remaining correction required to reproduce the reported "
+                    "pose score from publicly exposed components."
+                ),
+                options=configuration,
+            )
+        )
+        step = _explain_trace_step(
+            len(trace) + 1,
+            SCORING_EXPLANATION_STAGE_AGGREGATION,
+            "resolve_final_pose_score",
+            input_value=current,
+            output_value=final_score,
+            message="Matched the reported final pose score.",
+            options=configuration,
+        )
+        if step is not None:
+            trace.append(step)
+
+    factors = list(_explain_finalize_factors(factors, configuration))
+    explained_score, residual = _explain_score_accounting(
+        final_score,
+        0.0,
+        factors,
+    )
+    if configuration.top_children:
+        children.sort(
+            key=lambda item: -abs(item.score or 0.0)
+        )
+        children = children[: configuration.top_children]
+
+    ligand_id = _explain_identifier(
+        _explain_first(pose_result, ("ligand_id", "ligand"), "")
+    )
+    model_id = _explain_identifier(
+        _explain_first(pose_result, ("model_id", "model"), "")
+    )
+    result_status = _explain_identifier(
+        _explain_get(pose_result, "status", "complete")
+    )
+    limitations: List[str] = []
+    if not interactions:
+        limitations.append(
+            "Individual interaction scores were not available at pose level."
+        )
+    if final_score is None:
+        limitations.append("No finite final pose score was available.")
+    if residual is not None and abs(residual) > configuration.epsilon:
+        limitations.append(
+            "Displayed top factors do not fully close the reported score."
+        )
+    summary = f"Pose {pose_id}"
+    if final_score is not None:
+        summary += f" received a DockAnalyzer score of {final_score:.4f}."
+    else:
+        summary += " did not expose a finite DockAnalyzer score."
+    summary += (
+        f" The explanation considered {len(interactions)} interactions and "
+        f"{len(residues)} residue summaries."
+    )
+    return ScoringEntityExplanation(
+        entity_id=pose_id,
+        scope=SCORING_EXPLANATION_SCOPE_POSE,
+        title=f"Pose {pose_id}",
+        summary=summary,
+        status=(
+            SCORING_EXPLANATION_STATUS_COMPLETE
+            if final_score is not None
+            else SCORING_EXPLANATION_STATUS_PARTIAL
+        ),
+        score=final_score,
+        baseline_score=0.0,
+        explained_score=explained_score,
+        residual=residual,
+        confidence=(
+            SCORING_EXPLANATION_CONFIDENCE_HIGH
+            if interactions
+            else SCORING_EXPLANATION_CONFIDENCE_MODERATE
+        ),
+        factors=tuple(factors),
+        trace=tuple(trace),
+        children=tuple(children),
+        key_findings=_explain_top_findings(
+            factors,
+            score=final_score,
+            extra=(
+                f"Interaction count: {len(interactions)}.",
+                f"Residue count: {len(residues)}.",
+                f"Result status: {result_status}.",
+            ),
+        ),
+        limitations=tuple(limitations),
+        source_type=_explain_class_name(pose_result),
+        metadata=(
+            {
+                "pose_id": pose_id,
+                "ligand_id": ligand_id,
+                "model_id": model_id,
+                "result_status": result_status,
+                "family_components": dict(family_components),
+                "type_components": dict(type_components),
+            }
+            if configuration.include_metadata
+            else {}
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 24.8. Multipose-ranking explanations
+# -----------------------------------------------------------------------------
+
+def _explain_ranking_entries(source: Any) -> Tuple[Any, ...]:
+    return _explain_sequence(
+        _explain_first(source, ("entries", "ranked_poses", "poses"), ())
+    )
+
+
+def _explain_ranking_groups(source: Any) -> Tuple[Any, ...]:
+    groups = _explain_first(source, ("groups", "group_results"), None)
+    if groups is not None:
+        return _explain_sequence(groups)
+    if _explain_ranking_entries(source):
+        return (source,)
+    return ()
+
+
+def explain_ranked_pose(
+    ranked_pose: Any,
+    *,
+    options: Optional[ScoringExplainabilityOptions] = None,
+    entity_id: Optional[str] = None,
+) -> ScoringEntityExplanation:
+    """Explain one RankedPose-like object and its evaluated criteria."""
+
+    configuration = options or ScoringExplainabilityOptions()
+    if ranked_pose is None:
+        raise ScoringExplainabilityInputError("ranked_pose cannot be None.")
+    pose_id = _explain_identifier(
+        _explain_first(ranked_pose, ("pose_id", "id"), "pose")
+    )
+    group_id = _explain_identifier(
+        _explain_get(ranked_pose, "group_id", "global"),
+        default="global",
+    )
+    resolved_id = entity_id or f"{group_id}:{pose_id}"
+    ranking_score = _explain_optional_float(
+        _explain_get(ranked_pose, "ranking_score", None)
+    )
+    rank = _explain_int(_explain_get(ranked_pose, "rank", 0))
+    tied_rank = _explain_optional_float(
+        _explain_get(ranked_pose, "tied_rank", None)
+    )
+    percentile = _explain_optional_float(
+        _explain_get(ranked_pose, "percentile", None)
+    )
+    pareto_front = _explain_int(
+        _explain_get(ranked_pose, "pareto_front", 0)
+    )
+    selected = _explain_bool(_explain_get(ranked_pose, "selected", False))
+    best = _explain_bool(_explain_get(ranked_pose, "best", False))
+    criterion_values = _explain_sequence(
+        _explain_first(
+            ranked_pose,
+            ("criterion_values", "criteria", "metric_values"),
+            (),
+        )
+    )
+
+    factors: List[ScoringExplanationFactor] = []
+    trace: List[ScoringExplanationTraceStep] = []
+    cumulative = 0.0
+    for index, criterion in enumerate(criterion_values, start=1):
+        metric = _explain_identifier(
+            _explain_first(
+                criterion,
+                ("metric", "name", "criterion"),
+                f"criterion_{index}",
+            )
+        )
+        raw_value = _explain_optional_float(
+            _explain_get(criterion, "raw_value", None)
+        )
+        normalized_value = _explain_optional_float(
+            _explain_first(
+                criterion,
+                ("normalized_value", "oriented_value"),
+                None,
+            )
+        )
+        weighted_value = _explain_optional_float(
+            _explain_first(
+                criterion,
+                ("weighted_value", "contribution"),
+                None,
+            )
+        )
+        weight = _explain_optional_float(
+            _explain_get(criterion, "weight", None)
+        )
+        missing = _explain_bool(_explain_get(criterion, "missing", False))
+        imputed = _explain_bool(_explain_get(criterion, "imputed", False))
+        eligible = _explain_bool(
+            _explain_get(criterion, "eligible", True),
+            default=True,
+        )
+        direction = _explain_identifier(
+            _explain_get(criterion, "direction", "")
+        )
+        normalization = _explain_identifier(
+            _explain_get(criterion, "normalization", "")
+        )
+        contribution = weighted_value
+        if contribution is None and normalized_value is not None:
+            contribution = normalized_value * (weight if weight is not None else 1.0)
+        limitations: List[str] = []
+        if missing:
+            limitations.append("The original criterion value was missing.")
+        if imputed:
+            limitations.append("The criterion value was imputed.")
+        if not eligible:
+            limitations.append("The criterion was excluded from ranking.")
+        confidence = (
+            SCORING_EXPLANATION_CONFIDENCE_LOW
+            if missing or imputed
+            else SCORING_EXPLANATION_CONFIDENCE_HIGH
+        )
+        factors.append(
+            _explain_factor(
+                f"{resolved_id}:criterion:{metric}",
+                SCORING_EXPLANATION_FACTOR_RANKING,
+                f"Ranking criterion: {_explain_title_token(metric)}",
+                contribution,
+                raw_value=raw_value,
+                normalized_value=normalized_value,
+                weight=weight,
+                baseline_score=cumulative,
+                final_score=ranking_score,
+                confidence=confidence,
+                evidence=(
+                    ScoringExplanationEvidence(
+                        "direction",
+                        direction,
+                        source="ranking_criterion",
+                    ),
+                    ScoringExplanationEvidence(
+                        "normalization",
+                        normalization,
+                        source="ranking_criterion",
+                    ),
+                    ScoringExplanationEvidence(
+                        "missing",
+                        missing,
+                        source="ranking_criterion",
+                    ),
+                    ScoringExplanationEvidence(
+                        "imputed",
+                        imputed,
+                        source="ranking_criterion",
+                    ),
+                ),
+                description=(
+                    "Weighted contribution of one oriented and normalized "
+                    "criterion to the multipose ranking score."
+                ),
+                limitations=tuple(limitations) + (
+                    "Removing this factor estimates the score change but does "
+                    "not recompute other poses or the final rank position.",
+                ),
+                options=configuration,
+            )
+        )
+        if contribution is not None:
+            before = cumulative
+            cumulative += contribution
+            step = _explain_trace_step(
+                index,
+                SCORING_EXPLANATION_STAGE_RANKING,
+                f"apply_{metric}",
+                input_value=before,
+                output_value=cumulative,
+                multiplier=weight,
+                message=f"Applied ranking criterion {metric}.",
+                options=configuration,
+            )
+            if step is not None:
+                trace.append(step)
+
+    if (
+        ranking_score is not None
+        and abs(ranking_score - cumulative) > configuration.epsilon
+    ):
+        factors.append(
+            _explain_factor(
+                f"{resolved_id}:ranking_residual",
+                SCORING_EXPLANATION_FACTOR_RESIDUAL,
+                "Ranking-method remainder",
+                ranking_score - cumulative,
+                raw_value=ranking_score,
+                baseline_score=cumulative,
+                final_score=ranking_score,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_MODERATE,
+                description=(
+                    "Difference introduced by the selected ranking method, "
+                    "tie handling, Pareto logic, or unavailable criteria."
+                ),
+                options=configuration,
+            )
+        )
+
+    factors = list(_explain_finalize_factors(factors, configuration))
+    explained_score, residual = _explain_score_accounting(
+        ranking_score,
+        0.0,
+        factors,
+    )
+    limitations = [
+        "Criterion counterfactuals do not rerun the complete multipose ranking."
+    ]
+    if any(
+        _explain_bool(_explain_get(item, "imputed", False))
+        for item in criterion_values
+    ):
+        limitations.append(
+            "At least one ranking criterion was imputed."
+        )
+    summary = f"Pose {pose_id} ranked {rank or 'unranked'} in group {group_id}"
+    if ranking_score is not None:
+        summary += f" with a ranking score of {ranking_score:.4f}."
+    else:
+        summary += " without a finite ranking score."
+    if selected:
+        summary += " It was selected by the configured top-pose rule."
+    return ScoringEntityExplanation(
+        entity_id=resolved_id,
+        scope=SCORING_EXPLANATION_SCOPE_RANKING,
+        title=f"Ranking explanation for pose {pose_id}",
+        summary=summary,
+        status=(
+            SCORING_EXPLANATION_STATUS_COMPLETE
+            if ranking_score is not None
+            else SCORING_EXPLANATION_STATUS_PARTIAL
+        ),
+        score=ranking_score,
+        baseline_score=0.0,
+        explained_score=explained_score,
+        residual=residual,
+        confidence=(
+            SCORING_EXPLANATION_CONFIDENCE_HIGH
+            if criterion_values
+            else SCORING_EXPLANATION_CONFIDENCE_LOW
+        ),
+        factors=tuple(factors),
+        trace=tuple(trace),
+        key_findings=_explain_top_findings(
+            factors,
+            score=ranking_score,
+            extra=(
+                f"Rank: {rank}." if rank else "",
+                f"Tied rank: {tied_rank:.3f}." if tied_rank is not None else "",
+                (
+                    f"Percentile: {percentile:.3f}."
+                    if percentile is not None
+                    else ""
+                ),
+                f"Pareto front: {pareto_front}." if pareto_front else "",
+                f"Selected: {selected}.",
+                f"Best: {best}.",
+            ),
+        ),
+        limitations=tuple(limitations),
+        source_type=_explain_class_name(ranked_pose),
+        metadata=(
+            {
+                "pose_id": pose_id,
+                "group_id": group_id,
+                "rank": rank or None,
+                "tied_rank": tied_rank,
+                "percentile": percentile,
+                "pareto_front": pareto_front or None,
+                "selected": selected,
+                "best": best,
+            }
+            if configuration.include_metadata
+            else {}
+        ),
+    )
+
+
+def explain_ranking_group(
+    ranking_group: Any,
+    *,
+    options: Optional[ScoringExplainabilityOptions] = None,
+    entity_id: Optional[str] = None,
+) -> ScoringEntityExplanation:
+    """Explain one RankingGroupResult-like object."""
+
+    configuration = options or ScoringExplainabilityOptions()
+    if ranking_group is None:
+        raise ScoringExplainabilityInputError("ranking_group cannot be None.")
+    group_id = entity_id or _explain_entity_id(
+        ranking_group,
+        SCORING_EXPLANATION_SCOPE_RANKING,
+    )
+    entries = _explain_ranking_entries(ranking_group)
+    excluded = _explain_sequence(
+        _explain_first(
+            ranking_group,
+            ("excluded_records", "excluded", "excluded_poses"),
+            (),
+        )
+    )
+    method = _explain_identifier(
+        _explain_get(ranking_group, "method", "unknown")
+    )
+    tie_strategy = _explain_identifier(
+        _explain_get(ranking_group, "tie_strategy", "unknown")
+    )
+    children: List[ScoringEntityExplanation] = []
+    factors: List[ScoringExplanationFactor] = []
+    scores: List[float] = []
+    selected_count = 0
+    best_score: Optional[float] = None
+
+    for entry in entries:
+        child = explain_ranked_pose(entry, options=configuration)
+        children.append(child)
+        if child.score is not None:
+            scores.append(child.score)
+            if best_score is None or child.score > best_score:
+                best_score = child.score
+        if _explain_bool(_explain_get(entry, "selected", False)):
+            selected_count += 1
+
+    criteria = _explain_sequence(
+        _explain_first(ranking_group, ("criteria", "ranking_criteria"), ())
+    )
+    for index, criterion in enumerate(criteria, start=1):
+        metric = _explain_identifier(
+            _explain_first(
+                criterion,
+                ("metric", "name"),
+                f"criterion_{index}",
+            )
+        )
+        weight = _explain_optional_float(
+            _explain_get(criterion, "weight", None)
+        )
+        factors.append(
+            _explain_factor(
+                f"{group_id}:criterion_definition:{metric}",
+                SCORING_EXPLANATION_FACTOR_RANKING,
+                f"Configured criterion: {_explain_title_token(metric)}",
+                weight,
+                raw_value=weight,
+                weight=weight,
+                final_score=None,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_HIGH,
+                description=(
+                    "Configured criterion weight; this describes the group "
+                    "ranking policy rather than one pose score."
+                ),
+                options=configuration,
+            )
+        )
+
+    factors = list(_explain_finalize_factors(factors, configuration))
+    if configuration.top_children:
+        children = children[: configuration.top_children]
+    mean_score = fmean(scores) if scores else None
+    summary = (
+        f"Ranking group {group_id} evaluated {len(entries)} poses using "
+        f"{method} ranking and {tie_strategy} tie handling."
+    )
+    if selected_count:
+        summary += f" {selected_count} poses were selected."
+    limitations = []
+    if excluded:
+        limitations.append(
+            f"{len(excluded)} poses were excluded from the ranking."
+        )
+    return ScoringEntityExplanation(
+        entity_id=group_id,
+        scope=SCORING_EXPLANATION_SCOPE_RANKING,
+        title=f"Multipose ranking group {group_id}",
+        summary=summary,
+        status=(
+            SCORING_EXPLANATION_STATUS_COMPLETE
+            if entries
+            else SCORING_EXPLANATION_STATUS_EMPTY
+        ),
+        score=best_score,
+        baseline_score=None,
+        explained_score=None,
+        residual=None,
+        confidence=(
+            SCORING_EXPLANATION_CONFIDENCE_HIGH
+            if entries
+            else SCORING_EXPLANATION_CONFIDENCE_LOW
+        ),
+        factors=tuple(factors),
+        children=tuple(children),
+        key_findings=_explain_unique_strings(
+            (
+                f"Ranked poses: {len(entries)}.",
+                f"Selected poses: {selected_count}.",
+                f"Excluded poses: {len(excluded)}.",
+                (
+                    f"Best ranking score: {best_score:.4f}."
+                    if best_score is not None
+                    else ""
+                ),
+                (
+                    f"Mean ranking score: {mean_score:.4f}."
+                    if mean_score is not None
+                    else ""
+                ),
+            )
+        ),
+        limitations=tuple(limitations),
+        source_type=_explain_class_name(ranking_group),
+        metadata=(
+            {
+                "group_id": group_id,
+                "method": method,
+                "tie_strategy": tie_strategy,
+                "entry_count": len(entries),
+                "selected_count": selected_count,
+                "excluded_count": len(excluded),
+            }
+            if configuration.include_metadata
+            else {}
+        ),
+    )
+
+
+def explain_multipose_ranking(
+    ranking_result: Any,
+    *,
+    options: Optional[ScoringExplainabilityOptions] = None,
+) -> ScoringEntityExplanation:
+    """Explain a complete MultiposeRankingResult-like object."""
+
+    configuration = options or ScoringExplainabilityOptions()
+    if ranking_result is None:
+        raise ScoringExplainabilityInputError(
+            "ranking_result cannot be None."
+        )
+    groups = _explain_ranking_groups(ranking_result)
+    if len(groups) == 1 and groups[0] is ranking_result:
+        return explain_ranking_group(
+            ranking_result,
+            options=configuration,
+            entity_id=_explain_entity_id(
+                ranking_result,
+                SCORING_EXPLANATION_SCOPE_RANKING,
+            ),
+        )
+    children = [
+        explain_ranking_group(group, options=configuration)
+        for group in groups
+    ]
+    total_entries = sum(
+        len(_explain_ranking_entries(group))
+        for group in groups
+    )
+    selected_count = sum(
+        1
+        for group in groups
+        for entry in _explain_ranking_entries(group)
+        if _explain_bool(_explain_get(entry, "selected", False))
+    )
+    if configuration.top_children:
+        children = children[: configuration.top_children]
+    best_scores = [child.score for child in children if child.score is not None]
+    best_score = max(best_scores) if best_scores else None
+    status = _explain_identifier(
+        _explain_get(ranking_result, "status", "complete")
+    )
+    return ScoringEntityExplanation(
+        entity_id="multipose_ranking",
+        scope=SCORING_EXPLANATION_SCOPE_RANKING,
+        title="Multipose ranking explanation",
+        summary=(
+            f"The multipose ranking contains {len(groups)} groups and "
+            f"{total_entries} ranked poses; {selected_count} poses were "
+            "selected."
+        ),
+        status=(
+            SCORING_EXPLANATION_STATUS_COMPLETE
+            if groups
+            else SCORING_EXPLANATION_STATUS_EMPTY
+        ),
+        score=best_score,
+        confidence=(
+            SCORING_EXPLANATION_CONFIDENCE_HIGH
+            if groups
+            else SCORING_EXPLANATION_CONFIDENCE_LOW
+        ),
+        children=tuple(children),
+        key_findings=_explain_unique_strings(
+            (
+                f"Ranking groups: {len(groups)}.",
+                f"Ranked poses: {total_entries}.",
+                f"Selected poses: {selected_count}.",
+                f"Source status: {status}.",
+            )
+        ),
+        source_type=_explain_class_name(ranking_result),
+        metadata=(
+            {
+                "group_count": len(groups),
+                "ranked_pose_count": total_entries,
+                "selected_pose_count": selected_count,
+                "source_status": status,
+            }
+            if configuration.include_metadata
+            else {}
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 24.9. Consensus and persistence explanations
+# -----------------------------------------------------------------------------
+
+def explain_persistent_feature(
+    feature_record: Any,
+    *,
+    options: Optional[ScoringExplainabilityOptions] = None,
+    entity_id: Optional[str] = None,
+) -> ScoringEntityExplanation:
+    """Explain one PersistentFeatureRecord-like object."""
+
+    configuration = options or ScoringExplainabilityOptions()
+    if feature_record is None:
+        raise ScoringExplainabilityInputError(
+            "feature_record cannot be None."
+        )
+    feature_id = entity_id or _explain_identifier(
+        _explain_first(feature_record, ("feature_id", "id"), "feature")
+    )
+    label = _explain_identifier(
+        _explain_first(feature_record, ("label", "name"), feature_id)
+    )
+    level = _explain_identifier(
+        _explain_get(feature_record, "level", "interaction")
+    )
+    persistence = _explain_optional_float(
+        _explain_first(
+            feature_record,
+            ("persistence_fraction", "persistence"),
+            None,
+        )
+    )
+    weighted = _explain_optional_float(
+        _explain_first(
+            feature_record,
+            ("weighted_persistence_fraction", "weighted_persistence"),
+            persistence,
+        )
+    )
+    score = weighted if weighted is not None else persistence
+    pose_count = _explain_int(
+        _explain_get(feature_record, "pose_count", 0)
+    )
+    denominator = _explain_int(
+        _explain_get(feature_record, "denominator_pose_count", 0)
+    )
+    occurrence_count = _explain_int(
+        _explain_get(feature_record, "occurrence_count", 0)
+    )
+    support_weight = _explain_optional_float(
+        _explain_get(feature_record, "support_weight", None)
+    )
+    denominator_weight = _explain_optional_float(
+        _explain_get(feature_record, "denominator_weight", None)
+    )
+    score_mean = _explain_optional_float(
+        _explain_get(feature_record, "score_mean", None)
+    )
+    consensus_class = _explain_identifier(
+        _explain_get(feature_record, "consensus_class", "unknown")
+    )
+    is_consensus = _explain_bool(
+        _explain_get(feature_record, "is_consensus", False)
+    )
+    is_core = _explain_bool(_explain_get(feature_record, "is_core", False))
+    is_ubiquitous = _explain_bool(
+        _explain_get(feature_record, "is_ubiquitous", False)
+    )
+
+    factors: List[ScoringExplanationFactor] = []
+    trace: List[ScoringExplanationTraceStep] = []
+    if persistence is not None:
+        factors.append(
+            _explain_factor(
+                f"{feature_id}:pose_frequency",
+                SCORING_EXPLANATION_FACTOR_PERSISTENCE,
+                "Pose-frequency persistence",
+                persistence,
+                raw_value=float(pose_count),
+                normalized_value=persistence,
+                weight=(
+                    1.0 / denominator
+                    if denominator > 0
+                    else None
+                ),
+                final_score=score,
+                confidence=_explain_confidence_from_fraction(persistence),
+                evidence=(
+                    ScoringExplanationEvidence(
+                        "supporting_pose_count",
+                        pose_count,
+                        source="consensus_persistence",
+                    ),
+                    ScoringExplanationEvidence(
+                        "denominator_pose_count",
+                        denominator,
+                        source="consensus_persistence",
+                    ),
+                ),
+                description=(
+                    "Fraction of eligible poses containing the canonical "
+                    "feature at least once."
+                ),
+                options=configuration,
+            )
+        )
+        step = _explain_trace_step(
+            1,
+            SCORING_EXPLANATION_STAGE_CONSENSUS,
+            "compute_pose_frequency",
+            input_value=0.0,
+            output_value=persistence,
+            message=(
+                f"Observed in {pose_count} of {denominator} denominator poses."
+            ),
+            options=configuration,
+        )
+        if step is not None:
+            trace.append(step)
+    if weighted is not None and persistence is not None:
+        adjustment = weighted - persistence
+        factors.append(
+            _explain_factor(
+                f"{feature_id}:ranking_weight",
+                SCORING_EXPLANATION_FACTOR_CONSENSUS,
+                "Pose-weighted persistence adjustment",
+                adjustment,
+                raw_value=support_weight,
+                normalized_value=weighted,
+                weight=denominator_weight,
+                baseline_score=persistence,
+                final_score=score,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_HIGH,
+                evidence=(
+                    ScoringExplanationEvidence(
+                        "support_weight",
+                        support_weight,
+                        source="consensus_persistence",
+                    ),
+                    ScoringExplanationEvidence(
+                        "denominator_weight",
+                        denominator_weight,
+                        source="consensus_persistence",
+                    ),
+                ),
+                description=(
+                    "Change introduced when pose importance or ranking weights "
+                    "replace uniform pose weights."
+                ),
+                options=configuration,
+            )
+        )
+        step = _explain_trace_step(
+            2,
+            SCORING_EXPLANATION_STAGE_CONSENSUS,
+            "apply_pose_weights",
+            input_value=persistence,
+            output_value=weighted,
+            message="Applied pose/ranking weights to persistence.",
+            options=configuration,
+        )
+        if step is not None:
+            trace.append(step)
+    if score_mean is not None:
+        factors.append(
+            _explain_factor(
+                f"{feature_id}:mean_interaction_score",
+                SCORING_EXPLANATION_FACTOR_INTERACTION,
+                "Mean supporting interaction score",
+                score_mean,
+                raw_value=score_mean,
+                final_score=None,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_MODERATE,
+                description=(
+                    "Average DockAnalyzer interaction score among observations; "
+                    "reported as supporting evidence, not added to persistence."
+                ),
+                options=configuration,
+            )
+        )
+    factors = list(_explain_finalize_factors(factors, configuration))
+    confidence = _explain_confidence_from_fraction(score)
+    summary = (
+        f"Feature {label} occurred in {pose_count} of {denominator} poses"
+    )
+    if score is not None:
+        summary += f" with weighted persistence {score:.3f}."
+    else:
+        summary += " without a finite persistence fraction."
+    summary += f" Consensus class: {consensus_class}."
+    limitations = []
+    if denominator <= 1:
+        limitations.append(
+            "Persistence is based on one or fewer denominator poses."
+        )
+    if occurrence_count > pose_count and pose_count > 0:
+        limitations.append(
+            "Repeated occurrences within a pose do not increase pose frequency."
+        )
+    return ScoringEntityExplanation(
+        entity_id=feature_id,
+        scope=SCORING_EXPLANATION_SCOPE_CONSENSUS,
+        title=f"Persistent feature {label}",
+        summary=summary,
+        status=(
+            SCORING_EXPLANATION_STATUS_COMPLETE
+            if score is not None
+            else SCORING_EXPLANATION_STATUS_PARTIAL
+        ),
+        score=score,
+        baseline_score=0.0,
+        explained_score=score,
+        residual=0.0 if score is not None else None,
+        confidence=confidence,
+        factors=tuple(factors),
+        trace=tuple(trace),
+        key_findings=_explain_top_findings(
+            factors,
+            score=score,
+            extra=(
+                f"Aggregation level: {level}.",
+                f"Consensus: {is_consensus}.",
+                f"Core: {is_core}.",
+                f"Ubiquitous: {is_ubiquitous}.",
+                f"Occurrence count: {occurrence_count}.",
+            ),
+        ),
+        limitations=tuple(limitations),
+        source_type=_explain_class_name(feature_record),
+        metadata=(
+            {
+                "feature_id": feature_id,
+                "level": level,
+                "consensus_class": consensus_class,
+                "is_consensus": is_consensus,
+                "is_core": is_core,
+                "is_ubiquitous": is_ubiquitous,
+                "pose_count": pose_count,
+                "denominator_pose_count": denominator,
+                "occurrence_count": occurrence_count,
+                "representative_pose_id": _explain_identifier(
+                    _explain_get(
+                        feature_record,
+                        "representative_pose_id",
+                        "",
+                    )
+                ),
+            }
+            if configuration.include_metadata
+            else {}
+        ),
+    )
+
+
+def _explain_consensus_level_result(group: Any) -> Any:
+    primary = _explain_get(group, "primary_result", None)
+    if primary is not None:
+        return primary
+    primary_level = _explain_identifier(
+        _explain_get(group, "primary_level", "")
+    )
+    level_results = _explain_mapping(
+        _explain_get(group, "level_results", None)
+    )
+    if primary_level and primary_level in level_results:
+        return level_results[primary_level]
+    return next(iter(level_results.values()), None)
+
+
+def _explain_consensus_records(group: Any) -> Tuple[Any, ...]:
+    direct = _explain_first(
+        group,
+        ("records", "consensus_records", "persistent_features"),
+        None,
+    )
+    if direct is not None:
+        return _explain_sequence(direct)
+    level_result = _explain_consensus_level_result(group)
+    return _explain_sequence(
+        _explain_first(
+            level_result,
+            ("records", "consensus_records"),
+            (),
+        )
+    )
+
+
+def explain_consensus_group(
+    consensus_group: Any,
+    *,
+    options: Optional[ScoringExplainabilityOptions] = None,
+    entity_id: Optional[str] = None,
+) -> ScoringEntityExplanation:
+    """Explain one ConsensusGroupResult-like object."""
+
+    configuration = options or ScoringExplainabilityOptions()
+    if consensus_group is None:
+        raise ScoringExplainabilityInputError(
+            "consensus_group cannot be None."
+        )
+    group_id = entity_id or _explain_entity_id(
+        consensus_group,
+        SCORING_EXPLANATION_SCOPE_CONSENSUS,
+    )
+    records = _explain_consensus_records(consensus_group)
+    level_result = _explain_consensus_level_result(consensus_group)
+    included = _explain_sequence(
+        _explain_get(consensus_group, "included_pose_ids", ())
+    )
+    excluded = _explain_sequence(
+        _explain_get(consensus_group, "excluded_pose_ids", ())
+    )
+    denominator = _explain_int(
+        _explain_get(consensus_group, "denominator_pose_count", len(included))
+    )
+    primary_level = _explain_identifier(
+        _explain_get(consensus_group, "primary_level", "interaction")
+    )
+    mean_persistence = _explain_optional_float(
+        _explain_get(level_result, "mean_persistence", None)
+    )
+    mean_weighted = _explain_optional_float(
+        _explain_get(level_result, "mean_weighted_persistence", None)
+    )
+    score = mean_weighted if mean_weighted is not None else mean_persistence
+
+    children = [
+        explain_persistent_feature(record, options=configuration)
+        for record in records
+    ]
+    children.sort(key=lambda item: -(item.score or 0.0))
+    if configuration.top_children:
+        children = children[: configuration.top_children]
+
+    factors: List[ScoringExplanationFactor] = []
+    for child in children:
+        factors.append(
+            _explain_factor(
+                f"{group_id}:feature:{child.entity_id}",
+                SCORING_EXPLANATION_FACTOR_CONSENSUS,
+                child.title,
+                child.score,
+                raw_value=child.score,
+                final_score=None,
+                confidence=child.confidence,
+                description=(
+                    "Persistence strength of one canonical feature in the "
+                    "group consensus signature."
+                ),
+                limitations=(
+                    "Feature persistence values are not additive components "
+                    "of the group mean.",
+                ),
+                options=configuration,
+            )
+        )
+    pose_support = _explain_sequence(
+        _explain_get(consensus_group, "pose_support", ())
+    )
+    if pose_support:
+        support_scores = [
+            value
+            for value in (
+                _explain_optional_float(
+                    _explain_first(
+                        item,
+                        ("consensus_score", "persistence_support_score"),
+                        None,
+                    )
+                )
+                for item in pose_support
+            )
+            if value is not None
+        ]
+        if support_scores:
+            factors.append(
+                _explain_factor(
+                    f"{group_id}:pose_support",
+                    SCORING_EXPLANATION_FACTOR_CONSENSUS,
+                    "Mean pose support for consensus",
+                    fmean(support_scores),
+                    raw_value=fmean(support_scores),
+                    final_score=None,
+                    confidence=SCORING_EXPLANATION_CONFIDENCE_MODERATE,
+                    description=(
+                        "Average support of individual poses for the group "
+                        "consensus signature."
+                    ),
+                    options=configuration,
+                )
+            )
+    factors = list(_explain_finalize_factors(factors, configuration))
+
+    consensus_count = _explain_int(
+        _explain_get(level_result, "consensus_feature_count", 0)
+    )
+    core_count = _explain_int(
+        _explain_get(level_result, "core_feature_count", 0)
+    )
+    ubiquitous_count = _explain_int(
+        _explain_get(level_result, "ubiquitous_feature_count", 0)
+    )
+    summary = (
+        f"Consensus group {group_id} evaluated {denominator} denominator "
+        f"poses at the {primary_level} level and identified "
+        f"{consensus_count} consensus features."
+    )
+    limitations = []
+    if excluded:
+        limitations.append(
+            f"{len(excluded)} poses were excluded from the denominator."
+        )
+    if denominator <= 1:
+        limitations.append(
+            "Consensus stability cannot be established from one pose."
+        )
+    return ScoringEntityExplanation(
+        entity_id=group_id,
+        scope=SCORING_EXPLANATION_SCOPE_CONSENSUS,
+        title=f"Consensus group {group_id}",
+        summary=summary,
+        status=(
+            SCORING_EXPLANATION_STATUS_COMPLETE
+            if records
+            else SCORING_EXPLANATION_STATUS_EMPTY
+        ),
+        score=score,
+        confidence=(
+            SCORING_EXPLANATION_CONFIDENCE_HIGH
+            if denominator >= 3 and records
+            else SCORING_EXPLANATION_CONFIDENCE_LOW
+        ),
+        factors=tuple(factors),
+        children=tuple(children),
+        key_findings=_explain_unique_strings(
+            (
+                f"Included poses: {len(included)}.",
+                f"Excluded poses: {len(excluded)}.",
+                f"Consensus features: {consensus_count}.",
+                f"Core features: {core_count}.",
+                f"Ubiquitous features: {ubiquitous_count}.",
+                (
+                    f"Mean weighted persistence: {mean_weighted:.3f}."
+                    if mean_weighted is not None
+                    else ""
+                ),
+            )
+        ),
+        limitations=tuple(limitations),
+        source_type=_explain_class_name(consensus_group),
+        metadata=(
+            {
+                "group_id": group_id,
+                "primary_level": primary_level,
+                "denominator_pose_count": denominator,
+                "included_pose_count": len(included),
+                "excluded_pose_count": len(excluded),
+                "record_count": len(records),
+                "consensus_feature_count": consensus_count,
+                "core_feature_count": core_count,
+                "ubiquitous_feature_count": ubiquitous_count,
+            }
+            if configuration.include_metadata
+            else {}
+        ),
+    )
+
+
+def explain_consensus_persistence(
+    consensus_result: Any,
+    *,
+    options: Optional[ScoringExplainabilityOptions] = None,
+) -> ScoringEntityExplanation:
+    """Explain a complete ConsensusPersistenceResult-like object."""
+
+    configuration = options or ScoringExplainabilityOptions()
+    if consensus_result is None:
+        raise ScoringExplainabilityInputError(
+            "consensus_result cannot be None."
+        )
+    groups = _explain_sequence(
+        _explain_first(consensus_result, ("groups", "group_results"), ())
+    )
+    if not groups and _explain_consensus_records(consensus_result):
+        return explain_consensus_group(
+            consensus_result,
+            options=configuration,
+        )
+    children = [
+        explain_consensus_group(group, options=configuration)
+        for group in groups
+    ]
+    if configuration.top_children:
+        children = children[: configuration.top_children]
+    scores = [child.score for child in children if child.score is not None]
+    mean_score = fmean(scores) if scores else None
+    pose_count = _explain_int(_explain_get(consensus_result, "pose_count", 0))
+    if not pose_count:
+        pose_count = len(
+            {
+                pose_id
+                for group in groups
+                for pose_id in _explain_sequence(
+                    _explain_get(group, "included_pose_ids", ())
+                )
+            }
+        )
+    status = _explain_identifier(
+        _explain_get(consensus_result, "status", "complete")
+    )
+    return ScoringEntityExplanation(
+        entity_id="consensus_persistence",
+        scope=SCORING_EXPLANATION_SCOPE_CONSENSUS,
+        title="Consensus and persistence explanation",
+        summary=(
+            f"Consensus analysis covered {pose_count} poses in {len(groups)} "
+            "groups and quantified recurrent interaction features."
+        ),
+        status=(
+            SCORING_EXPLANATION_STATUS_COMPLETE
+            if groups
+            else SCORING_EXPLANATION_STATUS_EMPTY
+        ),
+        score=mean_score,
+        confidence=(
+            SCORING_EXPLANATION_CONFIDENCE_HIGH
+            if pose_count >= 3 and groups
+            else SCORING_EXPLANATION_CONFIDENCE_LOW
+        ),
+        children=tuple(children),
+        key_findings=_explain_unique_strings(
+            (
+                f"Pose count: {pose_count}.",
+                f"Consensus groups: {len(groups)}.",
+                (
+                    f"Mean group persistence: {mean_score:.3f}."
+                    if mean_score is not None
+                    else ""
+                ),
+                f"Source status: {status}.",
+            )
+        ),
+        limitations=(
+            "Persistence describes recurrence across the analyzed pose set; "
+            "it is not a direct estimate of experimental occupancy.",
+        ),
+        source_type=_explain_class_name(consensus_result),
+        metadata=(
+            {
+                "pose_count": pose_count,
+                "group_count": len(groups),
+                "source_status": status,
+            }
+            if configuration.include_metadata
+            else {}
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 24.10. Docking-affinity and external-score explanations
+# -----------------------------------------------------------------------------
+
+def explain_pose_external_scores(
+    pose_external_result: Any,
+    *,
+    options: Optional[ScoringExplainabilityOptions] = None,
+    entity_id: Optional[str] = None,
+) -> ScoringEntityExplanation:
+    """Explain one PoseExternalScoreResult-like object."""
+
+    configuration = options or ScoringExplainabilityOptions()
+    if pose_external_result is None:
+        raise ScoringExplainabilityInputError(
+            "pose_external_result cannot be None."
+        )
+    pose_id = entity_id or _explain_entity_id(
+        pose_external_result,
+        SCORING_EXPLANATION_SCOPE_EXTERNAL,
+    )
+    fused_score = _explain_optional_float(
+        _explain_get(pose_external_result, "fused_score", None)
+    )
+    external_composite = _explain_optional_float(
+        _explain_get(
+            pose_external_result,
+            "external_composite_score",
+            None,
+        )
+    )
+    internal_score = _explain_optional_float(
+        _explain_get(pose_external_result, "internal_score", None)
+    )
+    normalized_internal = _explain_optional_float(
+        _explain_get(
+            pose_external_result,
+            "normalized_internal_score",
+            None,
+        )
+    )
+    primary_affinity = _explain_optional_float(
+        _explain_get(pose_external_result, "primary_affinity", None)
+    )
+    primary_affinity_name = _explain_identifier(
+        _explain_get(
+            pose_external_result,
+            "primary_affinity_name",
+            "docking_affinity",
+        )
+    )
+    primary_affinity_unit = _explain_identifier(
+        _explain_get(pose_external_result, "primary_affinity_unit", "")
+    )
+    components = _explain_sequence(
+        _explain_get(pose_external_result, "components", ())
+    )
+
+    factors: List[ScoringExplanationFactor] = []
+    trace: List[ScoringExplanationTraceStep] = []
+    cumulative = 0.0
+    if normalized_internal is not None:
+        factors.append(
+            _explain_factor(
+                f"{pose_id}:internal",
+                SCORING_EXPLANATION_FACTOR_INTERNAL,
+                "Normalized DockAnalyzer internal score",
+                normalized_internal,
+                raw_value=internal_score,
+                normalized_value=normalized_internal,
+                final_score=fused_score,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_HIGH,
+                evidence=(
+                    ScoringExplanationEvidence(
+                        "raw_internal_score",
+                        internal_score,
+                        source="DockAnalyzer",
+                    ),
+                ),
+                description=(
+                    "Dimensionless internal score supplied to the fusion layer."
+                ),
+                limitations=(
+                    "The displayed value may be rescaled by the fusion method "
+                    "or by internal/external channel weights.",
+                ),
+                options=configuration,
+            )
+        )
+        cumulative += normalized_internal
+        step = _explain_trace_step(
+            1,
+            SCORING_EXPLANATION_STAGE_NORMALIZATION,
+            "normalize_internal_score",
+            input_value=internal_score,
+            output_value=normalized_internal,
+            message="Normalized the DockAnalyzer internal pose score.",
+            options=configuration,
+        )
+        if step is not None:
+            trace.append(step)
+
+    for index, component in enumerate(components, start=1):
+        name = _explain_identifier(
+            _explain_first(
+                component,
+                ("name", "score_name"),
+                f"external_{index}",
+            )
+        )
+        raw_value = _explain_optional_float(
+            _explain_get(component, "raw_value", None)
+        )
+        oriented_value = _explain_optional_float(
+            _explain_get(component, "oriented_value", None)
+        )
+        normalized_value = _explain_optional_float(
+            _explain_get(component, "normalized_value", None)
+        )
+        weighted_value = _explain_optional_float(
+            _explain_first(
+                component,
+                ("weighted_value", "contribution"),
+                None,
+            )
+        )
+        weight = _explain_optional_float(
+            _explain_get(component, "weight", None)
+        )
+        confidence_value = _explain_optional_float(
+            _explain_get(component, "confidence", None)
+        )
+        status = _explain_identifier(
+            _explain_get(component, "status", "used")
+        )
+        imputed = _explain_bool(_explain_get(component, "imputed", False))
+        replicate_count = _explain_int(
+            _explain_get(component, "replicate_count", 0)
+        )
+        contribution = weighted_value
+        if contribution is None and normalized_value is not None:
+            contribution = normalized_value * (weight if weight is not None else 1.0)
+        confidence = (
+            _explain_confidence_from_fraction(confidence_value)
+            if confidence_value is not None
+            else SCORING_EXPLANATION_CONFIDENCE_UNKNOWN
+        )
+        if imputed:
+            confidence = SCORING_EXPLANATION_CONFIDENCE_LOW
+        factors.append(
+            _explain_factor(
+                f"{pose_id}:external:{name}",
+                SCORING_EXPLANATION_FACTOR_EXTERNAL,
+                f"External score: {_explain_title_token(name)}",
+                contribution,
+                raw_value=raw_value,
+                normalized_value=normalized_value,
+                weight=weight,
+                baseline_score=cumulative,
+                final_score=fused_score,
+                confidence=confidence,
+                evidence=(
+                    ScoringExplanationEvidence(
+                        "oriented_value",
+                        oriented_value,
+                        source=_explain_identifier(
+                            _explain_get(component, "source", "external")
+                        ),
+                        unit=_explain_identifier(
+                            _explain_get(component, "unit", "")
+                        ),
+                    ),
+                    ScoringExplanationEvidence(
+                        "component_status",
+                        status,
+                        source="external_score_fusion",
+                    ),
+                    ScoringExplanationEvidence(
+                        "replicate_count",
+                        replicate_count,
+                        source="external_score_fusion",
+                    ),
+                ),
+                description=(
+                    "Direction-oriented, normalized, and weighted external "
+                    "score component used by the fusion layer."
+                ),
+                limitations=(
+                    "The local leave-one-component-out value does not rerun "
+                    "normalization across all poses.",
+                    "This component was imputed."
+                    if imputed
+                    else "",
+                ),
+                options=configuration,
+            )
+        )
+        if contribution is not None:
+            before = cumulative
+            cumulative += contribution
+            step = _explain_trace_step(
+                len(trace) + 1,
+                SCORING_EXPLANATION_STAGE_FUSION,
+                f"add_{name}",
+                input_value=before,
+                output_value=cumulative,
+                multiplier=weight,
+                message=f"Added normalized external component {name}.",
+                options=configuration,
+            )
+            if step is not None:
+                trace.append(step)
+
+    target_score = fused_score
+    if target_score is None:
+        target_score = external_composite
+    if (
+        target_score is not None
+        and abs(target_score - cumulative) > configuration.epsilon
+    ):
+        factors.append(
+            _explain_factor(
+                f"{pose_id}:fusion_method",
+                SCORING_EXPLANATION_FACTOR_FUSION,
+                "Fusion-method transformation",
+                target_score - cumulative,
+                raw_value=external_composite,
+                normalized_value=target_score,
+                baseline_score=cumulative,
+                final_score=target_score,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_MODERATE,
+                description=(
+                    "Difference introduced by weighted averaging, geometric "
+                    "or harmonic fusion, confidence weighting, or omitted "
+                    "components."
+                ),
+                options=configuration,
+            )
+        )
+        step = _explain_trace_step(
+            len(trace) + 1,
+            SCORING_EXPLANATION_STAGE_FUSION,
+            "resolve_fused_score",
+            input_value=cumulative,
+            output_value=target_score,
+            message="Applied the configured score-fusion method.",
+            options=configuration,
+        )
+        if step is not None:
+            trace.append(step)
+
+    factors = list(_explain_finalize_factors(factors, configuration))
+    explained_score, residual = _explain_score_accounting(
+        target_score,
+        0.0,
+        factors,
+    )
+    used_count = _explain_int(
+        _explain_get(pose_external_result, "used_component_count", 0)
+    )
+    missing_count = _explain_int(
+        _explain_get(pose_external_result, "missing_component_count", 0)
+    )
+    excluded_count = _explain_int(
+        _explain_get(pose_external_result, "excluded_component_count", 0)
+    )
+    warnings = _explain_sequence(
+        _explain_get(pose_external_result, "warnings", ())
+    )
+    limitations: List[str] = [
+        "Normalized external scores are relative to their comparison group."
+    ]
+    if missing_count:
+        limitations.append(
+            f"{missing_count} configured external components were missing."
+        )
+    if any(
+        _explain_bool(_explain_get(component, "imputed", False))
+        for component in components
+    ):
+        limitations.append("At least one external component was imputed.")
+    summary = f"Pose {pose_id}"
+    if fused_score is not None:
+        summary += f" received a fused score of {fused_score:.4f}."
+    elif external_composite is not None:
+        summary += (
+            f" received an external composite score of "
+            f"{external_composite:.4f}."
+        )
+    else:
+        summary += " did not expose a finite fused or composite score."
+    if primary_affinity is not None:
+        summary += (
+            f" Primary affinity: {primary_affinity:.4f} "
+            f"{primary_affinity_unit}."
+        )
+    return ScoringEntityExplanation(
+        entity_id=pose_id,
+        scope=SCORING_EXPLANATION_SCOPE_EXTERNAL,
+        title=f"External-score explanation for pose {pose_id}",
+        summary=summary,
+        status=(
+            SCORING_EXPLANATION_STATUS_COMPLETE
+            if target_score is not None
+            else SCORING_EXPLANATION_STATUS_PARTIAL
+        ),
+        score=target_score,
+        baseline_score=0.0,
+        explained_score=explained_score,
+        residual=residual,
+        confidence=(
+            SCORING_EXPLANATION_CONFIDENCE_HIGH
+            if used_count and not missing_count
+            else SCORING_EXPLANATION_CONFIDENCE_MODERATE
+        ),
+        factors=tuple(factors),
+        trace=tuple(trace),
+        key_findings=_explain_top_findings(
+            factors,
+            score=target_score,
+            extra=(
+                f"Used external components: {used_count or len(components)}.",
+                f"Missing components: {missing_count}.",
+                f"Excluded components: {excluded_count}.",
+                (
+                    f"Primary affinity ({primary_affinity_name}): "
+                    f"{primary_affinity:.4f} {primary_affinity_unit}."
+                    if primary_affinity is not None
+                    else ""
+                ),
+            ),
+        ),
+        limitations=tuple(limitations),
+        source_type=_explain_class_name(pose_external_result),
+        metadata=(
+            {
+                "pose_id": pose_id,
+                "ligand_id": _explain_identifier(
+                    _explain_get(pose_external_result, "ligand_id", "")
+                ),
+                "model_id": _explain_identifier(
+                    _explain_get(pose_external_result, "model_id", "")
+                ),
+                "group_id": _explain_identifier(
+                    _explain_get(pose_external_result, "group_id", "global")
+                ),
+                "primary_affinity_name": primary_affinity_name,
+                "primary_affinity": primary_affinity,
+                "primary_affinity_unit": primary_affinity_unit,
+                "warning_count": len(warnings),
+            }
+            if configuration.include_metadata
+            else {}
+        ),
+    )
+
+
+def explain_external_score_result(
+    external_result: Any,
+    *,
+    options: Optional[ScoringExplainabilityOptions] = None,
+) -> ScoringEntityExplanation:
+    """Explain a multipose external-score result or one pose result."""
+
+    configuration = options or ScoringExplainabilityOptions()
+    if external_result is None:
+        raise ScoringExplainabilityInputError("external_result cannot be None.")
+    pose_results = _explain_sequence(
+        _explain_first(
+            external_result,
+            ("pose_results", "results"),
+            (),
+        )
+    )
+    if not pose_results and _explain_get(external_result, "pose_id", None):
+        return explain_pose_external_scores(
+            external_result,
+            options=configuration,
+        )
+    children = [
+        explain_pose_external_scores(item, options=configuration)
+        for item in pose_results
+    ]
+    children.sort(key=lambda item: -(item.score or -math.inf))
+    if configuration.top_children:
+        children = children[: configuration.top_children]
+    scores = [item.score for item in children if item.score is not None]
+    best_score = max(scores) if scores else None
+    observations = _explain_sequence(
+        _explain_get(external_result, "observations", ())
+    )
+    aggregated = _explain_sequence(
+        _explain_get(external_result, "aggregated_scores", ())
+    )
+    warnings = _explain_sequence(
+        _explain_get(external_result, "warnings", ())
+    )
+    status = _explain_identifier(
+        _explain_get(external_result, "status", "complete")
+    )
+    return ScoringEntityExplanation(
+        entity_id="external_score_fusion",
+        scope=SCORING_EXPLANATION_SCOPE_EXTERNAL,
+        title="Docking affinity and external-score explanation",
+        summary=(
+            f"External-score integration evaluated {len(pose_results)} poses, "
+            f"{len(observations)} raw observations, and {len(aggregated)} "
+            "aggregated score channels."
+        ),
+        status=(
+            SCORING_EXPLANATION_STATUS_COMPLETE
+            if pose_results
+            else SCORING_EXPLANATION_STATUS_EMPTY
+        ),
+        score=best_score,
+        confidence=(
+            SCORING_EXPLANATION_CONFIDENCE_HIGH
+            if pose_results
+            else SCORING_EXPLANATION_CONFIDENCE_LOW
+        ),
+        children=tuple(children),
+        key_findings=_explain_unique_strings(
+            (
+                f"Pose results: {len(pose_results)}.",
+                f"Raw observations: {len(observations)}.",
+                f"Aggregated channels: {len(aggregated)}.",
+                f"Warnings: {len(warnings)}.",
+                f"Source status: {status}.",
+            )
+        ),
+        limitations=(
+            "Fused scores are comparison-set dependent and should retain "
+            "their raw external values and normalization context.",
+        ),
+        source_type=_explain_class_name(external_result),
+        metadata=(
+            {
+                "pose_result_count": len(pose_results),
+                "observation_count": len(observations),
+                "aggregated_score_count": len(aggregated),
+                "warning_count": len(warnings),
+                "source_status": status,
+            }
+            if configuration.include_metadata
+            else {}
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 24.11. DockModel integration explanations
+# -----------------------------------------------------------------------------
+
+def _explain_attached_scoring_result(dock_model_or_result: Any) -> Any:
+    direct = _explain_first(
+        dock_model_or_result,
+        ("scoring_result", "pose_scoring_result"),
+        None,
+    )
+    if direct is not None:
+        return direct
+    for attribute in (
+        "dockanalyzer_scoring",
+        "dockanalyzer_score_result",
+        "scoring",
+    ):
+        direct = _explain_get(dock_model_or_result, attribute, None)
+        if direct is not None and not isinstance(direct, (int, float, str)):
+            return direct
+    metadata = _explain_mapping(
+        _explain_get(dock_model_or_result, "metadata", None)
+    )
+    for key in (
+        "dockanalyzer_scoring",
+        "scoring_result",
+        "pose_scoring_result",
+    ):
+        direct = metadata.get(key)
+        if direct is not None:
+            return direct
+    return None
+
+
+def explain_dock_model_scoring(
+    dock_model_or_integration: Any,
+    *,
+    options: Optional[ScoringExplainabilityOptions] = None,
+    entity_id: Optional[str] = None,
+) -> ScoringEntityExplanation:
+    """Explain one DockModel or DockModelScoringIntegrationResult-like object."""
+
+    configuration = options or ScoringExplainabilityOptions()
+    if dock_model_or_integration is None:
+        raise ScoringExplainabilityInputError(
+            "dock_model_or_integration cannot be None."
+        )
+    dock_model = _explain_get(
+        dock_model_or_integration,
+        "dock_model",
+        dock_model_or_integration,
+    )
+    model_id = entity_id or _explain_entity_id(
+        dock_model,
+        SCORING_EXPLANATION_SCOPE_DOCK_MODEL,
+    )
+    pose_id = _explain_identifier(
+        _explain_first(
+            dock_model_or_integration,
+            ("pose_id",),
+            _explain_first(dock_model, ("pose_id", "name"), model_id),
+        )
+    )
+    integration_status = _explain_identifier(
+        _explain_get(dock_model_or_integration, "status", "complete")
+    )
+    bundle = _explain_get(dock_model_or_integration, "bundle", None)
+    attachment = _explain_get(
+        dock_model_or_integration,
+        "attachment",
+        None,
+    )
+    scoring_result = _explain_attached_scoring_result(
+        dock_model_or_integration
+    )
+    if scoring_result is None:
+        scoring_result = _explain_attached_scoring_result(dock_model)
+
+    children: List[ScoringEntityExplanation] = []
+    factors: List[ScoringExplanationFactor] = []
+    trace: List[ScoringExplanationTraceStep] = []
+    score = _explain_optional_float(_explain_get(dock_model, "score", None))
+    if scoring_result is not None:
+        child = explain_pose_scoring_result(
+            scoring_result,
+            options=configuration,
+            entity_id=pose_id or model_id,
+        )
+        children.append(child)
+        if score is None:
+            score = child.score
+        factors.append(
+            _explain_factor(
+                f"{model_id}:attached_pose_score",
+                SCORING_EXPLANATION_FACTOR_ATTACHMENT,
+                "Attached DockAnalyzer pose score",
+                child.score,
+                raw_value=child.score,
+                final_score=score,
+                confidence=child.confidence,
+                description=(
+                    "Score produced from DockModel interaction collections and "
+                    "attached to the model by Section 22."
+                ),
+                options=configuration,
+            )
+        )
+
+    interaction_count = _explain_int(
+        _explain_get(bundle, "interaction_count", 0)
+    )
+    counts_by_source = _explain_mapping(
+        _explain_get(bundle, "counts_by_source", None)
+    )
+    if not counts_by_source:
+        source_map = _explain_mapping(
+            _explain_get(bundle, "interactions_by_source", None)
+        )
+        counts_by_source = MappingProxyType(
+            {name: len(_explain_sequence(items)) for name, items in source_map.items()}
+        )
+    for source, count_value in counts_by_source.items():
+        count = _explain_int(count_value)
+        factors.append(
+            _explain_factor(
+                f"{model_id}:source:{source}",
+                SCORING_EXPLANATION_FACTOR_ATTACHMENT,
+                f"Extracted {_explain_title_token(source)} interactions",
+                None,
+                raw_value=float(count),
+                final_score=None,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_HIGH,
+                description=(
+                    "Interaction-source coverage used to build the canonical "
+                    "DockModel scoring bundle."
+                ),
+                options=configuration,
+            )
+        )
+
+    score_before = _explain_optional_float(
+        _explain_get(attachment, "score_before", None)
+    )
+    score_after = _explain_optional_float(
+        _explain_get(attachment, "score_after", score)
+    )
+    if score_before is not None and score_after is not None:
+        factors.append(
+            _explain_factor(
+                f"{model_id}:score_attachment_delta",
+                SCORING_EXPLANATION_FACTOR_ATTACHMENT,
+                "DockModel score-field update",
+                score_after - score_before,
+                raw_value=score_before,
+                normalized_value=score_after,
+                baseline_score=score_before,
+                final_score=score_after,
+                confidence=SCORING_EXPLANATION_CONFIDENCE_HIGH,
+                description=(
+                    "Change in DockModel.score caused by the Section 22 "
+                    "attachment transaction."
+                ),
+                options=configuration,
+            )
+        )
+        step = _explain_trace_step(
+            1,
+            SCORING_EXPLANATION_STAGE_ATTACHMENT,
+            "update_dock_model_score",
+            input_value=score_before,
+            output_value=score_after,
+            message="Updated DockModel.score transactionally.",
+            options=configuration,
+        )
+        if step is not None:
+            trace.append(step)
+
+    factors = list(_explain_finalize_factors(factors, configuration))
+    errors = _explain_sequence(
+        _explain_get(dock_model_or_integration, "errors", ())
+    )
+    warnings = _explain_sequence(
+        _explain_get(dock_model_or_integration, "warnings", ())
+    )
+    rolled_back = _explain_bool(
+        _explain_get(attachment, "rolled_back", False)
+    )
+    limitations = []
+    if scoring_result is None:
+        limitations.append(
+            "No attached PoseScoringResult was available for detailed tracing."
+        )
+    if errors:
+        limitations.append(
+            f"Integration reported {len(errors)} errors."
+        )
+    if rolled_back:
+        limitations.append(
+            "The attachment transaction was rolled back."
+        )
+    summary = f"DockModel {model_id}"
+    if score is not None:
+        summary += f" stores a DockAnalyzer score of {score:.4f}."
+    else:
+        summary += " does not store a finite DockAnalyzer score."
+    summary += (
+        f" The integration extracted {interaction_count} interactions and "
+        f"finished with status {integration_status}."
+    )
+    return ScoringEntityExplanation(
+        entity_id=model_id,
+        scope=SCORING_EXPLANATION_SCOPE_DOCK_MODEL,
+        title=f"DockModel integration {model_id}",
+        summary=summary,
+        status=(
+            SCORING_EXPLANATION_STATUS_COMPLETE
+            if scoring_result is not None and not errors
+            else SCORING_EXPLANATION_STATUS_PARTIAL
+        ),
+        score=score,
+        baseline_score=score_before,
+        explained_score=score_after,
+        residual=(
+            score - score_after
+            if score is not None and score_after is not None
+            else None
+        ),
+        confidence=(
+            SCORING_EXPLANATION_CONFIDENCE_HIGH
+            if scoring_result is not None and not rolled_back
+            else SCORING_EXPLANATION_CONFIDENCE_LOW
+        ),
+        factors=tuple(factors),
+        trace=tuple(trace),
+        children=tuple(children),
+        key_findings=_explain_unique_strings(
+            (
+                f"Integration status: {integration_status}.",
+                f"Extracted interactions: {interaction_count}.",
+                f"Warnings: {len(warnings)}.",
+                f"Errors: {len(errors)}.",
+                f"Rolled back: {rolled_back}.",
+            )
+        ),
+        limitations=tuple(limitations),
+        source_type=_explain_class_name(dock_model_or_integration),
+        metadata=(
+            {
+                "model_id": model_id,
+                "pose_id": pose_id,
+                "integration_status": integration_status,
+                "interaction_count": interaction_count,
+                "counts_by_source": dict(counts_by_source),
+                "warning_count": len(warnings),
+                "error_count": len(errors),
+                "rolled_back": rolled_back,
+            }
+            if configuration.include_metadata
+            else {}
+        ),
+    )
+
+
+def explain_dock_model_integrations(
+    multipose_result: Any,
+    *,
+    options: Optional[ScoringExplainabilityOptions] = None,
+) -> ScoringEntityExplanation:
+    """Explain a DockModelMultiposeScoringResult-like object."""
+
+    configuration = options or ScoringExplainabilityOptions()
+    if multipose_result is None:
+        raise ScoringExplainabilityInputError(
+            "multipose_result cannot be None."
+        )
+    integrations = _explain_sequence(
+        _explain_first(
+            multipose_result,
+            ("integrations", "integration_results"),
+            (),
+        )
+    )
+    if not integrations:
+        return explain_dock_model_scoring(
+            multipose_result,
+            options=configuration,
+        )
+    children = [
+        explain_dock_model_scoring(item, options=configuration)
+        for item in integrations
+    ]
+    if configuration.top_children:
+        children = children[: configuration.top_children]
+    successful_count = _explain_int(
+        _explain_get(multipose_result, "successful_count", 0)
+    )
+    if not successful_count:
+        successful_count = sum(
+            child.status != SCORING_EXPLANATION_STATUS_FAILED
+            for child in children
+        )
+    failed_count = _explain_int(
+        _explain_get(
+            multipose_result,
+            "failed_count",
+            len(integrations) - successful_count,
+        )
+    )
+    scores = [child.score for child in children if child.score is not None]
+    mean_score = fmean(scores) if scores else None
+    status = _explain_identifier(
+        _explain_get(multipose_result, "status", "complete")
+    )
+    return ScoringEntityExplanation(
+        entity_id="dock_model_integrations",
+        scope=SCORING_EXPLANATION_SCOPE_DOCK_MODEL,
+        title="DockModel multipose integration explanation",
+        summary=(
+            f"Section 22 processed {len(integrations)} DockModel objects; "
+            f"{successful_count} produced usable scoring results and "
+            f"{failed_count} failed."
+        ),
+        status=(
+            SCORING_EXPLANATION_STATUS_COMPLETE
+            if integrations and not failed_count
+            else SCORING_EXPLANATION_STATUS_PARTIAL
+        ),
+        score=mean_score,
+        confidence=(
+            SCORING_EXPLANATION_CONFIDENCE_HIGH
+            if integrations and not failed_count
+            else SCORING_EXPLANATION_CONFIDENCE_MODERATE
+        ),
+        children=tuple(children),
+        key_findings=_explain_unique_strings(
+            (
+                f"DockModel count: {len(integrations)}.",
+                f"Successful integrations: {successful_count}.",
+                f"Failed integrations: {failed_count}.",
+                (
+                    f"Mean attached score: {mean_score:.4f}."
+                    if mean_score is not None
+                    else ""
+                ),
+                f"Source status: {status}.",
+            )
+        ),
+        limitations=(
+            "Integration explanations describe data transfer and attachment; "
+            "the underlying interaction logic is explained in child poses.",
+        ),
+        source_type=_explain_class_name(multipose_result),
+        metadata=(
+            {
+                "model_count": len(integrations),
+                "successful_count": successful_count,
+                "failed_count": failed_count,
+                "source_status": status,
+            }
+            if configuration.include_metadata
+            else {}
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 24.12. Automatic recognition, dispatch, and integrated explanation builds
+# -----------------------------------------------------------------------------
+
+def infer_scoring_explanation_scope(source: Any) -> Optional[str]:
+    """Infer the most specific supported explanation scope for an object."""
+
+    if isinstance(source, ScoringEntityExplanation):
+        return source.scope
+    if source is None:
+        return None
+    class_name = _explain_token(_explain_class_name(source))
+    class_rules: Tuple[Tuple[Tuple[str, ...], str], ...] = (
+        (("interactionscore", "interaction_score"),
+         SCORING_EXPLANATION_SCOPE_INTERACTION),
+        (("residuescore", "residue_score"),
+         SCORING_EXPLANATION_SCOPE_RESIDUE),
+        (("posescoringresult", "pose_scoring_result", "posescore"),
+         SCORING_EXPLANATION_SCOPE_POSE),
+        (("rankedpose", "rankinggroupresult", "multiposerankingresult"),
+         SCORING_EXPLANATION_SCOPE_RANKING),
+        (("persistentfeaturerecord", "consensusgroupresult",
+          "consensuspersistenceresult"),
+         SCORING_EXPLANATION_SCOPE_CONSENSUS),
+        (("poseexternalscoreresult", "externalscoregroupresult",
+          "multiposeexternalscoreresult"),
+         SCORING_EXPLANATION_SCOPE_EXTERNAL),
+        (("dockmodelscoringintegrationresult",
+          "dockmodelmultiposescoringresult", "dockmodel"),
+         SCORING_EXPLANATION_SCOPE_DOCK_MODEL),
+    )
+    compact = class_name.replace("_", "")
+    for names, scope in class_rules:
+        if any(name.replace("_", "") in compact for name in names):
+            return scope
+
+    keys = set(source.keys()) if isinstance(source, Mapping) else set()
+    if keys:
+        if {
+            "interaction_family",
+            "interaction_type",
+            "base_weight",
+        } & keys and {"final_score", "raw_score", "score"} & keys:
+            return SCORING_EXPLANATION_SCOPE_INTERACTION
+        if "residue" in keys and {
+            "contributions",
+            "interaction_count",
+            "hotspot",
+        } & keys:
+            return SCORING_EXPLANATION_SCOPE_RESIDUE
+        if "pose_id" in keys and {
+            "scores",
+            "summary",
+            "residue_result",
+            "family_components",
+        } & keys:
+            return SCORING_EXPLANATION_SCOPE_POSE
+        if {
+            "ranking_score",
+            "criterion_values",
+            "pareto_front",
+        } & keys:
+            return SCORING_EXPLANATION_SCOPE_RANKING
+        if {
+            "level_results",
+            "persistence_fraction",
+            "weighted_persistence_fraction",
+            "consensus_records",
+        } & keys:
+            return SCORING_EXPLANATION_SCOPE_CONSENSUS
+        if {
+            "fused_score",
+            "external_composite_score",
+            "components",
+            "aggregated_scores",
+        } & keys:
+            return SCORING_EXPLANATION_SCOPE_EXTERNAL
+        if {
+            "dock_model",
+            "bundle",
+            "attachment",
+            "integrations",
+        } & keys:
+            return SCORING_EXPLANATION_SCOPE_DOCK_MODEL
+
+    if _explain_get(source, "criterion_values", None) is not None:
+        return SCORING_EXPLANATION_SCOPE_RANKING
+    if _explain_get(source, "level_results", None) is not None:
+        return SCORING_EXPLANATION_SCOPE_CONSENSUS
+    if _explain_get(source, "components", None) is not None and (
+        _explain_get(source, "fused_score", None) is not None
+        or _explain_get(source, "external_composite_score", None) is not None
+    ):
+        return SCORING_EXPLANATION_SCOPE_EXTERNAL
+    if _explain_get(source, "dock_model", None) is not None:
+        return SCORING_EXPLANATION_SCOPE_DOCK_MODEL
+    if _explain_get(source, "residue_result", None) is not None:
+        return SCORING_EXPLANATION_SCOPE_POSE
+    if _explain_get(source, "contributions", None) is not None and (
+        _explain_get(source, "residue", None) is not None
+    ):
+        return SCORING_EXPLANATION_SCOPE_RESIDUE
+    if _explain_get(source, "interaction_family", None) is not None:
+        return SCORING_EXPLANATION_SCOPE_INTERACTION
+    return None
+
+
+def explain_scoring_object(
+    source: Any,
+    *,
+    scope: Optional[str] = None,
+    options: Optional[ScoringExplainabilityOptions] = None,
+) -> ScoringEntityExplanation:
+    """Dispatch one supported scoring object to its explanation builder."""
+
+    configuration = options or ScoringExplainabilityOptions()
+    if isinstance(source, ScoringEntityExplanation):
+        return source
+    resolved_scope = (
+        normalize_scoring_explanation_scope(scope)
+        if scope is not None
+        else infer_scoring_explanation_scope(source)
+    )
+    if resolved_scope is None:
+        raise ScoringExplainabilityInputError(
+            f"Cannot infer explanation scope for {_explain_class_name(source)}."
+        )
+    if resolved_scope == SCORING_EXPLANATION_SCOPE_INTERACTION:
+        return explain_interaction_score(source, options=configuration)
+    if resolved_scope == SCORING_EXPLANATION_SCOPE_RESIDUE:
+        return explain_residue_score(source, options=configuration)
+    if resolved_scope == SCORING_EXPLANATION_SCOPE_POSE:
+        return explain_pose_scoring_result(source, options=configuration)
+    if resolved_scope == SCORING_EXPLANATION_SCOPE_RANKING:
+        if _explain_get(source, "ranking_score", None) is not None and (
+            _explain_get(source, "criterion_values", None) is not None
+        ):
+            return explain_ranked_pose(source, options=configuration)
+        if _explain_ranking_groups(source):
+            return explain_multipose_ranking(source, options=configuration)
+        return explain_ranking_group(source, options=configuration)
+    if resolved_scope == SCORING_EXPLANATION_SCOPE_CONSENSUS:
+        if _explain_get(source, "persistence_fraction", None) is not None:
+            return explain_persistent_feature(source, options=configuration)
+        if _explain_get(source, "groups", None) is not None:
+            return explain_consensus_persistence(source, options=configuration)
+        return explain_consensus_group(source, options=configuration)
+    if resolved_scope == SCORING_EXPLANATION_SCOPE_EXTERNAL:
+        return explain_external_score_result(source, options=configuration)
+    if resolved_scope == SCORING_EXPLANATION_SCOPE_DOCK_MODEL:
+        if _explain_get(source, "integrations", None) is not None:
+            return explain_dock_model_integrations(
+                source,
+                options=configuration,
+            )
+        return explain_dock_model_scoring(source, options=configuration)
+    if resolved_scope == SCORING_EXPLANATION_SCOPE_INTEGRATED:
+        raise ScoringExplainabilityInputError(
+            "Integrated scope requires build_scoring_explainability()."
+        )
+    raise ScoringExplainabilityInputError(
+        f"Unsupported explanation scope: {resolved_scope}."
+    )
+
+
+def _explain_scope_mapping(source: Any) -> Optional[Mapping[str, Any]]:
+    if not isinstance(source, Mapping):
+        return None
+    normalized: Dict[str, Any] = {}
+    for key, value in source.items():
+        try:
+            scope = normalize_scoring_explanation_scope(key)
+        except ScoringExplainabilityConfigurationError:
+            continue
+        if scope != SCORING_EXPLANATION_SCOPE_INTEGRATED:
+            normalized[scope] = value
+    return MappingProxyType(normalized) if normalized else None
+
+
+def _explain_mapping_is_entity(source: Mapping[str, Any], scope: str) -> bool:
+    keys = set(source)
+    entity_keys: Dict[str, Set[str]] = {
+        SCORING_EXPLANATION_SCOPE_INTERACTION: {
+            "interaction_family",
+            "interaction_type",
+            "base_weight",
+            "final_score",
+            "raw_score",
+        },
+        SCORING_EXPLANATION_SCOPE_RESIDUE: {
+            "residue",
+            "contributions",
+            "interaction_count",
+            "hotspot",
+            "final_score",
+        },
+        SCORING_EXPLANATION_SCOPE_POSE: {
+            "pose_id",
+            "scores",
+            "summary",
+            "residue_result",
+            "final_score",
+        },
+        SCORING_EXPLANATION_SCOPE_RANKING: {
+            "entries",
+            "groups",
+            "ranking_score",
+            "criterion_values",
+        },
+        SCORING_EXPLANATION_SCOPE_CONSENSUS: {
+            "groups",
+            "level_results",
+            "persistence_fraction",
+            "records",
+        },
+        SCORING_EXPLANATION_SCOPE_EXTERNAL: {
+            "pose_results",
+            "fused_score",
+            "components",
+            "aggregated_scores",
+        },
+        SCORING_EXPLANATION_SCOPE_DOCK_MODEL: {
+            "dock_model",
+            "integrations",
+            "bundle",
+            "attachment",
+            "score",
+        },
+    }
+    return bool(keys & entity_keys.get(scope, set()))
+
+
+def _explain_materialize_sources(
+    value: Any,
+    scope: Optional[str],
+) -> Tuple[Any, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, ScoringEntityExplanation):
+        return (value,)
+    if scope is not None:
+        resolved_scope = normalize_scoring_explanation_scope(scope)
+    else:
+        resolved_scope = infer_scoring_explanation_scope(value)
+    if isinstance(value, Mapping):
+        if resolved_scope and _explain_mapping_is_entity(value, resolved_scope):
+            return (value,)
+        return tuple(value.values())
+    if resolved_scope is not None:
+        return (value,)
+    return _explain_sequence(value)
+
+
+def _explain_walk_entities(
+    explanations: Iterable[ScoringEntityExplanation],
+) -> Iterator[ScoringEntityExplanation]:
+    for explanation in explanations:
+        yield explanation
+        yield from _explain_walk_entities(explanation.children)
+
+
+def _explain_coverage(
+    explanations: Sequence[ScoringEntityExplanation],
+    *,
+    requested_count: int,
+    failed_count: int,
+) -> ScoringExplainabilityCoverage:
+    all_entities = tuple(_explain_walk_entities(explanations))
+    partial_count = sum(
+        item.status == SCORING_EXPLANATION_STATUS_PARTIAL
+        for item in all_entities
+    )
+    factor_count = sum(len(item.factors) for item in all_entities)
+    evidence_count = sum(
+        len(factor.evidence)
+        for item in all_entities
+        for factor in item.factors
+    ) + sum(
+        len(step.evidence)
+        for item in all_entities
+        for step in item.trace
+    )
+    counterfactual_count = sum(
+        factor.score_without_factor is not None
+        for item in all_entities
+        for factor in item.factors
+    )
+    trace_count = sum(len(item.trace) for item in all_entities)
+    limitation_count = sum(
+        len(item.limitations)
+        + sum(len(factor.limitations) for factor in item.factors)
+        for item in all_entities
+    )
+    return ScoringExplainabilityCoverage(
+        requested_count=requested_count,
+        explained_count=len(explanations),
+        partial_count=partial_count,
+        failed_count=failed_count,
+        factor_count=factor_count,
+        evidence_count=evidence_count,
+        counterfactual_count=counterfactual_count,
+        trace_step_count=trace_count,
+        limitation_count=limitation_count,
+    )
+
+
+def build_scoring_explainability(
+    sources: Any,
+    *,
+    scope: Optional[str] = None,
+    options: Optional[ScoringExplainabilityOptions] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringExplainabilityResult:
+    """Build an integrated explanation result from one or many sources."""
+
+    configuration = options or ScoringExplainabilityOptions()
+    explanations: List[ScoringEntityExplanation] = []
+    warnings: List[str] = []
+    requested_count = 0
+    failed_count = 0
+
+    scope_mapping = _explain_scope_mapping(sources) if scope is None else None
+    work_items: List[Tuple[Optional[str], Any]] = []
+    if scope_mapping is not None:
+        for mapped_scope, value in scope_mapping.items():
+            for item in _explain_materialize_sources(value, mapped_scope):
+                work_items.append((mapped_scope, item))
+    else:
+        resolved_scope = (
+            normalize_scoring_explanation_scope(scope)
+            if scope is not None
+            else infer_scoring_explanation_scope(sources)
+        )
+        for item in _explain_materialize_sources(sources, resolved_scope):
+            item_scope = resolved_scope or infer_scoring_explanation_scope(item)
+            work_items.append((item_scope, item))
+
+    for item_scope, item in work_items:
+        requested_count += 1
+        try:
+            explanation = explain_scoring_object(
+                item,
+                scope=item_scope,
+                options=configuration,
+            )
+            explanations.append(explanation)
+        except Exception as error:
+            if configuration.strict:
+                raise
+            failed_count += 1
+            message = (
+                f"Failed to explain {_explain_class_name(item)}: {error}"
+            )
+            warnings.append(message)
+            explanations.append(
+                ScoringEntityExplanation(
+                    entity_id=f"failed_{requested_count}",
+                    scope=(
+                        item_scope
+                        or SCORING_EXPLANATION_SCOPE_INTEGRATED
+                    ),
+                    title="Unavailable explanation",
+                    summary=message,
+                    status=SCORING_EXPLANATION_STATUS_FAILED,
+                    confidence=SCORING_EXPLANATION_CONFIDENCE_LOW,
+                    limitations=(message,),
+                    source_type=_explain_class_name(item),
+                )
+            )
+
+    coverage = _explain_coverage(
+        explanations,
+        requested_count=requested_count,
+        failed_count=failed_count,
+    )
+    if not explanations:
+        status = SCORING_EXPLANATION_STATUS_EMPTY
+    elif failed_count:
+        status = SCORING_EXPLANATION_STATUS_PARTIAL
+    elif any(
+        item.status
+        in {
+            SCORING_EXPLANATION_STATUS_PARTIAL,
+            SCORING_EXPLANATION_STATUS_FAILED,
+        }
+        for item in explanations
+    ):
+        status = SCORING_EXPLANATION_STATUS_PARTIAL
+    else:
+        status = SCORING_EXPLANATION_STATUS_COMPLETE
+    result_metadata = dict(metadata or {})
+    result_metadata.setdefault(
+        "scopes",
+        dict(Counter(item.scope for item in explanations)),
+    )
+    result_metadata.setdefault("source_count", requested_count)
+    result = ScoringExplainabilityResult(
+        explanations=tuple(explanations),
+        options=configuration,
+        coverage=coverage,
+        status=status,
+        warnings=tuple(warnings),
+        metadata=result_metadata,
+    )
+    if configuration.recursive_validation:
+        validate_scoring_explainability_result(result)
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 24.13. Tabular views and human-readable summaries
+# -----------------------------------------------------------------------------
+
+def scoring_explainability_to_rows(
+    value: Any,
+    *,
+    include_factors: bool = True,
+    include_children: bool = True,
+    decimal_places: Optional[int] = 6,
+) -> List[Dict[str, Any]]:
+    """Flatten explanations into entity and factor rows."""
+
+    if isinstance(value, ScoringExplainabilityResult):
+        roots = value.explanations
+    elif isinstance(value, ScoringEntityExplanation):
+        roots = (value,)
+    else:
+        roots = build_scoring_explainability(value).explanations
+
+    rows: List[Dict[str, Any]] = []
+
+    def append_entity(
+        entity: ScoringEntityExplanation,
+        *,
+        parent_id: str = "",
+        depth: int = 0,
+    ) -> None:
+        rows.append(
+            {
+                "row_type": "entity",
+                "entity_id": entity.entity_id,
+                "parent_id": parent_id,
+                "depth": depth,
+                "scope": entity.scope,
+                "title": entity.title,
+                "status": entity.status,
+                "score": _explain_round(entity.score, decimal_places),
+                "baseline_score": _explain_round(
+                    entity.baseline_score,
+                    decimal_places,
+                ),
+                "explained_score": _explain_round(
+                    entity.explained_score,
+                    decimal_places,
+                ),
+                "residual": _explain_round(
+                    entity.residual,
+                    decimal_places,
+                ),
+                "confidence": entity.confidence,
+                "factor_count": len(entity.factors),
+                "child_count": len(entity.children),
+                "limitation_count": len(entity.limitations),
+                "summary": entity.summary,
+            }
+        )
+        if include_factors:
+            for factor in entity.factors:
+                rows.append(
+                    {
+                        "row_type": "factor",
+                        "entity_id": entity.entity_id,
+                        "parent_id": parent_id,
+                        "depth": depth,
+                        "scope": entity.scope,
+                        "factor_id": factor.factor_id,
+                        "factor_rank": factor.rank,
+                        "category": factor.category,
+                        "label": factor.label,
+                        "impact": factor.impact,
+                        "contribution": _explain_round(
+                            factor.contribution,
+                            decimal_places,
+                        ),
+                        "raw_value": _explain_round(
+                            factor.raw_value,
+                            decimal_places,
+                        ),
+                        "normalized_value": _explain_round(
+                            factor.normalized_value,
+                            decimal_places,
+                        ),
+                        "weight": _explain_round(
+                            factor.weight,
+                            decimal_places,
+                        ),
+                        "confidence": factor.confidence,
+                        "score_without_factor": _explain_round(
+                            factor.score_without_factor,
+                            decimal_places,
+                        ),
+                        "counterfactual_delta": _explain_round(
+                            factor.counterfactual_delta,
+                            decimal_places,
+                        ),
+                        "evidence_count": len(factor.evidence),
+                        "description": factor.description,
+                    }
+                )
+        if include_children:
+            for child in entity.children:
+                append_entity(
+                    child,
+                    parent_id=entity.entity_id,
+                    depth=depth + 1,
+                )
+
+    for root in roots:
+        append_entity(root)
+    return rows
+
+
+def summarize_scoring_explainability(value: Any) -> Dict[str, Any]:
+    """Return compact descriptive statistics for explanation output."""
+
+    if isinstance(value, ScoringExplainabilityResult):
+        result = value
+    else:
+        result = build_scoring_explainability(value)
+    entities = tuple(_explain_walk_entities(result.explanations))
+    factors = tuple(
+        factor for entity in entities for factor in entity.factors
+    )
+    numeric_contributions = tuple(
+        factor.contribution
+        for factor in factors
+        if factor.contribution is not None
+    )
+    positive_total = sum(
+        value for value in numeric_contributions if value > 0.0
+    )
+    negative_total = sum(
+        value for value in numeric_contributions if value < 0.0
+    )
+    return {
+        "status": result.status,
+        "root_explanation_count": len(result.explanations),
+        "entity_count": len(entities),
+        "scope_counts": dict(Counter(item.scope for item in entities)),
+        "status_counts": dict(Counter(item.status for item in entities)),
+        "confidence_counts": dict(
+            Counter(item.confidence for item in entities)
+        ),
+        "factor_count": len(factors),
+        "factor_category_counts": dict(
+            Counter(item.category for item in factors)
+        ),
+        "factor_impact_counts": dict(
+            Counter(item.impact for item in factors)
+        ),
+        "positive_contribution_total": positive_total,
+        "negative_contribution_total": negative_total,
+        "net_contribution_total": positive_total + negative_total,
+        "evidence_count": sum(len(item.evidence) for item in factors),
+        "counterfactual_count": sum(
+            item.score_without_factor is not None for item in factors
+        ),
+        "trace_step_count": sum(len(item.trace) for item in entities),
+        "limitation_count": sum(
+            len(item.limitations)
+            + sum(len(factor.limitations) for factor in item.factors)
+            for item in entities
+        ),
+        "coverage": result.coverage.to_dict(),
+        "warnings": list(result.warnings),
+    }
+
+
+def format_entity_score_explanation(
+    explanation: ScoringEntityExplanation,
+    *,
+    max_factors: int = 5,
+    include_limitations: bool = True,
+    include_children: bool = False,
+    indent: int = 0,
+) -> str:
+    """Format one entity explanation as concise plain text."""
+
+    if not isinstance(explanation, ScoringEntityExplanation):
+        raise ScoringExplainabilityInputError(
+            "format_entity_score_explanation requires an entity explanation."
+        )
+    prefix = " " * max(0, int(indent))
+    lines = [
+        f"{prefix}{explanation.title}",
+        f"{prefix}{explanation.summary}",
+        (
+            f"{prefix}Status: {explanation.status}; "
+            f"confidence: {explanation.confidence}."
+        ),
+    ]
+    if explanation.score is not None:
+        lines.append(f"{prefix}Score: {explanation.score:.6f}")
+    factors = explanation.factors
+    if max_factors >= 0:
+        factors = factors[: int(max_factors)]
+    if factors:
+        lines.append(f"{prefix}Main factors:")
+        for factor in factors:
+            contribution = (
+                "n/a"
+                if factor.contribution is None
+                else f"{factor.contribution:+.6f}"
+            )
+            lines.append(
+                f"{prefix}- {factor.label}: {contribution} "
+                f"[{factor.impact}]"
+            )
+    if explanation.key_findings:
+        lines.append(f"{prefix}Key findings:")
+        lines.extend(
+            f"{prefix}- {finding}"
+            for finding in explanation.key_findings
+        )
+    if include_limitations and explanation.limitations:
+        lines.append(f"{prefix}Limitations:")
+        lines.extend(
+            f"{prefix}- {item}" for item in explanation.limitations
+        )
+    if include_children and explanation.children:
+        lines.append(f"{prefix}Children:")
+        for child in explanation.children:
+            lines.append(
+                format_entity_score_explanation(
+                    child,
+                    max_factors=max_factors,
+                    include_limitations=include_limitations,
+                    include_children=False,
+                    indent=indent + 2,
+                )
+            )
+    return "\n".join(lines)
+
+
+def format_scoring_explainability_summary(
+    value: Any,
+    *,
+    max_entities: int = 10,
+    max_factors: int = 5,
+) -> str:
+    """Format an integrated Section 24 result as plain text."""
+
+    if isinstance(value, ScoringExplainabilityResult):
+        result = value
+    else:
+        result = build_scoring_explainability(value)
+    summary = summarize_scoring_explainability(result)
+    lines = [
+        "DockAnalyzer scoring explainability",
+        f"Status: {result.status}",
+        (
+            "Coverage: "
+            f"{result.coverage.explained_count}/"
+            f"{result.coverage.requested_count} requested roots"
+        ),
+        (
+            f"Entities: {summary['entity_count']}; "
+            f"factors: {summary['factor_count']}; "
+            f"evidence items: {summary['evidence_count']}."
+        ),
+    ]
+    roots = result.explanations
+    if max_entities >= 0:
+        roots = roots[: int(max_entities)]
+    for explanation in roots:
+        lines.extend(
+            (
+                "",
+                format_entity_score_explanation(
+                    explanation,
+                    max_factors=max_factors,
+                    include_limitations=True,
+                    include_children=False,
+                ),
+            )
+        )
+    if result.warnings:
+        lines.extend(("", "Warnings:"))
+        lines.extend(f"- {warning}" for warning in result.warnings)
+    return "\n".join(lines)
+
+
+# -----------------------------------------------------------------------------
+# 24.14. Validation and error handling
+# -----------------------------------------------------------------------------
+
+def validate_scoring_explanation_factor(
+    factor: ScoringExplanationFactor,
+) -> None:
+    """Validate one explanation factor."""
+
+    if not isinstance(factor, ScoringExplanationFactor):
+        raise ScoringExplainabilityValidationError(
+            "Expected ScoringExplanationFactor."
+        )
+    if factor.category not in SCORING_EXPLANATION_FACTOR_CATEGORIES:
+        raise ScoringExplainabilityValidationError(
+            f"Invalid factor category: {factor.category}."
+        )
+    if factor.impact not in SCORING_EXPLANATION_IMPACTS:
+        raise ScoringExplainabilityValidationError(
+            f"Invalid factor impact: {factor.impact}."
+        )
+    if factor.confidence not in SCORING_EXPLANATION_CONFIDENCES:
+        raise ScoringExplainabilityValidationError(
+            f"Invalid factor confidence: {factor.confidence}."
+        )
+    for value in (
+        factor.contribution,
+        factor.raw_value,
+        factor.normalized_value,
+        factor.weight,
+        factor.baseline_score,
+        factor.score_without_factor,
+        factor.counterfactual_delta,
+    ):
+        if value is not None and not math.isfinite(value):
+            raise ScoringExplainabilityValidationError(
+                f"Non-finite value in factor {factor.factor_id}."
+            )
+
+
+def validate_scoring_entity_explanation(
+    explanation: ScoringEntityExplanation,
+    *,
+    recursive: bool = True,
+) -> None:
+    """Validate one entity explanation and optionally all descendants."""
+
+    if not isinstance(explanation, ScoringEntityExplanation):
+        raise ScoringExplainabilityValidationError(
+            "Expected ScoringEntityExplanation."
+        )
+    if explanation.scope not in SCORING_EXPLANATION_SCOPES:
+        raise ScoringExplainabilityValidationError(
+            f"Invalid explanation scope: {explanation.scope}."
+        )
+    if explanation.status not in SCORING_EXPLANATION_STATUSES:
+        raise ScoringExplainabilityValidationError(
+            f"Invalid explanation status: {explanation.status}."
+        )
+    factor_ids = [factor.factor_id for factor in explanation.factors]
+    if len(factor_ids) != len(set(factor_ids)):
+        raise ScoringExplainabilityValidationError(
+            f"Duplicate factor IDs in {explanation.entity_id}."
+        )
+    factor_ranks = [
+        factor.rank for factor in explanation.factors if factor.rank is not None
+    ]
+    if factor_ranks and factor_ranks != list(range(1, len(factor_ranks) + 1)):
+        raise ScoringExplainabilityValidationError(
+            f"Non-contiguous factor ranks in {explanation.entity_id}."
+        )
+    trace_orders = [step.order for step in explanation.trace]
+    if trace_orders != sorted(trace_orders) or len(trace_orders) != len(
+        set(trace_orders)
+    ):
+        raise ScoringExplainabilityValidationError(
+            f"Trace orders must be unique and sorted in {explanation.entity_id}."
+        )
+    for value in (
+        explanation.score,
+        explanation.baseline_score,
+        explanation.explained_score,
+        explanation.residual,
+    ):
+        if value is not None and not math.isfinite(value):
+            raise ScoringExplainabilityValidationError(
+                f"Non-finite score in {explanation.entity_id}."
+            )
+    for factor in explanation.factors:
+        validate_scoring_explanation_factor(factor)
+    if recursive:
+        for child in explanation.children:
+            validate_scoring_entity_explanation(child, recursive=True)
+
+
+def validate_scoring_explainability_coverage(
+    coverage: ScoringExplainabilityCoverage,
+) -> None:
+    """Validate explanation-coverage counts."""
+
+    if not isinstance(coverage, ScoringExplainabilityCoverage):
+        raise ScoringExplainabilityValidationError(
+            "Expected ScoringExplainabilityCoverage."
+        )
+    if coverage.explained_count > coverage.requested_count:
+        raise ScoringExplainabilityValidationError(
+            "explained_count cannot exceed requested_count."
+        )
+    if coverage.failed_count > coverage.requested_count:
+        raise ScoringExplainabilityValidationError(
+            "failed_count cannot exceed requested_count."
+        )
+
+
+def validate_scoring_explainability_result(
+    result: ScoringExplainabilityResult,
+) -> None:
+    """Validate a complete Section 24 result."""
+
+    if not isinstance(result, ScoringExplainabilityResult):
+        raise ScoringExplainabilityValidationError(
+            "Expected ScoringExplainabilityResult."
+        )
+    validate_scoring_explainability_coverage(result.coverage)
+    if result.coverage.explained_count != len(result.explanations):
+        raise ScoringExplainabilityValidationError(
+            "Coverage explained_count does not match root explanations."
+        )
+    for explanation in result.explanations:
+        validate_scoring_entity_explanation(
+            explanation,
+            recursive=result.options.recursive_validation,
+        )
+    if result.schema != SCORING_EXPLANATION_SCHEMA:
+        raise ScoringExplainabilityValidationError(
+            f"Unexpected explanation schema: {result.schema}."
+        )
+
+
+# -----------------------------------------------------------------------------
+# 24.15. Deterministic Section 24 self-check
+# -----------------------------------------------------------------------------
+
+def run_section_24_self_check() -> Mapping[str, Any]:
+    """Run deterministic, dependency-free Section 24 smoke tests."""
+
+    options = ScoringExplainabilityOptions(
+        level=SCORING_EXPLANATION_LEVEL_DETAILED,
+        top_factors=20,
+        top_children=20,
+        include_zero_contributions=True,
+        strict=True,
+    )
+    interaction = {
+        "interaction_id": "int_1",
+        "interaction_family": "hydrogen_bond",
+        "interaction_type": "conventional_hbond",
+        "strength": "strong",
+        "classification": "optimal",
+        "base_weight": 2.0,
+        "strength_multiplier": 1.2,
+        "geometry_multiplier": 0.9,
+        "geometry_quality": 0.9,
+        "raw_score": 2.16,
+        "penalty_score": 0.10,
+        "bonus_score": 0.20,
+        "final_score": 2.26,
+    }
+    residue = {
+        "residue": "A:SER:10",
+        "contributions": [interaction],
+        "interaction_count": 1,
+        "raw_score": 2.26,
+        "final_score": 2.26,
+        "hotspot": True,
+        "rank": 1,
+    }
+    pose = {
+        "pose_id": "pose_1",
+        "ligand_id": "ligand_1",
+        "model_id": "model_1",
+        "scores": [interaction],
+        "residues": [residue],
+        "summary": {
+            "raw_score": 2.26,
+            "bonus_score": 0.24,
+            "final_score": 2.50,
+        },
+        "final_score": 2.50,
+        "status": "complete",
+    }
+    ranked_pose = {
+        "pose_id": "pose_1",
+        "group_id": "global",
+        "rank": 1,
+        "tied_rank": 1.0,
+        "percentile": 1.0,
+        "ranking_score": 0.9,
+        "pareto_front": 1,
+        "selected": True,
+        "best": True,
+        "criterion_values": [
+            {
+                "metric": "dockanalyzer_score",
+                "raw_value": 2.5,
+                "normalized_value": 0.75,
+                "weighted_value": 0.60,
+                "weight": 0.8,
+                "direction": "higher_is_better",
+                "normalization": "minmax",
+                "missing": False,
+                "imputed": False,
+                "eligible": True,
+            },
+            {
+                "metric": "diversity",
+                "raw_value": 0.6,
+                "normalized_value": 0.6,
+                "weighted_value": 0.30,
+                "weight": 0.5,
+                "direction": "higher_is_better",
+                "normalization": "none",
+                "missing": False,
+                "imputed": False,
+                "eligible": True,
+            },
+        ],
+    }
+    ranking = {
+        "groups": [
+            {
+                "group_id": "global",
+                "entries": [ranked_pose],
+                "excluded_records": [],
+                "method": "weighted_sum",
+                "tie_strategy": "dense",
+                "criteria": [
+                    {"metric": "dockanalyzer_score", "weight": 0.8},
+                    {"metric": "diversity", "weight": 0.5},
+                ],
+            }
+        ],
+        "status": "complete",
+    }
+    feature = {
+        "feature_id": "hb:A:SER:10",
+        "label": "Hydrogen bond with A:SER:10",
+        "level": "interaction",
+        "pose_count": 3,
+        "denominator_pose_count": 4,
+        "persistence_fraction": 0.75,
+        "support_weight": 3.2,
+        "denominator_weight": 4.0,
+        "weighted_persistence_fraction": 0.8,
+        "occurrence_count": 4,
+        "score_mean": 1.8,
+        "consensus_class": "core",
+        "is_consensus": True,
+        "is_core": True,
+        "is_ubiquitous": False,
+    }
+    consensus = {
+        "groups": [
+            {
+                "group_id": "global",
+                "included_pose_ids": ["pose_1", "pose_2", "pose_3", "pose_4"],
+                "excluded_pose_ids": [],
+                "denominator_pose_count": 4,
+                "primary_level": "interaction",
+                "level_results": {
+                    "interaction": {
+                        "records": [feature],
+                        "consensus_feature_count": 1,
+                        "core_feature_count": 1,
+                        "ubiquitous_feature_count": 0,
+                        "mean_persistence": 0.75,
+                        "mean_weighted_persistence": 0.8,
+                    }
+                },
+                "pose_support": [
+                    {"pose_id": "pose_1", "consensus_score": 0.9}
+                ],
+            }
+        ],
+        "pose_count": 4,
+        "status": "complete",
+    }
+    external = {
+        "pose_id": "pose_external_1",
+        "internal_score": 2.5,
+        "normalized_internal_score": 0.2,
+        "external_composite_score": 0.7,
+        "fused_score": 0.9,
+        "primary_affinity": -7.4,
+        "primary_affinity_name": "vina_affinity",
+        "primary_affinity_unit": "kcal/mol",
+        "used_component_count": 2,
+        "missing_component_count": 0,
+        "excluded_component_count": 0,
+        "components": [
+            {
+                "name": "vina_affinity",
+                "raw_value": -7.4,
+                "oriented_value": 7.4,
+                "normalized_value": 0.6,
+                "weighted_value": 0.3,
+                "weight": 0.5,
+                "confidence": 1.0,
+                "direction": "lower_is_better",
+                "unit": "kcal/mol",
+                "source": "vina",
+                "status": "used",
+                "replicate_count": 3,
+            },
+            {
+                "name": "cnnscore",
+                "raw_value": 0.8,
+                "oriented_value": 0.8,
+                "normalized_value": 0.8,
+                "weighted_value": 0.4,
+                "weight": 0.5,
+                "confidence": 0.9,
+                "direction": "higher_is_better",
+                "unit": "dimensionless",
+                "source": "gnina",
+                "status": "used",
+                "replicate_count": 1,
+            },
+        ],
+    }
+    dock_model_integration = {
+        "status": "complete",
+        "dock_model": {
+            "model_id": "dock_model_1",
+            "pose_id": "pose_1",
+            "score": 2.5,
+        },
+        "bundle": {
+            "interaction_count": 1,
+            "counts_by_source": {"hbonds": 1},
+        },
+        "scoring_result": pose,
+        "attachment": {
+            "score_before": 0.0,
+            "score_after": 2.5,
+            "rolled_back": False,
+        },
+        "warnings": [],
+        "errors": [],
+    }
+
+    checks = {
+        "interaction": explain_interaction_score(
+            interaction,
+            options=options,
+        ),
+        "residue": explain_residue_score(residue, options=options),
+        "pose": explain_pose_scoring_result(pose, options=options),
+        "ranking": explain_multipose_ranking(ranking, options=options),
+        "consensus": explain_consensus_persistence(
+            consensus,
+            options=options,
+        ),
+        "external": explain_pose_external_scores(external, options=options),
+        "dock_model": explain_dock_model_scoring(
+            dock_model_integration,
+            options=options,
+        ),
+    }
+    for explanation in checks.values():
+        validate_scoring_entity_explanation(explanation)
+    integrated = build_scoring_explainability(
+        {
+            "interaction": [interaction],
+            "residue": [residue],
+            "pose": [pose],
+            "ranking": ranking,
+            "consensus": consensus,
+            "external_score": external,
+            "dock_model": dock_model_integration,
+        },
+        options=options,
+        metadata={"self_check": True},
+    )
+    validate_scoring_explainability_result(integrated)
+    rows = scoring_explainability_to_rows(integrated)
+    summary = summarize_scoring_explainability(integrated)
+    formatted = format_scoring_explainability_summary(
+        integrated,
+        max_entities=3,
+        max_factors=3,
+    )
+    if integrated.coverage.requested_count != 7:
+        raise ScoringExplainabilityValidationError(
+            "Section 24 self-check requested-count mismatch."
+        )
+    if integrated.coverage.failed_count:
+        raise ScoringExplainabilityValidationError(
+            "Section 24 self-check produced failed explanations."
+        )
+    if not rows or not formatted or summary["factor_count"] < 1:
+        raise ScoringExplainabilityValidationError(
+            "Section 24 self-check summary output is empty."
+        )
+    return MappingProxyType(
+        {
+            "status": "passed",
+            "root_explanation_count": len(integrated.explanations),
+            "entity_count": summary["entity_count"],
+            "factor_count": summary["factor_count"],
+            "row_count": len(rows),
+            "coverage_fraction": integrated.coverage.coverage_fraction,
+            "scopes": tuple(sorted(summary["scope_counts"])),
+        }
+    )
+
+
+# -----------------------------------------------------------------------------
+# 24.16. Public interface closure
+# -----------------------------------------------------------------------------
+
+_SECTION_24_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    # Status, scope, level, impact, and confidence constants
+    "SCORING_EXPLANATION_STATUS_COMPLETE",
+    "SCORING_EXPLANATION_STATUS_PARTIAL",
+    "SCORING_EXPLANATION_STATUS_EMPTY",
+    "SCORING_EXPLANATION_STATUS_INVALID",
+    "SCORING_EXPLANATION_STATUS_FAILED",
+    "SCORING_EXPLANATION_STATUSES",
+    "SCORING_EXPLANATION_SCOPE_INTERACTION",
+    "SCORING_EXPLANATION_SCOPE_RESIDUE",
+    "SCORING_EXPLANATION_SCOPE_POSE",
+    "SCORING_EXPLANATION_SCOPE_RANKING",
+    "SCORING_EXPLANATION_SCOPE_CONSENSUS",
+    "SCORING_EXPLANATION_SCOPE_EXTERNAL",
+    "SCORING_EXPLANATION_SCOPE_DOCK_MODEL",
+    "SCORING_EXPLANATION_SCOPE_INTEGRATED",
+    "SCORING_EXPLANATION_SCOPES",
+    "SCORING_EXPLANATION_LEVEL_SUMMARY",
+    "SCORING_EXPLANATION_LEVEL_STANDARD",
+    "SCORING_EXPLANATION_LEVEL_DETAILED",
+    "SCORING_EXPLANATION_LEVEL_DEBUG",
+    "SCORING_EXPLANATION_LEVELS",
+    "SCORING_EXPLANATION_IMPACT_POSITIVE",
+    "SCORING_EXPLANATION_IMPACT_NEGATIVE",
+    "SCORING_EXPLANATION_IMPACT_NEUTRAL",
+    "SCORING_EXPLANATION_IMPACT_UNKNOWN",
+    "SCORING_EXPLANATION_IMPACTS",
+    "SCORING_EXPLANATION_CONFIDENCE_HIGH",
+    "SCORING_EXPLANATION_CONFIDENCE_MODERATE",
+    "SCORING_EXPLANATION_CONFIDENCE_LOW",
+    "SCORING_EXPLANATION_CONFIDENCE_UNKNOWN",
+    "SCORING_EXPLANATION_CONFIDENCES",
+    # Factor and trace constants
+    "SCORING_EXPLANATION_FACTOR_BASE_WEIGHT",
+    "SCORING_EXPLANATION_FACTOR_STRENGTH",
+    "SCORING_EXPLANATION_FACTOR_CLASSIFICATION",
+    "SCORING_EXPLANATION_FACTOR_GEOMETRY",
+    "SCORING_EXPLANATION_FACTOR_PENALTY",
+    "SCORING_EXPLANATION_FACTOR_BONUS",
+    "SCORING_EXPLANATION_FACTOR_CORRECTION",
+    "SCORING_EXPLANATION_FACTOR_INTERACTION",
+    "SCORING_EXPLANATION_FACTOR_RESIDUE",
+    "SCORING_EXPLANATION_FACTOR_DIVERSITY",
+    "SCORING_EXPLANATION_FACTOR_NORMALIZATION",
+    "SCORING_EXPLANATION_FACTOR_RANKING",
+    "SCORING_EXPLANATION_FACTOR_CONSENSUS",
+    "SCORING_EXPLANATION_FACTOR_PERSISTENCE",
+    "SCORING_EXPLANATION_FACTOR_EXTERNAL",
+    "SCORING_EXPLANATION_FACTOR_INTERNAL",
+    "SCORING_EXPLANATION_FACTOR_FUSION",
+    "SCORING_EXPLANATION_FACTOR_ATTACHMENT",
+    "SCORING_EXPLANATION_FACTOR_RESIDUAL",
+    "SCORING_EXPLANATION_FACTOR_LIMITATION",
+    "SCORING_EXPLANATION_FACTOR_CATEGORIES",
+    "SCORING_EXPLANATION_STAGE_INPUT",
+    "SCORING_EXPLANATION_STAGE_RECOGNITION",
+    "SCORING_EXPLANATION_STAGE_WEIGHTING",
+    "SCORING_EXPLANATION_STAGE_MULTIPLIERS",
+    "SCORING_EXPLANATION_STAGE_GEOMETRY",
+    "SCORING_EXPLANATION_STAGE_CORRECTIONS",
+    "SCORING_EXPLANATION_STAGE_AGGREGATION",
+    "SCORING_EXPLANATION_STAGE_NORMALIZATION",
+    "SCORING_EXPLANATION_STAGE_RANKING",
+    "SCORING_EXPLANATION_STAGE_CONSENSUS",
+    "SCORING_EXPLANATION_STAGE_FUSION",
+    "SCORING_EXPLANATION_STAGE_ATTACHMENT",
+    "SCORING_EXPLANATION_STAGES",
+    # Versions and defaults
+    "SCORING_EXPLANATION_SCHEMA",
+    "SCORING_EXPLANATION_SCHEMA_VERSION",
+    "SCORING_EXPLANATION_SECTION_VERSION",
+    "SCORING_EXPLANATION_METADATA_KEY",
+    "SCORING_EXPLANATION_DOCK_MODEL_ATTRIBUTE",
+    "DEFAULT_SCORING_EXPLANATION_LEVEL",
+    "DEFAULT_SCORING_EXPLANATION_TOP_FACTORS",
+    "DEFAULT_SCORING_EXPLANATION_TOP_CHILDREN",
+    "DEFAULT_SCORING_EXPLANATION_EPSILON",
+    # Exceptions and dataclasses
+    "ScoringExplainabilityError",
+    "ScoringExplainabilityInputError",
+    "ScoringExplainabilityConfigurationError",
+    "ScoringExplainabilityValidationError",
+    "ScoringExplainabilityOptions",
+    "ScoringExplanationEvidence",
+    "ScoringExplanationTraceStep",
+    "ScoringExplanationFactor",
+    "ScoringEntityExplanation",
+    "ScoringExplainabilityCoverage",
+    "ScoringExplainabilityResult",
+    # Canonicalization and explainers
+    "normalize_scoring_explanation_status",
+    "normalize_scoring_explanation_scope",
+    "normalize_scoring_explanation_level",
+    "normalize_scoring_explanation_impact",
+    "normalize_scoring_explanation_confidence",
+    "explain_interaction_score",
+    "explain_residue_score",
+    "explain_pose_scoring_result",
+    "explain_ranked_pose",
+    "explain_ranking_group",
+    "explain_multipose_ranking",
+    "explain_persistent_feature",
+    "explain_consensus_group",
+    "explain_consensus_persistence",
+    "explain_pose_external_scores",
+    "explain_external_score_result",
+    "explain_dock_model_scoring",
+    "explain_dock_model_integrations",
+    "infer_scoring_explanation_scope",
+    "explain_scoring_object",
+    "build_scoring_explainability",
+    # Rows, summaries, validation, and self-check
+    "scoring_explainability_to_rows",
+    "summarize_scoring_explainability",
+    "format_entity_score_explanation",
+    "format_scoring_explainability_summary",
+    "validate_scoring_explanation_factor",
+    "validate_scoring_entity_explanation",
+    "validate_scoring_explainability_coverage",
+    "validate_scoring_explainability_result",
+    "run_section_24_self_check",
+)
+
+if "__all__" not in globals():
+    __all__: List[str] = []
+
+for public_name in _SECTION_24_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+def section_24_public_names() -> Tuple[str, ...]:
+    """Return the complete immutable Section 24 public interface."""
+
+    return _SECTION_24_PUBLIC_NAMES
+
+
+def validate_section_24_public_interface() -> None:
+    """Validate that every declared Section 24 public name exists and exports."""
+
+    missing_names = tuple(
+        name for name in _SECTION_24_PUBLIC_NAMES if name not in globals()
+    )
+    if missing_names:
+        raise ScoringExplainabilityValidationError(
+            "Missing Section 24 public names: " + ", ".join(missing_names)
+        )
+    missing_exports = tuple(
+        name for name in _SECTION_24_PUBLIC_NAMES if name not in __all__
+    )
+    if missing_exports:
+        raise ScoringExplainabilityValidationError(
+            "Section 24 names missing from __all__: "
+            + ", ".join(missing_exports)
+        )
+
+
+if "section_24_public_names" not in __all__:
+    __all__.append("section_24_public_names")
+if "validate_section_24_public_interface" not in __all__:
+    __all__.append("validate_section_24_public_interface")
+
+validate_section_24_public_interface()
+
+# =============================================================================
+# End of Section 24
+# =============================================================================
+
 
 
 
