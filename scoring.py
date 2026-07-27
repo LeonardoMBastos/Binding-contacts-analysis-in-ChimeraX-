@@ -97755,4 +97755,14714 @@ validate_section_24_public_interface()
 
 
 
+# =============================================================================
+# DockAnalyzer — Interaction scoring
+# Section 25 — Serialization
+# =============================================================================
+
+"""
+Versioned and safe serialization for DockAnalyzer scoring artifacts.
+
+Section 25 provides the common serialization layer used by the scoring module.
+Earlier sections expose specialized ``to_dict`` and ``to_rows`` helpers for
+specific result types. This section does not replace those helpers. Instead, it
+coordinates them through one recursive serializer, adds schema information,
+validates JSON safety, writes and reads supported interchange formats, creates
+artifact bundles, and records any lossy conversion in an explicit issue list.
+
+The serializer is designed to work with:
+
+- scoring dataclasses from Sections 1–24;
+- standard dataclasses, enums, named tuples, mappings and sequences;
+- NumPy scalars and arrays when NumPy is available;
+- ChimeraX and third-party objects exposing ``to_dict``;
+- ordinary Python objects used by DockAnalyzer self-tests;
+- already serialized dictionaries loaded from JSON.
+
+Serialization is intentionally separate from report assembly. Section 26 may
+consume the envelopes, bundles, rows and files produced here, but report layout
+and narrative generation are not implemented in this section.
+"""
+
+from collections import Counter
+from dataclasses import dataclass, field, fields, is_dataclass
+from enum import Enum
+from types import MappingProxyType
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Final,
+    FrozenSet,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
+import base64
+import csv
+import gzip
+import hashlib
+import io
+import json
+import math
+import os
+
+
+# -----------------------------------------------------------------------------
+# 25.1. Constants, canonical names and defaults
+# -----------------------------------------------------------------------------
+
+SCORING_SERIALIZATION_STATUS_COMPLETE: Final[str] = "complete"
+SCORING_SERIALIZATION_STATUS_PARTIAL: Final[str] = "partial"
+SCORING_SERIALIZATION_STATUS_EMPTY: Final[str] = "empty"
+SCORING_SERIALIZATION_STATUS_INVALID: Final[str] = "invalid"
+SCORING_SERIALIZATION_STATUS_FAILED: Final[str] = "failed"
+SCORING_SERIALIZATION_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_SERIALIZATION_STATUS_COMPLETE,
+        SCORING_SERIALIZATION_STATUS_PARTIAL,
+        SCORING_SERIALIZATION_STATUS_EMPTY,
+        SCORING_SERIALIZATION_STATUS_INVALID,
+        SCORING_SERIALIZATION_STATUS_FAILED,
+    }
+)
+
+SCORING_SERIALIZATION_FORMAT_DICT: Final[str] = "dict"
+SCORING_SERIALIZATION_FORMAT_JSON: Final[str] = "json"
+SCORING_SERIALIZATION_FORMAT_JSONL: Final[str] = "jsonl"
+SCORING_SERIALIZATION_FORMAT_CSV: Final[str] = "csv"
+SCORING_SERIALIZATION_FORMATS: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_SERIALIZATION_FORMAT_DICT,
+        SCORING_SERIALIZATION_FORMAT_JSON,
+        SCORING_SERIALIZATION_FORMAT_JSONL,
+        SCORING_SERIALIZATION_FORMAT_CSV,
+    }
+)
+
+SCORING_SERIALIZATION_SCHEMA: Final[str] = "dockanalyzer.scoring"
+SCORING_SERIALIZATION_SCHEMA_VERSION: Final[str] = "1.0"
+SCORING_SERIALIZATION_SECTION_VERSION: Final[str] = "25.0"
+SCORING_SERIALIZATION_BUNDLE_SCHEMA: Final[str] = (
+    "dockanalyzer.scoring.bundle"
+)
+SCORING_SERIALIZATION_TABLE_SCHEMA: Final[str] = (
+    "dockanalyzer.scoring.table"
+)
+SCORING_SERIALIZATION_CHECKSUM_ALGORITHM: Final[str] = "sha256"
+SCORING_SERIALIZATION_MEDIA_TYPE_JSON: Final[str] = "application/json"
+SCORING_SERIALIZATION_MEDIA_TYPE_JSONL: Final[str] = (
+    "application/x-ndjson"
+)
+SCORING_SERIALIZATION_MEDIA_TYPE_CSV: Final[str] = "text/csv"
+
+SCORING_SERIALIZATION_NONFINITE_NULL: Final[str] = "null"
+SCORING_SERIALIZATION_NONFINITE_STRING: Final[str] = "string"
+SCORING_SERIALIZATION_NONFINITE_ERROR: Final[str] = "error"
+SCORING_SERIALIZATION_NONFINITE_POLICIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_SERIALIZATION_NONFINITE_NULL,
+        SCORING_SERIALIZATION_NONFINITE_STRING,
+        SCORING_SERIALIZATION_NONFINITE_ERROR,
+    }
+)
+
+SCORING_SERIALIZATION_UNKNOWN_STRING: Final[str] = "string"
+SCORING_SERIALIZATION_UNKNOWN_MAPPING: Final[str] = "mapping"
+SCORING_SERIALIZATION_UNKNOWN_NULL: Final[str] = "null"
+SCORING_SERIALIZATION_UNKNOWN_ERROR: Final[str] = "error"
+SCORING_SERIALIZATION_UNKNOWN_POLICIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_SERIALIZATION_UNKNOWN_STRING,
+        SCORING_SERIALIZATION_UNKNOWN_MAPPING,
+        SCORING_SERIALIZATION_UNKNOWN_NULL,
+        SCORING_SERIALIZATION_UNKNOWN_ERROR,
+    }
+)
+
+SCORING_SERIALIZATION_BYTES_BASE64: Final[str] = "base64"
+SCORING_SERIALIZATION_BYTES_UTF8: Final[str] = "utf8"
+SCORING_SERIALIZATION_BYTES_LIST: Final[str] = "list"
+SCORING_SERIALIZATION_BYTES_ERROR: Final[str] = "error"
+SCORING_SERIALIZATION_BYTES_POLICIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_SERIALIZATION_BYTES_BASE64,
+        SCORING_SERIALIZATION_BYTES_UTF8,
+        SCORING_SERIALIZATION_BYTES_LIST,
+        SCORING_SERIALIZATION_BYTES_ERROR,
+    }
+)
+
+SCORING_SERIALIZATION_CYCLE_REFERENCE: Final[str] = "reference"
+SCORING_SERIALIZATION_CYCLE_NULL: Final[str] = "null"
+SCORING_SERIALIZATION_CYCLE_ERROR: Final[str] = "error"
+SCORING_SERIALIZATION_CYCLE_POLICIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_SERIALIZATION_CYCLE_REFERENCE,
+        SCORING_SERIALIZATION_CYCLE_NULL,
+        SCORING_SERIALIZATION_CYCLE_ERROR,
+    }
+)
+
+SCORING_SERIALIZATION_ISSUE_INFO: Final[str] = "info"
+SCORING_SERIALIZATION_ISSUE_WARNING: Final[str] = "warning"
+SCORING_SERIALIZATION_ISSUE_ERROR: Final[str] = "error"
+SCORING_SERIALIZATION_ISSUE_LEVELS: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_SERIALIZATION_ISSUE_INFO,
+        SCORING_SERIALIZATION_ISSUE_WARNING,
+        SCORING_SERIALIZATION_ISSUE_ERROR,
+    }
+)
+
+SCORING_SERIALIZATION_ARTIFACT_UNKNOWN: Final[str] = "unknown"
+SCORING_SERIALIZATION_ARTIFACT_INTERACTION: Final[str] = "interaction_score"
+SCORING_SERIALIZATION_ARTIFACT_COLLECTION: Final[str] = (
+    "collection_scoring_result"
+)
+SCORING_SERIALIZATION_ARTIFACT_RESIDUE: Final[str] = "residue_score"
+SCORING_SERIALIZATION_ARTIFACT_POSE: Final[str] = "pose_scoring_result"
+SCORING_SERIALIZATION_ARTIFACT_NORMALIZATION: Final[str] = (
+    "score_normalization_result"
+)
+SCORING_SERIALIZATION_ARTIFACT_DIVERSITY: Final[str] = (
+    "pose_diversity_result"
+)
+SCORING_SERIALIZATION_ARTIFACT_COMPLEMENTARITY: Final[str] = (
+    "pose_set_complementarity_result"
+)
+SCORING_SERIALIZATION_ARTIFACT_SELECTION: Final[str] = (
+    "pose_set_selection_result"
+)
+SCORING_SERIALIZATION_ARTIFACT_STATISTICS: Final[str] = (
+    "scoring_statistics_report"
+)
+SCORING_SERIALIZATION_ARTIFACT_RANKING: Final[str] = (
+    "multipose_ranking_result"
+)
+SCORING_SERIALIZATION_ARTIFACT_CONSENSUS: Final[str] = (
+    "consensus_persistence_result"
+)
+SCORING_SERIALIZATION_ARTIFACT_DOCK_MODEL: Final[str] = (
+    "dock_model_scoring_result"
+)
+SCORING_SERIALIZATION_ARTIFACT_EXTERNAL: Final[str] = (
+    "external_score_result"
+)
+SCORING_SERIALIZATION_ARTIFACT_EXPLANATION: Final[str] = (
+    "scoring_explainability_result"
+)
+SCORING_SERIALIZATION_ARTIFACT_BUNDLE: Final[str] = "scoring_bundle"
+
+SCORING_SERIALIZATION_ARTIFACT_TYPES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_SERIALIZATION_ARTIFACT_UNKNOWN,
+        SCORING_SERIALIZATION_ARTIFACT_INTERACTION,
+        SCORING_SERIALIZATION_ARTIFACT_COLLECTION,
+        SCORING_SERIALIZATION_ARTIFACT_RESIDUE,
+        SCORING_SERIALIZATION_ARTIFACT_POSE,
+        SCORING_SERIALIZATION_ARTIFACT_NORMALIZATION,
+        SCORING_SERIALIZATION_ARTIFACT_DIVERSITY,
+        SCORING_SERIALIZATION_ARTIFACT_COMPLEMENTARITY,
+        SCORING_SERIALIZATION_ARTIFACT_SELECTION,
+        SCORING_SERIALIZATION_ARTIFACT_STATISTICS,
+        SCORING_SERIALIZATION_ARTIFACT_RANKING,
+        SCORING_SERIALIZATION_ARTIFACT_CONSENSUS,
+        SCORING_SERIALIZATION_ARTIFACT_DOCK_MODEL,
+        SCORING_SERIALIZATION_ARTIFACT_EXTERNAL,
+        SCORING_SERIALIZATION_ARTIFACT_EXPLANATION,
+        SCORING_SERIALIZATION_ARTIFACT_BUNDLE,
+    }
+)
+
+DEFAULT_SCORING_SERIALIZATION_INDENT: Final[int] = 2
+DEFAULT_SCORING_SERIALIZATION_MAX_DEPTH: Final[int] = 64
+DEFAULT_SCORING_SERIALIZATION_MAX_ITEMS: Final[int] = 100000
+DEFAULT_SCORING_SERIALIZATION_MAX_STRING_LENGTH: Final[int] = 1000000
+DEFAULT_SCORING_SERIALIZATION_ENCODING: Final[str] = "utf-8"
+DEFAULT_SCORING_SERIALIZATION_NEWLINE: Final[str] = "\n"
+DEFAULT_SCORING_SERIALIZATION_FLOAT_DIGITS: Final[int] = 12
+DEFAULT_SCORING_SERIALIZATION_TABLE_SEPARATOR: Final[str] = "."
+DEFAULT_SCORING_SERIALIZATION_LIST_SEPARATOR: Final[str] = ";"
+DEFAULT_SCORING_SERIALIZATION_INCLUDE_CHECKSUM: Final[bool] = True
+
+_EMPTY_SCORING_SERIALIZATION_METADATA: Final[Mapping[str, Any]] = (
+    MappingProxyType({})
+)
+
+_CLASS_NAME_TO_ARTIFACT_TYPE: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "ScoreComponent": "score_component",
+        "InteractionScore": SCORING_SERIALIZATION_ARTIFACT_INTERACTION,
+        "IndividualScoringResult": "individual_scoring_result",
+        "CollectionScoringResult": (
+            SCORING_SERIALIZATION_ARTIFACT_COLLECTION
+        ),
+        "ResidueScore": SCORING_SERIALIZATION_ARTIFACT_RESIDUE,
+        "ResidueAggregationResult": "residue_aggregation_result",
+        "PoseScore": "pose_score",
+        "PoseScoringResult": SCORING_SERIALIZATION_ARTIFACT_POSE,
+        "NormalizedPoseScore": "normalized_pose_score",
+        "ScoreNormalizationResult": (
+            SCORING_SERIALIZATION_ARTIFACT_NORMALIZATION
+        ),
+        "PoseFingerprint": "pose_fingerprint",
+        "PoseDiversityResult": SCORING_SERIALIZATION_ARTIFACT_DIVERSITY,
+        "PoseSetComplementarityResult": (
+            SCORING_SERIALIZATION_ARTIFACT_COMPLEMENTARITY
+        ),
+        "PoseSetSelectionResult": (
+            SCORING_SERIALIZATION_ARTIFACT_SELECTION
+        ),
+        "DiversityComplementarityAnalysis": (
+            "diversity_complementarity_analysis"
+        ),
+        "ScoringStatisticsReport": (
+            SCORING_SERIALIZATION_ARTIFACT_STATISTICS
+        ),
+        "MultiposeRankingResult": SCORING_SERIALIZATION_ARTIFACT_RANKING,
+        "ConsensusPersistenceResult": (
+            SCORING_SERIALIZATION_ARTIFACT_CONSENSUS
+        ),
+        "DockModelScoringIntegrationResult": (
+            SCORING_SERIALIZATION_ARTIFACT_DOCK_MODEL
+        ),
+        "DockModelMultiposeScoringResult": (
+            "dock_model_multipose_scoring_result"
+        ),
+        "MultiPoseExternalScoreResult": (
+            SCORING_SERIALIZATION_ARTIFACT_EXTERNAL
+        ),
+        "PoseExternalScoreResult": "pose_external_score_result",
+        "ScoringEntityExplanation": "scoring_entity_explanation",
+        "ScoringExplainabilityResult": (
+            SCORING_SERIALIZATION_ARTIFACT_EXPLANATION
+        ),
+        "ScoringSerializationBundle": (
+            SCORING_SERIALIZATION_ARTIFACT_BUNDLE
+        ),
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 25.2. Exceptions and low-level normalization helpers
+# -----------------------------------------------------------------------------
+
+class ScoringSerializationError(RuntimeError):
+    """Base exception for Section 25."""
+
+
+class ScoringSerializationInputError(ScoringSerializationError):
+    """Raised when an input cannot be serialized safely."""
+
+
+class ScoringSerializationConfigurationError(ScoringSerializationError):
+    """Raised when serialization options are inconsistent."""
+
+
+class ScoringSerializationDepthError(ScoringSerializationError):
+    """Raised when the configured maximum recursion depth is exceeded."""
+
+
+class ScoringSerializationCycleError(ScoringSerializationError):
+    """Raised when a cyclic reference cannot be handled."""
+
+
+class ScoringSerializationValidationError(ScoringSerializationError):
+    """Raised when a serialized artifact fails structural validation."""
+
+
+class ScoringDeserializationError(ScoringSerializationError):
+    """Raised when serialized content cannot be read or restored."""
+
+
+def _serialization_token(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    return "_".join(part for part in text.split() if part)
+
+
+def _serialization_identifier(value: Any, *, default: str = "") -> str:
+    text = str(value or "").strip()
+    return text or default
+
+
+def _serialization_optional_float(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _serialization_optional_int(value: Any) -> Optional[int]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _serialization_freeze_metadata(
+    value: Optional[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    if not value:
+        return _EMPTY_SCORING_SERIALIZATION_METADATA
+    return MappingProxyType(dict(value))
+
+
+def normalize_scoring_serialization_status(value: Any) -> str:
+    token = _serialization_token(value)
+    aliases = {
+        "ok": SCORING_SERIALIZATION_STATUS_COMPLETE,
+        "success": SCORING_SERIALIZATION_STATUS_COMPLETE,
+        "completed": SCORING_SERIALIZATION_STATUS_COMPLETE,
+        "warning": SCORING_SERIALIZATION_STATUS_PARTIAL,
+        "warnings": SCORING_SERIALIZATION_STATUS_PARTIAL,
+        "none": SCORING_SERIALIZATION_STATUS_EMPTY,
+        "error": SCORING_SERIALIZATION_STATUS_FAILED,
+    }
+    normalized = aliases.get(token, token)
+    if normalized not in SCORING_SERIALIZATION_STATUSES:
+        raise ScoringSerializationConfigurationError(
+            f"Unknown serialization status: {value!r}."
+        )
+    return normalized
+
+
+def normalize_scoring_serialization_format(value: Any) -> str:
+    token = _serialization_token(value).lstrip(".")
+    aliases = {
+        "dictionary": SCORING_SERIALIZATION_FORMAT_DICT,
+        "mapping": SCORING_SERIALIZATION_FORMAT_DICT,
+        "ndjson": SCORING_SERIALIZATION_FORMAT_JSONL,
+        "json_lines": SCORING_SERIALIZATION_FORMAT_JSONL,
+        "comma_separated_values": SCORING_SERIALIZATION_FORMAT_CSV,
+    }
+    normalized = aliases.get(token, token)
+    if normalized not in SCORING_SERIALIZATION_FORMATS:
+        raise ScoringSerializationConfigurationError(
+            f"Unknown serialization format: {value!r}."
+        )
+    return normalized
+
+
+def normalize_scoring_nonfinite_policy(value: Any) -> str:
+    token = _serialization_token(value)
+    aliases = {
+        "none": SCORING_SERIALIZATION_NONFINITE_NULL,
+        "raise": SCORING_SERIALIZATION_NONFINITE_ERROR,
+        "strict": SCORING_SERIALIZATION_NONFINITE_ERROR,
+        "text": SCORING_SERIALIZATION_NONFINITE_STRING,
+    }
+    normalized = aliases.get(token, token)
+    if normalized not in SCORING_SERIALIZATION_NONFINITE_POLICIES:
+        raise ScoringSerializationConfigurationError(
+            f"Unknown non-finite policy: {value!r}."
+        )
+    return normalized
+
+
+def normalize_scoring_unknown_policy(value: Any) -> str:
+    token = _serialization_token(value)
+    aliases = {
+        "repr": SCORING_SERIALIZATION_UNKNOWN_STRING,
+        "attributes": SCORING_SERIALIZATION_UNKNOWN_MAPPING,
+        "none": SCORING_SERIALIZATION_UNKNOWN_NULL,
+        "raise": SCORING_SERIALIZATION_UNKNOWN_ERROR,
+        "strict": SCORING_SERIALIZATION_UNKNOWN_ERROR,
+    }
+    normalized = aliases.get(token, token)
+    if normalized not in SCORING_SERIALIZATION_UNKNOWN_POLICIES:
+        raise ScoringSerializationConfigurationError(
+            f"Unknown object policy: {value!r}."
+        )
+    return normalized
+
+
+def normalize_scoring_bytes_policy(value: Any) -> str:
+    token = _serialization_token(value)
+    aliases = {
+        "b64": SCORING_SERIALIZATION_BYTES_BASE64,
+        "text": SCORING_SERIALIZATION_BYTES_UTF8,
+        "integers": SCORING_SERIALIZATION_BYTES_LIST,
+        "raise": SCORING_SERIALIZATION_BYTES_ERROR,
+    }
+    normalized = aliases.get(token, token)
+    if normalized not in SCORING_SERIALIZATION_BYTES_POLICIES:
+        raise ScoringSerializationConfigurationError(
+            f"Unknown bytes policy: {value!r}."
+        )
+    return normalized
+
+
+def normalize_scoring_cycle_policy(value: Any) -> str:
+    token = _serialization_token(value)
+    aliases = {
+        "ref": SCORING_SERIALIZATION_CYCLE_REFERENCE,
+        "none": SCORING_SERIALIZATION_CYCLE_NULL,
+        "raise": SCORING_SERIALIZATION_CYCLE_ERROR,
+    }
+    normalized = aliases.get(token, token)
+    if normalized not in SCORING_SERIALIZATION_CYCLE_POLICIES:
+        raise ScoringSerializationConfigurationError(
+            f"Unknown cycle policy: {value!r}."
+        )
+    return normalized
+
+
+def normalize_scoring_serialization_artifact_type(value: Any) -> str:
+    token = _serialization_token(value)
+    return token or SCORING_SERIALIZATION_ARTIFACT_UNKNOWN
+
+
+def normalize_scoring_serialization_issue_level(value: Any) -> str:
+    token = _serialization_token(value)
+    aliases = {
+        "warn": SCORING_SERIALIZATION_ISSUE_WARNING,
+        "failure": SCORING_SERIALIZATION_ISSUE_ERROR,
+    }
+    normalized = aliases.get(token, token)
+    if normalized not in SCORING_SERIALIZATION_ISSUE_LEVELS:
+        raise ScoringSerializationConfigurationError(
+            f"Unknown serialization issue level: {value!r}."
+        )
+    return normalized
+
+
+# -----------------------------------------------------------------------------
+# 25.3. Configuration, issue and result structures
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ScoringSerializationOptions:
+    """Configuration for recursive scoring serialization."""
+
+    include_metadata: bool = True
+    include_private_fields: bool = False
+    include_none: bool = True
+    include_type_tags: bool = False
+    include_checksum: bool = DEFAULT_SCORING_SERIALIZATION_INCLUDE_CHECKSUM
+    sort_keys: bool = True
+    ensure_ascii: bool = False
+    allow_nan: bool = False
+    indent: Optional[int] = DEFAULT_SCORING_SERIALIZATION_INDENT
+    float_digits: Optional[int] = DEFAULT_SCORING_SERIALIZATION_FLOAT_DIGITS
+    max_depth: int = DEFAULT_SCORING_SERIALIZATION_MAX_DEPTH
+    max_items: int = DEFAULT_SCORING_SERIALIZATION_MAX_ITEMS
+    max_string_length: int = DEFAULT_SCORING_SERIALIZATION_MAX_STRING_LENGTH
+    nonfinite_policy: str = SCORING_SERIALIZATION_NONFINITE_NULL
+    unknown_policy: str = SCORING_SERIALIZATION_UNKNOWN_MAPPING
+    bytes_policy: str = SCORING_SERIALIZATION_BYTES_BASE64
+    cycle_policy: str = SCORING_SERIALIZATION_CYCLE_REFERENCE
+    preserve_tuple_type: bool = False
+    preserve_set_type: bool = False
+    call_to_dict: bool = True
+    use_specialized_adapters: bool = True
+    strict: bool = False
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_SCORING_SERIALIZATION_METADATA
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "nonfinite_policy",
+            normalize_scoring_nonfinite_policy(self.nonfinite_policy),
+        )
+        object.__setattr__(
+            self,
+            "unknown_policy",
+            normalize_scoring_unknown_policy(self.unknown_policy),
+        )
+        object.__setattr__(
+            self,
+            "bytes_policy",
+            normalize_scoring_bytes_policy(self.bytes_policy),
+        )
+        object.__setattr__(
+            self,
+            "cycle_policy",
+            normalize_scoring_cycle_policy(self.cycle_policy),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _serialization_freeze_metadata(self.metadata),
+        )
+        if self.max_depth < 1:
+            raise ScoringSerializationConfigurationError(
+                "max_depth must be at least 1."
+            )
+        if self.max_items < 1:
+            raise ScoringSerializationConfigurationError(
+                "max_items must be at least 1."
+            )
+        if self.max_string_length < 1:
+            raise ScoringSerializationConfigurationError(
+                "max_string_length must be at least 1."
+            )
+        if self.indent is not None and self.indent < 0:
+            raise ScoringSerializationConfigurationError(
+                "indent cannot be negative."
+            )
+        if self.float_digits is not None and self.float_digits < 0:
+            raise ScoringSerializationConfigurationError(
+                "float_digits cannot be negative."
+            )
+        if self.allow_nan and self.nonfinite_policy == (
+            SCORING_SERIALIZATION_NONFINITE_ERROR
+        ):
+            raise ScoringSerializationConfigurationError(
+                "allow_nan conflicts with nonfinite_policy='error'."
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringSerializationIssue:
+    """One warning, information message or error produced during conversion."""
+
+    level: str
+    code: str
+    message: str
+    path: str = "$"
+    object_type: Optional[str] = None
+    lossy: bool = False
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_SCORING_SERIALIZATION_METADATA
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "level",
+            normalize_scoring_serialization_issue_level(self.level),
+        )
+        object.__setattr__(self, "code", _serialization_identifier(self.code))
+        object.__setattr__(
+            self,
+            "message",
+            _serialization_identifier(self.message),
+        )
+        object.__setattr__(
+            self,
+            "path",
+            _serialization_identifier(self.path, default="$"),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _serialization_freeze_metadata(self.metadata),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringSerializationManifestEntry:
+    """Description of one serialized artifact in a bundle."""
+
+    artifact_id: str
+    artifact_type: str
+    object_type: str
+    schema: str
+    schema_version: str
+    checksum: Optional[str]
+    payload_size: int
+    status: str = SCORING_SERIALIZATION_STATUS_COMPLETE
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_SCORING_SERIALIZATION_METADATA
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "artifact_id",
+            _serialization_identifier(self.artifact_id),
+        )
+        object.__setattr__(
+            self,
+            "artifact_type",
+            normalize_scoring_serialization_artifact_type(
+                self.artifact_type
+            ),
+        )
+        object.__setattr__(
+            self,
+            "status",
+            normalize_scoring_serialization_status(self.status),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _serialization_freeze_metadata(self.metadata),
+        )
+        if self.payload_size < 0:
+            raise ScoringSerializationValidationError(
+                "Manifest payload_size cannot be negative."
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringSerializationEnvelope:
+    """Versioned envelope around one JSON-compatible scoring payload."""
+
+    artifact_type: str
+    payload: Any
+    artifact_id: str
+    object_type: str
+    schema: str = SCORING_SERIALIZATION_SCHEMA
+    schema_version: str = SCORING_SERIALIZATION_SCHEMA_VERSION
+    section_version: str = SCORING_SERIALIZATION_SECTION_VERSION
+    status: str = SCORING_SERIALIZATION_STATUS_COMPLETE
+    checksum: Optional[str] = None
+    checksum_algorithm: Optional[str] = None
+    created_at: Optional[str] = None
+    issues: Tuple[ScoringSerializationIssue, ...] = field(
+        default_factory=tuple
+    )
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_SCORING_SERIALIZATION_METADATA
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "artifact_type",
+            normalize_scoring_serialization_artifact_type(
+                self.artifact_type
+            ),
+        )
+        object.__setattr__(
+            self,
+            "artifact_id",
+            _serialization_identifier(self.artifact_id),
+        )
+        object.__setattr__(
+            self,
+            "object_type",
+            _serialization_identifier(self.object_type, default="unknown"),
+        )
+        object.__setattr__(
+            self,
+            "status",
+            normalize_scoring_serialization_status(self.status),
+        )
+        object.__setattr__(self, "issues", tuple(self.issues))
+        object.__setattr__(
+            self,
+            "metadata",
+            _serialization_freeze_metadata(self.metadata),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        result: Dict[str, Any] = {
+            "schema": self.schema,
+            "schema_version": self.schema_version,
+            "section_version": self.section_version,
+            "artifact_type": self.artifact_type,
+            "artifact_id": self.artifact_id,
+            "object_type": self.object_type,
+            "status": self.status,
+            "created_at": self.created_at,
+            "checksum": self.checksum,
+            "checksum_algorithm": self.checksum_algorithm,
+            "payload": self.payload,
+            "issues": [
+                {
+                    "level": issue.level,
+                    "code": issue.code,
+                    "message": issue.message,
+                    "path": issue.path,
+                    "object_type": issue.object_type,
+                    "lossy": issue.lossy,
+                    "metadata": dict(issue.metadata),
+                }
+                for issue in self.issues
+            ],
+            "metadata": dict(self.metadata),
+        }
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringSerializationResult:
+    """Complete result of serializing one object."""
+
+    status: str
+    envelope: ScoringSerializationEnvelope
+    json_text: Optional[str] = None
+    issues: Tuple[ScoringSerializationIssue, ...] = field(
+        default_factory=tuple
+    )
+    byte_size: int = 0
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_SCORING_SERIALIZATION_METADATA
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "status",
+            normalize_scoring_serialization_status(self.status),
+        )
+        object.__setattr__(self, "issues", tuple(self.issues))
+        object.__setattr__(
+            self,
+            "metadata",
+            _serialization_freeze_metadata(self.metadata),
+        )
+        if self.byte_size < 0:
+            raise ScoringSerializationValidationError(
+                "Serialization byte_size cannot be negative."
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringSerializationBundle:
+    """Collection of independently versioned scoring envelopes."""
+
+    bundle_id: str
+    artifacts: Tuple[ScoringSerializationEnvelope, ...]
+    manifest: Tuple[ScoringSerializationManifestEntry, ...]
+    schema: str = SCORING_SERIALIZATION_BUNDLE_SCHEMA
+    schema_version: str = SCORING_SERIALIZATION_SCHEMA_VERSION
+    section_version: str = SCORING_SERIALIZATION_SECTION_VERSION
+    status: str = SCORING_SERIALIZATION_STATUS_COMPLETE
+    created_at: Optional[str] = None
+    checksum: Optional[str] = None
+    checksum_algorithm: Optional[str] = None
+    issues: Tuple[ScoringSerializationIssue, ...] = field(
+        default_factory=tuple
+    )
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_SCORING_SERIALIZATION_METADATA
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "bundle_id",
+            _serialization_identifier(self.bundle_id),
+        )
+        object.__setattr__(self, "artifacts", tuple(self.artifacts))
+        object.__setattr__(self, "manifest", tuple(self.manifest))
+        object.__setattr__(
+            self,
+            "status",
+            normalize_scoring_serialization_status(self.status),
+        )
+        object.__setattr__(self, "issues", tuple(self.issues))
+        object.__setattr__(
+            self,
+            "metadata",
+            _serialization_freeze_metadata(self.metadata),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "schema": self.schema,
+            "schema_version": self.schema_version,
+            "section_version": self.section_version,
+            "bundle_id": self.bundle_id,
+            "status": self.status,
+            "created_at": self.created_at,
+            "checksum": self.checksum,
+            "checksum_algorithm": self.checksum_algorithm,
+            "manifest": [
+                {
+                    "artifact_id": entry.artifact_id,
+                    "artifact_type": entry.artifact_type,
+                    "object_type": entry.object_type,
+                    "schema": entry.schema,
+                    "schema_version": entry.schema_version,
+                    "checksum": entry.checksum,
+                    "payload_size": entry.payload_size,
+                    "status": entry.status,
+                    "metadata": dict(entry.metadata),
+                }
+                for entry in self.manifest
+            ],
+            "artifacts": [artifact.to_dict() for artifact in self.artifacts],
+            "issues": [
+                {
+                    "level": issue.level,
+                    "code": issue.code,
+                    "message": issue.message,
+                    "path": issue.path,
+                    "object_type": issue.object_type,
+                    "lossy": issue.lossy,
+                    "metadata": dict(issue.metadata),
+                }
+                for issue in self.issues
+            ],
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringTableResult:
+    """Flattened tabular representation of serialized scoring data."""
+
+    rows: Tuple[Mapping[str, Any], ...]
+    columns: Tuple[str, ...]
+    table_id: str
+    artifact_type: str
+    schema: str = SCORING_SERIALIZATION_TABLE_SCHEMA
+    schema_version: str = SCORING_SERIALIZATION_SCHEMA_VERSION
+    status: str = SCORING_SERIALIZATION_STATUS_COMPLETE
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_SCORING_SERIALIZATION_METADATA
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "rows",
+            tuple(MappingProxyType(dict(row)) for row in self.rows),
+        )
+        object.__setattr__(self, "columns", tuple(self.columns))
+        object.__setattr__(
+            self,
+            "table_id",
+            _serialization_identifier(self.table_id),
+        )
+        object.__setattr__(
+            self,
+            "artifact_type",
+            normalize_scoring_serialization_artifact_type(
+                self.artifact_type
+            ),
+        )
+        object.__setattr__(
+            self,
+            "status",
+            normalize_scoring_serialization_status(self.status),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _serialization_freeze_metadata(self.metadata),
+        )
+
+
+# -----------------------------------------------------------------------------
+# 25.4. Adapter registry
+# -----------------------------------------------------------------------------
+
+ScoringSerializationAdapter = Callable[[Any], Any]
+ScoringDeserializationAdapter = Callable[[Mapping[str, Any]], Any]
+
+
+class ScoringSerializationRegistry:
+    """Mutable registry of object serializers and payload restorers."""
+
+    def __init__(self) -> None:
+        self._type_adapters: Dict[type, ScoringSerializationAdapter] = {}
+        self._name_adapters: Dict[str, ScoringSerializationAdapter] = {}
+        self._restorers: Dict[str, ScoringDeserializationAdapter] = {}
+
+    def register_type(
+        self,
+        object_type: type,
+        adapter: ScoringSerializationAdapter,
+        *,
+        replace_existing: bool = False,
+    ) -> None:
+        if not isinstance(object_type, type):
+            raise ScoringSerializationConfigurationError(
+                "object_type must be a class."
+            )
+        if not callable(adapter):
+            raise ScoringSerializationConfigurationError(
+                "Serialization adapter must be callable."
+            )
+        if object_type in self._type_adapters and not replace_existing:
+            raise ScoringSerializationConfigurationError(
+                f"Adapter already registered for {object_type.__name__}."
+            )
+        self._type_adapters[object_type] = adapter
+
+    def register_name(
+        self,
+        class_name: str,
+        adapter: ScoringSerializationAdapter,
+        *,
+        replace_existing: bool = False,
+    ) -> None:
+        name = _serialization_identifier(class_name)
+        if not name:
+            raise ScoringSerializationConfigurationError(
+                "class_name cannot be empty."
+            )
+        if not callable(adapter):
+            raise ScoringSerializationConfigurationError(
+                "Serialization adapter must be callable."
+            )
+        if name in self._name_adapters and not replace_existing:
+            raise ScoringSerializationConfigurationError(
+                f"Adapter already registered for class name {name!r}."
+            )
+        self._name_adapters[name] = adapter
+
+    def register_restorer(
+        self,
+        artifact_type: str,
+        restorer: ScoringDeserializationAdapter,
+        *,
+        replace_existing: bool = False,
+    ) -> None:
+        name = normalize_scoring_serialization_artifact_type(artifact_type)
+        if not callable(restorer):
+            raise ScoringSerializationConfigurationError(
+                "Deserialization adapter must be callable."
+            )
+        if name in self._restorers and not replace_existing:
+            raise ScoringSerializationConfigurationError(
+                f"Restorer already registered for {name!r}."
+            )
+        self._restorers[name] = restorer
+
+    def resolve_adapter(
+        self,
+        value: Any,
+    ) -> Optional[ScoringSerializationAdapter]:
+        value_type = type(value)
+        direct = self._type_adapters.get(value_type)
+        if direct is not None:
+            return direct
+        for registered_type, adapter in self._type_adapters.items():
+            if isinstance(value, registered_type):
+                return adapter
+        return self._name_adapters.get(value_type.__name__)
+
+    def resolve_restorer(
+        self,
+        artifact_type: str,
+    ) -> Optional[ScoringDeserializationAdapter]:
+        normalized = normalize_scoring_serialization_artifact_type(
+            artifact_type
+        )
+        return self._restorers.get(normalized)
+
+    def registered_type_names(self) -> Tuple[str, ...]:
+        names = [item.__name__ for item in self._type_adapters]
+        names.extend(self._name_adapters)
+        return tuple(sorted(set(names)))
+
+    def registered_artifact_types(self) -> Tuple[str, ...]:
+        return tuple(sorted(self._restorers))
+
+    def copy(self) -> "ScoringSerializationRegistry":
+        result = ScoringSerializationRegistry()
+        result._type_adapters.update(self._type_adapters)
+        result._name_adapters.update(self._name_adapters)
+        result._restorers.update(self._restorers)
+        return result
+
+
+DEFAULT_SCORING_SERIALIZATION_REGISTRY: Final[
+    ScoringSerializationRegistry
+] = ScoringSerializationRegistry()
+
+
+def register_scoring_serialization_adapter(
+    object_type_or_name: Any,
+    adapter: ScoringSerializationAdapter,
+    *,
+    registry: ScoringSerializationRegistry = (
+        DEFAULT_SCORING_SERIALIZATION_REGISTRY
+    ),
+    replace_existing: bool = False,
+) -> None:
+    """Register a custom serializer by concrete type or class name."""
+
+    if isinstance(object_type_or_name, type):
+        registry.register_type(
+            object_type_or_name,
+            adapter,
+            replace_existing=replace_existing,
+        )
+    else:
+        registry.register_name(
+            str(object_type_or_name),
+            adapter,
+            replace_existing=replace_existing,
+        )
+
+
+def register_scoring_deserialization_adapter(
+    artifact_type: str,
+    restorer: ScoringDeserializationAdapter,
+    *,
+    registry: ScoringSerializationRegistry = (
+        DEFAULT_SCORING_SERIALIZATION_REGISTRY
+    ),
+    replace_existing: bool = False,
+) -> None:
+    """Register a typed payload restorer for one artifact type."""
+
+    registry.register_restorer(
+        artifact_type,
+        restorer,
+        replace_existing=replace_existing,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 25.5. Recursive serialization context and path helpers
+# -----------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class _ScoringSerializationContext:
+    options: ScoringSerializationOptions
+    registry: ScoringSerializationRegistry
+    issues: List[ScoringSerializationIssue] = field(default_factory=list)
+    active_objects: Dict[int, str] = field(default_factory=dict)
+    item_count: int = 0
+
+    def add_issue(
+        self,
+        *,
+        level: str,
+        code: str,
+        message: str,
+        path: str,
+        value: Any = None,
+        lossy: bool = False,
+        metadata: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        issue = ScoringSerializationIssue(
+            level=level,
+            code=code,
+            message=message,
+            path=path,
+            object_type=(None if value is None else type(value).__name__),
+            lossy=lossy,
+            metadata=metadata or {},
+        )
+        self.issues.append(issue)
+        if self.options.strict and level == SCORING_SERIALIZATION_ISSUE_ERROR:
+            raise ScoringSerializationInputError(message)
+
+    def count_item(self, path: str) -> None:
+        self.item_count += 1
+        if self.item_count > self.options.max_items:
+            raise ScoringSerializationInputError(
+                "Serialization exceeded max_items at " + path + "."
+            )
+
+
+def _serialization_path_key(path: str, key: Any) -> str:
+    text = str(key)
+    if text.isidentifier():
+        return f"{path}.{text}"
+    encoded = json.dumps(text, ensure_ascii=False)
+    return f"{path}[{encoded}]"
+
+
+def _serialization_path_index(path: str, index: int) -> str:
+    return f"{path}[{index}]"
+
+
+def _serialization_object_type(value: Any) -> str:
+    value_type = type(value)
+    module = getattr(value_type, "__module__", "")
+    name = getattr(value_type, "__qualname__", value_type.__name__)
+    if module and module not in {"builtins", "__main__"}:
+        return f"{module}.{name}"
+    return name
+
+
+def _serialization_created_at() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _serialization_stable_json(
+    value: Any,
+    *,
+    ensure_ascii: bool = False,
+) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=ensure_ascii,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def calculate_scoring_serialization_checksum(
+    value: Any,
+    *,
+    algorithm: str = SCORING_SERIALIZATION_CHECKSUM_ALGORITHM,
+) -> str:
+    """Return a deterministic checksum for JSON-compatible content."""
+
+    normalized_algorithm = _serialization_token(algorithm)
+    if normalized_algorithm not in hashlib.algorithms_available:
+        raise ScoringSerializationConfigurationError(
+            f"Unsupported checksum algorithm: {algorithm!r}."
+        )
+    text = _serialization_stable_json(value)
+    digest = hashlib.new(normalized_algorithm)
+    digest.update(text.encode(DEFAULT_SCORING_SERIALIZATION_ENCODING))
+    return digest.hexdigest()
+
+
+def verify_scoring_serialization_checksum(
+    value: Any,
+    expected_checksum: str,
+    *,
+    algorithm: str = SCORING_SERIALIZATION_CHECKSUM_ALGORITHM,
+) -> bool:
+    """Return whether content matches an expected checksum."""
+
+    actual = calculate_scoring_serialization_checksum(
+        value,
+        algorithm=algorithm,
+    )
+    return actual == str(expected_checksum)
+
+
+# -----------------------------------------------------------------------------
+# 25.6. Specialized adapter discovery
+# -----------------------------------------------------------------------------
+
+def infer_scoring_serialization_artifact_type(value: Any) -> str:
+    """Infer a stable artifact name from an object or serialized mapping."""
+
+    if isinstance(value, ScoringSerializationEnvelope):
+        return value.artifact_type
+    if isinstance(value, ScoringSerializationBundle):
+        return SCORING_SERIALIZATION_ARTIFACT_BUNDLE
+    if isinstance(value, Mapping):
+        explicit = value.get("artifact_type")
+        if explicit:
+            return normalize_scoring_serialization_artifact_type(explicit)
+        schema = _serialization_token(value.get("schema"))
+        if "bundle" in schema:
+            return SCORING_SERIALIZATION_ARTIFACT_BUNDLE
+        object_type = str(value.get("object_type") or "").split(".")[-1]
+        if object_type in _CLASS_NAME_TO_ARTIFACT_TYPE:
+            return _CLASS_NAME_TO_ARTIFACT_TYPE[object_type]
+    class_name = type(value).__name__
+    return _CLASS_NAME_TO_ARTIFACT_TYPE.get(
+        class_name,
+        _serialization_token(class_name)
+        or SCORING_SERIALIZATION_ARTIFACT_UNKNOWN,
+    )
+
+
+_SERIALIZATION_MISSING_ARGUMENT: Final[object] = object()
+
+
+def _serialization_call_with_supported_keywords(
+    function: Callable[..., Any],
+    keyword_candidates: Mapping[str, Any],
+    *,
+    positional_value: Any = _SERIALIZATION_MISSING_ARGUMENT,
+) -> Any:
+    """Call a converter while passing only supported keyword arguments."""
+
+    try:
+        import inspect
+
+        signature = inspect.signature(function)
+        parameters = signature.parameters
+        accepts_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        positional_names = [
+            name
+            for name, parameter in parameters.items()
+            if parameter.kind
+            in {
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            }
+        ]
+        excluded = set()
+        if positional_value is not _SERIALIZATION_MISSING_ARGUMENT:
+            if positional_names:
+                excluded.add(positional_names[0])
+        accepted = {
+            key: item
+            for key, item in keyword_candidates.items()
+            if key not in excluded and (accepts_kwargs or key in parameters)
+        }
+        if positional_value is _SERIALIZATION_MISSING_ARGUMENT:
+            return function(**accepted)
+        return function(positional_value, **accepted)
+    except (TypeError, ValueError):
+        if positional_value is _SERIALIZATION_MISSING_ARGUMENT:
+            return function()
+        return function(positional_value)
+
+
+def _serialization_specialized_converter(value: Any) -> Optional[Any]:
+    """Use public Section 1–24 converters when one is available."""
+
+    class_name = type(value).__name__
+    converter_names = {
+        "InteractionScore": "interaction_score_to_dict",
+        "IndividualScoringResult": "individual_scoring_result_to_dict",
+        "CollectionScoringResult": "collection_scoring_result_to_dict",
+        "PoseScoringResult": "pose_scoring_result_to_dict",
+        "NormalizedPoseScore": "normalized_pose_score_to_dict",
+        "ScoreNormalizationResult": "score_normalization_result_to_dict",
+        "PoseFingerprint": "pose_fingerprint_to_dict",
+        "PosePairDiversity": "pose_pair_diversity_to_dict",
+        "PoseDiversityResult": "pose_diversity_result_to_dict",
+    }
+    converter_name = converter_names.get(class_name)
+    if converter_name:
+        converter = globals().get(converter_name)
+        if callable(converter):
+            return _serialization_call_with_supported_keywords(
+                converter,
+                {
+                    "result": value,
+                    "score": value,
+                    "include_metadata": True,
+                    "include_scores": True,
+                    "include_interactions": True,
+                    "include_residues": True,
+                    "include_components": True,
+                    "include_profiles": True,
+                    "include_candidates": True,
+                },
+                positional_value=value,
+            )
+    return None
+
+
+# -----------------------------------------------------------------------------
+# 25.7. JSON-safe recursive conversion
+# -----------------------------------------------------------------------------
+
+def _serialization_nonfinite(
+    value: float,
+    *,
+    path: str,
+    context: _ScoringSerializationContext,
+) -> Any:
+    if context.options.allow_nan:
+        return value
+    policy = context.options.nonfinite_policy
+    if policy == SCORING_SERIALIZATION_NONFINITE_ERROR:
+        raise ScoringSerializationInputError(
+            f"Non-finite float encountered at {path}: {value!r}."
+        )
+    if policy == SCORING_SERIALIZATION_NONFINITE_STRING:
+        if math.isnan(value):
+            replacement = "NaN"
+        elif value > 0:
+            replacement = "Infinity"
+        else:
+            replacement = "-Infinity"
+    else:
+        replacement = None
+    context.add_issue(
+        level=SCORING_SERIALIZATION_ISSUE_WARNING,
+        code="nonfinite_float_replaced",
+        message="A non-finite floating-point value was replaced.",
+        path=path,
+        value=value,
+        lossy=True,
+        metadata={"replacement": replacement},
+    )
+    return replacement
+
+
+def _serialization_float(
+    value: float,
+    *,
+    path: str,
+    context: _ScoringSerializationContext,
+) -> Any:
+    if not math.isfinite(value):
+        return _serialization_nonfinite(value, path=path, context=context)
+    digits = context.options.float_digits
+    if digits is None:
+        return value
+    rounded = round(value, digits)
+    if rounded == 0:
+        rounded = 0.0
+    return rounded
+
+
+def _serialization_string(
+    value: str,
+    *,
+    path: str,
+    context: _ScoringSerializationContext,
+) -> str:
+    limit = context.options.max_string_length
+    if len(value) <= limit:
+        return value
+    result = value[:limit]
+    context.add_issue(
+        level=SCORING_SERIALIZATION_ISSUE_WARNING,
+        code="string_truncated",
+        message="A string exceeded max_string_length and was truncated.",
+        path=path,
+        value=value,
+        lossy=True,
+        metadata={"original_length": len(value), "retained_length": limit},
+    )
+    return result
+
+
+def _serialization_bytes(
+    value: bytes,
+    *,
+    path: str,
+    context: _ScoringSerializationContext,
+) -> Any:
+    policy = context.options.bytes_policy
+    if policy == SCORING_SERIALIZATION_BYTES_ERROR:
+        raise ScoringSerializationInputError(
+            f"Bytes are not permitted at {path}."
+        )
+    if policy == SCORING_SERIALIZATION_BYTES_UTF8:
+        try:
+            result: Any = value.decode(DEFAULT_SCORING_SERIALIZATION_ENCODING)
+        except UnicodeDecodeError:
+            result = value.decode(
+                DEFAULT_SCORING_SERIALIZATION_ENCODING,
+                errors="replace",
+            )
+            context.add_issue(
+                level=SCORING_SERIALIZATION_ISSUE_WARNING,
+                code="bytes_utf8_replacement",
+                message="Invalid UTF-8 bytes were replaced during decoding.",
+                path=path,
+                value=value,
+                lossy=True,
+            )
+        return result
+    if policy == SCORING_SERIALIZATION_BYTES_LIST:
+        return list(value)
+    encoded = base64.b64encode(value).decode("ascii")
+    return {
+        "__type__": "bytes",
+        "encoding": "base64",
+        "data": encoded,
+    }
+
+
+def _serialization_cycle(
+    value: Any,
+    *,
+    path: str,
+    first_path: str,
+    context: _ScoringSerializationContext,
+) -> Any:
+    policy = context.options.cycle_policy
+    if policy == SCORING_SERIALIZATION_CYCLE_ERROR:
+        raise ScoringSerializationCycleError(
+            f"Cyclic reference at {path}; first seen at {first_path}."
+        )
+    context.add_issue(
+        level=SCORING_SERIALIZATION_ISSUE_WARNING,
+        code="cyclic_reference",
+        message="A cyclic reference was replaced during serialization.",
+        path=path,
+        value=value,
+        lossy=True,
+        metadata={"first_path": first_path},
+    )
+    if policy == SCORING_SERIALIZATION_CYCLE_NULL:
+        return None
+    return {"$ref": first_path}
+
+
+def _serialization_mapping_key(
+    key: Any,
+    *,
+    path: str,
+    context: _ScoringSerializationContext,
+) -> str:
+    if isinstance(key, str):
+        return key
+    if key is None:
+        return "null"
+    if isinstance(key, (bool, int, float, Enum)):
+        raw = key.value if isinstance(key, Enum) else key
+        return str(raw)
+    context.add_issue(
+        level=SCORING_SERIALIZATION_ISSUE_WARNING,
+        code="mapping_key_stringified",
+        message="A non-string mapping key was converted to text.",
+        path=path,
+        value=key,
+        lossy=True,
+    )
+    return str(key)
+
+
+def _serialization_numpy_value(value: Any) -> Tuple[bool, Any]:
+    value_type = type(value)
+    module = getattr(value_type, "__module__", "")
+    if not module.startswith("numpy"):
+        return False, None
+    if hasattr(value, "item") and not hasattr(value, "tolist"):
+        try:
+            return True, value.item()
+        except (TypeError, ValueError):
+            pass
+    if hasattr(value, "ndim") and getattr(value, "ndim", None) == 0:
+        try:
+            return True, value.item()
+        except (TypeError, ValueError):
+            pass
+    if hasattr(value, "tolist"):
+        try:
+            return True, value.tolist()
+        except (TypeError, ValueError):
+            pass
+    return False, None
+
+
+def _serialization_object_mapping(value: Any) -> Optional[Mapping[str, Any]]:
+    if hasattr(value, "__dict__"):
+        try:
+            return dict(vars(value))
+        except (TypeError, ValueError):
+            pass
+    slots = getattr(type(value), "__slots__", ())
+    if isinstance(slots, str):
+        slots = (slots,)
+    if slots:
+        result: Dict[str, Any] = {}
+        for name in slots:
+            if name.startswith("__"):
+                continue
+            try:
+                result[name] = getattr(value, name)
+            except (AttributeError, RuntimeError):
+                continue
+        if result:
+            return result
+    return None
+
+
+def _serialization_dataclass_mapping(
+    value: Any,
+    *,
+    options: ScoringSerializationOptions,
+) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for definition in fields(value):
+        name = definition.name
+        if name.startswith("_") and not options.include_private_fields:
+            continue
+        if not options.include_metadata and name == "metadata":
+            continue
+        try:
+            item = getattr(value, name)
+        except (AttributeError, RuntimeError):
+            continue
+        if item is None and not options.include_none:
+            continue
+        result[name] = item
+    return result
+
+
+def _serialization_unknown(
+    value: Any,
+    *,
+    path: str,
+    depth: int,
+    context: _ScoringSerializationContext,
+) -> Any:
+    policy = context.options.unknown_policy
+    if policy == SCORING_SERIALIZATION_UNKNOWN_ERROR:
+        raise ScoringSerializationInputError(
+            f"Unsupported object at {path}: {_serialization_object_type(value)}."
+        )
+    if policy == SCORING_SERIALIZATION_UNKNOWN_NULL:
+        context.add_issue(
+            level=SCORING_SERIALIZATION_ISSUE_WARNING,
+            code="unknown_object_replaced",
+            message="An unsupported object was replaced with null.",
+            path=path,
+            value=value,
+            lossy=True,
+        )
+        return None
+    if policy == SCORING_SERIALIZATION_UNKNOWN_MAPPING:
+        mapping = _serialization_object_mapping(value)
+        if mapping is not None:
+            context.add_issue(
+                level=SCORING_SERIALIZATION_ISSUE_INFO,
+                code="unknown_object_attributes",
+                message="An object was serialized from public attributes.",
+                path=path,
+                value=value,
+                lossy=False,
+            )
+            return _serialization_convert(
+                mapping,
+                path=path,
+                depth=depth + 1,
+                context=context,
+            )
+    context.add_issue(
+        level=SCORING_SERIALIZATION_ISSUE_WARNING,
+        code="unknown_object_stringified",
+        message="An unsupported object was converted to text.",
+        path=path,
+        value=value,
+        lossy=True,
+    )
+    return _serialization_string(str(value), path=path, context=context)
+
+
+def _serialization_convert(
+    value: Any,
+    *,
+    path: str,
+    depth: int,
+    context: _ScoringSerializationContext,
+) -> Any:
+    context.count_item(path)
+    if depth > context.options.max_depth:
+        raise ScoringSerializationDepthError(
+            f"Serialization exceeded max_depth at {path}."
+        )
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, str):
+        return _serialization_string(value, path=path, context=context)
+    if isinstance(value, float):
+        return _serialization_float(value, path=path, context=context)
+    if isinstance(value, bytes):
+        return _serialization_bytes(value, path=path, context=context)
+    if isinstance(value, bytearray):
+        return _serialization_bytes(bytes(value), path=path, context=context)
+    if isinstance(value, Enum):
+        converted = _serialization_convert(
+            value.value,
+            path=path,
+            depth=depth + 1,
+            context=context,
+        )
+        if context.options.include_type_tags:
+            return {
+                "__type__": "enum",
+                "class": _serialization_object_type(value),
+                "value": converted,
+            }
+        return converted
+
+    is_numpy, numpy_value = _serialization_numpy_value(value)
+    if is_numpy:
+        return _serialization_convert(
+            numpy_value,
+            path=path,
+            depth=depth + 1,
+            context=context,
+        )
+
+    track_identity = isinstance(value, (Mapping, Sequence, Set)) or (
+        is_dataclass(value)
+        or hasattr(value, "__dict__")
+        or hasattr(type(value), "__slots__")
+    )
+    object_id = id(value)
+    if track_identity and object_id in context.active_objects:
+        return _serialization_cycle(
+            value,
+            path=path,
+            first_path=context.active_objects[object_id],
+            context=context,
+        )
+    if track_identity:
+        context.active_objects[object_id] = path
+    try:
+        adapter = (
+            context.registry.resolve_adapter(value)
+            if context.options.use_specialized_adapters
+            else None
+        )
+        if adapter is not None:
+            adapted = adapter(value)
+            return _serialization_convert(
+                adapted,
+                path=path,
+                depth=depth + 1,
+                context=context,
+            )
+
+        if context.options.use_specialized_adapters:
+            specialized = _serialization_specialized_converter(value)
+            if specialized is not None and specialized is not value:
+                return _serialization_convert(
+                    specialized,
+                    path=path,
+                    depth=depth + 1,
+                    context=context,
+                )
+
+        if isinstance(value, Mapping):
+            result: Dict[str, Any] = {}
+            for raw_key, raw_value in value.items():
+                key = _serialization_mapping_key(
+                    raw_key,
+                    path=path,
+                    context=context,
+                )
+                if raw_value is None and not context.options.include_none:
+                    continue
+                child_path = _serialization_path_key(path, key)
+                result[key] = _serialization_convert(
+                    raw_value,
+                    path=child_path,
+                    depth=depth + 1,
+                    context=context,
+                )
+            if context.options.include_type_tags and not isinstance(
+                value,
+                dict,
+            ):
+                result.setdefault(
+                    "__mapping_type__",
+                    _serialization_object_type(value),
+                )
+            return result
+
+        if isinstance(value, tuple) and hasattr(value, "_fields"):
+            named_result = {
+                str(name): getattr(value, name) for name in value._fields
+            }
+            converted = _serialization_convert(
+                named_result,
+                path=path,
+                depth=depth + 1,
+                context=context,
+            )
+            if context.options.include_type_tags:
+                converted["__type__"] = "namedtuple"
+                converted["__class__"] = _serialization_object_type(value)
+            return converted
+
+        if isinstance(value, (list, tuple, set, frozenset)):
+            sequence = list(value)
+            if isinstance(value, (set, frozenset)):
+                sequence.sort(key=lambda item: (type(item).__name__, repr(item)))
+            converted_items = [
+                _serialization_convert(
+                    item,
+                    path=_serialization_path_index(path, index),
+                    depth=depth + 1,
+                    context=context,
+                )
+                for index, item in enumerate(sequence)
+                if item is not None or context.options.include_none
+            ]
+            if isinstance(value, tuple) and context.options.preserve_tuple_type:
+                return {"__type__": "tuple", "items": converted_items}
+            if isinstance(value, (set, frozenset)) and (
+                context.options.preserve_set_type
+            ):
+                return {
+                    "__type__": (
+                        "frozenset" if isinstance(value, frozenset) else "set"
+                    ),
+                    "items": converted_items,
+                }
+            return converted_items
+
+        if is_dataclass(value) and not isinstance(value, type):
+            mapping = _serialization_dataclass_mapping(
+                value,
+                options=context.options,
+            )
+            converted = _serialization_convert(
+                mapping,
+                path=path,
+                depth=depth + 1,
+                context=context,
+            )
+            if context.options.include_type_tags:
+                converted["__type__"] = "dataclass"
+                converted["__class__"] = _serialization_object_type(value)
+            return converted
+
+        to_dict = getattr(value, "to_dict", None)
+        if context.options.call_to_dict and callable(to_dict):
+            try:
+                mapping = _serialization_call_with_supported_keywords(
+                    to_dict,
+                    {
+                        "include_metadata": context.options.include_metadata,
+                        "include_interactions": True,
+                        "include_residues": True,
+                        "include_components": True,
+                        "include_scores": True,
+                        "include_profiles": True,
+                        "include_candidates": True,
+                        "include_children": True,
+                        "include_values": True,
+                    },
+                )
+            except Exception as error:
+                context.add_issue(
+                    level=SCORING_SERIALIZATION_ISSUE_WARNING,
+                    code="to_dict_failed",
+                    message=f"to_dict failed: {error}",
+                    path=path,
+                    value=value,
+                    lossy=False,
+                )
+            else:
+                if mapping is not value:
+                    return _serialization_convert(
+                        mapping,
+                        path=path,
+                        depth=depth + 1,
+                        context=context,
+                    )
+
+        return _serialization_unknown(
+            value,
+            path=path,
+            depth=depth,
+            context=context,
+        )
+    finally:
+        if track_identity:
+            context.active_objects.pop(object_id, None)
+
+
+def scoring_object_to_serializable(
+    value: Any,
+    *,
+    options: ScoringSerializationOptions = ScoringSerializationOptions(),
+    registry: ScoringSerializationRegistry = (
+        DEFAULT_SCORING_SERIALIZATION_REGISTRY
+    ),
+    return_issues: bool = False,
+) -> Any:
+    """Convert an arbitrary scoring object into JSON-compatible data."""
+
+    validate_scoring_serialization_options(options)
+    context = _ScoringSerializationContext(
+        options=options,
+        registry=registry,
+    )
+    result = _serialization_convert(
+        value,
+        path="$",
+        depth=0,
+        context=context,
+    )
+    if return_issues:
+        return result, tuple(context.issues)
+    return result
+
+
+def scoring_object_to_dict(
+    value: Any,
+    *,
+    options: ScoringSerializationOptions = ScoringSerializationOptions(),
+    registry: ScoringSerializationRegistry = (
+        DEFAULT_SCORING_SERIALIZATION_REGISTRY
+    ),
+) -> Dict[str, Any]:
+    """Convert one object to a JSON-compatible dictionary."""
+
+    converted = scoring_object_to_serializable(
+        value,
+        options=options,
+        registry=registry,
+    )
+    if isinstance(converted, Mapping):
+        return dict(converted)
+    return {"value": converted}
+
+
+def is_json_safe_scoring_value(value: Any) -> bool:
+    """Return whether ``value`` can be encoded as strict JSON."""
+
+    try:
+        json.dumps(value, allow_nan=False)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return True
+
+
+def validate_json_safe_scoring_value(value: Any) -> None:
+    """Raise when ``value`` is not strict JSON-compatible data."""
+
+    if not is_json_safe_scoring_value(value):
+        raise ScoringSerializationValidationError(
+            "Value is not strict JSON-compatible data."
+        )
+
+
+# -----------------------------------------------------------------------------
+# 25.8. Envelope construction and artifact serialization
+# -----------------------------------------------------------------------------
+
+def _serialization_status_from_issues(
+    payload: Any,
+    issues: Sequence[ScoringSerializationIssue],
+) -> str:
+    if payload in (None, {}, []):
+        return SCORING_SERIALIZATION_STATUS_EMPTY
+    if any(issue.level == SCORING_SERIALIZATION_ISSUE_ERROR for issue in issues):
+        return SCORING_SERIALIZATION_STATUS_FAILED
+    if issues:
+        return SCORING_SERIALIZATION_STATUS_PARTIAL
+    return SCORING_SERIALIZATION_STATUS_COMPLETE
+
+
+def _serialization_artifact_id(
+    value: Any,
+    *,
+    artifact_type: str,
+    payload: Any,
+) -> str:
+    candidates: List[Any] = []
+    if isinstance(value, Mapping):
+        candidates.extend(
+            value.get(name)
+            for name in (
+                "artifact_id",
+                "pose_id",
+                "model_id",
+                "interaction_id",
+                "residue_id",
+                "bundle_id",
+                "id",
+            )
+        )
+    else:
+        candidates.extend(
+            getattr(value, name, None)
+            for name in (
+                "artifact_id",
+                "pose_id",
+                "model_id",
+                "interaction_id",
+                "residue_id",
+                "bundle_id",
+                "id",
+            )
+        )
+    for candidate in candidates:
+        identifier = _serialization_identifier(candidate)
+        if identifier:
+            return identifier
+    digest = calculate_scoring_serialization_checksum(payload)[:16]
+    return f"{artifact_type}:{digest}"
+
+
+def build_scoring_serialization_envelope(
+    value: Any,
+    *,
+    artifact_type: Optional[str] = None,
+    artifact_id: Optional[str] = None,
+    options: ScoringSerializationOptions = ScoringSerializationOptions(),
+    registry: ScoringSerializationRegistry = (
+        DEFAULT_SCORING_SERIALIZATION_REGISTRY
+    ),
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringSerializationEnvelope:
+    """Create one validated and checksummed serialization envelope."""
+
+    if isinstance(value, ScoringSerializationEnvelope):
+        validate_scoring_serialization_envelope(value)
+        return value
+    payload, issues = scoring_object_to_serializable(
+        value,
+        options=options,
+        registry=registry,
+        return_issues=True,
+    )
+    inferred_type = infer_scoring_serialization_artifact_type(value)
+    resolved_type = normalize_scoring_serialization_artifact_type(
+        artifact_type or inferred_type
+    )
+    resolved_id = _serialization_identifier(artifact_id)
+    if not resolved_id:
+        resolved_id = _serialization_artifact_id(
+            value,
+            artifact_type=resolved_type,
+            payload=payload,
+        )
+    checksum = None
+    checksum_algorithm = None
+    if options.include_checksum:
+        checksum_algorithm = SCORING_SERIALIZATION_CHECKSUM_ALGORITHM
+        checksum = calculate_scoring_serialization_checksum(
+            payload,
+            algorithm=checksum_algorithm,
+        )
+    combined_metadata = dict(options.metadata)
+    combined_metadata.update(dict(metadata or {}))
+    envelope = ScoringSerializationEnvelope(
+        artifact_type=resolved_type,
+        payload=payload,
+        artifact_id=resolved_id,
+        object_type=_serialization_object_type(value),
+        status=_serialization_status_from_issues(payload, issues),
+        checksum=checksum,
+        checksum_algorithm=checksum_algorithm,
+        created_at=_serialization_created_at(),
+        issues=issues,
+        metadata=combined_metadata,
+    )
+    validate_scoring_serialization_envelope(envelope)
+    return envelope
+
+
+def scoring_serialization_envelope_to_dict(
+    envelope: ScoringSerializationEnvelope,
+) -> Dict[str, Any]:
+    """Convert a serialization envelope to a strict dictionary."""
+
+    validate_scoring_serialization_envelope(envelope)
+    result = envelope.to_dict()
+    validate_json_safe_scoring_value(result)
+    return result
+
+
+def serialize_scoring_object(
+    value: Any,
+    *,
+    artifact_type: Optional[str] = None,
+    artifact_id: Optional[str] = None,
+    use_envelope: bool = True,
+    options: ScoringSerializationOptions = ScoringSerializationOptions(),
+    registry: ScoringSerializationRegistry = (
+        DEFAULT_SCORING_SERIALIZATION_REGISTRY
+    ),
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringSerializationResult:
+    """Serialize one scoring object and return its envelope and JSON text."""
+
+    envelope = build_scoring_serialization_envelope(
+        value,
+        artifact_type=artifact_type,
+        artifact_id=artifact_id,
+        options=options,
+        registry=registry,
+        metadata=metadata,
+    )
+    output = envelope.to_dict() if use_envelope else envelope.payload
+    json_text = json.dumps(
+        output,
+        indent=options.indent,
+        sort_keys=options.sort_keys,
+        ensure_ascii=options.ensure_ascii,
+        allow_nan=options.allow_nan,
+    )
+    byte_size = len(json_text.encode(DEFAULT_SCORING_SERIALIZATION_ENCODING))
+    result = ScoringSerializationResult(
+        status=envelope.status,
+        envelope=envelope,
+        json_text=json_text,
+        issues=envelope.issues,
+        byte_size=byte_size,
+        metadata={
+            "use_envelope": bool(use_envelope),
+            "artifact_type": envelope.artifact_type,
+        },
+    )
+    validate_scoring_serialization_result(result)
+    return result
+
+
+def serialize_scoring_object_to_json(
+    value: Any,
+    *,
+    artifact_type: Optional[str] = None,
+    artifact_id: Optional[str] = None,
+    use_envelope: bool = True,
+    options: ScoringSerializationOptions = ScoringSerializationOptions(),
+    registry: ScoringSerializationRegistry = (
+        DEFAULT_SCORING_SERIALIZATION_REGISTRY
+    ),
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> str:
+    """Return one scoring artifact as JSON text."""
+
+    result = serialize_scoring_object(
+        value,
+        artifact_type=artifact_type,
+        artifact_id=artifact_id,
+        use_envelope=use_envelope,
+        options=options,
+        registry=registry,
+        metadata=metadata,
+    )
+    return result.json_text or ""
+
+
+# -----------------------------------------------------------------------------
+# 25.9. Convenience serializers for Sections 1–24
+# -----------------------------------------------------------------------------
+
+def serialize_interaction_scoring_artifact(
+    value: Any,
+    **kwargs: Any,
+) -> ScoringSerializationResult:
+    return serialize_scoring_object(
+        value,
+        artifact_type=SCORING_SERIALIZATION_ARTIFACT_INTERACTION,
+        **kwargs,
+    )
+
+
+def serialize_collection_scoring_artifact(
+    value: Any,
+    **kwargs: Any,
+) -> ScoringSerializationResult:
+    return serialize_scoring_object(
+        value,
+        artifact_type=SCORING_SERIALIZATION_ARTIFACT_COLLECTION,
+        **kwargs,
+    )
+
+
+def serialize_residue_scoring_artifact(
+    value: Any,
+    **kwargs: Any,
+) -> ScoringSerializationResult:
+    return serialize_scoring_object(
+        value,
+        artifact_type=SCORING_SERIALIZATION_ARTIFACT_RESIDUE,
+        **kwargs,
+    )
+
+
+def serialize_pose_scoring_artifact(
+    value: Any,
+    **kwargs: Any,
+) -> ScoringSerializationResult:
+    return serialize_scoring_object(
+        value,
+        artifact_type=SCORING_SERIALIZATION_ARTIFACT_POSE,
+        **kwargs,
+    )
+
+
+def serialize_scoring_statistics_artifact(
+    value: Any,
+    **kwargs: Any,
+) -> ScoringSerializationResult:
+    return serialize_scoring_object(
+        value,
+        artifact_type=SCORING_SERIALIZATION_ARTIFACT_STATISTICS,
+        **kwargs,
+    )
+
+
+def serialize_multipose_ranking_artifact(
+    value: Any,
+    **kwargs: Any,
+) -> ScoringSerializationResult:
+    return serialize_scoring_object(
+        value,
+        artifact_type=SCORING_SERIALIZATION_ARTIFACT_RANKING,
+        **kwargs,
+    )
+
+
+def serialize_consensus_persistence_artifact(
+    value: Any,
+    **kwargs: Any,
+) -> ScoringSerializationResult:
+    return serialize_scoring_object(
+        value,
+        artifact_type=SCORING_SERIALIZATION_ARTIFACT_CONSENSUS,
+        **kwargs,
+    )
+
+
+def serialize_dock_model_scoring_artifact(
+    value: Any,
+    **kwargs: Any,
+) -> ScoringSerializationResult:
+    return serialize_scoring_object(
+        value,
+        artifact_type=SCORING_SERIALIZATION_ARTIFACT_DOCK_MODEL,
+        **kwargs,
+    )
+
+
+def serialize_external_score_artifact(
+    value: Any,
+    **kwargs: Any,
+) -> ScoringSerializationResult:
+    return serialize_scoring_object(
+        value,
+        artifact_type=SCORING_SERIALIZATION_ARTIFACT_EXTERNAL,
+        **kwargs,
+    )
+
+
+def serialize_scoring_explainability_artifact(
+    value: Any,
+    **kwargs: Any,
+) -> ScoringSerializationResult:
+    return serialize_scoring_object(
+        value,
+        artifact_type=SCORING_SERIALIZATION_ARTIFACT_EXPLANATION,
+        **kwargs,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 25.10. Bundle creation, manifests and bundle extraction
+# -----------------------------------------------------------------------------
+
+def _serialization_bundle_status(
+    artifacts: Sequence[ScoringSerializationEnvelope],
+    issues: Sequence[ScoringSerializationIssue],
+) -> str:
+    if not artifacts:
+        return SCORING_SERIALIZATION_STATUS_EMPTY
+    statuses = {artifact.status for artifact in artifacts}
+    if SCORING_SERIALIZATION_STATUS_FAILED in statuses:
+        return SCORING_SERIALIZATION_STATUS_PARTIAL
+    if issues or SCORING_SERIALIZATION_STATUS_PARTIAL in statuses:
+        return SCORING_SERIALIZATION_STATUS_PARTIAL
+    return SCORING_SERIALIZATION_STATUS_COMPLETE
+
+
+def build_scoring_serialization_bundle(
+    artifacts: Iterable[Any],
+    *,
+    bundle_id: Optional[str] = None,
+    options: ScoringSerializationOptions = ScoringSerializationOptions(),
+    registry: ScoringSerializationRegistry = (
+        DEFAULT_SCORING_SERIALIZATION_REGISTRY
+    ),
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringSerializationBundle:
+    """Serialize many artifacts into one manifest-driven bundle."""
+
+    envelopes: List[ScoringSerializationEnvelope] = []
+    issues: List[ScoringSerializationIssue] = []
+    identifiers: Counter[str] = Counter()
+    for index, artifact in enumerate(artifacts):
+        try:
+            envelope = build_scoring_serialization_envelope(
+                artifact,
+                options=options,
+                registry=registry,
+            )
+        except Exception as error:
+            if options.strict:
+                raise
+            issues.append(
+                ScoringSerializationIssue(
+                    level=SCORING_SERIALIZATION_ISSUE_ERROR,
+                    code="artifact_serialization_failed",
+                    message=str(error),
+                    path=f"$.artifacts[{index}]",
+                    object_type=type(artifact).__name__,
+                    lossy=True,
+                )
+            )
+            continue
+        identifiers[envelope.artifact_id] += 1
+        if identifiers[envelope.artifact_id] > 1:
+            original = envelope.artifact_id
+            replacement = f"{original}:{identifiers[original]}"
+            issues.append(
+                ScoringSerializationIssue(
+                    level=SCORING_SERIALIZATION_ISSUE_WARNING,
+                    code="duplicate_artifact_id",
+                    message="A duplicate artifact identifier was renamed.",
+                    path=f"$.artifacts[{index}]",
+                    object_type=envelope.object_type,
+                    lossy=False,
+                    metadata={
+                        "original": original,
+                        "replacement": replacement,
+                    },
+                )
+            )
+            envelope = ScoringSerializationEnvelope(
+                artifact_type=envelope.artifact_type,
+                payload=envelope.payload,
+                artifact_id=replacement,
+                object_type=envelope.object_type,
+                schema=envelope.schema,
+                schema_version=envelope.schema_version,
+                section_version=envelope.section_version,
+                status=envelope.status,
+                checksum=envelope.checksum,
+                checksum_algorithm=envelope.checksum_algorithm,
+                created_at=envelope.created_at,
+                issues=envelope.issues,
+                metadata=envelope.metadata,
+            )
+        envelopes.append(envelope)
+        issues.extend(envelope.issues)
+
+    manifest = tuple(
+        ScoringSerializationManifestEntry(
+            artifact_id=envelope.artifact_id,
+            artifact_type=envelope.artifact_type,
+            object_type=envelope.object_type,
+            schema=envelope.schema,
+            schema_version=envelope.schema_version,
+            checksum=envelope.checksum,
+            payload_size=len(_serialization_stable_json(envelope.payload)),
+            status=envelope.status,
+            metadata={"created_at": envelope.created_at},
+        )
+        for envelope in envelopes
+    )
+    bundle_payload = {
+        "manifest": [
+            {
+                "artifact_id": entry.artifact_id,
+                "artifact_type": entry.artifact_type,
+                "checksum": entry.checksum,
+                "payload_size": entry.payload_size,
+            }
+            for entry in manifest
+        ],
+        "artifacts": [envelope.to_dict() for envelope in envelopes],
+    }
+    resolved_bundle_id = _serialization_identifier(bundle_id)
+    if not resolved_bundle_id:
+        digest = calculate_scoring_serialization_checksum(bundle_payload)[:16]
+        resolved_bundle_id = f"scoring_bundle:{digest}"
+    checksum = None
+    checksum_algorithm = None
+    if options.include_checksum:
+        checksum_algorithm = SCORING_SERIALIZATION_CHECKSUM_ALGORITHM
+        checksum = calculate_scoring_serialization_checksum(bundle_payload)
+    bundle = ScoringSerializationBundle(
+        bundle_id=resolved_bundle_id,
+        artifacts=tuple(envelopes),
+        manifest=manifest,
+        status=_serialization_bundle_status(envelopes, issues),
+        created_at=_serialization_created_at(),
+        checksum=checksum,
+        checksum_algorithm=checksum_algorithm,
+        issues=tuple(issues),
+        metadata=dict(metadata or {}),
+    )
+    validate_scoring_serialization_bundle(bundle)
+    return bundle
+
+
+def scoring_serialization_bundle_to_json(
+    bundle: ScoringSerializationBundle,
+    *,
+    options: ScoringSerializationOptions = ScoringSerializationOptions(),
+) -> str:
+    """Encode a validated scoring bundle as JSON."""
+
+    validate_scoring_serialization_bundle(bundle)
+    return json.dumps(
+        bundle.to_dict(),
+        indent=options.indent,
+        sort_keys=options.sort_keys,
+        ensure_ascii=options.ensure_ascii,
+        allow_nan=options.allow_nan,
+    )
+
+
+def scoring_bundle_artifact_map(
+    bundle: ScoringSerializationBundle,
+) -> Mapping[str, ScoringSerializationEnvelope]:
+    """Return an immutable artifact-id lookup for a bundle."""
+
+    validate_scoring_serialization_bundle(bundle)
+    return MappingProxyType(
+        {artifact.artifact_id: artifact for artifact in bundle.artifacts}
+    )
+
+
+def get_scoring_bundle_artifact(
+    bundle: ScoringSerializationBundle,
+    artifact_id: str,
+) -> ScoringSerializationEnvelope:
+    """Return one envelope from a bundle or raise ``KeyError``."""
+
+    return scoring_bundle_artifact_map(bundle)[str(artifact_id)]
+
+
+def filter_scoring_bundle_artifacts(
+    bundle: ScoringSerializationBundle,
+    *,
+    artifact_type: Optional[str] = None,
+    status: Optional[str] = None,
+) -> Tuple[ScoringSerializationEnvelope, ...]:
+    """Filter bundle artifacts by type and/or status."""
+
+    resolved_type = (
+        None
+        if artifact_type is None
+        else normalize_scoring_serialization_artifact_type(artifact_type)
+    )
+    resolved_status = (
+        None
+        if status is None
+        else normalize_scoring_serialization_status(status)
+    )
+    return tuple(
+        artifact
+        for artifact in bundle.artifacts
+        if (resolved_type is None or artifact.artifact_type == resolved_type)
+        and (resolved_status is None or artifact.status == resolved_status)
+    )
+
+
+# -----------------------------------------------------------------------------
+# 25.11. File writing and reading
+# -----------------------------------------------------------------------------
+
+def _serialization_path(value: Any) -> str:
+    try:
+        return os.fspath(value)
+    except TypeError as error:
+        raise ScoringSerializationInputError(
+            f"Invalid filesystem path: {value!r}."
+        ) from error
+
+
+def _serialization_parent_directory(path: str) -> str:
+    return os.path.dirname(os.path.abspath(path))
+
+
+def _serialization_atomic_write_text(
+    path: str,
+    text: str,
+    *,
+    encoding: str,
+    compress: bool,
+) -> None:
+    parent = _serialization_parent_directory(path)
+    os.makedirs(parent, exist_ok=True)
+    temporary_path = path + ".tmp"
+    try:
+        if compress:
+            with gzip.open(
+                temporary_path,
+                mode="wt",
+                encoding=encoding,
+                newline=DEFAULT_SCORING_SERIALIZATION_NEWLINE,
+            ) as handle:
+                handle.write(text)
+        else:
+            with open(
+                temporary_path,
+                mode="w",
+                encoding=encoding,
+                newline=DEFAULT_SCORING_SERIALIZATION_NEWLINE,
+            ) as handle:
+                handle.write(text)
+        os.replace(temporary_path, path)
+    except Exception:
+        try:
+            if os.path.exists(temporary_path):
+                os.remove(temporary_path)
+        finally:
+            raise
+
+
+def write_scoring_json(
+    value: Any,
+    path: Any,
+    *,
+    artifact_type: Optional[str] = None,
+    artifact_id: Optional[str] = None,
+    use_envelope: bool = True,
+    options: ScoringSerializationOptions = ScoringSerializationOptions(),
+    registry: ScoringSerializationRegistry = (
+        DEFAULT_SCORING_SERIALIZATION_REGISTRY
+    ),
+    compress: Optional[bool] = None,
+    encoding: str = DEFAULT_SCORING_SERIALIZATION_ENCODING,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringSerializationResult:
+    """Serialize one artifact and atomically write JSON or gzip-compressed JSON."""
+
+    resolved_path = _serialization_path(path)
+    resolved_compress = (
+        resolved_path.lower().endswith(".gz")
+        if compress is None
+        else bool(compress)
+    )
+    result = serialize_scoring_object(
+        value,
+        artifact_type=artifact_type,
+        artifact_id=artifact_id,
+        use_envelope=use_envelope,
+        options=options,
+        registry=registry,
+        metadata=metadata,
+    )
+    _serialization_atomic_write_text(
+        resolved_path,
+        result.json_text or "",
+        encoding=encoding,
+        compress=resolved_compress,
+    )
+    return result
+
+
+def write_scoring_bundle_json(
+    bundle: ScoringSerializationBundle,
+    path: Any,
+    *,
+    options: ScoringSerializationOptions = ScoringSerializationOptions(),
+    compress: Optional[bool] = None,
+    encoding: str = DEFAULT_SCORING_SERIALIZATION_ENCODING,
+) -> int:
+    """Atomically write one scoring bundle and return bytes written."""
+
+    resolved_path = _serialization_path(path)
+    resolved_compress = (
+        resolved_path.lower().endswith(".gz")
+        if compress is None
+        else bool(compress)
+    )
+    text = scoring_serialization_bundle_to_json(bundle, options=options)
+    _serialization_atomic_write_text(
+        resolved_path,
+        text,
+        encoding=encoding,
+        compress=resolved_compress,
+    )
+    return len(text.encode(encoding))
+
+
+def _serialization_read_text(
+    path: str,
+    *,
+    encoding: str,
+    compressed: Optional[bool],
+) -> str:
+    resolved_compressed = (
+        path.lower().endswith(".gz")
+        if compressed is None
+        else bool(compressed)
+    )
+    try:
+        if resolved_compressed:
+            with gzip.open(path, mode="rt", encoding=encoding) as handle:
+                return handle.read()
+        with open(path, mode="r", encoding=encoding) as handle:
+            return handle.read()
+    except OSError as error:
+        raise ScoringDeserializationError(
+            f"Could not read serialized scoring file {path!r}: {error}"
+        ) from error
+
+
+def read_scoring_json(
+    path: Any,
+    *,
+    encoding: str = DEFAULT_SCORING_SERIALIZATION_ENCODING,
+    compressed: Optional[bool] = None,
+    validate: bool = True,
+    verify_checksum: bool = True,
+) -> Any:
+    """Read JSON or gzip-compressed JSON and optionally validate its envelope."""
+
+    resolved_path = _serialization_path(path)
+    text = _serialization_read_text(
+        resolved_path,
+        encoding=encoding,
+        compressed=compressed,
+    )
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise ScoringDeserializationError(
+            f"Invalid JSON in {resolved_path!r}: {error}"
+        ) from error
+    if validate and isinstance(data, Mapping):
+        schema = data.get("schema")
+        if schema == SCORING_SERIALIZATION_SCHEMA:
+            validate_scoring_serialization_envelope_mapping(
+                data,
+                verify_checksum=verify_checksum,
+            )
+        elif schema == SCORING_SERIALIZATION_BUNDLE_SCHEMA:
+            validate_scoring_serialization_bundle_mapping(
+                data,
+                verify_checksum=verify_checksum,
+            )
+    return data
+
+
+# -----------------------------------------------------------------------------
+# 25.12. JSON Lines support
+# -----------------------------------------------------------------------------
+
+def iter_scoring_json_lines(
+    values: Iterable[Any],
+    *,
+    use_envelope: bool = True,
+    options: ScoringSerializationOptions = ScoringSerializationOptions(
+        indent=None
+    ),
+    registry: ScoringSerializationRegistry = (
+        DEFAULT_SCORING_SERIALIZATION_REGISTRY
+    ),
+) -> Iterator[str]:
+    """Yield one compact JSON document per scoring artifact."""
+
+    for value in values:
+        result = serialize_scoring_object(
+            value,
+            use_envelope=use_envelope,
+            options=options,
+            registry=registry,
+        )
+        output = (
+            result.envelope.to_dict()
+            if use_envelope
+            else result.envelope.payload
+        )
+        yield json.dumps(
+            output,
+            ensure_ascii=options.ensure_ascii,
+            allow_nan=options.allow_nan,
+            sort_keys=options.sort_keys,
+            separators=(",", ":"),
+        )
+
+
+def serialize_scoring_json_lines(
+    values: Iterable[Any],
+    *,
+    use_envelope: bool = True,
+    options: ScoringSerializationOptions = ScoringSerializationOptions(
+        indent=None
+    ),
+    registry: ScoringSerializationRegistry = (
+        DEFAULT_SCORING_SERIALIZATION_REGISTRY
+    ),
+) -> str:
+    """Return newline-delimited JSON for many scoring artifacts."""
+
+    lines = list(
+        iter_scoring_json_lines(
+            values,
+            use_envelope=use_envelope,
+            options=options,
+            registry=registry,
+        )
+    )
+    if not lines:
+        return ""
+    return DEFAULT_SCORING_SERIALIZATION_NEWLINE.join(lines) + (
+        DEFAULT_SCORING_SERIALIZATION_NEWLINE
+    )
+
+
+def write_scoring_json_lines(
+    values: Iterable[Any],
+    path: Any,
+    *,
+    use_envelope: bool = True,
+    options: ScoringSerializationOptions = ScoringSerializationOptions(
+        indent=None
+    ),
+    registry: ScoringSerializationRegistry = (
+        DEFAULT_SCORING_SERIALIZATION_REGISTRY
+    ),
+    compress: Optional[bool] = None,
+    encoding: str = DEFAULT_SCORING_SERIALIZATION_ENCODING,
+) -> int:
+    """Write JSON Lines and return uncompressed bytes written."""
+
+    resolved_path = _serialization_path(path)
+    resolved_compress = (
+        resolved_path.lower().endswith(".gz")
+        if compress is None
+        else bool(compress)
+    )
+    text = serialize_scoring_json_lines(
+        values,
+        use_envelope=use_envelope,
+        options=options,
+        registry=registry,
+    )
+    _serialization_atomic_write_text(
+        resolved_path,
+        text,
+        encoding=encoding,
+        compress=resolved_compress,
+    )
+    return len(text.encode(encoding))
+
+
+def read_scoring_json_lines(
+    path: Any,
+    *,
+    encoding: str = DEFAULT_SCORING_SERIALIZATION_ENCODING,
+    compressed: Optional[bool] = None,
+    validate: bool = True,
+) -> Tuple[Any, ...]:
+    """Read and optionally validate newline-delimited scoring JSON."""
+
+    resolved_path = _serialization_path(path)
+    text = _serialization_read_text(
+        resolved_path,
+        encoding=encoding,
+        compressed=compressed,
+    )
+    results: List[Any] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            value = json.loads(stripped)
+        except json.JSONDecodeError as error:
+            raise ScoringDeserializationError(
+                f"Invalid JSON on line {line_number}: {error}"
+            ) from error
+        if validate and isinstance(value, Mapping):
+            if value.get("schema") == SCORING_SERIALIZATION_SCHEMA:
+                validate_scoring_serialization_envelope_mapping(value)
+        results.append(value)
+    return tuple(results)
+
+
+# -----------------------------------------------------------------------------
+# 25.13. Flattening and table generation
+# -----------------------------------------------------------------------------
+
+def _serialization_scalar_table_value(
+    value: Any,
+    *,
+    list_separator: str,
+) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        if all(
+            item is None or isinstance(item, (str, int, float, bool))
+            for item in value
+        ):
+            return list_separator.join(
+                "" if item is None else str(item) for item in value
+            )
+    return _serialization_stable_json(value)
+
+
+def flatten_scoring_mapping(
+    value: Mapping[str, Any],
+    *,
+    parent_key: str = "",
+    separator: str = DEFAULT_SCORING_SERIALIZATION_TABLE_SEPARATOR,
+    list_separator: str = DEFAULT_SCORING_SERIALIZATION_LIST_SEPARATOR,
+) -> Dict[str, Any]:
+    """Flatten nested mappings into a single table row."""
+
+    result: Dict[str, Any] = {}
+    for raw_key, item in value.items():
+        key = str(raw_key)
+        composed = f"{parent_key}{separator}{key}" if parent_key else key
+        if isinstance(item, Mapping):
+            nested = flatten_scoring_mapping(
+                item,
+                parent_key=composed,
+                separator=separator,
+                list_separator=list_separator,
+            )
+            if nested:
+                result.update(nested)
+            else:
+                result[composed] = None
+        else:
+            result[composed] = _serialization_scalar_table_value(
+                item,
+                list_separator=list_separator,
+            )
+    return result
+
+
+def _serialization_candidate_rows(payload: Any) -> List[Any]:
+    if isinstance(payload, Sequence) and not isinstance(
+        payload,
+        (str, bytes, bytearray),
+    ):
+        return list(payload)
+    if isinstance(payload, Mapping):
+        preferred_keys = (
+            "rows",
+            "poses",
+            "ranked_poses",
+            "scores",
+            "interactions",
+            "residues",
+            "groups",
+            "features",
+            "explanations",
+            "artifacts",
+        )
+        for key in preferred_keys:
+            candidate = payload.get(key)
+            if isinstance(candidate, Sequence) and not isinstance(
+                candidate,
+                (str, bytes, bytearray),
+            ):
+                return list(candidate)
+    return [payload]
+
+
+def scoring_object_to_rows(
+    value: Any,
+    *,
+    options: ScoringSerializationOptions = ScoringSerializationOptions(),
+    registry: ScoringSerializationRegistry = (
+        DEFAULT_SCORING_SERIALIZATION_REGISTRY
+    ),
+    flatten: bool = True,
+    separator: str = DEFAULT_SCORING_SERIALIZATION_TABLE_SEPARATOR,
+    list_separator: str = DEFAULT_SCORING_SERIALIZATION_LIST_SEPARATOR,
+) -> Tuple[Mapping[str, Any], ...]:
+    """Convert one artifact into general-purpose tabular rows."""
+
+    class_name = type(value).__name__
+    specific_row_helpers = {
+        "ScoringStatisticsReport": "scoring_statistics_report_to_rows",
+        "MultiposeRankingResult": "multipose_ranking_to_rows",
+        "ConsensusPersistenceResult": "consensus_persistence_to_rows",
+        "DockModelScoringIntegrationResult": "dock_model_scoring_to_rows",
+        "MultiPoseExternalScoreResult": "external_score_result_to_rows",
+        "ScoringExplainabilityResult": "scoring_explainability_to_rows",
+    }
+    helper_name = specific_row_helpers.get(class_name)
+    helper = globals().get(helper_name or "")
+    if callable(helper):
+        try:
+            rows = helper(value)
+        except Exception:
+            rows = None
+        if rows is not None:
+            converted = scoring_object_to_serializable(
+                rows,
+                options=options,
+                registry=registry,
+            )
+            if isinstance(converted, Sequence):
+                return tuple(
+                    MappingProxyType(
+                        flatten_scoring_mapping(
+                            row,
+                            separator=separator,
+                            list_separator=list_separator,
+                        )
+                        if flatten and isinstance(row, Mapping)
+                        else dict(row)
+                        if isinstance(row, Mapping)
+                        else {"value": row}
+                    )
+                    for row in converted
+                )
+
+    payload = scoring_object_to_serializable(
+        value,
+        options=options,
+        registry=registry,
+    )
+    candidate_rows = _serialization_candidate_rows(payload)
+    output: List[Mapping[str, Any]] = []
+    for row in candidate_rows:
+        if isinstance(row, Mapping):
+            row_mapping = dict(row)
+        else:
+            row_mapping = {"value": row}
+        if flatten:
+            row_mapping = flatten_scoring_mapping(
+                row_mapping,
+                separator=separator,
+                list_separator=list_separator,
+            )
+        output.append(MappingProxyType(row_mapping))
+    return tuple(output)
+
+
+def build_scoring_table(
+    value: Any,
+    *,
+    table_id: Optional[str] = None,
+    artifact_type: Optional[str] = None,
+    options: ScoringSerializationOptions = ScoringSerializationOptions(),
+    registry: ScoringSerializationRegistry = (
+        DEFAULT_SCORING_SERIALIZATION_REGISTRY
+    ),
+    flatten: bool = True,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringTableResult:
+    """Build a stable table with a union of all observed columns."""
+
+    rows = scoring_object_to_rows(
+        value,
+        options=options,
+        registry=registry,
+        flatten=flatten,
+    )
+    columns: List[str] = []
+    seen: Set[str] = set()
+    for row in rows:
+        for key in row:
+            if key not in seen:
+                seen.add(key)
+                columns.append(key)
+    resolved_type = normalize_scoring_serialization_artifact_type(
+        artifact_type or infer_scoring_serialization_artifact_type(value)
+    )
+    resolved_table_id = _serialization_identifier(table_id)
+    if not resolved_table_id:
+        digest = calculate_scoring_serialization_checksum(
+            [dict(row) for row in rows]
+        )[:16]
+        resolved_table_id = f"{resolved_type}_table:{digest}"
+    table = ScoringTableResult(
+        rows=rows,
+        columns=tuple(columns),
+        table_id=resolved_table_id,
+        artifact_type=resolved_type,
+        status=(
+            SCORING_SERIALIZATION_STATUS_COMPLETE
+            if rows
+            else SCORING_SERIALIZATION_STATUS_EMPTY
+        ),
+        metadata=dict(metadata or {}),
+    )
+    validate_scoring_table_result(table)
+    return table
+
+
+def scoring_table_to_csv(
+    table: ScoringTableResult,
+    *,
+    dialect: str = "excel",
+    delimiter: str = ",",
+    lineterminator: str = "\n",
+) -> str:
+    """Encode a scoring table as CSV text."""
+
+    validate_scoring_table_result(table)
+    stream = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        stream,
+        fieldnames=list(table.columns),
+        dialect=dialect,
+        delimiter=delimiter,
+        lineterminator=lineterminator,
+        extrasaction="ignore",
+    )
+    writer.writeheader()
+    for row in table.rows:
+        writer.writerow({column: row.get(column) for column in table.columns})
+    return stream.getvalue()
+
+
+def write_scoring_csv(
+    value: Any,
+    path: Any,
+    *,
+    table_id: Optional[str] = None,
+    artifact_type: Optional[str] = None,
+    options: ScoringSerializationOptions = ScoringSerializationOptions(),
+    registry: ScoringSerializationRegistry = (
+        DEFAULT_SCORING_SERIALIZATION_REGISTRY
+    ),
+    flatten: bool = True,
+    delimiter: str = ",",
+    encoding: str = DEFAULT_SCORING_SERIALIZATION_ENCODING,
+) -> ScoringTableResult:
+    """Build a scoring table and atomically write it as CSV."""
+
+    table = build_scoring_table(
+        value,
+        table_id=table_id,
+        artifact_type=artifact_type,
+        options=options,
+        registry=registry,
+        flatten=flatten,
+    )
+    text = scoring_table_to_csv(table, delimiter=delimiter)
+    _serialization_atomic_write_text(
+        _serialization_path(path),
+        text,
+        encoding=encoding,
+        compress=False,
+    )
+    return table
+
+
+# -----------------------------------------------------------------------------
+# 25.14. Envelope and bundle deserialization
+# -----------------------------------------------------------------------------
+
+def scoring_serialization_issue_from_mapping(
+    value: Mapping[str, Any],
+) -> ScoringSerializationIssue:
+    """Restore one issue object from a serialized mapping."""
+
+    return ScoringSerializationIssue(
+        level=value.get("level", SCORING_SERIALIZATION_ISSUE_INFO),
+        code=value.get("code", "unknown"),
+        message=value.get("message", ""),
+        path=value.get("path", "$"),
+        object_type=value.get("object_type"),
+        lossy=bool(value.get("lossy", False)),
+        metadata=value.get("metadata") or {},
+    )
+
+
+def scoring_serialization_envelope_from_mapping(
+    value: Mapping[str, Any],
+    *,
+    verify_checksum: bool = True,
+) -> ScoringSerializationEnvelope:
+    """Restore and validate an envelope from a mapping."""
+
+    validate_scoring_serialization_envelope_mapping(
+        value,
+        verify_checksum=verify_checksum,
+    )
+    envelope = ScoringSerializationEnvelope(
+        schema=value.get("schema", SCORING_SERIALIZATION_SCHEMA),
+        schema_version=value.get(
+            "schema_version",
+            SCORING_SERIALIZATION_SCHEMA_VERSION,
+        ),
+        section_version=value.get(
+            "section_version",
+            SCORING_SERIALIZATION_SECTION_VERSION,
+        ),
+        artifact_type=value.get(
+            "artifact_type",
+            SCORING_SERIALIZATION_ARTIFACT_UNKNOWN,
+        ),
+        artifact_id=value.get("artifact_id", ""),
+        object_type=value.get("object_type", "unknown"),
+        status=value.get("status", SCORING_SERIALIZATION_STATUS_COMPLETE),
+        created_at=value.get("created_at"),
+        checksum=value.get("checksum"),
+        checksum_algorithm=value.get("checksum_algorithm"),
+        payload=value.get("payload"),
+        issues=tuple(
+            scoring_serialization_issue_from_mapping(issue)
+            for issue in value.get("issues", ())
+            if isinstance(issue, Mapping)
+        ),
+        metadata=value.get("metadata") or {},
+    )
+    validate_scoring_serialization_envelope(envelope)
+    return envelope
+
+
+def scoring_serialization_bundle_from_mapping(
+    value: Mapping[str, Any],
+    *,
+    verify_checksum: bool = True,
+) -> ScoringSerializationBundle:
+    """Restore a bundle and all nested envelopes from a mapping."""
+
+    validate_scoring_serialization_bundle_mapping(
+        value,
+        verify_checksum=verify_checksum,
+    )
+    artifacts = tuple(
+        scoring_serialization_envelope_from_mapping(
+            item,
+            verify_checksum=verify_checksum,
+        )
+        for item in value.get("artifacts", ())
+        if isinstance(item, Mapping)
+    )
+    manifest = tuple(
+        ScoringSerializationManifestEntry(
+            artifact_id=item.get("artifact_id", ""),
+            artifact_type=item.get(
+                "artifact_type",
+                SCORING_SERIALIZATION_ARTIFACT_UNKNOWN,
+            ),
+            object_type=item.get("object_type", "unknown"),
+            schema=item.get("schema", SCORING_SERIALIZATION_SCHEMA),
+            schema_version=item.get(
+                "schema_version",
+                SCORING_SERIALIZATION_SCHEMA_VERSION,
+            ),
+            checksum=item.get("checksum"),
+            payload_size=int(item.get("payload_size", 0)),
+            status=item.get(
+                "status",
+                SCORING_SERIALIZATION_STATUS_COMPLETE,
+            ),
+            metadata=item.get("metadata") or {},
+        )
+        for item in value.get("manifest", ())
+        if isinstance(item, Mapping)
+    )
+    bundle = ScoringSerializationBundle(
+        schema=value.get("schema", SCORING_SERIALIZATION_BUNDLE_SCHEMA),
+        schema_version=value.get(
+            "schema_version",
+            SCORING_SERIALIZATION_SCHEMA_VERSION,
+        ),
+        section_version=value.get(
+            "section_version",
+            SCORING_SERIALIZATION_SECTION_VERSION,
+        ),
+        bundle_id=value.get("bundle_id", ""),
+        status=value.get("status", SCORING_SERIALIZATION_STATUS_COMPLETE),
+        created_at=value.get("created_at"),
+        checksum=value.get("checksum"),
+        checksum_algorithm=value.get("checksum_algorithm"),
+        artifacts=artifacts,
+        manifest=manifest,
+        issues=tuple(
+            scoring_serialization_issue_from_mapping(issue)
+            for issue in value.get("issues", ())
+            if isinstance(issue, Mapping)
+        ),
+        metadata=value.get("metadata") or {},
+    )
+    validate_scoring_serialization_bundle(bundle)
+    return bundle
+
+
+def deserialize_scoring_payload(
+    value: Any,
+    *,
+    registry: ScoringSerializationRegistry = (
+        DEFAULT_SCORING_SERIALIZATION_REGISTRY
+    ),
+    restore_typed: bool = False,
+    verify_checksum: bool = True,
+) -> Any:
+    """Extract a payload and optionally apply a registered typed restorer."""
+
+    envelope: Optional[ScoringSerializationEnvelope] = None
+    if isinstance(value, ScoringSerializationEnvelope):
+        envelope = value
+    elif isinstance(value, str):
+        try:
+            loaded = json.loads(value)
+        except json.JSONDecodeError as error:
+            raise ScoringDeserializationError(
+                f"Invalid serialized scoring JSON: {error}"
+            ) from error
+        return deserialize_scoring_payload(
+            loaded,
+            registry=registry,
+            restore_typed=restore_typed,
+            verify_checksum=verify_checksum,
+        )
+    elif isinstance(value, Mapping):
+        if value.get("schema") == SCORING_SERIALIZATION_SCHEMA:
+            envelope = scoring_serialization_envelope_from_mapping(
+                value,
+                verify_checksum=verify_checksum,
+            )
+        else:
+            return dict(value)
+    else:
+        return value
+    validate_scoring_serialization_envelope(envelope)
+    if not restore_typed:
+        return envelope.payload
+    restorer = registry.resolve_restorer(envelope.artifact_type)
+    if restorer is None:
+        return envelope.payload
+    if not isinstance(envelope.payload, Mapping):
+        raise ScoringDeserializationError(
+            "Typed restoration requires a mapping payload."
+        )
+    try:
+        return restorer(envelope.payload)
+    except Exception as error:
+        raise ScoringDeserializationError(
+            "Typed restoration failed for artifact "
+            f"{envelope.artifact_type!r}: {error}"
+        ) from error
+
+
+def decode_scoring_tagged_types(value: Any) -> Any:
+    """Restore tuple, set, frozenset and bytes tags emitted by this section."""
+
+    if isinstance(value, list):
+        return [decode_scoring_tagged_types(item) for item in value]
+    if not isinstance(value, Mapping):
+        return value
+    type_name = value.get("__type__")
+    if type_name == "bytes" and value.get("encoding") == "base64":
+        try:
+            return base64.b64decode(value.get("data", ""))
+        except (ValueError, TypeError) as error:
+            raise ScoringDeserializationError(
+                "Invalid base64 bytes payload."
+            ) from error
+    if type_name in {"tuple", "set", "frozenset"}:
+        items = [
+            decode_scoring_tagged_types(item)
+            for item in value.get("items", ())
+        ]
+        if type_name == "tuple":
+            return tuple(items)
+        if type_name == "frozenset":
+            return frozenset(items)
+        return set(items)
+    return {
+        key: decode_scoring_tagged_types(item)
+        for key, item in value.items()
+    }
+
+
+# -----------------------------------------------------------------------------
+# 25.15. Validation
+# -----------------------------------------------------------------------------
+
+def validate_scoring_serialization_options(
+    options: ScoringSerializationOptions,
+) -> None:
+    if not isinstance(options, ScoringSerializationOptions):
+        raise ScoringSerializationValidationError(
+            "options must be ScoringSerializationOptions."
+        )
+    if options.max_depth < 1 or options.max_items < 1:
+        raise ScoringSerializationValidationError(
+            "Serialization limits must be positive."
+        )
+
+
+def validate_scoring_serialization_issue(
+    issue: ScoringSerializationIssue,
+) -> None:
+    if not isinstance(issue, ScoringSerializationIssue):
+        raise ScoringSerializationValidationError(
+            "issue must be ScoringSerializationIssue."
+        )
+    if issue.level not in SCORING_SERIALIZATION_ISSUE_LEVELS:
+        raise ScoringSerializationValidationError(
+            f"Invalid issue level: {issue.level!r}."
+        )
+    if not issue.code or not issue.message or not issue.path:
+        raise ScoringSerializationValidationError(
+            "Serialization issues require code, message and path."
+        )
+
+
+def validate_scoring_serialization_envelope(
+    envelope: ScoringSerializationEnvelope,
+    *,
+    verify_checksum: bool = True,
+) -> None:
+    if not isinstance(envelope, ScoringSerializationEnvelope):
+        raise ScoringSerializationValidationError(
+            "envelope must be ScoringSerializationEnvelope."
+        )
+    if envelope.schema != SCORING_SERIALIZATION_SCHEMA:
+        raise ScoringSerializationValidationError(
+            f"Unexpected scoring schema: {envelope.schema!r}."
+        )
+    if not envelope.schema_version or not envelope.artifact_id:
+        raise ScoringSerializationValidationError(
+            "Envelope schema_version and artifact_id are required."
+        )
+    if envelope.status not in SCORING_SERIALIZATION_STATUSES:
+        raise ScoringSerializationValidationError(
+            f"Invalid envelope status: {envelope.status!r}."
+        )
+    validate_json_safe_scoring_value(envelope.payload)
+    for issue in envelope.issues:
+        validate_scoring_serialization_issue(issue)
+    if verify_checksum and envelope.checksum:
+        algorithm = (
+            envelope.checksum_algorithm
+            or SCORING_SERIALIZATION_CHECKSUM_ALGORITHM
+        )
+        if not verify_scoring_serialization_checksum(
+            envelope.payload,
+            envelope.checksum,
+            algorithm=algorithm,
+        ):
+            raise ScoringSerializationValidationError(
+                "Envelope checksum does not match its payload."
+            )
+
+
+def validate_scoring_serialization_envelope_mapping(
+    value: Mapping[str, Any],
+    *,
+    verify_checksum: bool = True,
+) -> None:
+    if not isinstance(value, Mapping):
+        raise ScoringSerializationValidationError(
+            "Serialized envelope must be a mapping."
+        )
+    required = {
+        "schema",
+        "schema_version",
+        "artifact_type",
+        "artifact_id",
+        "object_type",
+        "status",
+        "payload",
+    }
+    missing = sorted(required.difference(value))
+    if missing:
+        raise ScoringSerializationValidationError(
+            "Serialized envelope is missing: " + ", ".join(missing)
+        )
+    if value.get("schema") != SCORING_SERIALIZATION_SCHEMA:
+        raise ScoringSerializationValidationError(
+            f"Unexpected envelope schema: {value.get('schema')!r}."
+        )
+    normalize_scoring_serialization_status(value.get("status"))
+    validate_json_safe_scoring_value(value.get("payload"))
+    checksum = value.get("checksum")
+    if verify_checksum and checksum:
+        algorithm = value.get("checksum_algorithm") or (
+            SCORING_SERIALIZATION_CHECKSUM_ALGORITHM
+        )
+        if not verify_scoring_serialization_checksum(
+            value.get("payload"),
+            checksum,
+            algorithm=algorithm,
+        ):
+            raise ScoringSerializationValidationError(
+                "Serialized envelope checksum mismatch."
+            )
+
+
+def validate_scoring_serialization_result(
+    result: ScoringSerializationResult,
+) -> None:
+    if not isinstance(result, ScoringSerializationResult):
+        raise ScoringSerializationValidationError(
+            "result must be ScoringSerializationResult."
+        )
+    validate_scoring_serialization_envelope(result.envelope)
+    for issue in result.issues:
+        validate_scoring_serialization_issue(issue)
+    if result.json_text is not None:
+        try:
+            json.loads(result.json_text)
+        except json.JSONDecodeError as error:
+            raise ScoringSerializationValidationError(
+                "Serialization result contains invalid JSON."
+            ) from error
+        expected_size = len(
+            result.json_text.encode(DEFAULT_SCORING_SERIALIZATION_ENCODING)
+        )
+        if result.byte_size != expected_size:
+            raise ScoringSerializationValidationError(
+                "Serialization result byte_size is inconsistent."
+            )
+
+
+def validate_scoring_serialization_bundle(
+    bundle: ScoringSerializationBundle,
+    *,
+    verify_checksum: bool = True,
+) -> None:
+    if not isinstance(bundle, ScoringSerializationBundle):
+        raise ScoringSerializationValidationError(
+            "bundle must be ScoringSerializationBundle."
+        )
+    if bundle.schema != SCORING_SERIALIZATION_BUNDLE_SCHEMA:
+        raise ScoringSerializationValidationError(
+            f"Unexpected bundle schema: {bundle.schema!r}."
+        )
+    if len(bundle.artifacts) != len(bundle.manifest):
+        raise ScoringSerializationValidationError(
+            "Bundle artifact and manifest counts differ."
+        )
+    artifact_ids = [artifact.artifact_id for artifact in bundle.artifacts]
+    if len(artifact_ids) != len(set(artifact_ids)):
+        raise ScoringSerializationValidationError(
+            "Bundle artifact identifiers must be unique."
+        )
+    for artifact in bundle.artifacts:
+        validate_scoring_serialization_envelope(
+            artifact,
+            verify_checksum=verify_checksum,
+        )
+    manifest_ids = [entry.artifact_id for entry in bundle.manifest]
+    if artifact_ids != manifest_ids:
+        raise ScoringSerializationValidationError(
+            "Bundle manifest order does not match artifact order."
+        )
+
+
+def validate_scoring_serialization_bundle_mapping(
+    value: Mapping[str, Any],
+    *,
+    verify_checksum: bool = True,
+) -> None:
+    if not isinstance(value, Mapping):
+        raise ScoringSerializationValidationError(
+            "Serialized bundle must be a mapping."
+        )
+    if value.get("schema") != SCORING_SERIALIZATION_BUNDLE_SCHEMA:
+        raise ScoringSerializationValidationError(
+            f"Unexpected bundle schema: {value.get('schema')!r}."
+        )
+    artifacts = value.get("artifacts")
+    manifest = value.get("manifest")
+    if not isinstance(artifacts, list) or not isinstance(manifest, list):
+        raise ScoringSerializationValidationError(
+            "Serialized bundle requires artifact and manifest lists."
+        )
+    if len(artifacts) != len(manifest):
+        raise ScoringSerializationValidationError(
+            "Serialized bundle artifact and manifest counts differ."
+        )
+    for artifact in artifacts:
+        validate_scoring_serialization_envelope_mapping(
+            artifact,
+            verify_checksum=verify_checksum,
+        )
+
+
+def validate_scoring_table_result(table: ScoringTableResult) -> None:
+    if not isinstance(table, ScoringTableResult):
+        raise ScoringSerializationValidationError(
+            "table must be ScoringTableResult."
+        )
+    if len(table.columns) != len(set(table.columns)):
+        raise ScoringSerializationValidationError(
+            "Table columns must be unique."
+        )
+    for row in table.rows:
+        unexpected = set(row).difference(table.columns)
+        if unexpected:
+            raise ScoringSerializationValidationError(
+                "Table row contains undeclared columns: "
+                + ", ".join(sorted(unexpected))
+            )
+
+
+# -----------------------------------------------------------------------------
+# 25.16. Summaries and diagnostics
+# -----------------------------------------------------------------------------
+
+def summarize_scoring_serialization(
+    value: Any,
+) -> Mapping[str, Any]:
+    """Return a compact diagnostic summary for a serialization result."""
+
+    if isinstance(value, ScoringSerializationResult):
+        envelope = value.envelope
+        issues = value.issues
+        byte_size = value.byte_size
+    elif isinstance(value, ScoringSerializationEnvelope):
+        envelope = value
+        issues = value.issues
+        byte_size = len(_serialization_stable_json(value.to_dict()))
+    else:
+        envelope = build_scoring_serialization_envelope(value)
+        issues = envelope.issues
+        byte_size = len(_serialization_stable_json(envelope.to_dict()))
+    level_counts = Counter(issue.level for issue in issues)
+    code_counts = Counter(issue.code for issue in issues)
+    return MappingProxyType(
+        {
+            "status": envelope.status,
+            "artifact_type": envelope.artifact_type,
+            "artifact_id": envelope.artifact_id,
+            "object_type": envelope.object_type,
+            "schema": envelope.schema,
+            "schema_version": envelope.schema_version,
+            "checksum_present": bool(envelope.checksum),
+            "issue_count": len(issues),
+            "lossy_issue_count": sum(issue.lossy for issue in issues),
+            "issue_levels": dict(level_counts),
+            "issue_codes": dict(code_counts),
+            "byte_size": byte_size,
+        }
+    )
+
+
+def summarize_scoring_serialization_bundle(
+    bundle: ScoringSerializationBundle,
+) -> Mapping[str, Any]:
+    """Return artifact, status and issue counts for one bundle."""
+
+    validate_scoring_serialization_bundle(bundle)
+    type_counts = Counter(item.artifact_type for item in bundle.artifacts)
+    status_counts = Counter(item.status for item in bundle.artifacts)
+    return MappingProxyType(
+        {
+            "bundle_id": bundle.bundle_id,
+            "status": bundle.status,
+            "artifact_count": len(bundle.artifacts),
+            "artifact_types": dict(type_counts),
+            "artifact_statuses": dict(status_counts),
+            "manifest_count": len(bundle.manifest),
+            "issue_count": len(bundle.issues),
+            "checksum_present": bool(bundle.checksum),
+        }
+    )
+
+
+def format_scoring_serialization_summary(value: Any) -> str:
+    """Format a concise human-readable serialization summary."""
+
+    summary = summarize_scoring_serialization(value)
+    lines = [
+        "DockAnalyzer scoring serialization",
+        f"Status: {summary['status']}",
+        f"Artifact: {summary['artifact_type']}",
+        f"Artifact ID: {summary['artifact_id']}",
+        f"Object type: {summary['object_type']}",
+        f"Schema: {summary['schema']} v{summary['schema_version']}",
+        f"Size: {summary['byte_size']} bytes",
+        f"Issues: {summary['issue_count']}",
+        f"Lossy conversions: {summary['lossy_issue_count']}",
+    ]
+    return "\n".join(lines)
+
+
+# -----------------------------------------------------------------------------
+# 25.17. Deterministic self-check
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class _Section25TestArtifact:
+    pose_id: str
+    score: float
+    labels: Tuple[str, ...]
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+def run_section_25_self_check() -> Mapping[str, Any]:
+    """Run deterministic serialization, bundle, file and table checks."""
+
+    artifact = _Section25TestArtifact(
+        pose_id="pose_1",
+        score=3.141592653589793,
+        labels=("hydrogen_bond", "pi_stacking"),
+        metadata={
+            "replicate": 1,
+            "bytes": b"dock",
+            "nonfinite": float("nan"),
+        },
+    )
+    options = ScoringSerializationOptions(
+        include_type_tags=True,
+        preserve_tuple_type=True,
+        nonfinite_policy=SCORING_SERIALIZATION_NONFINITE_NULL,
+        bytes_policy=SCORING_SERIALIZATION_BYTES_BASE64,
+    )
+    result = serialize_scoring_object(
+        artifact,
+        artifact_type=SCORING_SERIALIZATION_ARTIFACT_POSE,
+        options=options,
+    )
+    validate_scoring_serialization_result(result)
+    loaded = json.loads(result.json_text or "{}")
+    validate_scoring_serialization_envelope_mapping(loaded)
+    restored_envelope = scoring_serialization_envelope_from_mapping(loaded)
+    payload = deserialize_scoring_payload(restored_envelope)
+    decoded = decode_scoring_tagged_types(payload)
+    if decoded.get("pose_id") != "pose_1":
+        raise ScoringSerializationValidationError(
+            "Section 25 self-check pose identifier mismatch."
+        )
+    bundle = build_scoring_serialization_bundle(
+        (
+            artifact,
+            {"pose_id": "pose_2", "score": 2.0},
+        ),
+        options=options,
+    )
+    validate_scoring_serialization_bundle(bundle)
+    bundle_text = scoring_serialization_bundle_to_json(
+        bundle,
+        options=options,
+    )
+    restored_bundle = scoring_serialization_bundle_from_mapping(
+        json.loads(bundle_text)
+    )
+    table = build_scoring_table(
+        [
+            {"pose_id": "pose_1", "score": 3.0},
+            {"pose_id": "pose_2", "score": 2.0},
+        ],
+        options=options,
+    )
+    validate_scoring_table_result(table)
+    csv_text = scoring_table_to_csv(table)
+    jsonl_text = serialize_scoring_json_lines(
+        (artifact, {"pose_id": "pose_2", "score": 2.0}),
+        options=ScoringSerializationOptions(indent=None),
+    )
+    if len(restored_bundle.artifacts) != 2:
+        raise ScoringSerializationValidationError(
+            "Section 25 self-check bundle size mismatch."
+        )
+    if "pose_id" not in csv_text or len(jsonl_text.splitlines()) != 2:
+        raise ScoringSerializationValidationError(
+            "Section 25 self-check tabular output mismatch."
+        )
+    summary = summarize_scoring_serialization(result)
+    return MappingProxyType(
+        {
+            "status": "passed",
+            "artifact_type": result.envelope.artifact_type,
+            "artifact_id": result.envelope.artifact_id,
+            "issue_count": summary["issue_count"],
+            "lossy_issue_count": summary["lossy_issue_count"],
+            "bundle_artifact_count": len(restored_bundle.artifacts),
+            "table_row_count": len(table.rows),
+            "table_column_count": len(table.columns),
+            "jsonl_line_count": len(jsonl_text.splitlines()),
+            "checksum_verified": verify_scoring_serialization_checksum(
+                result.envelope.payload,
+                result.envelope.checksum or "",
+            ),
+        }
+    )
+
+
+# -----------------------------------------------------------------------------
+# 25.18. Public interface closure
+# -----------------------------------------------------------------------------
+
+_SECTION_25_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    # Status, formats, schemas and policies
+    "SCORING_SERIALIZATION_STATUS_COMPLETE",
+    "SCORING_SERIALIZATION_STATUS_PARTIAL",
+    "SCORING_SERIALIZATION_STATUS_EMPTY",
+    "SCORING_SERIALIZATION_STATUS_INVALID",
+    "SCORING_SERIALIZATION_STATUS_FAILED",
+    "SCORING_SERIALIZATION_STATUSES",
+    "SCORING_SERIALIZATION_FORMAT_DICT",
+    "SCORING_SERIALIZATION_FORMAT_JSON",
+    "SCORING_SERIALIZATION_FORMAT_JSONL",
+    "SCORING_SERIALIZATION_FORMAT_CSV",
+    "SCORING_SERIALIZATION_FORMATS",
+    "SCORING_SERIALIZATION_SCHEMA",
+    "SCORING_SERIALIZATION_SCHEMA_VERSION",
+    "SCORING_SERIALIZATION_SECTION_VERSION",
+    "SCORING_SERIALIZATION_BUNDLE_SCHEMA",
+    "SCORING_SERIALIZATION_TABLE_SCHEMA",
+    "SCORING_SERIALIZATION_CHECKSUM_ALGORITHM",
+    "SCORING_SERIALIZATION_MEDIA_TYPE_JSON",
+    "SCORING_SERIALIZATION_MEDIA_TYPE_JSONL",
+    "SCORING_SERIALIZATION_MEDIA_TYPE_CSV",
+    "SCORING_SERIALIZATION_NONFINITE_NULL",
+    "SCORING_SERIALIZATION_NONFINITE_STRING",
+    "SCORING_SERIALIZATION_NONFINITE_ERROR",
+    "SCORING_SERIALIZATION_NONFINITE_POLICIES",
+    "SCORING_SERIALIZATION_UNKNOWN_STRING",
+    "SCORING_SERIALIZATION_UNKNOWN_MAPPING",
+    "SCORING_SERIALIZATION_UNKNOWN_NULL",
+    "SCORING_SERIALIZATION_UNKNOWN_ERROR",
+    "SCORING_SERIALIZATION_UNKNOWN_POLICIES",
+    "SCORING_SERIALIZATION_BYTES_BASE64",
+    "SCORING_SERIALIZATION_BYTES_UTF8",
+    "SCORING_SERIALIZATION_BYTES_LIST",
+    "SCORING_SERIALIZATION_BYTES_ERROR",
+    "SCORING_SERIALIZATION_BYTES_POLICIES",
+    "SCORING_SERIALIZATION_CYCLE_REFERENCE",
+    "SCORING_SERIALIZATION_CYCLE_NULL",
+    "SCORING_SERIALIZATION_CYCLE_ERROR",
+    "SCORING_SERIALIZATION_CYCLE_POLICIES",
+    "SCORING_SERIALIZATION_ISSUE_INFO",
+    "SCORING_SERIALIZATION_ISSUE_WARNING",
+    "SCORING_SERIALIZATION_ISSUE_ERROR",
+    "SCORING_SERIALIZATION_ISSUE_LEVELS",
+    # Artifact names and defaults
+    "SCORING_SERIALIZATION_ARTIFACT_UNKNOWN",
+    "SCORING_SERIALIZATION_ARTIFACT_INTERACTION",
+    "SCORING_SERIALIZATION_ARTIFACT_COLLECTION",
+    "SCORING_SERIALIZATION_ARTIFACT_RESIDUE",
+    "SCORING_SERIALIZATION_ARTIFACT_POSE",
+    "SCORING_SERIALIZATION_ARTIFACT_NORMALIZATION",
+    "SCORING_SERIALIZATION_ARTIFACT_DIVERSITY",
+    "SCORING_SERIALIZATION_ARTIFACT_COMPLEMENTARITY",
+    "SCORING_SERIALIZATION_ARTIFACT_SELECTION",
+    "SCORING_SERIALIZATION_ARTIFACT_STATISTICS",
+    "SCORING_SERIALIZATION_ARTIFACT_RANKING",
+    "SCORING_SERIALIZATION_ARTIFACT_CONSENSUS",
+    "SCORING_SERIALIZATION_ARTIFACT_DOCK_MODEL",
+    "SCORING_SERIALIZATION_ARTIFACT_EXTERNAL",
+    "SCORING_SERIALIZATION_ARTIFACT_EXPLANATION",
+    "SCORING_SERIALIZATION_ARTIFACT_BUNDLE",
+    "SCORING_SERIALIZATION_ARTIFACT_TYPES",
+    "DEFAULT_SCORING_SERIALIZATION_INDENT",
+    "DEFAULT_SCORING_SERIALIZATION_MAX_DEPTH",
+    "DEFAULT_SCORING_SERIALIZATION_MAX_ITEMS",
+    "DEFAULT_SCORING_SERIALIZATION_MAX_STRING_LENGTH",
+    "DEFAULT_SCORING_SERIALIZATION_ENCODING",
+    "DEFAULT_SCORING_SERIALIZATION_NEWLINE",
+    "DEFAULT_SCORING_SERIALIZATION_FLOAT_DIGITS",
+    "DEFAULT_SCORING_SERIALIZATION_TABLE_SEPARATOR",
+    "DEFAULT_SCORING_SERIALIZATION_LIST_SEPARATOR",
+    "DEFAULT_SCORING_SERIALIZATION_INCLUDE_CHECKSUM",
+    # Exceptions, structures and registry
+    "ScoringSerializationError",
+    "ScoringSerializationInputError",
+    "ScoringSerializationConfigurationError",
+    "ScoringSerializationDepthError",
+    "ScoringSerializationCycleError",
+    "ScoringSerializationValidationError",
+    "ScoringDeserializationError",
+    "ScoringSerializationOptions",
+    "ScoringSerializationIssue",
+    "ScoringSerializationManifestEntry",
+    "ScoringSerializationEnvelope",
+    "ScoringSerializationResult",
+    "ScoringSerializationBundle",
+    "ScoringTableResult",
+    "ScoringSerializationAdapter",
+    "ScoringDeserializationAdapter",
+    "ScoringSerializationRegistry",
+    "DEFAULT_SCORING_SERIALIZATION_REGISTRY",
+    # Normalization and registry APIs
+    "normalize_scoring_serialization_status",
+    "normalize_scoring_serialization_format",
+    "normalize_scoring_nonfinite_policy",
+    "normalize_scoring_unknown_policy",
+    "normalize_scoring_bytes_policy",
+    "normalize_scoring_cycle_policy",
+    "normalize_scoring_serialization_artifact_type",
+    "normalize_scoring_serialization_issue_level",
+    "register_scoring_serialization_adapter",
+    "register_scoring_deserialization_adapter",
+    # Core conversion and checksums
+    "calculate_scoring_serialization_checksum",
+    "verify_scoring_serialization_checksum",
+    "infer_scoring_serialization_artifact_type",
+    "scoring_object_to_serializable",
+    "scoring_object_to_dict",
+    "is_json_safe_scoring_value",
+    "validate_json_safe_scoring_value",
+    "build_scoring_serialization_envelope",
+    "scoring_serialization_envelope_to_dict",
+    "serialize_scoring_object",
+    "serialize_scoring_object_to_json",
+    # Convenience serializers
+    "serialize_interaction_scoring_artifact",
+    "serialize_collection_scoring_artifact",
+    "serialize_residue_scoring_artifact",
+    "serialize_pose_scoring_artifact",
+    "serialize_scoring_statistics_artifact",
+    "serialize_multipose_ranking_artifact",
+    "serialize_consensus_persistence_artifact",
+    "serialize_dock_model_scoring_artifact",
+    "serialize_external_score_artifact",
+    "serialize_scoring_explainability_artifact",
+    # Bundles and file I/O
+    "build_scoring_serialization_bundle",
+    "scoring_serialization_bundle_to_json",
+    "scoring_bundle_artifact_map",
+    "get_scoring_bundle_artifact",
+    "filter_scoring_bundle_artifacts",
+    "write_scoring_json",
+    "write_scoring_bundle_json",
+    "read_scoring_json",
+    # JSON Lines
+    "iter_scoring_json_lines",
+    "serialize_scoring_json_lines",
+    "write_scoring_json_lines",
+    "read_scoring_json_lines",
+    # Tables and CSV
+    "flatten_scoring_mapping",
+    "scoring_object_to_rows",
+    "build_scoring_table",
+    "scoring_table_to_csv",
+    "write_scoring_csv",
+    # Restoration
+    "scoring_serialization_issue_from_mapping",
+    "scoring_serialization_envelope_from_mapping",
+    "scoring_serialization_bundle_from_mapping",
+    "deserialize_scoring_payload",
+    "decode_scoring_tagged_types",
+    # Validation, summaries and self-check
+    "validate_scoring_serialization_options",
+    "validate_scoring_serialization_issue",
+    "validate_scoring_serialization_envelope",
+    "validate_scoring_serialization_envelope_mapping",
+    "validate_scoring_serialization_result",
+    "validate_scoring_serialization_bundle",
+    "validate_scoring_serialization_bundle_mapping",
+    "validate_scoring_table_result",
+    "summarize_scoring_serialization",
+    "summarize_scoring_serialization_bundle",
+    "format_scoring_serialization_summary",
+    "run_section_25_self_check",
+)
+
+if "__all__" not in globals():
+    __all__: List[str] = []
+
+for public_name in _SECTION_25_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+def section_25_public_names() -> Tuple[str, ...]:
+    """Return the complete immutable Section 25 public interface."""
+
+    return _SECTION_25_PUBLIC_NAMES
+
+
+def validate_section_25_public_interface() -> None:
+    """Validate that every declared Section 25 public name exists and exports."""
+
+    missing_names = tuple(
+        name for name in _SECTION_25_PUBLIC_NAMES if name not in globals()
+    )
+    if missing_names:
+        raise ScoringSerializationValidationError(
+            "Missing Section 25 public names: " + ", ".join(missing_names)
+        )
+    missing_exports = tuple(
+        name for name in _SECTION_25_PUBLIC_NAMES if name not in __all__
+    )
+    if missing_exports:
+        raise ScoringSerializationValidationError(
+            "Section 25 names missing from __all__: "
+            + ", ".join(missing_exports)
+        )
+
+
+if "section_25_public_names" not in __all__:
+    __all__.append("section_25_public_names")
+if "validate_section_25_public_interface" not in __all__:
+    __all__.append("validate_section_25_public_interface")
+
+validate_section_25_public_interface()
+
+# =============================================================================
+# End of Section 25
+# =============================================================================
+
+
+# =============================================================================
+# DockAnalyzer — Interaction scoring
+# Section 26 — Report integration
+# =============================================================================
+
+"""
+Structured report integration for DockAnalyzer scoring results.
+
+Section 26 converts the analytical objects produced by Sections 1–25 into a
+neutral report document.  The document can be rendered as plain text,
+Markdown, HTML or JSON, attached to a future ``report.py`` object, stored in a
+mapping, or associated with a ``DockModel`` without creating a circular import.
+
+The section does not recalculate interaction scores.  It only selects,
+organizes and presents results that already exist.  Raw values, normalized
+values, docking affinities and fused external scores remain explicitly
+separated throughout the report.
+"""
+
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field, fields, is_dataclass
+from datetime import datetime, timezone
+from html import escape as _html_escape
+from pathlib import Path
+from types import MappingProxyType
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Final,
+    FrozenSet,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
+import csv
+import io
+import json
+import math
+import os
+import re
+
+
+# -----------------------------------------------------------------------------
+# 26.1. Constants and canonical names
+# -----------------------------------------------------------------------------
+
+SCORING_REPORT_SCHEMA: Final[str] = "dockanalyzer.scoring.report"
+SCORING_REPORT_SCHEMA_VERSION: Final[str] = "1.0"
+SCORING_REPORT_SECTION_VERSION: Final[str] = "26.0"
+
+SCORING_REPORT_STATUS_COMPLETE: Final[str] = "complete"
+SCORING_REPORT_STATUS_PARTIAL: Final[str] = "partial"
+SCORING_REPORT_STATUS_EMPTY: Final[str] = "empty"
+SCORING_REPORT_STATUS_FAILED: Final[str] = "failed"
+SCORING_REPORT_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_REPORT_STATUS_COMPLETE,
+        SCORING_REPORT_STATUS_PARTIAL,
+        SCORING_REPORT_STATUS_EMPTY,
+        SCORING_REPORT_STATUS_FAILED,
+    }
+)
+
+SCORING_REPORT_FORMAT_TEXT: Final[str] = "text"
+SCORING_REPORT_FORMAT_MARKDOWN: Final[str] = "markdown"
+SCORING_REPORT_FORMAT_HTML: Final[str] = "html"
+SCORING_REPORT_FORMAT_JSON: Final[str] = "json"
+SCORING_REPORT_FORMATS: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_REPORT_FORMAT_TEXT,
+        SCORING_REPORT_FORMAT_MARKDOWN,
+        SCORING_REPORT_FORMAT_HTML,
+        SCORING_REPORT_FORMAT_JSON,
+    }
+)
+
+SCORING_REPORT_DETAIL_COMPACT: Final[str] = "compact"
+SCORING_REPORT_DETAIL_STANDARD: Final[str] = "standard"
+SCORING_REPORT_DETAIL_EXTENDED: Final[str] = "extended"
+SCORING_REPORT_DETAIL_LEVELS: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_REPORT_DETAIL_COMPACT,
+        SCORING_REPORT_DETAIL_STANDARD,
+        SCORING_REPORT_DETAIL_EXTENDED,
+    }
+)
+
+SCORING_REPORT_AUDIENCE_GENERAL: Final[str] = "general"
+SCORING_REPORT_AUDIENCE_SCIENTIFIC: Final[str] = "scientific"
+SCORING_REPORT_AUDIENCE_TECHNICAL: Final[str] = "technical"
+SCORING_REPORT_AUDIENCES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_REPORT_AUDIENCE_GENERAL,
+        SCORING_REPORT_AUDIENCE_SCIENTIFIC,
+        SCORING_REPORT_AUDIENCE_TECHNICAL,
+    }
+)
+
+SCORING_REPORT_EMPTY_OMIT: Final[str] = "omit"
+SCORING_REPORT_EMPTY_INCLUDE: Final[str] = "include"
+SCORING_REPORT_EMPTY_WARN: Final[str] = "warn"
+SCORING_REPORT_EMPTY_POLICIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_REPORT_EMPTY_OMIT,
+        SCORING_REPORT_EMPTY_INCLUDE,
+        SCORING_REPORT_EMPTY_WARN,
+    }
+)
+
+SCORING_REPORT_BLOCK_PARAGRAPH: Final[str] = "paragraph"
+SCORING_REPORT_BLOCK_METRICS: Final[str] = "metrics"
+SCORING_REPORT_BLOCK_TABLE: Final[str] = "table"
+SCORING_REPORT_BLOCK_BULLETS: Final[str] = "bullets"
+SCORING_REPORT_BLOCK_WARNING: Final[str] = "warning"
+SCORING_REPORT_BLOCK_CODE: Final[str] = "code"
+SCORING_REPORT_BLOCK_TYPES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_REPORT_BLOCK_PARAGRAPH,
+        SCORING_REPORT_BLOCK_METRICS,
+        SCORING_REPORT_BLOCK_TABLE,
+        SCORING_REPORT_BLOCK_BULLETS,
+        SCORING_REPORT_BLOCK_WARNING,
+        SCORING_REPORT_BLOCK_CODE,
+    }
+)
+
+SCORING_REPORT_SEVERITY_INFO: Final[str] = "info"
+SCORING_REPORT_SEVERITY_WARNING: Final[str] = "warning"
+SCORING_REPORT_SEVERITY_ERROR: Final[str] = "error"
+SCORING_REPORT_SEVERITIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_REPORT_SEVERITY_INFO,
+        SCORING_REPORT_SEVERITY_WARNING,
+        SCORING_REPORT_SEVERITY_ERROR,
+    }
+)
+
+SCORING_REPORT_SECTION_OVERVIEW: Final[str] = "overview"
+SCORING_REPORT_SECTION_METHODS: Final[str] = "methods"
+SCORING_REPORT_SECTION_INTERACTIONS: Final[str] = "interactions"
+SCORING_REPORT_SECTION_RESIDUES: Final[str] = "residues"
+SCORING_REPORT_SECTION_POSES: Final[str] = "poses"
+SCORING_REPORT_SECTION_STATISTICS: Final[str] = "statistics"
+SCORING_REPORT_SECTION_RANKING: Final[str] = "ranking"
+SCORING_REPORT_SECTION_CONSENSUS: Final[str] = "consensus"
+SCORING_REPORT_SECTION_DIVERSITY: Final[str] = "diversity"
+SCORING_REPORT_SECTION_EXTERNAL: Final[str] = "external_scores"
+SCORING_REPORT_SECTION_EXPLAINABILITY: Final[str] = "explainability"
+SCORING_REPORT_SECTION_PROVENANCE: Final[str] = "provenance"
+SCORING_REPORT_SECTION_WARNINGS: Final[str] = "warnings"
+SCORING_REPORT_SECTION_APPENDIX: Final[str] = "appendix"
+SCORING_REPORT_SECTION_ORDER: Final[Tuple[str, ...]] = (
+    SCORING_REPORT_SECTION_OVERVIEW,
+    SCORING_REPORT_SECTION_METHODS,
+    SCORING_REPORT_SECTION_INTERACTIONS,
+    SCORING_REPORT_SECTION_RESIDUES,
+    SCORING_REPORT_SECTION_POSES,
+    SCORING_REPORT_SECTION_STATISTICS,
+    SCORING_REPORT_SECTION_RANKING,
+    SCORING_REPORT_SECTION_CONSENSUS,
+    SCORING_REPORT_SECTION_DIVERSITY,
+    SCORING_REPORT_SECTION_EXTERNAL,
+    SCORING_REPORT_SECTION_EXPLAINABILITY,
+    SCORING_REPORT_SECTION_PROVENANCE,
+    SCORING_REPORT_SECTION_WARNINGS,
+    SCORING_REPORT_SECTION_APPENDIX,
+)
+
+SCORING_REPORT_MEDIA_TEXT: Final[str] = "text/plain"
+SCORING_REPORT_MEDIA_MARKDOWN: Final[str] = "text/markdown"
+SCORING_REPORT_MEDIA_HTML: Final[str] = "text/html"
+SCORING_REPORT_MEDIA_JSON: Final[str] = "application/json"
+SCORING_REPORT_MEDIA_CSV: Final[str] = "text/csv"
+
+DEFAULT_SCORING_REPORT_TITLE: Final[str] = "DockAnalyzer scoring report"
+DEFAULT_SCORING_REPORT_MAX_ROWS: Final[int] = 100
+DEFAULT_SCORING_REPORT_MAX_CELL_LENGTH: Final[int] = 240
+DEFAULT_SCORING_REPORT_FLOAT_DIGITS: Final[int] = 4
+DEFAULT_SCORING_REPORT_HISTORY_LIMIT: Final[int] = 10
+DEFAULT_SCORING_REPORT_ENCODING: Final[str] = "utf-8"
+
+_REPORT_SECTION_TITLES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        SCORING_REPORT_SECTION_OVERVIEW: "Overview",
+        SCORING_REPORT_SECTION_METHODS: "Scoring methodology",
+        SCORING_REPORT_SECTION_INTERACTIONS: "Interaction scores",
+        SCORING_REPORT_SECTION_RESIDUES: "Residue contributions",
+        SCORING_REPORT_SECTION_POSES: "Pose scores",
+        SCORING_REPORT_SECTION_STATISTICS: "Statistics and summaries",
+        SCORING_REPORT_SECTION_RANKING: "Multipose ranking",
+        SCORING_REPORT_SECTION_CONSENSUS: "Consensus and persistence",
+        SCORING_REPORT_SECTION_DIVERSITY: "Diversity and complementarity",
+        SCORING_REPORT_SECTION_EXTERNAL: "Docking affinity and external scores",
+        SCORING_REPORT_SECTION_EXPLAINABILITY: "Explainability",
+        SCORING_REPORT_SECTION_PROVENANCE: "Provenance and reproducibility",
+        SCORING_REPORT_SECTION_WARNINGS: "Warnings and limitations",
+        SCORING_REPORT_SECTION_APPENDIX: "Structured appendix",
+    }
+)
+
+
+# -----------------------------------------------------------------------------
+# 26.2. Exceptions and normalization helpers
+# -----------------------------------------------------------------------------
+
+
+class ScoringReportError(RuntimeError):
+    """Base exception raised by Section 26."""
+
+
+class ScoringReportInputError(ScoringReportError, ValueError):
+    """Raised when report input cannot be interpreted."""
+
+
+class ScoringReportConfigurationError(ScoringReportError, ValueError):
+    """Raised when report options are inconsistent."""
+
+
+class ScoringReportIntegrationError(ScoringReportError):
+    """Raised when a report cannot be attached to a target."""
+
+
+class ScoringReportValidationError(ScoringReportError):
+    """Raised when a report structure is invalid."""
+
+
+def _report_token(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
+
+
+def _report_identifier(value: Any, *, default: str = "") -> str:
+    token = str(value).strip() if value is not None else ""
+    return token or default
+
+
+def _normalize_report_choice(
+    value: Any,
+    allowed: FrozenSet[str],
+    *,
+    name: str,
+    aliases: Optional[Mapping[str, str]] = None,
+) -> str:
+    token = _report_token(value)
+    if aliases and token in aliases:
+        token = aliases[token]
+    if token not in allowed:
+        choices = ", ".join(sorted(allowed))
+        raise ScoringReportConfigurationError(
+            f"Unsupported {name} {value!r}; expected one of: {choices}."
+        )
+    return token
+
+
+def normalize_scoring_report_status(value: Any) -> str:
+    return _normalize_report_choice(
+        value,
+        SCORING_REPORT_STATUSES,
+        name="report status",
+    )
+
+
+def normalize_scoring_report_format(value: Any) -> str:
+    return _normalize_report_choice(
+        value,
+        SCORING_REPORT_FORMATS,
+        name="report format",
+        aliases={"md": "markdown", "htm": "html", "txt": "text"},
+    )
+
+
+def normalize_scoring_report_detail(value: Any) -> str:
+    return _normalize_report_choice(
+        value,
+        SCORING_REPORT_DETAIL_LEVELS,
+        name="report detail level",
+        aliases={"full": "extended", "brief": "compact"},
+    )
+
+
+def normalize_scoring_report_audience(value: Any) -> str:
+    return _normalize_report_choice(
+        value,
+        SCORING_REPORT_AUDIENCES,
+        name="report audience",
+    )
+
+
+def normalize_scoring_report_empty_policy(value: Any) -> str:
+    return _normalize_report_choice(
+        value,
+        SCORING_REPORT_EMPTY_POLICIES,
+        name="empty-section policy",
+        aliases={"skip": "omit", "keep": "include"},
+    )
+
+
+def normalize_scoring_report_severity(value: Any) -> str:
+    return _normalize_report_choice(
+        value,
+        SCORING_REPORT_SEVERITIES,
+        name="report issue severity",
+    )
+
+
+def normalize_scoring_report_block_type(value: Any) -> str:
+    return _normalize_report_choice(
+        value,
+        SCORING_REPORT_BLOCK_TYPES,
+        name="report block type",
+    )
+
+
+def _report_optional_float(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _report_optional_int(value: Any) -> Optional[int]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _report_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _report_freeze_mapping(value: Any) -> Mapping[str, Any]:
+    if value is None:
+        return MappingProxyType({})
+    if not isinstance(value, Mapping):
+        raise ScoringReportInputError("Expected a mapping value.")
+    return MappingProxyType({str(key): item for key, item in value.items()})
+
+
+def _report_unique_strings(values: Iterable[Any]) -> Tuple[str, ...]:
+    output: List[str] = []
+    seen: Set[str] = set()
+    for value in values:
+        text = str(value).strip()
+        if text and text not in seen:
+            seen.add(text)
+            output.append(text)
+    return tuple(output)
+
+
+def _report_get(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, Mapping):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _report_first(value: Any, names: Sequence[str], default: Any = None) -> Any:
+    for name in names:
+        candidate = _report_get(value, name, None)
+        if candidate is not None:
+            return candidate
+    return default
+
+
+def _report_sequence(value: Any) -> Tuple[Any, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        return (value,)
+    if isinstance(value, Sequence):
+        return tuple(value)
+    try:
+        return tuple(value)
+    except TypeError:
+        return (value,)
+
+
+def _report_class_name(value: Any) -> str:
+    return value.__class__.__name__ if value is not None else "NoneType"
+
+
+def _report_slug(value: Any) -> str:
+    return _report_token(value).replace("_", "-") or "report"
+
+
+# -----------------------------------------------------------------------------
+# 26.3. Configuration and report structures
+# -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ScoringReportOptions:
+    """Control report selection, presentation and attachment behavior."""
+
+    title: str = DEFAULT_SCORING_REPORT_TITLE
+    subtitle: str = ""
+    detail_level: str = SCORING_REPORT_DETAIL_STANDARD
+    audience: str = SCORING_REPORT_AUDIENCE_SCIENTIFIC
+    empty_section_policy: str = SCORING_REPORT_EMPTY_OMIT
+    included_sections: Tuple[str, ...] = ()
+    excluded_sections: Tuple[str, ...] = ()
+    max_rows_per_table: int = DEFAULT_SCORING_REPORT_MAX_ROWS
+    max_cell_length: int = DEFAULT_SCORING_REPORT_MAX_CELL_LENGTH
+    float_digits: int = DEFAULT_SCORING_REPORT_FLOAT_DIGITS
+    include_methods: bool = True
+    include_provenance: bool = True
+    include_warnings: bool = True
+    include_raw_appendix: bool = False
+    include_empty_tables: bool = False
+    include_internal_ids: bool = True
+    include_metadata: bool = True
+    include_timestamp: bool = True
+    preserve_raw_values: bool = True
+    attach_serialized_artifact: bool = False
+    strict: bool = False
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "detail_level",
+            normalize_scoring_report_detail(self.detail_level),
+        )
+        object.__setattr__(
+            self,
+            "audience",
+            normalize_scoring_report_audience(self.audience),
+        )
+        object.__setattr__(
+            self,
+            "empty_section_policy",
+            normalize_scoring_report_empty_policy(self.empty_section_policy),
+        )
+        object.__setattr__(
+            self,
+            "included_sections",
+            _report_unique_strings(self.included_sections),
+        )
+        object.__setattr__(
+            self,
+            "excluded_sections",
+            _report_unique_strings(self.excluded_sections),
+        )
+        object.__setattr__(self, "metadata", _report_freeze_mapping(self.metadata))
+        if not str(self.title).strip():
+            raise ScoringReportConfigurationError("Report title cannot be empty.")
+        if self.max_rows_per_table < 1:
+            raise ScoringReportConfigurationError(
+                "max_rows_per_table must be at least one."
+            )
+        if self.max_cell_length < 16:
+            raise ScoringReportConfigurationError(
+                "max_cell_length must be at least 16."
+            )
+        if not 0 <= self.float_digits <= 12:
+            raise ScoringReportConfigurationError(
+                "float_digits must be between zero and twelve."
+            )
+
+
+@dataclass(frozen=True)
+class ScoringReportIssue:
+    severity: str
+    code: str
+    message: str
+    section_id: str = ""
+    source_type: str = ""
+    details: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "severity",
+            normalize_scoring_report_severity(self.severity),
+        )
+        object.__setattr__(self, "details", _report_freeze_mapping(self.details))
+        if not self.code.strip() or not self.message.strip():
+            raise ScoringReportValidationError(
+                "Report issues require non-empty code and message values."
+            )
+
+
+@dataclass(frozen=True)
+class ScoringReportMetric:
+    name: str
+    value: Any
+    label: str = ""
+    unit: str = ""
+    description: str = ""
+    raw_value: Any = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", _report_freeze_mapping(self.metadata))
+        if not self.name.strip():
+            raise ScoringReportValidationError("Metric name cannot be empty.")
+
+
+@dataclass(frozen=True)
+class ScoringReportColumn:
+    key: str
+    label: str = ""
+    unit: str = ""
+    alignment: str = "left"
+    description: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.key.strip():
+            raise ScoringReportValidationError("Table column key cannot be empty.")
+        if self.alignment not in {"left", "center", "right"}:
+            raise ScoringReportValidationError(
+                "Column alignment must be left, center or right."
+            )
+
+
+@dataclass(frozen=True)
+class ScoringReportTable:
+    table_id: str
+    title: str
+    columns: Tuple[ScoringReportColumn, ...]
+    rows: Tuple[Mapping[str, Any], ...]
+    caption: str = ""
+    truncated: bool = False
+    total_row_count: Optional[int] = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "columns", tuple(self.columns))
+        object.__setattr__(
+            self,
+            "rows",
+            tuple(_report_freeze_mapping(row) for row in self.rows),
+        )
+        object.__setattr__(self, "metadata", _report_freeze_mapping(self.metadata))
+        if not self.table_id.strip() or not self.title.strip():
+            raise ScoringReportValidationError(
+                "Tables require non-empty identifiers and titles."
+            )
+        keys = [column.key for column in self.columns]
+        if len(keys) != len(set(keys)):
+            raise ScoringReportValidationError(
+                f"Table {self.table_id!r} contains duplicate column keys."
+            )
+
+
+@dataclass(frozen=True)
+class ScoringReportBlock:
+    block_type: str
+    title: str = ""
+    text: str = ""
+    metrics: Tuple[ScoringReportMetric, ...] = ()
+    table: Optional[ScoringReportTable] = None
+    items: Tuple[str, ...] = ()
+    severity: str = SCORING_REPORT_SEVERITY_INFO
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "block_type",
+            normalize_scoring_report_block_type(self.block_type),
+        )
+        object.__setattr__(self, "metrics", tuple(self.metrics))
+        object.__setattr__(self, "items", _report_unique_strings(self.items))
+        object.__setattr__(
+            self,
+            "severity",
+            normalize_scoring_report_severity(self.severity),
+        )
+        object.__setattr__(self, "metadata", _report_freeze_mapping(self.metadata))
+        if self.block_type == SCORING_REPORT_BLOCK_TABLE and self.table is None:
+            raise ScoringReportValidationError("Table blocks require a table.")
+
+
+@dataclass(frozen=True)
+class ScoringReportSection:
+    section_id: str
+    title: str
+    blocks: Tuple[ScoringReportBlock, ...]
+    order: int = 0
+    status: str = SCORING_REPORT_STATUS_COMPLETE
+    summary: str = ""
+    source_types: Tuple[str, ...] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "blocks", tuple(self.blocks))
+        object.__setattr__(
+            self,
+            "status",
+            normalize_scoring_report_status(self.status),
+        )
+        object.__setattr__(
+            self,
+            "source_types",
+            _report_unique_strings(self.source_types),
+        )
+        object.__setattr__(self, "metadata", _report_freeze_mapping(self.metadata))
+        if not self.section_id.strip() or not self.title.strip():
+            raise ScoringReportValidationError(
+                "Sections require non-empty identifiers and titles."
+            )
+
+
+@dataclass(frozen=True)
+class ScoringReportAttachment:
+    name: str
+    media_type: str
+    content: Any
+    description: str = ""
+    checksum: str = ""
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", _report_freeze_mapping(self.metadata))
+        if not self.name.strip() or not self.media_type.strip():
+            raise ScoringReportValidationError(
+                "Attachments require non-empty name and media_type values."
+            )
+
+
+@dataclass(frozen=True)
+class ScoringReportDocument:
+    report_id: str
+    title: str
+    subtitle: str
+    created_at: str
+    status: str
+    sections: Tuple[ScoringReportSection, ...]
+    issues: Tuple[ScoringReportIssue, ...] = ()
+    attachments: Tuple[ScoringReportAttachment, ...] = ()
+    schema: str = SCORING_REPORT_SCHEMA
+    schema_version: str = SCORING_REPORT_SCHEMA_VERSION
+    generator: str = "DockAnalyzer scoring.py Section 26"
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "status",
+            normalize_scoring_report_status(self.status),
+        )
+        object.__setattr__(self, "sections", tuple(self.sections))
+        object.__setattr__(self, "issues", tuple(self.issues))
+        object.__setattr__(self, "attachments", tuple(self.attachments))
+        object.__setattr__(self, "metadata", _report_freeze_mapping(self.metadata))
+        if not self.report_id.strip() or not self.title.strip():
+            raise ScoringReportValidationError(
+                "Report documents require non-empty ID and title values."
+            )
+
+
+@dataclass(frozen=True)
+class ScoringReportSources:
+    """Canonical collection of source objects recognized by Section 26."""
+
+    objects: Tuple[Any, ...]
+    by_type: Mapping[str, Tuple[Any, ...]]
+    unclassified: Tuple[Any, ...] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "objects", tuple(self.objects))
+        object.__setattr__(
+            self,
+            "by_type",
+            MappingProxyType(
+                {
+                    str(key): tuple(items)
+                    for key, items in self.by_type.items()
+                }
+            ),
+        )
+        object.__setattr__(self, "unclassified", tuple(self.unclassified))
+        object.__setattr__(self, "metadata", _report_freeze_mapping(self.metadata))
+
+
+@dataclass(frozen=True)
+class ScoringReportIntegrationResult:
+    success: bool
+    adapter_name: str
+    report: ScoringReportDocument
+    target_type: str
+    inserted_section_count: int
+    attachment_count: int
+    message: str = ""
+    rollback_performed: bool = False
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", _report_freeze_mapping(self.metadata))
+
+
+@dataclass(frozen=True)
+class ScoringReportAdapter:
+    name: str
+    predicate: Callable[[Any], bool]
+    attach: Callable[[Any, ScoringReportDocument], int]
+    priority: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ScoringReportValidationError("Adapter name cannot be empty.")
+        if not callable(self.predicate) or not callable(self.attach):
+            raise ScoringReportValidationError(
+                "Report adapter predicate and attach values must be callable."
+            )
+
+
+DEFAULT_SCORING_REPORT_OPTIONS: Final[ScoringReportOptions] = (
+    ScoringReportOptions()
+)
+
+
+# -----------------------------------------------------------------------------
+# 26.4. Generic conversion and source recognition
+# -----------------------------------------------------------------------------
+
+
+def _report_plain_value(
+    value: Any,
+    *,
+    max_depth: int = 12,
+    _depth: int = 0,
+    _seen: Optional[Set[int]] = None,
+) -> Any:
+    """Convert an arbitrary scoring value into report-safe Python values."""
+
+    if _depth > max_depth:
+        return "<maximum depth reached>"
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+
+    if _seen is None:
+        _seen = set()
+    object_id = id(value)
+    track = isinstance(value, (Mapping, Sequence)) or is_dataclass(value)
+    if track and object_id in _seen:
+        return "<circular reference>"
+    if track:
+        _seen.add(object_id)
+
+    serializer = globals().get("scoring_object_to_serializable")
+    if callable(serializer):
+        try:
+            return serializer(value)
+        except Exception:
+            pass
+
+    if is_dataclass(value) and not isinstance(value, type):
+        output = {
+            item.name: _report_plain_value(
+                getattr(value, item.name),
+                max_depth=max_depth,
+                _depth=_depth + 1,
+                _seen=_seen,
+            )
+            for item in fields(value)
+        }
+    elif isinstance(value, Mapping):
+        output = {
+            str(key): _report_plain_value(
+                item,
+                max_depth=max_depth,
+                _depth=_depth + 1,
+                _seen=_seen,
+            )
+            for key, item in value.items()
+        }
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        output = [
+            _report_plain_value(
+                item,
+                max_depth=max_depth,
+                _depth=_depth + 1,
+                _seen=_seen,
+            )
+            for item in value
+        ]
+    elif hasattr(value, "to_dict") and callable(value.to_dict):
+        try:
+            output = _report_plain_value(
+                value.to_dict(),
+                max_depth=max_depth,
+                _depth=_depth + 1,
+                _seen=_seen,
+            )
+        except Exception:
+            output = str(value)
+    elif hasattr(value, "__dict__"):
+        output = {
+            str(key): _report_plain_value(
+                item,
+                max_depth=max_depth,
+                _depth=_depth + 1,
+                _seen=_seen,
+            )
+            for key, item in vars(value).items()
+            if not str(key).startswith("_")
+        }
+    else:
+        output = str(value)
+
+    if track:
+        _seen.discard(object_id)
+    return output
+
+
+def scoring_report_to_dict(value: Any) -> Dict[str, Any]:
+    """Return a dictionary representation of a Section 26 structure."""
+
+    converted = _report_plain_value(value)
+    if not isinstance(converted, Mapping):
+        raise ScoringReportInputError(
+            "The supplied report value does not convert to a mapping."
+        )
+    return dict(converted)
+
+
+def infer_scoring_report_source_type(value: Any) -> str:
+    """Infer a stable report category from a scoring object or mapping."""
+
+    name = _report_class_name(value).lower()
+    keys = {
+        _report_token(key)
+        for key in value.keys()
+    } if isinstance(value, Mapping) else set()
+    if isinstance(value, Mapping) and "pose_results" in value:
+        pose_results = _report_sequence(value.get("pose_results"))
+        if any(
+            isinstance(item, Mapping)
+            and any(
+                key in item
+                for key in (
+                    "external_composite_score",
+                    "fused_score",
+                    "primary_affinity",
+                )
+            )
+            for item in pose_results
+        ):
+            return "external_scores"
+
+    checks: Tuple[Tuple[str, Tuple[str, ...], Tuple[str, ...]], ...] = (
+        ("statistics", ("statisticsreport", "statisticssummary"),
+         ("interaction_statistics", "pose_statistics")),
+        ("ranking", ("multiposerankingresult", "rankinggroupresult"),
+         ("ranking_groups", "ranked_poses")),
+        ("consensus", ("consensuspersistenceresult", "consensusgroupresult"),
+         ("persistent_features", "consensus_groups")),
+        ("external_scores", ("externalcor", "externalscoreresult",
+         "multiposeexternalscoreresult"),
+         ("external_composite_score", "fused_score")),
+        ("explainability", ("scoringexplainability", "entityexplanation"),
+         ("explanation_factors", "coverage")),
+        ("dock_model", ("dockmodelscoringintegration", "dockmodel"),
+         ("dock_model", "attachment_mode")),
+        ("diversity", ("diversity", "complementarity", "posesetselection"),
+         ("joint_coverage", "marginal_gain")),
+        ("pose", ("posescoringresult", "posescore"),
+         ("pose_id", "total_score")),
+        ("residue", ("residuescore",),
+         ("residue_id", "interaction_count")),
+        ("interaction", ("interactionscore",),
+         ("interaction_id", "base_weight")),
+        ("collection", ("collectionscoringresult",),
+         ("interaction_scores", "deduplicated_count")),
+        ("serialization", ("scoringserialization",),
+         ("schema_version", "checksum")),
+    )
+    for category, name_tokens, key_tokens in checks:
+        if any(token in name for token in name_tokens):
+            return category
+        if any(token in keys for token in key_tokens):
+            return category
+    return "unclassified"
+
+
+def _report_is_atomic_source(value: Any) -> bool:
+    if value is None or isinstance(value, (str, bytes, int, float, bool)):
+        return True
+    return False
+
+
+def _expand_scoring_report_sources(
+    value: Any,
+    *,
+    _seen: Optional[Set[int]] = None,
+) -> Iterator[Any]:
+    """Yield reportable source objects while preventing recursive expansion."""
+
+    if value is None:
+        return
+    if _seen is None:
+        _seen = set()
+    object_id = id(value)
+    if object_id in _seen:
+        return
+    _seen.add(object_id)
+
+    if isinstance(value, ScoringReportSources):
+        yield from value.objects
+        return
+    if isinstance(value, Mapping):
+        source_type = infer_scoring_report_source_type(value)
+        if source_type != "unclassified":
+            yield value
+            return
+        known_container_keys = (
+            "results",
+            "artifacts",
+            "sources",
+            "poses",
+            "models",
+            "ranking",
+            "consensus",
+            "statistics",
+            "external_scores",
+            "explainability",
+        )
+        expanded = False
+        for key in known_container_keys:
+            if key in value:
+                expanded = True
+                yield from _expand_scoring_report_sources(
+                    value[key],
+                    _seen=_seen,
+                )
+        if not expanded:
+            yield value
+        return
+    if isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            yield from _expand_scoring_report_sources(item, _seen=_seen)
+        return
+    if _report_is_atomic_source(value):
+        return
+    yield value
+
+
+def collect_scoring_report_sources(
+    *values: Any,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringReportSources:
+    """Collect and classify scoring objects for report generation."""
+
+    objects: List[Any] = []
+    seen: Set[int] = set()
+    for value in values:
+        for item in _expand_scoring_report_sources(value):
+            object_id = id(item)
+            if object_id not in seen:
+                seen.add(object_id)
+                objects.append(item)
+
+    grouped: Dict[str, List[Any]] = defaultdict(list)
+    unclassified: List[Any] = []
+    for item in objects:
+        category = infer_scoring_report_source_type(item)
+        grouped[category].append(item)
+        if category == "unclassified":
+            unclassified.append(item)
+
+    return ScoringReportSources(
+        objects=tuple(objects),
+        by_type={key: tuple(items) for key, items in grouped.items()},
+        unclassified=tuple(unclassified),
+        metadata=metadata or {},
+    )
+
+
+# -----------------------------------------------------------------------------
+# 26.5. Table, metric and narrative helpers
+# -----------------------------------------------------------------------------
+
+
+def _report_format_number(value: Any, digits: int) -> Any:
+    number = _report_optional_float(value)
+    if number is None:
+        return value
+    rounded = round(number, digits)
+    if rounded == 0:
+        rounded = 0.0
+    return rounded
+
+
+def _report_cell(value: Any, options: ScoringReportOptions) -> Any:
+    if isinstance(value, float):
+        return _report_format_number(value, options.float_digits)
+    if value is None or isinstance(value, (str, bool, int)):
+        result = value
+    elif isinstance(value, Mapping):
+        result = json.dumps(
+            _report_plain_value(value),
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        result = "; ".join(str(item) for item in value)
+    else:
+        result = str(value)
+    if isinstance(result, str) and len(result) > options.max_cell_length:
+        return result[: options.max_cell_length - 1] + "…"
+    return result
+
+
+def _report_human_label(value: Any) -> str:
+    text = str(value).strip().replace("_", " ").replace("-", " ")
+    return text[:1].upper() + text[1:] if text else ""
+
+
+def _report_numeric_column(rows: Sequence[Mapping[str, Any]], key: str) -> bool:
+    observed = [row.get(key) for row in rows if row.get(key) is not None]
+    if not observed:
+        return False
+    return all(
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        for value in observed
+    )
+
+
+def _report_columns_for_rows(
+    rows: Sequence[Mapping[str, Any]],
+) -> Tuple[ScoringReportColumn, ...]:
+    keys: List[str] = []
+    seen: Set[str] = set()
+    for row in rows:
+        for key in row:
+            text = str(key)
+            if text not in seen:
+                seen.add(text)
+                keys.append(text)
+    return tuple(
+        ScoringReportColumn(
+            key=key,
+            label=_report_human_label(key),
+            alignment="right" if _report_numeric_column(rows, key) else "left",
+        )
+        for key in keys
+    )
+
+
+def build_scoring_report_table(
+    table_id: str,
+    title: str,
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    options: ScoringReportOptions = DEFAULT_SCORING_REPORT_OPTIONS,
+    caption: str = "",
+    columns: Optional[Sequence[ScoringReportColumn]] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringReportTable:
+    """Create a bounded report table from arbitrary mapping rows."""
+
+    materialized = [dict(row) for row in rows]
+    total = len(materialized)
+    limited = materialized[: options.max_rows_per_table]
+    safe_rows = tuple(
+        {
+            str(key): _report_cell(value, options)
+            for key, value in row.items()
+            if options.include_internal_ids or not str(key).startswith("_")
+        }
+        for row in limited
+    )
+    resolved_columns = tuple(columns or _report_columns_for_rows(safe_rows))
+    return ScoringReportTable(
+        table_id=table_id,
+        title=title,
+        columns=resolved_columns,
+        rows=safe_rows,
+        caption=caption,
+        truncated=total > len(safe_rows),
+        total_row_count=total,
+        metadata=metadata or {},
+    )
+
+
+def _report_metric(
+    name: str,
+    value: Any,
+    *,
+    label: str = "",
+    unit: str = "",
+    description: str = "",
+    raw_value: Any = None,
+) -> ScoringReportMetric:
+    return ScoringReportMetric(
+        name=name,
+        value=value,
+        label=label or _report_human_label(name),
+        unit=unit,
+        description=description,
+        raw_value=raw_value,
+    )
+
+
+def _report_metrics_block(
+    metrics: Sequence[ScoringReportMetric],
+    *,
+    title: str = "",
+) -> ScoringReportBlock:
+    return ScoringReportBlock(
+        block_type=SCORING_REPORT_BLOCK_METRICS,
+        title=title,
+        metrics=tuple(metrics),
+    )
+
+
+def _report_table_block(table: ScoringReportTable) -> ScoringReportBlock:
+    return ScoringReportBlock(
+        block_type=SCORING_REPORT_BLOCK_TABLE,
+        title=table.title,
+        table=table,
+    )
+
+
+def _report_paragraph(text: str, *, title: str = "") -> ScoringReportBlock:
+    return ScoringReportBlock(
+        block_type=SCORING_REPORT_BLOCK_PARAGRAPH,
+        title=title,
+        text=str(text).strip(),
+    )
+
+
+def _report_bullets(
+    items: Iterable[Any],
+    *,
+    title: str = "",
+) -> ScoringReportBlock:
+    return ScoringReportBlock(
+        block_type=SCORING_REPORT_BLOCK_BULLETS,
+        title=title,
+        items=_report_unique_strings(items),
+    )
+
+
+def _report_warning(
+    text: str,
+    *,
+    title: str = "Warning",
+    severity: str = SCORING_REPORT_SEVERITY_WARNING,
+) -> ScoringReportBlock:
+    return ScoringReportBlock(
+        block_type=SCORING_REPORT_BLOCK_WARNING,
+        title=title,
+        text=text,
+        severity=severity,
+    )
+
+
+def _report_section_order(section_id: str) -> int:
+    try:
+        return SCORING_REPORT_SECTION_ORDER.index(section_id)
+    except ValueError:
+        return len(SCORING_REPORT_SECTION_ORDER)
+
+
+def _make_report_section(
+    section_id: str,
+    blocks: Iterable[ScoringReportBlock],
+    *,
+    status: str = SCORING_REPORT_STATUS_COMPLETE,
+    summary: str = "",
+    source_types: Iterable[str] = (),
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringReportSection:
+    return ScoringReportSection(
+        section_id=section_id,
+        title=_REPORT_SECTION_TITLES.get(
+            section_id,
+            _report_human_label(section_id),
+        ),
+        blocks=tuple(blocks),
+        order=_report_section_order(section_id),
+        status=status,
+        summary=summary,
+        source_types=tuple(source_types),
+        metadata=metadata or {},
+    )
+
+
+def _call_report_helper(
+    helper_names: Sequence[str],
+    value: Any,
+) -> Any:
+    for helper_name in helper_names:
+        helper = globals().get(helper_name)
+        if not callable(helper):
+            continue
+        try:
+            return helper(value)
+        except TypeError:
+            continue
+        except Exception:
+            continue
+    return None
+
+
+def _coerce_rows(value: Any) -> Tuple[Mapping[str, Any], ...]:
+    if value is None:
+        return ()
+    if isinstance(value, Mapping):
+        return (dict(value),)
+    if isinstance(value, (str, bytes, bytearray)):
+        return ()
+    rows: List[Mapping[str, Any]] = []
+    try:
+        iterator = iter(value)
+    except TypeError:
+        return ()
+    for item in iterator:
+        if isinstance(item, Mapping):
+            rows.append(dict(item))
+        elif is_dataclass(item):
+            converted = _report_plain_value(item)
+            if isinstance(converted, Mapping):
+                rows.append(dict(converted))
+    return tuple(rows)
+
+
+def _rows_from_source(
+    source: Any,
+    helper_names: Sequence[str] = (),
+) -> Tuple[Mapping[str, Any], ...]:
+    """Extract table rows using the most specific available helper."""
+
+    result = _call_report_helper(helper_names, source)
+    rows = _coerce_rows(result)
+    if rows:
+        return rows
+
+    generic = globals().get("scoring_object_to_rows")
+    if callable(generic):
+        try:
+            rows = _coerce_rows(generic(source))
+        except Exception:
+            rows = ()
+        if rows:
+            return rows
+
+    converted = _report_plain_value(source)
+    if isinstance(converted, Mapping):
+        for key in (
+            "rows",
+            "entries",
+            "ranked_poses",
+            "pose_results",
+            "interaction_scores",
+            "residue_scores",
+            "features",
+        ):
+            rows = _coerce_rows(converted.get(key))
+            if rows:
+                return rows
+        scalar_row = {
+            str(key): value
+            for key, value in converted.items()
+            if value is None or isinstance(value, (str, bool, int, float))
+        }
+        if scalar_row:
+            return (scalar_row,)
+    return ()
+
+
+def _flatten_scalar_mapping(
+    value: Any,
+    *,
+    prefix: str = "",
+    max_depth: int = 3,
+    _depth: int = 0,
+) -> Dict[str, Any]:
+    converted = _report_plain_value(value)
+    if not isinstance(converted, Mapping):
+        return {}
+    output: Dict[str, Any] = {}
+    for key, item in converted.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if item is None or isinstance(item, (str, bool, int, float)):
+            output[path] = item
+        elif isinstance(item, Mapping) and _depth < max_depth:
+            output.update(
+                _flatten_scalar_mapping(
+                    item,
+                    prefix=path,
+                    max_depth=max_depth,
+                    _depth=_depth + 1,
+                )
+            )
+    return output
+
+
+def _source_scalar(
+    source: Any,
+    names: Sequence[str],
+    default: Any = None,
+) -> Any:
+    value = _report_first(source, names, default)
+    if isinstance(value, (Mapping, list, tuple, set, frozenset)):
+        return default
+    return value
+
+
+def _source_count(source: Any, names: Sequence[str]) -> Optional[int]:
+    value = _report_first(source, names, None)
+    integer = _report_optional_int(value)
+    if integer is not None:
+        return integer
+    if value is not None and not isinstance(value, (str, bytes, Mapping)):
+        try:
+            return len(value)
+        except TypeError:
+            return None
+    return None
+
+
+def _collect_nested_values(source: Any, names: Sequence[str]) -> Tuple[Any, ...]:
+    values: List[Any] = []
+    for name in names:
+        candidate = _report_get(source, name, None)
+        if candidate is None:
+            continue
+        if isinstance(candidate, Mapping):
+            values.extend(candidate.values())
+        elif isinstance(candidate, (list, tuple, set, frozenset)):
+            values.extend(candidate)
+        else:
+            values.append(candidate)
+    return tuple(values)
+
+
+def _section_is_requested(
+    section_id: str,
+    options: ScoringReportOptions,
+) -> bool:
+    if section_id in options.excluded_sections:
+        return False
+    if options.included_sections:
+        return section_id in options.included_sections
+    if section_id == SCORING_REPORT_SECTION_METHODS:
+        return options.include_methods
+    if section_id == SCORING_REPORT_SECTION_PROVENANCE:
+        return options.include_provenance
+    if section_id == SCORING_REPORT_SECTION_WARNINGS:
+        return options.include_warnings
+    if section_id == SCORING_REPORT_SECTION_APPENDIX:
+        return options.include_raw_appendix
+    return True
+
+
+def _resolve_empty_section(
+    section_id: str,
+    options: ScoringReportOptions,
+    issues: List[ScoringReportIssue],
+) -> Optional[ScoringReportSection]:
+    policy = options.empty_section_policy
+    if policy == SCORING_REPORT_EMPTY_OMIT:
+        return None
+    if policy == SCORING_REPORT_EMPTY_WARN:
+        issues.append(
+            ScoringReportIssue(
+                severity=SCORING_REPORT_SEVERITY_WARNING,
+                code="empty_report_section",
+                message=f"No data were available for {section_id!r}.",
+                section_id=section_id,
+            )
+        )
+    return _make_report_section(
+        section_id,
+        (_report_paragraph("No data were available for this section."),),
+        status=SCORING_REPORT_STATUS_EMPTY,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 26.6. Overview, methods and core scoring sections
+# -----------------------------------------------------------------------------
+
+
+def build_scoring_report_overview_section(
+    sources: ScoringReportSources,
+    *,
+    options: ScoringReportOptions = DEFAULT_SCORING_REPORT_OPTIONS,
+) -> ScoringReportSection:
+    counts = Counter(
+        infer_scoring_report_source_type(item) for item in sources.objects
+    )
+    pose_ids: Set[str] = set()
+    ligand_ids: Set[str] = set()
+    model_ids: Set[str] = set()
+    raw_scores: List[float] = []
+    normalized_scores: List[float] = []
+
+    for source in sources.objects:
+        pose_id = _source_scalar(source, ("pose_id", "pose_identifier"), "")
+        ligand_id = _source_scalar(source, ("ligand_id", "ligand_name"), "")
+        model_id = _source_scalar(source, ("model_id", "model_name"), "")
+        if pose_id:
+            pose_ids.add(str(pose_id))
+        if ligand_id:
+            ligand_ids.add(str(ligand_id))
+        if model_id:
+            model_ids.add(str(model_id))
+        raw = _report_optional_float(
+            _report_first(
+                source,
+                ("raw_score", "total_score", "internal_score", "score"),
+                None,
+            )
+        )
+        normalized = _report_optional_float(
+            _report_first(
+                source,
+                ("normalized_score", "normalized_internal_score"),
+                None,
+            )
+        )
+        if raw is not None:
+            raw_scores.append(raw)
+        if normalized is not None:
+            normalized_scores.append(normalized)
+
+    metrics = [
+        _report_metric("source_count", len(sources.objects)),
+        _report_metric("recognized_source_types", len(counts)),
+        _report_metric("pose_count", len(pose_ids)),
+        _report_metric("ligand_count", len(ligand_ids)),
+        _report_metric("model_count", len(model_ids)),
+    ]
+    if raw_scores:
+        metrics.extend(
+            (
+                _report_metric("minimum_raw_score", min(raw_scores)),
+                _report_metric("maximum_raw_score", max(raw_scores)),
+                _report_metric(
+                    "mean_raw_score",
+                    sum(raw_scores) / len(raw_scores),
+                ),
+            )
+        )
+    if normalized_scores:
+        metrics.extend(
+            (
+                _report_metric(
+                    "minimum_normalized_score",
+                    min(normalized_scores),
+                ),
+                _report_metric(
+                    "maximum_normalized_score",
+                    max(normalized_scores),
+                ),
+            )
+        )
+
+    type_rows = tuple(
+        {"source_type": key, "count": count}
+        for key, count in sorted(counts.items())
+    )
+    blocks: List[ScoringReportBlock] = [
+        _report_paragraph(
+            "This report consolidates DockAnalyzer interaction scoring results "
+            "without treating the heuristic interaction score as a binding "
+            "free energy. Raw, normalized and external scores are reported as "
+            "separate quantities."
+        ),
+        _report_metrics_block(metrics, title="Report coverage"),
+    ]
+    if type_rows:
+        blocks.append(
+            _report_table_block(
+                build_scoring_report_table(
+                    "source_inventory",
+                    "Source inventory",
+                    type_rows,
+                    options=options,
+                )
+            )
+        )
+    return _make_report_section(
+        SCORING_REPORT_SECTION_OVERVIEW,
+        blocks,
+        source_types=counts.keys(),
+        summary=(
+            f"{len(sources.objects)} source object(s) were incorporated into "
+            "the report."
+        ),
+    )
+
+
+def build_scoring_report_methods_section(
+    sources: ScoringReportSources,
+    *,
+    options: ScoringReportOptions = DEFAULT_SCORING_REPORT_OPTIONS,
+) -> ScoringReportSection:
+    paragraphs = [
+        "DockAnalyzer assigns configurable heuristic scores to detected "
+        "protein–ligand interactions. The scoring layer consumes results from "
+        "the specialized contact modules and does not repeat their chemical or "
+        "geometric detection procedures.",
+        "Individual contributions may include a canonical type weight, "
+        "strength and classification multipliers, geometric quality, "
+        "family-specific terms, penalties and deduplication corrections. "
+        "Collection, residue and pose scores are then aggregated from the "
+        "accepted individual contributions.",
+        "Docking affinity and third-party scores are retained in their native "
+        "channels. When fusion is requested, each channel is oriented and "
+        "normalized before combination; an energy value in kcal/mol is never "
+        "added directly to the dimensionless DockAnalyzer score.",
+    ]
+    if sources.by_type.get("ranking"):
+        paragraphs.append(
+            "Multipose rankings are reported with the selected criteria, "
+            "directions, normalization rules and tie strategy. Ranking does not "
+            "replace the underlying pose-level measurements."
+        )
+    if sources.by_type.get("consensus"):
+        paragraphs.append(
+            "Consensus and persistence are calculated across poses after "
+            "within-pose duplicate collapse, so repeated records in one pose "
+            "do not artificially increase persistence."
+        )
+    blocks = tuple(_report_paragraph(text) for text in paragraphs)
+    return _make_report_section(
+        SCORING_REPORT_SECTION_METHODS,
+        blocks,
+        source_types=tuple(sources.by_type),
+    )
+
+
+def _interaction_rows(sources: ScoringReportSources) -> Tuple[Mapping[str, Any], ...]:
+    rows: List[Mapping[str, Any]] = []
+    candidates = list(sources.by_type.get("interaction", ()))
+    candidates.extend(sources.by_type.get("collection", ()))
+    candidates.extend(sources.by_type.get("pose", ()))
+    for source in candidates:
+        direct = _rows_from_source(
+            source,
+            (
+                "interaction_score_to_dict",
+                "collection_scoring_result_to_rows",
+            ),
+        )
+        if infer_scoring_report_source_type(source) == "interaction":
+            rows.extend(direct)
+            continue
+        nested = _collect_nested_values(
+            source,
+            ("interaction_scores", "interactions", "accepted_interactions"),
+        )
+        if nested:
+            for item in nested:
+                converted = _report_plain_value(item)
+                if isinstance(converted, Mapping):
+                    rows.append(dict(converted))
+        elif direct:
+            rows.extend(direct)
+    return tuple(rows)
+
+
+def build_scoring_report_interactions_section(
+    sources: ScoringReportSources,
+    *,
+    options: ScoringReportOptions = DEFAULT_SCORING_REPORT_OPTIONS,
+) -> Optional[ScoringReportSection]:
+    rows = _interaction_rows(sources)
+    if not rows:
+        return None
+    family_counts = Counter(
+        str(row.get("family") or row.get("interaction_family") or "unknown")
+        for row in rows
+    )
+    status_counts = Counter(
+        str(row.get("status") or row.get("classification") or "unknown")
+        for row in rows
+    )
+    scores = [
+        value
+        for value in (
+            _report_optional_float(
+                row.get("final_score", row.get("score", row.get("total_score")))
+            )
+            for row in rows
+        )
+        if value is not None
+    ]
+    metrics = [
+        _report_metric("interaction_count", len(rows)),
+        _report_metric("family_count", len(family_counts)),
+        _report_metric("status_count", len(status_counts)),
+    ]
+    if scores:
+        metrics.extend(
+            (
+                _report_metric("interaction_score_sum", sum(scores)),
+                _report_metric("best_interaction_score", max(scores)),
+                _report_metric("worst_interaction_score", min(scores)),
+            )
+        )
+    family_rows = (
+        {"family": family, "count": count}
+        for family, count in family_counts.most_common()
+    )
+    blocks = [
+        _report_metrics_block(metrics, title="Interaction summary"),
+        _report_table_block(
+            build_scoring_report_table(
+                "interaction_family_distribution",
+                "Interaction-family distribution",
+                family_rows,
+                options=options,
+            )
+        ),
+        _report_table_block(
+            build_scoring_report_table(
+                "interaction_scores",
+                "Individual interaction scores",
+                rows,
+                options=options,
+                caption=(
+                    "Rows are limited by max_rows_per_table; complete data "
+                    "remain available in the source objects."
+                ),
+            )
+        ),
+    ]
+    return _make_report_section(
+        SCORING_REPORT_SECTION_INTERACTIONS,
+        blocks,
+        source_types=("interaction", "collection", "pose"),
+    )
+
+
+def _residue_rows(sources: ScoringReportSources) -> Tuple[Mapping[str, Any], ...]:
+    rows: List[Mapping[str, Any]] = []
+    for source in sources.by_type.get("residue", ()):
+        converted = _report_plain_value(source)
+        if isinstance(converted, Mapping):
+            rows.append(dict(converted))
+    for source in sources.by_type.get("pose", ()):
+        nested = _collect_nested_values(
+            source,
+            ("residue_scores", "scores_by_residue", "residues"),
+        )
+        for item in nested:
+            converted = _report_plain_value(item)
+            if isinstance(converted, Mapping):
+                rows.append(dict(converted))
+    return tuple(rows)
+
+
+def build_scoring_report_residues_section(
+    sources: ScoringReportSources,
+    *,
+    options: ScoringReportOptions = DEFAULT_SCORING_REPORT_OPTIONS,
+) -> Optional[ScoringReportSection]:
+    rows = _residue_rows(sources)
+    if not rows:
+        return None
+    scores = [
+        value
+        for value in (
+            _report_optional_float(
+                row.get("total_score", row.get("score", row.get("raw_score")))
+            )
+            for row in rows
+        )
+        if value is not None
+    ]
+    sorted_rows = sorted(
+        rows,
+        key=lambda row: _report_optional_float(
+            row.get("total_score", row.get("score"))
+        ) or 0.0,
+        reverse=True,
+    )
+    metrics = [
+        _report_metric("residue_count", len(rows)),
+        _report_metric(
+            "positive_residue_count",
+            sum(1 for value in scores if value > 0),
+        ),
+        _report_metric(
+            "penalized_residue_count",
+            sum(1 for value in scores if value < 0),
+        ),
+    ]
+    if scores:
+        metrics.append(_report_metric("residue_score_sum", sum(scores)))
+    blocks = [
+        _report_metrics_block(metrics, title="Residue summary"),
+        _report_table_block(
+            build_scoring_report_table(
+                "residue_contributions",
+                "Residue-level contributions",
+                sorted_rows,
+                options=options,
+            )
+        ),
+    ]
+    return _make_report_section(
+        SCORING_REPORT_SECTION_RESIDUES,
+        blocks,
+        source_types=("residue", "pose"),
+    )
+
+
+def _pose_rows(sources: ScoringReportSources) -> Tuple[Mapping[str, Any], ...]:
+    rows: List[Mapping[str, Any]] = []
+    for source in sources.by_type.get("pose", ()):
+        converted = _report_plain_value(source)
+        if isinstance(converted, Mapping):
+            scalar = {
+                key: value
+                for key, value in converted.items()
+                if value is None or isinstance(value, (str, bool, int, float))
+            }
+            if scalar:
+                rows.append(scalar)
+    for source in sources.by_type.get("dock_model", ()):
+        result = _report_first(
+            source,
+            ("scoring_result", "pose_result", "result"),
+            None,
+        )
+        if result is not None:
+            converted = _report_plain_value(result)
+            if isinstance(converted, Mapping):
+                rows.append(
+                    {
+                        key: value
+                        for key, value in converted.items()
+                        if value is None
+                        or isinstance(value, (str, bool, int, float))
+                    }
+                )
+    return tuple(rows)
+
+
+def build_scoring_report_poses_section(
+    sources: ScoringReportSources,
+    *,
+    options: ScoringReportOptions = DEFAULT_SCORING_REPORT_OPTIONS,
+) -> Optional[ScoringReportSection]:
+    rows = _pose_rows(sources)
+    if not rows:
+        return None
+    scores = [
+        value
+        for value in (
+            _report_optional_float(
+                row.get("total_score", row.get("raw_score", row.get("score")))
+            )
+            for row in rows
+        )
+        if value is not None
+    ]
+    metrics = [
+        _report_metric("pose_count", len(rows)),
+        _report_metric("scored_pose_count", len(scores)),
+    ]
+    if scores:
+        metrics.extend(
+            (
+                _report_metric("best_pose_score", max(scores)),
+                _report_metric("worst_pose_score", min(scores)),
+                _report_metric("mean_pose_score", sum(scores) / len(scores)),
+            )
+        )
+    return _make_report_section(
+        SCORING_REPORT_SECTION_POSES,
+        (
+            _report_metrics_block(metrics, title="Pose summary"),
+            _report_table_block(
+                build_scoring_report_table(
+                    "pose_scores",
+                    "Pose-level scores",
+                    rows,
+                    options=options,
+                )
+            ),
+        ),
+        source_types=("pose", "dock_model"),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 26.7. Statistics, ranking, consensus and diversity sections
+# -----------------------------------------------------------------------------
+
+
+def build_scoring_report_statistics_section(
+    sources: ScoringReportSources,
+    *,
+    options: ScoringReportOptions = DEFAULT_SCORING_REPORT_OPTIONS,
+) -> Optional[ScoringReportSection]:
+    statistics = sources.by_type.get("statistics", ())
+    if not statistics:
+        return None
+    blocks: List[ScoringReportBlock] = []
+    for index, source in enumerate(statistics, start=1):
+        summary = _call_report_helper(
+            (
+                "summarize_scoring_statistics_report",
+                "summarize_scoring_statistics",
+            ),
+            source,
+        )
+        if isinstance(summary, Mapping):
+            scalar = _flatten_scalar_mapping(summary, max_depth=2)
+            metrics = tuple(
+                _report_metric(key, value)
+                for key, value in scalar.items()
+                if value is None or isinstance(value, (str, bool, int, float))
+            )
+            if metrics:
+                blocks.append(
+                    _report_metrics_block(
+                        metrics,
+                        title=f"Statistical summary {index}",
+                    )
+                )
+        formatted = _call_report_helper(
+            ("format_scoring_statistics_summary",),
+            source,
+        )
+        if isinstance(formatted, str) and formatted.strip():
+            blocks.append(
+                _report_paragraph(
+                    formatted,
+                    title=f"Interpretation {index}",
+                )
+            )
+        rows = _rows_from_source(
+            source,
+            ("scoring_statistics_report_to_rows",),
+        )
+        if rows:
+            blocks.append(
+                _report_table_block(
+                    build_scoring_report_table(
+                        f"statistics_{index}",
+                        f"Statistical measurements {index}",
+                        rows,
+                        options=options,
+                    )
+                )
+            )
+    if not blocks:
+        return None
+    return _make_report_section(
+        SCORING_REPORT_SECTION_STATISTICS,
+        blocks,
+        source_types=("statistics",),
+    )
+
+
+def build_scoring_report_ranking_section(
+    sources: ScoringReportSources,
+    *,
+    options: ScoringReportOptions = DEFAULT_SCORING_REPORT_OPTIONS,
+) -> Optional[ScoringReportSection]:
+    ranking_sources = sources.by_type.get("ranking", ())
+    if not ranking_sources:
+        return None
+    blocks: List[ScoringReportBlock] = []
+    for index, source in enumerate(ranking_sources, start=1):
+        rows = _rows_from_source(source, ("multipose_ranking_to_rows",))
+        if rows:
+            rows = tuple(
+                sorted(
+                    rows,
+                    key=lambda row: (
+                        _report_optional_float(
+                            row.get("rank", row.get("position"))
+                        )
+                        or float("inf")
+                    ),
+                )
+            )
+            blocks.append(
+                _report_table_block(
+                    build_scoring_report_table(
+                        f"multipose_ranking_{index}",
+                        f"Multipose ranking {index}",
+                        rows,
+                        options=options,
+                    )
+                )
+            )
+        summary = _call_report_helper(
+            ("summarize_multipose_ranking",),
+            source,
+        )
+        if isinstance(summary, Mapping):
+            flat = _flatten_scalar_mapping(summary, max_depth=2)
+            metrics = tuple(
+                _report_metric(key, value)
+                for key, value in flat.items()
+                if value is None or isinstance(value, (str, bool, int, float))
+            )
+            if metrics:
+                blocks.insert(
+                    max(0, len(blocks) - 1),
+                    _report_metrics_block(
+                        metrics,
+                        title=f"Ranking summary {index}",
+                    ),
+                )
+        formatted = _call_report_helper(
+            ("format_multipose_ranking_summary",),
+            source,
+        )
+        if isinstance(formatted, str) and formatted.strip():
+            blocks.append(
+                _report_paragraph(
+                    formatted,
+                    title=f"Ranking interpretation {index}",
+                )
+            )
+    if not blocks:
+        return None
+    return _make_report_section(
+        SCORING_REPORT_SECTION_RANKING,
+        blocks,
+        source_types=("ranking",),
+    )
+
+
+def build_scoring_report_consensus_section(
+    sources: ScoringReportSources,
+    *,
+    options: ScoringReportOptions = DEFAULT_SCORING_REPORT_OPTIONS,
+) -> Optional[ScoringReportSection]:
+    consensus_sources = sources.by_type.get("consensus", ())
+    if not consensus_sources:
+        return None
+    blocks: List[ScoringReportBlock] = []
+    for index, source in enumerate(consensus_sources, start=1):
+        rows = _rows_from_source(source, ("consensus_persistence_to_rows",))
+        if rows:
+            rows = tuple(
+                sorted(
+                    rows,
+                    key=lambda row: _report_optional_float(
+                        row.get(
+                            "persistence",
+                            row.get("frequency", row.get("weighted_support")),
+                        )
+                    )
+                    or 0.0,
+                    reverse=True,
+                )
+            )
+            blocks.append(
+                _report_table_block(
+                    build_scoring_report_table(
+                        f"consensus_persistence_{index}",
+                        f"Persistent features {index}",
+                        rows,
+                        options=options,
+                    )
+                )
+            )
+        summary = _call_report_helper(
+            ("summarize_consensus_persistence",),
+            source,
+        )
+        if isinstance(summary, Mapping):
+            flat = _flatten_scalar_mapping(summary, max_depth=2)
+            metrics = tuple(
+                _report_metric(key, value)
+                for key, value in flat.items()
+                if value is None or isinstance(value, (str, bool, int, float))
+            )
+            if metrics:
+                blocks.insert(
+                    max(0, len(blocks) - 1),
+                    _report_metrics_block(
+                        metrics,
+                        title=f"Consensus summary {index}",
+                    ),
+                )
+        formatted = _call_report_helper(
+            ("format_consensus_persistence_summary",),
+            source,
+        )
+        if isinstance(formatted, str) and formatted.strip():
+            blocks.append(
+                _report_paragraph(
+                    formatted,
+                    title=f"Consensus interpretation {index}",
+                )
+            )
+    if not blocks:
+        return None
+    return _make_report_section(
+        SCORING_REPORT_SECTION_CONSENSUS,
+        blocks,
+        source_types=("consensus",),
+    )
+
+
+def build_scoring_report_diversity_section(
+    sources: ScoringReportSources,
+    *,
+    options: ScoringReportOptions = DEFAULT_SCORING_REPORT_OPTIONS,
+) -> Optional[ScoringReportSection]:
+    diversity_sources = sources.by_type.get("diversity", ())
+    statistics_sources = sources.by_type.get("statistics", ())
+    candidates = tuple(diversity_sources) + tuple(statistics_sources)
+    rows: List[Mapping[str, Any]] = []
+    metrics: List[ScoringReportMetric] = []
+    for source in candidates:
+        class_name = _report_class_name(source).lower()
+        if "diversity" not in class_name and "complement" not in class_name:
+            nested = _report_first(
+                source,
+                (
+                    "diversity_complementarity",
+                    "diversity_statistics",
+                    "complementarity_statistics",
+                ),
+                None,
+            )
+            if nested is None:
+                continue
+            source = nested
+        flattened = _flatten_scalar_mapping(source, max_depth=3)
+        for key, value in flattened.items():
+            if value is None or isinstance(value, (str, bool, int, float)):
+                metrics.append(_report_metric(key, value))
+        source_rows = _rows_from_source(source)
+        rows.extend(source_rows)
+    if not metrics and not rows:
+        return None
+    blocks: List[ScoringReportBlock] = []
+    if metrics:
+        blocks.append(
+            _report_metrics_block(
+                metrics,
+                title="Diversity and coverage metrics",
+            )
+        )
+    if rows:
+        blocks.append(
+            _report_table_block(
+                build_scoring_report_table(
+                    "diversity_complementarity",
+                    "Diversity and complementarity details",
+                    rows,
+                    options=options,
+                )
+            )
+        )
+    blocks.append(
+        _report_paragraph(
+            "Diversity describes how interaction signatures differ between "
+            "poses, whereas complementarity describes the additional coverage "
+            "obtained when poses are considered jointly. These quantities are "
+            "reported separately from the pose score."
+        )
+    )
+    return _make_report_section(
+        SCORING_REPORT_SECTION_DIVERSITY,
+        blocks,
+        source_types=("diversity", "statistics"),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 26.8. External scores, explainability and provenance
+# -----------------------------------------------------------------------------
+
+
+def build_scoring_report_external_scores_section(
+    sources: ScoringReportSources,
+    *,
+    options: ScoringReportOptions = DEFAULT_SCORING_REPORT_OPTIONS,
+) -> Optional[ScoringReportSection]:
+    external_sources = sources.by_type.get("external_scores", ())
+    if not external_sources:
+        return None
+    blocks: List[ScoringReportBlock] = [
+        _report_warning(
+            "Docking affinity, neural-network scores and the DockAnalyzer "
+            "interaction score have different meanings and scales. Raw values "
+            "are preserved and must not be interpreted as interchangeable.",
+            title="Score interpretation",
+            severity=SCORING_REPORT_SEVERITY_INFO,
+        )
+    ]
+    for index, source in enumerate(external_sources, start=1):
+        rows = _rows_from_source(source, ("external_score_result_to_rows",))
+        if rows:
+            blocks.append(
+                _report_table_block(
+                    build_scoring_report_table(
+                        f"external_scores_{index}",
+                        f"External-score channels {index}",
+                        rows,
+                        options=options,
+                    )
+                )
+            )
+        summary = _call_report_helper(
+            ("summarize_external_scores",),
+            source,
+        )
+        if isinstance(summary, Mapping):
+            flattened = _flatten_scalar_mapping(summary, max_depth=2)
+            metrics = tuple(
+                _report_metric(key, value)
+                for key, value in flattened.items()
+                if value is None or isinstance(value, (str, bool, int, float))
+            )
+            if metrics:
+                blocks.insert(
+                    max(1, len(blocks) - 1),
+                    _report_metrics_block(
+                        metrics,
+                        title=f"External-score summary {index}",
+                    ),
+                )
+        formatted = _call_report_helper(
+            ("format_external_score_summary",),
+            source,
+        )
+        if isinstance(formatted, str) and formatted.strip():
+            blocks.append(
+                _report_paragraph(
+                    formatted,
+                    title=f"External-score interpretation {index}",
+                )
+            )
+    return _make_report_section(
+        SCORING_REPORT_SECTION_EXTERNAL,
+        blocks,
+        source_types=("external_scores",),
+    )
+
+
+def build_scoring_report_explainability_section(
+    sources: ScoringReportSources,
+    *,
+    options: ScoringReportOptions = DEFAULT_SCORING_REPORT_OPTIONS,
+) -> Optional[ScoringReportSection]:
+    explanation_sources = sources.by_type.get("explainability", ())
+    if not explanation_sources:
+        return None
+    blocks: List[ScoringReportBlock] = []
+    for index, source in enumerate(explanation_sources, start=1):
+        summary = _call_report_helper(
+            ("summarize_scoring_explainability",),
+            source,
+        )
+        if isinstance(summary, Mapping):
+            flattened = _flatten_scalar_mapping(summary, max_depth=2)
+            metrics = tuple(
+                _report_metric(key, value)
+                for key, value in flattened.items()
+                if value is None or isinstance(value, (str, bool, int, float))
+            )
+            if metrics:
+                blocks.append(
+                    _report_metrics_block(
+                        metrics,
+                        title=f"Explanation coverage {index}",
+                    )
+                )
+        rows = _rows_from_source(source, ("scoring_explainability_to_rows",))
+        if rows:
+            blocks.append(
+                _report_table_block(
+                    build_scoring_report_table(
+                        f"explainability_{index}",
+                        f"Score factors and evidence {index}",
+                        rows,
+                        options=options,
+                    )
+                )
+            )
+        formatted = _call_report_helper(
+            ("format_scoring_explainability_summary",),
+            source,
+        )
+        if isinstance(formatted, str) and formatted.strip():
+            blocks.append(
+                _report_paragraph(
+                    formatted,
+                    title=f"Explanation summary {index}",
+                )
+            )
+    if not blocks:
+        return None
+    return _make_report_section(
+        SCORING_REPORT_SECTION_EXPLAINABILITY,
+        blocks,
+        source_types=("explainability",),
+    )
+
+
+def _collect_provenance_rows(
+    sources: ScoringReportSources,
+) -> Tuple[Mapping[str, Any], ...]:
+    rows: List[Mapping[str, Any]] = []
+    for index, source in enumerate(sources.objects, start=1):
+        metadata = _report_get(source, "metadata", {})
+        source_row: Dict[str, Any] = {
+            "index": index,
+            "source_type": infer_scoring_report_source_type(source),
+            "class_name": _report_class_name(source),
+        }
+        for key in (
+            "pose_id",
+            "ligand_id",
+            "model_id",
+            "source",
+            "engine",
+            "version",
+            "created_at",
+            "configuration_id",
+        ):
+            value = _report_get(source, key, None)
+            if value is not None:
+                source_row[key] = value
+        if isinstance(metadata, Mapping):
+            for key in (
+                "source",
+                "engine",
+                "version",
+                "file",
+                "path",
+                "configuration_id",
+                "created_at",
+            ):
+                if key in metadata and key not in source_row:
+                    source_row[key] = metadata[key]
+        rows.append(source_row)
+    return tuple(rows)
+
+
+def build_scoring_report_provenance_section(
+    sources: ScoringReportSources,
+    *,
+    options: ScoringReportOptions = DEFAULT_SCORING_REPORT_OPTIONS,
+) -> Optional[ScoringReportSection]:
+    rows = _collect_provenance_rows(sources)
+    if not rows:
+        return None
+    blocks = [
+        _report_paragraph(
+            "Provenance records identify the object type and any available "
+            "pose, ligand, model, engine, version or configuration metadata. "
+            "Absence of a value means that the source object did not expose it."
+        ),
+        _report_table_block(
+            build_scoring_report_table(
+                "scoring_provenance",
+                "Source provenance",
+                rows,
+                options=options,
+            )
+        ),
+    ]
+    return _make_report_section(
+        SCORING_REPORT_SECTION_PROVENANCE,
+        blocks,
+        source_types=tuple(sources.by_type),
+    )
+
+
+def _collect_source_warnings(
+    sources: ScoringReportSources,
+) -> Tuple[ScoringReportIssue, ...]:
+    issues: List[ScoringReportIssue] = []
+    if not sources.objects:
+        issues.append(
+            ScoringReportIssue(
+                severity=SCORING_REPORT_SEVERITY_WARNING,
+                code="no_report_sources",
+                message="No scoring result objects were supplied.",
+            )
+        )
+    if sources.unclassified:
+        issues.append(
+            ScoringReportIssue(
+                severity=SCORING_REPORT_SEVERITY_WARNING,
+                code="unclassified_sources",
+                message=(
+                    f"{len(sources.unclassified)} source object(s) could not "
+                    "be assigned to a specialized report category."
+                ),
+                details={"count": len(sources.unclassified)},
+            )
+        )
+    for source in sources.objects:
+        source_type = infer_scoring_report_source_type(source)
+        source_issues = _report_first(
+            source,
+            ("issues", "warnings", "validation_issues", "errors"),
+            (),
+        )
+        for item in _report_sequence(source_issues):
+            if isinstance(item, Mapping):
+                message = str(
+                    item.get("message")
+                    or item.get("description")
+                    or item
+                )
+                severity = item.get("severity", item.get("level", "warning"))
+                code = str(item.get("code", "source_issue"))
+            else:
+                message = str(item)
+                severity = "warning"
+                code = "source_issue"
+            try:
+                normalized_severity = normalize_scoring_report_severity(severity)
+            except ScoringReportConfigurationError:
+                normalized_severity = SCORING_REPORT_SEVERITY_WARNING
+            issues.append(
+                ScoringReportIssue(
+                    severity=normalized_severity,
+                    code=code,
+                    message=message,
+                    source_type=source_type,
+                )
+            )
+        status = _report_token(_report_get(source, "status", ""))
+        if status in {"failed", "invalid", "partial"}:
+            severity = (
+                SCORING_REPORT_SEVERITY_ERROR
+                if status in {"failed", "invalid"}
+                else SCORING_REPORT_SEVERITY_WARNING
+            )
+            issues.append(
+                ScoringReportIssue(
+                    severity=severity,
+                    code=f"source_status_{status}",
+                    message=(
+                        f"A {source_type} source reported status {status!r}."
+                    ),
+                    source_type=source_type,
+                )
+            )
+    return tuple(issues)
+
+
+def build_scoring_report_warnings_section(
+    issues: Sequence[ScoringReportIssue],
+) -> Optional[ScoringReportSection]:
+    if not issues:
+        return None
+    rows = tuple(
+        {
+            "severity": issue.severity,
+            "code": issue.code,
+            "section": issue.section_id,
+            "source_type": issue.source_type,
+            "message": issue.message,
+        }
+        for issue in issues
+    )
+    counts = Counter(issue.severity for issue in issues)
+    metrics = tuple(
+        _report_metric(f"{severity}_count", counts.get(severity, 0))
+        for severity in sorted(SCORING_REPORT_SEVERITIES)
+    )
+    return _make_report_section(
+        SCORING_REPORT_SECTION_WARNINGS,
+        (
+            _report_metrics_block(metrics, title="Issue counts"),
+            _report_table_block(
+                build_scoring_report_table(
+                    "report_issues",
+                    "Warnings and limitations",
+                    rows,
+                )
+            ),
+        ),
+        status=(
+            SCORING_REPORT_STATUS_PARTIAL
+            if any(
+                issue.severity != SCORING_REPORT_SEVERITY_INFO
+                for issue in issues
+            )
+            else SCORING_REPORT_STATUS_COMPLETE
+        ),
+    )
+
+
+def build_scoring_report_appendix_section(
+    sources: ScoringReportSources,
+    *,
+    options: ScoringReportOptions = DEFAULT_SCORING_REPORT_OPTIONS,
+) -> Optional[ScoringReportSection]:
+    rows: List[Mapping[str, Any]] = []
+    for index, source in enumerate(sources.objects, start=1):
+        converted = _report_plain_value(source)
+        payload = json.dumps(converted, ensure_ascii=False, sort_keys=True)
+        rows.append(
+            {
+                "index": index,
+                "source_type": infer_scoring_report_source_type(source),
+                "class_name": _report_class_name(source),
+                "payload": payload,
+            }
+        )
+    if not rows:
+        return None
+    return _make_report_section(
+        SCORING_REPORT_SECTION_APPENDIX,
+        (
+            _report_warning(
+                "The appendix is intended for traceability. It may contain "
+                "large structured payloads and should not replace the primary "
+                "serialized artifacts produced by Section 25.",
+                severity=SCORING_REPORT_SEVERITY_INFO,
+            ),
+            _report_table_block(
+                build_scoring_report_table(
+                    "structured_appendix",
+                    "Structured source appendix",
+                    rows,
+                    options=options,
+                )
+            ),
+        ),
+        source_types=tuple(sources.by_type),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 26.9. Report assembly and Section 25 bridge
+# -----------------------------------------------------------------------------
+
+
+_REPORT_SECTION_BUILDERS: Final[Mapping[str, Callable[..., Any]]] = (
+    MappingProxyType(
+        {
+            SCORING_REPORT_SECTION_OVERVIEW:
+                build_scoring_report_overview_section,
+            SCORING_REPORT_SECTION_METHODS:
+                build_scoring_report_methods_section,
+            SCORING_REPORT_SECTION_INTERACTIONS:
+                build_scoring_report_interactions_section,
+            SCORING_REPORT_SECTION_RESIDUES:
+                build_scoring_report_residues_section,
+            SCORING_REPORT_SECTION_POSES:
+                build_scoring_report_poses_section,
+            SCORING_REPORT_SECTION_STATISTICS:
+                build_scoring_report_statistics_section,
+            SCORING_REPORT_SECTION_RANKING:
+                build_scoring_report_ranking_section,
+            SCORING_REPORT_SECTION_CONSENSUS:
+                build_scoring_report_consensus_section,
+            SCORING_REPORT_SECTION_DIVERSITY:
+                build_scoring_report_diversity_section,
+            SCORING_REPORT_SECTION_EXTERNAL:
+                build_scoring_report_external_scores_section,
+            SCORING_REPORT_SECTION_EXPLAINABILITY:
+                build_scoring_report_explainability_section,
+            SCORING_REPORT_SECTION_PROVENANCE:
+                build_scoring_report_provenance_section,
+            SCORING_REPORT_SECTION_APPENDIX:
+                build_scoring_report_appendix_section,
+        }
+    )
+)
+
+
+def _build_report_id(
+    options: ScoringReportOptions,
+    sources: ScoringReportSources,
+) -> str:
+    explicit = options.metadata.get("report_id")
+    if explicit:
+        return _report_identifier(explicit, default="scoring-report")
+    pose_ids = sorted(
+        {
+            str(pose_id)
+            for source in sources.objects
+            for pose_id in (
+                _source_scalar(source, ("pose_id", "pose_identifier"), ""),
+            )
+            if pose_id
+        }
+    )
+    suffix = pose_ids[0] if len(pose_ids) == 1 else str(len(sources.objects))
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{_report_slug(options.title)}-{_report_slug(suffix)}-{timestamp}"
+
+
+def _document_status(
+    sections: Sequence[ScoringReportSection],
+    issues: Sequence[ScoringReportIssue],
+) -> str:
+    if not sections:
+        return SCORING_REPORT_STATUS_EMPTY
+    if any(issue.severity == SCORING_REPORT_SEVERITY_ERROR for issue in issues):
+        return SCORING_REPORT_STATUS_PARTIAL
+    if any(section.status == SCORING_REPORT_STATUS_PARTIAL for section in sections):
+        return SCORING_REPORT_STATUS_PARTIAL
+    if all(section.status == SCORING_REPORT_STATUS_EMPTY for section in sections):
+        return SCORING_REPORT_STATUS_EMPTY
+    return SCORING_REPORT_STATUS_COMPLETE
+
+
+def build_scoring_report_document(
+    *values: Any,
+    options: ScoringReportOptions = DEFAULT_SCORING_REPORT_OPTIONS,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringReportDocument:
+    """Build a complete neutral report document from scoring artifacts."""
+
+    validate_scoring_report_options(options)
+    sources = collect_scoring_report_sources(
+        *values,
+        metadata=metadata,
+    )
+    issues = list(_collect_source_warnings(sources))
+    sections: List[ScoringReportSection] = []
+
+    for section_id in SCORING_REPORT_SECTION_ORDER:
+        if section_id in {
+            SCORING_REPORT_SECTION_WARNINGS,
+        }:
+            continue
+        if not _section_is_requested(section_id, options):
+            continue
+        builder = _REPORT_SECTION_BUILDERS.get(section_id)
+        section: Optional[ScoringReportSection] = None
+        if builder is not None:
+            try:
+                section = builder(sources, options=options)
+            except Exception as exc:
+                if options.strict:
+                    raise ScoringReportError(
+                        f"Could not build report section {section_id!r}."
+                    ) from exc
+                issues.append(
+                    ScoringReportIssue(
+                        severity=SCORING_REPORT_SEVERITY_ERROR,
+                        code="section_builder_failed",
+                        message=str(exc),
+                        section_id=section_id,
+                    )
+                )
+        if section is None:
+            section = _resolve_empty_section(section_id, options, issues)
+        if section is not None:
+            sections.append(section)
+
+    if _section_is_requested(SCORING_REPORT_SECTION_WARNINGS, options):
+        warning_section = build_scoring_report_warnings_section(issues)
+        if warning_section is None:
+            warning_section = _resolve_empty_section(
+                SCORING_REPORT_SECTION_WARNINGS,
+                options,
+                issues,
+            )
+        if warning_section is not None:
+            sections.append(warning_section)
+
+    sections.sort(key=lambda item: (item.order, item.section_id))
+    combined_metadata = dict(options.metadata)
+    combined_metadata.update(dict(metadata or {}))
+    combined_metadata.update(
+        {
+            "source_count": len(sources.objects),
+            "source_types": tuple(sorted(sources.by_type)),
+            "detail_level": options.detail_level,
+            "audience": options.audience,
+            "section_version": SCORING_REPORT_SECTION_VERSION,
+        }
+    )
+    document = ScoringReportDocument(
+        report_id=_build_report_id(options, sources),
+        title=options.title,
+        subtitle=options.subtitle,
+        created_at=_report_now() if options.include_timestamp else "",
+        status=_document_status(sections, issues),
+        sections=tuple(sections),
+        issues=tuple(issues),
+        metadata=combined_metadata,
+    )
+    attachments: List[ScoringReportAttachment] = []
+    if options.attach_serialized_artifact:
+        attachment = build_scoring_report_json_attachment(document)
+        attachments.append(attachment)
+        document = ScoringReportDocument(
+            report_id=document.report_id,
+            title=document.title,
+            subtitle=document.subtitle,
+            created_at=document.created_at,
+            status=document.status,
+            sections=document.sections,
+            issues=document.issues,
+            attachments=tuple(attachments),
+            schema=document.schema,
+            schema_version=document.schema_version,
+            generator=document.generator,
+            metadata=document.metadata,
+        )
+    validate_scoring_report_document(document)
+    return document
+
+
+def build_scoring_report(
+    *values: Any,
+    options: ScoringReportOptions = DEFAULT_SCORING_REPORT_OPTIONS,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringReportDocument:
+    """Public alias for :func:`build_scoring_report_document`."""
+
+    return build_scoring_report_document(
+        *values,
+        options=options,
+        metadata=metadata,
+    )
+
+
+def serialize_scoring_report_artifact(
+    report: ScoringReportDocument,
+    *,
+    pretty: bool = False,
+) -> Any:
+    """Serialize a report through Section 25 when that API is available."""
+
+    validate_scoring_report_document(report)
+    serializer = globals().get("serialize_scoring_object")
+    if callable(serializer):
+        artifact_type = globals().get(
+            "SCORING_SERIALIZATION_ARTIFACT_UNKNOWN",
+            "unknown",
+        )
+        try:
+            return serializer(
+                report,
+                artifact_type=artifact_type,
+                metadata={
+                    "logical_artifact_type": "scoring_report",
+                    "report_id": report.report_id,
+                    "schema": report.schema,
+                },
+            )
+        except TypeError:
+            try:
+                return serializer(report)
+            except Exception:
+                pass
+        except Exception:
+            pass
+    if pretty:
+        return json.dumps(
+            scoring_report_to_dict(report),
+            indent=2,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    return scoring_report_to_dict(report)
+
+
+def build_scoring_report_json_attachment(
+    report: ScoringReportDocument,
+    *,
+    name: str = "",
+) -> ScoringReportAttachment:
+    content = json.dumps(
+        scoring_report_to_dict(report),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    checksum_helper = globals().get(
+        "calculate_scoring_serialization_checksum"
+    )
+    checksum = ""
+    if callable(checksum_helper):
+        try:
+            checksum = str(checksum_helper(scoring_report_to_dict(report)))
+        except Exception:
+            checksum = ""
+    return ScoringReportAttachment(
+        name=name or f"{_report_slug(report.report_id)}.json",
+        media_type=SCORING_REPORT_MEDIA_JSON,
+        content=content,
+        description="Machine-readable Section 26 report document.",
+        checksum=checksum,
+        metadata={"report_id": report.report_id},
+    )
+
+
+def scoring_report_tables(report: ScoringReportDocument) -> Tuple[
+    ScoringReportTable, ...
+]:
+    tables: List[ScoringReportTable] = []
+    for section in report.sections:
+        for block in section.blocks:
+            if block.table is not None:
+                tables.append(block.table)
+    return tuple(tables)
+
+
+def scoring_report_table_map(
+    report: ScoringReportDocument,
+) -> Mapping[str, ScoringReportTable]:
+    return MappingProxyType(
+        {table.table_id: table for table in scoring_report_tables(report)}
+    )
+
+
+def scoring_report_table_to_csv(
+    table: ScoringReportTable,
+    *,
+    delimiter: str = ",",
+    newline: str = "\n",
+) -> str:
+    validate_scoring_report_table(table)
+    buffer = io.StringIO(newline="")
+    keys = [column.key for column in table.columns]
+    writer = csv.DictWriter(
+        buffer,
+        fieldnames=keys,
+        delimiter=delimiter,
+        lineterminator=newline,
+        extrasaction="ignore",
+    )
+    writer.writeheader()
+    for row in table.rows:
+        writer.writerow({key: row.get(key, "") for key in keys})
+    return buffer.getvalue()
+
+
+def build_scoring_report_table_attachments(
+    report: ScoringReportDocument,
+    *,
+    delimiter: str = ",",
+) -> Tuple[ScoringReportAttachment, ...]:
+    attachments: List[ScoringReportAttachment] = []
+    for table in scoring_report_tables(report):
+        attachments.append(
+            ScoringReportAttachment(
+                name=f"{_report_slug(table.table_id)}.csv",
+                media_type=SCORING_REPORT_MEDIA_CSV,
+                content=scoring_report_table_to_csv(
+                    table,
+                    delimiter=delimiter,
+                ),
+                description=table.title,
+                metadata={
+                    "table_id": table.table_id,
+                    "row_count": len(table.rows),
+                    "truncated": table.truncated,
+                },
+            )
+        )
+    return tuple(attachments)
+
+
+def with_scoring_report_attachments(
+    report: ScoringReportDocument,
+    attachments: Iterable[ScoringReportAttachment],
+) -> ScoringReportDocument:
+    combined = tuple(report.attachments) + tuple(attachments)
+    return ScoringReportDocument(
+        report_id=report.report_id,
+        title=report.title,
+        subtitle=report.subtitle,
+        created_at=report.created_at,
+        status=report.status,
+        sections=report.sections,
+        issues=report.issues,
+        attachments=combined,
+        schema=report.schema,
+        schema_version=report.schema_version,
+        generator=report.generator,
+        metadata=report.metadata,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 26.10. Text, Markdown, HTML and JSON rendering
+# -----------------------------------------------------------------------------
+
+
+def _display_value(value: Any, unit: str = "") -> str:
+    if value is None:
+        text = "N/A"
+    elif isinstance(value, bool):
+        text = "yes" if value else "no"
+    elif isinstance(value, float):
+        text = f"{value:g}"
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        text = ", ".join(str(item) for item in value)
+    else:
+        text = str(value)
+    return f"{text} {unit}".strip() if unit else text
+
+
+def _plain_table(table: ScoringReportTable) -> str:
+    if not table.columns:
+        return "(no columns)"
+    keys = [column.key for column in table.columns]
+    labels = [column.label or _report_human_label(column.key)
+              for column in table.columns]
+    matrix = [labels]
+    for row in table.rows:
+        matrix.append([_display_value(row.get(key, "")) for key in keys])
+    widths = [
+        min(48, max(len(str(row[index])) for row in matrix))
+        for index in range(len(keys))
+    ]
+
+    def format_row(row: Sequence[Any]) -> str:
+        cells = []
+        for index, value in enumerate(row):
+            text = str(value)
+            if len(text) > widths[index]:
+                text = text[: max(1, widths[index] - 1)] + "…"
+            cells.append(text.ljust(widths[index]))
+        return " | ".join(cells)
+
+    lines = [format_row(matrix[0])]
+    lines.append("-+-".join("-" * width for width in widths))
+    lines.extend(format_row(row) for row in matrix[1:])
+    if table.truncated:
+        lines.append(
+            f"[truncated: {len(table.rows)} of {table.total_row_count} rows]"
+        )
+    return "\n".join(lines)
+
+
+def _markdown_escape(value: Any) -> str:
+    return str(value).replace("|", "\\|").replace("\n", "<br>")
+
+
+def _markdown_table(table: ScoringReportTable) -> str:
+    if not table.columns:
+        return "_No columns._"
+    keys = [column.key for column in table.columns]
+    labels = [column.label or _report_human_label(column.key)
+              for column in table.columns]
+    alignments = []
+    for column in table.columns:
+        if column.alignment == "right":
+            alignments.append("---:")
+        elif column.alignment == "center":
+            alignments.append(":---:")
+        else:
+            alignments.append(":---")
+    lines = [
+        "| " + " | ".join(_markdown_escape(label) for label in labels) + " |",
+        "| " + " | ".join(alignments) + " |",
+    ]
+    for row in table.rows:
+        values = [
+            _markdown_escape(_display_value(row.get(key, ""))) for key in keys
+        ]
+        lines.append("| " + " | ".join(values) + " |")
+    if table.truncated:
+        lines.append(
+            "\n"
+            f"_Table truncated to {len(table.rows)} of "
+            f"{table.total_row_count} rows._"
+        )
+    return "\n".join(lines)
+
+
+def _render_block_text(block: ScoringReportBlock) -> str:
+    lines: List[str] = []
+    if block.title:
+        lines.append(block.title)
+    if block.block_type == SCORING_REPORT_BLOCK_PARAGRAPH:
+        lines.append(block.text)
+    elif block.block_type == SCORING_REPORT_BLOCK_WARNING:
+        lines.append(f"[{block.severity.upper()}] {block.text}")
+    elif block.block_type == SCORING_REPORT_BLOCK_BULLETS:
+        lines.extend(f"- {item}" for item in block.items)
+    elif block.block_type == SCORING_REPORT_BLOCK_METRICS:
+        lines.extend(
+            f"- {metric.label or metric.name}: "
+            f"{_display_value(metric.value, metric.unit)}"
+            for metric in block.metrics
+        )
+    elif block.block_type == SCORING_REPORT_BLOCK_TABLE and block.table:
+        lines.append(_plain_table(block.table))
+    elif block.block_type == SCORING_REPORT_BLOCK_CODE:
+        lines.append(block.text)
+    return "\n".join(line for line in lines if line)
+
+
+def render_scoring_report_text(report: ScoringReportDocument) -> str:
+    validate_scoring_report_document(report)
+    lines = [report.title, "=" * len(report.title)]
+    if report.subtitle:
+        lines.extend((report.subtitle, ""))
+    if report.created_at:
+        lines.append(f"Created: {report.created_at}")
+    lines.extend((f"Status: {report.status}", ""))
+    for section in report.sections:
+        lines.extend((section.title, "-" * len(section.title)))
+        if section.summary:
+            lines.extend((section.summary, ""))
+        for block in section.blocks:
+            content = _render_block_text(block)
+            if content:
+                lines.extend((content, ""))
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_block_markdown(block: ScoringReportBlock) -> str:
+    lines: List[str] = []
+    if block.title:
+        lines.append(f"### {block.title}")
+    if block.block_type == SCORING_REPORT_BLOCK_PARAGRAPH:
+        lines.append(block.text)
+    elif block.block_type == SCORING_REPORT_BLOCK_WARNING:
+        lines.append(f"> **{block.severity.title()}:** {block.text}")
+    elif block.block_type == SCORING_REPORT_BLOCK_BULLETS:
+        lines.extend(f"- {item}" for item in block.items)
+    elif block.block_type == SCORING_REPORT_BLOCK_METRICS:
+        lines.extend(
+            f"- **{metric.label or metric.name}:** "
+            f"{_display_value(metric.value, metric.unit)}"
+            for metric in block.metrics
+        )
+    elif block.block_type == SCORING_REPORT_BLOCK_TABLE and block.table:
+        if block.table.caption:
+            lines.append(block.table.caption)
+        lines.append(_markdown_table(block.table))
+    elif block.block_type == SCORING_REPORT_BLOCK_CODE:
+        lines.extend(("```text", block.text, "```"))
+    return "\n\n".join(line for line in lines if line)
+
+
+def render_scoring_report_markdown(report: ScoringReportDocument) -> str:
+    validate_scoring_report_document(report)
+    lines = [f"# {report.title}"]
+    if report.subtitle:
+        lines.append(f"*{report.subtitle}*")
+    metadata = []
+    if report.created_at:
+        metadata.append(f"Created: {report.created_at}")
+    metadata.append(f"Status: {report.status}")
+    lines.append("  \n".join(metadata))
+    for section in report.sections:
+        lines.append(f"## {section.title}")
+        if section.summary:
+            lines.append(section.summary)
+        for block in section.blocks:
+            content = _render_block_markdown(block)
+            if content:
+                lines.append(content)
+    return "\n\n".join(lines).rstrip() + "\n"
+
+
+def _render_html_table(table: ScoringReportTable) -> str:
+    headings = "".join(
+        f"<th>{_html_escape(column.label or column.key)}</th>"
+        for column in table.columns
+    )
+    rows = []
+    for row in table.rows:
+        cells = "".join(
+            f"<td>{_html_escape(_display_value(row.get(column.key, '')))}</td>"
+            for column in table.columns
+        )
+        rows.append(f"<tr>{cells}</tr>")
+    note = ""
+    if table.truncated:
+        note = (
+            "<p class=\"table-note\">Table truncated to "
+            f"{len(table.rows)} of {table.total_row_count} rows.</p>"
+        )
+    caption = (
+        f"<caption>{_html_escape(table.caption)}</caption>"
+        if table.caption
+        else ""
+    )
+    return (
+        f"<table id=\"{_html_escape(table.table_id)}\">{caption}"
+        f"<thead><tr>{headings}</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>{note}"
+    )
+
+
+def _render_block_html(block: ScoringReportBlock) -> str:
+    title = f"<h3>{_html_escape(block.title)}</h3>" if block.title else ""
+    if block.block_type == SCORING_REPORT_BLOCK_PARAGRAPH:
+        body = f"<p>{_html_escape(block.text)}</p>"
+    elif block.block_type == SCORING_REPORT_BLOCK_WARNING:
+        body = (
+            f"<aside class=\"{_html_escape(block.severity)}\">"
+            f"{_html_escape(block.text)}</aside>"
+        )
+    elif block.block_type == SCORING_REPORT_BLOCK_BULLETS:
+        body = "<ul>" + "".join(
+            f"<li>{_html_escape(item)}</li>" for item in block.items
+        ) + "</ul>"
+    elif block.block_type == SCORING_REPORT_BLOCK_METRICS:
+        body = "<dl>" + "".join(
+            f"<dt>{_html_escape(metric.label or metric.name)}</dt>"
+            f"<dd>{_html_escape(_display_value(metric.value, metric.unit))}</dd>"
+            for metric in block.metrics
+        ) + "</dl>"
+    elif block.block_type == SCORING_REPORT_BLOCK_TABLE and block.table:
+        body = _render_html_table(block.table)
+    elif block.block_type == SCORING_REPORT_BLOCK_CODE:
+        body = f"<pre><code>{_html_escape(block.text)}</code></pre>"
+    else:
+        body = ""
+    return f"<div class=\"report-block\">{title}{body}</div>"
+
+
+def render_scoring_report_html(
+    report: ScoringReportDocument,
+    *,
+    full_document: bool = True,
+) -> str:
+    validate_scoring_report_document(report)
+    sections = []
+    for section in report.sections:
+        summary = (
+            f"<p class=\"section-summary\">"
+            f"{_html_escape(section.summary)}</p>"
+            if section.summary
+            else ""
+        )
+        body = "".join(_render_block_html(block) for block in section.blocks)
+        sections.append(
+            f"<section id=\"{_html_escape(section.section_id)}\">"
+            f"<h2>{_html_escape(section.title)}</h2>{summary}{body}</section>"
+        )
+    article = (
+        f"<article class=\"dockanalyzer-scoring-report\">"
+        f"<header><h1>{_html_escape(report.title)}</h1>"
+        f"<p>{_html_escape(report.subtitle)}</p>"
+        f"<p>Status: {_html_escape(report.status)}</p></header>"
+        f"{''.join(sections)}</article>"
+    )
+    if not full_document:
+        return article
+    style = (
+        "body{font-family:system-ui,sans-serif;line-height:1.45;max-width:"
+        "1200px;margin:2rem auto;padding:0 1rem}table{border-collapse:"
+        "collapse;width:100%;margin:1rem 0}th,td{border:1px solid #bbb;"
+        "padding:.4rem;text-align:left}th{background:#eee}aside{padding:"
+        ".75rem;border-left:4px solid #777;background:#f7f7f7}"
+        "aside.warning{border-color:#b7791f}aside.error{border-color:#c53030}"
+        "dl{display:grid;grid-template-columns:minmax(12rem,1fr) 2fr;gap:"
+        ".25rem 1rem}dt{font-weight:700}"
+    )
+    return (
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        f"<title>{_html_escape(report.title)}</title>"
+        f"<style>{style}</style></head><body>{article}</body></html>"
+    )
+
+
+def render_scoring_report_json(
+    report: ScoringReportDocument,
+    *,
+    indent: Optional[int] = 2,
+) -> str:
+    validate_scoring_report_document(report)
+    return json.dumps(
+        scoring_report_to_dict(report),
+        indent=indent,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def render_scoring_report(
+    report: ScoringReportDocument,
+    *,
+    output_format: str = SCORING_REPORT_FORMAT_MARKDOWN,
+) -> str:
+    format_name = normalize_scoring_report_format(output_format)
+    if format_name == SCORING_REPORT_FORMAT_TEXT:
+        return render_scoring_report_text(report)
+    if format_name == SCORING_REPORT_FORMAT_MARKDOWN:
+        return render_scoring_report_markdown(report)
+    if format_name == SCORING_REPORT_FORMAT_HTML:
+        return render_scoring_report_html(report)
+    if format_name == SCORING_REPORT_FORMAT_JSON:
+        return render_scoring_report_json(report)
+    raise ScoringReportConfigurationError(
+        f"No renderer is available for {format_name!r}."
+    )
+
+
+def _report_format_suffix(output_format: str) -> str:
+    return {
+        SCORING_REPORT_FORMAT_TEXT: ".txt",
+        SCORING_REPORT_FORMAT_MARKDOWN: ".md",
+        SCORING_REPORT_FORMAT_HTML: ".html",
+        SCORING_REPORT_FORMAT_JSON: ".json",
+    }[normalize_scoring_report_format(output_format)]
+
+
+def write_scoring_report(
+    report: ScoringReportDocument,
+    path: Any,
+    *,
+    output_format: Optional[str] = None,
+    encoding: str = DEFAULT_SCORING_REPORT_ENCODING,
+    overwrite: bool = False,
+) -> Path:
+    """Render and write a report atomically to the requested path."""
+
+    target = Path(path)
+    format_name = (
+        normalize_scoring_report_format(output_format)
+        if output_format is not None
+        else normalize_scoring_report_format(target.suffix.lstrip(".") or "markdown")
+    )
+    if not target.suffix:
+        target = target.with_suffix(_report_format_suffix(format_name))
+    if target.exists() and not overwrite:
+        raise FileExistsError(f"Report file already exists: {target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    content = render_scoring_report(report, output_format=format_name)
+    temporary = target.with_name(target.name + ".tmp")
+    try:
+        temporary.write_text(content, encoding=encoding, newline="")
+        os.replace(temporary, target)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return target
+
+
+# -----------------------------------------------------------------------------
+# 26.11. Generic report-target adapters
+# -----------------------------------------------------------------------------
+
+
+_SCORING_REPORT_ADAPTERS: List[ScoringReportAdapter] = []
+
+
+def register_scoring_report_adapter(
+    adapter: ScoringReportAdapter,
+    *,
+    replace: bool = False,
+) -> None:
+    """Register a report-target adapter by name."""
+
+    existing = [item for item in _SCORING_REPORT_ADAPTERS if item.name == adapter.name]
+    if existing and not replace:
+        raise ScoringReportConfigurationError(
+            f"A report adapter named {adapter.name!r} is already registered."
+        )
+    if existing:
+        _SCORING_REPORT_ADAPTERS[:] = [
+            item for item in _SCORING_REPORT_ADAPTERS if item.name != adapter.name
+        ]
+    _SCORING_REPORT_ADAPTERS.append(adapter)
+    _SCORING_REPORT_ADAPTERS.sort(
+        key=lambda item: (-item.priority, item.name)
+    )
+
+
+def unregister_scoring_report_adapter(name: str) -> bool:
+    original = len(_SCORING_REPORT_ADAPTERS)
+    _SCORING_REPORT_ADAPTERS[:] = [
+        item for item in _SCORING_REPORT_ADAPTERS if item.name != name
+    ]
+    return len(_SCORING_REPORT_ADAPTERS) != original
+
+
+def scoring_report_adapters() -> Tuple[ScoringReportAdapter, ...]:
+    return tuple(_SCORING_REPORT_ADAPTERS)
+
+
+def _method_target_predicate(target: Any) -> bool:
+    return any(
+        callable(getattr(target, name, None))
+        for name in (
+            "add_scoring_report",
+            "add_report",
+            "add_section",
+            "append_section",
+        )
+    )
+
+
+def _method_target_attach(
+    target: Any,
+    report: ScoringReportDocument,
+) -> int:
+    direct = getattr(target, "add_scoring_report", None)
+    if callable(direct):
+        direct(report)
+        return len(report.sections)
+    direct = getattr(target, "add_report", None)
+    if callable(direct):
+        direct(report)
+        return len(report.sections)
+    for method_name in ("add_section", "append_section"):
+        method = getattr(target, method_name, None)
+        if not callable(method):
+            continue
+        inserted = 0
+        for section in report.sections:
+            try:
+                method(section)
+            except TypeError:
+                try:
+                    method(section.title, section)
+                except TypeError:
+                    method(
+                        title=section.title,
+                        content=section,
+                        section_id=section.section_id,
+                    )
+            inserted += 1
+        return inserted
+    raise ScoringReportIntegrationError(
+        "The method-based target did not expose a supported insertion method."
+    )
+
+
+def _mapping_target_predicate(target: Any) -> bool:
+    return isinstance(target, MutableMapping)
+
+
+def _mapping_target_attach(
+    target: MutableMapping[str, Any],
+    report: ScoringReportDocument,
+) -> int:
+    reports = target.setdefault("scoring_reports", [])
+    if not isinstance(reports, list):
+        raise ScoringReportIntegrationError(
+            "Mapping key 'scoring_reports' exists but is not a list."
+        )
+    reports.append(report)
+    target["scoring_report"] = report
+    target["scoring_report_id"] = report.report_id
+    return len(report.sections)
+
+
+def _list_target_predicate(target: Any) -> bool:
+    return isinstance(target, list)
+
+
+def _list_target_attach(target: List[Any], report: ScoringReportDocument) -> int:
+    target.append(report)
+    return len(report.sections)
+
+
+def _sections_attribute_predicate(target: Any) -> bool:
+    return hasattr(target, "sections") and isinstance(target.sections, list)
+
+
+def _sections_attribute_attach(
+    target: Any,
+    report: ScoringReportDocument,
+) -> int:
+    target.sections.extend(report.sections)
+    try:
+        setattr(target, "scoring_report", report)
+    except Exception:
+        pass
+    return len(report.sections)
+
+
+def _initialize_default_scoring_report_adapters() -> None:
+    defaults = (
+        ScoringReportAdapter(
+            name="report_methods",
+            predicate=_method_target_predicate,
+            attach=_method_target_attach,
+            priority=100,
+        ),
+        ScoringReportAdapter(
+            name="mutable_mapping",
+            predicate=_mapping_target_predicate,
+            attach=_mapping_target_attach,
+            priority=80,
+        ),
+        ScoringReportAdapter(
+            name="sections_attribute",
+            predicate=_sections_attribute_predicate,
+            attach=_sections_attribute_attach,
+            priority=60,
+        ),
+        ScoringReportAdapter(
+            name="list",
+            predicate=_list_target_predicate,
+            attach=_list_target_attach,
+            priority=40,
+        ),
+    )
+    existing = {adapter.name for adapter in _SCORING_REPORT_ADAPTERS}
+    for adapter in defaults:
+        if adapter.name not in existing:
+            register_scoring_report_adapter(adapter)
+
+
+def resolve_scoring_report_adapter(target: Any) -> ScoringReportAdapter:
+    _initialize_default_scoring_report_adapters()
+    for adapter in _SCORING_REPORT_ADAPTERS:
+        try:
+            if adapter.predicate(target):
+                return adapter
+        except Exception:
+            continue
+    raise ScoringReportIntegrationError(
+        f"No report adapter supports target type {_report_class_name(target)!r}."
+    )
+
+
+def integrate_scoring_report(
+    target: Any,
+    report: ScoringReportDocument,
+    *,
+    adapter_name: str = "",
+) -> ScoringReportIntegrationResult:
+    """Attach a report to a generic report target."""
+
+    validate_scoring_report_document(report)
+    _initialize_default_scoring_report_adapters()
+    if adapter_name:
+        matches = [
+            adapter
+            for adapter in _SCORING_REPORT_ADAPTERS
+            if adapter.name == adapter_name
+        ]
+        if not matches:
+            raise ScoringReportIntegrationError(
+                f"Unknown report adapter {adapter_name!r}."
+            )
+        adapter = matches[0]
+        if not adapter.predicate(target):
+            raise ScoringReportIntegrationError(
+                f"Adapter {adapter.name!r} does not support this target."
+            )
+    else:
+        adapter = resolve_scoring_report_adapter(target)
+
+    try:
+        inserted = adapter.attach(target, report)
+    except Exception as exc:
+        raise ScoringReportIntegrationError(
+            f"Adapter {adapter.name!r} could not attach the scoring report."
+        ) from exc
+    return ScoringReportIntegrationResult(
+        success=True,
+        adapter_name=adapter.name,
+        report=report,
+        target_type=_report_class_name(target),
+        inserted_section_count=inserted,
+        attachment_count=len(report.attachments),
+        message="Scoring report attached successfully.",
+    )
+
+
+def attach_scoring_report_to_dock_model(
+    dock_model: Any,
+    report: ScoringReportDocument,
+    *,
+    history_limit: int = DEFAULT_SCORING_REPORT_HISTORY_LIMIT,
+    replace_current: bool = True,
+) -> ScoringReportIntegrationResult:
+    """Attach a report to a DockModel-like object with bounded history."""
+
+    if dock_model is None:
+        raise ScoringReportInputError("dock_model cannot be None.")
+    if history_limit < 0:
+        raise ScoringReportConfigurationError(
+            "history_limit cannot be negative."
+        )
+    validate_scoring_report_document(report)
+
+    old_current = getattr(dock_model, "scoring_report", None)
+    old_history = getattr(dock_model, "scoring_report_history", None)
+    history = list(old_history) if isinstance(old_history, (list, tuple)) else []
+    if old_current is not None and old_current is not report:
+        history.append(old_current)
+    if history_limit == 0:
+        history = []
+    elif len(history) > history_limit:
+        history = history[-history_limit:]
+
+    try:
+        if replace_current or old_current is None:
+            setattr(dock_model, "scoring_report", report)
+        setattr(dock_model, "scoring_report_history", history)
+        metadata = getattr(dock_model, "metadata", None)
+        if isinstance(metadata, MutableMapping):
+            metadata["scoring_report_id"] = report.report_id
+            metadata["scoring_report_status"] = report.status
+            metadata["scoring_report_created_at"] = report.created_at
+        elif isinstance(dock_model, MutableMapping):
+            dock_model["scoring_report"] = report
+            dock_model["scoring_report_history"] = history
+    except Exception as exc:
+        try:
+            if old_current is None and hasattr(dock_model, "scoring_report"):
+                delattr(dock_model, "scoring_report")
+            else:
+                setattr(dock_model, "scoring_report", old_current)
+            if old_history is None and hasattr(
+                dock_model,
+                "scoring_report_history",
+            ):
+                delattr(dock_model, "scoring_report_history")
+            else:
+                setattr(dock_model, "scoring_report_history", old_history)
+        except Exception:
+            pass
+        raise ScoringReportIntegrationError(
+            "Could not attach the scoring report to DockModel."
+        ) from exc
+
+    return ScoringReportIntegrationResult(
+        success=True,
+        adapter_name="dock_model",
+        report=report,
+        target_type=_report_class_name(dock_model),
+        inserted_section_count=len(report.sections),
+        attachment_count=len(report.attachments),
+        message="Scoring report attached to DockModel.",
+    )
+
+
+def build_and_integrate_scoring_report(
+    target: Any,
+    *values: Any,
+    options: ScoringReportOptions = DEFAULT_SCORING_REPORT_OPTIONS,
+    metadata: Optional[Mapping[str, Any]] = None,
+    adapter_name: str = "",
+) -> ScoringReportIntegrationResult:
+    report = build_scoring_report_document(
+        *values,
+        options=options,
+        metadata=metadata,
+    )
+    return integrate_scoring_report(
+        target,
+        report,
+        adapter_name=adapter_name,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 26.12. Validation, summaries and self-check
+# -----------------------------------------------------------------------------
+
+
+def validate_scoring_report_options(options: ScoringReportOptions) -> None:
+    if not isinstance(options, ScoringReportOptions):
+        raise ScoringReportValidationError(
+            "options must be a ScoringReportOptions instance."
+        )
+    unknown_included = set(options.included_sections).difference(
+        SCORING_REPORT_SECTION_ORDER
+    )
+    unknown_excluded = set(options.excluded_sections).difference(
+        SCORING_REPORT_SECTION_ORDER
+    )
+    if unknown_included or unknown_excluded:
+        unknown = sorted(unknown_included | unknown_excluded)
+        raise ScoringReportValidationError(
+            "Unknown report section identifiers: " + ", ".join(unknown)
+        )
+    overlap = set(options.included_sections).intersection(
+        options.excluded_sections
+    )
+    if overlap:
+        raise ScoringReportValidationError(
+            "Sections cannot be both included and excluded: "
+            + ", ".join(sorted(overlap))
+        )
+
+
+def validate_scoring_report_metric(metric: ScoringReportMetric) -> None:
+    if not isinstance(metric, ScoringReportMetric):
+        raise ScoringReportValidationError(
+            "Expected ScoringReportMetric instance."
+        )
+    if not metric.name.strip():
+        raise ScoringReportValidationError("Metric name cannot be empty.")
+
+
+def validate_scoring_report_table(table: ScoringReportTable) -> None:
+    if not isinstance(table, ScoringReportTable):
+        raise ScoringReportValidationError(
+            "Expected ScoringReportTable instance."
+        )
+    column_keys = [column.key for column in table.columns]
+    if len(column_keys) != len(set(column_keys)):
+        raise ScoringReportValidationError(
+            f"Table {table.table_id!r} contains duplicate columns."
+        )
+    allowed = set(column_keys)
+    for index, row in enumerate(table.rows):
+        extra = set(row).difference(allowed)
+        if extra:
+            raise ScoringReportValidationError(
+                f"Table {table.table_id!r} row {index} contains columns "
+                f"not declared in the schema: {sorted(extra)!r}."
+            )
+    if table.total_row_count is not None:
+        if table.total_row_count < len(table.rows):
+            raise ScoringReportValidationError(
+                "total_row_count cannot be smaller than retained rows."
+            )
+        if table.truncated and table.total_row_count == len(table.rows):
+            raise ScoringReportValidationError(
+                "A truncated table must have omitted at least one row."
+            )
+
+
+def validate_scoring_report_block(block: ScoringReportBlock) -> None:
+    if not isinstance(block, ScoringReportBlock):
+        raise ScoringReportValidationError(
+            "Expected ScoringReportBlock instance."
+        )
+    for metric in block.metrics:
+        validate_scoring_report_metric(metric)
+    if block.table is not None:
+        validate_scoring_report_table(block.table)
+    if block.block_type == SCORING_REPORT_BLOCK_TABLE and block.table is None:
+        raise ScoringReportValidationError("Table block is missing its table.")
+
+
+def validate_scoring_report_section(section: ScoringReportSection) -> None:
+    if not isinstance(section, ScoringReportSection):
+        raise ScoringReportValidationError(
+            "Expected ScoringReportSection instance."
+        )
+    if not section.section_id or not section.title:
+        raise ScoringReportValidationError(
+            "Report section ID and title cannot be empty."
+        )
+    for block in section.blocks:
+        validate_scoring_report_block(block)
+
+
+def validate_scoring_report_attachment(
+    attachment: ScoringReportAttachment,
+) -> None:
+    if not isinstance(attachment, ScoringReportAttachment):
+        raise ScoringReportValidationError(
+            "Expected ScoringReportAttachment instance."
+        )
+    if not attachment.name or not attachment.media_type:
+        raise ScoringReportValidationError(
+            "Attachment name and media type cannot be empty."
+        )
+
+
+def validate_scoring_report_document(report: ScoringReportDocument) -> None:
+    if not isinstance(report, ScoringReportDocument):
+        raise ScoringReportValidationError(
+            "Expected ScoringReportDocument instance."
+        )
+    if report.schema != SCORING_REPORT_SCHEMA:
+        raise ScoringReportValidationError(
+            f"Unsupported report schema {report.schema!r}."
+        )
+    section_ids = [section.section_id for section in report.sections]
+    if len(section_ids) != len(set(section_ids)):
+        raise ScoringReportValidationError(
+            "A report document cannot contain duplicate section IDs."
+        )
+    orders = [section.order for section in report.sections]
+    if orders != sorted(orders):
+        raise ScoringReportValidationError(
+            "Report sections must be ordered by their order field."
+        )
+    for section in report.sections:
+        validate_scoring_report_section(section)
+    for attachment in report.attachments:
+        validate_scoring_report_attachment(attachment)
+    if report.status == SCORING_REPORT_STATUS_EMPTY and report.sections:
+        if any(
+            section.status != SCORING_REPORT_STATUS_EMPTY
+            for section in report.sections
+        ):
+            raise ScoringReportValidationError(
+                "An empty report cannot contain non-empty sections."
+            )
+
+
+def summarize_scoring_report(report: ScoringReportDocument) -> Dict[str, Any]:
+    validate_scoring_report_document(report)
+    tables = scoring_report_tables(report)
+    blocks = [
+        block
+        for section in report.sections
+        for block in section.blocks
+    ]
+    issue_counts = Counter(issue.severity for issue in report.issues)
+    return {
+        "report_id": report.report_id,
+        "title": report.title,
+        "status": report.status,
+        "section_count": len(report.sections),
+        "block_count": len(blocks),
+        "table_count": len(tables),
+        "retained_table_rows": sum(len(table.rows) for table in tables),
+        "truncated_table_count": sum(table.truncated for table in tables),
+        "issue_count": len(report.issues),
+        "issue_distribution": dict(issue_counts),
+        "attachment_count": len(report.attachments),
+        "section_ids": tuple(section.section_id for section in report.sections),
+        "created_at": report.created_at,
+    }
+
+
+def format_scoring_report_summary(report: ScoringReportDocument) -> str:
+    summary = summarize_scoring_report(report)
+    return (
+        f"Scoring report {summary['report_id']!r}: "
+        f"status={summary['status']}, "
+        f"sections={summary['section_count']}, "
+        f"tables={summary['table_count']}, "
+        f"issues={summary['issue_count']}, "
+        f"attachments={summary['attachment_count']}."
+    )
+
+
+def run_section_26_self_check() -> Dict[str, Any]:
+    """Run deterministic integration tests without requiring ChimeraX."""
+
+    synthetic_pose = {
+        "pose_id": "pose_001",
+        "ligand_id": "LIG",
+        "model_id": "receptor_A",
+        "total_score": 12.5,
+        "normalized_score": 82.0,
+        "interaction_scores": [
+            {
+                "interaction_id": "hb_1",
+                "family": "hydrogen_bond",
+                "final_score": 3.5,
+                "status": "accepted",
+                "receptor_residue": "A:SER42",
+            },
+            {
+                "interaction_id": "pi_1",
+                "family": "pi",
+                "final_score": 4.2,
+                "status": "accepted",
+                "receptor_residue": "A:PHE85",
+            },
+        ],
+        "residue_scores": [
+            {
+                "residue_id": "A:SER42",
+                "total_score": 3.5,
+                "interaction_count": 1,
+            },
+            {
+                "residue_id": "A:PHE85",
+                "total_score": 4.2,
+                "interaction_count": 1,
+            },
+        ],
+        "metadata": {"engine": "synthetic", "version": "1"},
+    }
+    synthetic_ranking = {
+        "ranking_groups": 1,
+        "ranked_poses": [
+            {"pose_id": "pose_001", "rank": 1, "ranking_score": 0.91},
+            {"pose_id": "pose_002", "rank": 2, "ranking_score": 0.73},
+        ],
+    }
+    synthetic_consensus = {
+        "consensus_groups": 1,
+        "persistent_features": [
+            {
+                "feature_id": "A:SER42|hydrogen_bond",
+                "persistence": 1.0,
+                "classification": "ubiquitous",
+            }
+        ],
+    }
+    synthetic_external = {
+        "pose_results": [
+            {
+                "pose_id": "pose_001",
+                "internal_score": 12.5,
+                "primary_affinity": -7.4,
+                "external_composite_score": 0.81,
+                "fused_score": 0.84,
+            }
+        ]
+    }
+
+    options = ScoringReportOptions(
+        title="Section 26 self-check",
+        include_methods=True,
+        include_provenance=True,
+        include_warnings=True,
+        include_raw_appendix=False,
+        empty_section_policy=SCORING_REPORT_EMPTY_OMIT,
+        max_rows_per_table=25,
+    )
+    report = build_scoring_report_document(
+        synthetic_pose,
+        synthetic_ranking,
+        synthetic_consensus,
+        synthetic_external,
+        options=options,
+        metadata={"self_check": True},
+    )
+    validate_scoring_report_document(report)
+
+    text = render_scoring_report_text(report)
+    markdown = render_scoring_report_markdown(report)
+    html = render_scoring_report_html(report)
+    json_text = render_scoring_report_json(report)
+    if report.title not in text or report.title not in markdown:
+        raise ScoringReportValidationError(
+            "Text or Markdown renderer omitted the report title."
+        )
+    if "<html" not in html.lower():
+        raise ScoringReportValidationError(
+            "HTML renderer did not produce a complete document."
+        )
+    decoded = json.loads(json_text)
+    if decoded.get("report_id") != report.report_id:
+        raise ScoringReportValidationError(
+            "JSON renderer did not preserve the report identifier."
+        )
+
+    tables = scoring_report_tables(report)
+    if not tables:
+        raise ScoringReportValidationError(
+            "Self-check report did not contain any tables."
+        )
+    csv_text = scoring_report_table_to_csv(tables[0])
+    if not csv_text.strip():
+        raise ScoringReportValidationError(
+            "CSV rendering returned an empty result."
+        )
+
+    mapping_target: Dict[str, Any] = {}
+    integration = integrate_scoring_report(mapping_target, report)
+    if not integration.success or mapping_target.get("scoring_report") is not report:
+        raise ScoringReportValidationError(
+            "Mapping report integration did not preserve the report object."
+        )
+
+    class SyntheticDockModel:
+        def __init__(self) -> None:
+            self.metadata: Dict[str, Any] = {}
+
+    dock_model = SyntheticDockModel()
+    dock_result = attach_scoring_report_to_dock_model(dock_model, report)
+    if not dock_result.success or dock_model.scoring_report is not report:
+        raise ScoringReportValidationError(
+            "DockModel report attachment failed."
+        )
+
+    summary = summarize_scoring_report(report)
+    return {
+        "success": True,
+        "report_id": report.report_id,
+        "status": report.status,
+        "section_count": summary["section_count"],
+        "table_count": summary["table_count"],
+        "text_length": len(text),
+        "markdown_length": len(markdown),
+        "html_length": len(html),
+        "json_length": len(json_text),
+        "csv_length": len(csv_text),
+        "mapping_adapter": integration.adapter_name,
+        "dock_model_adapter": dock_result.adapter_name,
+    }
+
+
+# -----------------------------------------------------------------------------
+# 26.13. Public interface closure
+# -----------------------------------------------------------------------------
+
+
+_SECTION_26_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    # Constants
+    "SCORING_REPORT_SCHEMA",
+    "SCORING_REPORT_SCHEMA_VERSION",
+    "SCORING_REPORT_SECTION_VERSION",
+    "SCORING_REPORT_STATUS_COMPLETE",
+    "SCORING_REPORT_STATUS_PARTIAL",
+    "SCORING_REPORT_STATUS_EMPTY",
+    "SCORING_REPORT_STATUS_FAILED",
+    "SCORING_REPORT_STATUSES",
+    "SCORING_REPORT_FORMAT_TEXT",
+    "SCORING_REPORT_FORMAT_MARKDOWN",
+    "SCORING_REPORT_FORMAT_HTML",
+    "SCORING_REPORT_FORMAT_JSON",
+    "SCORING_REPORT_FORMATS",
+    "SCORING_REPORT_DETAIL_COMPACT",
+    "SCORING_REPORT_DETAIL_STANDARD",
+    "SCORING_REPORT_DETAIL_EXTENDED",
+    "SCORING_REPORT_DETAIL_LEVELS",
+    "SCORING_REPORT_AUDIENCE_GENERAL",
+    "SCORING_REPORT_AUDIENCE_SCIENTIFIC",
+    "SCORING_REPORT_AUDIENCE_TECHNICAL",
+    "SCORING_REPORT_AUDIENCES",
+    "SCORING_REPORT_EMPTY_OMIT",
+    "SCORING_REPORT_EMPTY_INCLUDE",
+    "SCORING_REPORT_EMPTY_WARN",
+    "SCORING_REPORT_EMPTY_POLICIES",
+    "SCORING_REPORT_BLOCK_PARAGRAPH",
+    "SCORING_REPORT_BLOCK_METRICS",
+    "SCORING_REPORT_BLOCK_TABLE",
+    "SCORING_REPORT_BLOCK_BULLETS",
+    "SCORING_REPORT_BLOCK_WARNING",
+    "SCORING_REPORT_BLOCK_CODE",
+    "SCORING_REPORT_BLOCK_TYPES",
+    "SCORING_REPORT_SEVERITY_INFO",
+    "SCORING_REPORT_SEVERITY_WARNING",
+    "SCORING_REPORT_SEVERITY_ERROR",
+    "SCORING_REPORT_SEVERITIES",
+    "SCORING_REPORT_SECTION_OVERVIEW",
+    "SCORING_REPORT_SECTION_METHODS",
+    "SCORING_REPORT_SECTION_INTERACTIONS",
+    "SCORING_REPORT_SECTION_RESIDUES",
+    "SCORING_REPORT_SECTION_POSES",
+    "SCORING_REPORT_SECTION_STATISTICS",
+    "SCORING_REPORT_SECTION_RANKING",
+    "SCORING_REPORT_SECTION_CONSENSUS",
+    "SCORING_REPORT_SECTION_DIVERSITY",
+    "SCORING_REPORT_SECTION_EXTERNAL",
+    "SCORING_REPORT_SECTION_EXPLAINABILITY",
+    "SCORING_REPORT_SECTION_PROVENANCE",
+    "SCORING_REPORT_SECTION_WARNINGS",
+    "SCORING_REPORT_SECTION_APPENDIX",
+    "SCORING_REPORT_SECTION_ORDER",
+    "SCORING_REPORT_MEDIA_TEXT",
+    "SCORING_REPORT_MEDIA_MARKDOWN",
+    "SCORING_REPORT_MEDIA_HTML",
+    "SCORING_REPORT_MEDIA_JSON",
+    "SCORING_REPORT_MEDIA_CSV",
+    "DEFAULT_SCORING_REPORT_TITLE",
+    "DEFAULT_SCORING_REPORT_MAX_ROWS",
+    "DEFAULT_SCORING_REPORT_MAX_CELL_LENGTH",
+    "DEFAULT_SCORING_REPORT_FLOAT_DIGITS",
+    "DEFAULT_SCORING_REPORT_HISTORY_LIMIT",
+    "DEFAULT_SCORING_REPORT_ENCODING",
+    "DEFAULT_SCORING_REPORT_OPTIONS",
+    # Exceptions and structures
+    "ScoringReportError",
+    "ScoringReportInputError",
+    "ScoringReportConfigurationError",
+    "ScoringReportIntegrationError",
+    "ScoringReportValidationError",
+    "ScoringReportOptions",
+    "ScoringReportIssue",
+    "ScoringReportMetric",
+    "ScoringReportColumn",
+    "ScoringReportTable",
+    "ScoringReportBlock",
+    "ScoringReportSection",
+    "ScoringReportAttachment",
+    "ScoringReportDocument",
+    "ScoringReportSources",
+    "ScoringReportIntegrationResult",
+    "ScoringReportAdapter",
+    # Normalization and conversion
+    "normalize_scoring_report_status",
+    "normalize_scoring_report_format",
+    "normalize_scoring_report_detail",
+    "normalize_scoring_report_audience",
+    "normalize_scoring_report_empty_policy",
+    "normalize_scoring_report_severity",
+    "normalize_scoring_report_block_type",
+    "scoring_report_to_dict",
+    "infer_scoring_report_source_type",
+    "collect_scoring_report_sources",
+    "build_scoring_report_table",
+    # Section builders
+    "build_scoring_report_overview_section",
+    "build_scoring_report_methods_section",
+    "build_scoring_report_interactions_section",
+    "build_scoring_report_residues_section",
+    "build_scoring_report_poses_section",
+    "build_scoring_report_statistics_section",
+    "build_scoring_report_ranking_section",
+    "build_scoring_report_consensus_section",
+    "build_scoring_report_diversity_section",
+    "build_scoring_report_external_scores_section",
+    "build_scoring_report_explainability_section",
+    "build_scoring_report_provenance_section",
+    "build_scoring_report_warnings_section",
+    "build_scoring_report_appendix_section",
+    # Assembly and serialization bridge
+    "build_scoring_report_document",
+    "build_scoring_report",
+    "serialize_scoring_report_artifact",
+    "build_scoring_report_json_attachment",
+    "scoring_report_tables",
+    "scoring_report_table_map",
+    "scoring_report_table_to_csv",
+    "build_scoring_report_table_attachments",
+    "with_scoring_report_attachments",
+    # Rendering and writing
+    "render_scoring_report_text",
+    "render_scoring_report_markdown",
+    "render_scoring_report_html",
+    "render_scoring_report_json",
+    "render_scoring_report",
+    "write_scoring_report",
+    # Report-target integration
+    "register_scoring_report_adapter",
+    "unregister_scoring_report_adapter",
+    "scoring_report_adapters",
+    "resolve_scoring_report_adapter",
+    "integrate_scoring_report",
+    "attach_scoring_report_to_dock_model",
+    "build_and_integrate_scoring_report",
+    # Validation, summaries and self-check
+    "validate_scoring_report_options",
+    "validate_scoring_report_metric",
+    "validate_scoring_report_table",
+    "validate_scoring_report_block",
+    "validate_scoring_report_section",
+    "validate_scoring_report_attachment",
+    "validate_scoring_report_document",
+    "summarize_scoring_report",
+    "format_scoring_report_summary",
+    "run_section_26_self_check",
+)
+
+if "__all__" not in globals():
+    __all__: List[str] = []
+
+for public_name in _SECTION_26_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+def section_26_public_names() -> Tuple[str, ...]:
+    """Return the immutable Section 26 public interface."""
+
+    return _SECTION_26_PUBLIC_NAMES
+
+
+def validate_section_26_public_interface() -> None:
+    """Validate all public Section 26 names and exports."""
+
+    missing_names = tuple(
+        name for name in _SECTION_26_PUBLIC_NAMES if name not in globals()
+    )
+    if missing_names:
+        raise ScoringReportValidationError(
+            "Missing Section 26 public names: " + ", ".join(missing_names)
+        )
+    missing_exports = tuple(
+        name for name in _SECTION_26_PUBLIC_NAMES if name not in __all__
+    )
+    if missing_exports:
+        raise ScoringReportValidationError(
+            "Section 26 names missing from __all__: "
+            + ", ".join(missing_exports)
+        )
+
+
+if "section_26_public_names" not in __all__:
+    __all__.append("section_26_public_names")
+if "validate_section_26_public_interface" not in __all__:
+    __all__.append("validate_section_26_public_interface")
+
+_initialize_default_scoring_report_adapters()
+validate_section_26_public_interface()
+
+# =============================================================================
+# End of Section 26
+# =============================================================================
+
+
+
+# =============================================================================
+# DockAnalyzer — Interaction scoring
+# Section 27 — Validation and error handling
+# =============================================================================
+
+"""
+Central validation and error-handling infrastructure for DockAnalyzer scoring.
+
+Section 27 validates configuration objects and analytical artifacts produced by
+Sections 1–26 without recalculating their scientific results. It provides a
+uniform issue model, recursive structural validation, cross-field invariants,
+conservative repair utilities, validator registration, safe execution wrappers,
+and structured error records.
+
+Repairs are opt-in and always create a separate object when possible. Expected
+input/configuration failures are distinguished from unexpected internal errors.
+Performance optimization belongs to Section 28, ChimeraX-specific presentation
+to Section 29, and complete self-tests to Section 30.
+"""
+
+from contextlib import contextmanager
+from dataclasses import dataclass, field, fields, is_dataclass, replace
+from datetime import datetime, timezone
+from types import MappingProxyType
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Final,
+    FrozenSet,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Type,
+    Union,
+)
+import copy
+import inspect
+import math
+import re
+import traceback
+import warnings
+
+if "__all__" not in globals():
+    __all__: List[str] = []
+
+# -----------------------------------------------------------------------------
+# 27.1. Constants and canonical names
+# -----------------------------------------------------------------------------
+
+SCORING_VALIDATION_SCHEMA: Final[str] = "dockanalyzer.scoring.validation"
+SCORING_VALIDATION_SCHEMA_VERSION: Final[str] = "1.0"
+SCORING_VALIDATION_SECTION_VERSION: Final[str] = "27.0"
+
+SCORING_VALIDATION_STATUS_VALID: Final[str] = "valid"
+SCORING_VALIDATION_STATUS_VALID_WITH_WARNINGS: Final[str] = (
+    "valid_with_warnings"
+)
+SCORING_VALIDATION_STATUS_INVALID: Final[str] = "invalid"
+SCORING_VALIDATION_STATUS_REPAIRED: Final[str] = "repaired"
+SCORING_VALIDATION_STATUS_SKIPPED: Final[str] = "skipped"
+SCORING_VALIDATION_STATUS_FAILED: Final[str] = "failed"
+SCORING_VALIDATION_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_VALIDATION_STATUS_VALID,
+        SCORING_VALIDATION_STATUS_VALID_WITH_WARNINGS,
+        SCORING_VALIDATION_STATUS_INVALID,
+        SCORING_VALIDATION_STATUS_REPAIRED,
+        SCORING_VALIDATION_STATUS_SKIPPED,
+        SCORING_VALIDATION_STATUS_FAILED,
+    }
+)
+
+SCORING_VALIDATION_SEVERITY_INFO: Final[str] = "info"
+SCORING_VALIDATION_SEVERITY_WARNING: Final[str] = "warning"
+SCORING_VALIDATION_SEVERITY_ERROR: Final[str] = "error"
+SCORING_VALIDATION_SEVERITY_FATAL: Final[str] = "fatal"
+SCORING_VALIDATION_SEVERITIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_VALIDATION_SEVERITY_INFO,
+        SCORING_VALIDATION_SEVERITY_WARNING,
+        SCORING_VALIDATION_SEVERITY_ERROR,
+        SCORING_VALIDATION_SEVERITY_FATAL,
+    }
+)
+SCORING_VALIDATION_SEVERITY_ORDER: Final[Mapping[str, int]] = (
+    MappingProxyType(
+        {
+            SCORING_VALIDATION_SEVERITY_INFO: 0,
+            SCORING_VALIDATION_SEVERITY_WARNING: 1,
+            SCORING_VALIDATION_SEVERITY_ERROR: 2,
+            SCORING_VALIDATION_SEVERITY_FATAL: 3,
+        }
+    )
+)
+
+SCORING_VALIDATION_CATEGORY_INPUT: Final[str] = "input"
+SCORING_VALIDATION_CATEGORY_CONFIGURATION: Final[str] = "configuration"
+SCORING_VALIDATION_CATEGORY_STRUCTURE: Final[str] = "structure"
+SCORING_VALIDATION_CATEGORY_NUMERIC: Final[str] = "numeric"
+SCORING_VALIDATION_CATEGORY_IDENTITY: Final[str] = "identity"
+SCORING_VALIDATION_CATEGORY_CONSISTENCY: Final[str] = "consistency"
+SCORING_VALIDATION_CATEGORY_SERIALIZATION: Final[str] = "serialization"
+SCORING_VALIDATION_CATEGORY_INTEGRATION: Final[str] = "integration"
+SCORING_VALIDATION_CATEGORY_INTERNAL: Final[str] = "internal"
+SCORING_VALIDATION_CATEGORIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_VALIDATION_CATEGORY_INPUT,
+        SCORING_VALIDATION_CATEGORY_CONFIGURATION,
+        SCORING_VALIDATION_CATEGORY_STRUCTURE,
+        SCORING_VALIDATION_CATEGORY_NUMERIC,
+        SCORING_VALIDATION_CATEGORY_IDENTITY,
+        SCORING_VALIDATION_CATEGORY_CONSISTENCY,
+        SCORING_VALIDATION_CATEGORY_SERIALIZATION,
+        SCORING_VALIDATION_CATEGORY_INTEGRATION,
+        SCORING_VALIDATION_CATEGORY_INTERNAL,
+    }
+)
+
+SCORING_ERROR_MODE_RAISE: Final[str] = "raise"
+SCORING_ERROR_MODE_RETURN: Final[str] = "return"
+SCORING_ERROR_MODE_WARN: Final[str] = "warn"
+SCORING_ERROR_MODE_COLLECT: Final[str] = "collect"
+SCORING_ERROR_MODE_DEFAULT: Final[str] = "default"
+SCORING_ERROR_MODE_SKIP: Final[str] = "skip"
+SCORING_ERROR_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_ERROR_MODE_RAISE,
+        SCORING_ERROR_MODE_RETURN,
+        SCORING_ERROR_MODE_WARN,
+        SCORING_ERROR_MODE_COLLECT,
+        SCORING_ERROR_MODE_DEFAULT,
+        SCORING_ERROR_MODE_SKIP,
+    }
+)
+
+SCORING_RECOVERY_NONE: Final[str] = "none"
+SCORING_RECOVERY_RETRY: Final[str] = "retry"
+SCORING_RECOVERY_FALLBACK: Final[str] = "fallback"
+SCORING_RECOVERY_DEFAULT: Final[str] = "default"
+SCORING_RECOVERY_REPAIR_AND_RETRY: Final[str] = "repair_and_retry"
+SCORING_RECOVERY_STRATEGIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_RECOVERY_NONE,
+        SCORING_RECOVERY_RETRY,
+        SCORING_RECOVERY_FALLBACK,
+        SCORING_RECOVERY_DEFAULT,
+        SCORING_RECOVERY_REPAIR_AND_RETRY,
+    }
+)
+
+SCORING_ERROR_CATEGORY_INPUT: Final[str] = "input_error"
+SCORING_ERROR_CATEGORY_CONFIGURATION: Final[str] = "configuration_error"
+SCORING_ERROR_CATEGORY_VALIDATION: Final[str] = "validation_error"
+SCORING_ERROR_CATEGORY_NUMERIC: Final[str] = "numeric_error"
+SCORING_ERROR_CATEGORY_IO: Final[str] = "io_error"
+SCORING_ERROR_CATEGORY_INTEGRATION: Final[str] = "integration_error"
+SCORING_ERROR_CATEGORY_RUNTIME: Final[str] = "runtime_error"
+SCORING_ERROR_CATEGORY_INTERNAL: Final[str] = "internal_error"
+SCORING_ERROR_CATEGORIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_ERROR_CATEGORY_INPUT,
+        SCORING_ERROR_CATEGORY_CONFIGURATION,
+        SCORING_ERROR_CATEGORY_VALIDATION,
+        SCORING_ERROR_CATEGORY_NUMERIC,
+        SCORING_ERROR_CATEGORY_IO,
+        SCORING_ERROR_CATEGORY_INTEGRATION,
+        SCORING_ERROR_CATEGORY_RUNTIME,
+        SCORING_ERROR_CATEGORY_INTERNAL,
+    }
+)
+
+DEFAULT_SCORING_VALIDATION_MAX_ISSUES: Final[int] = 500
+DEFAULT_SCORING_VALIDATION_MAX_DEPTH: Final[int] = 24
+DEFAULT_SCORING_VALIDATION_TOLERANCE: Final[float] = 1.0e-8
+DEFAULT_SCORING_VALIDATION_RELATIVE_TOLERANCE: Final[float] = 1.0e-7
+DEFAULT_SCORING_ERROR_MAX_TRACEBACK: Final[int] = 12000
+DEFAULT_SCORING_VALIDATION_MAX_REPR: Final[int] = 240
+
+_SCORE_FIELDS: Final[FrozenSet[str]] = frozenset(
+    {
+        "score",
+        "raw_score",
+        "final_score",
+        "normalized_score",
+        "ranking_score",
+        "contribution",
+        "contribution_score",
+        "penalty_score",
+        "bonus_score",
+        "favorable_score",
+        "unfavorable_score",
+        "external_composite_score",
+        "fused_score",
+        "internal_score",
+        "normalized_internal_score",
+        "weighted_value",
+        "oriented_value",
+        "imputed_value",
+        "raw_value",
+        "value",
+    }
+)
+_IDENTIFIER_FIELDS: Final[FrozenSet[str]] = frozenset(
+    {
+        "interaction_id",
+        "entity_id",
+        "residue_id",
+        "pose_id",
+        "model_id",
+        "ligand_id",
+        "feature_id",
+        "group_id",
+        "report_id",
+        "artifact_id",
+        "bundle_id",
+        "table_id",
+        "section_id",
+    }
+)
+_PROBABILITY_FIELDS: Final[FrozenSet[str]] = frozenset(
+    {
+        "percentile",
+        "persistence_fraction",
+        "weighted_persistence_fraction",
+        "consensus_precision",
+        "consensus_recall",
+        "core_recall",
+        "confidence",
+        "normalized_entropy",
+        "dominance_fraction",
+        "concentration_fraction",
+        "overall_coverage_fraction",
+        "weighted_coverage_fraction",
+        "residue_coverage_fraction",
+        "family_coverage_fraction",
+        "type_coverage_fraction",
+        "hotspot_coverage_fraction",
+        "jaccard_similarity",
+        "overlap_coefficient",
+        "weighted_jaccard_similarity",
+    }
+)
+
+# -----------------------------------------------------------------------------
+# 27.2. Exceptions
+# -----------------------------------------------------------------------------
+
+class ScoringValidationFrameworkError(RuntimeError):
+    """Base exception raised by the Section 27 framework."""
+
+
+class ScoringValidationInputError(
+    ScoringValidationFrameworkError,
+    ValueError,
+):
+    """Raised when a value cannot be interpreted as a scoring artifact."""
+
+
+class ScoringValidationConfigurationError(
+    ScoringValidationFrameworkError,
+    ValueError,
+):
+    """Raised when validation options are inconsistent."""
+
+
+class ScoringArtifactValidationError(ScoringValidationFrameworkError):
+    """Raised when a scoring artifact fails strict validation."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        report: Optional["ScoringValidationReport"] = None,
+    ) -> None:
+        super().__init__(message)
+        self.report = report
+
+
+class ScoringRepairError(ScoringValidationFrameworkError):
+    """Raised when a requested repair cannot be performed safely."""
+
+
+class ScoringOperationError(ScoringValidationFrameworkError):
+    """Wrap an exception raised while executing a scoring operation."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        record: Optional["ScoringErrorRecord"] = None,
+    ) -> None:
+        super().__init__(message)
+        self.record = record
+
+# -----------------------------------------------------------------------------
+# 27.3. Helpers and normalization
+# -----------------------------------------------------------------------------
+
+def _validation_token(value: Any) -> str:
+    return re.sub(
+        r"[^a-z0-9]+",
+        "_",
+        str(value).strip().lower(),
+    ).strip("_")
+
+
+def _normalize_choice(
+    value: Any,
+    allowed: FrozenSet[str],
+    *,
+    name: str,
+    aliases: Optional[Mapping[str, str]] = None,
+) -> str:
+    token = _validation_token(value)
+    if aliases and token in aliases:
+        token = aliases[token]
+    if token not in allowed:
+        choices = ", ".join(sorted(allowed))
+        raise ScoringValidationConfigurationError(
+            f"Unsupported {name} {value!r}; expected one of: {choices}."
+        )
+    return token
+
+
+def normalize_scoring_validation_status(value: Any) -> str:
+    return _normalize_choice(
+        value,
+        SCORING_VALIDATION_STATUSES,
+        name="validation status",
+        aliases={
+            "ok": SCORING_VALIDATION_STATUS_VALID,
+            "warning": SCORING_VALIDATION_STATUS_VALID_WITH_WARNINGS,
+            "error": SCORING_VALIDATION_STATUS_INVALID,
+        },
+    )
+
+
+def normalize_scoring_validation_severity(value: Any) -> str:
+    return _normalize_choice(
+        value,
+        SCORING_VALIDATION_SEVERITIES,
+        name="validation severity",
+        aliases={
+            "warn": SCORING_VALIDATION_SEVERITY_WARNING,
+            "critical": SCORING_VALIDATION_SEVERITY_FATAL,
+        },
+    )
+
+
+def normalize_scoring_validation_category(value: Any) -> str:
+    return _normalize_choice(
+        value,
+        SCORING_VALIDATION_CATEGORIES,
+        name="validation category",
+    )
+
+
+def normalize_scoring_error_mode(value: Any) -> str:
+    return _normalize_choice(
+        value,
+        SCORING_ERROR_MODES,
+        name="error mode",
+        aliases={
+            "result": SCORING_ERROR_MODE_RETURN,
+            "ignore": SCORING_ERROR_MODE_SKIP,
+        },
+    )
+
+
+def normalize_scoring_recovery_strategy(value: Any) -> str:
+    return _normalize_choice(
+        value,
+        SCORING_RECOVERY_STRATEGIES,
+        name="recovery strategy",
+        aliases={
+            "repair": SCORING_RECOVERY_REPAIR_AND_RETRY,
+            "repair_retry": SCORING_RECOVERY_REPAIR_AND_RETRY,
+        },
+    )
+
+
+def normalize_scoring_error_category(value: Any) -> str:
+    return _normalize_choice(
+        value,
+        SCORING_ERROR_CATEGORIES,
+        name="error category",
+    )
+
+
+def _validation_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _optional_float(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _finite_float(value: Any) -> Optional[float]:
+    number = _optional_float(value)
+    if number is None or not math.isfinite(number):
+        return None
+    return number
+
+
+def _safe_repr(value: Any, max_length: int = 240) -> str:
+    try:
+        text = repr(value)
+    except Exception:
+        text = f"<{type(value).__name__} repr failed>"
+    if len(text) <= max_length:
+        return text
+    return text[: max(0, max_length - 3)] + "..."
+
+
+def _type_name(value: Any) -> str:
+    return "NoneType" if value is None else type(value).__name__
+
+
+def _get(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, Mapping):
+        return value.get(name, default)
+    try:
+        return getattr(value, name, default)
+    except Exception:
+        return default
+
+
+def _has(value: Any, name: str) -> bool:
+    if isinstance(value, Mapping):
+        return name in value
+    try:
+        return hasattr(value, name)
+    except Exception:
+        return False
+
+
+def _items(value: Any) -> Iterable[Tuple[str, Any]]:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            yield str(key), item
+        return
+    if is_dataclass(value) and not isinstance(value, type):
+        for descriptor in fields(value):
+            try:
+                yield descriptor.name, getattr(value, descriptor.name)
+            except Exception:
+                continue
+        return
+    if hasattr(value, "__dict__"):
+        try:
+            for key, item in vars(value).items():
+                if not str(key).startswith("_"):
+                    yield str(key), item
+        except Exception:
+            return
+
+
+def _sequence(value: Any) -> Optional[Tuple[Any, ...]]:
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        return None
+    try:
+        return tuple(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _path_join(base: str, child: Union[str, int]) -> str:
+    text = str(child)
+    if not base:
+        return text
+    return base + text if text.startswith("[") else base + "." + text
+
+# -----------------------------------------------------------------------------
+# 27.4. Public dataclasses
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ScoringValidationPolicy:
+    strict: bool = False
+    raise_on_error: bool = False
+    raise_on_fatal: bool = True
+    warnings_as_errors: bool = False
+    allow_unknown_types: bool = True
+    allow_empty: bool = True
+    require_finite_numbers: bool = True
+    validate_nested: bool = True
+    validate_cross_invariants: bool = True
+    validate_identifiers: bool = True
+    validate_probabilities: bool = True
+    repair: bool = False
+    repair_nonfinite: bool = False
+    repair_missing_identifiers: bool = False
+    coerce_numeric_strings: bool = False
+    preserve_input: bool = True
+    include_values_in_issues: bool = True
+    include_exception_details: bool = False
+    max_issues: int = DEFAULT_SCORING_VALIDATION_MAX_ISSUES
+    max_depth: int = DEFAULT_SCORING_VALIDATION_MAX_DEPTH
+    absolute_tolerance: float = DEFAULT_SCORING_VALIDATION_TOLERANCE
+    relative_tolerance: float = (
+        DEFAULT_SCORING_VALIDATION_RELATIVE_TOLERANCE
+    )
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.max_issues < 1 or self.max_depth < 0:
+            raise ScoringValidationConfigurationError(
+                "Validation limits are invalid."
+            )
+        if self.absolute_tolerance < 0.0:
+            raise ScoringValidationConfigurationError(
+                "absolute_tolerance cannot be negative."
+            )
+        if self.relative_tolerance < 0.0:
+            raise ScoringValidationConfigurationError(
+                "relative_tolerance cannot be negative."
+            )
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(dict(self.metadata or {})),
+        )
+
+
+@dataclass(frozen=True)
+class ScoringValidationIssue:
+    severity: str
+    code: str
+    message: str
+    path: str = ""
+    category: str = SCORING_VALIDATION_CATEGORY_STRUCTURE
+    artifact_type: str = "unknown"
+    field_name: str = ""
+    observed: Any = None
+    expected: str = ""
+    repairable: bool = False
+    repaired: bool = False
+    exception_type: str = ""
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "severity",
+            normalize_scoring_validation_severity(self.severity),
+        )
+        object.__setattr__(
+            self,
+            "category",
+            normalize_scoring_validation_category(self.category),
+        )
+        object.__setattr__(self, "code", _validation_token(self.code))
+        object.__setattr__(self, "message", str(self.message).strip())
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(dict(self.metadata or {})),
+        )
+
+    @property
+    def is_error(self) -> bool:
+        return self.severity in {
+            SCORING_VALIDATION_SEVERITY_ERROR,
+            SCORING_VALIDATION_SEVERITY_FATAL,
+        }
+
+    @property
+    def is_warning(self) -> bool:
+        return self.severity == SCORING_VALIDATION_SEVERITY_WARNING
+
+
+@dataclass(frozen=True)
+class ScoringValidationReport:
+    artifact_type: str
+    status: str
+    valid: bool
+    issues: Tuple[ScoringValidationIssue, ...] = ()
+    checked_field_count: int = 0
+    checked_item_count: int = 0
+    repaired: bool = False
+    repaired_object: Any = None
+    started_at: str = ""
+    finished_at: str = ""
+    duration_seconds: float = 0.0
+    schema: str = SCORING_VALIDATION_SCHEMA
+    schema_version: str = SCORING_VALIDATION_SCHEMA_VERSION
+    section_version: str = SCORING_VALIDATION_SECTION_VERSION
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "status",
+            normalize_scoring_validation_status(self.status),
+        )
+        object.__setattr__(self, "issues", tuple(self.issues or ()))
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(dict(self.metadata or {})),
+        )
+
+    @property
+    def info_count(self) -> int:
+        return sum(
+            issue.severity == SCORING_VALIDATION_SEVERITY_INFO
+            for issue in self.issues
+        )
+
+    @property
+    def warning_count(self) -> int:
+        return sum(issue.is_warning for issue in self.issues)
+
+    @property
+    def error_count(self) -> int:
+        return sum(
+            issue.severity == SCORING_VALIDATION_SEVERITY_ERROR
+            for issue in self.issues
+        )
+
+    @property
+    def fatal_count(self) -> int:
+        return sum(
+            issue.severity == SCORING_VALIDATION_SEVERITY_FATAL
+            for issue in self.issues
+        )
+
+    @property
+    def highest_severity(self) -> str:
+        if not self.issues:
+            return SCORING_VALIDATION_SEVERITY_INFO
+        return max(
+            (issue.severity for issue in self.issues),
+            key=lambda item: SCORING_VALIDATION_SEVERITY_ORDER[item],
+        )
+
+
+@dataclass(frozen=True)
+class ScoringBatchValidationReport:
+    reports: Tuple[ScoringValidationReport, ...]
+    status: str
+    valid: bool
+    artifact_count: int
+    valid_count: int
+    invalid_count: int
+    repaired_count: int
+    issue_count: int
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "status",
+            normalize_scoring_validation_status(self.status),
+        )
+        object.__setattr__(self, "reports", tuple(self.reports or ()))
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(dict(self.metadata or {})),
+        )
+
+
+@dataclass(frozen=True)
+class ScoringValidatorRegistration:
+    name: str
+    predicate: Callable[[Any], bool]
+    validator: Callable[[Any, "_ValidationContext"], None]
+    priority: int = 0
+    artifact_type: str = ""
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not callable(self.predicate) or not callable(self.validator):
+            raise ScoringValidationConfigurationError(
+                "Validator predicate and callback must be callable."
+            )
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(dict(self.metadata or {})),
+        )
+
+
+@dataclass(frozen=True)
+class ScoringErrorHandlingOptions:
+    mode: str = SCORING_ERROR_MODE_RETURN
+    recovery_strategy: str = SCORING_RECOVERY_NONE
+    operation: str = "scoring_operation"
+    artifact_type: str = ""
+    default_value: Any = None
+    fallback: Optional[Callable[..., Any]] = None
+    repair_function: Optional[Callable[[Any], Any]] = None
+    retry_count: int = 0
+    validate_input: bool = False
+    validate_output: bool = False
+    validation_policy: ScoringValidationPolicy = field(
+        default_factory=ScoringValidationPolicy
+    )
+    include_traceback: bool = False
+    max_traceback_length: int = DEFAULT_SCORING_ERROR_MAX_TRACEBACK
+    warn_category: Type[Warning] = RuntimeWarning
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "mode",
+            normalize_scoring_error_mode(self.mode),
+        )
+        object.__setattr__(
+            self,
+            "recovery_strategy",
+            normalize_scoring_recovery_strategy(self.recovery_strategy),
+        )
+        if self.retry_count < 0 or self.max_traceback_length < 0:
+            raise ScoringValidationConfigurationError(
+                "Retry and traceback limits cannot be negative."
+            )
+        if self.fallback is not None and not callable(self.fallback):
+            raise ScoringValidationConfigurationError(
+                "fallback must be callable."
+            )
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(dict(self.metadata or {})),
+        )
+
+
+@dataclass(frozen=True)
+class ScoringErrorRecord:
+    error_type: str
+    message: str
+    operation: str
+    category: str
+    severity: str
+    recoverable: bool
+    artifact_type: str = ""
+    path: str = ""
+    exception_repr: str = ""
+    traceback_text: str = ""
+    timestamp: str = ""
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "category",
+            normalize_scoring_error_category(self.category),
+        )
+        object.__setattr__(
+            self,
+            "severity",
+            normalize_scoring_validation_severity(self.severity),
+        )
+        object.__setattr__(
+            self,
+            "timestamp",
+            self.timestamp or _validation_now(),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(dict(self.metadata or {})),
+        )
+
+
+@dataclass(frozen=True)
+class ScoringRecoveryAttempt:
+    strategy: str
+    attempted: bool
+    succeeded: bool
+    attempt_count: int = 0
+    result: Any = None
+    message: str = ""
+    exception_type: str = ""
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "strategy",
+            normalize_scoring_recovery_strategy(self.strategy),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(dict(self.metadata or {})),
+        )
+
+
+@dataclass(frozen=True)
+class ScoringExecutionResult:
+    success: bool
+    value: Any = None
+    error: Optional[ScoringErrorRecord] = None
+    recovery: Optional[ScoringRecoveryAttempt] = None
+    input_validation: Optional[ScoringValidationReport] = None
+    output_validation: Optional[ScoringValidationReport] = None
+    warnings: Tuple[str, ...] = ()
+    attempt_count: int = 1
+    operation: str = ""
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "warnings", tuple(self.warnings or ()))
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(dict(self.metadata or {})),
+        )
+
+
+@dataclass
+class ScoringErrorCollector:
+    records: List[ScoringErrorRecord] = field(default_factory=list)
+    max_records: int = 1000
+
+    def add(self, record: ScoringErrorRecord) -> None:
+        if len(self.records) < self.max_records:
+            self.records.append(record)
+
+    def clear(self) -> None:
+        self.records.clear()
+
+    def as_tuple(self) -> Tuple[ScoringErrorRecord, ...]:
+        return tuple(self.records)
+
+    @property
+    def error_count(self) -> int:
+        return len(self.records)
+
+
+@dataclass
+class _ValidationContext:
+    policy: ScoringValidationPolicy
+    artifact_type: str
+    root: Any
+    path: str = ""
+    depth: int = 0
+    issues: List[ScoringValidationIssue] = field(default_factory=list)
+    checked_field_count: int = 0
+    checked_item_count: int = 0
+    seen_ids: Set[int] = field(default_factory=set)
+    stop: bool = False
+
+    def child(self, path: Union[str, int]) -> "_ValidationContext":
+        return _ValidationContext(
+            policy=self.policy,
+            artifact_type=self.artifact_type,
+            root=self.root,
+            path=_path_join(self.path, path),
+            depth=self.depth + 1,
+            issues=self.issues,
+            checked_field_count=self.checked_field_count,
+            checked_item_count=self.checked_item_count,
+            seen_ids=self.seen_ids,
+            stop=self.stop,
+        )
+
+    def sync(self, child: "_ValidationContext") -> None:
+        self.checked_field_count = max(
+            self.checked_field_count,
+            child.checked_field_count,
+        )
+        self.checked_item_count = max(
+            self.checked_item_count,
+            child.checked_item_count,
+        )
+        self.stop = self.stop or child.stop
+
+    def add(
+        self,
+        severity: str,
+        code: str,
+        message: str,
+        *,
+        category: str = SCORING_VALIDATION_CATEGORY_STRUCTURE,
+        path: Optional[str] = None,
+        field_name: str = "",
+        observed: Any = None,
+        expected: str = "",
+        repairable: bool = False,
+        repaired: bool = False,
+        exception: Optional[BaseException] = None,
+    ) -> None:
+        if self.stop or len(self.issues) >= self.policy.max_issues:
+            self.stop = True
+            return
+        normalized = normalize_scoring_validation_severity(severity)
+        if (
+            normalized == SCORING_VALIDATION_SEVERITY_WARNING
+            and self.policy.warnings_as_errors
+        ):
+            normalized = SCORING_VALIDATION_SEVERITY_ERROR
+        issue_observed = observed
+        if not self.policy.include_values_in_issues:
+            issue_observed = None
+        elif observed is not None:
+            issue_observed = _safe_repr(observed)
+        self.issues.append(
+            ScoringValidationIssue(
+                severity=normalized,
+                code=code,
+                message=message,
+                path=self.path if path is None else path,
+                category=category,
+                artifact_type=self.artifact_type,
+                field_name=field_name,
+                observed=issue_observed,
+                expected=expected,
+                repairable=repairable,
+                repaired=repaired,
+                exception_type=(
+                    type(exception).__name__ if exception else ""
+                ),
+            )
+        )
+
+_SCORING_VALIDATORS: List[ScoringValidatorRegistration] = []
+_SCORING_VALIDATORS_INITIALIZED = False
+
+# -----------------------------------------------------------------------------
+# 27.5. Validator registry and primitive checks
+# -----------------------------------------------------------------------------
+
+def register_scoring_validator(
+    name: str,
+    predicate: Callable[[Any], bool],
+    validator: Callable[[Any, _ValidationContext], None],
+    *,
+    priority: int = 0,
+    artifact_type: str = "",
+    replace_existing: bool = False,
+) -> ScoringValidatorRegistration:
+    global _SCORING_VALIDATORS
+    normalized_name = str(name).strip()
+    if not normalized_name:
+        raise ScoringValidationConfigurationError(
+            "Validator name cannot be empty."
+        )
+    if any(item.name == normalized_name for item in _SCORING_VALIDATORS):
+        if not replace_existing:
+            raise ScoringValidationConfigurationError(
+                f"Validator {normalized_name!r} already exists."
+            )
+        _SCORING_VALIDATORS = [
+            item for item in _SCORING_VALIDATORS
+            if item.name != normalized_name
+        ]
+    registration = ScoringValidatorRegistration(
+        name=normalized_name,
+        predicate=predicate,
+        validator=validator,
+        priority=int(priority),
+        artifact_type=artifact_type,
+    )
+    _SCORING_VALIDATORS.append(registration)
+    _SCORING_VALIDATORS.sort(
+        key=lambda item: (-item.priority, item.name)
+    )
+    return registration
+
+
+def unregister_scoring_validator(name: str) -> bool:
+    global _SCORING_VALIDATORS
+    old_count = len(_SCORING_VALIDATORS)
+    _SCORING_VALIDATORS = [
+        item for item in _SCORING_VALIDATORS
+        if item.name != str(name).strip()
+    ]
+    return len(_SCORING_VALIDATORS) != old_count
+
+
+def scoring_validators() -> Tuple[ScoringValidatorRegistration, ...]:
+    _initialize_default_scoring_validators()
+    return tuple(_SCORING_VALIDATORS)
+
+
+def resolve_scoring_validator(
+    value: Any,
+) -> Optional[ScoringValidatorRegistration]:
+    _initialize_default_scoring_validators()
+    for registration in _SCORING_VALIDATORS:
+        try:
+            if registration.predicate(value):
+                return registration
+        except Exception:
+            continue
+    return None
+
+
+def _class_names(*names: str) -> Callable[[Any], bool]:
+    expected = frozenset(names)
+    return lambda value: _type_name(value) in expected
+
+
+def _check_identifier(
+    value: Any,
+    field_name: str,
+    context: _ValidationContext,
+    *,
+    required: bool = False,
+) -> None:
+    context.checked_field_count += 1
+    if value is None or not str(value).strip():
+        context.add(
+            (
+                SCORING_VALIDATION_SEVERITY_ERROR
+                if required
+                else SCORING_VALIDATION_SEVERITY_WARNING
+            ),
+            "missing_identifier",
+            f"Identifier field {field_name!r} is empty.",
+            category=SCORING_VALIDATION_CATEGORY_IDENTITY,
+            field_name=field_name,
+            observed=value,
+            expected="a non-empty identifier",
+            repairable=context.policy.repair_missing_identifiers,
+        )
+
+
+def _check_number(
+    value: Any,
+    field_name: str,
+    context: _ValidationContext,
+    *,
+    required: bool = False,
+    minimum: Optional[float] = None,
+    maximum: Optional[float] = None,
+) -> Optional[float]:
+    context.checked_field_count += 1
+    if value is None:
+        if required:
+            context.add(
+                SCORING_VALIDATION_SEVERITY_ERROR,
+                "missing_numeric_value",
+                f"Numeric field {field_name!r} is missing.",
+                category=SCORING_VALIDATION_CATEGORY_NUMERIC,
+                field_name=field_name,
+                expected="a finite number",
+            )
+        return None
+    number = _optional_float(value)
+    if number is None:
+        context.add(
+            SCORING_VALIDATION_SEVERITY_ERROR,
+            "invalid_numeric_type",
+            f"Field {field_name!r} is not numeric.",
+            category=SCORING_VALIDATION_CATEGORY_NUMERIC,
+            field_name=field_name,
+            observed=value,
+            expected="a numeric value",
+            repairable=(
+                context.policy.coerce_numeric_strings
+                and isinstance(value, str)
+            ),
+        )
+        return None
+    if context.policy.require_finite_numbers and not math.isfinite(number):
+        context.add(
+            SCORING_VALIDATION_SEVERITY_ERROR,
+            "nonfinite_numeric_value",
+            f"Field {field_name!r} contains a non-finite number.",
+            category=SCORING_VALIDATION_CATEGORY_NUMERIC,
+            field_name=field_name,
+            observed=number,
+            expected="a finite number",
+            repairable=context.policy.repair_nonfinite,
+        )
+        return None
+    if minimum is not None and number < minimum:
+        context.add(
+            SCORING_VALIDATION_SEVERITY_ERROR,
+            "numeric_value_below_minimum",
+            f"Field {field_name!r} is below its minimum.",
+            category=SCORING_VALIDATION_CATEGORY_NUMERIC,
+            field_name=field_name,
+            observed=number,
+            expected=f">= {minimum}",
+        )
+    if maximum is not None and number > maximum:
+        context.add(
+            SCORING_VALIDATION_SEVERITY_ERROR,
+            "numeric_value_above_maximum",
+            f"Field {field_name!r} is above its maximum.",
+            category=SCORING_VALIDATION_CATEGORY_NUMERIC,
+            field_name=field_name,
+            observed=number,
+            expected=f"<= {maximum}",
+        )
+    return number
+
+
+def _check_common(value: Any, context: _ValidationContext) -> None:
+    if value is None:
+        context.add(
+            SCORING_VALIDATION_SEVERITY_ERROR,
+            "null_artifact",
+            "The scoring artifact is None.",
+            category=SCORING_VALIDATION_CATEGORY_INPUT,
+        )
+        return
+    for field_name, field_value in _items(value):
+        if context.stop:
+            return
+        if (
+            context.policy.validate_identifiers
+            and field_name in _IDENTIFIER_FIELDS
+        ):
+            _check_identifier(
+                field_value,
+                field_name,
+                context,
+                required=field_name in {"pose_id", "interaction_id"},
+            )
+        if field_name in _SCORE_FIELDS and field_value is not None:
+            _check_number(field_value, field_name, context)
+        if (
+            context.policy.validate_probabilities
+            and field_name in _PROBABILITY_FIELDS
+            and field_value is not None
+        ):
+            _check_number(
+                field_value,
+                field_name,
+                context,
+                minimum=0.0,
+                maximum=1.0,
+            )
+
+
+def _check_unique(
+    values: Iterable[Any],
+    field_name: str,
+    context: _ValidationContext,
+) -> None:
+    seen: Set[str] = set()
+    duplicates: Set[str] = set()
+    for item in values:
+        identifier = _get(item, field_name)
+        if identifier is None or not str(identifier).strip():
+            continue
+        token = str(identifier)
+        if token in seen:
+            duplicates.add(token)
+        seen.add(token)
+    if duplicates:
+        context.add(
+            SCORING_VALIDATION_SEVERITY_ERROR,
+            "duplicate_identifiers",
+            f"Duplicate {field_name} values were detected.",
+            category=SCORING_VALIDATION_CATEGORY_IDENTITY,
+            field_name=field_name,
+            observed=sorted(duplicates),
+            expected="unique identifiers",
+        )
+
+
+def _check_sum(
+    declared: Any,
+    values: Iterable[Any],
+    field_name: str,
+    context: _ValidationContext,
+) -> None:
+    declared_value = _finite_float(declared)
+    numbers = [
+        number
+        for number in (_finite_float(item) for item in values)
+        if number is not None
+    ]
+    if declared_value is None or not numbers:
+        return
+    observed = math.fsum(numbers)
+    if not math.isclose(
+        declared_value,
+        observed,
+        rel_tol=context.policy.relative_tolerance,
+        abs_tol=context.policy.absolute_tolerance,
+    ):
+        context.add(
+            SCORING_VALIDATION_SEVERITY_WARNING,
+            "score_sum_mismatch",
+            f"Declared {field_name!r} differs from the component sum.",
+            category=SCORING_VALIDATION_CATEGORY_CONSISTENCY,
+            field_name=field_name,
+            observed={"declared": declared_value, "sum": observed},
+        )
+
+# -----------------------------------------------------------------------------
+# 27.6. Built-in artifact validators
+# -----------------------------------------------------------------------------
+
+def _validate_generic(value: Any, context: _ValidationContext) -> None:
+    _check_common(value, context)
+    if (
+        isinstance(value, Mapping)
+        and not value
+        and not context.policy.allow_empty
+    ):
+        context.add(
+            SCORING_VALIDATION_SEVERITY_ERROR,
+            "empty_mapping_artifact",
+            "The scoring mapping is empty.",
+            category=SCORING_VALIDATION_CATEGORY_INPUT,
+        )
+
+
+def _validate_configuration(
+    value: Any,
+    context: _ValidationContext,
+) -> None:
+    _validate_generic(value, context)
+    for field_name, field_value in _items(value):
+        token = _validation_token(field_name)
+        if not any(
+            marker in token
+            for marker in (
+                "weight",
+                "multiplier",
+                "threshold",
+                "tolerance",
+                "epsilon",
+            )
+        ):
+            continue
+        if isinstance(field_value, Mapping):
+            for key, item in field_value.items():
+                number = _optional_float(item)
+                if number is not None and not math.isfinite(number):
+                    context.add(
+                        SCORING_VALIDATION_SEVERITY_ERROR,
+                        "nonfinite_configuration_value",
+                        "Configuration mapping contains a non-finite value.",
+                        category=(
+                            SCORING_VALIDATION_CATEGORY_CONFIGURATION
+                        ),
+                        path=_path_join(context.path, f"{field_name}.{key}"),
+                        observed=item,
+                    )
+            continue
+        number = _optional_float(field_value)
+        if number is not None and not math.isfinite(number):
+            context.add(
+                SCORING_VALIDATION_SEVERITY_ERROR,
+                "nonfinite_configuration_value",
+                f"Configuration field {field_name!r} is non-finite.",
+                category=SCORING_VALIDATION_CATEGORY_CONFIGURATION,
+                field_name=field_name,
+                observed=field_value,
+            )
+        if token.endswith("weight") and number is not None and number < 0.0:
+            context.add(
+                SCORING_VALIDATION_SEVERITY_WARNING,
+                "negative_weight",
+                f"Configuration weight {field_name!r} is negative.",
+                category=SCORING_VALIDATION_CATEGORY_CONFIGURATION,
+                field_name=field_name,
+                observed=number,
+            )
+
+
+def _validate_interaction(
+    value: Any,
+    context: _ValidationContext,
+) -> None:
+    _validate_generic(value, context)
+    if not any(
+        _has(value, name)
+        for name in ("interaction_type", "family", "type", "interaction")
+    ):
+        context.add(
+            SCORING_VALIDATION_SEVERITY_WARNING,
+            "missing_interaction_type",
+            "The interaction type or family could not be identified.",
+        )
+    accepted = _get(value, "accepted")
+    final_score = _finite_float(_get(value, "final_score"))
+    if accepted is False and final_score not in (None, 0.0):
+        context.add(
+            SCORING_VALIDATION_SEVERITY_WARNING,
+            "rejected_interaction_has_score",
+            "A rejected interaction retains a non-zero final score.",
+            category=SCORING_VALIDATION_CATEGORY_CONSISTENCY,
+            observed=final_score,
+        )
+
+
+def _validate_collection(
+    value: Any,
+    context: _ValidationContext,
+) -> None:
+    _validate_generic(value, context)
+    candidates: Optional[Tuple[Any, ...]] = None
+    field_name = ""
+    for name in (
+        "interaction_scores",
+        "scores",
+        "components",
+        "interactions",
+        "items",
+    ):
+        if _has(value, name):
+            candidates = _sequence(_get(value, name))
+            field_name = name
+            break
+    if candidates is None:
+        context.add(
+            SCORING_VALIDATION_SEVERITY_WARNING,
+            "missing_collection_items",
+            "No interaction-score collection was found.",
+        )
+        return
+    context.checked_item_count += len(candidates)
+    _check_unique(candidates, "interaction_id", context)
+    if context.policy.validate_cross_invariants:
+        declared = _get(value, "final_score", _get(value, "total_score"))
+        _check_sum(
+            declared,
+            (_get(item, "final_score") for item in candidates),
+            "final_score",
+            context,
+        )
+    if context.policy.validate_nested:
+        for index, item in enumerate(candidates):
+            child = context.child(f"{field_name}[{index}]")
+            _validate_interaction(item, child)
+            context.sync(child)
+
+
+def _validate_residue(value: Any, context: _ValidationContext) -> None:
+    _validate_generic(value, context)
+    if not any(
+        _has(value, name)
+        for name in ("residue_id", "residue_key", "residue", "identifier")
+    ):
+        context.add(
+            SCORING_VALIDATION_SEVERITY_WARNING,
+            "missing_residue_identity",
+            "The residue score has no identifiable residue.",
+            category=SCORING_VALIDATION_CATEGORY_IDENTITY,
+        )
+    contributions = None
+    for name in (
+        "contributions",
+        "interaction_scores",
+        "interactions",
+        "components",
+    ):
+        if _has(value, name):
+            contributions = _sequence(_get(value, name))
+            break
+    if contributions and context.policy.validate_cross_invariants:
+        _check_sum(
+            _get(value, "final_score"),
+            (
+                _get(item, "final_score", item)
+                for item in contributions
+            ),
+            "final_score",
+            context,
+        )
+
+
+def _validate_pose(value: Any, context: _ValidationContext) -> None:
+    _validate_generic(value, context)
+    if context.policy.validate_identifiers:
+        _check_identifier(
+            _get(value, "pose_id"),
+            "pose_id",
+            context,
+            required=True,
+        )
+    collections = None
+    collection_name = ""
+    for name in (
+        "collection_results",
+        "collections",
+        "family_results",
+        "interaction_results",
+    ):
+        if _has(value, name):
+            collections = _sequence(_get(value, name))
+            collection_name = name
+            break
+    if collections and context.policy.validate_cross_invariants:
+        declared = _get(value, "raw_score", _get(value, "final_score"))
+        _check_sum(
+            declared,
+            (_get(item, "final_score") for item in collections),
+            "raw_score",
+            context,
+        )
+    if collections and context.policy.validate_nested:
+        for index, item in enumerate(collections):
+            child = context.child(f"{collection_name}[{index}]")
+            _validate_collection(item, child)
+            context.sync(child)
+
+
+def _validate_normalization(
+    value: Any,
+    context: _ValidationContext,
+) -> None:
+    _validate_generic(value, context)
+    method = _validation_token(_get(value, "method", ""))
+    score = _finite_float(_get(value, "normalized_score"))
+    if score is not None and method in {
+        "min_max",
+        "percentile",
+        "unit_interval",
+        "zero_one",
+    }:
+        tolerance = context.policy.absolute_tolerance
+        if score < -tolerance or score > 1.0 + tolerance:
+            context.add(
+                SCORING_VALIDATION_SEVERITY_ERROR,
+                "normalized_score_out_of_range",
+                "The normalized score lies outside [0, 1].",
+                category=SCORING_VALIDATION_CATEGORY_NUMERIC,
+                observed=score,
+            )
+
+
+def _validate_ranking(value: Any, context: _ValidationContext) -> None:
+    _validate_generic(value, context)
+    groups = _sequence(_get(value, "groups"))
+    if groups is None:
+        context.add(
+            SCORING_VALIDATION_SEVERITY_ERROR,
+            "invalid_ranking_groups",
+            "Ranking groups are missing or invalid.",
+        )
+        return
+    pose_ids: List[str] = []
+    for group_index, group in enumerate(groups):
+        entries = _sequence(_get(group, "entries"))
+        if entries is None:
+            context.add(
+                SCORING_VALIDATION_SEVERITY_ERROR,
+                "invalid_ranking_entries",
+                "A ranking group has invalid entries.",
+                path=_path_join(
+                    context.path,
+                    f"groups[{group_index}].entries",
+                ),
+            )
+            continue
+        previous_rank = 0.0
+        for entry_index, entry in enumerate(entries):
+            pose_id = _get(entry, "pose_id")
+            if pose_id:
+                pose_ids.append(str(pose_id))
+            rank = _optional_float(_get(entry, "rank"))
+            if rank is None or rank <= 0.0:
+                context.add(
+                    SCORING_VALIDATION_SEVERITY_ERROR,
+                    "invalid_rank",
+                    "Rank values must be positive numbers.",
+                    path=_path_join(
+                        context.path,
+                        (
+                            f"groups[{group_index}].entries"
+                            f"[{entry_index}].rank"
+                        ),
+                    ),
+                    observed=rank,
+                )
+            elif rank < previous_rank:
+                context.add(
+                    SCORING_VALIDATION_SEVERITY_WARNING,
+                    "nonmonotonic_ranks",
+                    "Ranking entries are not ordered by rank.",
+                )
+            if rank is not None:
+                previous_rank = max(previous_rank, rank)
+    duplicates = {item for item in pose_ids if pose_ids.count(item) > 1}
+    if duplicates:
+        context.add(
+            SCORING_VALIDATION_SEVERITY_WARNING,
+            "pose_ranked_multiple_times",
+            "Some pose identifiers occur in multiple ranking entries.",
+            category=SCORING_VALIDATION_CATEGORY_IDENTITY,
+            observed=sorted(duplicates),
+        )
+
+
+def _validate_consensus(value: Any, context: _ValidationContext) -> None:
+    _validate_generic(value, context)
+    groups = _sequence(_get(value, "groups"))
+    if groups is None:
+        context.add(
+            SCORING_VALIDATION_SEVERITY_ERROR,
+            "invalid_consensus_groups",
+            "Consensus groups are missing or invalid.",
+        )
+        return
+    for index, group in enumerate(groups):
+        denominator = _optional_float(
+            _get(group, "denominator_pose_count")
+        )
+        included = _sequence(_get(group, "included_pose_ids"))
+        if denominator is not None and denominator < 0.0:
+            context.add(
+                SCORING_VALIDATION_SEVERITY_ERROR,
+                "negative_consensus_denominator",
+                "Consensus denominator cannot be negative.",
+                path=_path_join(
+                    context.path,
+                    f"groups[{index}].denominator_pose_count",
+                ),
+                observed=denominator,
+            )
+        if (
+            denominator is not None
+            and included is not None
+            and denominator > len(included)
+        ):
+            context.add(
+                SCORING_VALIDATION_SEVERITY_WARNING,
+                "consensus_denominator_exceeds_included",
+                "Consensus denominator exceeds included pose count.",
+            )
+
+
+def _validate_external(value: Any, context: _ValidationContext) -> None:
+    _validate_generic(value, context)
+    pose_results = _sequence(_get(value, "pose_results"))
+    if pose_results:
+        _check_unique(pose_results, "pose_id", context)
+        for index, item in enumerate(pose_results):
+            child = context.child(f"pose_results[{index}]")
+            _validate_external(item, child)
+            context.sync(child)
+        return
+    affinity = _get(value, "primary_affinity")
+    unit = str(_get(value, "primary_affinity_unit", "") or "").strip()
+    if affinity is not None and not unit:
+        context.add(
+            SCORING_VALIDATION_SEVERITY_WARNING,
+            "missing_affinity_unit",
+            "A primary docking affinity has no explicit unit.",
+            category=SCORING_VALIDATION_CATEGORY_CONSISTENCY,
+        )
+
+
+def _validate_explainability(
+    value: Any,
+    context: _ValidationContext,
+) -> None:
+    _validate_generic(value, context)
+    explanations = _sequence(_get(value, "explanations"))
+    if explanations is None:
+        explanations = (value,)
+    for index, explanation in enumerate(explanations):
+        score = _finite_float(_get(explanation, "score"))
+        explained = _finite_float(_get(explanation, "explained_score"))
+        residual = _finite_float(_get(explanation, "residual"))
+        if (
+            score is not None
+            and explained is not None
+            and residual is not None
+            and not math.isclose(
+                score,
+                explained + residual,
+                rel_tol=context.policy.relative_tolerance,
+                abs_tol=context.policy.absolute_tolerance,
+            )
+        ):
+            context.add(
+                SCORING_VALIDATION_SEVERITY_WARNING,
+                "explanation_residual_mismatch",
+                "Explained score plus residual does not recover the score.",
+                path=_path_join(context.path, f"explanations[{index}]"),
+                category=SCORING_VALIDATION_CATEGORY_CONSISTENCY,
+            )
+
+
+def _validate_serialization(
+    value: Any,
+    context: _ValidationContext,
+) -> None:
+    _validate_generic(value, context)
+    if _type_name(value) == "ScoringSerializationEnvelope":
+        if _get(value, "payload") is None:
+            context.add(
+                SCORING_VALIDATION_SEVERITY_ERROR,
+                "missing_serialization_payload",
+                "A serialization envelope has no payload.",
+                category=SCORING_VALIDATION_CATEGORY_SERIALIZATION,
+            )
+        checksum = str(_get(value, "checksum", "") or "")
+        verifier = globals().get("verify_scoring_serialization_checksum")
+        if checksum and callable(verifier):
+            try:
+                verified = bool(verifier(value))
+            except Exception as exc:
+                context.add(
+                    SCORING_VALIDATION_SEVERITY_WARNING,
+                    "checksum_verification_failed",
+                    "The serialization checksum could not be verified.",
+                    category=SCORING_VALIDATION_CATEGORY_SERIALIZATION,
+                    exception=exc,
+                )
+            else:
+                if not verified:
+                    context.add(
+                        SCORING_VALIDATION_SEVERITY_ERROR,
+                        "checksum_mismatch",
+                        "The serialization checksum does not match.",
+                        category=SCORING_VALIDATION_CATEGORY_SERIALIZATION,
+                    )
+    artifacts = _sequence(_get(value, "artifacts"))
+    manifest = _sequence(_get(value, "manifest"))
+    if artifacts is not None and manifest is not None:
+        if len(artifacts) != len(manifest):
+            context.add(
+                SCORING_VALIDATION_SEVERITY_ERROR,
+                "bundle_manifest_length_mismatch",
+                "Serialization bundle and manifest lengths differ.",
+                category=SCORING_VALIDATION_CATEGORY_SERIALIZATION,
+            )
+
+
+def _validate_report(value: Any, context: _ValidationContext) -> None:
+    _validate_generic(value, context)
+    sections = _sequence(_get(value, "sections"))
+    if sections is None:
+        context.add(
+            SCORING_VALIDATION_SEVERITY_ERROR,
+            "invalid_report_sections",
+            "Report sections are missing or invalid.",
+        )
+        return
+    _check_unique(sections, "section_id", context)
+    previous_order: Optional[float] = None
+    for index, section in enumerate(sections):
+        order = _optional_float(_get(section, "order"))
+        if (
+            order is not None
+            and previous_order is not None
+            and order < previous_order
+        ):
+            context.add(
+                SCORING_VALIDATION_SEVERITY_WARNING,
+                "nonmonotonic_report_section_order",
+                "Report sections are not ordered monotonically.",
+                path=_path_join(context.path, f"sections[{index}].order"),
+            )
+        if order is not None:
+            previous_order = order
+
+
+def _validate_dock_model(value: Any, context: _ValidationContext) -> None:
+    _validate_generic(value, context)
+    sources = (
+        "contacts",
+        "hbonds",
+        "hydrophobic",
+        "pi",
+        "saltbridge",
+        "clashes",
+    )
+    found = False
+    for name in sources:
+        if not _has(value, name):
+            continue
+        found = True
+        source = _get(value, name)
+        if source is not None and _sequence(source) is None:
+            context.add(
+                SCORING_VALIDATION_SEVERITY_ERROR,
+                "invalid_dock_model_interaction_source",
+                f"DockModel field {name!r} is not iterable.",
+                category=SCORING_VALIDATION_CATEGORY_INTEGRATION,
+                field_name=name,
+            )
+    if not found:
+        context.add(
+            SCORING_VALIDATION_SEVERITY_WARNING,
+            "no_dock_model_interaction_sources",
+            "No standard interaction source was found on the DockModel.",
+            category=SCORING_VALIDATION_CATEGORY_INTEGRATION,
+        )
+    for name in ("statistics", "metadata"):
+        field_value = _get(value, name)
+        if field_value is not None and not isinstance(field_value, Mapping):
+            context.add(
+                SCORING_VALIDATION_SEVERITY_ERROR,
+                f"invalid_dock_model_{name}",
+                f"DockModel.{name} is not a mapping.",
+                category=SCORING_VALIDATION_CATEGORY_INTEGRATION,
+            )
+
+
+def _initialize_default_scoring_validators() -> None:
+    global _SCORING_VALIDATORS_INITIALIZED
+    if _SCORING_VALIDATORS_INITIALIZED:
+        return
+    definitions = (
+        (
+            "report",
+            _class_names(
+                "ScoringReportDocument",
+                "ScoringReportSection",
+                "ScoringReportTable",
+            ),
+            _validate_report,
+            100,
+            "report",
+        ),
+        (
+            "serialization",
+            _class_names(
+                "ScoringSerializationEnvelope",
+                "ScoringSerializationBundle",
+                "ScoringSerializationResult",
+                "ScoringTableResult",
+            ),
+            _validate_serialization,
+            95,
+            "serialization",
+        ),
+        (
+            "explainability",
+            _class_names(
+                "ScoringExplainabilityResult",
+                "ScoringEntityExplanation",
+                "ScoringExplanationFactor",
+            ),
+            _validate_explainability,
+            90,
+            "explainability",
+        ),
+        (
+            "external_scores",
+            _class_names(
+                "ExternalScoreDefinition",
+                "ExternalScoreObservation",
+                "AggregatedExternalScore",
+                "ExternalScoreComponent",
+                "PoseExternalScoreResult",
+                "MultiPoseExternalScoreResult",
+            ),
+            _validate_external,
+            85,
+            "external_scores",
+        ),
+        (
+            "consensus",
+            _class_names(
+                "ConsensusPersistenceResult",
+                "ConsensusGroupResult",
+                "ConsensusLevelResult",
+                "PersistentFeatureRecord",
+            ),
+            _validate_consensus,
+            80,
+            "consensus",
+        ),
+        (
+            "ranking",
+            _class_names(
+                "MultiposeRankingResult",
+                "RankingGroupResult",
+                "RankedPose",
+            ),
+            _validate_ranking,
+            75,
+            "ranking",
+        ),
+        (
+            "normalization",
+            _class_names(
+                "NormalizedPoseScore",
+                "ScoreNormalizationResult",
+            ),
+            _validate_normalization,
+            70,
+            "normalization",
+        ),
+        (
+            "pose",
+            _class_names("PoseScore", "PoseScoringResult"),
+            _validate_pose,
+            65,
+            "pose",
+        ),
+        (
+            "residue",
+            _class_names("ResidueScore", "ResidueAggregationResult"),
+            _validate_residue,
+            60,
+            "residue",
+        ),
+        (
+            "collection",
+            _class_names("CollectionScoringResult"),
+            _validate_collection,
+            55,
+            "collection",
+        ),
+        (
+            "interaction",
+            _class_names("InteractionScore", "ScoreComponent"),
+            _validate_interaction,
+            50,
+            "interaction",
+        ),
+        (
+            "dock_model",
+            lambda value: _type_name(value) == "DockModel"
+            or any(
+                _has(value, name)
+                for name in (
+                    "contacts",
+                    "hbonds",
+                    "hydrophobic",
+                    "saltbridge",
+                )
+            ),
+            _validate_dock_model,
+            40,
+            "dock_model",
+        ),
+        (
+            "configuration",
+            lambda value: (
+                _type_name(value).endswith("Options")
+                or _type_name(value).endswith("Config")
+                or _type_name(value).endswith("Configuration")
+            ),
+            _validate_configuration,
+            30,
+            "configuration",
+        ),
+        (
+            "generic",
+            lambda value: isinstance(value, Mapping)
+            or is_dataclass(value)
+            or hasattr(value, "__dict__"),
+            _validate_generic,
+            -100,
+            "generic",
+        ),
+    )
+    for name, predicate, validator, priority, artifact_type in definitions:
+        register_scoring_validator(
+            name,
+            predicate,
+            validator,
+            priority=priority,
+            artifact_type=artifact_type,
+        )
+    _SCORING_VALIDATORS_INITIALIZED = True
+
+# -----------------------------------------------------------------------------
+# 27.7. Recursive validation and public entry points
+# -----------------------------------------------------------------------------
+
+def infer_scoring_validation_artifact_type(value: Any) -> str:
+    registration = resolve_scoring_validator(value)
+    if registration is not None and registration.artifact_type:
+        return registration.artifact_type
+    if isinstance(value, Mapping):
+        for key in ("artifact_type", "object_type", "scope", "type", "kind"):
+            token = value.get(key)
+            if token:
+                return _validation_token(token)
+        return "mapping"
+    return _validation_token(
+        re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", _type_name(value))
+    ) or "unknown"
+
+
+def _recursive_validate(value: Any, context: _ValidationContext) -> None:
+    if context.stop:
+        return
+    if context.depth > context.policy.max_depth:
+        context.add(
+            SCORING_VALIDATION_SEVERITY_WARNING,
+            "maximum_validation_depth_reached",
+            "Nested validation stopped at the maximum depth.",
+        )
+        return
+    if value is None or isinstance(value, (str, bytes, bytearray, bool, int)):
+        return
+    if isinstance(value, float):
+        if context.policy.require_finite_numbers and not math.isfinite(value):
+            context.add(
+                SCORING_VALIDATION_SEVERITY_ERROR,
+                "nonfinite_nested_number",
+                "A nested value contains a non-finite number.",
+                category=SCORING_VALIDATION_CATEGORY_NUMERIC,
+                observed=value,
+                repairable=context.policy.repair_nonfinite,
+            )
+        return
+    object_id = id(value)
+    if object_id in context.seen_ids:
+        return
+    context.seen_ids.add(object_id)
+    if isinstance(value, Mapping):
+        context.checked_item_count += len(value)
+        for key, item in value.items():
+            child = context.child(str(key))
+            _recursive_validate(item, child)
+            context.sync(child)
+        return
+    sequence = _sequence(value)
+    if sequence is not None and not is_dataclass(value):
+        context.checked_item_count += len(sequence)
+        for index, item in enumerate(sequence):
+            child = context.child(f"[{index}]")
+            _recursive_validate(item, child)
+            context.sync(child)
+        return
+    for field_name, item in _items(value):
+        context.checked_field_count += 1
+        child = context.child(field_name)
+        _recursive_validate(item, child)
+        context.sync(child)
+
+
+def _status_from_issues(
+    issues: Sequence[ScoringValidationIssue],
+    *,
+    repaired: bool = False,
+) -> Tuple[str, bool]:
+    has_error = any(issue.is_error for issue in issues)
+    has_warning = any(issue.is_warning for issue in issues)
+    if has_error:
+        return SCORING_VALIDATION_STATUS_INVALID, False
+    if repaired:
+        return SCORING_VALIDATION_STATUS_REPAIRED, True
+    if has_warning:
+        return SCORING_VALIDATION_STATUS_VALID_WITH_WARNINGS, True
+    return SCORING_VALIDATION_STATUS_VALID, True
+
+
+def validate_scoring_artifact(
+    value: Any,
+    *,
+    policy: Optional[ScoringValidationPolicy] = None,
+    artifact_type: str = "",
+    path: str = "",
+) -> ScoringValidationReport:
+    validation_policy = policy or ScoringValidationPolicy()
+    started = datetime.now(timezone.utc)
+    inferred = artifact_type or infer_scoring_validation_artifact_type(value)
+    context = _ValidationContext(
+        policy=validation_policy,
+        artifact_type=inferred,
+        root=value,
+        path=path,
+    )
+    registration = resolve_scoring_validator(value)
+    if registration is None:
+        context.add(
+            (
+                SCORING_VALIDATION_SEVERITY_WARNING
+                if validation_policy.allow_unknown_types
+                else SCORING_VALIDATION_SEVERITY_ERROR
+            ),
+            "unknown_artifact_type",
+            "No specialized validator matched the artifact.",
+            category=SCORING_VALIDATION_CATEGORY_INPUT,
+            observed=_type_name(value),
+        )
+        if validation_policy.allow_unknown_types:
+            _validate_generic(value, context)
+    else:
+        try:
+            registration.validator(value, context)
+        except ScoringValidationFrameworkError:
+            raise
+        except Exception as exc:
+            context.add(
+                SCORING_VALIDATION_SEVERITY_FATAL,
+                "validator_internal_error",
+                f"Validator {registration.name!r} failed unexpectedly.",
+                category=SCORING_VALIDATION_CATEGORY_INTERNAL,
+                exception=exc,
+            )
+    if validation_policy.validate_nested and not context.stop:
+        child = context.child("nested")
+        _recursive_validate(value, child)
+        context.sync(child)
+    repaired_object = None
+    repaired = False
+    if validation_policy.repair and context.issues:
+        try:
+            repaired_object = repair_scoring_artifact(
+                value,
+                policy=validation_policy,
+                issues=tuple(context.issues),
+            )
+        except Exception as exc:
+            context.add(
+                SCORING_VALIDATION_SEVERITY_ERROR,
+                "artifact_repair_failed",
+                "The requested artifact repair failed.",
+                category=SCORING_VALIDATION_CATEGORY_INTERNAL,
+                exception=exc,
+            )
+        else:
+            repaired = repaired_object is not value
+            if repaired:
+                context.add(
+                    SCORING_VALIDATION_SEVERITY_INFO,
+                    "artifact_repaired",
+                    "A repaired copy of the artifact was produced.",
+                    category=SCORING_VALIDATION_CATEGORY_CONSISTENCY,
+                    repairable=True,
+                    repaired=True,
+                )
+    status, valid = _status_from_issues(context.issues, repaired=repaired)
+    report = ScoringValidationReport(
+        artifact_type=inferred,
+        status=status,
+        valid=valid,
+        issues=tuple(context.issues),
+        checked_field_count=context.checked_field_count,
+        checked_item_count=context.checked_item_count,
+        repaired=repaired,
+        repaired_object=repaired_object,
+        started_at=started.replace(microsecond=0).isoformat(),
+        finished_at=_validation_now(),
+        duration_seconds=max(
+            0.0,
+            (datetime.now(timezone.utc) - started).total_seconds(),
+        ),
+        metadata={
+            "validator": registration.name if registration else "",
+            "source_type": _type_name(value),
+        },
+    )
+    should_raise = (
+        (validation_policy.raise_on_error and report.error_count > 0)
+        or (validation_policy.raise_on_fatal and report.fatal_count > 0)
+        or (validation_policy.strict and not report.valid)
+    )
+    if should_raise:
+        raise ScoringArtifactValidationError(
+            format_scoring_validation_summary(report),
+            report=report,
+        )
+    return report
+
+
+def validate_scoring_artifacts(
+    values: Iterable[Any],
+    *,
+    policy: Optional[ScoringValidationPolicy] = None,
+    artifact_type: str = "",
+) -> ScoringBatchValidationReport:
+    reports = tuple(
+        validate_scoring_artifact(
+            value,
+            policy=policy,
+            artifact_type=artifact_type,
+            path=f"artifacts[{index}]",
+        )
+        for index, value in enumerate(values)
+    )
+    invalid_count = sum(not report.valid for report in reports)
+    repaired_count = sum(report.repaired for report in reports)
+    if invalid_count:
+        status = SCORING_VALIDATION_STATUS_INVALID
+        valid = False
+    elif repaired_count:
+        status = SCORING_VALIDATION_STATUS_REPAIRED
+        valid = True
+    elif any(report.warning_count for report in reports):
+        status = SCORING_VALIDATION_STATUS_VALID_WITH_WARNINGS
+        valid = True
+    else:
+        status = SCORING_VALIDATION_STATUS_VALID
+        valid = True
+    return ScoringBatchValidationReport(
+        reports=reports,
+        status=status,
+        valid=valid,
+        artifact_count=len(reports),
+        valid_count=len(reports) - invalid_count,
+        invalid_count=invalid_count,
+        repaired_count=repaired_count,
+        issue_count=sum(len(report.issues) for report in reports),
+    )
+
+
+def ensure_valid_scoring_artifact(
+    value: Any,
+    *,
+    policy: Optional[ScoringValidationPolicy] = None,
+    artifact_type: str = "",
+) -> Any:
+    validation_policy = policy or ScoringValidationPolicy(
+        strict=True,
+        raise_on_error=True,
+    )
+    report = validate_scoring_artifact(
+        value,
+        policy=validation_policy,
+        artifact_type=artifact_type,
+    )
+    if report.repaired and report.repaired_object is not None:
+        return report.repaired_object
+    return value
+
+
+def _validate_explicit(
+    value: Any,
+    validator: Callable[[Any, _ValidationContext], None],
+    artifact_type: str,
+    policy: Optional[ScoringValidationPolicy],
+) -> ScoringValidationReport:
+    validation_policy = policy or ScoringValidationPolicy()
+    started = datetime.now(timezone.utc)
+    context = _ValidationContext(
+        policy=validation_policy,
+        artifact_type=artifact_type,
+        root=value,
+    )
+    validator(value, context)
+    if validation_policy.validate_nested:
+        child = context.child("nested")
+        _recursive_validate(value, child)
+        context.sync(child)
+    status, valid = _status_from_issues(context.issues)
+    report = ScoringValidationReport(
+        artifact_type=artifact_type,
+        status=status,
+        valid=valid,
+        issues=tuple(context.issues),
+        checked_field_count=context.checked_field_count,
+        checked_item_count=context.checked_item_count,
+        started_at=started.replace(microsecond=0).isoformat(),
+        finished_at=_validation_now(),
+        duration_seconds=max(
+            0.0,
+            (datetime.now(timezone.utc) - started).total_seconds(),
+        ),
+    )
+    if (
+        validation_policy.strict
+        or validation_policy.raise_on_error
+    ) and not report.valid:
+        raise ScoringArtifactValidationError(
+            format_scoring_validation_summary(report),
+            report=report,
+        )
+    return report
+
+
+def validate_scoring_configuration(
+    value: Any,
+    *,
+    policy: Optional[ScoringValidationPolicy] = None,
+) -> ScoringValidationReport:
+    return _validate_explicit(
+        value,
+        _validate_configuration,
+        "configuration",
+        policy,
+    )
+
+
+def validate_scoring_interaction(
+    value: Any,
+    *,
+    policy: Optional[ScoringValidationPolicy] = None,
+) -> ScoringValidationReport:
+    return _validate_explicit(value, _validate_interaction, "interaction", policy)
+
+
+def validate_scoring_collection(
+    value: Any,
+    *,
+    policy: Optional[ScoringValidationPolicy] = None,
+) -> ScoringValidationReport:
+    return _validate_explicit(value, _validate_collection, "collection", policy)
+
+
+def validate_scoring_residue(
+    value: Any,
+    *,
+    policy: Optional[ScoringValidationPolicy] = None,
+) -> ScoringValidationReport:
+    return _validate_explicit(value, _validate_residue, "residue", policy)
+
+
+def validate_scoring_pose(
+    value: Any,
+    *,
+    policy: Optional[ScoringValidationPolicy] = None,
+) -> ScoringValidationReport:
+    return _validate_explicit(value, _validate_pose, "pose", policy)
+
+
+def validate_scoring_ranking(
+    value: Any,
+    *,
+    policy: Optional[ScoringValidationPolicy] = None,
+) -> ScoringValidationReport:
+    return _validate_explicit(value, _validate_ranking, "ranking", policy)
+
+
+def validate_scoring_consensus(
+    value: Any,
+    *,
+    policy: Optional[ScoringValidationPolicy] = None,
+) -> ScoringValidationReport:
+    return _validate_explicit(value, _validate_consensus, "consensus", policy)
+
+
+def validate_scoring_external_scores(
+    value: Any,
+    *,
+    policy: Optional[ScoringValidationPolicy] = None,
+) -> ScoringValidationReport:
+    return _validate_explicit(
+        value,
+        _validate_external,
+        "external_scores",
+        policy,
+    )
+
+
+def validate_scoring_explainability(
+    value: Any,
+    *,
+    policy: Optional[ScoringValidationPolicy] = None,
+) -> ScoringValidationReport:
+    return _validate_explicit(
+        value,
+        _validate_explainability,
+        "explainability",
+        policy,
+    )
+
+
+def validate_scoring_serialization(
+    value: Any,
+    *,
+    policy: Optional[ScoringValidationPolicy] = None,
+) -> ScoringValidationReport:
+    return _validate_explicit(
+        value,
+        _validate_serialization,
+        "serialization",
+        policy,
+    )
+
+
+def validate_scoring_report_artifact(
+    value: Any,
+    *,
+    policy: Optional[ScoringValidationPolicy] = None,
+) -> ScoringValidationReport:
+    return _validate_explicit(value, _validate_report, "report", policy)
+
+
+def validate_scoring_dock_model(
+    value: Any,
+    *,
+    policy: Optional[ScoringValidationPolicy] = None,
+) -> ScoringValidationReport:
+    return _validate_explicit(
+        value,
+        _validate_dock_model,
+        "dock_model",
+        policy,
+    )
+
+# -----------------------------------------------------------------------------
+# 27.8. Conservative sanitation and repair
+# -----------------------------------------------------------------------------
+
+def sanitize_scoring_mapping(
+    value: Mapping[Any, Any],
+    *,
+    nonfinite_replacement: Any = None,
+    stringify_keys: bool = True,
+    remove_private_keys: bool = False,
+    max_depth: int = DEFAULT_SCORING_VALIDATION_MAX_DEPTH,
+) -> Dict[str, Any]:
+    seen: Set[int] = set()
+
+    def sanitize(item: Any, depth: int) -> Any:
+        if depth > max_depth:
+            return None
+        if item is None or isinstance(item, (str, bool, int)):
+            return item
+        if isinstance(item, float):
+            return item if math.isfinite(item) else nonfinite_replacement
+        item_id = id(item)
+        if item_id in seen:
+            return None
+        if isinstance(item, Mapping):
+            seen.add(item_id)
+            output: Dict[str, Any] = {}
+            for key, child in item.items():
+                key_text = str(key) if stringify_keys else key
+                if remove_private_keys and str(key_text).startswith("_"):
+                    continue
+                output[key_text] = sanitize(child, depth + 1)
+            return output
+        sequence = _sequence(item)
+        if sequence is not None:
+            seen.add(item_id)
+            return [sanitize(child, depth + 1) for child in sequence]
+        if is_dataclass(item):
+            seen.add(item_id)
+            return {
+                descriptor.name: sanitize(
+                    getattr(item, descriptor.name),
+                    depth + 1,
+                )
+                for descriptor in fields(item)
+            }
+        if hasattr(item, "to_dict") and callable(item.to_dict):
+            try:
+                return sanitize(item.to_dict(), depth + 1)
+            except Exception:
+                return _safe_repr(item)
+        return _safe_repr(item)
+
+    return sanitize(value, 0)
+
+
+def _repair_recursive(
+    value: Any,
+    policy: ScoringValidationPolicy,
+    *,
+    path: str = "",
+    depth: int = 0,
+    seen: Optional[Set[int]] = None,
+) -> Any:
+    if depth > policy.max_depth:
+        return value
+    if seen is None:
+        seen = set()
+    if value is None or isinstance(value, (str, bytes, bytearray, bool, int)):
+        return value
+    if isinstance(value, float):
+        if policy.repair_nonfinite and not math.isfinite(value):
+            return None
+        return value
+    object_id = id(value)
+    if object_id in seen:
+        return value
+    seen.add(object_id)
+    if isinstance(value, Mapping):
+        output: Dict[Any, Any] = {}
+        for key, item in value.items():
+            repaired = _repair_recursive(
+                item,
+                policy,
+                path=_path_join(path, str(key)),
+                depth=depth + 1,
+                seen=seen,
+            )
+            if (
+                policy.repair_missing_identifiers
+                and str(key) in _IDENTIFIER_FIELDS
+                and (repaired is None or not str(repaired).strip())
+            ):
+                repaired = (
+                    f"generated_{key}_{abs(hash(path)) % 1000000}"
+                )
+            output[key] = repaired
+        return output
+    sequence = _sequence(value)
+    if sequence is not None and not is_dataclass(value):
+        repaired_values = [
+            _repair_recursive(
+                item,
+                policy,
+                path=_path_join(path, f"[{index}]"),
+                depth=depth + 1,
+                seen=seen,
+            )
+            for index, item in enumerate(sequence)
+        ]
+        if isinstance(value, tuple):
+            return tuple(repaired_values)
+        if isinstance(value, set):
+            return set(repaired_values)
+        return repaired_values
+    if is_dataclass(value) and not isinstance(value, type):
+        replacements: Dict[str, Any] = {}
+        for descriptor in fields(value):
+            current = getattr(value, descriptor.name)
+            repaired = _repair_recursive(
+                current,
+                policy,
+                path=_path_join(path, descriptor.name),
+                depth=depth + 1,
+                seen=seen,
+            )
+            if (
+                policy.repair_missing_identifiers
+                and descriptor.name in _IDENTIFIER_FIELDS
+                and (repaired is None or not str(repaired).strip())
+            ):
+                repaired = (
+                    f"generated_{descriptor.name}_"
+                    f"{abs(hash(path)) % 1000000}"
+                )
+            if repaired is not current and repaired != current:
+                replacements[descriptor.name] = repaired
+        if replacements:
+            try:
+                return replace(value, **replacements)
+            except Exception as exc:
+                raise ScoringRepairError(
+                    f"Could not repair {_type_name(value)}."
+                ) from exc
+        return value
+    try:
+        cloned = copy.copy(value)
+    except Exception:
+        return value
+    changed = False
+    for field_name, item in _items(value):
+        repaired = _repair_recursive(
+            item,
+            policy,
+            path=_path_join(path, field_name),
+            depth=depth + 1,
+            seen=seen,
+        )
+        if repaired is item or repaired == item:
+            continue
+        try:
+            setattr(cloned, field_name, repaired)
+        except Exception:
+            continue
+        changed = True
+    return cloned if changed else value
+
+
+def repair_scoring_artifact(
+    value: Any,
+    *,
+    policy: Optional[ScoringValidationPolicy] = None,
+    issues: Sequence[ScoringValidationIssue] = (),
+) -> Any:
+    repair_policy = policy or ScoringValidationPolicy(
+        repair=True,
+        repair_nonfinite=True,
+    )
+    if not repair_policy.repair:
+        return value
+    if issues and not any(issue.repairable for issue in issues):
+        return value
+    return _repair_recursive(value, repair_policy)
+
+# -----------------------------------------------------------------------------
+# 27.9. Exception classification and safe execution
+# -----------------------------------------------------------------------------
+
+def classify_scoring_exception(exception: BaseException) -> str:
+    class_name = type(exception).__name__.lower()
+    if isinstance(exception, ScoringArtifactValidationError):
+        return SCORING_ERROR_CATEGORY_VALIDATION
+    if isinstance(
+        exception,
+        (ScoringValidationInputError, TypeError, KeyError),
+    ):
+        return SCORING_ERROR_CATEGORY_INPUT
+    if isinstance(exception, ScoringValidationConfigurationError):
+        return SCORING_ERROR_CATEGORY_CONFIGURATION
+    if "configuration" in class_name:
+        return SCORING_ERROR_CATEGORY_CONFIGURATION
+    if "validation" in class_name:
+        return SCORING_ERROR_CATEGORY_VALIDATION
+    if isinstance(exception, ArithmeticError):
+        return SCORING_ERROR_CATEGORY_NUMERIC
+    if isinstance(exception, OSError):
+        return SCORING_ERROR_CATEGORY_IO
+    if "integration" in class_name or "attachment" in class_name:
+        return SCORING_ERROR_CATEGORY_INTEGRATION
+    if isinstance(exception, (ValueError, RuntimeError)):
+        return SCORING_ERROR_CATEGORY_RUNTIME
+    return SCORING_ERROR_CATEGORY_INTERNAL
+
+
+def scoring_exception_is_recoverable(exception: BaseException) -> bool:
+    if isinstance(exception, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+        return False
+    return classify_scoring_exception(
+        exception
+    ) != SCORING_ERROR_CATEGORY_INTERNAL
+
+
+def scoring_error_record_from_exception(
+    exception: BaseException,
+    *,
+    operation: str = "scoring_operation",
+    artifact_type: str = "",
+    path: str = "",
+    include_traceback: bool = False,
+    max_traceback_length: int = DEFAULT_SCORING_ERROR_MAX_TRACEBACK,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringErrorRecord:
+    category = classify_scoring_exception(exception)
+    recoverable = scoring_exception_is_recoverable(exception)
+    traceback_text = ""
+    if include_traceback:
+        traceback_text = "".join(
+            traceback.format_exception(
+                type(exception),
+                exception,
+                exception.__traceback__,
+            )
+        )
+        if max_traceback_length and len(traceback_text) > max_traceback_length:
+            traceback_text = traceback_text[:max_traceback_length] + "..."
+    return ScoringErrorRecord(
+        error_type=type(exception).__name__,
+        message=str(exception) or type(exception).__name__,
+        operation=str(operation or "scoring_operation"),
+        category=category,
+        severity=(
+            SCORING_VALIDATION_SEVERITY_ERROR
+            if recoverable
+            else SCORING_VALIDATION_SEVERITY_FATAL
+        ),
+        recoverable=recoverable,
+        artifact_type=str(artifact_type or ""),
+        path=str(path or ""),
+        exception_repr=_safe_repr(exception),
+        traceback_text=traceback_text,
+        metadata=metadata or {},
+    )
+
+
+def _log_error(record: ScoringErrorRecord) -> None:
+    logger = globals().get("_LOGGER")
+    if logger is None:
+        return
+    message = f"{record.operation}: {record.error_type}: {record.message}"
+    for method_name in ("error", "exception", "warning"):
+        method = getattr(logger, method_name, None)
+        if callable(method):
+            try:
+                method(message)
+            except Exception:
+                pass
+            return
+
+
+def _call_fallback(
+    fallback: Callable[..., Any],
+    exception: BaseException,
+    args: Tuple[Any, ...],
+    kwargs: Mapping[str, Any],
+) -> Any:
+    try:
+        parameters = tuple(inspect.signature(fallback).parameters.values())
+    except (TypeError, ValueError):
+        return fallback(exception, *args, **dict(kwargs))
+    if not parameters:
+        return fallback()
+    if len(parameters) == 1:
+        return fallback(exception)
+    return fallback(exception, *args, **dict(kwargs))
+
+
+def execute_scoring_operation(
+    function: Callable[..., Any],
+    *args: Any,
+    options: Optional[ScoringErrorHandlingOptions] = None,
+    collector: Optional[ScoringErrorCollector] = None,
+    **kwargs: Any,
+) -> ScoringExecutionResult:
+    if not callable(function):
+        raise ScoringValidationInputError("function must be callable.")
+    execution_options = options or ScoringErrorHandlingOptions()
+    input_report = None
+    output_report = None
+    if execution_options.validate_input:
+        input_value = args[0] if len(args) == 1 else args
+        input_report = validate_scoring_artifact(
+            input_value,
+            policy=execution_options.validation_policy,
+        )
+        if not input_report.valid:
+            error = ScoringArtifactValidationError(
+                "Scoring operation input failed validation.",
+                report=input_report,
+            )
+            return _handle_operation_error(
+                error,
+                function,
+                args,
+                kwargs,
+                execution_options,
+                collector,
+                input_report=input_report,
+            )
+    attempts = 0
+    max_attempts = max(1, execution_options.retry_count + 1)
+    operation_warnings: List[str] = []
+    last_exception: Optional[BaseException] = None
+    while attempts < max_attempts:
+        attempts += 1
+        try:
+            value = function(*args, **kwargs)
+            if execution_options.validate_output:
+                output_report = validate_scoring_artifact(
+                    value,
+                    policy=execution_options.validation_policy,
+                )
+                if not output_report.valid:
+                    raise ScoringArtifactValidationError(
+                        "Scoring operation output failed validation.",
+                        report=output_report,
+                    )
+            return ScoringExecutionResult(
+                success=True,
+                value=value,
+                input_validation=input_report,
+                output_validation=output_report,
+                warnings=tuple(operation_warnings),
+                attempt_count=attempts,
+                operation=execution_options.operation,
+                metadata=execution_options.metadata,
+            )
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException as exc:
+            last_exception = exc
+            if (
+                execution_options.recovery_strategy
+                == SCORING_RECOVERY_RETRY
+                and attempts < max_attempts
+            ):
+                operation_warnings.append(
+                    f"Attempt {attempts} failed: {type(exc).__name__}."
+                )
+                continue
+            break
+    assert last_exception is not None
+    return _handle_operation_error(
+        last_exception,
+        function,
+        args,
+        kwargs,
+        execution_options,
+        collector,
+        input_report=input_report,
+        output_report=output_report,
+        attempt_count=attempts,
+        warning_messages=tuple(operation_warnings),
+    )
+
+
+def _handle_operation_error(
+    exception: BaseException,
+    function: Callable[..., Any],
+    args: Tuple[Any, ...],
+    kwargs: Mapping[str, Any],
+    options: ScoringErrorHandlingOptions,
+    collector: Optional[ScoringErrorCollector],
+    *,
+    input_report: Optional[ScoringValidationReport] = None,
+    output_report: Optional[ScoringValidationReport] = None,
+    attempt_count: int = 1,
+    warning_messages: Tuple[str, ...] = (),
+) -> ScoringExecutionResult:
+    record = scoring_error_record_from_exception(
+        exception,
+        operation=options.operation,
+        artifact_type=options.artifact_type,
+        include_traceback=options.include_traceback,
+        max_traceback_length=options.max_traceback_length,
+        metadata=options.metadata,
+    )
+    if collector is not None:
+        collector.add(record)
+    _log_error(record)
+    recovery = None
+    value = None
+    success = False
+    strategy = options.recovery_strategy
+    if strategy == SCORING_RECOVERY_FALLBACK and options.fallback is not None:
+        try:
+            value = _call_fallback(options.fallback, exception, args, kwargs)
+        except BaseException as recovery_exception:
+            recovery = ScoringRecoveryAttempt(
+                strategy=strategy,
+                attempted=True,
+                succeeded=False,
+                attempt_count=1,
+                message=str(recovery_exception),
+                exception_type=type(recovery_exception).__name__,
+            )
+        else:
+            recovery = ScoringRecoveryAttempt(
+                strategy=strategy,
+                attempted=True,
+                succeeded=True,
+                attempt_count=1,
+                result=value,
+                message="Fallback completed successfully.",
+            )
+            success = True
+    elif strategy == SCORING_RECOVERY_DEFAULT:
+        value = options.default_value
+        recovery = ScoringRecoveryAttempt(
+            strategy=strategy,
+            attempted=True,
+            succeeded=True,
+            attempt_count=1,
+            result=value,
+            message="The configured default value was returned.",
+        )
+        success = True
+    elif (
+        strategy == SCORING_RECOVERY_REPAIR_AND_RETRY
+        and options.repair_function is not None
+        and args
+    ):
+        try:
+            repaired_first = options.repair_function(args[0])
+            repaired_args = (repaired_first,) + tuple(args[1:])
+            value = function(*repaired_args, **dict(kwargs))
+        except BaseException as recovery_exception:
+            recovery = ScoringRecoveryAttempt(
+                strategy=strategy,
+                attempted=True,
+                succeeded=False,
+                attempt_count=1,
+                message=str(recovery_exception),
+                exception_type=type(recovery_exception).__name__,
+            )
+        else:
+            recovery = ScoringRecoveryAttempt(
+                strategy=strategy,
+                attempted=True,
+                succeeded=True,
+                attempt_count=1,
+                result=value,
+                message="Repair and retry completed successfully.",
+            )
+            success = True
+    if success:
+        return ScoringExecutionResult(
+            success=True,
+            value=value,
+            error=record,
+            recovery=recovery,
+            input_validation=input_report,
+            output_validation=output_report,
+            warnings=warning_messages,
+            attempt_count=attempt_count,
+            operation=options.operation,
+            metadata=options.metadata,
+        )
+    if options.mode == SCORING_ERROR_MODE_RAISE:
+        raise ScoringOperationError(
+            f"{record.operation} failed: {record.message}",
+            record=record,
+        ) from exception
+    if options.mode == SCORING_ERROR_MODE_WARN:
+        warnings.warn(
+            f"{record.operation} failed: {record.message}",
+            category=options.warn_category,
+            stacklevel=3,
+        )
+    if options.mode == SCORING_ERROR_MODE_DEFAULT:
+        value = options.default_value
+    return ScoringExecutionResult(
+        success=False,
+        value=value,
+        error=record,
+        recovery=recovery,
+        input_validation=input_report,
+        output_validation=output_report,
+        warnings=warning_messages,
+        attempt_count=attempt_count,
+        operation=options.operation,
+        metadata=options.metadata,
+    )
+
+
+def safe_scoring_call(
+    function: Callable[..., Any],
+    *args: Any,
+    default: Any = None,
+    fallback: Optional[Callable[..., Any]] = None,
+    mode: str = SCORING_ERROR_MODE_RETURN,
+    operation: str = "scoring_operation",
+    collector: Optional[ScoringErrorCollector] = None,
+    **kwargs: Any,
+) -> ScoringExecutionResult:
+    strategy = (
+        SCORING_RECOVERY_FALLBACK
+        if fallback is not None
+        else (
+            SCORING_RECOVERY_DEFAULT
+            if mode == SCORING_ERROR_MODE_DEFAULT
+            else SCORING_RECOVERY_NONE
+        )
+    )
+    return execute_scoring_operation(
+        function,
+        *args,
+        options=ScoringErrorHandlingOptions(
+            mode=mode,
+            recovery_strategy=strategy,
+            operation=operation,
+            default_value=default,
+            fallback=fallback,
+        ),
+        collector=collector,
+        **kwargs,
+    )
+
+
+@dataclass
+class ScoringErrorBoundary:
+    options: ScoringErrorHandlingOptions
+    collector: Optional[ScoringErrorCollector] = None
+    error: Optional[ScoringErrorRecord] = None
+    suppressed: bool = False
+
+    def capture(self, exception: BaseException) -> bool:
+        self.error = scoring_error_record_from_exception(
+            exception,
+            operation=self.options.operation,
+            artifact_type=self.options.artifact_type,
+            include_traceback=self.options.include_traceback,
+            max_traceback_length=self.options.max_traceback_length,
+        )
+        if self.collector is not None:
+            self.collector.add(self.error)
+        _log_error(self.error)
+        if self.options.mode == SCORING_ERROR_MODE_RAISE:
+            return False
+        if self.options.mode == SCORING_ERROR_MODE_WARN:
+            warnings.warn(
+                f"{self.error.operation} failed: {self.error.message}",
+                category=self.options.warn_category,
+                stacklevel=3,
+            )
+        self.suppressed = True
+        return True
+
+
+@contextmanager
+def scoring_error_boundary(
+    *,
+    options: Optional[ScoringErrorHandlingOptions] = None,
+    collector: Optional[ScoringErrorCollector] = None,
+) -> Iterator[ScoringErrorBoundary]:
+    boundary = ScoringErrorBoundary(
+        options=options or ScoringErrorHandlingOptions(),
+        collector=collector,
+    )
+    try:
+        yield boundary
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as exc:
+        if not boundary.capture(exc):
+            raise
+
+# -----------------------------------------------------------------------------
+# 27.10. Conversion and summaries
+# -----------------------------------------------------------------------------
+
+def scoring_validation_issue_to_dict(
+    issue: ScoringValidationIssue,
+) -> Dict[str, Any]:
+    return {
+        "severity": issue.severity,
+        "code": issue.code,
+        "message": issue.message,
+        "path": issue.path,
+        "category": issue.category,
+        "artifact_type": issue.artifact_type,
+        "field_name": issue.field_name,
+        "observed": issue.observed,
+        "expected": issue.expected,
+        "repairable": issue.repairable,
+        "repaired": issue.repaired,
+        "exception_type": issue.exception_type,
+        "metadata": dict(issue.metadata),
+    }
+
+
+def scoring_validation_report_to_dict(
+    report: ScoringValidationReport,
+    *,
+    include_repaired_object: bool = False,
+) -> Dict[str, Any]:
+    output = {
+        "artifact_type": report.artifact_type,
+        "status": report.status,
+        "valid": report.valid,
+        "issues": [
+            scoring_validation_issue_to_dict(issue)
+            for issue in report.issues
+        ],
+        "issue_count": len(report.issues),
+        "info_count": report.info_count,
+        "warning_count": report.warning_count,
+        "error_count": report.error_count,
+        "fatal_count": report.fatal_count,
+        "highest_severity": report.highest_severity,
+        "checked_field_count": report.checked_field_count,
+        "checked_item_count": report.checked_item_count,
+        "repaired": report.repaired,
+        "started_at": report.started_at,
+        "finished_at": report.finished_at,
+        "duration_seconds": report.duration_seconds,
+        "schema": report.schema,
+        "schema_version": report.schema_version,
+        "section_version": report.section_version,
+        "metadata": dict(report.metadata),
+    }
+    if include_repaired_object:
+        serializer = globals().get("scoring_object_to_serializable")
+        if callable(serializer):
+            try:
+                output["repaired_object"] = serializer(
+                    report.repaired_object
+                )
+            except Exception:
+                output["repaired_object"] = _safe_repr(
+                    report.repaired_object
+                )
+        else:
+            output["repaired_object"] = _safe_repr(report.repaired_object)
+    return output
+
+
+def scoring_validation_to_rows(
+    report: ScoringValidationReport,
+) -> Tuple[Dict[str, Any], ...]:
+    if not report.issues:
+        return (
+            {
+                "artifact_type": report.artifact_type,
+                "status": report.status,
+                "valid": report.valid,
+                "severity": "",
+                "code": "",
+                "category": "",
+                "path": "",
+                "message": "No validation issues.",
+            },
+        )
+    return tuple(
+        {
+            "artifact_type": report.artifact_type,
+            "status": report.status,
+            "valid": report.valid,
+            "severity": issue.severity,
+            "code": issue.code,
+            "category": issue.category,
+            "path": issue.path,
+            "field_name": issue.field_name,
+            "message": issue.message,
+            "expected": issue.expected,
+            "observed": issue.observed,
+            "repairable": issue.repairable,
+            "repaired": issue.repaired,
+        }
+        for issue in report.issues
+    )
+
+
+def summarize_scoring_validation(
+    report: ScoringValidationReport,
+) -> Dict[str, Any]:
+    category_counts: Dict[str, int] = {}
+    code_counts: Dict[str, int] = {}
+    for issue in report.issues:
+        category_counts[issue.category] = (
+            category_counts.get(issue.category, 0) + 1
+        )
+        code_counts[issue.code] = code_counts.get(issue.code, 0) + 1
+    return {
+        "artifact_type": report.artifact_type,
+        "status": report.status,
+        "valid": report.valid,
+        "issue_count": len(report.issues),
+        "info_count": report.info_count,
+        "warning_count": report.warning_count,
+        "error_count": report.error_count,
+        "fatal_count": report.fatal_count,
+        "highest_severity": report.highest_severity,
+        "checked_field_count": report.checked_field_count,
+        "checked_item_count": report.checked_item_count,
+        "repaired": report.repaired,
+        "category_counts": category_counts,
+        "code_counts": code_counts,
+    }
+
+
+def format_scoring_validation_summary(
+    report: ScoringValidationReport,
+    *,
+    max_issues: int = 10,
+) -> str:
+    lines = [
+        f"Scoring validation: {report.status} ({report.artifact_type})",
+        (
+            f"Issues: {len(report.issues)} "
+            f"[info={report.info_count}, warnings={report.warning_count}, "
+            f"errors={report.error_count}, fatal={report.fatal_count}]"
+        ),
+        (
+            f"Checked fields/items: {report.checked_field_count}/"
+            f"{report.checked_item_count}"
+        ),
+    ]
+    if report.repaired:
+        lines.append("A repaired artifact copy is available.")
+    for issue in report.issues[: max(0, max_issues)]:
+        location = f" at {issue.path}" if issue.path else ""
+        lines.append(
+            f"- {issue.severity.upper()} {issue.code}{location}: "
+            f"{issue.message}"
+        )
+    remaining = len(report.issues) - max(0, max_issues)
+    if remaining > 0:
+        lines.append(f"- ... {remaining} additional issue(s).")
+    return "\n".join(lines)
+
+
+def scoring_error_record_to_dict(
+    record: ScoringErrorRecord,
+) -> Dict[str, Any]:
+    return {
+        "error_type": record.error_type,
+        "message": record.message,
+        "operation": record.operation,
+        "category": record.category,
+        "severity": record.severity,
+        "recoverable": record.recoverable,
+        "artifact_type": record.artifact_type,
+        "path": record.path,
+        "exception_repr": record.exception_repr,
+        "traceback": record.traceback_text,
+        "timestamp": record.timestamp,
+        "metadata": dict(record.metadata),
+    }
+
+
+def summarize_scoring_errors(
+    records: Iterable[ScoringErrorRecord],
+) -> Dict[str, Any]:
+    materialized = tuple(records)
+    category_counts: Dict[str, int] = {}
+    type_counts: Dict[str, int] = {}
+    operation_counts: Dict[str, int] = {}
+    for record in materialized:
+        category_counts[record.category] = (
+            category_counts.get(record.category, 0) + 1
+        )
+        type_counts[record.error_type] = (
+            type_counts.get(record.error_type, 0) + 1
+        )
+        operation_counts[record.operation] = (
+            operation_counts.get(record.operation, 0) + 1
+        )
+    return {
+        "error_count": len(materialized),
+        "recoverable_count": sum(
+            record.recoverable for record in materialized
+        ),
+        "fatal_count": sum(
+            record.severity == SCORING_VALIDATION_SEVERITY_FATAL
+            for record in materialized
+        ),
+        "category_counts": category_counts,
+        "type_counts": type_counts,
+        "operation_counts": operation_counts,
+    }
+
+
+def format_scoring_error_summary(
+    records: Iterable[ScoringErrorRecord],
+    *,
+    max_records: int = 10,
+) -> str:
+    materialized = tuple(records)
+    summary = summarize_scoring_errors(materialized)
+    lines = [
+        (
+            f"Scoring errors: {summary['error_count']} "
+            f"(recoverable={summary['recoverable_count']}, "
+            f"fatal={summary['fatal_count']})"
+        )
+    ]
+    for record in materialized[: max(0, max_records)]:
+        lines.append(
+            f"- {record.operation}: {record.error_type}: {record.message}"
+        )
+    remaining = len(materialized) - max(0, max_records)
+    if remaining > 0:
+        lines.append(f"- ... {remaining} additional error(s).")
+    return "\n".join(lines)
+
+# -----------------------------------------------------------------------------
+# 27.11. Validation of Section 27 structures
+# -----------------------------------------------------------------------------
+
+def validate_scoring_validation_policy(
+    policy: ScoringValidationPolicy,
+) -> None:
+    if not isinstance(policy, ScoringValidationPolicy):
+        raise ScoringValidationInputError(
+            "Expected ScoringValidationPolicy."
+        )
+
+
+def validate_scoring_validation_issue(
+    issue: ScoringValidationIssue,
+) -> None:
+    if not isinstance(issue, ScoringValidationIssue):
+        raise ScoringValidationInputError(
+            "Expected ScoringValidationIssue."
+        )
+    if not issue.code or not issue.message:
+        raise ScoringArtifactValidationError(
+            "Validation issue code and message cannot be empty."
+        )
+
+
+def validate_scoring_validation_report(
+    report: ScoringValidationReport,
+) -> None:
+    if not isinstance(report, ScoringValidationReport):
+        raise ScoringValidationInputError(
+            "Expected ScoringValidationReport."
+        )
+    for issue in report.issues:
+        validate_scoring_validation_issue(issue)
+    if report.valid != (not any(issue.is_error for issue in report.issues)):
+        raise ScoringArtifactValidationError(
+            "Validation report valid flag conflicts with its issues."
+        )
+
+
+def validate_scoring_error_record(record: ScoringErrorRecord) -> None:
+    if not isinstance(record, ScoringErrorRecord):
+        raise ScoringValidationInputError("Expected ScoringErrorRecord.")
+    if not record.error_type or not record.operation:
+        raise ScoringArtifactValidationError(
+            "Error record type and operation cannot be empty."
+        )
+
+
+def validate_scoring_execution_result(
+    result: ScoringExecutionResult,
+) -> None:
+    if not isinstance(result, ScoringExecutionResult):
+        raise ScoringValidationInputError(
+            "Expected ScoringExecutionResult."
+        )
+    if result.success and result.error is not None:
+        if result.recovery is None or not result.recovery.succeeded:
+            raise ScoringArtifactValidationError(
+                "A successful result may retain an error only after recovery."
+            )
+    if not result.success and result.error is None:
+        raise ScoringArtifactValidationError(
+            "An unsuccessful execution result requires an error record."
+        )
+
+# -----------------------------------------------------------------------------
+# 27.12. Public interface closure
+# -----------------------------------------------------------------------------
+
+_SECTION_27_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    "SCORING_VALIDATION_SCHEMA",
+    "SCORING_VALIDATION_SCHEMA_VERSION",
+    "SCORING_VALIDATION_SECTION_VERSION",
+    "SCORING_VALIDATION_STATUS_VALID",
+    "SCORING_VALIDATION_STATUS_VALID_WITH_WARNINGS",
+    "SCORING_VALIDATION_STATUS_INVALID",
+    "SCORING_VALIDATION_STATUS_REPAIRED",
+    "SCORING_VALIDATION_STATUS_SKIPPED",
+    "SCORING_VALIDATION_STATUS_FAILED",
+    "SCORING_VALIDATION_STATUSES",
+    "SCORING_VALIDATION_SEVERITY_INFO",
+    "SCORING_VALIDATION_SEVERITY_WARNING",
+    "SCORING_VALIDATION_SEVERITY_ERROR",
+    "SCORING_VALIDATION_SEVERITY_FATAL",
+    "SCORING_VALIDATION_SEVERITIES",
+    "SCORING_VALIDATION_CATEGORY_INPUT",
+    "SCORING_VALIDATION_CATEGORY_CONFIGURATION",
+    "SCORING_VALIDATION_CATEGORY_STRUCTURE",
+    "SCORING_VALIDATION_CATEGORY_NUMERIC",
+    "SCORING_VALIDATION_CATEGORY_IDENTITY",
+    "SCORING_VALIDATION_CATEGORY_CONSISTENCY",
+    "SCORING_VALIDATION_CATEGORY_SERIALIZATION",
+    "SCORING_VALIDATION_CATEGORY_INTEGRATION",
+    "SCORING_VALIDATION_CATEGORY_INTERNAL",
+    "SCORING_VALIDATION_CATEGORIES",
+    "SCORING_ERROR_MODE_RAISE",
+    "SCORING_ERROR_MODE_RETURN",
+    "SCORING_ERROR_MODE_WARN",
+    "SCORING_ERROR_MODE_COLLECT",
+    "SCORING_ERROR_MODE_DEFAULT",
+    "SCORING_ERROR_MODE_SKIP",
+    "SCORING_ERROR_MODES",
+    "SCORING_RECOVERY_NONE",
+    "SCORING_RECOVERY_RETRY",
+    "SCORING_RECOVERY_FALLBACK",
+    "SCORING_RECOVERY_DEFAULT",
+    "SCORING_RECOVERY_REPAIR_AND_RETRY",
+    "SCORING_RECOVERY_STRATEGIES",
+    "ScoringValidationFrameworkError",
+    "ScoringValidationInputError",
+    "ScoringValidationConfigurationError",
+    "ScoringArtifactValidationError",
+    "ScoringRepairError",
+    "ScoringOperationError",
+    "ScoringValidationPolicy",
+    "ScoringValidationIssue",
+    "ScoringValidationReport",
+    "ScoringBatchValidationReport",
+    "ScoringValidatorRegistration",
+    "ScoringErrorHandlingOptions",
+    "ScoringErrorRecord",
+    "ScoringRecoveryAttempt",
+    "ScoringExecutionResult",
+    "ScoringErrorCollector",
+    "ScoringErrorBoundary",
+    "normalize_scoring_validation_status",
+    "normalize_scoring_validation_severity",
+    "normalize_scoring_validation_category",
+    "normalize_scoring_error_mode",
+    "normalize_scoring_recovery_strategy",
+    "normalize_scoring_error_category",
+    "register_scoring_validator",
+    "unregister_scoring_validator",
+    "scoring_validators",
+    "resolve_scoring_validator",
+    "infer_scoring_validation_artifact_type",
+    "validate_scoring_artifact",
+    "validate_scoring_artifacts",
+    "ensure_valid_scoring_artifact",
+    "validate_scoring_configuration",
+    "validate_scoring_interaction",
+    "validate_scoring_collection",
+    "validate_scoring_residue",
+    "validate_scoring_pose",
+    "validate_scoring_ranking",
+    "validate_scoring_consensus",
+    "validate_scoring_external_scores",
+    "validate_scoring_explainability",
+    "validate_scoring_serialization",
+    "validate_scoring_report_artifact",
+    "validate_scoring_dock_model",
+    "sanitize_scoring_mapping",
+    "repair_scoring_artifact",
+    "classify_scoring_exception",
+    "scoring_exception_is_recoverable",
+    "scoring_error_record_from_exception",
+    "execute_scoring_operation",
+    "safe_scoring_call",
+    "scoring_error_boundary",
+    "scoring_validation_issue_to_dict",
+    "scoring_validation_report_to_dict",
+    "scoring_validation_to_rows",
+    "summarize_scoring_validation",
+    "format_scoring_validation_summary",
+    "scoring_error_record_to_dict",
+    "summarize_scoring_errors",
+    "format_scoring_error_summary",
+    "validate_scoring_validation_policy",
+    "validate_scoring_validation_issue",
+    "validate_scoring_validation_report",
+    "validate_scoring_error_record",
+    "validate_scoring_execution_result",
+)
+
+for public_name in _SECTION_27_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+def section_27_public_names() -> Tuple[str, ...]:
+    """Return the immutable Section 27 public interface."""
+
+    return _SECTION_27_PUBLIC_NAMES
+
+
+def validate_section_27_public_interface() -> None:
+    """Validate all public Section 27 names and exports."""
+
+    missing_names = tuple(
+        name for name in _SECTION_27_PUBLIC_NAMES if name not in globals()
+    )
+    if missing_names:
+        raise ScoringValidationFrameworkError(
+            "Missing Section 27 public names: " + ", ".join(missing_names)
+        )
+    missing_exports = tuple(
+        name for name in _SECTION_27_PUBLIC_NAMES if name not in __all__
+    )
+    if missing_exports:
+        raise ScoringValidationFrameworkError(
+            "Section 27 names missing from __all__: "
+            + ", ".join(missing_exports)
+        )
+
+
+if "section_27_public_names" not in __all__:
+    __all__.append("section_27_public_names")
+if "validate_section_27_public_interface" not in __all__:
+    __all__.append("validate_section_27_public_interface")
+
+_initialize_default_scoring_validators()
+validate_section_27_public_interface()
+
+# =============================================================================
+# End of Section 27
+# =============================================================================
+
+
+# =============================================================================
+# DockAnalyzer — Interaction scoring
+# Section 28 — Performance
+# =============================================================================
+
+"""
+Performance infrastructure for DockAnalyzer scoring.
+
+Section 28 adds optional and observable performance tools without changing the
+scientific meaning of any score produced by Sections 1–27. It provides timing,
+benchmarking, memory measurements, bounded caches, deterministic cache keys,
+batch planning, sequential and concurrent execution, streaming statistics,
+low-memory grouping helpers, complexity estimates, regression comparisons,
+and optimization recommendations.
+
+Every optimization is opt-in. Functions preserve input order by default, cache
+entries are bounded, parallel execution can be disabled, and failures remain
+visible through structured results. ChimeraX compatibility belongs to Section
+29 and complete module self-tests belong to Section 30.
+"""
+
+from collections import OrderedDict, defaultdict, deque
+from concurrent.futures import (
+    Future,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    as_completed,
+)
+from contextlib import contextmanager
+from dataclasses import dataclass, field, is_dataclass, asdict
+from datetime import datetime, timezone
+from functools import wraps
+from types import MappingProxyType
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Final,
+    FrozenSet,
+    Generic,
+    Hashable,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    TypeVar,
+    Union,
+)
+import gc
+import hashlib
+import heapq
+import inspect
+import json
+import math
+import os
+import statistics
+import sys
+import threading
+import time
+import tracemalloc
+import warnings
+
+try:
+    import resource as _resource
+except ImportError:  # pragma: no cover - unavailable on some platforms
+    _resource = None
+
+if "__all__" not in globals():
+    __all__: List[str] = []
+
+_T = TypeVar("_T")
+_R = TypeVar("_R")
+
+# -----------------------------------------------------------------------------
+# 28.1. Constants and canonical names
+# -----------------------------------------------------------------------------
+
+SCORING_PERFORMANCE_SCHEMA: Final[str] = "dockanalyzer.scoring.performance"
+SCORING_PERFORMANCE_SCHEMA_VERSION: Final[str] = "1.0"
+SCORING_PERFORMANCE_SECTION_VERSION: Final[str] = "28.0"
+
+SCORING_TIMER_WALL: Final[str] = "wall"
+SCORING_TIMER_CPU: Final[str] = "cpu"
+SCORING_TIMER_BOTH: Final[str] = "both"
+SCORING_TIMERS: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_TIMER_WALL,
+        SCORING_TIMER_CPU,
+        SCORING_TIMER_BOTH,
+    }
+)
+
+SCORING_BATCH_BACKEND_SEQUENTIAL: Final[str] = "sequential"
+SCORING_BATCH_BACKEND_THREAD: Final[str] = "thread"
+SCORING_BATCH_BACKEND_PROCESS: Final[str] = "process"
+SCORING_BATCH_BACKEND_AUTO: Final[str] = "auto"
+SCORING_BATCH_BACKENDS: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_BATCH_BACKEND_SEQUENTIAL,
+        SCORING_BATCH_BACKEND_THREAD,
+        SCORING_BATCH_BACKEND_PROCESS,
+        SCORING_BATCH_BACKEND_AUTO,
+    }
+)
+
+SCORING_CACHE_KEY_VALUE: Final[str] = "value"
+SCORING_CACHE_KEY_IDENTITY: Final[str] = "identity"
+SCORING_CACHE_KEY_HYBRID: Final[str] = "hybrid"
+SCORING_CACHE_KEY_STRATEGIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_CACHE_KEY_VALUE,
+        SCORING_CACHE_KEY_IDENTITY,
+        SCORING_CACHE_KEY_HYBRID,
+    }
+)
+
+SCORING_CACHE_STATUS_HIT: Final[str] = "hit"
+SCORING_CACHE_STATUS_MISS: Final[str] = "miss"
+SCORING_CACHE_STATUS_EXPIRED: Final[str] = "expired"
+SCORING_CACHE_STATUS_BYPASSED: Final[str] = "bypassed"
+SCORING_CACHE_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_CACHE_STATUS_HIT,
+        SCORING_CACHE_STATUS_MISS,
+        SCORING_CACHE_STATUS_EXPIRED,
+        SCORING_CACHE_STATUS_BYPASSED,
+    }
+)
+
+SCORING_COMPLEXITY_CONSTANT: Final[str] = "O(1)"
+SCORING_COMPLEXITY_LINEAR: Final[str] = "O(n)"
+SCORING_COMPLEXITY_N_LOG_N: Final[str] = "O(n log n)"
+SCORING_COMPLEXITY_QUADRATIC: Final[str] = "O(n^2)"
+SCORING_COMPLEXITY_POSE_INTERACTION: Final[str] = "O(p × i)"
+SCORING_COMPLEXITY_UNKNOWN: Final[str] = "unknown"
+
+SCORING_PERFORMANCE_SEVERITY_INFO: Final[str] = "info"
+SCORING_PERFORMANCE_SEVERITY_WARNING: Final[str] = "warning"
+SCORING_PERFORMANCE_SEVERITY_CRITICAL: Final[str] = "critical"
+SCORING_PERFORMANCE_SEVERITIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_PERFORMANCE_SEVERITY_INFO,
+        SCORING_PERFORMANCE_SEVERITY_WARNING,
+        SCORING_PERFORMANCE_SEVERITY_CRITICAL,
+    }
+)
+
+SCORING_OPTIMIZATION_CACHE: Final[str] = "cache"
+SCORING_OPTIMIZATION_BATCH: Final[str] = "batch"
+SCORING_OPTIMIZATION_PARALLEL: Final[str] = "parallel"
+SCORING_OPTIMIZATION_STREAM: Final[str] = "stream"
+SCORING_OPTIMIZATION_INDEX: Final[str] = "index"
+SCORING_OPTIMIZATION_MEMORY: Final[str] = "memory"
+SCORING_OPTIMIZATION_ALGORITHM: Final[str] = "algorithm"
+SCORING_OPTIMIZATION_CATEGORIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_OPTIMIZATION_CACHE,
+        SCORING_OPTIMIZATION_BATCH,
+        SCORING_OPTIMIZATION_PARALLEL,
+        SCORING_OPTIMIZATION_STREAM,
+        SCORING_OPTIMIZATION_INDEX,
+        SCORING_OPTIMIZATION_MEMORY,
+        SCORING_OPTIMIZATION_ALGORITHM,
+    }
+)
+
+DEFAULT_SCORING_PERFORMANCE_HISTORY: Final[int] = 500
+DEFAULT_SCORING_BENCHMARK_WARMUPS: Final[int] = 1
+DEFAULT_SCORING_BENCHMARK_REPEATS: Final[int] = 5
+DEFAULT_SCORING_CACHE_MAX_ENTRIES: Final[int] = 2048
+DEFAULT_SCORING_CACHE_TTL_SECONDS: Final[Optional[float]] = None
+DEFAULT_SCORING_BATCH_MIN_PARALLEL_ITEMS: Final[int] = 64
+DEFAULT_SCORING_BATCH_CHUNK_SIZE: Final[int] = 32
+DEFAULT_SCORING_MEMORY_BUDGET_MB: Final[float] = 512.0
+DEFAULT_SCORING_CACHE_KEY_MAX_DEPTH: Final[int] = 12
+DEFAULT_SCORING_CACHE_KEY_MAX_ITEMS: Final[int] = 20000
+DEFAULT_SCORING_SIZE_MAX_DEPTH: Final[int] = 20
+DEFAULT_SCORING_SIZE_MAX_ITEMS: Final[int] = 100000
+DEFAULT_SCORING_REGRESSION_THRESHOLD: Final[float] = 0.15
+DEFAULT_SCORING_SLOW_OPERATION_SECONDS: Final[float] = 1.0
+DEFAULT_SCORING_LARGE_ARTIFACT_MB: Final[float] = 50.0
+DEFAULT_SCORING_MAX_WORKERS: Final[int] = 32
+
+_PERFORMANCE_CLOCKS: Final[Mapping[str, Callable[[], int]]] = (
+    MappingProxyType(
+        {
+            SCORING_TIMER_WALL: time.perf_counter_ns,
+            SCORING_TIMER_CPU: time.process_time_ns,
+        }
+    )
+)
+
+# -----------------------------------------------------------------------------
+# 28.2. Exceptions
+# -----------------------------------------------------------------------------
+
+
+class ScoringPerformanceError(Exception):
+    """Base exception for Section 28 performance infrastructure."""
+
+
+class ScoringPerformanceConfigurationError(ScoringPerformanceError):
+    """Raised when a performance configuration is invalid."""
+
+
+class ScoringBenchmarkError(ScoringPerformanceError):
+    """Raised when a benchmark cannot be executed or summarized."""
+
+
+class ScoringCacheError(ScoringPerformanceError):
+    """Raised when a scoring cache operation fails."""
+
+
+class ScoringBatchExecutionError(ScoringPerformanceError):
+    """Raised when a scoring batch cannot be executed safely."""
+
+
+class ScoringPerformanceValidationError(ScoringPerformanceError):
+    """Raised when a Section 28 result violates an invariant."""
+
+
+# -----------------------------------------------------------------------------
+# 28.3. Normalization helpers
+# -----------------------------------------------------------------------------
+
+
+def _normalize_scoring_performance_token(
+    value: Any,
+    *,
+    field_name: str,
+    allowed: FrozenSet[str],
+    aliases: Optional[Mapping[str, str]] = None,
+) -> str:
+    token = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    if aliases is not None:
+        token = aliases.get(token, token)
+    if token not in allowed:
+        options = ", ".join(sorted(allowed))
+        raise ScoringPerformanceConfigurationError(
+            f"Unsupported {field_name} {value!r}; expected one of: {options}."
+        )
+    return token
+
+
+def normalize_scoring_timer(value: Any) -> str:
+    """Return a canonical timer name."""
+
+    aliases = {
+        "elapsed": SCORING_TIMER_WALL,
+        "real": SCORING_TIMER_WALL,
+        "process": SCORING_TIMER_CPU,
+        "all": SCORING_TIMER_BOTH,
+    }
+    return _normalize_scoring_performance_token(
+        value,
+        field_name="timer",
+        allowed=SCORING_TIMERS,
+        aliases=aliases,
+    )
+
+
+def normalize_scoring_batch_backend(value: Any) -> str:
+    """Return a canonical batch backend name."""
+
+    aliases = {
+        "serial": SCORING_BATCH_BACKEND_SEQUENTIAL,
+        "single": SCORING_BATCH_BACKEND_SEQUENTIAL,
+        "threads": SCORING_BATCH_BACKEND_THREAD,
+        "threaded": SCORING_BATCH_BACKEND_THREAD,
+        "processes": SCORING_BATCH_BACKEND_PROCESS,
+        "multiprocessing": SCORING_BATCH_BACKEND_PROCESS,
+        "automatic": SCORING_BATCH_BACKEND_AUTO,
+    }
+    return _normalize_scoring_performance_token(
+        value,
+        field_name="batch backend",
+        allowed=SCORING_BATCH_BACKENDS,
+        aliases=aliases,
+    )
+
+
+def normalize_scoring_cache_key_strategy(value: Any) -> str:
+    """Return a canonical cache-key strategy."""
+
+    aliases = {
+        "content": SCORING_CACHE_KEY_VALUE,
+        "object": SCORING_CACHE_KEY_IDENTITY,
+        "mixed": SCORING_CACHE_KEY_HYBRID,
+    }
+    return _normalize_scoring_performance_token(
+        value,
+        field_name="cache-key strategy",
+        allowed=SCORING_CACHE_KEY_STRATEGIES,
+        aliases=aliases,
+    )
+
+
+def normalize_scoring_performance_severity(value: Any) -> str:
+    """Return a canonical performance severity."""
+
+    aliases = {
+        "warn": SCORING_PERFORMANCE_SEVERITY_WARNING,
+        "error": SCORING_PERFORMANCE_SEVERITY_CRITICAL,
+        "fatal": SCORING_PERFORMANCE_SEVERITY_CRITICAL,
+    }
+    return _normalize_scoring_performance_token(
+        value,
+        field_name="performance severity",
+        allowed=SCORING_PERFORMANCE_SEVERITIES,
+        aliases=aliases,
+    )
+
+
+def normalize_scoring_optimization_category(value: Any) -> str:
+    """Return a canonical optimization category."""
+
+    aliases = {
+        "memoization": SCORING_OPTIMIZATION_CACHE,
+        "chunk": SCORING_OPTIMIZATION_BATCH,
+        "concurrency": SCORING_OPTIMIZATION_PARALLEL,
+        "streaming": SCORING_OPTIMIZATION_STREAM,
+        "indexing": SCORING_OPTIMIZATION_INDEX,
+        "ram": SCORING_OPTIMIZATION_MEMORY,
+    }
+    return _normalize_scoring_performance_token(
+        value,
+        field_name="optimization category",
+        allowed=SCORING_OPTIMIZATION_CATEGORIES,
+        aliases=aliases,
+    )
+
+
+def _finite_nonnegative(value: Any, field_name: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ScoringPerformanceConfigurationError(
+            f"{field_name} must be numeric."
+        ) from exc
+    if not math.isfinite(number) or number < 0.0:
+        raise ScoringPerformanceConfigurationError(
+            f"{field_name} must be finite and non-negative."
+        )
+    return number
+
+
+def _positive_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ScoringPerformanceConfigurationError(
+            f"{field_name} must be a positive integer."
+        )
+    try:
+        integer = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ScoringPerformanceConfigurationError(
+            f"{field_name} must be a positive integer."
+        ) from exc
+    if integer <= 0:
+        raise ScoringPerformanceConfigurationError(
+            f"{field_name} must be a positive integer."
+        )
+    return integer
+
+
+# -----------------------------------------------------------------------------
+# 28.4. Configuration and result structures
+# -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ScoringPerformancePolicy:
+    """Configuration for profiling, caching, batching, and memory limits."""
+
+    enabled: bool = True
+    timer: str = SCORING_TIMER_BOTH
+    measure_memory: bool = False
+    trace_allocations: bool = False
+    collect_history: bool = True
+    max_history: int = DEFAULT_SCORING_PERFORMANCE_HISTORY
+    benchmark_warmups: int = DEFAULT_SCORING_BENCHMARK_WARMUPS
+    benchmark_repeats: int = DEFAULT_SCORING_BENCHMARK_REPEATS
+    collect_garbage_between_runs: bool = False
+    cache_enabled: bool = True
+    cache_max_entries: int = DEFAULT_SCORING_CACHE_MAX_ENTRIES
+    cache_ttl_seconds: Optional[float] = DEFAULT_SCORING_CACHE_TTL_SECONDS
+    cache_key_strategy: str = SCORING_CACHE_KEY_VALUE
+    batch_backend: str = SCORING_BATCH_BACKEND_AUTO
+    max_workers: Optional[int] = None
+    chunk_size: Optional[int] = None
+    min_parallel_items: int = DEFAULT_SCORING_BATCH_MIN_PARALLEL_ITEMS
+    preserve_order: bool = True
+    fail_fast: bool = False
+    collect_errors: bool = True
+    memory_budget_mb: float = DEFAULT_SCORING_MEMORY_BUDGET_MB
+    slow_operation_seconds: float = DEFAULT_SCORING_SLOW_OPERATION_SECONDS
+    regression_threshold: float = DEFAULT_SCORING_REGRESSION_THRESHOLD
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "timer", normalize_scoring_timer(self.timer))
+        object.__setattr__(
+            self,
+            "cache_key_strategy",
+            normalize_scoring_cache_key_strategy(self.cache_key_strategy),
+        )
+        object.__setattr__(
+            self,
+            "batch_backend",
+            normalize_scoring_batch_backend(self.batch_backend),
+        )
+        object.__setattr__(
+            self,
+            "max_history",
+            _positive_int(self.max_history, "max_history"),
+        )
+        object.__setattr__(
+            self,
+            "benchmark_repeats",
+            _positive_int(self.benchmark_repeats, "benchmark_repeats"),
+        )
+        warmups = int(self.benchmark_warmups)
+        if warmups < 0:
+            raise ScoringPerformanceConfigurationError(
+                "benchmark_warmups cannot be negative."
+            )
+        object.__setattr__(self, "benchmark_warmups", warmups)
+        object.__setattr__(
+            self,
+            "cache_max_entries",
+            _positive_int(self.cache_max_entries, "cache_max_entries"),
+        )
+        if self.cache_ttl_seconds is not None:
+            object.__setattr__(
+                self,
+                "cache_ttl_seconds",
+                _finite_nonnegative(
+                    self.cache_ttl_seconds,
+                    "cache_ttl_seconds",
+                ),
+            )
+        if self.max_workers is not None:
+            workers = _positive_int(self.max_workers, "max_workers")
+            object.__setattr__(
+                self,
+                "max_workers",
+                min(workers, DEFAULT_SCORING_MAX_WORKERS),
+            )
+        if self.chunk_size is not None:
+            object.__setattr__(
+                self,
+                "chunk_size",
+                _positive_int(self.chunk_size, "chunk_size"),
+            )
+        object.__setattr__(
+            self,
+            "min_parallel_items",
+            _positive_int(
+                self.min_parallel_items,
+                "min_parallel_items",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "memory_budget_mb",
+            _finite_nonnegative(self.memory_budget_mb, "memory_budget_mb"),
+        )
+        object.__setattr__(
+            self,
+            "slow_operation_seconds",
+            _finite_nonnegative(
+                self.slow_operation_seconds,
+                "slow_operation_seconds",
+            ),
+        )
+        threshold = _finite_nonnegative(
+            self.regression_threshold,
+            "regression_threshold",
+        )
+        object.__setattr__(self, "regression_threshold", threshold)
+
+
+@dataclass(frozen=True)
+class ScoringResourceSnapshot:
+    """Resource counters captured at a single point in time."""
+
+    timestamp: str
+    wall_time_ns: int
+    cpu_time_ns: int
+    traced_current_bytes: Optional[int] = None
+    traced_peak_bytes: Optional[int] = None
+    resident_memory_bytes: Optional[int] = None
+    user_cpu_seconds: Optional[float] = None
+    system_cpu_seconds: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class ScoringBenchmarkSample:
+    """One measured execution of a benchmarked scoring operation."""
+
+    index: int
+    wall_time_seconds: float
+    cpu_time_seconds: float
+    memory_delta_bytes: Optional[int]
+    peak_memory_delta_bytes: Optional[int]
+    succeeded: bool
+    result_type: Optional[str] = None
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ScoringBenchmarkStatistics:
+    """Descriptive statistics for benchmark durations."""
+
+    count: int
+    minimum_seconds: float
+    maximum_seconds: float
+    mean_seconds: float
+    median_seconds: float
+    standard_deviation_seconds: float
+    p25_seconds: float
+    p75_seconds: float
+    p90_seconds: float
+    p95_seconds: float
+    coefficient_of_variation: float
+    throughput_per_second: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class ScoringOperationProfile:
+    """Measured performance of one scoring operation."""
+
+    operation: str
+    started_at: str
+    finished_at: str
+    wall_time_seconds: float
+    cpu_time_seconds: float
+    memory_delta_bytes: Optional[int]
+    peak_memory_delta_bytes: Optional[int]
+    succeeded: bool
+    item_count: Optional[int] = None
+    throughput_per_second: Optional[float] = None
+    cache_status: Optional[str] = None
+    backend: Optional[str] = None
+    worker_count: Optional[int] = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+
+    @property
+    def memory_delta_mb(self) -> Optional[float]:
+        if self.memory_delta_bytes is None:
+            return None
+        return self.memory_delta_bytes / (1024.0 * 1024.0)
+
+
+@dataclass(frozen=True)
+class ScoringCacheInfo:
+    """State and cumulative counters for a bounded scoring cache."""
+
+    name: str
+    current_entries: int
+    max_entries: int
+    hits: int
+    misses: int
+    expirations: int
+    evictions: int
+    writes: int
+    hit_rate: float
+    ttl_seconds: Optional[float]
+    estimated_size_bytes: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class ScoringBatchPlan:
+    """Resolved execution plan for a scoring batch."""
+
+    item_count: int
+    backend: str
+    worker_count: int
+    chunk_size: int
+    chunk_count: int
+    preserve_order: bool
+    fail_fast: bool
+    estimated_memory_bytes: Optional[int] = None
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class ScoringBatchItemError:
+    """Failure associated with one batch item."""
+
+    index: int
+    item_repr: str
+    error_type: str
+    error_message: str
+
+
+@dataclass(frozen=True)
+class ScoringBatchChunkResult:
+    """Measured output of one chunk in a batch execution."""
+
+    chunk_index: int
+    start_index: int
+    stop_index: int
+    completed_count: int
+    failed_count: int
+    wall_time_seconds: float
+    cpu_time_seconds: float
+    results: Tuple[Tuple[int, Any], ...] = ()
+    errors: Tuple[ScoringBatchItemError, ...] = ()
+
+
+@dataclass(frozen=True)
+class ScoringBatchExecutionResult:
+    """Complete result of a sequential or concurrent batch execution."""
+
+    operation: str
+    plan: ScoringBatchPlan
+    results: Tuple[Any, ...]
+    errors: Tuple[ScoringBatchItemError, ...]
+    chunks: Tuple[ScoringBatchChunkResult, ...]
+    wall_time_seconds: float
+    cpu_time_seconds: float
+    completed_count: int
+    failed_count: int
+    throughput_per_second: float
+    preserved_order: bool
+
+    @property
+    def succeeded(self) -> bool:
+        return self.failed_count == 0
+
+
+@dataclass(frozen=True)
+class ScoringStreamingStatistics:
+    """Online numerical statistics calculated without retaining all values."""
+
+    count: int = 0
+    mean: float = 0.0
+    m2: float = 0.0
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
+    total: float = 0.0
+    nonfinite_count: int = 0
+
+    @property
+    def variance(self) -> float:
+        if self.count < 2:
+            return 0.0
+        return self.m2 / (self.count - 1)
+
+    @property
+    def standard_deviation(self) -> float:
+        return math.sqrt(max(0.0, self.variance))
+
+
+@dataclass(frozen=True)
+class ScoringInteractionIndex:
+    """Reusable lookup index for interaction-like scoring artifacts."""
+
+    item_count: int
+    by_identity: Mapping[str, Tuple[Any, ...]]
+    by_pose: Mapping[str, Tuple[Any, ...]]
+    by_residue: Mapping[str, Tuple[Any, ...]]
+    by_family: Mapping[str, Tuple[Any, ...]]
+    by_type: Mapping[str, Tuple[Any, ...]]
+    duplicate_identity_count: int
+
+
+@dataclass(frozen=True)
+class ScoringComplexityEstimate:
+    """Approximate computational and memory cost of a scoring operation."""
+
+    operation: str
+    complexity: str
+    item_count: int
+    pose_count: int
+    interaction_count: int
+    feature_count: int
+    estimated_work_units: float
+    estimated_memory_bytes: int
+    assumptions: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ScoringOptimizationSuggestion:
+    """Actionable optimization suggested from observed or estimated costs."""
+
+    category: str
+    severity: str
+    title: str
+    rationale: str
+    action: str
+    estimated_benefit: Optional[str] = None
+    evidence: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "category",
+            normalize_scoring_optimization_category(self.category),
+        )
+        object.__setattr__(
+            self,
+            "severity",
+            normalize_scoring_performance_severity(self.severity),
+        )
+
+
+@dataclass(frozen=True)
+class ScoringPerformanceRegression:
+    """Comparison between baseline and candidate operation profiles."""
+
+    operation: str
+    baseline_seconds: float
+    candidate_seconds: float
+    absolute_change_seconds: float
+    relative_change: float
+    is_regression: bool
+    threshold: float
+    baseline_memory_bytes: Optional[int] = None
+    candidate_memory_bytes: Optional[int] = None
+    memory_relative_change: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class ScoringPerformanceReport:
+    """Integrated performance report for one or more scoring operations."""
+
+    generated_at: str
+    profiles: Tuple[ScoringOperationProfile, ...]
+    cache_information: Tuple[ScoringCacheInfo, ...]
+    complexity_estimates: Tuple[ScoringComplexityEstimate, ...]
+    suggestions: Tuple[ScoringOptimizationSuggestion, ...]
+    regressions: Tuple[ScoringPerformanceRegression, ...] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+# -----------------------------------------------------------------------------
+# 28.5. Resource measurements and operation profiling
+# -----------------------------------------------------------------------------
+
+
+_PERFORMANCE_HISTORY_LOCK = threading.RLock()
+_SCORING_PERFORMANCE_HISTORY: List[ScoringOperationProfile] = []
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _resident_memory_bytes() -> Optional[int]:
+    if _resource is None:
+        return None
+    try:
+        usage = _resource.getrusage(_resource.RUSAGE_SELF)
+        value = int(usage.ru_maxrss)
+    except (AttributeError, OSError, ValueError):
+        return None
+    if sys.platform == "darwin":
+        return value
+    return value * 1024
+
+
+def capture_scoring_resource_snapshot(
+    *,
+    trace_memory: bool = False,
+) -> ScoringResourceSnapshot:
+    """Capture wall, CPU, traced-memory, and resident-memory counters."""
+
+    traced_current: Optional[int] = None
+    traced_peak: Optional[int] = None
+    if trace_memory and tracemalloc.is_tracing():
+        traced_current, traced_peak = tracemalloc.get_traced_memory()
+
+    user_cpu: Optional[float] = None
+    system_cpu: Optional[float] = None
+    if _resource is not None:
+        try:
+            usage = _resource.getrusage(_resource.RUSAGE_SELF)
+            user_cpu = float(usage.ru_utime)
+            system_cpu = float(usage.ru_stime)
+        except (AttributeError, OSError, ValueError):
+            pass
+
+    return ScoringResourceSnapshot(
+        timestamp=_utc_now_iso(),
+        wall_time_ns=time.perf_counter_ns(),
+        cpu_time_ns=time.process_time_ns(),
+        traced_current_bytes=traced_current,
+        traced_peak_bytes=traced_peak,
+        resident_memory_bytes=_resident_memory_bytes(),
+        user_cpu_seconds=user_cpu,
+        system_cpu_seconds=system_cpu,
+    )
+
+
+def _profile_from_snapshots(
+    operation: str,
+    start: ScoringResourceSnapshot,
+    end: ScoringResourceSnapshot,
+    *,
+    succeeded: bool,
+    item_count: Optional[int] = None,
+    cache_status: Optional[str] = None,
+    backend: Optional[str] = None,
+    worker_count: Optional[int] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+    error: Optional[BaseException] = None,
+) -> ScoringOperationProfile:
+    wall_seconds = max(0.0, (end.wall_time_ns - start.wall_time_ns) / 1e9)
+    cpu_seconds = max(0.0, (end.cpu_time_ns - start.cpu_time_ns) / 1e9)
+
+    memory_delta: Optional[int] = None
+    peak_delta: Optional[int] = None
+    if (
+        start.traced_current_bytes is not None
+        and end.traced_current_bytes is not None
+    ):
+        memory_delta = end.traced_current_bytes - start.traced_current_bytes
+    if start.traced_peak_bytes is not None and end.traced_peak_bytes is not None:
+        peak_delta = max(0, end.traced_peak_bytes - start.traced_peak_bytes)
+
+    throughput: Optional[float] = None
+    if item_count is not None and item_count >= 0 and wall_seconds > 0.0:
+        throughput = item_count / wall_seconds
+
+    return ScoringOperationProfile(
+        operation=str(operation),
+        started_at=start.timestamp,
+        finished_at=end.timestamp,
+        wall_time_seconds=wall_seconds,
+        cpu_time_seconds=cpu_seconds,
+        memory_delta_bytes=memory_delta,
+        peak_memory_delta_bytes=peak_delta,
+        succeeded=bool(succeeded),
+        item_count=item_count,
+        throughput_per_second=throughput,
+        cache_status=cache_status,
+        backend=backend,
+        worker_count=worker_count,
+        metadata=dict(metadata or {}),
+        error_type=type(error).__name__ if error is not None else None,
+        error_message=str(error) if error is not None else None,
+    )
+
+
+def record_scoring_operation_profile(
+    profile: ScoringOperationProfile,
+    *,
+    max_history: int = DEFAULT_SCORING_PERFORMANCE_HISTORY,
+) -> None:
+    """Append a profile to the bounded process-local history."""
+
+    validate_scoring_operation_profile(profile)
+    limit = _positive_int(max_history, "max_history")
+    with _PERFORMANCE_HISTORY_LOCK:
+        _SCORING_PERFORMANCE_HISTORY.append(profile)
+        overflow = len(_SCORING_PERFORMANCE_HISTORY) - limit
+        if overflow > 0:
+            del _SCORING_PERFORMANCE_HISTORY[:overflow]
+
+
+def scoring_operation_history(
+    *,
+    operation: Optional[str] = None,
+    succeeded: Optional[bool] = None,
+) -> Tuple[ScoringOperationProfile, ...]:
+    """Return filtered immutable operation history."""
+
+    with _PERFORMANCE_HISTORY_LOCK:
+        profiles = tuple(_SCORING_PERFORMANCE_HISTORY)
+    if operation is not None:
+        profiles = tuple(
+            profile for profile in profiles if profile.operation == operation
+        )
+    if succeeded is not None:
+        profiles = tuple(
+            profile for profile in profiles if profile.succeeded is succeeded
+        )
+    return profiles
+
+
+def clear_scoring_operation_history() -> int:
+    """Clear process-local operation history and return removed count."""
+
+    with _PERFORMANCE_HISTORY_LOCK:
+        count = len(_SCORING_PERFORMANCE_HISTORY)
+        _SCORING_PERFORMANCE_HISTORY.clear()
+    return count
+
+
+class ScoringPerformanceMonitor:
+    """Context manager that captures one operation profile."""
+
+    def __init__(
+        self,
+        operation: str,
+        *,
+        policy: Optional[ScoringPerformancePolicy] = None,
+        item_count: Optional[int] = None,
+        cache_status: Optional[str] = None,
+        backend: Optional[str] = None,
+        worker_count: Optional[int] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        self.operation = str(operation)
+        self.policy = policy or ScoringPerformancePolicy()
+        self.item_count = item_count
+        self.cache_status = cache_status
+        self.backend = backend
+        self.worker_count = worker_count
+        self.metadata = dict(metadata or {})
+        self.start: Optional[ScoringResourceSnapshot] = None
+        self.profile: Optional[ScoringOperationProfile] = None
+        self._started_tracemalloc = False
+
+    def __enter__(self) -> "ScoringPerformanceMonitor":
+        if self.policy.enabled and self.policy.measure_memory:
+            if not tracemalloc.is_tracing():
+                tracemalloc.start()
+                self._started_tracemalloc = True
+        self.start = capture_scoring_resource_snapshot(
+            trace_memory=self.policy.measure_memory,
+        )
+        return self
+
+    def __exit__(
+        self,
+        exc_type: Optional[type],
+        exc_value: Optional[BaseException],
+        exc_traceback: Any,
+    ) -> bool:
+        if self.start is None:
+            raise ScoringPerformanceError(
+                "Performance monitor exited before it was entered."
+            )
+        end = capture_scoring_resource_snapshot(
+            trace_memory=self.policy.measure_memory,
+        )
+        self.profile = _profile_from_snapshots(
+            self.operation,
+            self.start,
+            end,
+            succeeded=exc_value is None,
+            item_count=self.item_count,
+            cache_status=self.cache_status,
+            backend=self.backend,
+            worker_count=self.worker_count,
+            metadata=self.metadata,
+            error=exc_value,
+        )
+        if self.policy.collect_history:
+            record_scoring_operation_profile(
+                self.profile,
+                max_history=self.policy.max_history,
+            )
+        if self._started_tracemalloc:
+            tracemalloc.stop()
+        return False
+
+
+def monitor_scoring_performance(
+    operation: str,
+    *,
+    policy: Optional[ScoringPerformancePolicy] = None,
+    item_count: Optional[int] = None,
+    cache_status: Optional[str] = None,
+    backend: Optional[str] = None,
+    worker_count: Optional[int] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringPerformanceMonitor:
+    """Return a configured scoring performance monitor."""
+
+    return ScoringPerformanceMonitor(
+        operation,
+        policy=policy,
+        item_count=item_count,
+        cache_status=cache_status,
+        backend=backend,
+        worker_count=worker_count,
+        metadata=metadata,
+    )
+
+
+def profile_scoring_operation(
+    operation: Optional[str] = None,
+    *,
+    policy: Optional[ScoringPerformancePolicy] = None,
+    item_count_resolver: Optional[Callable[..., Optional[int]]] = None,
+) -> Callable[[Callable[..., _R]], Callable[..., _R]]:
+    """Decorate a callable and record every execution in the history."""
+
+    def decorator(function: Callable[..., _R]) -> Callable[..., _R]:
+        operation_name = operation or function.__qualname__
+
+        @wraps(function)
+        def wrapped(*args: Any, **kwargs: Any) -> _R:
+            item_count: Optional[int] = None
+            if item_count_resolver is not None:
+                item_count = item_count_resolver(*args, **kwargs)
+            with monitor_scoring_performance(
+                operation_name,
+                policy=policy,
+                item_count=item_count,
+            ):
+                return function(*args, **kwargs)
+
+        setattr(wrapped, "__scoring_profiled__", True)
+        return wrapped
+
+    return decorator
+
+
+# -----------------------------------------------------------------------------
+# 28.6. Benchmarking
+# -----------------------------------------------------------------------------
+
+
+def _percentile(values: Sequence[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(value) for value in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * percentile
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    fraction = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
+
+
+def summarize_scoring_benchmark_samples(
+    samples: Iterable[ScoringBenchmarkSample],
+    *,
+    item_count: Optional[int] = None,
+) -> ScoringBenchmarkStatistics:
+    """Summarize successful benchmark samples."""
+
+    successful = tuple(sample for sample in samples if sample.succeeded)
+    if not successful:
+        raise ScoringBenchmarkError(
+            "At least one successful benchmark sample is required."
+        )
+    values = [sample.wall_time_seconds for sample in successful]
+    mean = statistics.fmean(values)
+    deviation = statistics.stdev(values) if len(values) > 1 else 0.0
+    coefficient = deviation / mean if mean > 0.0 else 0.0
+    throughput: Optional[float] = None
+    if item_count is not None and item_count >= 0 and mean > 0.0:
+        throughput = item_count / mean
+    return ScoringBenchmarkStatistics(
+        count=len(values),
+        minimum_seconds=min(values),
+        maximum_seconds=max(values),
+        mean_seconds=mean,
+        median_seconds=statistics.median(values),
+        standard_deviation_seconds=deviation,
+        p25_seconds=_percentile(values, 0.25),
+        p75_seconds=_percentile(values, 0.75),
+        p90_seconds=_percentile(values, 0.90),
+        p95_seconds=_percentile(values, 0.95),
+        coefficient_of_variation=coefficient,
+        throughput_per_second=throughput,
+    )
+
+
+def benchmark_scoring_callable(
+    function: Callable[..., _R],
+    *args: Any,
+    operation: Optional[str] = None,
+    policy: Optional[ScoringPerformancePolicy] = None,
+    item_count: Optional[int] = None,
+    kwargs: Optional[Mapping[str, Any]] = None,
+    raise_on_error: bool = True,
+) -> Tuple[Tuple[ScoringBenchmarkSample, ...], ScoringBenchmarkStatistics]:
+    """Benchmark a callable with warmups and repeated measured executions."""
+
+    if not callable(function):
+        raise ScoringBenchmarkError("function must be callable.")
+    resolved = policy or ScoringPerformancePolicy()
+    call_kwargs = dict(kwargs or {})
+    operation_name = operation or getattr(
+        function,
+        "__qualname__",
+        getattr(function, "__name__", "scoring_callable"),
+    )
+
+    for _ in range(resolved.benchmark_warmups):
+        function(*args, **call_kwargs)
+
+    samples: List[ScoringBenchmarkSample] = []
+    for index in range(resolved.benchmark_repeats):
+        if resolved.collect_garbage_between_runs:
+            gc.collect()
+        started_tracing = False
+        if resolved.measure_memory and not tracemalloc.is_tracing():
+            tracemalloc.start()
+            started_tracing = True
+        start = capture_scoring_resource_snapshot(
+            trace_memory=resolved.measure_memory,
+        )
+        result: Any = None
+        error: Optional[BaseException] = None
+        try:
+            result = function(*args, **call_kwargs)
+        except BaseException as exc:
+            error = exc
+        end = capture_scoring_resource_snapshot(
+            trace_memory=resolved.measure_memory,
+        )
+        if started_tracing:
+            tracemalloc.stop()
+
+        memory_delta: Optional[int] = None
+        peak_delta: Optional[int] = None
+        if (
+            start.traced_current_bytes is not None
+            and end.traced_current_bytes is not None
+        ):
+            memory_delta = end.traced_current_bytes - start.traced_current_bytes
+        if (
+            start.traced_peak_bytes is not None
+            and end.traced_peak_bytes is not None
+        ):
+            peak_delta = max(
+                0,
+                end.traced_peak_bytes - start.traced_peak_bytes,
+            )
+        samples.append(
+            ScoringBenchmarkSample(
+                index=index,
+                wall_time_seconds=max(
+                    0.0,
+                    (end.wall_time_ns - start.wall_time_ns) / 1e9,
+                ),
+                cpu_time_seconds=max(
+                    0.0,
+                    (end.cpu_time_ns - start.cpu_time_ns) / 1e9,
+                ),
+                memory_delta_bytes=memory_delta,
+                peak_memory_delta_bytes=peak_delta,
+                succeeded=error is None,
+                result_type=(
+                    type(result).__name__ if error is None else None
+                ),
+                error_type=type(error).__name__ if error else None,
+                error_message=str(error) if error else None,
+            )
+        )
+        if error is not None and raise_on_error:
+            raise ScoringBenchmarkError(
+                f"Benchmark {operation_name!r} failed on repetition {index}."
+            ) from error
+
+    statistics_result = summarize_scoring_benchmark_samples(
+        samples,
+        item_count=item_count,
+    )
+    return tuple(samples), statistics_result
+
+
+# -----------------------------------------------------------------------------
+# 28.7. Deterministic cache keys and bounded cache
+# -----------------------------------------------------------------------------
+
+
+def _canonicalize_scoring_cache_value(
+    value: Any,
+    *,
+    strategy: str,
+    depth: int,
+    max_depth: int,
+    max_items: int,
+    counter: List[int],
+    active: Set[int],
+) -> Any:
+    if depth > max_depth:
+        return {"__truncated_depth__": type(value).__name__}
+    counter[0] += 1
+    if counter[0] > max_items:
+        return {"__truncated_items__": max_items}
+
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        if math.isnan(value):
+            return {"__float__": "nan"}
+        if math.isinf(value):
+            return {"__float__": "inf" if value > 0 else "-inf"}
+        return value
+    if isinstance(value, bytes):
+        return {
+            "__bytes_sha256__": hashlib.sha256(value).hexdigest(),
+            "length": len(value),
+        }
+
+    identity = id(value)
+    if strategy == SCORING_CACHE_KEY_IDENTITY:
+        return {
+            "__identity__": identity,
+            "type": type(value).__qualname__,
+        }
+    if identity in active:
+        return {
+            "__cycle__": identity,
+            "type": type(value).__qualname__,
+        }
+
+    if strategy == SCORING_CACHE_KEY_HYBRID:
+        immutable = isinstance(value, (tuple, frozenset, Mapping))
+        if not immutable and not is_dataclass(value):
+            return {
+                "__identity__": identity,
+                "type": type(value).__qualname__,
+            }
+
+    active.add(identity)
+    try:
+        if is_dataclass(value):
+            data = {
+                field_name: getattr(value, field_name)
+                for field_name in value.__dataclass_fields__
+            }
+            return {
+                "__dataclass__": type(value).__qualname__,
+                "fields": _canonicalize_scoring_cache_value(
+                    data,
+                    strategy=strategy,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                    max_items=max_items,
+                    counter=counter,
+                    active=active,
+                ),
+            }
+        if isinstance(value, Mapping):
+            entries = []
+            for key, item in value.items():
+                canonical_key = _canonicalize_scoring_cache_value(
+                    key,
+                    strategy=strategy,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                    max_items=max_items,
+                    counter=counter,
+                    active=active,
+                )
+                canonical_item = _canonicalize_scoring_cache_value(
+                    item,
+                    strategy=strategy,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                    max_items=max_items,
+                    counter=counter,
+                    active=active,
+                )
+                entries.append((canonical_key, canonical_item))
+            entries.sort(key=lambda pair: repr(pair[0]))
+            return {"__mapping__": entries}
+        if isinstance(value, (list, tuple)):
+            return {
+                "__sequence__": type(value).__name__,
+                "items": [
+                    _canonicalize_scoring_cache_value(
+                        item,
+                        strategy=strategy,
+                        depth=depth + 1,
+                        max_depth=max_depth,
+                        max_items=max_items,
+                        counter=counter,
+                        active=active,
+                    )
+                    for item in value
+                ],
+            }
+        if isinstance(value, (set, frozenset)):
+            items = [
+                _canonicalize_scoring_cache_value(
+                    item,
+                    strategy=strategy,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                    max_items=max_items,
+                    counter=counter,
+                    active=active,
+                )
+                for item in value
+            ]
+            items.sort(key=repr)
+            return {"__set__": items}
+        if hasattr(value, "to_dict") and callable(value.to_dict):
+            return {
+                "__object__": type(value).__qualname__,
+                "data": _canonicalize_scoring_cache_value(
+                    value.to_dict(),
+                    strategy=strategy,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                    max_items=max_items,
+                    counter=counter,
+                    active=active,
+                ),
+            }
+        if hasattr(value, "__dict__"):
+            public = {
+                key: item
+                for key, item in vars(value).items()
+                if not str(key).startswith("_")
+            }
+            return {
+                "__object__": type(value).__qualname__,
+                "attributes": _canonicalize_scoring_cache_value(
+                    public,
+                    strategy=strategy,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                    max_items=max_items,
+                    counter=counter,
+                    active=active,
+                ),
+            }
+        return {
+            "__repr__": repr(value),
+            "type": type(value).__qualname__,
+        }
+    finally:
+        active.discard(identity)
+
+
+def build_scoring_cache_key(
+    *values: Any,
+    namespace: str = "scoring",
+    strategy: str = SCORING_CACHE_KEY_VALUE,
+    max_depth: int = DEFAULT_SCORING_CACHE_KEY_MAX_DEPTH,
+    max_items: int = DEFAULT_SCORING_CACHE_KEY_MAX_ITEMS,
+    kwargs: Optional[Mapping[str, Any]] = None,
+) -> str:
+    """Build a deterministic SHA-256 key from arguments and metadata."""
+
+    resolved_strategy = normalize_scoring_cache_key_strategy(strategy)
+    payload = {
+        "namespace": str(namespace),
+        "args": _canonicalize_scoring_cache_value(
+            values,
+            strategy=resolved_strategy,
+            depth=0,
+            max_depth=_positive_int(max_depth, "max_depth"),
+            max_items=_positive_int(max_items, "max_items"),
+            counter=[0],
+            active=set(),
+        ),
+        "kwargs": _canonicalize_scoring_cache_value(
+            dict(kwargs or {}),
+            strategy=resolved_strategy,
+            depth=0,
+            max_depth=max_depth,
+            max_items=max_items,
+            counter=[0],
+            active=set(),
+        ),
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass
+class _ScoringCacheEntry:
+    value: Any
+    created_at: float
+    accessed_at: float
+    access_count: int = 0
+
+
+class ScoringLRUCache:
+    """Thread-safe bounded LRU cache with optional time-to-live."""
+
+    def __init__(
+        self,
+        name: str = "default",
+        *,
+        max_entries: int = DEFAULT_SCORING_CACHE_MAX_ENTRIES,
+        ttl_seconds: Optional[float] = DEFAULT_SCORING_CACHE_TTL_SECONDS,
+    ) -> None:
+        self.name = str(name)
+        self.max_entries = _positive_int(max_entries, "max_entries")
+        if ttl_seconds is not None:
+            ttl_seconds = _finite_nonnegative(ttl_seconds, "ttl_seconds")
+        self.ttl_seconds = ttl_seconds
+        self._entries: "OrderedDict[str, _ScoringCacheEntry]" = OrderedDict()
+        self._lock = threading.RLock()
+        self._hits = 0
+        self._misses = 0
+        self._expirations = 0
+        self._evictions = 0
+        self._writes = 0
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    def _expired(self, entry: _ScoringCacheEntry, now: float) -> bool:
+        if self.ttl_seconds is None:
+            return False
+        return (now - entry.created_at) > self.ttl_seconds
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Return a cached value, updating LRU order and counters."""
+
+        normalized = str(key)
+        now = time.monotonic()
+        with self._lock:
+            entry = self._entries.get(normalized)
+            if entry is None:
+                self._misses += 1
+                return default
+            if self._expired(entry, now):
+                del self._entries[normalized]
+                self._misses += 1
+                self._expirations += 1
+                return default
+            entry.accessed_at = now
+            entry.access_count += 1
+            self._entries.move_to_end(normalized)
+            self._hits += 1
+            return entry.value
+
+    def contains(self, key: str) -> bool:
+        """Return whether a non-expired key is currently stored."""
+
+        sentinel = object()
+        return self.get(str(key), sentinel) is not sentinel
+
+    def set(self, key: str, value: Any) -> None:
+        """Store a value and evict least-recently-used entries if needed."""
+
+        normalized = str(key)
+        now = time.monotonic()
+        with self._lock:
+            self._entries[normalized] = _ScoringCacheEntry(
+                value=value,
+                created_at=now,
+                accessed_at=now,
+            )
+            self._entries.move_to_end(normalized)
+            self._writes += 1
+            while len(self._entries) > self.max_entries:
+                self._entries.popitem(last=False)
+                self._evictions += 1
+
+    def pop(self, key: str, default: Any = None) -> Any:
+        """Remove and return a key without affecting hit/miss counters."""
+
+        with self._lock:
+            entry = self._entries.pop(str(key), None)
+        return default if entry is None else entry.value
+
+    def clear(self) -> int:
+        """Remove all entries and return the number removed."""
+
+        with self._lock:
+            count = len(self._entries)
+            self._entries.clear()
+        return count
+
+    def prune_expired(self) -> int:
+        """Remove all expired entries and return the number removed."""
+
+        if self.ttl_seconds is None:
+            return 0
+        now = time.monotonic()
+        removed = 0
+        with self._lock:
+            for key in tuple(self._entries):
+                if self._expired(self._entries[key], now):
+                    del self._entries[key]
+                    removed += 1
+            self._expirations += removed
+        return removed
+
+    def invalidate(
+        self,
+        predicate: Callable[[str, Any], bool],
+    ) -> int:
+        """Remove entries selected by a key/value predicate."""
+
+        if not callable(predicate):
+            raise ScoringCacheError("predicate must be callable.")
+        removed = 0
+        with self._lock:
+            for key in tuple(self._entries):
+                entry = self._entries[key]
+                if predicate(key, entry.value):
+                    del self._entries[key]
+                    removed += 1
+        return removed
+
+    def get_or_compute(
+        self,
+        key: str,
+        factory: Callable[[], _R],
+    ) -> Tuple[_R, str]:
+        """Return a cached value or compute and store it."""
+
+        sentinel = object()
+        cached = self.get(key, sentinel)
+        if cached is not sentinel:
+            return cached, SCORING_CACHE_STATUS_HIT
+        value = factory()
+        self.set(key, value)
+        return value, SCORING_CACHE_STATUS_MISS
+
+    def info(self, *, estimate_size: bool = False) -> ScoringCacheInfo:
+        """Return immutable cache state and counters."""
+
+        with self._lock:
+            total = self._hits + self._misses
+            hit_rate = self._hits / total if total else 0.0
+            estimated_size: Optional[int] = None
+            if estimate_size:
+                estimated_size = estimate_scoring_object_size(self._entries)
+            return ScoringCacheInfo(
+                name=self.name,
+                current_entries=len(self._entries),
+                max_entries=self.max_entries,
+                hits=self._hits,
+                misses=self._misses,
+                expirations=self._expirations,
+                evictions=self._evictions,
+                writes=self._writes,
+                hit_rate=hit_rate,
+                ttl_seconds=self.ttl_seconds,
+                estimated_size_bytes=estimated_size,
+            )
+
+
+_SCORING_CACHE_REGISTRY_LOCK = threading.RLock()
+_SCORING_CACHE_REGISTRY: Dict[str, ScoringLRUCache] = {}
+
+
+def register_scoring_cache(
+    cache: ScoringLRUCache,
+    *,
+    replace_existing: bool = False,
+) -> ScoringLRUCache:
+    """Register a named scoring cache."""
+
+    if not isinstance(cache, ScoringLRUCache):
+        raise ScoringCacheError("cache must be a ScoringLRUCache.")
+    with _SCORING_CACHE_REGISTRY_LOCK:
+        if cache.name in _SCORING_CACHE_REGISTRY and not replace_existing:
+            raise ScoringCacheError(
+                f"A scoring cache named {cache.name!r} is already registered."
+            )
+        _SCORING_CACHE_REGISTRY[cache.name] = cache
+    return cache
+
+
+def get_scoring_cache(
+    name: str = "default",
+    *,
+    create: bool = True,
+    max_entries: int = DEFAULT_SCORING_CACHE_MAX_ENTRIES,
+    ttl_seconds: Optional[float] = DEFAULT_SCORING_CACHE_TTL_SECONDS,
+) -> Optional[ScoringLRUCache]:
+    """Return a named cache, optionally creating it."""
+
+    normalized = str(name)
+    with _SCORING_CACHE_REGISTRY_LOCK:
+        cache = _SCORING_CACHE_REGISTRY.get(normalized)
+        if cache is None and create:
+            cache = ScoringLRUCache(
+                normalized,
+                max_entries=max_entries,
+                ttl_seconds=ttl_seconds,
+            )
+            _SCORING_CACHE_REGISTRY[normalized] = cache
+        return cache
+
+
+def unregister_scoring_cache(name: str) -> Optional[ScoringLRUCache]:
+    """Remove and return a named scoring cache."""
+
+    with _SCORING_CACHE_REGISTRY_LOCK:
+        return _SCORING_CACHE_REGISTRY.pop(str(name), None)
+
+
+def scoring_cache_information(
+    *,
+    estimate_size: bool = False,
+) -> Tuple[ScoringCacheInfo, ...]:
+    """Return information for all registered caches."""
+
+    with _SCORING_CACHE_REGISTRY_LOCK:
+        caches = tuple(_SCORING_CACHE_REGISTRY.values())
+    return tuple(cache.info(estimate_size=estimate_size) for cache in caches)
+
+
+def clear_all_scoring_caches() -> int:
+    """Clear all registered caches and return the removed entry count."""
+
+    with _SCORING_CACHE_REGISTRY_LOCK:
+        caches = tuple(_SCORING_CACHE_REGISTRY.values())
+    return sum(cache.clear() for cache in caches)
+
+
+def cached_scoring_call(
+    function: Callable[..., _R],
+    *args: Any,
+    cache: Optional[ScoringLRUCache] = None,
+    namespace: Optional[str] = None,
+    policy: Optional[ScoringPerformancePolicy] = None,
+    kwargs: Optional[Mapping[str, Any]] = None,
+) -> Tuple[_R, str, str]:
+    """Execute a callable through a deterministic bounded cache."""
+
+    resolved = policy or ScoringPerformancePolicy()
+    call_kwargs = dict(kwargs or {})
+    if not resolved.cache_enabled:
+        return function(*args, **call_kwargs), SCORING_CACHE_STATUS_BYPASSED, ""
+    selected = cache or get_scoring_cache(
+        "default",
+        max_entries=resolved.cache_max_entries,
+        ttl_seconds=resolved.cache_ttl_seconds,
+    )
+    if selected is None:
+        raise ScoringCacheError("No scoring cache is available.")
+    key = build_scoring_cache_key(
+        *args,
+        namespace=namespace or getattr(function, "__qualname__", "scoring"),
+        strategy=resolved.cache_key_strategy,
+        kwargs=call_kwargs,
+    )
+    value, status = selected.get_or_compute(
+        key,
+        lambda: function(*args, **call_kwargs),
+    )
+    return value, status, key
+
+
+def memoize_scoring(
+    *,
+    cache_name: str = "default",
+    namespace: Optional[str] = None,
+    policy: Optional[ScoringPerformancePolicy] = None,
+) -> Callable[[Callable[..., _R]], Callable[..., _R]]:
+    """Decorate a deterministic scoring callable with bounded memoization."""
+
+    resolved = policy or ScoringPerformancePolicy()
+
+    def decorator(function: Callable[..., _R]) -> Callable[..., _R]:
+        @wraps(function)
+        def wrapped(*args: Any, **kwargs: Any) -> _R:
+            cache = get_scoring_cache(
+                cache_name,
+                max_entries=resolved.cache_max_entries,
+                ttl_seconds=resolved.cache_ttl_seconds,
+            )
+            value, status, key = cached_scoring_call(
+                function,
+                *args,
+                cache=cache,
+                namespace=namespace or function.__qualname__,
+                policy=resolved,
+                kwargs=kwargs,
+            )
+            setattr(wrapped, "__scoring_last_cache_status__", status)
+            setattr(wrapped, "__scoring_last_cache_key__", key)
+            return value
+
+        setattr(wrapped, "__scoring_memoized__", True)
+        return wrapped
+
+    return decorator
+
+
+# -----------------------------------------------------------------------------
+# 28.8. Memory estimation and streaming utilities
+# -----------------------------------------------------------------------------
+
+
+def estimate_scoring_object_size(
+    value: Any,
+    *,
+    max_depth: int = DEFAULT_SCORING_SIZE_MAX_DEPTH,
+    max_items: int = DEFAULT_SCORING_SIZE_MAX_ITEMS,
+) -> int:
+    """Estimate recursive object size while protecting against cycles."""
+
+    depth_limit = _positive_int(max_depth, "max_depth")
+    item_limit = _positive_int(max_items, "max_items")
+    seen: Set[int] = set()
+    counter = [0]
+
+    def visit(item: Any, depth: int) -> int:
+        if counter[0] >= item_limit or depth > depth_limit:
+            return 0
+        identity = id(item)
+        if identity in seen:
+            return 0
+        seen.add(identity)
+        counter[0] += 1
+        try:
+            size = sys.getsizeof(item)
+        except TypeError:
+            size = 0
+        if isinstance(item, Mapping):
+            size += sum(
+                visit(key, depth + 1) + visit(element, depth + 1)
+                for key, element in item.items()
+            )
+        elif isinstance(item, (list, tuple, set, frozenset, deque)):
+            size += sum(visit(element, depth + 1) for element in item)
+        elif is_dataclass(item):
+            size += sum(
+                visit(getattr(item, name), depth + 1)
+                for name in item.__dataclass_fields__
+            )
+        elif hasattr(item, "__dict__"):
+            size += visit(vars(item), depth + 1)
+        elif hasattr(item, "__slots__"):
+            slots = item.__slots__
+            if isinstance(slots, str):
+                slots = (slots,)
+            size += sum(
+                visit(getattr(item, slot), depth + 1)
+                for slot in slots
+                if hasattr(item, slot)
+            )
+        return size
+
+    return max(0, visit(value, 0))
+
+
+
+def update_scoring_streaming_statistics(
+    state: ScoringStreamingStatistics,
+    value: Any,
+    *,
+    ignore_nonfinite: bool = True,
+) -> ScoringStreamingStatistics:
+    """Update Welford online statistics with one numerical value."""
+
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ScoringPerformanceValidationError(
+            "Streaming statistics require numerical values."
+        ) from exc
+    if not math.isfinite(number):
+        if ignore_nonfinite:
+            return ScoringStreamingStatistics(
+                count=state.count,
+                mean=state.mean,
+                m2=state.m2,
+                minimum=state.minimum,
+                maximum=state.maximum,
+                total=state.total,
+                nonfinite_count=state.nonfinite_count + 1,
+            )
+        raise ScoringPerformanceValidationError(
+            "Non-finite value received by streaming statistics."
+        )
+    count = state.count + 1
+    delta = number - state.mean
+    mean = state.mean + delta / count
+    delta_two = number - mean
+    m2 = state.m2 + delta * delta_two
+    minimum = number if state.minimum is None else min(state.minimum, number)
+    maximum = number if state.maximum is None else max(state.maximum, number)
+    return ScoringStreamingStatistics(
+        count=count,
+        mean=mean,
+        m2=m2,
+        minimum=minimum,
+        maximum=maximum,
+        total=state.total + number,
+        nonfinite_count=state.nonfinite_count,
+    )
+
+
+def scoring_streaming_statistics(
+    values: Iterable[Any],
+    *,
+    ignore_nonfinite: bool = True,
+) -> ScoringStreamingStatistics:
+    """Calculate numerical statistics in one pass and constant memory."""
+
+    state = ScoringStreamingStatistics()
+    for value in values:
+        state = update_scoring_streaming_statistics(
+            state,
+            value,
+            ignore_nonfinite=ignore_nonfinite,
+        )
+    return state
+
+
+def merge_scoring_streaming_statistics(
+    left: ScoringStreamingStatistics,
+    right: ScoringStreamingStatistics,
+) -> ScoringStreamingStatistics:
+    """Merge two Welford summaries without access to original values."""
+
+    if left.count == 0:
+        return ScoringStreamingStatistics(
+            count=right.count,
+            mean=right.mean,
+            m2=right.m2,
+            minimum=right.minimum,
+            maximum=right.maximum,
+            total=right.total,
+            nonfinite_count=left.nonfinite_count + right.nonfinite_count,
+        )
+    if right.count == 0:
+        return ScoringStreamingStatistics(
+            count=left.count,
+            mean=left.mean,
+            m2=left.m2,
+            minimum=left.minimum,
+            maximum=left.maximum,
+            total=left.total,
+            nonfinite_count=left.nonfinite_count + right.nonfinite_count,
+        )
+    total_count = left.count + right.count
+    delta = right.mean - left.mean
+    mean = (
+        left.mean * left.count + right.mean * right.count
+    ) / total_count
+    m2 = (
+        left.m2
+        + right.m2
+        + delta * delta * left.count * right.count / total_count
+    )
+    minima = [
+        value for value in (left.minimum, right.minimum) if value is not None
+    ]
+    maxima = [
+        value for value in (left.maximum, right.maximum) if value is not None
+    ]
+    return ScoringStreamingStatistics(
+        count=total_count,
+        mean=mean,
+        m2=m2,
+        minimum=min(minima) if minima else None,
+        maximum=max(maxima) if maxima else None,
+        total=left.total + right.total,
+        nonfinite_count=left.nonfinite_count + right.nonfinite_count,
+    )
+
+
+def iter_scoring_chunks(
+    items: Iterable[_T],
+    chunk_size: int,
+) -> Iterator[Tuple[_T, ...]]:
+    """Yield fixed-size immutable chunks without materializing all input."""
+
+    size = _positive_int(chunk_size, "chunk_size")
+    chunk: List[_T] = []
+    for item in items:
+        chunk.append(item)
+        if len(chunk) >= size:
+            yield tuple(chunk)
+            chunk.clear()
+    if chunk:
+        yield tuple(chunk)
+
+
+def deduplicate_scoring_items_fast(
+    items: Iterable[_T],
+    *,
+    key: Optional[Callable[[_T], Hashable]] = None,
+) -> Tuple[_T, ...]:
+    """Deduplicate items in linear expected time while preserving order."""
+
+    resolver = key or (lambda item: item)  # type: ignore[return-value]
+    seen: Set[Hashable] = set()
+    result: List[_T] = []
+    for item in items:
+        identity = resolver(item)
+        if identity not in seen:
+            seen.add(identity)
+            result.append(item)
+    return tuple(result)
+
+
+def group_scoring_items_fast(
+    items: Iterable[_T],
+    key: Callable[[_T], Hashable],
+) -> Mapping[Hashable, Tuple[_T, ...]]:
+    """Group items in one pass using a hashable key."""
+
+    if not callable(key):
+        raise ScoringPerformanceValidationError("key must be callable.")
+    groups: Dict[Hashable, List[_T]] = defaultdict(list)
+    for item in items:
+        groups[key(item)].append(item)
+    return MappingProxyType(
+        {group: tuple(values) for group, values in groups.items()}
+    )
+
+
+def top_k_scoring_items(
+    items: Iterable[_T],
+    k: int,
+    *,
+    key: Callable[[_T], float],
+    largest: bool = True,
+) -> Tuple[_T, ...]:
+    """Select top-k items in O(n log k) time."""
+
+    limit = _positive_int(k, "k")
+    if not callable(key):
+        raise ScoringPerformanceValidationError("key must be callable.")
+    if largest:
+        return tuple(heapq.nlargest(limit, items, key=key))
+    return tuple(heapq.nsmallest(limit, items, key=key))
+
+
+# -----------------------------------------------------------------------------
+# 28.9. Interaction indexing
+# -----------------------------------------------------------------------------
+
+
+def _performance_get(value: Any, names: Sequence[str], default: Any = None) -> Any:
+    if isinstance(value, Mapping):
+        for name in names:
+            if name in value:
+                return value[name]
+        return default
+    for name in names:
+        if hasattr(value, name):
+            return getattr(value, name)
+    return default
+
+
+def _performance_text(value: Any, names: Sequence[str]) -> str:
+    resolved = _performance_get(value, names, "")
+    if resolved is None:
+        return ""
+    if hasattr(resolved, "value"):
+        resolved = resolved.value
+    return str(resolved).strip()
+
+
+def _interaction_identity_for_index(item: Any, index: int) -> str:
+    identity = _performance_text(
+        item,
+        (
+            "interaction_id",
+            "identity",
+            "deduplication_key",
+            "key",
+            "id",
+        ),
+    )
+    if identity:
+        return identity
+    receptor = _performance_text(
+        item,
+        ("receptor_residue_id", "protein_residue_id", "residue_id"),
+    )
+    ligand = _performance_text(
+        item,
+        ("ligand_residue_id", "partner_residue_id"),
+    )
+    family = _performance_text(item, ("family", "interaction_family"))
+    interaction_type = _performance_text(
+        item,
+        ("interaction_type", "type", "kind"),
+    )
+    composed = "|".join(
+        part for part in (family, interaction_type, receptor, ligand) if part
+    )
+    return composed or f"interaction:{index}"
+
+
+def build_scoring_interaction_index(
+    interactions: Iterable[Any],
+) -> ScoringInteractionIndex:
+    """Build reusable indexes for common interaction lookup dimensions."""
+
+    by_identity: Dict[str, List[Any]] = defaultdict(list)
+    by_pose: Dict[str, List[Any]] = defaultdict(list)
+    by_residue: Dict[str, List[Any]] = defaultdict(list)
+    by_family: Dict[str, List[Any]] = defaultdict(list)
+    by_type: Dict[str, List[Any]] = defaultdict(list)
+    count = 0
+    for index, item in enumerate(interactions):
+        count += 1
+        identity = _interaction_identity_for_index(item, index)
+        by_identity[identity].append(item)
+        pose = _performance_text(item, ("pose_id", "model_id"))
+        if pose:
+            by_pose[pose].append(item)
+        residues = {
+            _performance_text(
+                item,
+                (
+                    "receptor_residue_id",
+                    "protein_residue_id",
+                    "residue_id",
+                ),
+            ),
+            _performance_text(
+                item,
+                ("ligand_residue_id", "partner_residue_id"),
+            ),
+        }
+        for residue in residues:
+            if residue:
+                by_residue[residue].append(item)
+        family = _performance_text(item, ("family", "interaction_family"))
+        if family:
+            by_family[family].append(item)
+        interaction_type = _performance_text(
+            item,
+            ("interaction_type", "type", "kind"),
+        )
+        if interaction_type:
+            by_type[interaction_type].append(item)
+
+    def freeze(groups: Mapping[str, List[Any]]) -> Mapping[str, Tuple[Any, ...]]:
+        return MappingProxyType(
+            {key: tuple(values) for key, values in groups.items()}
+        )
+
+    duplicates = sum(
+        max(0, len(values) - 1) for values in by_identity.values()
+    )
+    return ScoringInteractionIndex(
+        item_count=count,
+        by_identity=freeze(by_identity),
+        by_pose=freeze(by_pose),
+        by_residue=freeze(by_residue),
+        by_family=freeze(by_family),
+        by_type=freeze(by_type),
+        duplicate_identity_count=duplicates,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 28.10. Batch planning and execution
+# -----------------------------------------------------------------------------
+
+
+def _available_worker_count(max_workers: Optional[int] = None) -> int:
+    detected = os.cpu_count() or 1
+    if max_workers is not None:
+        detected = min(detected, _positive_int(max_workers, "max_workers"))
+    return max(1, min(detected, DEFAULT_SCORING_MAX_WORKERS))
+
+
+def recommend_scoring_chunk_size(
+    item_count: int,
+    *,
+    worker_count: int = 1,
+    item_size_bytes: Optional[int] = None,
+    memory_budget_mb: float = DEFAULT_SCORING_MEMORY_BUDGET_MB,
+    minimum: int = 1,
+    maximum: int = 4096,
+) -> int:
+    """Recommend a chunk size from work distribution and memory limits."""
+
+    count = max(0, int(item_count))
+    if count == 0:
+        return 1
+    workers = _positive_int(worker_count, "worker_count")
+    lower = _positive_int(minimum, "minimum")
+    upper = _positive_int(maximum, "maximum")
+    if lower > upper:
+        raise ScoringPerformanceConfigurationError(
+            "minimum chunk size cannot exceed maximum."
+        )
+    distribution_target = max(1, math.ceil(count / (workers * 4)))
+    candidate = min(upper, max(lower, distribution_target))
+    if item_size_bytes is not None and item_size_bytes > 0:
+        budget_bytes = int(
+            _finite_nonnegative(memory_budget_mb, "memory_budget_mb")
+            * 1024
+            * 1024
+        )
+        per_worker_budget = max(1, budget_bytes // workers)
+        memory_limit = max(1, per_worker_budget // int(item_size_bytes))
+        candidate = min(candidate, memory_limit)
+    return min(count, max(lower, candidate))
+
+
+def resolve_scoring_batch_backend(
+    item_count: int,
+    *,
+    policy: Optional[ScoringPerformancePolicy] = None,
+    function: Optional[Callable[..., Any]] = None,
+) -> Tuple[str, str]:
+    """Resolve auto backend conservatively and return its rationale."""
+
+    resolved = policy or ScoringPerformancePolicy()
+    requested = resolved.batch_backend
+    if requested != SCORING_BATCH_BACKEND_AUTO:
+        return requested, "Backend explicitly configured."
+    if item_count < resolved.min_parallel_items:
+        return (
+            SCORING_BATCH_BACKEND_SEQUENTIAL,
+            "Item count is below the parallelization threshold.",
+        )
+    if function is not None and inspect.iscoroutinefunction(function):
+        return (
+            SCORING_BATCH_BACKEND_SEQUENTIAL,
+            "Coroutine functions require an external async scheduler.",
+        )
+    return (
+        SCORING_BATCH_BACKEND_THREAD,
+        "Thread backend selected as the portable automatic default.",
+    )
+
+
+def plan_scoring_batch(
+    item_count: int,
+    *,
+    policy: Optional[ScoringPerformancePolicy] = None,
+    function: Optional[Callable[..., Any]] = None,
+    representative_item: Any = None,
+) -> ScoringBatchPlan:
+    """Build a deterministic batch plan from count and policy."""
+
+    count = max(0, int(item_count))
+    resolved = policy or ScoringPerformancePolicy()
+    backend, reason = resolve_scoring_batch_backend(
+        count,
+        policy=resolved,
+        function=function,
+    )
+    worker_count = 1
+    if backend in {
+        SCORING_BATCH_BACKEND_THREAD,
+        SCORING_BATCH_BACKEND_PROCESS,
+    }:
+        worker_count = min(count or 1, _available_worker_count(resolved.max_workers))
+    item_size: Optional[int] = None
+    if representative_item is not None:
+        item_size = estimate_scoring_object_size(representative_item)
+    chunk_size = resolved.chunk_size or recommend_scoring_chunk_size(
+        count,
+        worker_count=worker_count,
+        item_size_bytes=item_size,
+        memory_budget_mb=resolved.memory_budget_mb,
+        minimum=1,
+        maximum=DEFAULT_SCORING_BATCH_CHUNK_SIZE * 128,
+    )
+    chunk_count = math.ceil(count / chunk_size) if count else 0
+    estimated_memory: Optional[int] = None
+    if item_size is not None:
+        estimated_memory = item_size * min(count, chunk_size * worker_count)
+    return ScoringBatchPlan(
+        item_count=count,
+        backend=backend,
+        worker_count=worker_count,
+        chunk_size=chunk_size,
+        chunk_count=chunk_count,
+        preserve_order=resolved.preserve_order,
+        fail_fast=resolved.fail_fast,
+        estimated_memory_bytes=estimated_memory,
+        reason=reason,
+    )
+
+
+def _safe_item_repr(item: Any, limit: int = 240) -> str:
+    try:
+        text = repr(item)
+    except BaseException:
+        text = f"<{type(item).__name__}>"
+    if len(text) > limit:
+        return text[: max(0, limit - 3)] + "..."
+    return text
+
+
+def _execute_scoring_chunk_worker(
+    function: Callable[[_T], _R],
+    indexed_items: Tuple[Tuple[int, _T], ...],
+    chunk_index: int,
+    fail_fast: bool,
+) -> ScoringBatchChunkResult:
+    wall_start = time.perf_counter_ns()
+    cpu_start = time.process_time_ns()
+    results: List[Tuple[int, Any]] = []
+    errors: List[ScoringBatchItemError] = []
+    for index, item in indexed_items:
+        try:
+            results.append((index, function(item)))
+        except BaseException as exc:
+            errors.append(
+                ScoringBatchItemError(
+                    index=index,
+                    item_repr=_safe_item_repr(item),
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                )
+            )
+            if fail_fast:
+                break
+    wall_seconds = (time.perf_counter_ns() - wall_start) / 1e9
+    cpu_seconds = (time.process_time_ns() - cpu_start) / 1e9
+    start_index = indexed_items[0][0] if indexed_items else 0
+    stop_index = indexed_items[-1][0] + 1 if indexed_items else start_index
+    return ScoringBatchChunkResult(
+        chunk_index=chunk_index,
+        start_index=start_index,
+        stop_index=stop_index,
+        completed_count=len(results),
+        failed_count=len(errors),
+        wall_time_seconds=max(0.0, wall_seconds),
+        cpu_time_seconds=max(0.0, cpu_seconds),
+        results=tuple(results),
+        errors=tuple(errors),
+    )
+
+
+def _indexed_scoring_chunks(
+    items: Sequence[_T],
+    chunk_size: int,
+) -> Tuple[Tuple[Tuple[int, _T], ...], ...]:
+    indexed = tuple(enumerate(items))
+    return tuple(iter_scoring_chunks(indexed, chunk_size))
+
+
+def execute_scoring_batch(
+    function: Callable[[_T], _R],
+    items: Iterable[_T],
+    *,
+    operation: Optional[str] = None,
+    policy: Optional[ScoringPerformancePolicy] = None,
+) -> ScoringBatchExecutionResult:
+    """Execute a scoring callable sequentially or with a bounded executor."""
+
+    if not callable(function):
+        raise ScoringBatchExecutionError("function must be callable.")
+    resolved = policy or ScoringPerformancePolicy()
+    materialized = tuple(items)
+    operation_name = operation or getattr(
+        function,
+        "__qualname__",
+        getattr(function, "__name__", "scoring_batch"),
+    )
+    representative = materialized[0] if materialized else None
+    plan = plan_scoring_batch(
+        len(materialized),
+        policy=resolved,
+        function=function,
+        representative_item=representative,
+    )
+    chunks = _indexed_scoring_chunks(materialized, plan.chunk_size)
+    started_at = _utc_now_iso()
+    wall_start = time.perf_counter_ns()
+    cpu_start = time.process_time_ns()
+    chunk_results: List[ScoringBatchChunkResult] = []
+
+    if plan.backend == SCORING_BATCH_BACKEND_SEQUENTIAL:
+        for chunk_index, indexed_items in enumerate(chunks):
+            chunk_result = _execute_scoring_chunk_worker(
+                function,
+                indexed_items,
+                chunk_index,
+                plan.fail_fast,
+            )
+            chunk_results.append(chunk_result)
+            if plan.fail_fast and chunk_result.errors:
+                break
+    else:
+        executor_class: Any
+        if plan.backend == SCORING_BATCH_BACKEND_THREAD:
+            executor_class = ThreadPoolExecutor
+        elif plan.backend == SCORING_BATCH_BACKEND_PROCESS:
+            executor_class = ProcessPoolExecutor
+        else:
+            raise ScoringBatchExecutionError(
+                f"Unsupported resolved backend: {plan.backend!r}."
+            )
+        futures: Dict[Future[Any], int] = {}
+        try:
+            with executor_class(max_workers=plan.worker_count) as executor:
+                for chunk_index, indexed_items in enumerate(chunks):
+                    future = executor.submit(
+                        _execute_scoring_chunk_worker,
+                        function,
+                        indexed_items,
+                        chunk_index,
+                        plan.fail_fast,
+                    )
+                    futures[future] = chunk_index
+                for future in as_completed(futures):
+                    try:
+                        chunk_result = future.result()
+                    except BaseException as exc:
+                        chunk_index = futures[future]
+                        indexed_items = chunks[chunk_index]
+                        first_index = indexed_items[0][0] if indexed_items else 0
+                        chunk_result = ScoringBatchChunkResult(
+                            chunk_index=chunk_index,
+                            start_index=first_index,
+                            stop_index=(
+                                indexed_items[-1][0] + 1
+                                if indexed_items
+                                else first_index
+                            ),
+                            completed_count=0,
+                            failed_count=len(indexed_items) or 1,
+                            wall_time_seconds=0.0,
+                            cpu_time_seconds=0.0,
+                            results=(),
+                            errors=tuple(
+                                ScoringBatchItemError(
+                                    index=item_index,
+                                    item_repr=_safe_item_repr(item),
+                                    error_type=type(exc).__name__,
+                                    error_message=str(exc),
+                                )
+                                for item_index, item in indexed_items
+                            )
+                            or (
+                                ScoringBatchItemError(
+                                    index=first_index,
+                                    item_repr="<empty chunk>",
+                                    error_type=type(exc).__name__,
+                                    error_message=str(exc),
+                                ),
+                            ),
+                        )
+                    chunk_results.append(chunk_result)
+                    if plan.fail_fast and chunk_result.errors:
+                        for pending in futures:
+                            if not pending.done():
+                                pending.cancel()
+                        break
+        except BaseException as exc:
+            raise ScoringBatchExecutionError(
+                f"Batch backend {plan.backend!r} failed."
+            ) from exc
+
+    wall_seconds = max(0.0, (time.perf_counter_ns() - wall_start) / 1e9)
+    cpu_seconds = max(0.0, (time.process_time_ns() - cpu_start) / 1e9)
+    ordered_chunks = sorted(chunk_results, key=lambda chunk: chunk.chunk_index)
+    indexed_results = [
+        pair for chunk in ordered_chunks for pair in chunk.results
+    ]
+    errors = tuple(error for chunk in ordered_chunks for error in chunk.errors)
+    completed = len(indexed_results)
+    if plan.preserve_order:
+        indexed_results.sort(key=lambda pair: pair[0])
+    results = tuple(value for _, value in indexed_results)
+    throughput = completed / wall_seconds if wall_seconds > 0.0 else 0.0
+    execution = ScoringBatchExecutionResult(
+        operation=operation_name,
+        plan=plan,
+        results=results,
+        errors=errors,
+        chunks=tuple(ordered_chunks),
+        wall_time_seconds=wall_seconds,
+        cpu_time_seconds=cpu_seconds,
+        completed_count=completed,
+        failed_count=len(errors),
+        throughput_per_second=throughput,
+        preserved_order=plan.preserve_order,
+    )
+    if resolved.collect_history:
+        profile = ScoringOperationProfile(
+            operation=operation_name,
+            started_at=started_at,
+            finished_at=_utc_now_iso(),
+            wall_time_seconds=wall_seconds,
+            cpu_time_seconds=cpu_seconds,
+            memory_delta_bytes=None,
+            peak_memory_delta_bytes=None,
+            succeeded=execution.succeeded,
+            item_count=len(materialized),
+            throughput_per_second=throughput,
+            backend=plan.backend,
+            worker_count=plan.worker_count,
+            metadata={
+                "chunk_size": plan.chunk_size,
+                "chunk_count": plan.chunk_count,
+                "failed_count": execution.failed_count,
+            },
+            error_type=(
+                errors[0].error_type if errors and resolved.fail_fast else None
+            ),
+            error_message=(
+                errors[0].error_message
+                if errors and resolved.fail_fast
+                else None
+            ),
+        )
+        record_scoring_operation_profile(
+            profile,
+            max_history=resolved.max_history,
+        )
+    if execution.errors and not resolved.collect_errors:
+        first = execution.errors[0]
+        raise ScoringBatchExecutionError(
+            f"Batch item {first.index} failed: {first.error_message}"
+        )
+    return execution
+
+
+# -----------------------------------------------------------------------------
+# 28.11. Complexity estimation
+# -----------------------------------------------------------------------------
+
+
+def _safe_len(value: Any) -> int:
+    if value is None:
+        return 0
+    try:
+        return len(value)
+    except (TypeError, AttributeError):
+        return 0
+
+
+def _extract_performance_counts(artifact: Any) -> Tuple[int, int, int, int]:
+    item_count = _safe_len(artifact)
+    pose_count = 0
+    interaction_count = 0
+    feature_count = 0
+
+    if isinstance(artifact, Mapping):
+        pose_count = int(
+            artifact.get("pose_count", artifact.get("total_poses", 0)) or 0
+        )
+        interaction_count = int(
+            artifact.get(
+                "interaction_count",
+                artifact.get("total_interactions", 0),
+            )
+            or 0
+        )
+        feature_count = int(
+            artifact.get("feature_count", artifact.get("total_features", 0))
+            or 0
+        )
+        for key in ("poses", "pose_scores", "results", "ranked_poses"):
+            if key in artifact and pose_count == 0:
+                pose_count = _safe_len(artifact[key])
+        for key in ("interactions", "interaction_scores", "items"):
+            if key in artifact and interaction_count == 0:
+                interaction_count = _safe_len(artifact[key])
+    else:
+        pose_count = int(
+            _performance_get(
+                artifact,
+                ("pose_count", "total_poses"),
+                0,
+            )
+            or 0
+        )
+        interaction_count = int(
+            _performance_get(
+                artifact,
+                ("interaction_count", "total_interactions"),
+                0,
+            )
+            or 0
+        )
+        feature_count = int(
+            _performance_get(
+                artifact,
+                ("feature_count", "total_features"),
+                0,
+            )
+            or 0
+        )
+        if pose_count == 0:
+            for name in ("poses", "pose_scores", "results", "ranked_poses"):
+                value = _performance_get(artifact, (name,), None)
+                if value is not None:
+                    pose_count = _safe_len(value)
+                    break
+        if interaction_count == 0:
+            for name in ("interactions", "interaction_scores", "items"):
+                value = _performance_get(artifact, (name,), None)
+                if value is not None:
+                    interaction_count = _safe_len(value)
+                    break
+
+    if item_count == 0:
+        item_count = max(pose_count, interaction_count, feature_count, 1)
+    return item_count, pose_count, interaction_count, feature_count
+
+
+def estimate_scoring_complexity(
+    operation: str,
+    artifact: Any = None,
+    *,
+    item_count: Optional[int] = None,
+    pose_count: Optional[int] = None,
+    interaction_count: Optional[int] = None,
+    feature_count: Optional[int] = None,
+) -> ScoringComplexityEstimate:
+    """Estimate asymptotic complexity and approximate work units."""
+
+    inferred = _extract_performance_counts(artifact)
+    n = max(0, int(item_count if item_count is not None else inferred[0]))
+    poses = max(0, int(pose_count if pose_count is not None else inferred[1]))
+    interactions = max(
+        0,
+        int(
+            interaction_count
+            if interaction_count is not None
+            else inferred[2]
+        ),
+    )
+    features = max(
+        0,
+        int(feature_count if feature_count is not None else inferred[3]),
+    )
+    token = str(operation).strip().lower().replace("-", "_")
+    assumptions: List[str] = []
+    if any(word in token for word in ("diversity", "similarity", "pairwise")):
+        base = max(poses, n)
+        complexity = SCORING_COMPLEXITY_QUADRATIC
+        work = float(base * max(0, base - 1) // 2) * max(1, features)
+        assumptions.append("All pose pairs may be compared.")
+    elif any(word in token for word in ("rank", "sort", "pareto")):
+        base = max(poses, n)
+        complexity = SCORING_COMPLEXITY_N_LOG_N
+        work = float(base) * math.log2(max(2, base))
+        assumptions.append("Comparison cost is treated as constant.")
+    elif any(word in token for word in ("consensus", "persistence")):
+        complexity = SCORING_COMPLEXITY_POSE_INTERACTION
+        work = float(max(1, poses)) * max(1, interactions)
+        assumptions.append("Each pose contributes an interaction signature.")
+    elif any(word in token for word in ("score", "aggregate", "validate")):
+        base = max(interactions, n)
+        complexity = SCORING_COMPLEXITY_LINEAR
+        work = float(base)
+        assumptions.append("Each input item is visited once.")
+    elif any(word in token for word in ("lookup", "cache_get", "index_get")):
+        complexity = SCORING_COMPLEXITY_CONSTANT
+        work = 1.0
+        assumptions.append("Hash-table access has expected constant time.")
+    else:
+        complexity = SCORING_COMPLEXITY_UNKNOWN
+        work = float(max(1, n))
+        assumptions.append("Unknown operation is estimated conservatively.")
+
+    estimated_memory = 0
+    if artifact is not None:
+        estimated_memory = estimate_scoring_object_size(
+            artifact,
+            max_depth=8,
+            max_items=20000,
+        )
+    if estimated_memory == 0:
+        estimated_memory = int(max(1.0, work) * 64.0)
+    return ScoringComplexityEstimate(
+        operation=str(operation),
+        complexity=complexity,
+        item_count=n,
+        pose_count=poses,
+        interaction_count=interactions,
+        feature_count=features,
+        estimated_work_units=work,
+        estimated_memory_bytes=estimated_memory,
+        assumptions=tuple(assumptions),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 28.12. Regression comparisons and recommendations
+# -----------------------------------------------------------------------------
+
+
+def compare_scoring_operation_profiles(
+    baseline: ScoringOperationProfile,
+    candidate: ScoringOperationProfile,
+    *,
+    threshold: float = DEFAULT_SCORING_REGRESSION_THRESHOLD,
+) -> ScoringPerformanceRegression:
+    """Compare two profiles and flag a relative wall-time regression."""
+
+    validate_scoring_operation_profile(baseline)
+    validate_scoring_operation_profile(candidate)
+    resolved_threshold = _finite_nonnegative(threshold, "threshold")
+    baseline_seconds = baseline.wall_time_seconds
+    candidate_seconds = candidate.wall_time_seconds
+    absolute = candidate_seconds - baseline_seconds
+    if baseline_seconds > 0.0:
+        relative = absolute / baseline_seconds
+    elif candidate_seconds > 0.0:
+        relative = math.inf
+    else:
+        relative = 0.0
+    memory_relative: Optional[float] = None
+    if (
+        baseline.peak_memory_delta_bytes is not None
+        and candidate.peak_memory_delta_bytes is not None
+    ):
+        baseline_memory = baseline.peak_memory_delta_bytes
+        candidate_memory = candidate.peak_memory_delta_bytes
+        if baseline_memory > 0:
+            memory_relative = (
+                candidate_memory - baseline_memory
+            ) / baseline_memory
+        elif candidate_memory > 0:
+            memory_relative = math.inf
+        else:
+            memory_relative = 0.0
+    return ScoringPerformanceRegression(
+        operation=candidate.operation,
+        baseline_seconds=baseline_seconds,
+        candidate_seconds=candidate_seconds,
+        absolute_change_seconds=absolute,
+        relative_change=relative,
+        is_regression=relative > resolved_threshold,
+        threshold=resolved_threshold,
+        baseline_memory_bytes=baseline.peak_memory_delta_bytes,
+        candidate_memory_bytes=candidate.peak_memory_delta_bytes,
+        memory_relative_change=memory_relative,
+    )
+
+
+def recommend_scoring_optimizations(
+    *,
+    profiles: Iterable[ScoringOperationProfile] = (),
+    caches: Iterable[ScoringCacheInfo] = (),
+    estimates: Iterable[ScoringComplexityEstimate] = (),
+    policy: Optional[ScoringPerformancePolicy] = None,
+) -> Tuple[ScoringOptimizationSuggestion, ...]:
+    """Generate conservative, evidence-based optimization suggestions."""
+
+    resolved = policy or ScoringPerformancePolicy()
+    suggestions: List[ScoringOptimizationSuggestion] = []
+
+    for profile in profiles:
+        if profile.wall_time_seconds >= resolved.slow_operation_seconds:
+            category = SCORING_OPTIMIZATION_BATCH
+            action = (
+                "Process independent poses or interaction collections in "
+                "bounded chunks."
+            )
+            if profile.item_count and profile.item_count >= resolved.min_parallel_items:
+                category = SCORING_OPTIMIZATION_PARALLEL
+                action = (
+                    "Benchmark bounded thread execution against sequential "
+                    "execution for this operation."
+                )
+            suggestions.append(
+                ScoringOptimizationSuggestion(
+                    category=category,
+                    severity=SCORING_PERFORMANCE_SEVERITY_WARNING,
+                    title=f"Slow operation: {profile.operation}",
+                    rationale=(
+                        f"Observed wall time was "
+                        f"{profile.wall_time_seconds:.3f} seconds."
+                    ),
+                    action=action,
+                    estimated_benefit="Reduced elapsed time after benchmarking.",
+                    evidence={
+                        "wall_time_seconds": profile.wall_time_seconds,
+                        "item_count": profile.item_count,
+                        "throughput_per_second": (
+                            profile.throughput_per_second
+                        ),
+                    },
+                )
+            )
+        if (
+            profile.peak_memory_delta_bytes is not None
+            and profile.peak_memory_delta_bytes
+            > resolved.memory_budget_mb * 1024 * 1024
+        ):
+            suggestions.append(
+                ScoringOptimizationSuggestion(
+                    category=SCORING_OPTIMIZATION_MEMORY,
+                    severity=SCORING_PERFORMANCE_SEVERITY_CRITICAL,
+                    title=f"Memory budget exceeded: {profile.operation}",
+                    rationale=(
+                        "Measured peak allocation exceeded the configured "
+                        "memory budget."
+                    ),
+                    action=(
+                        "Use streaming aggregation and reduce the batch chunk "
+                        "size before enabling parallel execution."
+                    ),
+                    evidence={
+                        "peak_memory_bytes": profile.peak_memory_delta_bytes,
+                        "budget_mb": resolved.memory_budget_mb,
+                    },
+                )
+            )
+
+    for cache in caches:
+        requests = cache.hits + cache.misses
+        if requests >= 10 and cache.hit_rate < 0.10:
+            suggestions.append(
+                ScoringOptimizationSuggestion(
+                    category=SCORING_OPTIMIZATION_CACHE,
+                    severity=SCORING_PERFORMANCE_SEVERITY_INFO,
+                    title=f"Low cache utility: {cache.name}",
+                    rationale=(
+                        f"Cache hit rate is only {cache.hit_rate:.1%} after "
+                        f"{requests} lookups."
+                    ),
+                    action=(
+                        "Review cache-key stability or disable this cache to "
+                        "avoid hashing and memory overhead."
+                    ),
+                    evidence={
+                        "hit_rate": cache.hit_rate,
+                        "lookups": requests,
+                        "entries": cache.current_entries,
+                    },
+                )
+            )
+        if cache.evictions > cache.max_entries:
+            suggestions.append(
+                ScoringOptimizationSuggestion(
+                    category=SCORING_OPTIMIZATION_CACHE,
+                    severity=SCORING_PERFORMANCE_SEVERITY_INFO,
+                    title=f"Frequent cache eviction: {cache.name}",
+                    rationale=(
+                        "The cumulative eviction count exceeds cache capacity."
+                    ),
+                    action=(
+                        "Increase capacity only after confirming a useful hit "
+                        "rate and available memory."
+                    ),
+                    evidence={
+                        "evictions": cache.evictions,
+                        "max_entries": cache.max_entries,
+                        "hit_rate": cache.hit_rate,
+                    },
+                )
+            )
+
+    for estimate in estimates:
+        if estimate.complexity == SCORING_COMPLEXITY_QUADRATIC:
+            suggestions.append(
+                ScoringOptimizationSuggestion(
+                    category=SCORING_OPTIMIZATION_ALGORITHM,
+                    severity=SCORING_PERFORMANCE_SEVERITY_WARNING,
+                    title=f"Quadratic operation: {estimate.operation}",
+                    rationale=(
+                        "Estimated work grows with the square of the pose or "
+                        "feature count."
+                    ),
+                    action=(
+                        "Pre-filter candidates, reuse signatures, or compute "
+                        "only required pairwise comparisons."
+                    ),
+                    estimated_benefit=(
+                        "Potentially avoids a large fraction of pairwise work."
+                    ),
+                    evidence={
+                        "estimated_work_units": estimate.estimated_work_units,
+                        "pose_count": estimate.pose_count,
+                        "feature_count": estimate.feature_count,
+                    },
+                )
+            )
+        if (
+            estimate.estimated_memory_bytes
+            > resolved.memory_budget_mb * 1024 * 1024
+        ):
+            suggestions.append(
+                ScoringOptimizationSuggestion(
+                    category=SCORING_OPTIMIZATION_STREAM,
+                    severity=SCORING_PERFORMANCE_SEVERITY_WARNING,
+                    title=f"Large artifact: {estimate.operation}",
+                    rationale=(
+                        "Estimated working data exceeds the configured memory "
+                        "budget."
+                    ),
+                    action=(
+                        "Use iterators, streaming statistics, and incremental "
+                        "serialization instead of retaining all intermediates."
+                    ),
+                    evidence={
+                        "estimated_memory_bytes": (
+                            estimate.estimated_memory_bytes
+                        ),
+                        "memory_budget_mb": resolved.memory_budget_mb,
+                    },
+                )
+            )
+
+    unique: Dict[Tuple[str, str], ScoringOptimizationSuggestion] = {}
+    for suggestion in suggestions:
+        unique[(suggestion.category, suggestion.title)] = suggestion
+    return tuple(unique.values())
+
+
+def build_scoring_performance_report(
+    *,
+    profiles: Optional[Iterable[ScoringOperationProfile]] = None,
+    caches: Optional[Iterable[ScoringCacheInfo]] = None,
+    estimates: Iterable[ScoringComplexityEstimate] = (),
+    regressions: Iterable[ScoringPerformanceRegression] = (),
+    policy: Optional[ScoringPerformancePolicy] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringPerformanceReport:
+    """Build an integrated performance report and recommendations."""
+
+    profile_values = tuple(
+        scoring_operation_history() if profiles is None else profiles
+    )
+    cache_values = tuple(
+        scoring_cache_information() if caches is None else caches
+    )
+    estimate_values = tuple(estimates)
+    regression_values = tuple(regressions)
+    suggestions = list(
+        recommend_scoring_optimizations(
+            profiles=profile_values,
+            caches=cache_values,
+            estimates=estimate_values,
+            policy=policy,
+        )
+    )
+    for regression in regression_values:
+        if regression.is_regression:
+            suggestions.append(
+                ScoringOptimizationSuggestion(
+                    category=SCORING_OPTIMIZATION_ALGORITHM,
+                    severity=SCORING_PERFORMANCE_SEVERITY_CRITICAL,
+                    title=f"Performance regression: {regression.operation}",
+                    rationale=(
+                        f"Wall time increased by "
+                        f"{regression.relative_change:.1%}."
+                    ),
+                    action=(
+                        "Inspect recent algorithm, allocation, and cache-key "
+                        "changes before accepting the regression."
+                    ),
+                    evidence={
+                        "baseline_seconds": regression.baseline_seconds,
+                        "candidate_seconds": regression.candidate_seconds,
+                        "threshold": regression.threshold,
+                    },
+                )
+            )
+    report = ScoringPerformanceReport(
+        generated_at=_utc_now_iso(),
+        profiles=profile_values,
+        cache_information=cache_values,
+        complexity_estimates=estimate_values,
+        suggestions=tuple(suggestions),
+        regressions=regression_values,
+        metadata=dict(metadata or {}),
+    )
+    validate_scoring_performance_report(report)
+    return report
+
+
+# -----------------------------------------------------------------------------
+# 28.13. Conversion, tabular output, and summaries
+# -----------------------------------------------------------------------------
+
+
+def scoring_performance_policy_to_dict(
+    policy: ScoringPerformancePolicy,
+) -> Dict[str, Any]:
+    """Convert a performance policy to a plain dictionary."""
+
+    validate_scoring_performance_policy(policy)
+    return asdict(policy)
+
+
+def scoring_resource_snapshot_to_dict(
+    snapshot: ScoringResourceSnapshot,
+) -> Dict[str, Any]:
+    """Convert a resource snapshot to a plain dictionary."""
+
+    return asdict(snapshot)
+
+
+def scoring_benchmark_sample_to_dict(
+    sample: ScoringBenchmarkSample,
+) -> Dict[str, Any]:
+    """Convert a benchmark sample to a plain dictionary."""
+
+    return asdict(sample)
+
+
+def scoring_benchmark_statistics_to_dict(
+    result: ScoringBenchmarkStatistics,
+) -> Dict[str, Any]:
+    """Convert benchmark statistics to a plain dictionary."""
+
+    return asdict(result)
+
+
+def scoring_operation_profile_to_dict(
+    profile: ScoringOperationProfile,
+) -> Dict[str, Any]:
+    """Convert an operation profile to a plain dictionary."""
+
+    validate_scoring_operation_profile(profile)
+    return asdict(profile)
+
+
+def scoring_cache_info_to_dict(info: ScoringCacheInfo) -> Dict[str, Any]:
+    """Convert cache information to a plain dictionary."""
+
+    validate_scoring_cache_info(info)
+    return asdict(info)
+
+
+def scoring_batch_plan_to_dict(plan: ScoringBatchPlan) -> Dict[str, Any]:
+    """Convert a batch plan to a plain dictionary."""
+
+    validate_scoring_batch_plan(plan)
+    return asdict(plan)
+
+
+def scoring_batch_result_to_dict(
+    result: ScoringBatchExecutionResult,
+    *,
+    include_values: bool = True,
+) -> Dict[str, Any]:
+    """Convert a batch result while optionally omitting result values."""
+
+    validate_scoring_batch_execution_result(result)
+    payload = asdict(result)
+    if not include_values:
+        payload["results"] = []
+        for chunk in payload["chunks"]:
+            chunk["results"] = []
+    return payload
+
+
+def scoring_complexity_estimate_to_dict(
+    estimate: ScoringComplexityEstimate,
+) -> Dict[str, Any]:
+    """Convert a complexity estimate to a plain dictionary."""
+
+    return asdict(estimate)
+
+
+def scoring_optimization_suggestion_to_dict(
+    suggestion: ScoringOptimizationSuggestion,
+) -> Dict[str, Any]:
+    """Convert an optimization suggestion to a plain dictionary."""
+
+    return asdict(suggestion)
+
+
+def scoring_performance_regression_to_dict(
+    regression: ScoringPerformanceRegression,
+) -> Dict[str, Any]:
+    """Convert a regression comparison to a plain dictionary."""
+
+    return asdict(regression)
+
+
+def scoring_performance_report_to_dict(
+    report: ScoringPerformanceReport,
+) -> Dict[str, Any]:
+    """Convert an integrated performance report to a dictionary."""
+
+    validate_scoring_performance_report(report)
+    return {
+        "schema": SCORING_PERFORMANCE_SCHEMA,
+        "schema_version": SCORING_PERFORMANCE_SCHEMA_VERSION,
+        "section_version": SCORING_PERFORMANCE_SECTION_VERSION,
+        "generated_at": report.generated_at,
+        "profiles": [
+            scoring_operation_profile_to_dict(profile)
+            for profile in report.profiles
+        ],
+        "cache_information": [
+            scoring_cache_info_to_dict(info)
+            for info in report.cache_information
+        ],
+        "complexity_estimates": [
+            scoring_complexity_estimate_to_dict(estimate)
+            for estimate in report.complexity_estimates
+        ],
+        "suggestions": [
+            scoring_optimization_suggestion_to_dict(suggestion)
+            for suggestion in report.suggestions
+        ],
+        "regressions": [
+            scoring_performance_regression_to_dict(regression)
+            for regression in report.regressions
+        ],
+        "metadata": dict(report.metadata),
+    }
+
+
+def scoring_performance_to_rows(
+    value: Any,
+) -> Tuple[Dict[str, Any], ...]:
+    """Convert Section 28 structures into flat diagnostic rows."""
+
+    if isinstance(value, ScoringPerformanceReport):
+        rows: List[Dict[str, Any]] = []
+        for profile in value.profiles:
+            row = scoring_operation_profile_to_dict(profile)
+            row["row_type"] = "operation_profile"
+            rows.append(row)
+        for info in value.cache_information:
+            row = scoring_cache_info_to_dict(info)
+            row["row_type"] = "cache"
+            rows.append(row)
+        for estimate in value.complexity_estimates:
+            row = scoring_complexity_estimate_to_dict(estimate)
+            row["row_type"] = "complexity"
+            rows.append(row)
+        for suggestion in value.suggestions:
+            row = scoring_optimization_suggestion_to_dict(suggestion)
+            row["row_type"] = "suggestion"
+            rows.append(row)
+        for regression in value.regressions:
+            row = scoring_performance_regression_to_dict(regression)
+            row["row_type"] = "regression"
+            rows.append(row)
+        return tuple(rows)
+    if isinstance(value, ScoringBatchExecutionResult):
+        return tuple(
+            {
+                "row_type": "batch_chunk",
+                "operation": value.operation,
+                "chunk_index": chunk.chunk_index,
+                "start_index": chunk.start_index,
+                "stop_index": chunk.stop_index,
+                "completed_count": chunk.completed_count,
+                "failed_count": chunk.failed_count,
+                "wall_time_seconds": chunk.wall_time_seconds,
+                "cpu_time_seconds": chunk.cpu_time_seconds,
+            }
+            for chunk in value.chunks
+        )
+    if isinstance(value, ScoringOperationProfile):
+        row = scoring_operation_profile_to_dict(value)
+        row["row_type"] = "operation_profile"
+        return (row,)
+    if isinstance(value, ScoringCacheInfo):
+        row = scoring_cache_info_to_dict(value)
+        row["row_type"] = "cache"
+        return (row,)
+    raise ScoringPerformanceValidationError(
+        f"Unsupported performance row source: {type(value).__name__}."
+    )
+
+
+def summarize_scoring_performance(
+    report: ScoringPerformanceReport,
+) -> Dict[str, Any]:
+    """Return compact aggregate metrics for a performance report."""
+
+    validate_scoring_performance_report(report)
+    wall_times = [profile.wall_time_seconds for profile in report.profiles]
+    successful = sum(1 for profile in report.profiles if profile.succeeded)
+    regressions = sum(
+        1 for regression in report.regressions if regression.is_regression
+    )
+    return {
+        "profile_count": len(report.profiles),
+        "successful_profile_count": successful,
+        "failed_profile_count": len(report.profiles) - successful,
+        "total_wall_time_seconds": sum(wall_times),
+        "mean_wall_time_seconds": (
+            statistics.fmean(wall_times) if wall_times else 0.0
+        ),
+        "maximum_wall_time_seconds": max(wall_times, default=0.0),
+        "cache_count": len(report.cache_information),
+        "mean_cache_hit_rate": (
+            statistics.fmean(
+                info.hit_rate for info in report.cache_information
+            )
+            if report.cache_information
+            else 0.0
+        ),
+        "complexity_estimate_count": len(report.complexity_estimates),
+        "suggestion_count": len(report.suggestions),
+        "regression_count": regressions,
+    }
+
+
+def format_scoring_performance_summary(
+    report: ScoringPerformanceReport,
+    *,
+    max_suggestions: int = 8,
+) -> str:
+    """Format a concise human-readable performance summary."""
+
+    summary = summarize_scoring_performance(report)
+    lines = [
+        "DockAnalyzer scoring performance",
+        (
+            f"Operations: {summary['profile_count']} "
+            f"({summary['failed_profile_count']} failed)"
+        ),
+        (
+            "Total wall time: "
+            f"{summary['total_wall_time_seconds']:.6f} s"
+        ),
+        (
+            "Mean wall time: "
+            f"{summary['mean_wall_time_seconds']:.6f} s"
+        ),
+        f"Caches: {summary['cache_count']}",
+        f"Mean cache hit rate: {summary['mean_cache_hit_rate']:.1%}",
+        f"Detected regressions: {summary['regression_count']}",
+        f"Optimization suggestions: {summary['suggestion_count']}",
+    ]
+    limit = max(0, int(max_suggestions))
+    for suggestion in report.suggestions[:limit]:
+        lines.append(
+            f"- [{suggestion.severity}] {suggestion.title}: "
+            f"{suggestion.action}"
+        )
+    return "\n".join(lines)
+
+
+# -----------------------------------------------------------------------------
+# 28.14. Validation
+# -----------------------------------------------------------------------------
+
+
+def validate_scoring_performance_policy(
+    policy: ScoringPerformancePolicy,
+) -> None:
+    """Validate a performance policy instance."""
+
+    if not isinstance(policy, ScoringPerformancePolicy):
+        raise ScoringPerformanceValidationError(
+            "Expected ScoringPerformancePolicy."
+        )
+
+
+def validate_scoring_resource_snapshot(
+    snapshot: ScoringResourceSnapshot,
+) -> None:
+    """Validate a resource snapshot."""
+
+    if not isinstance(snapshot, ScoringResourceSnapshot):
+        raise ScoringPerformanceValidationError(
+            "Expected ScoringResourceSnapshot."
+        )
+    if snapshot.wall_time_ns < 0 or snapshot.cpu_time_ns < 0:
+        raise ScoringPerformanceValidationError(
+            "Resource counters cannot be negative."
+        )
+
+
+def validate_scoring_operation_profile(
+    profile: ScoringOperationProfile,
+) -> None:
+    """Validate an operation profile and derived throughput."""
+
+    if not isinstance(profile, ScoringOperationProfile):
+        raise ScoringPerformanceValidationError(
+            "Expected ScoringOperationProfile."
+        )
+    if not profile.operation:
+        raise ScoringPerformanceValidationError(
+            "Operation profile requires a non-empty operation name."
+        )
+    for field_name in ("wall_time_seconds", "cpu_time_seconds"):
+        value = getattr(profile, field_name)
+        if not math.isfinite(value) or value < 0.0:
+            raise ScoringPerformanceValidationError(
+                f"{field_name} must be finite and non-negative."
+            )
+    if profile.item_count is not None and profile.item_count < 0:
+        raise ScoringPerformanceValidationError(
+            "item_count cannot be negative."
+        )
+    if profile.cache_status is not None:
+        if profile.cache_status not in SCORING_CACHE_STATUSES:
+            raise ScoringPerformanceValidationError(
+                "Unknown operation-profile cache status."
+            )
+
+
+def validate_scoring_cache_info(info: ScoringCacheInfo) -> None:
+    """Validate cache counters and rates."""
+
+    if not isinstance(info, ScoringCacheInfo):
+        raise ScoringPerformanceValidationError("Expected ScoringCacheInfo.")
+    counters = (
+        info.current_entries,
+        info.max_entries,
+        info.hits,
+        info.misses,
+        info.expirations,
+        info.evictions,
+        info.writes,
+    )
+    if any(counter < 0 for counter in counters):
+        raise ScoringPerformanceValidationError(
+            "Cache counters cannot be negative."
+        )
+    if info.current_entries > info.max_entries:
+        raise ScoringPerformanceValidationError(
+            "Cache entries exceed configured capacity."
+        )
+    if not 0.0 <= info.hit_rate <= 1.0:
+        raise ScoringPerformanceValidationError(
+            "Cache hit rate must be between zero and one."
+        )
+
+
+def validate_scoring_batch_plan(plan: ScoringBatchPlan) -> None:
+    """Validate a resolved batch plan."""
+
+    if not isinstance(plan, ScoringBatchPlan):
+        raise ScoringPerformanceValidationError("Expected ScoringBatchPlan.")
+    if plan.backend not in SCORING_BATCH_BACKENDS:
+        raise ScoringPerformanceValidationError("Unknown batch backend.")
+    if plan.worker_count <= 0 or plan.chunk_size <= 0:
+        raise ScoringPerformanceValidationError(
+            "Batch worker and chunk counts must be positive."
+        )
+    expected_chunks = (
+        math.ceil(plan.item_count / plan.chunk_size)
+        if plan.item_count
+        else 0
+    )
+    if plan.chunk_count != expected_chunks:
+        raise ScoringPerformanceValidationError(
+            "Batch chunk count conflicts with item and chunk counts."
+        )
+
+
+def validate_scoring_batch_execution_result(
+    result: ScoringBatchExecutionResult,
+) -> None:
+    """Validate batch result counts, timing, and error consistency."""
+
+    if not isinstance(result, ScoringBatchExecutionResult):
+        raise ScoringPerformanceValidationError(
+            "Expected ScoringBatchExecutionResult."
+        )
+    validate_scoring_batch_plan(result.plan)
+    if result.completed_count != len(result.results):
+        raise ScoringPerformanceValidationError(
+            "Batch completed count conflicts with result count."
+        )
+    if result.failed_count != len(result.errors):
+        raise ScoringPerformanceValidationError(
+            "Batch failed count conflicts with error count."
+        )
+    if result.wall_time_seconds < 0.0 or result.cpu_time_seconds < 0.0:
+        raise ScoringPerformanceValidationError(
+            "Batch durations cannot be negative."
+        )
+
+
+def validate_scoring_performance_report(
+    report: ScoringPerformanceReport,
+) -> None:
+    """Validate an integrated performance report."""
+
+    if not isinstance(report, ScoringPerformanceReport):
+        raise ScoringPerformanceValidationError(
+            "Expected ScoringPerformanceReport."
+        )
+    for profile in report.profiles:
+        validate_scoring_operation_profile(profile)
+    for info in report.cache_information:
+        validate_scoring_cache_info(info)
+    for suggestion in report.suggestions:
+        if suggestion.category not in SCORING_OPTIMIZATION_CATEGORIES:
+            raise ScoringPerformanceValidationError(
+                "Unknown optimization category."
+            )
+        if suggestion.severity not in SCORING_PERFORMANCE_SEVERITIES:
+            raise ScoringPerformanceValidationError(
+                "Unknown optimization severity."
+            )
+
+
+# -----------------------------------------------------------------------------
+# 28.15. Lightweight self-check and public interface closure
+# -----------------------------------------------------------------------------
+
+
+def run_section_28_self_check() -> Mapping[str, Any]:
+    """Run deterministic smoke checks for Section 28 infrastructure."""
+
+    checks: Dict[str, bool] = {}
+
+    policy = ScoringPerformancePolicy(
+        collect_history=False,
+        benchmark_warmups=0,
+        benchmark_repeats=3,
+        batch_backend=SCORING_BATCH_BACKEND_SEQUENTIAL,
+        chunk_size=2,
+    )
+    samples, benchmark = benchmark_scoring_callable(
+        lambda values: sum(values),
+        (1, 2, 3),
+        policy=policy,
+        item_count=3,
+    )
+    checks["benchmark"] = len(samples) == 3 and benchmark.count == 3
+
+    cache = ScoringLRUCache("section_28_self_check", max_entries=2)
+    first, first_status = cache.get_or_compute("a", lambda: 10)
+    second, second_status = cache.get_or_compute("a", lambda: 20)
+    checks["cache"] = (
+        first == second == 10
+        and first_status == SCORING_CACHE_STATUS_MISS
+        and second_status == SCORING_CACHE_STATUS_HIT
+    )
+
+    batch = execute_scoring_batch(
+        lambda value: value * value,
+        [1, 2, 3, 4],
+        policy=policy,
+    )
+    checks["batch"] = batch.results == (1, 4, 9, 16)
+
+    stream = scoring_streaming_statistics([1.0, 2.0, 3.0, 4.0])
+    checks["stream"] = (
+        stream.count == 4
+        and math.isclose(stream.mean, 2.5)
+        and math.isclose(stream.total, 10.0)
+    )
+
+    interactions = [
+        {
+            "interaction_id": "i1",
+            "pose_id": "p1",
+            "residue_id": "A:10",
+            "family": "hbond",
+            "type": "donor_acceptor",
+        },
+        {
+            "interaction_id": "i2",
+            "pose_id": "p1",
+            "residue_id": "A:11",
+            "family": "hydrophobic",
+            "type": "alkyl",
+        },
+    ]
+    index = build_scoring_interaction_index(interactions)
+    checks["index"] = index.item_count == 2 and len(index.by_pose["p1"]) == 2
+
+    estimate = estimate_scoring_complexity(
+        "diversity",
+        pose_count=10,
+        feature_count=5,
+        item_count=10,
+    )
+    checks["complexity"] = (
+        estimate.complexity == SCORING_COMPLEXITY_QUADRATIC
+        and estimate.estimated_work_units > 0
+    )
+
+    with monitor_scoring_performance(
+        "section_28_self_check",
+        policy=policy,
+        item_count=4,
+    ) as monitor:
+        sum(range(4))
+    checks["monitor"] = (
+        monitor.profile is not None and monitor.profile.succeeded
+    )
+
+    report = build_scoring_performance_report(
+        profiles=(monitor.profile,) if monitor.profile else (),
+        caches=(cache.info(),),
+        estimates=(estimate,),
+        policy=policy,
+        metadata={"self_check": True},
+    )
+    checks["report"] = bool(scoring_performance_to_rows(report))
+
+    failed = tuple(name for name, passed in checks.items() if not passed)
+    if failed:
+        raise ScoringPerformanceValidationError(
+            "Section 28 self-check failed: " + ", ".join(failed)
+        )
+    return MappingProxyType(
+        {
+            "status": "passed",
+            "check_count": len(checks),
+            "checks": MappingProxyType(dict(checks)),
+        }
+    )
+
+
+_SECTION_28_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    "SCORING_PERFORMANCE_SCHEMA",
+    "SCORING_PERFORMANCE_SCHEMA_VERSION",
+    "SCORING_PERFORMANCE_SECTION_VERSION",
+    "SCORING_TIMER_WALL",
+    "SCORING_TIMER_CPU",
+    "SCORING_TIMER_BOTH",
+    "SCORING_TIMERS",
+    "SCORING_BATCH_BACKEND_SEQUENTIAL",
+    "SCORING_BATCH_BACKEND_THREAD",
+    "SCORING_BATCH_BACKEND_PROCESS",
+    "SCORING_BATCH_BACKEND_AUTO",
+    "SCORING_BATCH_BACKENDS",
+    "SCORING_CACHE_KEY_VALUE",
+    "SCORING_CACHE_KEY_IDENTITY",
+    "SCORING_CACHE_KEY_HYBRID",
+    "SCORING_CACHE_KEY_STRATEGIES",
+    "SCORING_CACHE_STATUS_HIT",
+    "SCORING_CACHE_STATUS_MISS",
+    "SCORING_CACHE_STATUS_EXPIRED",
+    "SCORING_CACHE_STATUS_BYPASSED",
+    "SCORING_CACHE_STATUSES",
+    "SCORING_COMPLEXITY_CONSTANT",
+    "SCORING_COMPLEXITY_LINEAR",
+    "SCORING_COMPLEXITY_N_LOG_N",
+    "SCORING_COMPLEXITY_QUADRATIC",
+    "SCORING_COMPLEXITY_POSE_INTERACTION",
+    "SCORING_COMPLEXITY_UNKNOWN",
+    "SCORING_PERFORMANCE_SEVERITY_INFO",
+    "SCORING_PERFORMANCE_SEVERITY_WARNING",
+    "SCORING_PERFORMANCE_SEVERITY_CRITICAL",
+    "SCORING_PERFORMANCE_SEVERITIES",
+    "SCORING_OPTIMIZATION_CACHE",
+    "SCORING_OPTIMIZATION_BATCH",
+    "SCORING_OPTIMIZATION_PARALLEL",
+    "SCORING_OPTIMIZATION_STREAM",
+    "SCORING_OPTIMIZATION_INDEX",
+    "SCORING_OPTIMIZATION_MEMORY",
+    "SCORING_OPTIMIZATION_ALGORITHM",
+    "SCORING_OPTIMIZATION_CATEGORIES",
+    "ScoringPerformanceError",
+    "ScoringPerformanceConfigurationError",
+    "ScoringBenchmarkError",
+    "ScoringCacheError",
+    "ScoringBatchExecutionError",
+    "ScoringPerformanceValidationError",
+    "ScoringPerformancePolicy",
+    "ScoringResourceSnapshot",
+    "ScoringBenchmarkSample",
+    "ScoringBenchmarkStatistics",
+    "ScoringOperationProfile",
+    "ScoringCacheInfo",
+    "ScoringBatchPlan",
+    "ScoringBatchItemError",
+    "ScoringBatchChunkResult",
+    "ScoringBatchExecutionResult",
+    "ScoringStreamingStatistics",
+    "ScoringInteractionIndex",
+    "ScoringComplexityEstimate",
+    "ScoringOptimizationSuggestion",
+    "ScoringPerformanceRegression",
+    "ScoringPerformanceReport",
+    "normalize_scoring_timer",
+    "normalize_scoring_batch_backend",
+    "normalize_scoring_cache_key_strategy",
+    "normalize_scoring_performance_severity",
+    "normalize_scoring_optimization_category",
+    "capture_scoring_resource_snapshot",
+    "record_scoring_operation_profile",
+    "scoring_operation_history",
+    "clear_scoring_operation_history",
+    "ScoringPerformanceMonitor",
+    "monitor_scoring_performance",
+    "profile_scoring_operation",
+    "summarize_scoring_benchmark_samples",
+    "benchmark_scoring_callable",
+    "build_scoring_cache_key",
+    "ScoringLRUCache",
+    "register_scoring_cache",
+    "get_scoring_cache",
+    "unregister_scoring_cache",
+    "scoring_cache_information",
+    "clear_all_scoring_caches",
+    "cached_scoring_call",
+    "memoize_scoring",
+    "estimate_scoring_object_size",
+    "update_scoring_streaming_statistics",
+    "scoring_streaming_statistics",
+    "merge_scoring_streaming_statistics",
+    "iter_scoring_chunks",
+    "deduplicate_scoring_items_fast",
+    "group_scoring_items_fast",
+    "top_k_scoring_items",
+    "build_scoring_interaction_index",
+    "recommend_scoring_chunk_size",
+    "resolve_scoring_batch_backend",
+    "plan_scoring_batch",
+    "execute_scoring_batch",
+    "estimate_scoring_complexity",
+    "compare_scoring_operation_profiles",
+    "recommend_scoring_optimizations",
+    "build_scoring_performance_report",
+    "scoring_performance_policy_to_dict",
+    "scoring_resource_snapshot_to_dict",
+    "scoring_benchmark_sample_to_dict",
+    "scoring_benchmark_statistics_to_dict",
+    "scoring_operation_profile_to_dict",
+    "scoring_cache_info_to_dict",
+    "scoring_batch_plan_to_dict",
+    "scoring_batch_result_to_dict",
+    "scoring_complexity_estimate_to_dict",
+    "scoring_optimization_suggestion_to_dict",
+    "scoring_performance_regression_to_dict",
+    "scoring_performance_report_to_dict",
+    "scoring_performance_to_rows",
+    "summarize_scoring_performance",
+    "format_scoring_performance_summary",
+    "validate_scoring_performance_policy",
+    "validate_scoring_resource_snapshot",
+    "validate_scoring_operation_profile",
+    "validate_scoring_cache_info",
+    "validate_scoring_batch_plan",
+    "validate_scoring_batch_execution_result",
+    "validate_scoring_performance_report",
+    "run_section_28_self_check",
+)
+
+for public_name in _SECTION_28_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+def section_28_public_names() -> Tuple[str, ...]:
+    """Return the immutable Section 28 public interface."""
+
+    return _SECTION_28_PUBLIC_NAMES
+
+
+def validate_section_28_public_interface() -> None:
+    """Validate all public Section 28 names and exports."""
+
+    missing_names = tuple(
+        name for name in _SECTION_28_PUBLIC_NAMES if name not in globals()
+    )
+    if missing_names:
+        raise ScoringPerformanceError(
+            "Missing Section 28 public names: " + ", ".join(missing_names)
+        )
+    missing_exports = tuple(
+        name for name in _SECTION_28_PUBLIC_NAMES if name not in __all__
+    )
+    if missing_exports:
+        raise ScoringPerformanceError(
+            "Section 28 names missing from __all__: "
+            + ", ".join(missing_exports)
+        )
+
+
+if "section_28_public_names" not in __all__:
+    __all__.append("section_28_public_names")
+if "validate_section_28_public_interface" not in __all__:
+    __all__.append("validate_section_28_public_interface")
+
+validate_section_28_public_interface()
+
+# =============================================================================
+# End of Section 28
+# =============================================================================
+
+
 
