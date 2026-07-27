@@ -880,5 +880,329 @@ __all__.extend(
 # End of Section 2
 # =============================================================================
 
+# =============================================================================
+# Section 3 — Export exceptions and warnings
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 3.1. Base exception
+# -----------------------------------------------------------------------------
+
+
+class ExportError(Exception):
+    """Base exception for export failures."""
+
+    default_code: ClassVar[str] = "export_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: Optional[str] = None,
+        context: Optional[Mapping[str, Any]] = None,
+        cause: Optional[BaseException] = None,
+    ) -> None:
+        clean_message = str(message).strip() or self.__class__.__name__
+        self.message = clean_message
+        self.code = str(code or self.default_code)
+        self.context: Dict[str, Any] = dict(context or {})
+        self.cause = cause
+        super().__init__(clean_message)
+
+    def __str__(self) -> str:
+        text = self.message
+        if self.code:
+            text = f"[{self.code}] {text}"
+        if self.context:
+            details = ", ".join(
+                f"{key}={value!r}" for key, value in sorted(self.context.items())
+            )
+            text = f"{text} ({details})"
+        return text
+
+    def with_context(self, **context: Any) -> "ExportError":
+        """Add context and return this exception."""
+        self.context.update(context)
+        return self
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a serializable error record."""
+        record: Dict[str, Any] = {
+            "type": self.__class__.__name__,
+            "code": self.code,
+            "message": self.message,
+            "context": dict(self.context),
+        }
+        if self.cause is not None:
+            record["cause"] = {
+                "type": self.cause.__class__.__name__,
+                "message": str(self.cause),
+            }
+        return record
+
+
+# -----------------------------------------------------------------------------
+# 3.2. Input and configuration errors
+# -----------------------------------------------------------------------------
+
+
+class ExportInputError(ExportError):
+    """Raised for unsupported or malformed input objects."""
+
+    default_code = "invalid_input"
+
+
+class ExportConfigurationError(ExportError):
+    """Raised for invalid export options."""
+
+    default_code = "invalid_configuration"
+
+
+class ExportFormatError(ExportConfigurationError):
+    """Raised for unsupported formats or format options."""
+
+    default_code = "unsupported_format"
+
+
+class ExportDependencyError(ExportConfigurationError):
+    """Raised when an optional dependency is required."""
+
+    default_code = "missing_dependency"
+
+    def __init__(
+        self,
+        dependency: str,
+        *,
+        feature: Optional[str] = None,
+        message: Optional[str] = None,
+        context: Optional[Mapping[str, Any]] = None,
+        cause: Optional[BaseException] = None,
+    ) -> None:
+        dependency_name = str(dependency).strip() or "unknown"
+        details = dict(context or {})
+        details.setdefault("dependency", dependency_name)
+        if feature:
+            details.setdefault("feature", str(feature))
+        if message is None:
+            message = f"Optional dependency {dependency_name!r} is required"
+            if feature:
+                message += f" for {feature}"
+        super().__init__(
+            message,
+            context=details,
+            cause=cause,
+        )
+        self.dependency = dependency_name
+        self.feature = feature
+
+
+# -----------------------------------------------------------------------------
+# 3.3. Path and write errors
+# -----------------------------------------------------------------------------
+
+
+class ExportPathError(ExportError):
+    """Raised for invalid or inaccessible output paths."""
+
+    default_code = "invalid_path"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        path: Optional[PathLike] = None,
+        code: Optional[str] = None,
+        context: Optional[Mapping[str, Any]] = None,
+        cause: Optional[BaseException] = None,
+    ) -> None:
+        details = dict(context or {})
+        if path is not None:
+            details.setdefault("path", str(path))
+        super().__init__(
+            message,
+            code=code,
+            context=details,
+            cause=cause,
+        )
+        self.path = Path(path) if path is not None else None
+
+
+class ExportWriteError(ExportPathError):
+    """Raised when writing or replacing an output file fails."""
+
+    default_code = "write_failed"
+
+
+# -----------------------------------------------------------------------------
+# 3.4. Serialization and validation errors
+# -----------------------------------------------------------------------------
+
+
+class ExportSerializationError(ExportError):
+    """Raised when an object cannot be serialized safely."""
+
+    default_code = "serialization_failed"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        object_type: Optional[Union[str, type]] = None,
+        location: Optional[str] = None,
+        code: Optional[str] = None,
+        context: Optional[Mapping[str, Any]] = None,
+        cause: Optional[BaseException] = None,
+    ) -> None:
+        details = dict(context or {})
+        if object_type is not None:
+            type_name = (
+                object_type.__qualname__
+                if isinstance(object_type, type)
+                else str(object_type)
+            )
+            details.setdefault("object_type", type_name)
+        if location:
+            details.setdefault("location", str(location))
+        super().__init__(
+            message,
+            code=code,
+            context=details,
+            cause=cause,
+        )
+        self.object_type = object_type
+        self.location = location
+
+
+class ExportValidationError(ExportError):
+    """Raised when export data fail validation."""
+
+    default_code = "validation_failed"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        field_name: Optional[str] = None,
+        value: Any = None,
+        include_value: bool = False,
+        code: Optional[str] = None,
+        context: Optional[Mapping[str, Any]] = None,
+        cause: Optional[BaseException] = None,
+    ) -> None:
+        details = dict(context or {})
+        if field_name:
+            details.setdefault("field", str(field_name))
+        if include_value:
+            details.setdefault("value", value)
+        super().__init__(
+            message,
+            code=code,
+            context=details,
+            cause=cause,
+        )
+        self.field_name = field_name
+        self.value = value
+
+
+# -----------------------------------------------------------------------------
+# 3.5. Batch errors
+# -----------------------------------------------------------------------------
+
+
+class ExportBatchError(ExportError):
+    """Raised when one or more batch exports fail."""
+
+    default_code = "batch_failed"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failures: Optional[Sequence[BaseException]] = None,
+        completed: int = 0,
+        total: Optional[int] = None,
+        context: Optional[Mapping[str, Any]] = None,
+        cause: Optional[BaseException] = None,
+    ) -> None:
+        self.failures: Tuple[BaseException, ...] = tuple(failures or ())
+        self.completed = max(0, int(completed))
+        self.total = None if total is None else max(0, int(total))
+        details = dict(context or {})
+        details.setdefault("completed", self.completed)
+        details.setdefault("failure_count", len(self.failures))
+        if self.total is not None:
+            details.setdefault("total", self.total)
+        super().__init__(message, context=details, cause=cause)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return the batch error and nested failures."""
+        record = super().to_dict()
+        record["failures"] = [
+            failure.to_dict()
+            if isinstance(failure, ExportError)
+            else {
+                "type": failure.__class__.__name__,
+                "message": str(failure),
+            }
+            for failure in self.failures
+        ]
+        return record
+
+
+# -----------------------------------------------------------------------------
+# 3.6. Warnings
+# -----------------------------------------------------------------------------
+
+
+class ExportWarning(UserWarning):
+    """Base warning for recoverable export issues."""
+
+
+class ExportLossyConversionWarning(ExportWarning):
+    """Warn that conversion discarded or simplified data."""
+
+
+class ExportDependencyWarning(ExportWarning):
+    """Warn that an optional feature is unavailable."""
+
+
+class ExportCompatibilityWarning(ExportWarning):
+    """Warn about legacy or partially supported data."""
+
+
+class ExportOverwriteWarning(ExportWarning):
+    """Warn that an existing output may be replaced."""
+
+
+# -----------------------------------------------------------------------------
+# 3.7. Public registration
+# -----------------------------------------------------------------------------
+
+__all__.extend(
+    [
+        "ExportError",
+        "ExportInputError",
+        "ExportConfigurationError",
+        "ExportFormatError",
+        "ExportDependencyError",
+        "ExportPathError",
+        "ExportWriteError",
+        "ExportSerializationError",
+        "ExportValidationError",
+        "ExportBatchError",
+        "ExportWarning",
+        "ExportLossyConversionWarning",
+        "ExportDependencyWarning",
+        "ExportCompatibilityWarning",
+        "ExportOverwriteWarning",
+    ]
+)
+
+# =============================================================================
+# End of Section 3
+# =============================================================================
+
+
+
 
 
