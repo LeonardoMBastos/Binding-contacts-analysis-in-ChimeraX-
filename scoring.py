@@ -68856,3 +68856,4314 @@ for public_name in _SECTION_18_PART_3_PUBLIC_NAMES:
 # =============================================================================
 
 
+# =============================================================================
+# Section 18 — Diversity and complementarity
+# Part 4 — Explainability, serialization, validation and public API closure
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 18.69. Explainability constants
+# -----------------------------------------------------------------------------
+
+EXPLANATION_LEVEL_SUMMARY: Final[str] = "summary"
+EXPLANATION_LEVEL_STANDARD: Final[str] = "standard"
+EXPLANATION_LEVEL_DETAILED: Final[str] = "detailed"
+
+EXPLANATION_LEVELS: Final[FrozenSet[str]] = frozenset(
+    {
+        EXPLANATION_LEVEL_SUMMARY,
+        EXPLANATION_LEVEL_STANDARD,
+        EXPLANATION_LEVEL_DETAILED,
+    }
+)
+
+
+EXPLANATION_FORMAT_TEXT: Final[str] = "text"
+EXPLANATION_FORMAT_MARKDOWN: Final[str] = "markdown"
+EXPLANATION_FORMAT_STRUCTURED: Final[str] = "structured"
+
+EXPLANATION_FORMATS: Final[FrozenSet[str]] = frozenset(
+    {
+        EXPLANATION_FORMAT_TEXT,
+        EXPLANATION_FORMAT_MARKDOWN,
+        EXPLANATION_FORMAT_STRUCTURED,
+    }
+)
+
+
+EXPLANATION_SEVERITY_INFO: Final[str] = "info"
+EXPLANATION_SEVERITY_POSITIVE: Final[str] = "positive"
+EXPLANATION_SEVERITY_WARNING: Final[str] = "warning"
+EXPLANATION_SEVERITY_NEGATIVE: Final[str] = "negative"
+
+EXPLANATION_SEVERITIES: Final[FrozenSet[str]] = frozenset(
+    {
+        EXPLANATION_SEVERITY_INFO,
+        EXPLANATION_SEVERITY_POSITIVE,
+        EXPLANATION_SEVERITY_WARNING,
+        EXPLANATION_SEVERITY_NEGATIVE,
+    }
+)
+
+
+EXPLANATION_REASON_COVERAGE_GAIN: Final[str] = "coverage_gain"
+EXPLANATION_REASON_DIVERSITY: Final[str] = "diversity"
+EXPLANATION_REASON_POSE_SCORE: Final[str] = "pose_score"
+EXPLANATION_REASON_REQUIRED: Final[str] = "required"
+EXPLANATION_REASON_REDUNDANT: Final[str] = "redundant"
+EXPLANATION_REASON_EXCLUDED: Final[str] = "excluded"
+EXPLANATION_REASON_TARGET_REACHED: Final[str] = "target_reached"
+EXPLANATION_REASON_TARGET_NOT_REACHED: Final[str] = "target_not_reached"
+EXPLANATION_REASON_OPTIMALITY: Final[str] = "optimality"
+EXPLANATION_REASON_SEARCH_LIMIT: Final[str] = "search_limit"
+
+EXPLANATION_REASONS: Final[FrozenSet[str]] = frozenset(
+    {
+        EXPLANATION_REASON_COVERAGE_GAIN,
+        EXPLANATION_REASON_DIVERSITY,
+        EXPLANATION_REASON_POSE_SCORE,
+        EXPLANATION_REASON_REQUIRED,
+        EXPLANATION_REASON_REDUNDANT,
+        EXPLANATION_REASON_EXCLUDED,
+        EXPLANATION_REASON_TARGET_REACHED,
+        EXPLANATION_REASON_TARGET_NOT_REACHED,
+        EXPLANATION_REASON_OPTIMALITY,
+        EXPLANATION_REASON_SEARCH_LIMIT,
+    }
+)
+
+
+DEFAULT_EXPLANATION_LEVEL: Final[str] = EXPLANATION_LEVEL_STANDARD
+DEFAULT_EXPLANATION_FORMAT: Final[str] = EXPLANATION_FORMAT_STRUCTURED
+DEFAULT_EXPLANATION_MAX_FEATURES: Final[int] = 25
+DEFAULT_EXPLANATION_MAX_POSES: Final[int] = 25
+DEFAULT_EXPLANATION_INCLUDE_VALUES: Final[bool] = True
+DEFAULT_EXPLANATION_INCLUDE_CONTRIBUTORS: Final[bool] = True
+DEFAULT_EXPLANATION_INCLUDE_REJECTED: Final[bool] = True
+DEFAULT_EXPLANATION_INCLUDE_METADATA: Final[bool] = False
+
+DIVERSITY_COMPLEMENTARITY_SCHEMA_VERSION: Final[str] = "18.4.0"
+DIVERSITY_COMPLEMENTARITY_SECTION_VERSION: Final[str] = "18"
+
+
+# -----------------------------------------------------------------------------
+# 18.70. Explainability aliases and normalization
+# -----------------------------------------------------------------------------
+
+_EXPLANATION_LEVEL_ALIASES: Final[
+    Mapping[str, str]
+] = MappingProxyType(
+    {
+        "summary": EXPLANATION_LEVEL_SUMMARY,
+        "short": EXPLANATION_LEVEL_SUMMARY,
+        "compact": EXPLANATION_LEVEL_SUMMARY,
+
+        "standard": EXPLANATION_LEVEL_STANDARD,
+        "normal": EXPLANATION_LEVEL_STANDARD,
+
+        "detailed": EXPLANATION_LEVEL_DETAILED,
+        "full": EXPLANATION_LEVEL_DETAILED,
+        "verbose": EXPLANATION_LEVEL_DETAILED,
+    }
+)
+
+
+_EXPLANATION_FORMAT_ALIASES: Final[
+    Mapping[str, str]
+] = MappingProxyType(
+    {
+        "text": EXPLANATION_FORMAT_TEXT,
+        "plain": EXPLANATION_FORMAT_TEXT,
+        "plain_text": EXPLANATION_FORMAT_TEXT,
+
+        "markdown": EXPLANATION_FORMAT_MARKDOWN,
+        "md": EXPLANATION_FORMAT_MARKDOWN,
+
+        "structured": EXPLANATION_FORMAT_STRUCTURED,
+        "dict": EXPLANATION_FORMAT_STRUCTURED,
+        "mapping": EXPLANATION_FORMAT_STRUCTURED,
+    }
+)
+
+
+_EXPLANATION_SEVERITY_ALIASES: Final[
+    Mapping[str, str]
+] = MappingProxyType(
+    {
+        "info": EXPLANATION_SEVERITY_INFO,
+        "informational": EXPLANATION_SEVERITY_INFO,
+
+        "positive": EXPLANATION_SEVERITY_POSITIVE,
+        "success": EXPLANATION_SEVERITY_POSITIVE,
+
+        "warning": EXPLANATION_SEVERITY_WARNING,
+        "caution": EXPLANATION_SEVERITY_WARNING,
+
+        "negative": EXPLANATION_SEVERITY_NEGATIVE,
+        "error": EXPLANATION_SEVERITY_NEGATIVE,
+    }
+)
+
+
+def normalize_explanation_level(
+    value: Any,
+    *,
+    default: str = DEFAULT_EXPLANATION_LEVEL,
+) -> str:
+    """
+    Normalize an explanation detail level.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if normalized in EXPLANATION_LEVELS:
+        return normalized
+
+    return _EXPLANATION_LEVEL_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def normalize_explanation_format(
+    value: Any,
+    *,
+    default: str = DEFAULT_EXPLANATION_FORMAT,
+) -> str:
+    """
+    Normalize an explanation output format.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if normalized in EXPLANATION_FORMATS:
+        return normalized
+
+    return _EXPLANATION_FORMAT_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def normalize_explanation_severity(
+    value: Any,
+    *,
+    default: str = EXPLANATION_SEVERITY_INFO,
+) -> str:
+    """
+    Normalize an explanation severity.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if normalized in EXPLANATION_SEVERITIES:
+        return normalized
+
+    return _EXPLANATION_SEVERITY_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.71. Final Section 18 exceptions
+# -----------------------------------------------------------------------------
+
+class DiversityComplementaritySerializationError(
+    DiversityError
+):
+    """
+    Raised when Section 18 serialization fails.
+    """
+
+
+class ExplainabilityError(DiversityError):
+    """
+    Raised when an explanation cannot be generated.
+    """
+
+
+class Section18ValidationError(DiversityError):
+    """
+    Raised when final Section 18 validation fails.
+    """
+
+
+class Section18SelfCheckError(DiversityError):
+    """
+    Raised when the integrated Section 18 self-check fails.
+    """
+
+
+# -----------------------------------------------------------------------------
+# 18.72. ExplainabilityOptions
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ExplainabilityOptions:
+    """
+    Immutable configuration for Section 18 explanations.
+    """
+
+    level: str = DEFAULT_EXPLANATION_LEVEL
+    output_format: str = DEFAULT_EXPLANATION_FORMAT
+
+    maximum_features: int = DEFAULT_EXPLANATION_MAX_FEATURES
+    maximum_poses: int = DEFAULT_EXPLANATION_MAX_POSES
+
+    include_values: bool = (
+        DEFAULT_EXPLANATION_INCLUDE_VALUES
+    )
+    include_contributors: bool = (
+        DEFAULT_EXPLANATION_INCLUDE_CONTRIBUTORS
+    )
+    include_rejected_poses: bool = (
+        DEFAULT_EXPLANATION_INCLUDE_REJECTED
+    )
+    include_metadata: bool = (
+        DEFAULT_EXPLANATION_INCLUDE_METADATA
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize explanation options.
+        """
+
+        object.__setattr__(
+            self,
+            "level",
+            normalize_explanation_level(self.level),
+        )
+        object.__setattr__(
+            self,
+            "output_format",
+            normalize_explanation_format(
+                self.output_format
+            ),
+        )
+
+        maximum_features = int(self.maximum_features)
+        maximum_poses = int(self.maximum_poses)
+
+        if maximum_features < 1:
+            raise ExplainabilityError(
+                "maximum_features must be positive."
+            )
+
+        if maximum_poses < 1:
+            raise ExplainabilityError(
+                "maximum_poses must be positive."
+            )
+
+        object.__setattr__(
+            self,
+            "maximum_features",
+            maximum_features,
+        )
+        object.__setattr__(
+            self,
+            "maximum_poses",
+            maximum_poses,
+        )
+
+        for field_name in (
+            "include_values",
+            "include_contributors",
+            "include_rejected_poses",
+            "include_metadata",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                bool(getattr(self, field_name)),
+            )
+
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    def with_updates(
+        self,
+        **changes: Any,
+    ) -> "ExplainabilityOptions":
+        """
+        Return a validated options copy.
+        """
+
+        return replace(self, **changes)
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a serializable explanation configuration.
+        """
+
+        result: Dict[str, Any] = {
+            "level": self.level,
+            "output_format": self.output_format,
+            "maximum_features": self.maximum_features,
+            "maximum_poses": self.maximum_poses,
+            "include_values": self.include_values,
+            "include_contributors": (
+                self.include_contributors
+            ),
+            "include_rejected_poses": (
+                self.include_rejected_poses
+            ),
+            "include_metadata": self.include_metadata,
+        }
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+DEFAULT_EXPLAINABILITY_OPTIONS: Final[
+    ExplainabilityOptions
+] = ExplainabilityOptions()
+
+
+# -----------------------------------------------------------------------------
+# 18.73. Explanation dataclasses
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ExplanationItem:
+    """
+    One structured explanation statement.
+    """
+
+    code: str
+    title: str
+    message: str
+
+    severity: str = EXPLANATION_SEVERITY_INFO
+    reason: str = ""
+
+    pose_ids: Tuple[str, ...] = field(
+        default_factory=tuple
+    )
+    features: Tuple[str, ...] = field(
+        default_factory=tuple
+    )
+    values: Mapping[str, float] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize one explanation item.
+        """
+
+        object.__setattr__(
+            self,
+            "code",
+            _coerce_identifier(self.code),
+        )
+        object.__setattr__(
+            self,
+            "title",
+            _coerce_optional_text(self.title),
+        )
+        object.__setattr__(
+            self,
+            "message",
+            _coerce_optional_text(self.message),
+        )
+        object.__setattr__(
+            self,
+            "severity",
+            normalize_explanation_severity(
+                self.severity
+            ),
+        )
+        object.__setattr__(
+            self,
+            "reason",
+            _normalize_scoring_name(self.reason),
+        )
+        object.__setattr__(
+            self,
+            "pose_ids",
+            tuple(
+                _coerce_identifier(pose_id)
+                for pose_id in self.pose_ids
+                if _coerce_identifier(pose_id)
+            ),
+        )
+        object.__setattr__(
+            self,
+            "features",
+            tuple(
+                sorted(
+                    {
+                        _coerce_identifier(feature)
+                        for feature in self.features
+                        if _coerce_identifier(feature)
+                    }
+                )
+            ),
+        )
+
+        normalized_values: Dict[str, float] = {}
+
+        for raw_key, raw_value in self.values.items():
+            key = _coerce_identifier(raw_key)
+
+            if not key:
+                continue
+
+            normalized_values[key] = float(
+                _coerce_finite_score_value(
+                    raw_value,
+                    name=(
+                        f"ExplanationItem.values[{key!r}]"
+                    ),
+                )
+            )
+
+        object.__setattr__(
+            self,
+            "values",
+            MappingProxyType(
+                dict(sorted(normalized_values.items()))
+            ),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a serializable explanation item.
+        """
+
+        result: Dict[str, Any] = {
+            "code": self.code,
+            "title": self.title,
+            "message": self.message,
+            "severity": self.severity,
+            "reason": self.reason,
+            "pose_ids": list(self.pose_ids),
+            "features": list(self.features),
+            "values": dict(self.values),
+        }
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class PoseSelectionExplanation:
+    """
+    Structured explanation for a selected or rejected pose.
+    """
+
+    pose_id: str
+    selected: bool
+    selection_order: Optional[int]
+
+    primary_reason: str
+    summary: str
+
+    objective_gain: float
+    weighted_coverage_gain: float
+    raw_coverage_gain: float
+    diversity_value: float
+    pose_score: Optional[float]
+
+    newly_covered_features: Tuple[str, ...]
+    redundant_features: Tuple[str, ...]
+
+    items: Tuple[ExplanationItem, ...] = field(
+        default_factory=tuple
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize one pose-selection explanation.
+        """
+
+        object.__setattr__(
+            self,
+            "pose_id",
+            _coerce_identifier(self.pose_id),
+        )
+        object.__setattr__(
+            self,
+            "selected",
+            bool(self.selected),
+        )
+
+        selection_order = (
+            None
+            if self.selection_order is None
+            else int(self.selection_order)
+        )
+
+        if (
+            selection_order is not None
+            and selection_order < 1
+        ):
+            raise ExplainabilityError(
+                "selection_order must be positive or None."
+            )
+
+        object.__setattr__(
+            self,
+            "selection_order",
+            selection_order,
+        )
+        object.__setattr__(
+            self,
+            "primary_reason",
+            _normalize_scoring_name(
+                self.primary_reason
+            ),
+        )
+        object.__setattr__(
+            self,
+            "summary",
+            _coerce_optional_text(self.summary),
+        )
+
+        for field_name in (
+            "objective_gain",
+            "weighted_coverage_gain",
+            "raw_coverage_gain",
+            "diversity_value",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                float(
+                    _coerce_finite_score_value(
+                        getattr(self, field_name),
+                        name=(
+                            "PoseSelectionExplanation."
+                            f"{field_name}"
+                        ),
+                    )
+                ),
+            )
+
+        pose_score = (
+            None
+            if self.pose_score is None
+            else float(
+                _coerce_finite_score_value(
+                    self.pose_score,
+                    name=(
+                        "PoseSelectionExplanation."
+                        "pose_score"
+                    ),
+                )
+            )
+        )
+
+        object.__setattr__(
+            self,
+            "pose_score",
+            pose_score,
+        )
+
+        for field_name in (
+            "newly_covered_features",
+            "redundant_features",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                tuple(
+                    sorted(
+                        {
+                            _coerce_identifier(feature)
+                            for feature in getattr(
+                                self,
+                                field_name,
+                            )
+                            if _coerce_identifier(feature)
+                        }
+                    )
+                ),
+            )
+
+        object.__setattr__(
+            self,
+            "items",
+            tuple(self.items),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a serializable pose explanation.
+        """
+
+        result: Dict[str, Any] = {
+            "pose_id": self.pose_id,
+            "selected": self.selected,
+            "selection_order": self.selection_order,
+            "primary_reason": self.primary_reason,
+            "summary": self.summary,
+            "objective_gain": self.objective_gain,
+            "weighted_coverage_gain": (
+                self.weighted_coverage_gain
+            ),
+            "raw_coverage_gain": self.raw_coverage_gain,
+            "diversity_value": self.diversity_value,
+            "pose_score": self.pose_score,
+            "newly_covered_features": list(
+                self.newly_covered_features
+            ),
+            "redundant_features": list(
+                self.redundant_features
+            ),
+            "items": [
+                item.to_dict(
+                    include_metadata=include_metadata
+                )
+                for item in self.items
+            ],
+        }
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class ComplementarityExplanation:
+    """
+    Complete human-readable explanation for Section 18 output.
+    """
+
+    title: str
+    summary: str
+    status: str
+
+    selected_pose_ids: Tuple[str, ...]
+    rejected_pose_ids: Tuple[str, ...]
+
+    coverage_items: Tuple[ExplanationItem, ...]
+    selection_items: Tuple[ExplanationItem, ...]
+    pose_explanations: Tuple[
+        PoseSelectionExplanation,
+        ...,
+    ]
+
+    recommendations: Tuple[str, ...]
+    warnings: Tuple[str, ...]
+
+    text: str
+    markdown: str
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize a complete explanation.
+        """
+
+        object.__setattr__(
+            self,
+            "title",
+            _coerce_optional_text(self.title),
+        )
+        object.__setattr__(
+            self,
+            "summary",
+            _coerce_optional_text(self.summary),
+        )
+        object.__setattr__(
+            self,
+            "status",
+            _normalize_scoring_name(self.status),
+        )
+
+        for field_name in (
+            "selected_pose_ids",
+            "rejected_pose_ids",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                tuple(
+                    _coerce_identifier(pose_id)
+                    for pose_id in getattr(
+                        self,
+                        field_name,
+                    )
+                    if _coerce_identifier(pose_id)
+                ),
+            )
+
+        object.__setattr__(
+            self,
+            "coverage_items",
+            tuple(self.coverage_items),
+        )
+        object.__setattr__(
+            self,
+            "selection_items",
+            tuple(self.selection_items),
+        )
+        object.__setattr__(
+            self,
+            "pose_explanations",
+            tuple(self.pose_explanations),
+        )
+        object.__setattr__(
+            self,
+            "recommendations",
+            tuple(
+                _coerce_optional_text(value)
+                for value in self.recommendations
+                if _coerce_optional_text(value)
+            ),
+        )
+        object.__setattr__(
+            self,
+            "warnings",
+            tuple(
+                _coerce_optional_text(value)
+                for value in self.warnings
+                if _coerce_optional_text(value)
+            ),
+        )
+        object.__setattr__(
+            self,
+            "text",
+            str(self.text),
+        )
+        object.__setattr__(
+            self,
+            "markdown",
+            str(self.markdown),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a serializable complete explanation.
+        """
+
+        result: Dict[str, Any] = {
+            "title": self.title,
+            "summary": self.summary,
+            "status": self.status,
+            "selected_pose_ids": list(
+                self.selected_pose_ids
+            ),
+            "rejected_pose_ids": list(
+                self.rejected_pose_ids
+            ),
+            "coverage_items": [
+                item.to_dict(
+                    include_metadata=include_metadata
+                )
+                for item in self.coverage_items
+            ],
+            "selection_items": [
+                item.to_dict(
+                    include_metadata=include_metadata
+                )
+                for item in self.selection_items
+            ],
+            "pose_explanations": [
+                explanation.to_dict(
+                    include_metadata=include_metadata
+                )
+                for explanation
+                in self.pose_explanations
+            ],
+            "recommendations": list(
+                self.recommendations
+            ),
+            "warnings": list(self.warnings),
+            "text": self.text,
+            "markdown": self.markdown,
+        }
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+# -----------------------------------------------------------------------------
+# 18.74. Generic explainability helpers
+# -----------------------------------------------------------------------------
+
+def format_fraction_percent(
+    value: float,
+    *,
+    digits: int = 1,
+) -> str:
+    """
+    Format a normalized fraction as a percentage.
+    """
+
+    normalized_value = max(
+        0.0,
+        min(
+            1.0,
+            float(
+                _coerce_finite_score_value(
+                    value,
+                    name="fraction value",
+                )
+            ),
+        ),
+    )
+
+    return f"{normalized_value * 100.0:.{digits}f}%"
+
+
+def truncate_explanation_values(
+    values: Iterable[str],
+    *,
+    maximum: int,
+) -> Tuple[str, ...]:
+    """
+    Return a deterministic truncated value sequence.
+    """
+
+    normalized = tuple(
+        sorted(
+            {
+                _coerce_identifier(value)
+                for value in values
+                if _coerce_identifier(value)
+            }
+        )
+    )
+
+    return normalized[:maximum]
+
+
+def humanize_coverage_feature(
+    feature: str,
+) -> str:
+    """
+    Convert an internal coverage feature into readable text.
+    """
+
+    category = coverage_feature_category(feature)
+    identifier = coverage_feature_identifier(feature)
+
+    if category == COVERAGE_CATEGORY_RESIDUE:
+        return f"residue {identifier}"
+
+    if category == COVERAGE_CATEGORY_FAMILY:
+        return f"interaction family {identifier}"
+
+    if category == COVERAGE_CATEGORY_TYPE:
+        return f"interaction type {identifier}"
+
+    if category == COVERAGE_CATEGORY_HOTSPOT:
+        return f"hotspot {identifier}"
+
+    return identifier
+
+
+def explanation_feature_list_text(
+    features: Sequence[str],
+    *,
+    maximum: int,
+) -> str:
+    """
+    Format a bounded feature list.
+    """
+
+    truncated = truncate_explanation_values(
+        features,
+        maximum=maximum,
+    )
+
+    if not truncated:
+        return "none"
+
+    labels = tuple(
+        humanize_coverage_feature(feature)
+        for feature in truncated
+    )
+
+    remaining = max(0, len(set(features)) - len(labels))
+
+    text = ", ".join(labels)
+
+    if remaining:
+        text += f", and {remaining} additional feature(s)"
+
+    return text
+
+
+def coverage_category_display_name(
+    category: str,
+) -> str:
+    """
+    Return a readable coverage-category name.
+    """
+
+    normalized = normalize_coverage_category(category)
+
+    names = {
+        COVERAGE_CATEGORY_RESIDUE: "Residue coverage",
+        COVERAGE_CATEGORY_FAMILY: "Interaction-family coverage",
+        COVERAGE_CATEGORY_TYPE: "Interaction-type coverage",
+        COVERAGE_CATEGORY_HOTSPOT: "Hotspot coverage",
+    }
+
+    return names[normalized]
+
+
+# -----------------------------------------------------------------------------
+# 18.75. Coverage explainability
+# -----------------------------------------------------------------------------
+
+def explain_category_coverage(
+    coverage: CategoryCoverageResult,
+    *,
+    options: ExplainabilityOptions = (
+        DEFAULT_EXPLAINABILITY_OPTIONS
+    ),
+) -> ExplanationItem:
+    """
+    Explain one category coverage result.
+    """
+
+    validate_category_coverage_result(coverage)
+
+    display_name = coverage_category_display_name(
+        coverage.category
+    )
+
+    if coverage.universe_count == 0:
+        severity = EXPLANATION_SEVERITY_WARNING
+        message = (
+            f"{display_name} could not be evaluated because "
+            "the configured universe contains no features."
+        )
+
+    elif coverage.complete:
+        severity = EXPLANATION_SEVERITY_POSITIVE
+        message = (
+            f"{display_name} is complete: "
+            f"{coverage.covered_count} of "
+            f"{coverage.universe_count} features are covered "
+            f"({format_fraction_percent(coverage.coverage_fraction)})."
+        )
+
+    elif coverage.empty:
+        severity = EXPLANATION_SEVERITY_NEGATIVE
+        message = (
+            f"{display_name} is empty: none of the "
+            f"{coverage.universe_count} configured features "
+            "are covered."
+        )
+
+    else:
+        severity = EXPLANATION_SEVERITY_WARNING
+        message = (
+            f"{display_name} is partial: "
+            f"{coverage.covered_count} of "
+            f"{coverage.universe_count} features are covered "
+            f"({format_fraction_percent(coverage.coverage_fraction)})."
+        )
+
+    features = (
+        coverage.covered_features
+        if options.level != EXPLANATION_LEVEL_SUMMARY
+        else ()
+    )
+
+    values: Dict[str, float] = {
+        "coverage_fraction": coverage.coverage_fraction,
+        "weighted_coverage": coverage.weighted_coverage,
+        "covered_count": float(coverage.covered_count),
+        "uncovered_count": float(
+            coverage.uncovered_count
+        ),
+    }
+
+    if not options.include_values:
+        values = {}
+
+    return ExplanationItem(
+        code=f"coverage_{coverage.category}",
+        title=display_name,
+        message=message,
+        severity=severity,
+        reason=EXPLANATION_REASON_COVERAGE_GAIN,
+        pose_ids=coverage.contributing_pose_ids,
+        features=truncate_explanation_values(
+            features,
+            maximum=options.maximum_features,
+        ),
+        values=values,
+        metadata=(
+            {
+                "uncovered_features": (
+                    coverage.uncovered_features[
+                        :options.maximum_features
+                    ]
+                ),
+                "feature_contributors": (
+                    dict(coverage.feature_contributors)
+                    if options.include_contributors
+                    else {}
+                ),
+            }
+            if options.include_metadata
+            else {}
+        ),
+    )
+
+
+def explain_pose_set_coverage(
+    result: PoseSetComplementarityResult,
+    *,
+    options: ExplainabilityOptions = (
+        DEFAULT_EXPLAINABILITY_OPTIONS
+    ),
+) -> Tuple[ExplanationItem, ...]:
+    """
+    Explain all joint-coverage categories.
+    """
+
+    validate_pose_set_complementarity_result(result)
+
+    return tuple(
+        explain_category_coverage(
+            result.coverage_by_category[category],
+            options=options,
+        )
+        for category in (
+            COVERAGE_CATEGORY_RESIDUE,
+            COVERAGE_CATEGORY_FAMILY,
+            COVERAGE_CATEGORY_TYPE,
+            COVERAGE_CATEGORY_HOTSPOT,
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.76. Marginal-gain explainability
+# -----------------------------------------------------------------------------
+
+def explain_marginal_gain(
+    gain: MarginalGainResult,
+    *,
+    options: ExplainabilityOptions = (
+        DEFAULT_EXPLAINABILITY_OPTIONS
+    ),
+) -> ExplanationItem:
+    """
+    Explain why a candidate pose is useful or redundant.
+    """
+
+    validate_marginal_gain_result(gain)
+
+    if gain.newly_covered_feature_count > 0:
+        severity = EXPLANATION_SEVERITY_POSITIVE
+        title = f"Marginal contribution of {gain.candidate_pose_id}"
+        message = (
+            f"Pose {gain.candidate_pose_id} adds "
+            f"{gain.newly_covered_feature_count} new feature(s), "
+            f"increasing weighted coverage by "
+            f"{format_fraction_percent(gain.weighted_coverage_gain)}."
+        )
+        reason = EXPLANATION_REASON_COVERAGE_GAIN
+
+    elif gain.objective_gain > 0.0:
+        severity = EXPLANATION_SEVERITY_INFO
+        title = f"Secondary contribution of {gain.candidate_pose_id}"
+        message = (
+            f"Pose {gain.candidate_pose_id} adds no new coverage "
+            "feature, but improves the configured objective through "
+            "score or diversity components."
+        )
+        reason = EXPLANATION_REASON_DIVERSITY
+
+    else:
+        severity = EXPLANATION_SEVERITY_WARNING
+        title = f"Redundancy of {gain.candidate_pose_id}"
+        message = (
+            f"Pose {gain.candidate_pose_id} adds no new feature "
+            "to the current pose set and is therefore redundant "
+            "under the configured coverage universe."
+        )
+        reason = EXPLANATION_REASON_REDUNDANT
+
+    values: Dict[str, float] = {
+        "objective_gain": gain.objective_gain,
+        "weighted_coverage_gain": (
+            gain.weighted_coverage_gain
+        ),
+        "raw_coverage_gain": gain.raw_coverage_gain,
+        "diversity_value": (
+            gain.diversity_tie_break_value
+        ),
+    }
+
+    if gain.candidate_pose_score is not None:
+        values["pose_score"] = gain.candidate_pose_score
+
+    if not options.include_values:
+        values = {}
+
+    return ExplanationItem(
+        code=f"marginal_gain_{gain.candidate_pose_id}",
+        title=title,
+        message=message,
+        severity=severity,
+        reason=reason,
+        pose_ids=(gain.candidate_pose_id,),
+        features=truncate_explanation_values(
+            gain.newly_covered_features,
+            maximum=options.maximum_features,
+        ),
+        values=values,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.77. Selected-pose explainability
+# -----------------------------------------------------------------------------
+
+def selection_step_mapping(
+    result: PoseSetSelectionResult,
+) -> Mapping[str, GreedySelectionStep]:
+    """
+    Return selected greedy steps indexed by pose identifier.
+    """
+
+    return MappingProxyType(
+        {
+            step.selected_pose_id: step
+            for step in result.greedy_steps
+        }
+    )
+
+
+def pose_selection_order_mapping(
+    result: PoseSetSelectionResult,
+) -> Mapping[str, int]:
+    """
+    Return one-based selection order by pose identifier.
+    """
+
+    return MappingProxyType(
+        {
+            pose_id: index
+            for index, pose_id in enumerate(
+                result.selected_pose_ids,
+                start=1,
+            )
+        }
+    )
+
+
+def explain_selected_pose(
+    result: PoseSetSelectionResult,
+    pose_id: str,
+    *,
+    options: ExplainabilityOptions = (
+        DEFAULT_EXPLAINABILITY_OPTIONS
+    ),
+) -> PoseSelectionExplanation:
+    """
+    Explain why one pose was selected.
+    """
+
+    validate_pose_set_selection_result(result)
+
+    normalized_pose_id = _coerce_identifier(pose_id)
+
+    if normalized_pose_id not in result.selected_pose_ids:
+        raise ExplainabilityError(
+            f"Pose {normalized_pose_id!r} is not selected."
+        )
+
+    order_mapping = pose_selection_order_mapping(result)
+    step_mapping = selection_step_mapping(result)
+    step = step_mapping.get(normalized_pose_id)
+
+    profile_by_id = pose_profile_mapping(result.profiles)
+    profile = profile_by_id[normalized_pose_id]
+
+    if normalized_pose_id in result.required_pose_ids:
+        primary_reason = EXPLANATION_REASON_REQUIRED
+        summary = (
+            f"Pose {normalized_pose_id} was included because it "
+            "was configured as a required pose."
+        )
+        objective_gain = 0.0
+        weighted_gain = 0.0
+        raw_gain = 0.0
+        diversity_value = 0.0
+        new_features = profile.features
+        items = (
+            ExplanationItem(
+                code=f"required_{normalized_pose_id}",
+                title="Required pose",
+                message=summary,
+                severity=EXPLANATION_SEVERITY_INFO,
+                reason=EXPLANATION_REASON_REQUIRED,
+                pose_ids=(normalized_pose_id,),
+                features=truncate_explanation_values(
+                    new_features,
+                    maximum=options.maximum_features,
+                ),
+            ),
+        )
+
+    elif step is not None:
+        gain = step.marginal_gain
+        primary_reason = (
+            EXPLANATION_REASON_COVERAGE_GAIN
+            if gain.newly_covered_feature_count > 0
+            else EXPLANATION_REASON_DIVERSITY
+        )
+        summary = (
+            f"Pose {normalized_pose_id} was selected at step "
+            f"{step.step_index} with an objective gain of "
+            f"{gain.objective_gain:.6f} and "
+            f"{gain.newly_covered_feature_count} newly covered "
+            "feature(s)."
+        )
+        objective_gain = gain.objective_gain
+        weighted_gain = gain.weighted_coverage_gain
+        raw_gain = gain.raw_coverage_gain
+        diversity_value = (
+            gain.diversity_tie_break_value
+        )
+        new_features = gain.newly_covered_features
+        items = (
+            explain_marginal_gain(
+                gain,
+                options=options,
+            ),
+        )
+
+    else:
+        primary_reason = EXPLANATION_REASON_OPTIMALITY
+        objective_gain = 0.0
+        weighted_gain = 0.0
+        raw_gain = 0.0
+        diversity_value = (
+            mean_pairwise_diversity_for_pose_set(
+                (normalized_pose_id,),
+                None,
+            )
+        )
+        new_features = profile.features
+        summary = (
+            f"Pose {normalized_pose_id} belongs to the optimal "
+            "pose set identified by exhaustive evaluation."
+        )
+        items = (
+            ExplanationItem(
+                code=f"optimal_{normalized_pose_id}",
+                title="Optimal-set membership",
+                message=summary,
+                severity=EXPLANATION_SEVERITY_POSITIVE,
+                reason=EXPLANATION_REASON_OPTIMALITY,
+                pose_ids=(normalized_pose_id,),
+                features=truncate_explanation_values(
+                    new_features,
+                    maximum=options.maximum_features,
+                ),
+            ),
+        )
+
+    selected_coverage = result.selected_coverage_result
+    redundant_features: Tuple[str, ...] = ()
+
+    if selected_coverage is not None:
+        contributor_counts: Dict[str, int] = {}
+
+        for coverage in (
+            selected_coverage.coverage_by_category.values()
+        ):
+            for feature, contributors in (
+                coverage.feature_contributors.items()
+            ):
+                contributor_counts[feature] = len(
+                    contributors
+                )
+
+        redundant_features = tuple(
+            sorted(
+                feature
+                for feature in profile.features
+                if contributor_counts.get(feature, 0) > 1
+            )
+        )
+
+    return PoseSelectionExplanation(
+        pose_id=normalized_pose_id,
+        selected=True,
+        selection_order=order_mapping[
+            normalized_pose_id
+        ],
+        primary_reason=primary_reason,
+        summary=summary,
+        objective_gain=objective_gain,
+        weighted_coverage_gain=weighted_gain,
+        raw_coverage_gain=raw_gain,
+        diversity_value=diversity_value,
+        pose_score=profile.pose_score,
+        newly_covered_features=truncate_explanation_values(
+            new_features,
+            maximum=options.maximum_features,
+        ),
+        redundant_features=truncate_explanation_values(
+            redundant_features,
+            maximum=options.maximum_features,
+        ),
+        items=items,
+    )
+
+
+def calculate_rejected_pose_gain(
+    result: PoseSetSelectionResult,
+    pose_id: str,
+) -> Optional[MarginalGainResult]:
+    """
+    Calculate the gain of adding one rejected pose to the final set.
+    """
+
+    if result.universe is None:
+        return None
+
+    if pose_id in result.selected_pose_ids:
+        return None
+
+    if pose_id in result.excluded_pose_ids:
+        return None
+
+    coverage_options = CoverageOptions(
+        value_mode=(
+            result.selected_coverage_result.metadata.get(
+                "coverage_value_mode",
+                DEFAULT_COVERAGE_VALUE_MODE,
+            )
+            if result.selected_coverage_result is not None
+            else DEFAULT_COVERAGE_VALUE_MODE
+        ),
+        universe_mode=result.universe.source_mode,
+        aggregation_mode=(
+            result.selected_coverage_result.metadata.get(
+                "coverage_aggregation_mode",
+                DEFAULT_COVERAGE_AGGREGATION_MODE,
+            )
+            if result.selected_coverage_result is not None
+            else DEFAULT_COVERAGE_AGGREGATION_MODE
+        ),
+    )
+
+    selection_options = PoseSelectionOptions(
+        method=result.method,
+        objective=result.objective,
+        target_coverage_fraction=(
+            result.target_coverage_fraction
+        ),
+        required_pose_ids=result.required_pose_ids,
+        excluded_pose_ids=result.excluded_pose_ids,
+    )
+
+    return calculate_marginal_gain(
+        result.profiles,
+        baseline_pose_ids=result.selected_pose_ids,
+        candidate_pose_id=pose_id,
+        universe=result.universe,
+        coverage_options=coverage_options,
+        selection_options=selection_options,
+    )
+
+
+def explain_rejected_pose(
+    result: PoseSetSelectionResult,
+    pose_id: str,
+    *,
+    options: ExplainabilityOptions = (
+        DEFAULT_EXPLAINABILITY_OPTIONS
+    ),
+) -> PoseSelectionExplanation:
+    """
+    Explain why one pose was not selected.
+    """
+
+    validate_pose_set_selection_result(result)
+
+    normalized_pose_id = _coerce_identifier(pose_id)
+
+    if normalized_pose_id in result.selected_pose_ids:
+        raise ExplainabilityError(
+            f"Pose {normalized_pose_id!r} is selected."
+        )
+
+    profile_by_id = pose_profile_mapping(result.profiles)
+
+    if normalized_pose_id not in profile_by_id:
+        raise ExplainabilityError(
+            f"Pose {normalized_pose_id!r} is unavailable."
+        )
+
+    profile = profile_by_id[normalized_pose_id]
+
+    if normalized_pose_id in result.excluded_pose_ids:
+        summary = (
+            f"Pose {normalized_pose_id} was not evaluated because "
+            "it was explicitly excluded."
+        )
+
+        return PoseSelectionExplanation(
+            pose_id=normalized_pose_id,
+            selected=False,
+            selection_order=None,
+            primary_reason=EXPLANATION_REASON_EXCLUDED,
+            summary=summary,
+            objective_gain=0.0,
+            weighted_coverage_gain=0.0,
+            raw_coverage_gain=0.0,
+            diversity_value=0.0,
+            pose_score=profile.pose_score,
+            newly_covered_features=(),
+            redundant_features=profile.features,
+            items=(
+                ExplanationItem(
+                    code=f"excluded_{normalized_pose_id}",
+                    title="Excluded pose",
+                    message=summary,
+                    severity=EXPLANATION_SEVERITY_INFO,
+                    reason=EXPLANATION_REASON_EXCLUDED,
+                    pose_ids=(normalized_pose_id,),
+                ),
+            ),
+        )
+
+    gain = calculate_rejected_pose_gain(
+        result,
+        normalized_pose_id,
+    )
+
+    if gain is None:
+        summary = (
+            f"Pose {normalized_pose_id} was not selected, and "
+            "its final marginal gain could not be reconstructed."
+        )
+
+        return PoseSelectionExplanation(
+            pose_id=normalized_pose_id,
+            selected=False,
+            selection_order=None,
+            primary_reason=EXPLANATION_REASON_REDUNDANT,
+            summary=summary,
+            objective_gain=0.0,
+            weighted_coverage_gain=0.0,
+            raw_coverage_gain=0.0,
+            diversity_value=0.0,
+            pose_score=profile.pose_score,
+            newly_covered_features=(),
+            redundant_features=profile.features,
+            items=(),
+        )
+
+    if gain.newly_covered_feature_count == 0:
+        primary_reason = EXPLANATION_REASON_REDUNDANT
+        summary = (
+            f"Pose {normalized_pose_id} was not selected because "
+            "it adds no new feature to the final pose set."
+        )
+        redundant_features = profile.features
+
+    else:
+        primary_reason = EXPLANATION_REASON_COVERAGE_GAIN
+        summary = (
+            f"Pose {normalized_pose_id} was not selected because "
+            f"its final objective gain ({gain.objective_gain:.6f}) "
+            "was lower than that of the selected alternatives or "
+            "the configured set-size limit had already been reached."
+        )
+        redundant_features = tuple(
+            sorted(
+                set(profile.features)
+                - set(gain.newly_covered_features)
+            )
+        )
+
+    return PoseSelectionExplanation(
+        pose_id=normalized_pose_id,
+        selected=False,
+        selection_order=None,
+        primary_reason=primary_reason,
+        summary=summary,
+        objective_gain=gain.objective_gain,
+        weighted_coverage_gain=(
+            gain.weighted_coverage_gain
+        ),
+        raw_coverage_gain=gain.raw_coverage_gain,
+        diversity_value=(
+            gain.diversity_tie_break_value
+        ),
+        pose_score=profile.pose_score,
+        newly_covered_features=truncate_explanation_values(
+            gain.newly_covered_features,
+            maximum=options.maximum_features,
+        ),
+        redundant_features=truncate_explanation_values(
+            redundant_features,
+            maximum=options.maximum_features,
+        ),
+        items=(
+            explain_marginal_gain(
+                gain,
+                options=options,
+            ),
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.78. Selection-level explainability
+# -----------------------------------------------------------------------------
+
+def explain_selection_status(
+    result: PoseSetSelectionResult,
+) -> ExplanationItem:
+    """
+    Explain the global pose-selection status.
+    """
+
+    if result.status == POSE_SELECTION_STATUS_COMPLETE:
+        severity = EXPLANATION_SEVERITY_POSITIVE
+        reason = EXPLANATION_REASON_TARGET_REACHED
+        message = (
+            f"The selected set contains "
+            f"{result.selected_set_size} pose(s) and reaches "
+            f"the requested coverage target of "
+            f"{format_fraction_percent(result.target_coverage_fraction)}."
+        )
+
+    elif result.status == POSE_SELECTION_STATUS_PARTIAL:
+        severity = EXPLANATION_SEVERITY_WARNING
+        reason = EXPLANATION_REASON_TARGET_NOT_REACHED
+        achieved = (
+            result.selected_candidate
+            .weighted_coverage_fraction
+            if result.selected_candidate is not None
+            else 0.0
+        )
+        message = (
+            f"The selected set reaches "
+            f"{format_fraction_percent(achieved)}, below the "
+            f"requested target of "
+            f"{format_fraction_percent(result.target_coverage_fraction)}."
+        )
+
+    elif result.status == POSE_SELECTION_STATUS_INFEASIBLE:
+        severity = EXPLANATION_SEVERITY_NEGATIVE
+        reason = EXPLANATION_REASON_TARGET_NOT_REACHED
+        message = (
+            "No pose set satisfied all configured size, inclusion, "
+            "exclusion and coverage constraints."
+        )
+
+    elif result.status == POSE_SELECTION_STATUS_EMPTY:
+        severity = EXPLANATION_SEVERITY_WARNING
+        reason = EXPLANATION_REASON_TARGET_NOT_REACHED
+        message = "No pose was available for optimization."
+
+    else:
+        severity = EXPLANATION_SEVERITY_NEGATIVE
+        reason = EXPLANATION_REASON_TARGET_NOT_REACHED
+        message = result.message or (
+            "Pose-set optimization did not complete successfully."
+        )
+
+    return ExplanationItem(
+        code="selection_status",
+        title="Pose-set selection status",
+        message=message,
+        severity=severity,
+        reason=reason,
+        pose_ids=result.selected_pose_ids,
+        values={
+            "target_coverage_fraction": (
+                result.target_coverage_fraction
+            ),
+            "selected_set_size": float(
+                result.selected_set_size
+            ),
+        },
+    )
+
+
+def explain_search_method(
+    result: PoseSetSelectionResult,
+) -> ExplanationItem:
+    """
+    Explain the optimization method and optimality guarantee.
+    """
+
+    if result.optimality_guaranteed:
+        severity = EXPLANATION_SEVERITY_POSITIVE
+        message = (
+            f"The {result.method} method evaluated "
+            f"{result.evaluated_combination_count} candidate "
+            "combination(s); optimality is guaranteed within the "
+            "configured constraints."
+        )
+    else:
+        severity = EXPLANATION_SEVERITY_INFO
+        message = (
+            f"The {result.method} method evaluated "
+            f"{result.evaluated_combination_count} candidate "
+            "addition(s). It is deterministic but does not guarantee "
+            "the globally optimal subset."
+        )
+
+    return ExplanationItem(
+        code="optimization_method",
+        title="Optimization method",
+        message=message,
+        severity=severity,
+        reason=EXPLANATION_REASON_OPTIMALITY,
+        pose_ids=result.selected_pose_ids,
+        values={
+            "evaluated_combination_count": float(
+                result.evaluated_combination_count
+            ),
+            "search_space_size": float(
+                result.search_space_size
+            ),
+        },
+    )
+
+
+def build_selection_recommendations(
+    result: PoseSetSelectionResult,
+) -> Tuple[str, ...]:
+    """
+    Build deterministic recommendations from optimization output.
+    """
+
+    recommendations: List[str] = []
+
+    if result.selected_candidate is None:
+        recommendations.append(
+            "Review pose-selection constraints and verify that "
+            "coverage profiles were generated correctly."
+        )
+        return tuple(recommendations)
+
+    selected_coverage = result.selected_candidate.coverage_result
+
+    if not result.target_reached:
+        recommendations.append(
+            "Increase maximum_set_size, reduce the requested target, "
+            "or expand the available pose pool."
+        )
+
+    for category, coverage in (
+        selected_coverage.coverage_by_category.items()
+    ):
+        if (
+            coverage.universe_count > 0
+            and coverage.coverage_fraction < 1.0
+        ):
+            display_name = coverage_category_display_name(
+                category
+            )
+            recommendations.append(
+                f"Inspect poses covering the missing features in "
+                f"{display_name.lower()}."
+            )
+
+    if (
+        selected_coverage.summary.redundant_pose_count > 0
+    ):
+        recommendations.append(
+            "Review selected poses with no unique coverage "
+            "contribution; they may be removable unless retained "
+            "for score or diversity reasons."
+        )
+
+    if not result.optimality_guaranteed:
+        recommendations.append(
+            "Use exhaustive optimization for small pose collections "
+            "when a global optimality guarantee is required."
+        )
+
+    return tuple(dict.fromkeys(recommendations))
+
+
+def build_selection_warnings(
+    result: PoseSetSelectionResult,
+) -> Tuple[str, ...]:
+    """
+    Build deterministic warnings from optimization output.
+    """
+
+    warnings: List[str] = []
+
+    if result.status == POSE_SELECTION_STATUS_EMPTY:
+        warnings.append(
+            "No pose profiles were available."
+        )
+
+    if result.status == POSE_SELECTION_STATUS_INFEASIBLE:
+        warnings.append(
+            "The configured constraints are infeasible for the "
+            "available pose collection."
+        )
+
+    if (
+        result.selected_candidate is not None
+        and result.selected_candidate.coverage_result
+        .universe.size == 0
+    ):
+        warnings.append(
+            "The coverage universe is empty; complementarity "
+            "cannot be interpreted."
+        )
+
+    if (
+        result.method == POSE_SELECTION_METHOD_GREEDY
+        and not result.optimality_guaranteed
+    ):
+        warnings.append(
+            "Greedy optimization may miss a better global "
+            "combination."
+        )
+
+    return tuple(warnings)
+
+
+# -----------------------------------------------------------------------------
+# 18.79. Rendering explanations
+# -----------------------------------------------------------------------------
+
+def render_explanation_text(
+    *,
+    title: str,
+    summary: str,
+    coverage_items: Sequence[ExplanationItem],
+    selection_items: Sequence[ExplanationItem],
+    pose_explanations: Sequence[
+        PoseSelectionExplanation
+    ],
+    recommendations: Sequence[str],
+    warnings: Sequence[str],
+) -> str:
+    """
+    Render a plain-text explanation.
+    """
+
+    lines: List[str] = [
+        title,
+        "=" * len(title),
+        summary,
+        "",
+        "Coverage:",
+    ]
+
+    for item in coverage_items:
+        lines.append(f"- {item.title}: {item.message}")
+
+    lines.extend(
+        (
+            "",
+            "Selection:",
+        )
+    )
+
+    for item in selection_items:
+        lines.append(f"- {item.title}: {item.message}")
+
+    if pose_explanations:
+        lines.extend(
+            (
+                "",
+                "Pose explanations:",
+            )
+        )
+
+        for explanation in pose_explanations:
+            state = (
+                "selected"
+                if explanation.selected
+                else "not selected"
+            )
+            lines.append(
+                f"- {explanation.pose_id} ({state}): "
+                f"{explanation.summary}"
+            )
+
+    if recommendations:
+        lines.extend(
+            (
+                "",
+                "Recommendations:",
+            )
+        )
+        lines.extend(
+            f"- {value}"
+            for value in recommendations
+        )
+
+    if warnings:
+        lines.extend(
+            (
+                "",
+                "Warnings:",
+            )
+        )
+        lines.extend(
+            f"- {value}"
+            for value in warnings
+        )
+
+    return "\n".join(lines).strip()
+
+
+def render_explanation_markdown(
+    *,
+    title: str,
+    summary: str,
+    coverage_items: Sequence[ExplanationItem],
+    selection_items: Sequence[ExplanationItem],
+    pose_explanations: Sequence[
+        PoseSelectionExplanation
+    ],
+    recommendations: Sequence[str],
+    warnings: Sequence[str],
+) -> str:
+    """
+    Render a Markdown explanation.
+    """
+
+    lines: List[str] = [
+        f"# {title}",
+        "",
+        summary,
+        "",
+        "## Coverage",
+        "",
+    ]
+
+    for item in coverage_items:
+        lines.append(
+            f"- **{item.title}:** {item.message}"
+        )
+
+    lines.extend(
+        (
+            "",
+            "## Selection",
+            "",
+        )
+    )
+
+    for item in selection_items:
+        lines.append(
+            f"- **{item.title}:** {item.message}"
+        )
+
+    if pose_explanations:
+        lines.extend(
+            (
+                "",
+                "## Pose explanations",
+                "",
+            )
+        )
+
+        for explanation in pose_explanations:
+            state = (
+                "Selected"
+                if explanation.selected
+                else "Not selected"
+            )
+            lines.append(
+                f"### {explanation.pose_id} — {state}"
+            )
+            lines.append("")
+            lines.append(explanation.summary)
+            lines.append("")
+
+            if explanation.newly_covered_features:
+                lines.append(
+                    "- Newly covered features: "
+                    + explanation_feature_list_text(
+                        explanation
+                        .newly_covered_features,
+                        maximum=len(
+                            explanation
+                            .newly_covered_features
+                        ),
+                    )
+                )
+
+            if explanation.redundant_features:
+                lines.append(
+                    "- Redundant features: "
+                    + explanation_feature_list_text(
+                        explanation
+                        .redundant_features,
+                        maximum=len(
+                            explanation
+                            .redundant_features
+                        ),
+                    )
+                )
+
+            lines.append("")
+
+    if recommendations:
+        lines.extend(
+            (
+                "## Recommendations",
+                "",
+            )
+        )
+        lines.extend(
+            f"- {value}"
+            for value in recommendations
+        )
+        lines.append("")
+
+    if warnings:
+        lines.extend(
+            (
+                "## Warnings",
+                "",
+            )
+        )
+        lines.extend(
+            f"- {value}"
+            for value in warnings
+        )
+
+    return "\n".join(lines).strip()
+
+
+# -----------------------------------------------------------------------------
+# 18.80. Main explainability API
+# -----------------------------------------------------------------------------
+
+def explain_pose_set_selection(
+    result: PoseSetSelectionResult,
+    *,
+    options: ExplainabilityOptions = (
+        DEFAULT_EXPLAINABILITY_OPTIONS
+    ),
+) -> ComplementarityExplanation:
+    """
+    Generate a complete explanation of pose-set optimization.
+    """
+
+    validate_pose_set_selection_result(result)
+
+    selected_coverage = result.selected_coverage_result
+
+    coverage_items = (
+        explain_pose_set_coverage(
+            selected_coverage,
+            options=options,
+        )
+        if selected_coverage is not None
+        else ()
+    )
+
+    selection_items = (
+        explain_selection_status(result),
+        explain_search_method(result),
+    )
+
+    pose_explanations: List[
+        PoseSelectionExplanation
+    ] = []
+
+    for pose_id in result.selected_pose_ids[
+        :options.maximum_poses
+    ]:
+        pose_explanations.append(
+            explain_selected_pose(
+                result,
+                pose_id,
+                options=options,
+            )
+        )
+
+    rejected_pose_ids = tuple(
+        profile.pose_id
+        for profile in rejected_pose_profiles(result)
+    )
+
+    if options.include_rejected_poses:
+        remaining_slots = max(
+            0,
+            options.maximum_poses
+            - len(pose_explanations),
+        )
+
+        for pose_id in rejected_pose_ids[
+            :remaining_slots
+        ]:
+            pose_explanations.append(
+                explain_rejected_pose(
+                    result,
+                    pose_id,
+                    options=options,
+                )
+            )
+
+    achieved_fraction = (
+        result.selected_candidate
+        .weighted_coverage_fraction
+        if result.selected_candidate is not None
+        else 0.0
+    )
+
+    title = "Pose diversity and complementarity analysis"
+    summary = (
+        f"The selected set contains "
+        f"{result.selected_set_size} pose(s), reaches "
+        f"{format_fraction_percent(achieved_fraction)} weighted "
+        f"coverage and was obtained using the "
+        f"{result.method} method."
+    )
+
+    recommendations = build_selection_recommendations(
+        result
+    )
+    warnings = build_selection_warnings(result)
+
+    text = render_explanation_text(
+        title=title,
+        summary=summary,
+        coverage_items=coverage_items,
+        selection_items=selection_items,
+        pose_explanations=pose_explanations,
+        recommendations=recommendations,
+        warnings=warnings,
+    )
+    markdown = render_explanation_markdown(
+        title=title,
+        summary=summary,
+        coverage_items=coverage_items,
+        selection_items=selection_items,
+        pose_explanations=pose_explanations,
+        recommendations=recommendations,
+        warnings=warnings,
+    )
+
+    return ComplementarityExplanation(
+        title=title,
+        summary=summary,
+        status=result.status,
+        selected_pose_ids=result.selected_pose_ids,
+        rejected_pose_ids=rejected_pose_ids,
+        coverage_items=coverage_items,
+        selection_items=selection_items,
+        pose_explanations=tuple(
+            pose_explanations
+        ),
+        recommendations=recommendations,
+        warnings=warnings,
+        text=text,
+        markdown=markdown,
+        metadata=(
+            {
+                "schema_version": (
+                    DIVERSITY_COMPLEMENTARITY_SCHEMA_VERSION
+                ),
+                "explanation_options": (
+                    options.to_dict(
+                        include_metadata=False
+                    )
+                ),
+            }
+            if options.include_metadata
+            else {}
+        ),
+    )
+
+
+def explain_pose_complementarity(
+    result: PoseSetComplementarityResult,
+    *,
+    options: ExplainabilityOptions = (
+        DEFAULT_EXPLAINABILITY_OPTIONS
+    ),
+) -> ComplementarityExplanation:
+    """
+    Explain a coverage result without pose-set optimization.
+    """
+
+    validate_pose_set_complementarity_result(result)
+
+    coverage_items = explain_pose_set_coverage(
+        result,
+        options=options,
+    )
+
+    if result.summary.complete:
+        severity = EXPLANATION_SEVERITY_POSITIVE
+        reason = EXPLANATION_REASON_TARGET_REACHED
+    elif result.summary.empty:
+        severity = EXPLANATION_SEVERITY_NEGATIVE
+        reason = EXPLANATION_REASON_TARGET_NOT_REACHED
+    else:
+        severity = EXPLANATION_SEVERITY_WARNING
+        reason = EXPLANATION_REASON_TARGET_NOT_REACHED
+
+    selection_items = (
+        ExplanationItem(
+            code="coverage_status",
+            title="Joint coverage status",
+            message=result.message,
+            severity=severity,
+            reason=reason,
+            pose_ids=result.selected_pose_ids,
+            values={
+                "weighted_coverage_fraction": (
+                    result.summary
+                    .weighted_coverage_fraction
+                ),
+                "overall_coverage_fraction": (
+                    result.summary
+                    .overall_coverage_fraction
+                ),
+            },
+        ),
+    )
+
+    title = "Pose-set complementarity analysis"
+    summary = (
+        f"The evaluated set contains "
+        f"{result.summary.selected_pose_count} pose(s) and "
+        f"covers "
+        f"{format_fraction_percent(result.summary.weighted_coverage_fraction)} "
+        "of the weighted feature universe."
+    )
+
+    warnings: List[str] = []
+
+    if result.universe.size == 0:
+        warnings.append(
+            "The configured coverage universe is empty."
+        )
+
+    if result.summary.redundant_pose_count:
+        warnings.append(
+            f"{result.summary.redundant_pose_count} selected "
+            "pose(s) provide no unique coverage feature."
+        )
+
+    text = render_explanation_text(
+        title=title,
+        summary=summary,
+        coverage_items=coverage_items,
+        selection_items=selection_items,
+        pose_explanations=(),
+        recommendations=(),
+        warnings=warnings,
+    )
+    markdown = render_explanation_markdown(
+        title=title,
+        summary=summary,
+        coverage_items=coverage_items,
+        selection_items=selection_items,
+        pose_explanations=(),
+        recommendations=(),
+        warnings=warnings,
+    )
+
+    return ComplementarityExplanation(
+        title=title,
+        summary=summary,
+        status=result.status,
+        selected_pose_ids=result.selected_pose_ids,
+        rejected_pose_ids=(),
+        coverage_items=coverage_items,
+        selection_items=selection_items,
+        pose_explanations=(),
+        recommendations=(),
+        warnings=tuple(warnings),
+        text=text,
+        markdown=markdown,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.81. Consolidated serialization helpers
+# -----------------------------------------------------------------------------
+
+def _section_18_json_default(
+    value: Any,
+) -> Any:
+    """
+    Convert immutable and custom Section 18 objects to JSON-safe values.
+    """
+
+    if isinstance(value, MappingProxyType):
+        return dict(value)
+
+    if isinstance(value, frozenset):
+        return sorted(value)
+
+    if isinstance(value, set):
+        return sorted(value)
+
+    if isinstance(value, tuple):
+        return list(value)
+
+    if isinstance(value, Path):
+        return str(value)
+
+    to_dict = getattr(value, "to_dict", None)
+
+    if callable(to_dict):
+        return to_dict()
+
+    raise TypeError(
+        f"Object of type {type(value).__name__} "
+        "is not JSON serializable."
+    )
+
+
+def section_18_serialization_envelope(
+    *,
+    artifact_type: str,
+    payload: Mapping[str, Any],
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Build a stable Section 18 serialization envelope.
+    """
+
+    normalized_artifact_type = _coerce_identifier(
+        artifact_type
+    )
+
+    if not normalized_artifact_type:
+        raise DiversityComplementaritySerializationError(
+            "artifact_type cannot be empty."
+        )
+
+    return {
+        "schema": "dockanalyzer.scoring.section18",
+        "schema_version": (
+            DIVERSITY_COMPLEMENTARITY_SCHEMA_VERSION
+        ),
+        "section_version": (
+            DIVERSITY_COMPLEMENTARITY_SECTION_VERSION
+        ),
+        "artifact_type": normalized_artifact_type,
+        "payload": dict(payload),
+        "metadata": dict(metadata or {}),
+    }
+
+
+def serialize_section_18_payload(
+    payload: Mapping[str, Any],
+    *,
+    indent: Optional[int] = 2,
+    sort_keys: bool = True,
+    ensure_ascii: bool = False,
+) -> str:
+    """
+    Serialize a Section 18 mapping to JSON.
+    """
+
+    try:
+        return json.dumps(
+            payload,
+            indent=indent,
+            sort_keys=sort_keys,
+            ensure_ascii=ensure_ascii,
+            allow_nan=False,
+            default=_section_18_json_default,
+        )
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+    ) as exc:
+        raise DiversityComplementaritySerializationError(
+            "Failed to serialize Section 18 payload."
+        ) from exc
+
+
+def pose_diversity_result_to_envelope(
+    result: PoseDiversityResult,
+    *,
+    include_metadata: bool = True,
+) -> Dict[str, Any]:
+    """
+    Convert a diversity result to a versioned envelope.
+    """
+
+    validate_pose_diversity_result(result)
+
+    return section_18_serialization_envelope(
+        artifact_type="pose_diversity_result",
+        payload=pose_diversity_result_to_dict(
+            result,
+            include_metadata=include_metadata,
+        ),
+    )
+
+
+def pose_set_complementarity_result_to_envelope(
+    result: PoseSetComplementarityResult,
+    *,
+    include_metadata: bool = True,
+    include_profiles: bool = True,
+) -> Dict[str, Any]:
+    """
+    Convert a complementarity result to a versioned envelope.
+    """
+
+    validate_pose_set_complementarity_result(result)
+
+    return section_18_serialization_envelope(
+        artifact_type="pose_set_complementarity_result",
+        payload=result.to_dict(
+            include_metadata=include_metadata,
+            include_profiles=include_profiles,
+        ),
+    )
+
+
+def pose_set_selection_result_to_envelope(
+    result: PoseSetSelectionResult,
+    *,
+    include_metadata: bool = True,
+    include_candidates: bool = True,
+    include_profiles: bool = False,
+) -> Dict[str, Any]:
+    """
+    Convert a pose-selection result to a versioned envelope.
+    """
+
+    validate_pose_set_selection_result(result)
+
+    return section_18_serialization_envelope(
+        artifact_type="pose_set_selection_result",
+        payload=result.to_dict(
+            include_metadata=include_metadata,
+            include_candidates=include_candidates,
+            include_profiles=include_profiles,
+        ),
+    )
+
+
+def complementarity_explanation_to_envelope(
+    explanation: ComplementarityExplanation,
+    *,
+    include_metadata: bool = True,
+) -> Dict[str, Any]:
+    """
+    Convert an explanation to a versioned envelope.
+    """
+
+    validate_complementarity_explanation(
+        explanation
+    )
+
+    return section_18_serialization_envelope(
+        artifact_type="complementarity_explanation",
+        payload=explanation.to_dict(
+            include_metadata=include_metadata
+        ),
+    )
+
+
+def serialize_pose_set_complementarity_result(
+    result: PoseSetComplementarityResult,
+    *,
+    include_metadata: bool = True,
+    include_profiles: bool = True,
+    use_envelope: bool = True,
+    indent: Optional[int] = 2,
+    sort_keys: bool = True,
+) -> str:
+    """
+    Serialize a complementarity result to JSON.
+    """
+
+    payload = (
+        pose_set_complementarity_result_to_envelope(
+            result,
+            include_metadata=include_metadata,
+            include_profiles=include_profiles,
+        )
+        if use_envelope
+        else result.to_dict(
+            include_metadata=include_metadata,
+            include_profiles=include_profiles,
+        )
+    )
+
+    return serialize_section_18_payload(
+        payload,
+        indent=indent,
+        sort_keys=sort_keys,
+    )
+
+
+def serialize_pose_set_selection_result(
+    result: PoseSetSelectionResult,
+    *,
+    include_metadata: bool = True,
+    include_candidates: bool = True,
+    include_profiles: bool = False,
+    use_envelope: bool = True,
+    indent: Optional[int] = 2,
+    sort_keys: bool = True,
+) -> str:
+    """
+    Serialize a pose-selection result to JSON.
+    """
+
+    payload = (
+        pose_set_selection_result_to_envelope(
+            result,
+            include_metadata=include_metadata,
+            include_candidates=include_candidates,
+            include_profiles=include_profiles,
+        )
+        if use_envelope
+        else result.to_dict(
+            include_metadata=include_metadata,
+            include_candidates=include_candidates,
+            include_profiles=include_profiles,
+        )
+    )
+
+    return serialize_section_18_payload(
+        payload,
+        indent=indent,
+        sort_keys=sort_keys,
+    )
+
+
+def serialize_complementarity_explanation(
+    explanation: ComplementarityExplanation,
+    *,
+    include_metadata: bool = True,
+    use_envelope: bool = True,
+    indent: Optional[int] = 2,
+    sort_keys: bool = True,
+) -> str:
+    """
+    Serialize a complementarity explanation to JSON.
+    """
+
+    payload = (
+        complementarity_explanation_to_envelope(
+            explanation,
+            include_metadata=include_metadata,
+        )
+        if use_envelope
+        else explanation.to_dict(
+            include_metadata=include_metadata
+        )
+    )
+
+    return serialize_section_18_payload(
+        payload,
+        indent=indent,
+        sort_keys=sort_keys,
+    )
+
+
+def write_section_18_json(
+    path: Union[str, Path],
+    payload: Union[
+        Mapping[str, Any],
+        PoseDiversityResult,
+        PoseSetComplementarityResult,
+        PoseSetSelectionResult,
+        ComplementarityExplanation,
+    ],
+    *,
+    indent: Optional[int] = 2,
+    sort_keys: bool = True,
+    encoding: str = "utf-8",
+) -> Path:
+    """
+    Write a supported Section 18 artifact to a JSON file.
+    """
+
+    output_path = Path(path)
+
+    if isinstance(payload, PoseDiversityResult):
+        data = pose_diversity_result_to_envelope(
+            payload
+        )
+
+    elif isinstance(
+        payload,
+        PoseSetComplementarityResult,
+    ):
+        data = pose_set_complementarity_result_to_envelope(
+            payload
+        )
+
+    elif isinstance(payload, PoseSetSelectionResult):
+        data = pose_set_selection_result_to_envelope(
+            payload
+        )
+
+    elif isinstance(
+        payload,
+        ComplementarityExplanation,
+    ):
+        data = complementarity_explanation_to_envelope(
+            payload
+        )
+
+    elif isinstance(payload, Mapping):
+        data = dict(payload)
+
+    else:
+        raise DiversityComplementaritySerializationError(
+            f"Unsupported Section 18 payload type: "
+            f"{type(payload).__name__}."
+        )
+
+    serialized = serialize_section_18_payload(
+        data,
+        indent=indent,
+        sort_keys=sort_keys,
+    )
+
+    try:
+        output_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+        output_path.write_text(
+            serialized,
+            encoding=encoding,
+        )
+    except OSError as exc:
+        raise DiversityComplementaritySerializationError(
+            f"Failed to write Section 18 JSON to "
+            f"{output_path!s}."
+        ) from exc
+
+    return output_path
+
+
+# -----------------------------------------------------------------------------
+# 18.82. Compact table serialization
+# -----------------------------------------------------------------------------
+
+def pose_coverage_profiles_to_rows(
+    profiles: Iterable[PoseCoverageProfile],
+) -> Tuple[Dict[str, Any], ...]:
+    """
+    Convert coverage profiles into flat table rows.
+    """
+
+    rows: List[Dict[str, Any]] = []
+
+    for profile in profiles:
+        rows.append(
+            {
+                "pose_id": profile.pose_id,
+                "model_id": profile.model_id,
+                "ligand_id": profile.ligand_id,
+                "source": profile.source,
+                "pose_score": profile.pose_score,
+                "residue_count": len(
+                    profile.residue_values
+                ),
+                "family_count": len(
+                    profile.family_values
+                ),
+                "type_count": len(
+                    profile.type_values
+                ),
+                "hotspot_count": len(
+                    profile.hotspot_values
+                ),
+                "total_feature_count": len(
+                    profile.features
+                ),
+                "empty": profile.empty,
+            }
+        )
+
+    return tuple(rows)
+
+
+def marginal_gain_results_to_rows(
+    gains: Iterable[MarginalGainResult],
+) -> Tuple[Dict[str, Any], ...]:
+    """
+    Convert marginal gains into flat table rows.
+    """
+
+    return tuple(
+        {
+            "rank": gain.rank,
+            "candidate_pose_id": gain.candidate_pose_id,
+            "baseline_pose_count": len(
+                gain.baseline_pose_ids
+            ),
+            "objective_gain": gain.objective_gain,
+            "weighted_coverage_gain": (
+                gain.weighted_coverage_gain
+            ),
+            "raw_coverage_gain": (
+                gain.raw_coverage_gain
+            ),
+            "residue_gain": gain.residue_gain,
+            "family_gain": gain.family_gain,
+            "type_gain": gain.type_gain,
+            "hotspot_gain": gain.hotspot_gain,
+            "new_feature_count": (
+                gain.newly_covered_feature_count
+            ),
+            "diversity_value": (
+                gain.diversity_tie_break_value
+            ),
+            "pose_score": gain.candidate_pose_score,
+        }
+        for gain in gains
+    )
+
+
+def pose_set_candidates_to_rows(
+    candidates: Iterable[PoseSetCandidate],
+) -> Tuple[Dict[str, Any], ...]:
+    """
+    Convert pose-set candidates into flat table rows.
+    """
+
+    return tuple(
+        {
+            "pose_ids": "|".join(candidate.pose_ids),
+            "set_size": candidate.set_size,
+            "objective_value": (
+                candidate.objective_value
+            ),
+            "weighted_coverage_fraction": (
+                candidate.weighted_coverage_fraction
+            ),
+            "raw_coverage_fraction": (
+                candidate.raw_coverage_fraction
+            ),
+            "mean_pose_score": candidate.mean_pose_score,
+            "total_pose_score": (
+                candidate.total_pose_score
+            ),
+            "mean_pairwise_diversity": (
+                candidate.mean_pairwise_diversity
+            ),
+            "target_reached": candidate.target_reached,
+        }
+        for candidate in candidates
+    )
+
+
+def coverage_result_to_rows(
+    result: PoseSetComplementarityResult,
+) -> Tuple[Dict[str, Any], ...]:
+    """
+    Convert category coverage results into table rows.
+    """
+
+    validate_pose_set_complementarity_result(result)
+
+    return tuple(
+        {
+            "category": category,
+            "universe_count": coverage.universe_count,
+            "covered_count": coverage.covered_count,
+            "uncovered_count": (
+                coverage.uncovered_count
+            ),
+            "coverage_fraction": (
+                coverage.coverage_fraction
+            ),
+            "category_weight": (
+                coverage.category_weight
+            ),
+            "weighted_coverage": (
+                coverage.weighted_coverage
+            ),
+            "contributing_pose_count": len(
+                coverage.contributing_pose_ids
+            ),
+            "complete": coverage.complete,
+            "empty": coverage.empty,
+        }
+        for category, coverage
+        in result.coverage_by_category.items()
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.83. Final explainability validation
+# -----------------------------------------------------------------------------
+
+def validate_explainability_options(
+    options: ExplainabilityOptions,
+) -> ExplainabilityOptions:
+    """
+    Validate explanation configuration.
+    """
+
+    if not isinstance(
+        options,
+        ExplainabilityOptions,
+    ):
+        raise Section18ValidationError(
+            "Expected ExplainabilityOptions."
+        )
+
+    if options.level not in EXPLANATION_LEVELS:
+        raise Section18ValidationError(
+            "Invalid explanation level."
+        )
+
+    if options.output_format not in EXPLANATION_FORMATS:
+        raise Section18ValidationError(
+            "Invalid explanation output format."
+        )
+
+    return options
+
+
+def validate_explanation_item(
+    item: ExplanationItem,
+) -> ExplanationItem:
+    """
+    Validate one explanation item.
+    """
+
+    if not isinstance(item, ExplanationItem):
+        raise Section18ValidationError(
+            "Expected ExplanationItem."
+        )
+
+    if not item.code:
+        raise Section18ValidationError(
+            "ExplanationItem.code cannot be empty."
+        )
+
+    if not item.title:
+        raise Section18ValidationError(
+            "ExplanationItem.title cannot be empty."
+        )
+
+    if not item.message:
+        raise Section18ValidationError(
+            "ExplanationItem.message cannot be empty."
+        )
+
+    return item
+
+
+def validate_pose_selection_explanation(
+    explanation: PoseSelectionExplanation,
+) -> PoseSelectionExplanation:
+    """
+    Validate one pose explanation.
+    """
+
+    if not isinstance(
+        explanation,
+        PoseSelectionExplanation,
+    ):
+        raise Section18ValidationError(
+            "Expected PoseSelectionExplanation."
+        )
+
+    if not explanation.pose_id:
+        raise Section18ValidationError(
+            "Pose explanation identifier cannot be empty."
+        )
+
+    if explanation.selected:
+        if explanation.selection_order is None:
+            raise Section18ValidationError(
+                "Selected pose explanations require "
+                "selection_order."
+            )
+    elif explanation.selection_order is not None:
+        raise Section18ValidationError(
+            "Rejected pose explanations cannot have "
+            "selection_order."
+        )
+
+    for item in explanation.items:
+        validate_explanation_item(item)
+
+    return explanation
+
+
+def validate_complementarity_explanation(
+    explanation: ComplementarityExplanation,
+) -> ComplementarityExplanation:
+    """
+    Validate a complete complementarity explanation.
+    """
+
+    if not isinstance(
+        explanation,
+        ComplementarityExplanation,
+    ):
+        raise Section18ValidationError(
+            "Expected ComplementarityExplanation."
+        )
+
+    if not explanation.title:
+        raise Section18ValidationError(
+            "Explanation title cannot be empty."
+        )
+
+    if not explanation.summary:
+        raise Section18ValidationError(
+            "Explanation summary cannot be empty."
+        )
+
+    for item in (
+        *explanation.coverage_items,
+        *explanation.selection_items,
+    ):
+        validate_explanation_item(item)
+
+    for pose_explanation in (
+        explanation.pose_explanations
+    ):
+        validate_pose_selection_explanation(
+            pose_explanation
+        )
+
+    if not explanation.text:
+        raise Section18ValidationError(
+            "Plain-text explanation cannot be empty."
+        )
+
+    if not explanation.markdown:
+        raise Section18ValidationError(
+            "Markdown explanation cannot be empty."
+        )
+
+    return explanation
+
+
+# -----------------------------------------------------------------------------
+# 18.84. Cross-result validation
+# -----------------------------------------------------------------------------
+
+def validate_diversity_complementarity_alignment(
+    diversity_result: PoseDiversityResult,
+    complementarity_result: PoseSetComplementarityResult,
+) -> None:
+    """
+    Validate pose alignment between diversity and coverage results.
+    """
+
+    validate_pose_diversity_result(diversity_result)
+    validate_pose_set_complementarity_result(
+        complementarity_result
+    )
+
+    diversity_pose_ids = tuple(
+        fingerprint.pose_id
+        for fingerprint
+        in diversity_result.fingerprints
+    )
+    coverage_pose_ids = (
+        complementarity_result.available_pose_ids
+    )
+
+    if set(diversity_pose_ids) != set(
+        coverage_pose_ids
+    ):
+        raise Section18ValidationError(
+            "Diversity and complementarity results contain "
+            "different pose identifiers."
+        )
+
+
+def validate_selection_complementarity_alignment(
+    selection_result: PoseSetSelectionResult,
+) -> None:
+    """
+    Validate selected candidate and coverage alignment.
+    """
+
+    validate_pose_set_selection_result(
+        selection_result
+    )
+
+    candidate = selection_result.selected_candidate
+
+    if candidate is None:
+        return
+
+    coverage_result = candidate.coverage_result
+
+    if (
+        selection_result.selected_pose_ids
+        != coverage_result.selected_pose_ids
+    ):
+        raise Section18ValidationError(
+            "Selection and coverage pose identifiers differ."
+        )
+
+    expected_target_reached = (
+        coverage_result.summary
+        .weighted_coverage_fraction
+        + DEFAULT_OPTIMIZATION_EPSILON
+        >= selection_result.target_coverage_fraction
+    )
+
+    if (
+        selection_result.target_reached
+        != expected_target_reached
+    ):
+        raise Section18ValidationError(
+            "Selection target status is inconsistent with "
+            "weighted coverage."
+        )
+
+
+def validate_section_18_result_bundle(
+    *,
+    diversity_result: Optional[
+        PoseDiversityResult
+    ] = None,
+    complementarity_result: Optional[
+        PoseSetComplementarityResult
+    ] = None,
+    selection_result: Optional[
+        PoseSetSelectionResult
+    ] = None,
+    explanation: Optional[
+        ComplementarityExplanation
+    ] = None,
+) -> None:
+    """
+    Validate any complete Section 18 result bundle.
+    """
+
+    if diversity_result is not None:
+        validate_pose_diversity_result(
+            diversity_result
+        )
+
+    if complementarity_result is not None:
+        validate_pose_set_complementarity_result(
+            complementarity_result
+        )
+
+    if selection_result is not None:
+        validate_pose_set_selection_result(
+            selection_result
+        )
+        validate_selection_complementarity_alignment(
+            selection_result
+        )
+
+    if explanation is not None:
+        validate_complementarity_explanation(
+            explanation
+        )
+
+    if (
+        diversity_result is not None
+        and complementarity_result is not None
+    ):
+        validate_diversity_complementarity_alignment(
+            diversity_result,
+            complementarity_result,
+        )
+
+
+# -----------------------------------------------------------------------------
+# 18.85. Integrated Section 18 result
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class DiversityComplementarityAnalysis:
+    """
+    Consolidated output of the complete Section 18 workflow.
+    """
+
+    diversity_result: PoseDiversityResult
+    complementarity_result: PoseSetComplementarityResult
+    selection_result: PoseSetSelectionResult
+    explanation: ComplementarityExplanation
+
+    fingerprint_options: FingerprintOptions
+    diversity_options: DiversityOptions
+    coverage_options: CoverageOptions
+    selection_options: PoseSelectionOptions
+    explainability_options: ExplainabilityOptions
+
+    schema_version: str = (
+        DIVERSITY_COMPLEMENTARITY_SCHEMA_VERSION
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Validate and freeze the complete analysis.
+        """
+
+        object.__setattr__(
+            self,
+            "schema_version",
+            _coerce_identifier(
+                self.schema_version
+            ),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+        validate_section_18_result_bundle(
+            diversity_result=self.diversity_result,
+            complementarity_result=(
+                self.complementarity_result
+            ),
+            selection_result=self.selection_result,
+            explanation=self.explanation,
+        )
+
+    @property
+    def selected_pose_ids(self) -> Tuple[str, ...]:
+        """
+        Return optimized selected pose identifiers.
+        """
+
+        return self.selection_result.selected_pose_ids
+
+    @property
+    def selected_profiles(
+        self,
+    ) -> Tuple[PoseCoverageProfile, ...]:
+        """
+        Return optimized selected coverage profiles.
+        """
+
+        return selected_pose_profiles(
+            self.selection_result
+        )
+
+    @property
+    def weighted_coverage_fraction(self) -> float:
+        """
+        Return optimized weighted coverage.
+        """
+
+        selected_candidate = (
+            self.selection_result.selected_candidate
+        )
+
+        if selected_candidate is None:
+            return 0.0
+
+        return (
+            selected_candidate
+            .weighted_coverage_fraction
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+        include_profiles: bool = False,
+        include_candidates: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a serializable complete Section 18 analysis.
+        """
+
+        result: Dict[str, Any] = {
+            "schema_version": self.schema_version,
+            "selected_pose_ids": list(
+                self.selected_pose_ids
+            ),
+            "weighted_coverage_fraction": (
+                self.weighted_coverage_fraction
+            ),
+            "diversity_result": (
+                pose_diversity_result_to_dict(
+                    self.diversity_result,
+                    include_metadata=include_metadata,
+                )
+            ),
+            "complementarity_result": (
+                self.complementarity_result.to_dict(
+                    include_metadata=include_metadata,
+                    include_profiles=include_profiles,
+                )
+            ),
+            "selection_result": (
+                self.selection_result.to_dict(
+                    include_metadata=include_metadata,
+                    include_candidates=include_candidates,
+                    include_profiles=include_profiles,
+                )
+            ),
+            "explanation": self.explanation.to_dict(
+                include_metadata=include_metadata
+            ),
+            "options": {
+                "fingerprint": (
+                    self.fingerprint_options.to_dict(
+                        include_metadata=include_metadata
+                    )
+                ),
+                "diversity": (
+                    self.diversity_options.to_dict(
+                        include_metadata=include_metadata
+                    )
+                ),
+                "coverage": (
+                    self.coverage_options.to_dict(
+                        include_metadata=include_metadata
+                    )
+                ),
+                "selection": (
+                    self.selection_options.to_dict(
+                        include_metadata=include_metadata
+                    )
+                ),
+                "explainability": (
+                    self.explainability_options.to_dict(
+                        include_metadata=include_metadata
+                    )
+                ),
+            },
+        }
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+# -----------------------------------------------------------------------------
+# 18.86. Complete Section 18 analysis API
+# -----------------------------------------------------------------------------
+
+def analyze_pose_diversity_and_complementarity(
+    pose_results: Iterable[PoseScoringResult],
+    *,
+    fingerprint_options: FingerprintOptions = (
+        FingerprintOptions(
+            kind=FINGERPRINT_KIND_COMBINED,
+            value_mode=FINGERPRINT_VALUE_BINARY,
+        )
+    ),
+    diversity_options: DiversityOptions = (
+        DiversityOptions(
+            similarity_metric=SIMILARITY_JACCARD,
+            distance_metric=DISTANCE_COMPLEMENT,
+        )
+    ),
+    coverage_options: CoverageOptions = (
+        DEFAULT_COVERAGE_OPTIONS
+    ),
+    selection_options: PoseSelectionOptions = (
+        DEFAULT_POSE_SELECTION_OPTIONS
+    ),
+    explainability_options: ExplainabilityOptions = (
+        DEFAULT_EXPLAINABILITY_OPTIONS
+    ),
+    universe: Optional[CoverageUniverse] = None,
+) -> DiversityComplementarityAnalysis:
+    """
+    Run the complete Section 18 workflow.
+
+    Workflow:
+        pose results
+        -> fingerprints
+        -> diversity
+        -> coverage profiles
+        -> coverage universe
+        -> pose-set optimization
+        -> selected-set complementarity
+        -> explainability
+    """
+
+    normalized_results = (
+        materialize_pose_scoring_results(
+            pose_results
+        )
+    )
+
+    diversity_result = compute_pose_diversity(
+        normalized_results,
+        fingerprint_options=fingerprint_options,
+        diversity_options=diversity_options,
+    )
+
+    profiles = build_pose_coverage_profiles(
+        diversity_result,
+        options=coverage_options,
+    )
+
+    resolved_universe = (
+        universe
+        if universe is not None
+        else build_coverage_universe(
+            profiles,
+            options=coverage_options,
+        )
+    )
+
+    selection_result = select_optimal_pose_set(
+        profiles,
+        universe=resolved_universe,
+        coverage_options=coverage_options,
+        selection_options=selection_options,
+        diversity_result=diversity_result,
+    )
+
+    complementarity_result = (
+        selection_result.selected_coverage_result
+    )
+
+    if complementarity_result is None:
+        complementarity_result = (
+            compute_pose_set_coverage(
+                profiles,
+                selected_pose_ids=(),
+                universe=resolved_universe,
+                options=coverage_options,
+            )
+        )
+
+    explanation = explain_pose_set_selection(
+        selection_result,
+        options=explainability_options,
+    )
+
+    return DiversityComplementarityAnalysis(
+        diversity_result=diversity_result,
+        complementarity_result=(
+            complementarity_result
+        ),
+        selection_result=selection_result,
+        explanation=explanation,
+        fingerprint_options=fingerprint_options,
+        diversity_options=diversity_options,
+        coverage_options=coverage_options,
+        selection_options=selection_options,
+        explainability_options=(
+            explainability_options
+        ),
+        metadata={
+            "pose_count": len(normalized_results),
+            "selected_pose_count": len(
+                selection_result.selected_pose_ids
+            ),
+        },
+    )
+
+
+def diversity_complementarity_analysis_to_envelope(
+    analysis: DiversityComplementarityAnalysis,
+    *,
+    include_metadata: bool = True,
+    include_profiles: bool = False,
+    include_candidates: bool = True,
+) -> Dict[str, Any]:
+    """
+    Convert a complete analysis to a versioned envelope.
+    """
+
+    if not isinstance(
+        analysis,
+        DiversityComplementarityAnalysis,
+    ):
+        raise Section18ValidationError(
+            "Expected DiversityComplementarityAnalysis."
+        )
+
+    return section_18_serialization_envelope(
+        artifact_type=(
+            "diversity_complementarity_analysis"
+        ),
+        payload=analysis.to_dict(
+            include_metadata=include_metadata,
+            include_profiles=include_profiles,
+            include_candidates=include_candidates,
+        ),
+    )
+
+
+def serialize_diversity_complementarity_analysis(
+    analysis: DiversityComplementarityAnalysis,
+    *,
+    include_metadata: bool = True,
+    include_profiles: bool = False,
+    include_candidates: bool = True,
+    use_envelope: bool = True,
+    indent: Optional[int] = 2,
+    sort_keys: bool = True,
+) -> str:
+    """
+    Serialize a complete Section 18 analysis.
+    """
+
+    payload = (
+        diversity_complementarity_analysis_to_envelope(
+            analysis,
+            include_metadata=include_metadata,
+            include_profiles=include_profiles,
+            include_candidates=include_candidates,
+        )
+        if use_envelope
+        else analysis.to_dict(
+            include_metadata=include_metadata,
+            include_profiles=include_profiles,
+            include_candidates=include_candidates,
+        )
+    )
+
+    return serialize_section_18_payload(
+        payload,
+        indent=indent,
+        sort_keys=sort_keys,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.87. Compact final summaries
+# -----------------------------------------------------------------------------
+
+def summarize_pose_set_selection(
+    result: PoseSetSelectionResult,
+) -> Dict[str, Any]:
+    """
+    Return a compact pose-set selection summary.
+    """
+
+    candidate = result.selected_candidate
+
+    return {
+        "status": result.status,
+        "method": result.method,
+        "objective": result.objective,
+        "selected_pose_ids": list(
+            result.selected_pose_ids
+        ),
+        "selected_set_size": result.selected_set_size,
+        "target_coverage_fraction": (
+            result.target_coverage_fraction
+        ),
+        "target_reached": result.target_reached,
+        "optimality_guaranteed": (
+            result.optimality_guaranteed
+        ),
+        "weighted_coverage_fraction": (
+            candidate.weighted_coverage_fraction
+            if candidate is not None
+            else 0.0
+        ),
+        "raw_coverage_fraction": (
+            candidate.raw_coverage_fraction
+            if candidate is not None
+            else 0.0
+        ),
+        "objective_value": (
+            candidate.objective_value
+            if candidate is not None
+            else 0.0
+        ),
+        "evaluated_combination_count": (
+            result.evaluated_combination_count
+        ),
+        "message": result.message,
+    }
+
+
+def summarize_diversity_complementarity_analysis(
+    analysis: DiversityComplementarityAnalysis,
+) -> Dict[str, Any]:
+    """
+    Return a compact summary of the complete analysis.
+    """
+
+    return {
+        "schema_version": analysis.schema_version,
+        "pose_count": (
+            analysis.diversity_result.summary.pose_count
+        ),
+        "selected_pose_ids": list(
+            analysis.selected_pose_ids
+        ),
+        "selected_pose_count": len(
+            analysis.selected_pose_ids
+        ),
+        "weighted_coverage_fraction": (
+            analysis.weighted_coverage_fraction
+        ),
+        "selection_status": (
+            analysis.selection_result.status
+        ),
+        "selection_method": (
+            analysis.selection_result.method
+        ),
+        "target_reached": (
+            analysis.selection_result.target_reached
+        ),
+        "optimality_guaranteed": (
+            analysis.selection_result
+            .optimality_guaranteed
+        ),
+        "mean_pairwise_distance": (
+            analysis.diversity_result.summary
+            .mean_distance
+        ),
+        "minimum_pairwise_distance": (
+            analysis.diversity_result.summary
+            .minimum_distance
+        ),
+        "maximum_pairwise_distance": (
+            analysis.diversity_result.summary
+            .maximum_distance
+        ),
+        "coverage": {
+            category: coverage.coverage_fraction
+            for category, coverage
+            in analysis.complementarity_result
+            .coverage_by_category.items()
+        },
+    }
+
+
+# -----------------------------------------------------------------------------
+# 18.88. Integrated Section 18 self-check report
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class Section18SelfCheckReport:
+    """
+    Result of the complete Section 18 self-check.
+    """
+
+    passed: bool
+    test_count: int
+    passed_count: int
+    failed_count: int
+
+    test_names: Tuple[str, ...]
+    failures: Tuple[str, ...]
+
+    schema_version: str = (
+        DIVERSITY_COMPLEMENTARITY_SCHEMA_VERSION
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize the self-check report.
+        """
+
+        object.__setattr__(
+            self,
+            "passed",
+            bool(self.passed),
+        )
+
+        for field_name in (
+            "test_count",
+            "passed_count",
+            "failed_count",
+        ):
+            value = int(getattr(self, field_name))
+
+            if value < 0:
+                raise Section18SelfCheckError(
+                    f"{field_name} cannot be negative."
+                )
+
+            object.__setattr__(
+                self,
+                field_name,
+                value,
+            )
+
+        object.__setattr__(
+            self,
+            "test_names",
+            tuple(self.test_names),
+        )
+        object.__setattr__(
+            self,
+            "failures",
+            tuple(self.failures),
+        )
+        object.__setattr__(
+            self,
+            "schema_version",
+            _coerce_identifier(
+                self.schema_version
+            ),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a serializable self-check report.
+        """
+
+        result: Dict[str, Any] = {
+            "passed": self.passed,
+            "test_count": self.test_count,
+            "passed_count": self.passed_count,
+            "failed_count": self.failed_count,
+            "test_names": list(self.test_names),
+            "failures": list(self.failures),
+            "schema_version": self.schema_version,
+        }
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+def _section_18_assert(
+    condition: bool,
+    message: str,
+) -> None:
+    """
+    Raise a self-check error when a condition is false.
+    """
+
+    if not condition:
+        raise Section18SelfCheckError(message)
+
+
+def _build_section_18_self_check_profiles(
+) -> Tuple[PoseCoverageProfile, ...]:
+    """
+    Build deterministic synthetic profiles for self-checks.
+    """
+
+    return (
+        PoseCoverageProfile(
+            pose_id="pose_a",
+            model_id="model",
+            ligand_id="ligand",
+            residue_values={
+                "residue:A:10:LYS": 1.0,
+                "residue:A:20:VAL": 1.0,
+            },
+            family_values={
+                "family:hbond": 1.0,
+            },
+            type_values={
+                "type:hydrogen_bond": 1.0,
+            },
+            hotspot_values={
+                "hotspot:A:10:LYS": 1.0,
+            },
+            source=COVERAGE_SOURCE_FINGERPRINT,
+            pose_score=3.0,
+        ),
+        PoseCoverageProfile(
+            pose_id="pose_b",
+            model_id="model",
+            ligand_id="ligand",
+            residue_values={
+                "residue:A:20:VAL": 1.0,
+                "residue:A:30:PHE": 1.0,
+            },
+            family_values={
+                "family:pi": 1.0,
+            },
+            type_values={
+                "type:pi_stacking": 1.0,
+            },
+            hotspot_values={
+                "hotspot:A:30:PHE": 1.0,
+            },
+            source=COVERAGE_SOURCE_FINGERPRINT,
+            pose_score=2.0,
+        ),
+        PoseCoverageProfile(
+            pose_id="pose_c",
+            model_id="model",
+            ligand_id="ligand",
+            residue_values={
+                "residue:A:40:ASP": 1.0,
+            },
+            family_values={
+                "family:saltbridge": 1.0,
+            },
+            type_values={
+                "type:salt_bridge": 1.0,
+            },
+            hotspot_values={
+                "hotspot:A:40:ASP": 1.0,
+            },
+            source=COVERAGE_SOURCE_FINGERPRINT,
+            pose_score=1.0,
+        ),
+    )
+
+
+def run_section_18_self_check(
+    *,
+    raise_on_failure: bool = True,
+) -> Section18SelfCheckReport:
+    """
+    Run the integrated Section 18 self-check suite.
+    """
+
+    tests: List[
+        Tuple[str, Callable[[], None]]
+    ] = []
+
+    profiles = _build_section_18_self_check_profiles()
+
+    coverage_options = CoverageOptions(
+        value_mode=COVERAGE_VALUE_BINARY,
+        universe_mode=COVERAGE_UNIVERSE_OBSERVED,
+        aggregation_mode=COVERAGE_AGGREGATION_UNION,
+    )
+
+    selection_options = PoseSelectionOptions(
+        method=POSE_SELECTION_METHOD_EXHAUSTIVE,
+        minimum_set_size=1,
+        maximum_set_size=3,
+        target_coverage_fraction=1.0,
+    )
+
+    universe = build_coverage_universe(
+        profiles,
+        options=coverage_options,
+    )
+
+    def test_feature_helpers() -> None:
+        feature = make_coverage_feature(
+            COVERAGE_CATEGORY_RESIDUE,
+            "A:10:LYS",
+        )
+        _section_18_assert(
+            coverage_feature_category(feature)
+            == COVERAGE_CATEGORY_RESIDUE,
+            "Feature-category recognition failed.",
+        )
+        _section_18_assert(
+            coverage_feature_identifier(feature)
+            == "A:10:LYS",
+            "Feature identifier extraction failed.",
+        )
+
+    def test_universe() -> None:
+        _section_18_assert(
+            universe.feature_count(
+                COVERAGE_CATEGORY_RESIDUE
+            ) == 4,
+            "Residue-universe size is incorrect.",
+        )
+        _section_18_assert(
+            universe.feature_count(
+                COVERAGE_CATEGORY_FAMILY
+            ) == 3,
+            "Family-universe size is incorrect.",
+        )
+
+    def test_joint_coverage() -> None:
+        result = compute_pose_set_coverage(
+            profiles,
+            selected_pose_ids=(
+                "pose_a",
+                "pose_b",
+            ),
+            universe=universe,
+            options=coverage_options,
+        )
+        _section_18_assert(
+            abs(
+                result.residue_coverage
+                .coverage_fraction
+                - 0.75
+            )
+            <= SCORE_COMPARISON_TOLERANCE,
+            "Joint residue coverage is incorrect.",
+        )
+        validate_pose_set_complementarity_result(
+            result
+        )
+
+    def test_marginal_gain() -> None:
+        gain = calculate_marginal_gain(
+            profiles,
+            baseline_pose_ids=("pose_a",),
+            candidate_pose_id="pose_b",
+            universe=universe,
+            coverage_options=coverage_options,
+            selection_options=selection_options,
+        )
+        _section_18_assert(
+            gain.newly_covered_feature_count == 4,
+            "Marginal feature count is incorrect.",
+        )
+        validate_marginal_gain_result(gain)
+
+    def test_exhaustive_selection() -> None:
+        result = exhaustive_select_pose_set(
+            profiles,
+            universe=universe,
+            coverage_options=coverage_options,
+            selection_options=selection_options,
+        )
+        _section_18_assert(
+            result.target_reached,
+            "Exhaustive selection did not reach target.",
+        )
+        _section_18_assert(
+            result.optimality_guaranteed,
+            "Exhaustive optimality flag is incorrect.",
+        )
+        validate_pose_set_selection_result(result)
+
+    def test_greedy_selection() -> None:
+        result = greedy_select_pose_set(
+            profiles,
+            universe=universe,
+            coverage_options=coverage_options,
+            selection_options=(
+                selection_options.with_updates(
+                    method=POSE_SELECTION_METHOD_GREEDY
+                )
+            ),
+        )
+        _section_18_assert(
+            result.target_reached,
+            "Greedy selection did not reach target.",
+        )
+        validate_pose_set_selection_result(result)
+
+    def test_explanation() -> None:
+        selection_result = exhaustive_select_pose_set(
+            profiles,
+            universe=universe,
+            coverage_options=coverage_options,
+            selection_options=selection_options,
+        )
+        explanation = explain_pose_set_selection(
+            selection_result
+        )
+        _section_18_assert(
+            bool(explanation.text),
+            "Text explanation is empty.",
+        )
+        _section_18_assert(
+            bool(explanation.markdown),
+            "Markdown explanation is empty.",
+        )
+        validate_complementarity_explanation(
+            explanation
+        )
+
+    def test_serialization() -> None:
+        selection_result = exhaustive_select_pose_set(
+            profiles,
+            universe=universe,
+            coverage_options=coverage_options,
+            selection_options=selection_options,
+        )
+        serialized = (
+            serialize_pose_set_selection_result(
+                selection_result
+            )
+        )
+        loaded = json.loads(serialized)
+        _section_18_assert(
+            loaded["schema"]
+            == "dockanalyzer.scoring.section18",
+            "Serialization schema is incorrect.",
+        )
+        _section_18_assert(
+            loaded["artifact_type"]
+            == "pose_set_selection_result",
+            "Serialized artifact type is incorrect.",
+        )
+
+    def test_table_rows() -> None:
+        rows = pose_coverage_profiles_to_rows(
+            profiles
+        )
+        _section_18_assert(
+            len(rows) == 3,
+            "Profile table row count is incorrect.",
+        )
+        _section_18_assert(
+            rows[0]["total_feature_count"] == 5,
+            "Profile feature count is incorrect.",
+        )
+
+    def test_empty_input() -> None:
+        result = compute_pose_set_coverage(
+            (),
+            options=coverage_options,
+        )
+        _section_18_assert(
+            result.status
+            == COMPLEMENTARITY_STATUS_EMPTY,
+            "Empty coverage status is incorrect.",
+        )
+
+    tests.extend(
+        (
+            ("feature_helpers", test_feature_helpers),
+            ("coverage_universe", test_universe),
+            ("joint_coverage", test_joint_coverage),
+            ("marginal_gain", test_marginal_gain),
+            (
+                "exhaustive_selection",
+                test_exhaustive_selection,
+            ),
+            ("greedy_selection", test_greedy_selection),
+            ("explainability", test_explanation),
+            ("serialization", test_serialization),
+            ("table_rows", test_table_rows),
+            ("empty_input", test_empty_input),
+        )
+    )
+
+    passed_names: List[str] = []
+    failures: List[str] = []
+
+    for test_name, test_callable in tests:
+        try:
+            test_callable()
+        except Exception as exc:
+            failures.append(
+                f"{test_name}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+        else:
+            passed_names.append(test_name)
+
+    report = Section18SelfCheckReport(
+        passed=not failures,
+        test_count=len(tests),
+        passed_count=len(passed_names),
+        failed_count=len(failures),
+        test_names=tuple(
+            name
+            for name, _ in tests
+        ),
+        failures=tuple(failures),
+        metadata={
+            "passed_tests": tuple(passed_names),
+        },
+    )
+
+    if failures and raise_on_failure:
+        raise Section18SelfCheckError(
+            "Section 18 self-check failed:\n"
+            + "\n".join(failures)
+        )
+
+    return report
+
+
+# -----------------------------------------------------------------------------
+# 18.89. Import-time final validation
+# -----------------------------------------------------------------------------
+
+def _validate_section_18_part_4() -> None:
+    """
+    Validate Section 18 Part 4 during module import.
+    """
+
+    validate_explainability_options(
+        DEFAULT_EXPLAINABILITY_OPTIONS
+    )
+
+    profile = PoseCoverageProfile(
+        pose_id="pose_validation",
+        model_id="model",
+        ligand_id="ligand",
+        residue_values={
+            "residue:A:10:LYS": 1.0,
+        },
+        family_values={
+            "family:hbond": 1.0,
+        },
+        type_values={
+            "type:hydrogen_bond": 1.0,
+        },
+        hotspot_values={
+            "hotspot:A:10:LYS": 1.0,
+        },
+        source=COVERAGE_SOURCE_FINGERPRINT,
+        pose_score=1.0,
+    )
+
+    coverage_options = CoverageOptions()
+    universe = build_coverage_universe(
+        (profile,),
+        options=coverage_options,
+    )
+    coverage_result = compute_pose_set_coverage(
+        (profile,),
+        selected_pose_ids=("pose_validation",),
+        universe=universe,
+        options=coverage_options,
+    )
+
+    explanation = explain_pose_complementarity(
+        coverage_result
+    )
+
+    validate_complementarity_explanation(
+        explanation
+    )
+
+    serialized = (
+        serialize_pose_set_complementarity_result(
+            coverage_result
+        )
+    )
+
+    loaded = json.loads(serialized)
+
+    if (
+        loaded.get("schema")
+        != "dockanalyzer.scoring.section18"
+    ):
+        raise RuntimeError(
+            "Section 18 envelope validation failed."
+        )
+
+    report = run_section_18_self_check(
+        raise_on_failure=False
+    )
+
+    if not report.passed:
+        raise RuntimeError(
+            "Integrated Section 18 self-check failed: "
+            + "; ".join(report.failures)
+        )
+
+
+_validate_section_18_part_4()
+
+
+# -----------------------------------------------------------------------------
+# 18.90. Final Section 18 public API
+# -----------------------------------------------------------------------------
+
+_SECTION_18_PART_4_PUBLIC_NAMES: Final[
+    Tuple[str, ...]
+] = (
+    # Explainability constants
+    "EXPLANATION_LEVEL_SUMMARY",
+    "EXPLANATION_LEVEL_STANDARD",
+    "EXPLANATION_LEVEL_DETAILED",
+    "EXPLANATION_LEVELS",
+    "EXPLANATION_FORMAT_TEXT",
+    "EXPLANATION_FORMAT_MARKDOWN",
+    "EXPLANATION_FORMAT_STRUCTURED",
+    "EXPLANATION_FORMATS",
+    "EXPLANATION_SEVERITY_INFO",
+    "EXPLANATION_SEVERITY_POSITIVE",
+    "EXPLANATION_SEVERITY_WARNING",
+    "EXPLANATION_SEVERITY_NEGATIVE",
+    "EXPLANATION_SEVERITIES",
+    "EXPLANATION_REASON_COVERAGE_GAIN",
+    "EXPLANATION_REASON_DIVERSITY",
+    "EXPLANATION_REASON_POSE_SCORE",
+    "EXPLANATION_REASON_REQUIRED",
+    "EXPLANATION_REASON_REDUNDANT",
+    "EXPLANATION_REASON_EXCLUDED",
+    "EXPLANATION_REASON_TARGET_REACHED",
+    "EXPLANATION_REASON_TARGET_NOT_REACHED",
+    "EXPLANATION_REASON_OPTIMALITY",
+    "EXPLANATION_REASON_SEARCH_LIMIT",
+    "EXPLANATION_REASONS",
+
+    # Schema constants
+    "DIVERSITY_COMPLEMENTARITY_SCHEMA_VERSION",
+    "DIVERSITY_COMPLEMENTARITY_SECTION_VERSION",
+
+    # Defaults
+    "DEFAULT_EXPLANATION_LEVEL",
+    "DEFAULT_EXPLANATION_FORMAT",
+    "DEFAULT_EXPLANATION_MAX_FEATURES",
+    "DEFAULT_EXPLANATION_MAX_POSES",
+    "DEFAULT_EXPLANATION_INCLUDE_VALUES",
+    "DEFAULT_EXPLANATION_INCLUDE_CONTRIBUTORS",
+    "DEFAULT_EXPLANATION_INCLUDE_REJECTED",
+    "DEFAULT_EXPLANATION_INCLUDE_METADATA",
+    "DEFAULT_EXPLAINABILITY_OPTIONS",
+
+    # Exceptions
+    "DiversityComplementaritySerializationError",
+    "ExplainabilityError",
+    "Section18ValidationError",
+    "Section18SelfCheckError",
+
+    # Dataclasses
+    "ExplainabilityOptions",
+    "ExplanationItem",
+    "PoseSelectionExplanation",
+    "ComplementarityExplanation",
+    "DiversityComplementarityAnalysis",
+    "Section18SelfCheckReport",
+
+    # Normalization
+    "normalize_explanation_level",
+    "normalize_explanation_format",
+    "normalize_explanation_severity",
+
+    # Generic explanation helpers
+    "format_fraction_percent",
+    "truncate_explanation_values",
+    "humanize_coverage_feature",
+    "explanation_feature_list_text",
+    "coverage_category_display_name",
+
+    # Coverage explanations
+    "explain_category_coverage",
+    "explain_pose_set_coverage",
+
+    # Marginal explanations
+    "explain_marginal_gain",
+
+    # Pose explanations
+    "selection_step_mapping",
+    "pose_selection_order_mapping",
+    "explain_selected_pose",
+    "calculate_rejected_pose_gain",
+    "explain_rejected_pose",
+
+    # Selection explanations
+    "explain_selection_status",
+    "explain_search_method",
+    "build_selection_recommendations",
+    "build_selection_warnings",
+
+    # Rendering
+    "render_explanation_text",
+    "render_explanation_markdown",
+
+    # Main explainability APIs
+    "explain_pose_set_selection",
+    "explain_pose_complementarity",
+
+    # Serialization
+    "section_18_serialization_envelope",
+    "serialize_section_18_payload",
+    "pose_diversity_result_to_envelope",
+    "pose_set_complementarity_result_to_envelope",
+    "pose_set_selection_result_to_envelope",
+    "complementarity_explanation_to_envelope",
+    "serialize_pose_set_complementarity_result",
+    "serialize_pose_set_selection_result",
+    "serialize_complementarity_explanation",
+    "write_section_18_json",
+
+    # Table rows
+    "pose_coverage_profiles_to_rows",
+    "marginal_gain_results_to_rows",
+    "pose_set_candidates_to_rows",
+    "coverage_result_to_rows",
+
+    # Validation
+    "validate_explainability_options",
+    "validate_explanation_item",
+    "validate_pose_selection_explanation",
+    "validate_complementarity_explanation",
+    "validate_diversity_complementarity_alignment",
+    "validate_selection_complementarity_alignment",
+    "validate_section_18_result_bundle",
+
+    # Complete analysis
+    "analyze_pose_diversity_and_complementarity",
+    "diversity_complementarity_analysis_to_envelope",
+    "serialize_diversity_complementarity_analysis",
+
+    # Summaries
+    "summarize_pose_set_selection",
+    "summarize_diversity_complementarity_analysis",
+
+    # Self-check
+    "run_section_18_self_check",
+)
+
+
+for public_name in _SECTION_18_PART_4_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+# -----------------------------------------------------------------------------
+# 18.91. Final consolidated Section 18 interface
+# -----------------------------------------------------------------------------
+
+_SECTION_18_PUBLIC_NAMES: Final[
+    Tuple[str, ...]
+] = tuple(
+    dict.fromkeys(
+        (
+            *_SECTION_18_PART_1_PUBLIC_NAMES,
+            *_SECTION_18_PART_2_PUBLIC_NAMES,
+            *_SECTION_18_PART_3_PUBLIC_NAMES,
+            *_SECTION_18_PART_4_PUBLIC_NAMES,
+        )
+    )
+)
+
+
+def section_18_public_names() -> Tuple[str, ...]:
+    """
+    Return the complete immutable Section 18 public interface.
+    """
+
+    return _SECTION_18_PUBLIC_NAMES
+
+
+def validate_section_18_public_interface() -> None:
+    """
+    Validate that every declared Section 18 public name exists.
+    """
+
+    missing_names = tuple(
+        name
+        for name in _SECTION_18_PUBLIC_NAMES
+        if name not in globals()
+    )
+
+    if missing_names:
+        raise Section18ValidationError(
+            "Missing Section 18 public names: "
+            + ", ".join(missing_names)
+        )
+
+    missing_exports = tuple(
+        name
+        for name in _SECTION_18_PUBLIC_NAMES
+        if name not in __all__
+    )
+
+    if missing_exports:
+        raise Section18ValidationError(
+            "Section 18 names missing from __all__: "
+            + ", ".join(missing_exports)
+        )
+
+
+if "section_18_public_names" not in __all__:
+    __all__.append("section_18_public_names")
+
+if "validate_section_18_public_interface" not in __all__:
+    __all__.append(
+        "validate_section_18_public_interface"
+    )
+
+
+validate_section_18_public_interface()
+
+
+# =============================================================================
+# End of Section 18
+# =============================================================================
+
