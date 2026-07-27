@@ -60563,3 +60563,8296 @@ for public_name in _SECTION_18_PART_1_PUBLIC_NAMES:
 # End of Section 18 — Part 1
 # =============================================================================
 
+# =============================================================================
+# Section 18 — Diversity and complementarity
+# Part 2 — Complementarity dataclasses and coverage engine
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 18.28. Complementarity constants
+# -----------------------------------------------------------------------------
+
+COMPLEMENTARITY_STATUS_COMPLETE: Final[str] = "complete"
+COMPLEMENTARITY_STATUS_PARTIAL: Final[str] = "partial"
+COMPLEMENTARITY_STATUS_EMPTY: Final[str] = "empty"
+COMPLEMENTARITY_STATUS_DEGENERATE: Final[str] = "degenerate"
+COMPLEMENTARITY_STATUS_FAILED: Final[str] = "failed"
+
+COMPLEMENTARITY_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        COMPLEMENTARITY_STATUS_COMPLETE,
+        COMPLEMENTARITY_STATUS_PARTIAL,
+        COMPLEMENTARITY_STATUS_EMPTY,
+        COMPLEMENTARITY_STATUS_DEGENERATE,
+        COMPLEMENTARITY_STATUS_FAILED,
+    }
+)
+
+
+COVERAGE_CATEGORY_RESIDUE: Final[str] = "residue"
+COVERAGE_CATEGORY_FAMILY: Final[str] = "family"
+COVERAGE_CATEGORY_TYPE: Final[str] = "interaction_type"
+COVERAGE_CATEGORY_HOTSPOT: Final[str] = "hotspot"
+
+COVERAGE_CATEGORIES: Final[FrozenSet[str]] = frozenset(
+    {
+        COVERAGE_CATEGORY_RESIDUE,
+        COVERAGE_CATEGORY_FAMILY,
+        COVERAGE_CATEGORY_TYPE,
+        COVERAGE_CATEGORY_HOTSPOT,
+    }
+)
+
+
+COVERAGE_VALUE_BINARY: Final[str] = "binary"
+COVERAGE_VALUE_COUNT: Final[str] = "count"
+COVERAGE_VALUE_SCORE: Final[str] = "score"
+COVERAGE_VALUE_ABSOLUTE_SCORE: Final[str] = "absolute_score"
+COVERAGE_VALUE_MAXIMUM_SCORE: Final[str] = "maximum_score"
+
+COVERAGE_VALUE_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        COVERAGE_VALUE_BINARY,
+        COVERAGE_VALUE_COUNT,
+        COVERAGE_VALUE_SCORE,
+        COVERAGE_VALUE_ABSOLUTE_SCORE,
+        COVERAGE_VALUE_MAXIMUM_SCORE,
+    }
+)
+
+
+COVERAGE_UNIVERSE_OBSERVED: Final[str] = "observed"
+COVERAGE_UNIVERSE_REFERENCE: Final[str] = "reference"
+COVERAGE_UNIVERSE_EXPLICIT: Final[str] = "explicit"
+
+COVERAGE_UNIVERSE_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        COVERAGE_UNIVERSE_OBSERVED,
+        COVERAGE_UNIVERSE_REFERENCE,
+        COVERAGE_UNIVERSE_EXPLICIT,
+    }
+)
+
+
+COVERAGE_AGGREGATION_UNION: Final[str] = "union"
+COVERAGE_AGGREGATION_SUM: Final[str] = "sum"
+COVERAGE_AGGREGATION_MAXIMUM: Final[str] = "maximum"
+COVERAGE_AGGREGATION_MEAN: Final[str] = "mean"
+
+COVERAGE_AGGREGATION_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        COVERAGE_AGGREGATION_UNION,
+        COVERAGE_AGGREGATION_SUM,
+        COVERAGE_AGGREGATION_MAXIMUM,
+        COVERAGE_AGGREGATION_MEAN,
+    }
+)
+
+
+COVERAGE_SOURCE_AUTO: Final[str] = "auto"
+COVERAGE_SOURCE_FINGERPRINT: Final[str] = "fingerprint"
+COVERAGE_SOURCE_POSE_RESULT: Final[str] = "pose_result"
+
+COVERAGE_SOURCES: Final[FrozenSet[str]] = frozenset(
+    {
+        COVERAGE_SOURCE_AUTO,
+        COVERAGE_SOURCE_FINGERPRINT,
+        COVERAGE_SOURCE_POSE_RESULT,
+    }
+)
+
+
+DEFAULT_COVERAGE_VALUE_MODE: Final[str] = COVERAGE_VALUE_BINARY
+DEFAULT_COVERAGE_UNIVERSE_MODE: Final[str] = COVERAGE_UNIVERSE_OBSERVED
+DEFAULT_COVERAGE_AGGREGATION_MODE: Final[str] = COVERAGE_AGGREGATION_UNION
+DEFAULT_COVERAGE_SOURCE: Final[str] = COVERAGE_SOURCE_AUTO
+
+DEFAULT_RESIDUE_COVERAGE_WEIGHT: Final[float] = 1.0
+DEFAULT_FAMILY_COVERAGE_WEIGHT: Final[float] = 1.0
+DEFAULT_TYPE_COVERAGE_WEIGHT: Final[float] = 1.0
+DEFAULT_HOTSPOT_COVERAGE_WEIGHT: Final[float] = 1.0
+
+DEFAULT_COMPLEMENTARITY_EPSILON: Final[float] = 1.0e-12
+DEFAULT_INCLUDE_RESIDUE_COVERAGE: Final[bool] = True
+DEFAULT_INCLUDE_FAMILY_COVERAGE: Final[bool] = True
+DEFAULT_INCLUDE_TYPE_COVERAGE: Final[bool] = True
+DEFAULT_INCLUDE_HOTSPOT_COVERAGE: Final[bool] = True
+DEFAULT_INCLUDE_LIGAND_COVERAGE: Final[bool] = False
+DEFAULT_INCLUDE_UNKNOWN_COVERAGE: Final[bool] = False
+DEFAULT_COMPLEMENTARITY_VALIDATE_RESULT: Final[bool] = True
+
+
+# -----------------------------------------------------------------------------
+# 18.29. Complementarity aliases and normalization
+# -----------------------------------------------------------------------------
+
+_COMPLEMENTARITY_STATUS_ALIASES: Final[
+    Mapping[str, str]
+] = MappingProxyType(
+    {
+        "complete": COMPLEMENTARITY_STATUS_COMPLETE,
+        "completed": COMPLEMENTARITY_STATUS_COMPLETE,
+        "success": COMPLEMENTARITY_STATUS_COMPLETE,
+
+        "partial": COMPLEMENTARITY_STATUS_PARTIAL,
+        "incomplete": COMPLEMENTARITY_STATUS_PARTIAL,
+
+        "empty": COMPLEMENTARITY_STATUS_EMPTY,
+        "no_poses": COMPLEMENTARITY_STATUS_EMPTY,
+
+        "degenerate": COMPLEMENTARITY_STATUS_DEGENERATE,
+        "redundant": COMPLEMENTARITY_STATUS_DEGENERATE,
+
+        "failed": COMPLEMENTARITY_STATUS_FAILED,
+        "error": COMPLEMENTARITY_STATUS_FAILED,
+    }
+)
+
+
+_COVERAGE_CATEGORY_ALIASES: Final[
+    Mapping[str, str]
+] = MappingProxyType(
+    {
+        "residue": COVERAGE_CATEGORY_RESIDUE,
+        "residues": COVERAGE_CATEGORY_RESIDUE,
+
+        "family": COVERAGE_CATEGORY_FAMILY,
+        "families": COVERAGE_CATEGORY_FAMILY,
+
+        "type": COVERAGE_CATEGORY_TYPE,
+        "types": COVERAGE_CATEGORY_TYPE,
+        "interaction_type": COVERAGE_CATEGORY_TYPE,
+        "interaction_types": COVERAGE_CATEGORY_TYPE,
+
+        "hotspot": COVERAGE_CATEGORY_HOTSPOT,
+        "hotspots": COVERAGE_CATEGORY_HOTSPOT,
+    }
+)
+
+
+_COVERAGE_VALUE_MODE_ALIASES: Final[
+    Mapping[str, str]
+] = MappingProxyType(
+    {
+        "binary": COVERAGE_VALUE_BINARY,
+        "presence": COVERAGE_VALUE_BINARY,
+
+        "count": COVERAGE_VALUE_COUNT,
+        "counts": COVERAGE_VALUE_COUNT,
+        "frequency": COVERAGE_VALUE_COUNT,
+
+        "score": COVERAGE_VALUE_SCORE,
+        "signed_score": COVERAGE_VALUE_SCORE,
+
+        "absolute_score": COVERAGE_VALUE_ABSOLUTE_SCORE,
+        "abs_score": COVERAGE_VALUE_ABSOLUTE_SCORE,
+
+        "maximum_score": COVERAGE_VALUE_MAXIMUM_SCORE,
+        "max_score": COVERAGE_VALUE_MAXIMUM_SCORE,
+    }
+)
+
+
+_COVERAGE_UNIVERSE_MODE_ALIASES: Final[
+    Mapping[str, str]
+] = MappingProxyType(
+    {
+        "observed": COVERAGE_UNIVERSE_OBSERVED,
+        "all_observed": COVERAGE_UNIVERSE_OBSERVED,
+
+        "reference": COVERAGE_UNIVERSE_REFERENCE,
+        "reference_pose": COVERAGE_UNIVERSE_REFERENCE,
+
+        "explicit": COVERAGE_UNIVERSE_EXPLICIT,
+        "custom": COVERAGE_UNIVERSE_EXPLICIT,
+    }
+)
+
+
+_COVERAGE_AGGREGATION_MODE_ALIASES: Final[
+    Mapping[str, str]
+] = MappingProxyType(
+    {
+        "union": COVERAGE_AGGREGATION_UNION,
+        "presence": COVERAGE_AGGREGATION_UNION,
+
+        "sum": COVERAGE_AGGREGATION_SUM,
+        "total": COVERAGE_AGGREGATION_SUM,
+
+        "maximum": COVERAGE_AGGREGATION_MAXIMUM,
+        "max": COVERAGE_AGGREGATION_MAXIMUM,
+
+        "mean": COVERAGE_AGGREGATION_MEAN,
+        "average": COVERAGE_AGGREGATION_MEAN,
+    }
+)
+
+
+_COVERAGE_SOURCE_ALIASES: Final[
+    Mapping[str, str]
+] = MappingProxyType(
+    {
+        "auto": COVERAGE_SOURCE_AUTO,
+        "automatic": COVERAGE_SOURCE_AUTO,
+
+        "fingerprint": COVERAGE_SOURCE_FINGERPRINT,
+        "fingerprints": COVERAGE_SOURCE_FINGERPRINT,
+
+        "pose_result": COVERAGE_SOURCE_POSE_RESULT,
+        "pose_results": COVERAGE_SOURCE_POSE_RESULT,
+        "score_result": COVERAGE_SOURCE_POSE_RESULT,
+    }
+)
+
+
+def normalize_complementarity_status(
+    value: Any,
+    *,
+    default: str = COMPLEMENTARITY_STATUS_FAILED,
+) -> str:
+    """
+    Normalize a complementarity-analysis status.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if normalized in COMPLEMENTARITY_STATUSES:
+        return normalized
+
+    return _COMPLEMENTARITY_STATUS_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def normalize_coverage_category(
+    value: Any,
+    *,
+    default: str = COVERAGE_CATEGORY_RESIDUE,
+) -> str:
+    """
+    Normalize a coverage category.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if normalized in COVERAGE_CATEGORIES:
+        return normalized
+
+    return _COVERAGE_CATEGORY_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def normalize_coverage_value_mode(
+    value: Any,
+    *,
+    default: str = DEFAULT_COVERAGE_VALUE_MODE,
+) -> str:
+    """
+    Normalize a coverage value mode.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if normalized in COVERAGE_VALUE_MODES:
+        return normalized
+
+    return _COVERAGE_VALUE_MODE_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def normalize_coverage_universe_mode(
+    value: Any,
+    *,
+    default: str = DEFAULT_COVERAGE_UNIVERSE_MODE,
+) -> str:
+    """
+    Normalize a coverage-universe mode.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if normalized in COVERAGE_UNIVERSE_MODES:
+        return normalized
+
+    return _COVERAGE_UNIVERSE_MODE_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def normalize_coverage_aggregation_mode(
+    value: Any,
+    *,
+    default: str = DEFAULT_COVERAGE_AGGREGATION_MODE,
+) -> str:
+    """
+    Normalize a joint coverage aggregation mode.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if normalized in COVERAGE_AGGREGATION_MODES:
+        return normalized
+
+    return _COVERAGE_AGGREGATION_MODE_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def normalize_coverage_source(
+    value: Any,
+    *,
+    default: str = DEFAULT_COVERAGE_SOURCE,
+) -> str:
+    """
+    Normalize a coverage-data source.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if normalized in COVERAGE_SOURCES:
+        return normalized
+
+    return _COVERAGE_SOURCE_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.30. Complementarity exceptions
+# -----------------------------------------------------------------------------
+
+class ComplementarityError(DiversityError):
+    """
+    Base exception for pose complementarity analysis.
+    """
+
+
+class ComplementarityInputError(ComplementarityError):
+    """
+    Raised when complementarity-analysis input is invalid.
+    """
+
+
+class CoverageExtractionError(ComplementarityError):
+    """
+    Raised when coverage information cannot be extracted.
+    """
+
+
+class CoverageUniverseError(ComplementarityError):
+    """
+    Raised when the coverage universe is invalid.
+    """
+
+
+class ComplementarityValidationError(ComplementarityError):
+    """
+    Raised when a complementarity result is inconsistent.
+    """
+
+
+# -----------------------------------------------------------------------------
+# 18.31. Coverage feature utilities
+# -----------------------------------------------------------------------------
+
+_COVERAGE_FEATURE_PREFIXES: Final[
+    Mapping[str, str]
+] = MappingProxyType(
+    {
+        COVERAGE_CATEGORY_RESIDUE: "residue:",
+        COVERAGE_CATEGORY_FAMILY: "family:",
+        COVERAGE_CATEGORY_TYPE: "type:",
+        COVERAGE_CATEGORY_HOTSPOT: "hotspot:",
+    }
+)
+
+
+def coverage_feature_prefix(
+    category: str,
+) -> str:
+    """
+    Return the stable prefix associated with a coverage category.
+    """
+
+    normalized_category = normalize_coverage_category(
+        category
+    )
+
+    return _COVERAGE_FEATURE_PREFIXES[
+        normalized_category
+    ]
+
+
+def make_coverage_feature(
+    category: str,
+    identifier: Any,
+) -> str:
+    """
+    Build a stable coverage feature identifier.
+    """
+
+    normalized_category = normalize_coverage_category(
+        category
+    )
+    normalized_identifier = _coerce_identifier(identifier)
+
+    if not normalized_identifier:
+        raise CoverageExtractionError(
+            "Coverage feature identifier cannot be empty."
+        )
+
+    return (
+        f"{coverage_feature_prefix(normalized_category)}"
+        f"{normalized_identifier}"
+    )
+
+
+def coverage_feature_category(
+    feature: str,
+) -> Optional[str]:
+    """
+    Infer a coverage category from a feature prefix.
+    """
+
+    normalized_feature = _coerce_identifier(feature)
+
+    for category, prefix in _COVERAGE_FEATURE_PREFIXES.items():
+        if normalized_feature.startswith(prefix):
+            return category
+
+    return None
+
+
+def coverage_feature_identifier(
+    feature: str,
+) -> str:
+    """
+    Return the identifier portion of a coverage feature.
+    """
+
+    normalized_feature = _coerce_identifier(feature)
+    category = coverage_feature_category(
+        normalized_feature
+    )
+
+    if category is None:
+        return normalized_feature
+
+    prefix = coverage_feature_prefix(category)
+
+    return normalized_feature[len(prefix):]
+
+
+def split_coverage_features(
+    features: Iterable[str],
+) -> Mapping[str, Tuple[str, ...]]:
+    """
+    Group coverage features by category.
+    """
+
+    grouped: Dict[str, Set[str]] = {
+        category: set()
+        for category in COVERAGE_CATEGORIES
+    }
+
+    for feature in features:
+        normalized_feature = _coerce_identifier(feature)
+        category = coverage_feature_category(
+            normalized_feature
+        )
+
+        if category is None:
+            continue
+
+        grouped[category].add(normalized_feature)
+
+    return MappingProxyType(
+        {
+            category: tuple(sorted(values))
+            for category, values in sorted(grouped.items())
+        }
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.32. CoverageOptions
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class CoverageOptions:
+    """
+    Immutable configuration for pose-set coverage analysis.
+    """
+
+    value_mode: str = DEFAULT_COVERAGE_VALUE_MODE
+    universe_mode: str = DEFAULT_COVERAGE_UNIVERSE_MODE
+    aggregation_mode: str = DEFAULT_COVERAGE_AGGREGATION_MODE
+    source: str = DEFAULT_COVERAGE_SOURCE
+
+    include_residues: bool = DEFAULT_INCLUDE_RESIDUE_COVERAGE
+    include_families: bool = DEFAULT_INCLUDE_FAMILY_COVERAGE
+    include_types: bool = DEFAULT_INCLUDE_TYPE_COVERAGE
+    include_hotspots: bool = DEFAULT_INCLUDE_HOTSPOT_COVERAGE
+
+    include_ligand_residues: bool = (
+        DEFAULT_INCLUDE_LIGAND_COVERAGE
+    )
+    include_unknown_residues: bool = (
+        DEFAULT_INCLUDE_UNKNOWN_COVERAGE
+    )
+
+    residue_weight: float = DEFAULT_RESIDUE_COVERAGE_WEIGHT
+    family_weight: float = DEFAULT_FAMILY_COVERAGE_WEIGHT
+    type_weight: float = DEFAULT_TYPE_COVERAGE_WEIGHT
+    hotspot_weight: float = DEFAULT_HOTSPOT_COVERAGE_WEIGHT
+
+    minimum_absolute_score: float = 0.0
+    hotspot_limit_per_pose: Optional[int] = None
+
+    explicit_residues: Tuple[str, ...] = field(
+        default_factory=tuple
+    )
+    explicit_families: Tuple[str, ...] = field(
+        default_factory=tuple
+    )
+    explicit_types: Tuple[str, ...] = field(
+        default_factory=tuple
+    )
+    explicit_hotspots: Tuple[str, ...] = field(
+        default_factory=tuple
+    )
+
+    reference_pose_id: str = ""
+    epsilon: float = DEFAULT_COMPLEMENTARITY_EPSILON
+    validate_result: bool = (
+        DEFAULT_COMPLEMENTARITY_VALIDATE_RESULT
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize coverage configuration.
+        """
+
+        object.__setattr__(
+            self,
+            "value_mode",
+            normalize_coverage_value_mode(
+                self.value_mode
+            ),
+        )
+        object.__setattr__(
+            self,
+            "universe_mode",
+            normalize_coverage_universe_mode(
+                self.universe_mode
+            ),
+        )
+        object.__setattr__(
+            self,
+            "aggregation_mode",
+            normalize_coverage_aggregation_mode(
+                self.aggregation_mode
+            ),
+        )
+        object.__setattr__(
+            self,
+            "source",
+            normalize_coverage_source(self.source),
+        )
+
+        for field_name in (
+            "include_residues",
+            "include_families",
+            "include_types",
+            "include_hotspots",
+            "include_ligand_residues",
+            "include_unknown_residues",
+            "validate_result",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                bool(getattr(self, field_name)),
+            )
+
+        for field_name in (
+            "residue_weight",
+            "family_weight",
+            "type_weight",
+            "hotspot_weight",
+            "minimum_absolute_score",
+            "epsilon",
+        ):
+            value = float(
+                _coerce_finite_score_value(
+                    getattr(self, field_name),
+                    name=f"CoverageOptions.{field_name}",
+                )
+            )
+
+            if field_name != "minimum_absolute_score" and value < 0.0:
+                raise ComplementarityInputError(
+                    f"{field_name} cannot be negative."
+                )
+
+            if field_name == "minimum_absolute_score":
+                value = abs(value)
+
+            if field_name == "epsilon" and value <= 0.0:
+                raise ComplementarityInputError(
+                    "epsilon must be greater than zero."
+                )
+
+            object.__setattr__(
+                self,
+                field_name,
+                value,
+            )
+
+        hotspot_limit = (
+            None
+            if self.hotspot_limit_per_pose is None
+            else int(self.hotspot_limit_per_pose)
+        )
+
+        if hotspot_limit is not None and hotspot_limit < 1:
+            raise ComplementarityInputError(
+                "hotspot_limit_per_pose must be positive or None."
+            )
+
+        object.__setattr__(
+            self,
+            "hotspot_limit_per_pose",
+            hotspot_limit,
+        )
+
+        object.__setattr__(
+            self,
+            "explicit_residues",
+            _normalize_explicit_coverage_identifiers(
+                self.explicit_residues,
+                category=COVERAGE_CATEGORY_RESIDUE,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "explicit_families",
+            _normalize_explicit_coverage_identifiers(
+                self.explicit_families,
+                category=COVERAGE_CATEGORY_FAMILY,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "explicit_types",
+            _normalize_explicit_coverage_identifiers(
+                self.explicit_types,
+                category=COVERAGE_CATEGORY_TYPE,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "explicit_hotspots",
+            _normalize_explicit_coverage_identifiers(
+                self.explicit_hotspots,
+                category=COVERAGE_CATEGORY_HOTSPOT,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "reference_pose_id",
+            _coerce_identifier(self.reference_pose_id),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+        if (
+            self.universe_mode == COVERAGE_UNIVERSE_REFERENCE
+            and not self.reference_pose_id
+        ):
+            raise ComplementarityInputError(
+                "reference_pose_id is required when "
+                "universe_mode='reference'."
+            )
+
+    @property
+    def enabled_categories(self) -> Tuple[str, ...]:
+        """
+        Return enabled coverage categories.
+        """
+
+        enabled: List[str] = []
+
+        if self.include_residues:
+            enabled.append(COVERAGE_CATEGORY_RESIDUE)
+
+        if self.include_families:
+            enabled.append(COVERAGE_CATEGORY_FAMILY)
+
+        if self.include_types:
+            enabled.append(COVERAGE_CATEGORY_TYPE)
+
+        if self.include_hotspots:
+            enabled.append(COVERAGE_CATEGORY_HOTSPOT)
+
+        return tuple(enabled)
+
+    @property
+    def category_weights(self) -> Mapping[str, float]:
+        """
+        Return immutable coverage-category weights.
+        """
+
+        return MappingProxyType(
+            {
+                COVERAGE_CATEGORY_RESIDUE: self.residue_weight,
+                COVERAGE_CATEGORY_FAMILY: self.family_weight,
+                COVERAGE_CATEGORY_TYPE: self.type_weight,
+                COVERAGE_CATEGORY_HOTSPOT: self.hotspot_weight,
+            }
+        )
+
+    def with_updates(
+        self,
+        **changes: Any,
+    ) -> "CoverageOptions":
+        """
+        Return a validated options copy.
+        """
+
+        return replace(self, **changes)
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a serializable options representation.
+        """
+
+        result: Dict[str, Any] = {
+            "value_mode": self.value_mode,
+            "universe_mode": self.universe_mode,
+            "aggregation_mode": self.aggregation_mode,
+            "source": self.source,
+            "include_residues": self.include_residues,
+            "include_families": self.include_families,
+            "include_types": self.include_types,
+            "include_hotspots": self.include_hotspots,
+            "include_ligand_residues": (
+                self.include_ligand_residues
+            ),
+            "include_unknown_residues": (
+                self.include_unknown_residues
+            ),
+            "residue_weight": self.residue_weight,
+            "family_weight": self.family_weight,
+            "type_weight": self.type_weight,
+            "hotspot_weight": self.hotspot_weight,
+            "minimum_absolute_score": (
+                self.minimum_absolute_score
+            ),
+            "hotspot_limit_per_pose": (
+                self.hotspot_limit_per_pose
+            ),
+            "explicit_residues": list(
+                self.explicit_residues
+            ),
+            "explicit_families": list(
+                self.explicit_families
+            ),
+            "explicit_types": list(
+                self.explicit_types
+            ),
+            "explicit_hotspots": list(
+                self.explicit_hotspots
+            ),
+            "reference_pose_id": self.reference_pose_id,
+            "epsilon": self.epsilon,
+            "validate_result": self.validate_result,
+            "enabled_categories": list(
+                self.enabled_categories
+            ),
+            "category_weights": dict(
+                self.category_weights
+            ),
+        }
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+def _normalize_explicit_coverage_identifiers(
+    values: Iterable[Any],
+    *,
+    category: str,
+) -> Tuple[str, ...]:
+    """
+    Normalize explicit coverage-universe identifiers.
+    """
+
+    normalized_category = normalize_coverage_category(
+        category
+    )
+    prefix = coverage_feature_prefix(
+        normalized_category
+    )
+
+    normalized: Set[str] = set()
+
+    for raw_value in values:
+        value = _coerce_identifier(raw_value)
+
+        if not value:
+            continue
+
+        if value.startswith(prefix):
+            normalized.add(value)
+        else:
+            normalized.add(
+                make_coverage_feature(
+                    normalized_category,
+                    value,
+                )
+            )
+
+    return tuple(sorted(normalized))
+
+
+DEFAULT_COVERAGE_OPTIONS: Final[
+    CoverageOptions
+] = CoverageOptions()
+
+
+# -----------------------------------------------------------------------------
+# 18.33. CoverageUniverse
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class CoverageUniverse:
+    """
+    Immutable feature universe used to calculate coverage fractions.
+    """
+
+    residues: Tuple[str, ...] = field(
+        default_factory=tuple
+    )
+    families: Tuple[str, ...] = field(
+        default_factory=tuple
+    )
+    interaction_types: Tuple[str, ...] = field(
+        default_factory=tuple
+    )
+    hotspots: Tuple[str, ...] = field(
+        default_factory=tuple
+    )
+
+    source_mode: str = DEFAULT_COVERAGE_UNIVERSE_MODE
+    source_pose_ids: Tuple[str, ...] = field(
+        default_factory=tuple
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize and freeze the coverage universe.
+        """
+
+        object.__setattr__(
+            self,
+            "residues",
+            _normalize_explicit_coverage_identifiers(
+                self.residues,
+                category=COVERAGE_CATEGORY_RESIDUE,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "families",
+            _normalize_explicit_coverage_identifiers(
+                self.families,
+                category=COVERAGE_CATEGORY_FAMILY,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "interaction_types",
+            _normalize_explicit_coverage_identifiers(
+                self.interaction_types,
+                category=COVERAGE_CATEGORY_TYPE,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "hotspots",
+            _normalize_explicit_coverage_identifiers(
+                self.hotspots,
+                category=COVERAGE_CATEGORY_HOTSPOT,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "source_mode",
+            normalize_coverage_universe_mode(
+                self.source_mode
+            ),
+        )
+        object.__setattr__(
+            self,
+            "source_pose_ids",
+            tuple(
+                sorted(
+                    {
+                        _coerce_identifier(pose_id)
+                        for pose_id in self.source_pose_ids
+                        if _coerce_identifier(pose_id)
+                    }
+                )
+            ),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def by_category(
+        self,
+    ) -> Mapping[str, Tuple[str, ...]]:
+        """
+        Return coverage-universe features grouped by category.
+        """
+
+        return MappingProxyType(
+            {
+                COVERAGE_CATEGORY_RESIDUE: self.residues,
+                COVERAGE_CATEGORY_FAMILY: self.families,
+                COVERAGE_CATEGORY_TYPE: self.interaction_types,
+                COVERAGE_CATEGORY_HOTSPOT: self.hotspots,
+            }
+        )
+
+    @property
+    def features(self) -> Tuple[str, ...]:
+        """
+        Return all universe features.
+        """
+
+        combined: Set[str] = set()
+
+        for values in self.by_category.values():
+            combined.update(values)
+
+        return tuple(sorted(combined))
+
+    @property
+    def size(self) -> int:
+        """
+        Return the total number of universe features.
+        """
+
+        return len(self.features)
+
+    def feature_count(
+        self,
+        category: str,
+    ) -> int:
+        """
+        Return the number of universe features in one category.
+        """
+
+        normalized_category = normalize_coverage_category(
+            category
+        )
+
+        return len(
+            self.by_category[normalized_category]
+        )
+
+    def contains(
+        self,
+        feature: str,
+    ) -> bool:
+        """
+        Return whether a feature belongs to the universe.
+        """
+
+        return (
+            _coerce_identifier(feature)
+            in set(self.features)
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a serializable coverage universe.
+        """
+
+        result: Dict[str, Any] = {
+            "residues": list(self.residues),
+            "families": list(self.families),
+            "interaction_types": list(
+                self.interaction_types
+            ),
+            "hotspots": list(self.hotspots),
+            "features": list(self.features),
+            "size": self.size,
+            "source_mode": self.source_mode,
+            "source_pose_ids": list(
+                self.source_pose_ids
+            ),
+            "counts": {
+                category: len(features)
+                for category, features
+                in self.by_category.items()
+            },
+        }
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+# -----------------------------------------------------------------------------
+# 18.34. PoseCoverageProfile
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PoseCoverageProfile:
+    """
+    Coverage features and values contributed by one pose.
+    """
+
+    pose_id: str
+    model_id: str
+    ligand_id: str
+
+    residue_values: Mapping[str, float] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    family_values: Mapping[str, float] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    type_values: Mapping[str, float] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    hotspot_values: Mapping[str, float] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+
+    source: str = DEFAULT_COVERAGE_SOURCE
+    pose_score: Optional[float] = None
+
+    fingerprint: Optional[PoseFingerprint] = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+    pose_result: Optional[PoseScoringResult] = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize a pose coverage profile.
+        """
+
+        object.__setattr__(
+            self,
+            "pose_id",
+            _coerce_identifier(self.pose_id),
+        )
+        object.__setattr__(
+            self,
+            "model_id",
+            _coerce_identifier(self.model_id),
+        )
+        object.__setattr__(
+            self,
+            "ligand_id",
+            _coerce_identifier(self.ligand_id),
+        )
+
+        for field_name, category in (
+            (
+                "residue_values",
+                COVERAGE_CATEGORY_RESIDUE,
+            ),
+            (
+                "family_values",
+                COVERAGE_CATEGORY_FAMILY,
+            ),
+            (
+                "type_values",
+                COVERAGE_CATEGORY_TYPE,
+            ),
+            (
+                "hotspot_values",
+                COVERAGE_CATEGORY_HOTSPOT,
+            ),
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _normalize_coverage_value_mapping(
+                    getattr(self, field_name),
+                    category=category,
+                ),
+            )
+
+        object.__setattr__(
+            self,
+            "source",
+            normalize_coverage_source(self.source),
+        )
+
+        pose_score = (
+            None
+            if self.pose_score is None
+            else float(
+                _coerce_finite_score_value(
+                    self.pose_score,
+                    name="PoseCoverageProfile.pose_score",
+                )
+            )
+        )
+
+        object.__setattr__(
+            self,
+            "pose_score",
+            pose_score,
+        )
+
+        if (
+            self.fingerprint is not None
+            and not isinstance(
+                self.fingerprint,
+                PoseFingerprint,
+            )
+        ):
+            raise ComplementarityValidationError(
+                "fingerprint must be a PoseFingerprint or None."
+            )
+
+        if (
+            self.pose_result is not None
+            and not isinstance(
+                self.pose_result,
+                PoseScoringResult,
+            )
+        ):
+            raise ComplementarityValidationError(
+                "pose_result must be a PoseScoringResult or None."
+            )
+
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def values_by_category(
+        self,
+    ) -> Mapping[str, Mapping[str, float]]:
+        """
+        Return feature values grouped by category.
+        """
+
+        return MappingProxyType(
+            {
+                COVERAGE_CATEGORY_RESIDUE: (
+                    self.residue_values
+                ),
+                COVERAGE_CATEGORY_FAMILY: (
+                    self.family_values
+                ),
+                COVERAGE_CATEGORY_TYPE: (
+                    self.type_values
+                ),
+                COVERAGE_CATEGORY_HOTSPOT: (
+                    self.hotspot_values
+                ),
+            }
+        )
+
+    @property
+    def features_by_category(
+        self,
+    ) -> Mapping[str, Tuple[str, ...]]:
+        """
+        Return active features grouped by category.
+        """
+
+        return MappingProxyType(
+            {
+                category: tuple(
+                    sorted(
+                        feature
+                        for feature, value
+                        in values.items()
+                        if abs(value)
+                        > DEFAULT_COMPLEMENTARITY_EPSILON
+                    )
+                )
+                for category, values
+                in self.values_by_category.items()
+            }
+        )
+
+    @property
+    def features(self) -> Tuple[str, ...]:
+        """
+        Return all active pose coverage features.
+        """
+
+        combined: Set[str] = set()
+
+        for values in self.features_by_category.values():
+            combined.update(values)
+
+        return tuple(sorted(combined))
+
+    @property
+    def empty(self) -> bool:
+        """
+        Return whether the pose contributes no coverage feature.
+        """
+
+        return not self.features
+
+    def category_values(
+        self,
+        category: str,
+    ) -> Mapping[str, float]:
+        """
+        Return values for one normalized coverage category.
+        """
+
+        normalized_category = normalize_coverage_category(
+            category
+        )
+
+        return self.values_by_category[
+            normalized_category
+        ]
+
+    def category_features(
+        self,
+        category: str,
+    ) -> Tuple[str, ...]:
+        """
+        Return active features for one category.
+        """
+
+        normalized_category = normalize_coverage_category(
+            category
+        )
+
+        return self.features_by_category[
+            normalized_category
+        ]
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+        include_fingerprint: bool = False,
+        include_pose_result: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Return a serializable coverage profile.
+        """
+
+        result: Dict[str, Any] = {
+            "pose_id": self.pose_id,
+            "model_id": self.model_id,
+            "ligand_id": self.ligand_id,
+            "source": self.source,
+            "pose_score": self.pose_score,
+            "residue_values": dict(
+                self.residue_values
+            ),
+            "family_values": dict(
+                self.family_values
+            ),
+            "type_values": dict(
+                self.type_values
+            ),
+            "hotspot_values": dict(
+                self.hotspot_values
+            ),
+            "features": list(self.features),
+            "features_by_category": {
+                category: list(features)
+                for category, features
+                in self.features_by_category.items()
+            },
+            "empty": self.empty,
+        }
+
+        if include_fingerprint:
+            result["fingerprint"] = (
+                None
+                if self.fingerprint is None
+                else self.fingerprint.to_dict(
+                    include_metadata=include_metadata,
+                    include_pose_result=False,
+                )
+            )
+
+        if include_pose_result:
+            result["pose_result"] = (
+                None
+                if self.pose_result is None
+                else self.pose_result.to_dict(
+                    include_metadata=include_metadata,
+                    include_collection_result=False,
+                )
+            )
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+def _normalize_coverage_value_mapping(
+    values: Mapping[str, Any],
+    *,
+    category: str,
+) -> Mapping[str, float]:
+    """
+    Normalize an immutable feature-value mapping.
+    """
+
+    normalized_category = normalize_coverage_category(
+        category
+    )
+    prefix = coverage_feature_prefix(
+        normalized_category
+    )
+
+    normalized: Dict[str, float] = {}
+
+    for raw_feature, raw_value in values.items():
+        feature = _coerce_identifier(raw_feature)
+
+        if not feature:
+            continue
+
+        if not feature.startswith(prefix):
+            feature = make_coverage_feature(
+                normalized_category,
+                feature,
+            )
+
+        value = float(
+            _coerce_finite_score_value(
+                raw_value,
+                name=f"coverage feature {feature!r}",
+            )
+        )
+
+        normalized[feature] = value
+
+    return MappingProxyType(
+        dict(sorted(normalized.items()))
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.35. CategoryCoverageResult
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class CategoryCoverageResult:
+    """
+    Joint coverage result for one feature category.
+    """
+
+    category: str
+
+    universe_features: Tuple[str, ...]
+    covered_features: Tuple[str, ...]
+    uncovered_features: Tuple[str, ...]
+
+    feature_values: Mapping[str, float]
+
+    universe_count: int
+    covered_count: int
+    uncovered_count: int
+
+    coverage_fraction: float
+    weighted_coverage: float
+    category_weight: float
+
+    contributing_pose_ids: Tuple[str, ...]
+    feature_contributors: Mapping[
+        str,
+        Tuple[str, ...],
+    ]
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize a category coverage result.
+        """
+
+        object.__setattr__(
+            self,
+            "category",
+            normalize_coverage_category(
+                self.category
+            ),
+        )
+        object.__setattr__(
+            self,
+            "universe_features",
+            tuple(
+                sorted(set(self.universe_features))
+            ),
+        )
+        object.__setattr__(
+            self,
+            "covered_features",
+            tuple(
+                sorted(set(self.covered_features))
+            ),
+        )
+        object.__setattr__(
+            self,
+            "uncovered_features",
+            tuple(
+                sorted(set(self.uncovered_features))
+            ),
+        )
+        object.__setattr__(
+            self,
+            "feature_values",
+            _normalize_coverage_value_mapping(
+                self.feature_values,
+                category=self.category,
+            ),
+        )
+
+        for field_name in (
+            "universe_count",
+            "covered_count",
+            "uncovered_count",
+        ):
+            value = int(getattr(self, field_name))
+
+            if value < 0:
+                raise ComplementarityValidationError(
+                    f"{field_name} cannot be negative."
+                )
+
+            object.__setattr__(
+                self,
+                field_name,
+                value,
+            )
+
+        for field_name in (
+            "coverage_fraction",
+            "weighted_coverage",
+            "category_weight",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                float(
+                    _coerce_finite_score_value(
+                        getattr(self, field_name),
+                        name=(
+                            f"CategoryCoverageResult."
+                            f"{field_name}"
+                        ),
+                    )
+                ),
+            )
+
+        object.__setattr__(
+            self,
+            "contributing_pose_ids",
+            tuple(
+                sorted(
+                    {
+                        _coerce_identifier(pose_id)
+                        for pose_id
+                        in self.contributing_pose_ids
+                        if _coerce_identifier(pose_id)
+                    }
+                )
+            ),
+        )
+
+        normalized_contributors: Dict[
+            str,
+            Tuple[str, ...],
+        ] = {}
+
+        for raw_feature, raw_pose_ids in (
+            self.feature_contributors.items()
+        ):
+            feature = _coerce_identifier(raw_feature)
+
+            if not feature:
+                continue
+
+            normalized_contributors[feature] = tuple(
+                sorted(
+                    {
+                        _coerce_identifier(pose_id)
+                        for pose_id in raw_pose_ids
+                        if _coerce_identifier(pose_id)
+                    }
+                )
+            )
+
+        object.__setattr__(
+            self,
+            "feature_contributors",
+            MappingProxyType(
+                dict(
+                    sorted(
+                        normalized_contributors.items()
+                    )
+                )
+            ),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def complete(self) -> bool:
+        """
+        Return whether all universe features are covered.
+        """
+
+        return (
+            self.universe_count == 0
+            or self.covered_count == self.universe_count
+        )
+
+    @property
+    def empty(self) -> bool:
+        """
+        Return whether no feature is covered.
+        """
+
+        return self.covered_count == 0
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a serializable category coverage result.
+        """
+
+        result: Dict[str, Any] = {
+            "category": self.category,
+            "universe_features": list(
+                self.universe_features
+            ),
+            "covered_features": list(
+                self.covered_features
+            ),
+            "uncovered_features": list(
+                self.uncovered_features
+            ),
+            "feature_values": dict(
+                self.feature_values
+            ),
+            "universe_count": self.universe_count,
+            "covered_count": self.covered_count,
+            "uncovered_count": self.uncovered_count,
+            "coverage_fraction": self.coverage_fraction,
+            "weighted_coverage": self.weighted_coverage,
+            "category_weight": self.category_weight,
+            "contributing_pose_ids": list(
+                self.contributing_pose_ids
+            ),
+            "feature_contributors": {
+                feature: list(pose_ids)
+                for feature, pose_ids
+                in self.feature_contributors.items()
+            },
+            "complete": self.complete,
+            "empty": self.empty,
+        }
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+# -----------------------------------------------------------------------------
+# 18.36. JointCoverageSummary
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class JointCoverageSummary:
+    """
+    Global coverage summary for a selected pose set.
+    """
+
+    selected_pose_count: int
+    available_pose_count: int
+
+    total_universe_features: int
+    total_covered_features: int
+    total_uncovered_features: int
+
+    overall_coverage_fraction: float
+    weighted_coverage_fraction: float
+
+    residue_coverage_fraction: float
+    family_coverage_fraction: float
+    type_coverage_fraction: float
+    hotspot_coverage_fraction: float
+
+    total_category_weight: float
+    contributing_pose_count: int
+    redundant_pose_count: int
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize a joint coverage summary.
+        """
+
+        for field_name in (
+            "selected_pose_count",
+            "available_pose_count",
+            "total_universe_features",
+            "total_covered_features",
+            "total_uncovered_features",
+            "contributing_pose_count",
+            "redundant_pose_count",
+        ):
+            value = int(getattr(self, field_name))
+
+            if value < 0:
+                raise ComplementarityValidationError(
+                    f"{field_name} cannot be negative."
+                )
+
+            object.__setattr__(
+                self,
+                field_name,
+                value,
+            )
+
+        for field_name in (
+            "overall_coverage_fraction",
+            "weighted_coverage_fraction",
+            "residue_coverage_fraction",
+            "family_coverage_fraction",
+            "type_coverage_fraction",
+            "hotspot_coverage_fraction",
+            "total_category_weight",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                float(
+                    _coerce_finite_score_value(
+                        getattr(self, field_name),
+                        name=(
+                            f"JointCoverageSummary."
+                            f"{field_name}"
+                        ),
+                    )
+                ),
+            )
+
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def complete(self) -> bool:
+        """
+        Return whether the selected poses cover the full universe.
+        """
+
+        return (
+            self.total_universe_features == 0
+            or (
+                self.total_covered_features
+                == self.total_universe_features
+            )
+        )
+
+    @property
+    def empty(self) -> bool:
+        """
+        Return whether no universe feature is covered.
+        """
+
+        return self.total_covered_features == 0
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a serializable joint coverage summary.
+        """
+
+        result: Dict[str, Any] = {
+            "selected_pose_count": (
+                self.selected_pose_count
+            ),
+            "available_pose_count": (
+                self.available_pose_count
+            ),
+            "total_universe_features": (
+                self.total_universe_features
+            ),
+            "total_covered_features": (
+                self.total_covered_features
+            ),
+            "total_uncovered_features": (
+                self.total_uncovered_features
+            ),
+            "overall_coverage_fraction": (
+                self.overall_coverage_fraction
+            ),
+            "weighted_coverage_fraction": (
+                self.weighted_coverage_fraction
+            ),
+            "residue_coverage_fraction": (
+                self.residue_coverage_fraction
+            ),
+            "family_coverage_fraction": (
+                self.family_coverage_fraction
+            ),
+            "type_coverage_fraction": (
+                self.type_coverage_fraction
+            ),
+            "hotspot_coverage_fraction": (
+                self.hotspot_coverage_fraction
+            ),
+            "total_category_weight": (
+                self.total_category_weight
+            ),
+            "contributing_pose_count": (
+                self.contributing_pose_count
+            ),
+            "redundant_pose_count": (
+                self.redundant_pose_count
+            ),
+            "complete": self.complete,
+            "empty": self.empty,
+        }
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+# -----------------------------------------------------------------------------
+# 18.37. PoseSetComplementarityResult
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PoseSetComplementarityResult:
+    """
+    Complete joint coverage result for a selected pose subset.
+    """
+
+    status: str
+
+    selected_pose_ids: Tuple[str, ...]
+    available_pose_ids: Tuple[str, ...]
+
+    profiles: Tuple[PoseCoverageProfile, ...]
+    selected_profiles: Tuple[PoseCoverageProfile, ...]
+
+    universe: CoverageUniverse
+
+    residue_coverage: CategoryCoverageResult
+    family_coverage: CategoryCoverageResult
+    type_coverage: CategoryCoverageResult
+    hotspot_coverage: CategoryCoverageResult
+
+    summary: JointCoverageSummary
+
+    message: str = ""
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize a complete complementarity result.
+        """
+
+        object.__setattr__(
+            self,
+            "status",
+            normalize_complementarity_status(
+                self.status
+            ),
+        )
+        object.__setattr__(
+            self,
+            "selected_pose_ids",
+            tuple(
+                _coerce_identifier(pose_id)
+                for pose_id in self.selected_pose_ids
+                if _coerce_identifier(pose_id)
+            ),
+        )
+        object.__setattr__(
+            self,
+            "available_pose_ids",
+            tuple(
+                _coerce_identifier(pose_id)
+                for pose_id in self.available_pose_ids
+                if _coerce_identifier(pose_id)
+            ),
+        )
+        object.__setattr__(
+            self,
+            "profiles",
+            tuple(self.profiles),
+        )
+        object.__setattr__(
+            self,
+            "selected_profiles",
+            tuple(self.selected_profiles),
+        )
+
+        if not isinstance(
+            self.universe,
+            CoverageUniverse,
+        ):
+            raise ComplementarityValidationError(
+                "universe must be a CoverageUniverse."
+            )
+
+        for field_name in (
+            "residue_coverage",
+            "family_coverage",
+            "type_coverage",
+            "hotspot_coverage",
+        ):
+            if not isinstance(
+                getattr(self, field_name),
+                CategoryCoverageResult,
+            ):
+                raise ComplementarityValidationError(
+                    f"{field_name} must be a "
+                    "CategoryCoverageResult."
+                )
+
+        if not isinstance(
+            self.summary,
+            JointCoverageSummary,
+        ):
+            raise ComplementarityValidationError(
+                "summary must be a JointCoverageSummary."
+            )
+
+        object.__setattr__(
+            self,
+            "message",
+            _coerce_optional_text(self.message),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def coverage_by_category(
+        self,
+    ) -> Mapping[str, CategoryCoverageResult]:
+        """
+        Return category coverage objects.
+        """
+
+        return MappingProxyType(
+            {
+                COVERAGE_CATEGORY_RESIDUE: (
+                    self.residue_coverage
+                ),
+                COVERAGE_CATEGORY_FAMILY: (
+                    self.family_coverage
+                ),
+                COVERAGE_CATEGORY_TYPE: (
+                    self.type_coverage
+                ),
+                COVERAGE_CATEGORY_HOTSPOT: (
+                    self.hotspot_coverage
+                ),
+            }
+        )
+
+    @property
+    def covered_features(self) -> Tuple[str, ...]:
+        """
+        Return all jointly covered features.
+        """
+
+        combined: Set[str] = set()
+
+        for coverage in self.coverage_by_category.values():
+            combined.update(
+                coverage.covered_features
+            )
+
+        return tuple(sorted(combined))
+
+    @property
+    def uncovered_features(self) -> Tuple[str, ...]:
+        """
+        Return all uncovered universe features.
+        """
+
+        combined: Set[str] = set()
+
+        for coverage in self.coverage_by_category.values():
+            combined.update(
+                coverage.uncovered_features
+            )
+
+        return tuple(sorted(combined))
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+        include_profiles: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a serializable complementarity result.
+        """
+
+        result: Dict[str, Any] = {
+            "status": self.status,
+            "message": self.message,
+            "selected_pose_ids": list(
+                self.selected_pose_ids
+            ),
+            "available_pose_ids": list(
+                self.available_pose_ids
+            ),
+            "universe": self.universe.to_dict(
+                include_metadata=include_metadata
+            ),
+            "coverage": {
+                category: coverage.to_dict(
+                    include_metadata=include_metadata
+                )
+                for category, coverage
+                in self.coverage_by_category.items()
+            },
+            "summary": self.summary.to_dict(
+                include_metadata=include_metadata
+            ),
+            "covered_features": list(
+                self.covered_features
+            ),
+            "uncovered_features": list(
+                self.uncovered_features
+            ),
+        }
+
+        if include_profiles:
+            result["profiles"] = [
+                profile.to_dict(
+                    include_metadata=include_metadata,
+                    include_fingerprint=False,
+                    include_pose_result=False,
+                )
+                for profile in self.profiles
+            ]
+            result["selected_profiles"] = [
+                profile.to_dict(
+                    include_metadata=include_metadata,
+                    include_fingerprint=False,
+                    include_pose_result=False,
+                )
+                for profile in self.selected_profiles
+            ]
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+# -----------------------------------------------------------------------------
+# 18.38. Coverage-value resolution
+# -----------------------------------------------------------------------------
+
+def resolve_coverage_value(
+    raw_score: float,
+    *,
+    value_mode: str,
+) -> float:
+    """
+    Convert an interaction or residue score to a coverage value.
+    """
+
+    normalized_mode = normalize_coverage_value_mode(
+        value_mode
+    )
+    score = float(
+        _coerce_finite_score_value(
+            raw_score,
+            name="coverage raw score",
+        )
+    )
+
+    if normalized_mode == COVERAGE_VALUE_BINARY:
+        return 1.0
+
+    if normalized_mode == COVERAGE_VALUE_COUNT:
+        return 1.0
+
+    if normalized_mode == COVERAGE_VALUE_SCORE:
+        return score
+
+    if normalized_mode == COVERAGE_VALUE_ABSOLUTE_SCORE:
+        return abs(score)
+
+    if normalized_mode == COVERAGE_VALUE_MAXIMUM_SCORE:
+        return abs(score)
+
+    raise CoverageExtractionError(
+        f"Unsupported coverage value mode: "
+        f"{normalized_mode!r}."
+    )
+
+
+def aggregate_coverage_value(
+    current: float,
+    contribution: float,
+    *,
+    value_mode: str,
+) -> float:
+    """
+    Aggregate repeated contributions within one pose profile.
+    """
+
+    normalized_mode = normalize_coverage_value_mode(
+        value_mode
+    )
+
+    if normalized_mode == COVERAGE_VALUE_BINARY:
+        return 1.0
+
+    if normalized_mode == COVERAGE_VALUE_MAXIMUM_SCORE:
+        return max(
+            abs(current),
+            abs(contribution),
+        )
+
+    return current + contribution
+
+
+def aggregate_joint_coverage_values(
+    values: Sequence[float],
+    *,
+    aggregation_mode: str,
+) -> float:
+    """
+    Aggregate one feature across multiple selected poses.
+    """
+
+    if not values:
+        return 0.0
+
+    normalized_mode = normalize_coverage_aggregation_mode(
+        aggregation_mode
+    )
+
+    if normalized_mode == COVERAGE_AGGREGATION_UNION:
+        return 1.0
+
+    if normalized_mode == COVERAGE_AGGREGATION_SUM:
+        return float(sum(values))
+
+    if normalized_mode == COVERAGE_AGGREGATION_MAXIMUM:
+        return float(
+            max(
+                values,
+                key=lambda value: abs(value),
+            )
+        )
+
+    if normalized_mode == COVERAGE_AGGREGATION_MEAN:
+        return float(statistics.fmean(values))
+
+    raise CoverageExtractionError(
+        f"Unsupported coverage aggregation mode: "
+        f"{normalized_mode!r}."
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.39. Coverage extraction from fingerprints
+# -----------------------------------------------------------------------------
+
+def extract_coverage_values_from_fingerprint(
+    fingerprint: PoseFingerprint,
+    *,
+    options: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+) -> Mapping[str, Mapping[str, float]]:
+    """
+    Extract category coverage values from one pose fingerprint.
+    """
+
+    validate_pose_fingerprint(fingerprint)
+
+    extracted: Dict[str, Dict[str, float]] = {
+        category: {}
+        for category in COVERAGE_CATEGORIES
+    }
+
+    for feature, raw_value in fingerprint.values.items():
+        category = coverage_feature_category(feature)
+
+        if category is None:
+            continue
+
+        if category not in options.enabled_categories:
+            continue
+
+        value = resolve_coverage_value(
+            raw_value,
+            value_mode=options.value_mode,
+        )
+
+        if (
+            abs(value)
+            < options.minimum_absolute_score
+        ):
+            continue
+
+        current = extracted[category].get(
+            feature,
+            0.0,
+        )
+
+        extracted[category][feature] = (
+            aggregate_coverage_value(
+                current,
+                value,
+                value_mode=options.value_mode,
+            )
+        )
+
+    return MappingProxyType(
+        {
+            category: MappingProxyType(
+                dict(sorted(values.items()))
+            )
+            for category, values in sorted(
+                extracted.items()
+            )
+        }
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.40. Coverage extraction from PoseScoringResult
+# -----------------------------------------------------------------------------
+
+def extract_residue_coverage_values(
+    pose_result: PoseScoringResult,
+    *,
+    options: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+) -> Mapping[str, float]:
+    """
+    Extract residue-level coverage from a scored pose.
+    """
+
+    if not options.include_residues:
+        return MappingProxyType({})
+
+    residue_result = pose_result.residue_result
+
+    if residue_result is None:
+        residue_result = aggregate_scores_by_residue(
+            pose_result.scores,
+            options=ResidueAggregationOptions(
+                include_ligand_residues=(
+                    options.include_ligand_residues
+                ),
+                include_unknown_residues=(
+                    options.include_unknown_residues
+                ),
+            ),
+        )
+
+    values: Dict[str, float] = {}
+
+    for residue_score in residue_result.residues:
+        residue = residue_score.residue
+        side = normalize_residue_side(residue.side)
+
+        if (
+            side == RESIDUE_SIDE_LIGAND
+            and not options.include_ligand_residues
+        ):
+            continue
+
+        if (
+            side == RESIDUE_SIDE_UNKNOWN
+            and not options.include_unknown_residues
+        ):
+            continue
+
+        score_value = float(residue_score.final_score)
+
+        if (
+            abs(score_value)
+            < options.minimum_absolute_score
+        ):
+            continue
+
+        feature = make_coverage_feature(
+            COVERAGE_CATEGORY_RESIDUE,
+            residue.residue_id,
+        )
+        contribution = resolve_coverage_value(
+            score_value,
+            value_mode=options.value_mode,
+        )
+
+        values[feature] = aggregate_coverage_value(
+            values.get(feature, 0.0),
+            contribution,
+            value_mode=options.value_mode,
+        )
+
+    return MappingProxyType(
+        dict(sorted(values.items()))
+    )
+
+
+def extract_family_coverage_values(
+    pose_result: PoseScoringResult,
+    *,
+    options: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+) -> Mapping[str, float]:
+    """
+    Extract interaction-family coverage from a scored pose.
+    """
+
+    if not options.include_families:
+        return MappingProxyType({})
+
+    values: Dict[str, float] = {}
+
+    for score in pose_result.scores:
+        score_value = float(score.final_score)
+
+        if (
+            abs(score_value)
+            < options.minimum_absolute_score
+        ):
+            continue
+
+        family = canonical_interaction_family(
+            score.interaction_family
+        )
+        feature = make_coverage_feature(
+            COVERAGE_CATEGORY_FAMILY,
+            family,
+        )
+        contribution = resolve_coverage_value(
+            score_value,
+            value_mode=options.value_mode,
+        )
+
+        values[feature] = aggregate_coverage_value(
+            values.get(feature, 0.0),
+            contribution,
+            value_mode=options.value_mode,
+        )
+
+    return MappingProxyType(
+        dict(sorted(values.items()))
+    )
+
+
+def extract_type_coverage_values(
+    pose_result: PoseScoringResult,
+    *,
+    options: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+) -> Mapping[str, float]:
+    """
+    Extract interaction-type coverage from a scored pose.
+    """
+
+    if not options.include_types:
+        return MappingProxyType({})
+
+    values: Dict[str, float] = {}
+
+    for score in pose_result.scores:
+        score_value = float(score.final_score)
+
+        if (
+            abs(score_value)
+            < options.minimum_absolute_score
+        ):
+            continue
+
+        interaction_type = normalize_interaction_type(
+            score.interaction_type,
+            preserve_unknown=True,
+        )
+        feature = make_coverage_feature(
+            COVERAGE_CATEGORY_TYPE,
+            interaction_type,
+        )
+        contribution = resolve_coverage_value(
+            score_value,
+            value_mode=options.value_mode,
+        )
+
+        values[feature] = aggregate_coverage_value(
+            values.get(feature, 0.0),
+            contribution,
+            value_mode=options.value_mode,
+        )
+
+    return MappingProxyType(
+        dict(sorted(values.items()))
+    )
+
+
+def extract_hotspot_coverage_values(
+    pose_result: PoseScoringResult,
+    *,
+    options: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+) -> Mapping[str, float]:
+    """
+    Extract hotspot coverage from a scored pose.
+    """
+
+    if not options.include_hotspots:
+        return MappingProxyType({})
+
+    residue_result = pose_result.residue_result
+
+    if residue_result is None:
+        residue_result = aggregate_scores_by_residue(
+            pose_result.scores,
+            options=ResidueAggregationOptions(
+                include_ligand_residues=(
+                    options.include_ligand_residues
+                ),
+                include_unknown_residues=(
+                    options.include_unknown_residues
+                ),
+            ),
+        )
+
+    hotspots = residue_result.hotspots
+
+    if options.hotspot_limit_per_pose is not None:
+        hotspots = hotspots[
+            :options.hotspot_limit_per_pose
+        ]
+
+    values: Dict[str, float] = {}
+
+    for hotspot in hotspots:
+        residue = hotspot.residue
+        side = normalize_residue_side(residue.side)
+
+        if (
+            side == RESIDUE_SIDE_LIGAND
+            and not options.include_ligand_residues
+        ):
+            continue
+
+        if (
+            side == RESIDUE_SIDE_UNKNOWN
+            and not options.include_unknown_residues
+        ):
+            continue
+
+        score_value = float(hotspot.final_score)
+
+        if (
+            abs(score_value)
+            < options.minimum_absolute_score
+        ):
+            continue
+
+        feature = make_coverage_feature(
+            COVERAGE_CATEGORY_HOTSPOT,
+            hotspot.residue_id,
+        )
+        contribution = resolve_coverage_value(
+            score_value,
+            value_mode=options.value_mode,
+        )
+
+        values[feature] = aggregate_coverage_value(
+            values.get(feature, 0.0),
+            contribution,
+            value_mode=options.value_mode,
+        )
+
+    return MappingProxyType(
+        dict(sorted(values.items()))
+    )
+
+
+def extract_coverage_values_from_pose_result(
+    pose_result: PoseScoringResult,
+    *,
+    options: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+) -> Mapping[str, Mapping[str, float]]:
+    """
+    Extract all enabled coverage categories from one scored pose.
+    """
+
+    validate_pose_scoring_result(pose_result)
+
+    return MappingProxyType(
+        {
+            COVERAGE_CATEGORY_RESIDUE: (
+                extract_residue_coverage_values(
+                    pose_result,
+                    options=options,
+                )
+            ),
+            COVERAGE_CATEGORY_FAMILY: (
+                extract_family_coverage_values(
+                    pose_result,
+                    options=options,
+                )
+            ),
+            COVERAGE_CATEGORY_TYPE: (
+                extract_type_coverage_values(
+                    pose_result,
+                    options=options,
+                )
+            ),
+            COVERAGE_CATEGORY_HOTSPOT: (
+                extract_hotspot_coverage_values(
+                    pose_result,
+                    options=options,
+                )
+            ),
+        }
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.41. Pose coverage profile construction
+# -----------------------------------------------------------------------------
+
+def resolve_profile_coverage_source(
+    fingerprint: Optional[PoseFingerprint],
+    pose_result: Optional[PoseScoringResult],
+    *,
+    options: CoverageOptions,
+) -> str:
+    """
+    Resolve the coverage source for one pose.
+    """
+
+    requested = options.source
+
+    if requested == COVERAGE_SOURCE_FINGERPRINT:
+        if fingerprint is None:
+            raise CoverageExtractionError(
+                "Fingerprint coverage source was requested, "
+                "but no fingerprint is available."
+            )
+
+        return COVERAGE_SOURCE_FINGERPRINT
+
+    if requested == COVERAGE_SOURCE_POSE_RESULT:
+        if pose_result is None:
+            raise CoverageExtractionError(
+                "Pose-result coverage source was requested, "
+                "but no PoseScoringResult is available."
+            )
+
+        return COVERAGE_SOURCE_POSE_RESULT
+
+    if pose_result is not None:
+        return COVERAGE_SOURCE_POSE_RESULT
+
+    if fingerprint is not None:
+        return COVERAGE_SOURCE_FINGERPRINT
+
+    raise CoverageExtractionError(
+        "Neither a fingerprint nor a pose-scoring result "
+        "is available."
+    )
+
+
+def build_pose_coverage_profile(
+    *,
+    fingerprint: Optional[PoseFingerprint] = None,
+    pose_result: Optional[PoseScoringResult] = None,
+    options: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+) -> PoseCoverageProfile:
+    """
+    Build one pose coverage profile.
+    """
+
+    if fingerprint is None and pose_result is None:
+        raise ComplementarityInputError(
+            "At least one fingerprint or pose_result is required."
+        )
+
+    source = resolve_profile_coverage_source(
+        fingerprint,
+        pose_result,
+        options=options,
+    )
+
+    if source == COVERAGE_SOURCE_POSE_RESULT:
+        if pose_result is None:
+            raise CoverageExtractionError(
+                "Resolved pose-result source is unavailable."
+            )
+
+        extracted = extract_coverage_values_from_pose_result(
+            pose_result,
+            options=options,
+        )
+
+        pose_id = pose_result.pose_id
+        model_id = pose_result.model_id
+        ligand_id = pose_result.ligand_id
+        pose_score = pose_result.final_score
+
+    else:
+        if fingerprint is None:
+            raise CoverageExtractionError(
+                "Resolved fingerprint source is unavailable."
+            )
+
+        extracted = extract_coverage_values_from_fingerprint(
+            fingerprint,
+            options=options,
+        )
+
+        pose_id = fingerprint.pose_id
+        model_id = fingerprint.model_id
+        ligand_id = fingerprint.ligand_id
+        pose_score = fingerprint.pose_score
+
+    return PoseCoverageProfile(
+        pose_id=pose_id,
+        model_id=model_id,
+        ligand_id=ligand_id,
+        residue_values=extracted[
+            COVERAGE_CATEGORY_RESIDUE
+        ],
+        family_values=extracted[
+            COVERAGE_CATEGORY_FAMILY
+        ],
+        type_values=extracted[
+            COVERAGE_CATEGORY_TYPE
+        ],
+        hotspot_values=extracted[
+            COVERAGE_CATEGORY_HOTSPOT
+        ],
+        source=source,
+        pose_score=pose_score,
+        fingerprint=fingerprint,
+        pose_result=pose_result,
+        metadata={
+            "enabled_categories": (
+                options.enabled_categories
+            ),
+            "value_mode": options.value_mode,
+        },
+    )
+
+
+def build_pose_coverage_profiles(
+    diversity_result: PoseDiversityResult,
+    *,
+    options: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+) -> Tuple[PoseCoverageProfile, ...]:
+    """
+    Build coverage profiles from a diversity-analysis result.
+    """
+
+    validate_pose_diversity_result(
+        diversity_result
+    )
+
+    profiles: List[PoseCoverageProfile] = []
+
+    for fingerprint in diversity_result.fingerprints:
+        profiles.append(
+            build_pose_coverage_profile(
+                fingerprint=fingerprint,
+                pose_result=fingerprint.pose_result,
+                options=options,
+            )
+        )
+
+    return tuple(
+        sorted(
+            profiles,
+            key=lambda profile: (
+                profile.pose_id,
+                profile.model_id,
+                profile.ligand_id,
+            ),
+        )
+    )
+
+
+def build_pose_coverage_profiles_from_results(
+    pose_results: Iterable[PoseScoringResult],
+    *,
+    options: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+) -> Tuple[PoseCoverageProfile, ...]:
+    """
+    Build coverage profiles directly from pose-scoring results.
+    """
+
+    normalized_results = (
+        materialize_pose_scoring_results(
+            pose_results
+        )
+    )
+
+    profiles = tuple(
+        build_pose_coverage_profile(
+            pose_result=pose_result,
+            options=options,
+        )
+        for pose_result in normalized_results
+    )
+
+    return tuple(
+        sorted(
+            profiles,
+            key=lambda profile: (
+                profile.pose_id,
+                profile.model_id,
+                profile.ligand_id,
+            ),
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.42. Coverage universe construction
+# -----------------------------------------------------------------------------
+
+def build_observed_coverage_universe(
+    profiles: Sequence[PoseCoverageProfile],
+    *,
+    options: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+) -> CoverageUniverse:
+    """
+    Build a universe from all observed profile features.
+    """
+
+    features_by_category: Dict[str, Set[str]] = {
+        category: set()
+        for category in COVERAGE_CATEGORIES
+    }
+
+    for profile in profiles:
+        for category in options.enabled_categories:
+            features_by_category[category].update(
+                profile.category_features(category)
+            )
+
+    return CoverageUniverse(
+        residues=tuple(
+            sorted(
+                features_by_category[
+                    COVERAGE_CATEGORY_RESIDUE
+                ]
+            )
+        ),
+        families=tuple(
+            sorted(
+                features_by_category[
+                    COVERAGE_CATEGORY_FAMILY
+                ]
+            )
+        ),
+        interaction_types=tuple(
+            sorted(
+                features_by_category[
+                    COVERAGE_CATEGORY_TYPE
+                ]
+            )
+        ),
+        hotspots=tuple(
+            sorted(
+                features_by_category[
+                    COVERAGE_CATEGORY_HOTSPOT
+                ]
+            )
+        ),
+        source_mode=COVERAGE_UNIVERSE_OBSERVED,
+        source_pose_ids=tuple(
+            profile.pose_id
+            for profile in profiles
+        ),
+    )
+
+
+def build_reference_coverage_universe(
+    profiles: Sequence[PoseCoverageProfile],
+    *,
+    reference_pose_id: str,
+    options: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+) -> CoverageUniverse:
+    """
+    Build a coverage universe from one reference pose.
+    """
+
+    normalized_reference_pose_id = _coerce_identifier(
+        reference_pose_id
+    )
+
+    reference_profile = next(
+        (
+            profile
+            for profile in profiles
+            if profile.pose_id
+            == normalized_reference_pose_id
+        ),
+        None,
+    )
+
+    if reference_profile is None:
+        raise CoverageUniverseError(
+            f"Reference pose {normalized_reference_pose_id!r} "
+            "was not found."
+        )
+
+    return CoverageUniverse(
+        residues=reference_profile.category_features(
+            COVERAGE_CATEGORY_RESIDUE
+        ),
+        families=reference_profile.category_features(
+            COVERAGE_CATEGORY_FAMILY
+        ),
+        interaction_types=reference_profile.category_features(
+            COVERAGE_CATEGORY_TYPE
+        ),
+        hotspots=reference_profile.category_features(
+            COVERAGE_CATEGORY_HOTSPOT
+        ),
+        source_mode=COVERAGE_UNIVERSE_REFERENCE,
+        source_pose_ids=(
+            reference_profile.pose_id,
+        ),
+    )
+
+
+def build_explicit_coverage_universe(
+    *,
+    options: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+) -> CoverageUniverse:
+    """
+    Build a coverage universe from explicit configuration.
+    """
+
+    return CoverageUniverse(
+        residues=(
+            options.explicit_residues
+            if options.include_residues
+            else ()
+        ),
+        families=(
+            options.explicit_families
+            if options.include_families
+            else ()
+        ),
+        interaction_types=(
+            options.explicit_types
+            if options.include_types
+            else ()
+        ),
+        hotspots=(
+            options.explicit_hotspots
+            if options.include_hotspots
+            else ()
+        ),
+        source_mode=COVERAGE_UNIVERSE_EXPLICIT,
+        source_pose_ids=(),
+    )
+
+
+def build_coverage_universe(
+    profiles: Sequence[PoseCoverageProfile],
+    *,
+    options: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+) -> CoverageUniverse:
+    """
+    Build the configured coverage universe.
+    """
+
+    if (
+        options.universe_mode
+        == COVERAGE_UNIVERSE_OBSERVED
+    ):
+        return build_observed_coverage_universe(
+            profiles,
+            options=options,
+        )
+
+    if (
+        options.universe_mode
+        == COVERAGE_UNIVERSE_REFERENCE
+    ):
+        return build_reference_coverage_universe(
+            profiles,
+            reference_pose_id=options.reference_pose_id,
+            options=options,
+        )
+
+    if (
+        options.universe_mode
+        == COVERAGE_UNIVERSE_EXPLICIT
+    ):
+        return build_explicit_coverage_universe(
+            options=options
+        )
+
+    raise CoverageUniverseError(
+        f"Unsupported coverage universe mode: "
+        f"{options.universe_mode!r}."
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.43. Selected-profile resolution
+# -----------------------------------------------------------------------------
+
+def resolve_selected_coverage_profiles(
+    profiles: Sequence[PoseCoverageProfile],
+    selected_pose_ids: Optional[Iterable[str]],
+) -> Tuple[PoseCoverageProfile, ...]:
+    """
+    Resolve selected profiles while preserving requested order.
+    """
+
+    profile_by_pose_id = {
+        profile.pose_id: profile
+        for profile in profiles
+    }
+
+    if selected_pose_ids is None:
+        return tuple(profiles)
+
+    normalized_pose_ids = tuple(
+        _coerce_identifier(pose_id)
+        for pose_id in selected_pose_ids
+        if _coerce_identifier(pose_id)
+    )
+
+    missing_pose_ids = tuple(
+        pose_id
+        for pose_id in normalized_pose_ids
+        if pose_id not in profile_by_pose_id
+    )
+
+    if missing_pose_ids:
+        raise ComplementarityInputError(
+            "Unknown selected pose identifiers: "
+            + ", ".join(missing_pose_ids)
+        )
+
+    seen: Set[str] = set()
+    selected: List[PoseCoverageProfile] = []
+
+    for pose_id in normalized_pose_ids:
+        if pose_id in seen:
+            continue
+
+        seen.add(pose_id)
+        selected.append(
+            profile_by_pose_id[pose_id]
+        )
+
+    return tuple(selected)
+
+
+# -----------------------------------------------------------------------------
+# 18.44. Joint category coverage engine
+# -----------------------------------------------------------------------------
+
+def compute_category_coverage(
+    selected_profiles: Sequence[PoseCoverageProfile],
+    *,
+    universe_features: Sequence[str],
+    category: str,
+    category_weight: float,
+    aggregation_mode: str,
+    epsilon: float = DEFAULT_COMPLEMENTARITY_EPSILON,
+) -> CategoryCoverageResult:
+    """
+    Compute joint coverage for one feature category.
+    """
+
+    normalized_category = normalize_coverage_category(
+        category
+    )
+    normalized_universe = tuple(
+        sorted(set(universe_features))
+    )
+    universe_set = set(normalized_universe)
+
+    feature_values: Dict[str, float] = {}
+    feature_contributors: Dict[str, Set[str]] = {}
+
+    for feature in normalized_universe:
+        contributions: List[float] = []
+
+        for profile in selected_profiles:
+            value = profile.category_values(
+                normalized_category
+            ).get(feature)
+
+            if value is None:
+                continue
+
+            if abs(value) <= epsilon:
+                continue
+
+            contributions.append(float(value))
+            feature_contributors.setdefault(
+                feature,
+                set(),
+            ).add(profile.pose_id)
+
+        if contributions:
+            feature_values[feature] = (
+                aggregate_joint_coverage_values(
+                    contributions,
+                    aggregation_mode=aggregation_mode,
+                )
+            )
+
+    covered_features = tuple(
+        sorted(
+            feature
+            for feature, value
+            in feature_values.items()
+            if (
+                feature in universe_set
+                and abs(value) > epsilon
+            )
+        )
+    )
+    covered_set = set(covered_features)
+    uncovered_features = tuple(
+        sorted(universe_set - covered_set)
+    )
+
+    universe_count = len(normalized_universe)
+    covered_count = len(covered_features)
+    uncovered_count = len(uncovered_features)
+
+    coverage_fraction = (
+        covered_count / universe_count
+        if universe_count > 0
+        else 0.0
+    )
+    weighted_coverage = (
+        coverage_fraction * category_weight
+    )
+
+    contributing_pose_ids = tuple(
+        sorted(
+            {
+                pose_id
+                for pose_ids
+                in feature_contributors.values()
+                for pose_id in pose_ids
+            }
+        )
+    )
+
+    return CategoryCoverageResult(
+        category=normalized_category,
+        universe_features=normalized_universe,
+        covered_features=covered_features,
+        uncovered_features=uncovered_features,
+        feature_values=feature_values,
+        universe_count=universe_count,
+        covered_count=covered_count,
+        uncovered_count=uncovered_count,
+        coverage_fraction=coverage_fraction,
+        weighted_coverage=weighted_coverage,
+        category_weight=category_weight,
+        contributing_pose_ids=contributing_pose_ids,
+        feature_contributors={
+            feature: tuple(sorted(pose_ids))
+            for feature, pose_ids
+            in feature_contributors.items()
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.45. Joint coverage summary construction
+# -----------------------------------------------------------------------------
+
+def build_joint_coverage_summary(
+    *,
+    selected_profiles: Sequence[PoseCoverageProfile],
+    available_profiles: Sequence[PoseCoverageProfile],
+    coverage_by_category: Mapping[
+        str,
+        CategoryCoverageResult,
+    ],
+    options: CoverageOptions,
+) -> JointCoverageSummary:
+    """
+    Build a global joint coverage summary.
+    """
+
+    enabled_coverages = tuple(
+        coverage_by_category[category]
+        for category in options.enabled_categories
+    )
+
+    total_universe_features = sum(
+        coverage.universe_count
+        for coverage in enabled_coverages
+    )
+    total_covered_features = sum(
+        coverage.covered_count
+        for coverage in enabled_coverages
+    )
+    total_uncovered_features = (
+        total_universe_features
+        - total_covered_features
+    )
+
+    overall_coverage_fraction = (
+        total_covered_features
+        / total_universe_features
+        if total_universe_features > 0
+        else 0.0
+    )
+
+    total_category_weight = sum(
+        coverage.category_weight
+        for coverage in enabled_coverages
+        if coverage.universe_count > 0
+    )
+    weighted_coverage_total = sum(
+        coverage.weighted_coverage
+        for coverage in enabled_coverages
+        if coverage.universe_count > 0
+    )
+    weighted_coverage_fraction = (
+        weighted_coverage_total
+        / total_category_weight
+        if total_category_weight > 0.0
+        else 0.0
+    )
+
+    contributing_pose_ids: Set[str] = set()
+
+    for coverage in enabled_coverages:
+        contributing_pose_ids.update(
+            coverage.contributing_pose_ids
+        )
+
+    selected_pose_ids = {
+        profile.pose_id
+        for profile in selected_profiles
+    }
+    redundant_pose_count = len(
+        selected_pose_ids - contributing_pose_ids
+    )
+
+    def category_fraction(
+        category: str,
+    ) -> float:
+        coverage = coverage_by_category[
+            category
+        ]
+
+        if category not in options.enabled_categories:
+            return 0.0
+
+        return coverage.coverage_fraction
+
+    return JointCoverageSummary(
+        selected_pose_count=len(selected_profiles),
+        available_pose_count=len(available_profiles),
+        total_universe_features=(
+            total_universe_features
+        ),
+        total_covered_features=(
+            total_covered_features
+        ),
+        total_uncovered_features=(
+            total_uncovered_features
+        ),
+        overall_coverage_fraction=(
+            overall_coverage_fraction
+        ),
+        weighted_coverage_fraction=(
+            weighted_coverage_fraction
+        ),
+        residue_coverage_fraction=category_fraction(
+            COVERAGE_CATEGORY_RESIDUE
+        ),
+        family_coverage_fraction=category_fraction(
+            COVERAGE_CATEGORY_FAMILY
+        ),
+        type_coverage_fraction=category_fraction(
+            COVERAGE_CATEGORY_TYPE
+        ),
+        hotspot_coverage_fraction=category_fraction(
+            COVERAGE_CATEGORY_HOTSPOT
+        ),
+        total_category_weight=total_category_weight,
+        contributing_pose_count=len(
+            contributing_pose_ids
+        ),
+        redundant_pose_count=redundant_pose_count,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.46. Main complementarity coverage engine
+# -----------------------------------------------------------------------------
+
+def compute_pose_set_coverage(
+    profiles: Sequence[PoseCoverageProfile],
+    *,
+    selected_pose_ids: Optional[Iterable[str]] = None,
+    universe: Optional[CoverageUniverse] = None,
+    options: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+) -> PoseSetComplementarityResult:
+    """
+    Compute joint residue, family, type and hotspot coverage.
+
+    This function does not optimize pose selection. It evaluates the
+    selected subset supplied by the caller. Optimization and marginal
+    gain are implemented in Section 18 Part 3.
+    """
+
+    normalized_profiles = tuple(profiles)
+
+    if not normalized_profiles:
+        empty_universe = (
+            universe
+            if universe is not None
+            else CoverageUniverse()
+        )
+
+        empty_category_results = {
+            category: compute_category_coverage(
+                (),
+                universe_features=(
+                    empty_universe.by_category[
+                        category
+                    ]
+                ),
+                category=category,
+                category_weight=(
+                    options.category_weights[
+                        category
+                    ]
+                ),
+                aggregation_mode=(
+                    options.aggregation_mode
+                ),
+                epsilon=options.epsilon,
+            )
+            for category in COVERAGE_CATEGORIES
+        }
+
+        summary = build_joint_coverage_summary(
+            selected_profiles=(),
+            available_profiles=(),
+            coverage_by_category=(
+                empty_category_results
+            ),
+            options=options,
+        )
+
+        return PoseSetComplementarityResult(
+            status=COMPLEMENTARITY_STATUS_EMPTY,
+            selected_pose_ids=(),
+            available_pose_ids=(),
+            profiles=(),
+            selected_profiles=(),
+            universe=empty_universe,
+            residue_coverage=empty_category_results[
+                COVERAGE_CATEGORY_RESIDUE
+            ],
+            family_coverage=empty_category_results[
+                COVERAGE_CATEGORY_FAMILY
+            ],
+            type_coverage=empty_category_results[
+                COVERAGE_CATEGORY_TYPE
+            ],
+            hotspot_coverage=empty_category_results[
+                COVERAGE_CATEGORY_HOTSPOT
+            ],
+            summary=summary,
+            message="No pose coverage profiles were supplied.",
+        )
+
+    for profile in normalized_profiles:
+        if not isinstance(
+            profile,
+            PoseCoverageProfile,
+        ):
+            raise ComplementarityInputError(
+                "profiles must contain "
+                "PoseCoverageProfile objects."
+            )
+
+    available_pose_ids = tuple(
+        profile.pose_id
+        for profile in normalized_profiles
+    )
+
+    if len(set(available_pose_ids)) != len(
+        available_pose_ids
+    ):
+        raise ComplementarityInputError(
+            "Pose coverage profile identifiers must be unique."
+        )
+
+    selected_profiles = (
+        resolve_selected_coverage_profiles(
+            normalized_profiles,
+            selected_pose_ids,
+        )
+    )
+
+    resolved_universe = (
+        universe
+        if universe is not None
+        else build_coverage_universe(
+            normalized_profiles,
+            options=options,
+        )
+    )
+
+    category_results: Dict[
+        str,
+        CategoryCoverageResult,
+    ] = {}
+
+    for category in COVERAGE_CATEGORIES:
+        universe_features = (
+            resolved_universe.by_category[
+                category
+            ]
+        )
+
+        category_results[category] = (
+            compute_category_coverage(
+                selected_profiles,
+                universe_features=universe_features,
+                category=category,
+                category_weight=(
+                    options.category_weights[
+                        category
+                    ]
+                ),
+                aggregation_mode=(
+                    options.aggregation_mode
+                ),
+                epsilon=options.epsilon,
+            )
+        )
+
+    summary = build_joint_coverage_summary(
+        selected_profiles=selected_profiles,
+        available_profiles=normalized_profiles,
+        coverage_by_category=category_results,
+        options=options,
+    )
+
+    selected_pose_ids_tuple = tuple(
+        profile.pose_id
+        for profile in selected_profiles
+    )
+
+    if not selected_profiles:
+        status = COMPLEMENTARITY_STATUS_EMPTY
+        message = "No pose was selected for joint coverage."
+
+    elif resolved_universe.size == 0:
+        status = COMPLEMENTARITY_STATUS_DEGENERATE
+        message = (
+            "The configured coverage universe is empty."
+        )
+
+    elif summary.complete:
+        status = COMPLEMENTARITY_STATUS_COMPLETE
+        message = (
+            "The selected pose set covers the complete "
+            "configured feature universe."
+        )
+
+    elif summary.total_covered_features == 0:
+        status = COMPLEMENTARITY_STATUS_DEGENERATE
+        message = (
+            "The selected pose set does not cover any "
+            "configured universe feature."
+        )
+
+    else:
+        status = COMPLEMENTARITY_STATUS_PARTIAL
+        message = (
+            "The selected pose set covers part of the "
+            "configured feature universe."
+        )
+
+    result = PoseSetComplementarityResult(
+        status=status,
+        selected_pose_ids=selected_pose_ids_tuple,
+        available_pose_ids=available_pose_ids,
+        profiles=normalized_profiles,
+        selected_profiles=selected_profiles,
+        universe=resolved_universe,
+        residue_coverage=category_results[
+            COVERAGE_CATEGORY_RESIDUE
+        ],
+        family_coverage=category_results[
+            COVERAGE_CATEGORY_FAMILY
+        ],
+        type_coverage=category_results[
+            COVERAGE_CATEGORY_TYPE
+        ],
+        hotspot_coverage=category_results[
+            COVERAGE_CATEGORY_HOTSPOT
+        ],
+        summary=summary,
+        message=message,
+        metadata={
+            "coverage_value_mode": (
+                options.value_mode
+            ),
+            "coverage_universe_mode": (
+                options.universe_mode
+            ),
+            "coverage_aggregation_mode": (
+                options.aggregation_mode
+            ),
+            "coverage_source": options.source,
+            "enabled_categories": (
+                options.enabled_categories
+            ),
+        },
+    )
+
+    if options.validate_result:
+        validate_pose_set_complementarity_result(
+            result
+        )
+
+    return result
+
+
+def compute_pose_complementarity(
+    diversity_result: PoseDiversityResult,
+    *,
+    selected_pose_ids: Optional[Iterable[str]] = None,
+    universe: Optional[CoverageUniverse] = None,
+    options: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+) -> PoseSetComplementarityResult:
+    """
+    Compute complementarity from a pose-diversity result.
+    """
+
+    profiles = build_pose_coverage_profiles(
+        diversity_result,
+        options=options,
+    )
+
+    return compute_pose_set_coverage(
+        profiles,
+        selected_pose_ids=selected_pose_ids,
+        universe=universe,
+        options=options,
+    )
+
+
+def compute_pose_complementarity_from_results(
+    pose_results: Iterable[PoseScoringResult],
+    *,
+    selected_pose_ids: Optional[Iterable[str]] = None,
+    universe: Optional[CoverageUniverse] = None,
+    options: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+) -> PoseSetComplementarityResult:
+    """
+    Compute complementarity directly from scored poses.
+    """
+
+    profiles = (
+        build_pose_coverage_profiles_from_results(
+            pose_results,
+            options=options,
+        )
+    )
+
+    return compute_pose_set_coverage(
+        profiles,
+        selected_pose_ids=selected_pose_ids,
+        universe=universe,
+        options=options,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.47. Category-specific coverage APIs
+# -----------------------------------------------------------------------------
+
+def residue_coverage_fraction(
+    result: PoseSetComplementarityResult,
+) -> float:
+    """
+    Return joint residue coverage.
+    """
+
+    return result.residue_coverage.coverage_fraction
+
+
+def family_coverage_fraction(
+    result: PoseSetComplementarityResult,
+) -> float:
+    """
+    Return joint interaction-family coverage.
+    """
+
+    return result.family_coverage.coverage_fraction
+
+
+def type_coverage_fraction(
+    result: PoseSetComplementarityResult,
+) -> float:
+    """
+    Return joint interaction-type coverage.
+    """
+
+    return result.type_coverage.coverage_fraction
+
+
+def hotspot_coverage_fraction(
+    result: PoseSetComplementarityResult,
+) -> float:
+    """
+    Return joint hotspot coverage.
+    """
+
+    return result.hotspot_coverage.coverage_fraction
+
+
+def coverage_fraction_by_category(
+    result: PoseSetComplementarityResult,
+) -> Mapping[str, float]:
+    """
+    Return coverage fractions grouped by category.
+    """
+
+    return MappingProxyType(
+        {
+            category: coverage.coverage_fraction
+            for category, coverage
+            in result.coverage_by_category.items()
+        }
+    )
+
+
+def covered_features_by_category(
+    result: PoseSetComplementarityResult,
+) -> Mapping[str, Tuple[str, ...]]:
+    """
+    Return jointly covered features grouped by category.
+    """
+
+    return MappingProxyType(
+        {
+            category: coverage.covered_features
+            for category, coverage
+            in result.coverage_by_category.items()
+        }
+    )
+
+
+def uncovered_features_by_category(
+    result: PoseSetComplementarityResult,
+) -> Mapping[str, Tuple[str, ...]]:
+    """
+    Return uncovered universe features grouped by category.
+    """
+
+    return MappingProxyType(
+        {
+            category: coverage.uncovered_features
+            for category, coverage
+            in result.coverage_by_category.items()
+        }
+    )
+
+
+def feature_contributors(
+    result: PoseSetComplementarityResult,
+    feature: str,
+) -> Tuple[str, ...]:
+    """
+    Return pose identifiers contributing a specific feature.
+    """
+
+    normalized_feature = _coerce_identifier(feature)
+    category = coverage_feature_category(
+        normalized_feature
+    )
+
+    if category is None:
+        return ()
+
+    return result.coverage_by_category[
+        category
+    ].feature_contributors.get(
+        normalized_feature,
+        (),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.48. Basic Part 2 validation
+# -----------------------------------------------------------------------------
+
+def validate_coverage_options(
+    options: CoverageOptions,
+) -> CoverageOptions:
+    """
+    Validate coverage options.
+    """
+
+    if not isinstance(options, CoverageOptions):
+        raise ComplementarityValidationError(
+            "Expected CoverageOptions."
+        )
+
+    if not options.enabled_categories:
+        raise ComplementarityValidationError(
+            "At least one coverage category must be enabled."
+        )
+
+    if options.epsilon <= 0.0:
+        raise ComplementarityValidationError(
+            "Coverage epsilon must be positive."
+        )
+
+    return options
+
+
+def validate_coverage_universe(
+    universe: CoverageUniverse,
+) -> CoverageUniverse:
+    """
+    Validate a coverage universe.
+    """
+
+    if not isinstance(universe, CoverageUniverse):
+        raise ComplementarityValidationError(
+            "Expected CoverageUniverse."
+        )
+
+    for category, features in (
+        universe.by_category.items()
+    ):
+        expected_prefix = coverage_feature_prefix(
+            category
+        )
+
+        for feature in features:
+            if not feature.startswith(expected_prefix):
+                raise ComplementarityValidationError(
+                    f"Feature {feature!r} does not match "
+                    f"category {category!r}."
+                )
+
+    return universe
+
+
+def validate_pose_coverage_profile(
+    profile: PoseCoverageProfile,
+) -> PoseCoverageProfile:
+    """
+    Validate one pose coverage profile.
+    """
+
+    if not isinstance(
+        profile,
+        PoseCoverageProfile,
+    ):
+        raise ComplementarityValidationError(
+            "Expected PoseCoverageProfile."
+        )
+
+    for category, values in (
+        profile.values_by_category.items()
+    ):
+        expected_prefix = coverage_feature_prefix(
+            category
+        )
+
+        for feature in values:
+            if not feature.startswith(expected_prefix):
+                raise ComplementarityValidationError(
+                    f"Profile feature {feature!r} does not "
+                    f"match category {category!r}."
+                )
+
+    return profile
+
+
+def validate_category_coverage_result(
+    result: CategoryCoverageResult,
+) -> CategoryCoverageResult:
+    """
+    Validate one category coverage result.
+    """
+
+    if not isinstance(
+        result,
+        CategoryCoverageResult,
+    ):
+        raise ComplementarityValidationError(
+            "Expected CategoryCoverageResult."
+        )
+
+    if (
+        result.universe_count
+        != len(result.universe_features)
+    ):
+        raise ComplementarityValidationError(
+            "universe_count is inconsistent."
+        )
+
+    if (
+        result.covered_count
+        != len(result.covered_features)
+    ):
+        raise ComplementarityValidationError(
+            "covered_count is inconsistent."
+        )
+
+    if (
+        result.uncovered_count
+        != len(result.uncovered_features)
+    ):
+        raise ComplementarityValidationError(
+            "uncovered_count is inconsistent."
+        )
+
+    if (
+        result.covered_count
+        + result.uncovered_count
+        != result.universe_count
+    ):
+        raise ComplementarityValidationError(
+            "Coverage counts are inconsistent."
+        )
+
+    expected_fraction = (
+        result.covered_count
+        / result.universe_count
+        if result.universe_count > 0
+        else 0.0
+    )
+
+    if (
+        abs(
+            result.coverage_fraction
+            - expected_fraction
+        )
+        > SCORE_COMPARISON_TOLERANCE
+    ):
+        raise ComplementarityValidationError(
+            "coverage_fraction is inconsistent."
+        )
+
+    return result
+
+
+def validate_joint_coverage_summary(
+    summary: JointCoverageSummary,
+) -> JointCoverageSummary:
+    """
+    Validate a joint coverage summary.
+    """
+
+    if not isinstance(
+        summary,
+        JointCoverageSummary,
+    ):
+        raise ComplementarityValidationError(
+            "Expected JointCoverageSummary."
+        )
+
+    if (
+        summary.total_covered_features
+        + summary.total_uncovered_features
+        != summary.total_universe_features
+    ):
+        raise ComplementarityValidationError(
+            "Global coverage counts are inconsistent."
+        )
+
+    if (
+        summary.contributing_pose_count
+        > summary.selected_pose_count
+    ):
+        raise ComplementarityValidationError(
+            "contributing_pose_count cannot exceed "
+            "selected_pose_count."
+        )
+
+    return summary
+
+
+def validate_pose_set_complementarity_result(
+    result: PoseSetComplementarityResult,
+) -> PoseSetComplementarityResult:
+    """
+    Validate a complete pose-set complementarity result.
+    """
+
+    if not isinstance(
+        result,
+        PoseSetComplementarityResult,
+    ):
+        raise ComplementarityValidationError(
+            "Expected PoseSetComplementarityResult."
+        )
+
+    validate_coverage_universe(
+        result.universe
+    )
+
+    for profile in result.profiles:
+        validate_pose_coverage_profile(profile)
+
+    for profile in result.selected_profiles:
+        validate_pose_coverage_profile(profile)
+
+    for coverage in result.coverage_by_category.values():
+        validate_category_coverage_result(
+            coverage
+        )
+
+    validate_joint_coverage_summary(
+        result.summary
+    )
+
+    available_pose_ids = tuple(
+        profile.pose_id
+        for profile in result.profiles
+    )
+    selected_pose_ids = tuple(
+        profile.pose_id
+        for profile in result.selected_profiles
+    )
+
+    if result.available_pose_ids != available_pose_ids:
+        raise ComplementarityValidationError(
+            "available_pose_ids are inconsistent."
+        )
+
+    if result.selected_pose_ids != selected_pose_ids:
+        raise ComplementarityValidationError(
+            "selected_pose_ids are inconsistent."
+        )
+
+    if (
+        result.summary.available_pose_count
+        != len(result.profiles)
+    ):
+        raise ComplementarityValidationError(
+            "available_pose_count is inconsistent."
+        )
+
+    if (
+        result.summary.selected_pose_count
+        != len(result.selected_profiles)
+    ):
+        raise ComplementarityValidationError(
+            "selected_pose_count is inconsistent."
+        )
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 18.49. Part 2 import self-check
+# -----------------------------------------------------------------------------
+
+def _validate_section_18_complementarity_part_2() -> None:
+    """
+    Validate Section 18 Part 2 during module import.
+    """
+
+    profile_a = PoseCoverageProfile(
+        pose_id="pose_a",
+        model_id="model",
+        ligand_id="ligand",
+        residue_values={
+            "residue:A:10:LYS": 1.0,
+            "residue:A:20:VAL": 1.0,
+        },
+        family_values={
+            "family:hbond": 1.0,
+        },
+        type_values={
+            "type:hydrogen_bond": 1.0,
+        },
+        hotspot_values={
+            "hotspot:A:10:LYS": 1.0,
+        },
+        source=COVERAGE_SOURCE_FINGERPRINT,
+        pose_score=3.0,
+    )
+
+    profile_b = PoseCoverageProfile(
+        pose_id="pose_b",
+        model_id="model",
+        ligand_id="ligand",
+        residue_values={
+            "residue:A:20:VAL": 1.0,
+            "residue:A:30:PHE": 1.0,
+        },
+        family_values={
+            "family:pi": 1.0,
+        },
+        type_values={
+            "type:pi_stacking": 1.0,
+        },
+        hotspot_values={
+            "hotspot:A:30:PHE": 1.0,
+        },
+        source=COVERAGE_SOURCE_FINGERPRINT,
+        pose_score=2.0,
+    )
+
+    profile_c = PoseCoverageProfile(
+        pose_id="pose_c",
+        model_id="model",
+        ligand_id="ligand",
+        residue_values={
+            "residue:A:40:ASP": 1.0,
+        },
+        family_values={
+            "family:saltbridge": 1.0,
+        },
+        type_values={
+            "type:salt_bridge": 1.0,
+        },
+        hotspot_values={
+            "hotspot:A:40:ASP": 1.0,
+        },
+        source=COVERAGE_SOURCE_FINGERPRINT,
+        pose_score=1.0,
+    )
+
+    profiles = (
+        profile_a,
+        profile_b,
+        profile_c,
+    )
+
+    options = CoverageOptions(
+        value_mode=COVERAGE_VALUE_BINARY,
+        universe_mode=COVERAGE_UNIVERSE_OBSERVED,
+        aggregation_mode=COVERAGE_AGGREGATION_UNION,
+    )
+
+    universe = build_coverage_universe(
+        profiles,
+        options=options,
+    )
+
+    if universe.feature_count(
+        COVERAGE_CATEGORY_RESIDUE
+    ) != 4:
+        raise RuntimeError(
+            "Observed residue-universe validation failed."
+        )
+
+    result_ab = compute_pose_set_coverage(
+        profiles,
+        selected_pose_ids=(
+            "pose_a",
+            "pose_b",
+        ),
+        universe=universe,
+        options=options,
+    )
+
+    if (
+        result_ab.residue_coverage.covered_count
+        != 3
+    ):
+        raise RuntimeError(
+            "Joint residue coverage validation failed."
+        )
+
+    if (
+        abs(
+            result_ab.residue_coverage.coverage_fraction
+            - 0.75
+        )
+        > SCORE_COMPARISON_TOLERANCE
+    ):
+        raise RuntimeError(
+            "Residue coverage fraction validation failed."
+        )
+
+    if (
+        result_ab.family_coverage.covered_count
+        != 2
+    ):
+        raise RuntimeError(
+            "Joint family coverage validation failed."
+        )
+
+    if (
+        feature_contributors(
+            result_ab,
+            "residue:A:20:VAL",
+        )
+        != (
+            "pose_a",
+            "pose_b",
+        )
+    ):
+        raise RuntimeError(
+            "Coverage contributor validation failed."
+        )
+
+    result_all = compute_pose_set_coverage(
+        profiles,
+        selected_pose_ids=(
+            "pose_a",
+            "pose_b",
+            "pose_c",
+        ),
+        universe=universe,
+        options=options,
+    )
+
+    if not result_all.summary.complete:
+        raise RuntimeError(
+            "Complete joint coverage validation failed."
+        )
+
+    if (
+        result_all.summary.weighted_coverage_fraction
+        < 1.0 - SCORE_COMPARISON_TOLERANCE
+    ):
+        raise RuntimeError(
+            "Weighted coverage validation failed."
+        )
+
+    validate_coverage_options(options)
+    validate_coverage_universe(universe)
+
+    for profile in profiles:
+        validate_pose_coverage_profile(profile)
+
+    validate_pose_set_complementarity_result(
+        result_ab
+    )
+    validate_pose_set_complementarity_result(
+        result_all
+    )
+
+
+_validate_section_18_complementarity_part_2()
+
+
+# -----------------------------------------------------------------------------
+# 18.50. Section 18 Part 2 public interface
+# -----------------------------------------------------------------------------
+
+_SECTION_18_PART_2_PUBLIC_NAMES: Final[
+    Tuple[str, ...]
+] = (
+    # Statuses
+    "COMPLEMENTARITY_STATUS_COMPLETE",
+    "COMPLEMENTARITY_STATUS_PARTIAL",
+    "COMPLEMENTARITY_STATUS_EMPTY",
+    "COMPLEMENTARITY_STATUS_DEGENERATE",
+    "COMPLEMENTARITY_STATUS_FAILED",
+    "COMPLEMENTARITY_STATUSES",
+
+    # Coverage categories
+    "COVERAGE_CATEGORY_RESIDUE",
+    "COVERAGE_CATEGORY_FAMILY",
+    "COVERAGE_CATEGORY_TYPE",
+    "COVERAGE_CATEGORY_HOTSPOT",
+    "COVERAGE_CATEGORIES",
+
+    # Coverage value modes
+    "COVERAGE_VALUE_BINARY",
+    "COVERAGE_VALUE_COUNT",
+    "COVERAGE_VALUE_SCORE",
+    "COVERAGE_VALUE_ABSOLUTE_SCORE",
+    "COVERAGE_VALUE_MAXIMUM_SCORE",
+    "COVERAGE_VALUE_MODES",
+
+    # Universe modes
+    "COVERAGE_UNIVERSE_OBSERVED",
+    "COVERAGE_UNIVERSE_REFERENCE",
+    "COVERAGE_UNIVERSE_EXPLICIT",
+    "COVERAGE_UNIVERSE_MODES",
+
+    # Aggregation modes
+    "COVERAGE_AGGREGATION_UNION",
+    "COVERAGE_AGGREGATION_SUM",
+    "COVERAGE_AGGREGATION_MAXIMUM",
+    "COVERAGE_AGGREGATION_MEAN",
+    "COVERAGE_AGGREGATION_MODES",
+
+    # Sources
+    "COVERAGE_SOURCE_AUTO",
+    "COVERAGE_SOURCE_FINGERPRINT",
+    "COVERAGE_SOURCE_POSE_RESULT",
+    "COVERAGE_SOURCES",
+
+    # Defaults
+    "DEFAULT_COVERAGE_VALUE_MODE",
+    "DEFAULT_COVERAGE_UNIVERSE_MODE",
+    "DEFAULT_COVERAGE_AGGREGATION_MODE",
+    "DEFAULT_COVERAGE_SOURCE",
+    "DEFAULT_RESIDUE_COVERAGE_WEIGHT",
+    "DEFAULT_FAMILY_COVERAGE_WEIGHT",
+    "DEFAULT_TYPE_COVERAGE_WEIGHT",
+    "DEFAULT_HOTSPOT_COVERAGE_WEIGHT",
+    "DEFAULT_COMPLEMENTARITY_EPSILON",
+    "DEFAULT_INCLUDE_RESIDUE_COVERAGE",
+    "DEFAULT_INCLUDE_FAMILY_COVERAGE",
+    "DEFAULT_INCLUDE_TYPE_COVERAGE",
+    "DEFAULT_INCLUDE_HOTSPOT_COVERAGE",
+    "DEFAULT_INCLUDE_LIGAND_COVERAGE",
+    "DEFAULT_INCLUDE_UNKNOWN_COVERAGE",
+    "DEFAULT_COMPLEMENTARITY_VALIDATE_RESULT",
+    "DEFAULT_COVERAGE_OPTIONS",
+
+    # Exceptions
+    "ComplementarityError",
+    "ComplementarityInputError",
+    "CoverageExtractionError",
+    "CoverageUniverseError",
+    "ComplementarityValidationError",
+
+    # Dataclasses
+    "CoverageOptions",
+    "CoverageUniverse",
+    "PoseCoverageProfile",
+    "CategoryCoverageResult",
+    "JointCoverageSummary",
+    "PoseSetComplementarityResult",
+
+    # Normalization
+    "normalize_complementarity_status",
+    "normalize_coverage_category",
+    "normalize_coverage_value_mode",
+    "normalize_coverage_universe_mode",
+    "normalize_coverage_aggregation_mode",
+    "normalize_coverage_source",
+
+    # Feature utilities
+    "coverage_feature_prefix",
+    "make_coverage_feature",
+    "coverage_feature_category",
+    "coverage_feature_identifier",
+    "split_coverage_features",
+
+    # Coverage values
+    "resolve_coverage_value",
+    "aggregate_coverage_value",
+    "aggregate_joint_coverage_values",
+
+    # Fingerprint extraction
+    "extract_coverage_values_from_fingerprint",
+
+    # Pose-result extraction
+    "extract_residue_coverage_values",
+    "extract_family_coverage_values",
+    "extract_type_coverage_values",
+    "extract_hotspot_coverage_values",
+    "extract_coverage_values_from_pose_result",
+
+    # Profile construction
+    "resolve_profile_coverage_source",
+    "build_pose_coverage_profile",
+    "build_pose_coverage_profiles",
+    "build_pose_coverage_profiles_from_results",
+
+    # Universe construction
+    "build_observed_coverage_universe",
+    "build_reference_coverage_universe",
+    "build_explicit_coverage_universe",
+    "build_coverage_universe",
+
+    # Selection resolution
+    "resolve_selected_coverage_profiles",
+
+    # Coverage engine
+    "compute_category_coverage",
+    "build_joint_coverage_summary",
+    "compute_pose_set_coverage",
+    "compute_pose_complementarity",
+    "compute_pose_complementarity_from_results",
+
+    # Category APIs
+    "residue_coverage_fraction",
+    "family_coverage_fraction",
+    "type_coverage_fraction",
+    "hotspot_coverage_fraction",
+    "coverage_fraction_by_category",
+    "covered_features_by_category",
+    "uncovered_features_by_category",
+    "feature_contributors",
+
+    # Validation
+    "validate_coverage_options",
+    "validate_coverage_universe",
+    "validate_pose_coverage_profile",
+    "validate_category_coverage_result",
+    "validate_joint_coverage_summary",
+    "validate_pose_set_complementarity_result",
+)
+
+for public_name in _SECTION_18_PART_2_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+# =============================================================================
+# End of Section 18 — Part 2
+# =============================================================================
+
+# =============================================================================
+# Section 18 — Diversity and complementarity
+# Part 3 — Marginal gain, optimal pose-set selection and greedy optimization
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 18.51. Pose-set optimization constants
+# -----------------------------------------------------------------------------
+
+POSE_SELECTION_STATUS_COMPLETE: Final[str] = "complete"
+POSE_SELECTION_STATUS_PARTIAL: Final[str] = "partial"
+POSE_SELECTION_STATUS_EMPTY: Final[str] = "empty"
+POSE_SELECTION_STATUS_INFEASIBLE: Final[str] = "infeasible"
+POSE_SELECTION_STATUS_FAILED: Final[str] = "failed"
+
+POSE_SELECTION_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        POSE_SELECTION_STATUS_COMPLETE,
+        POSE_SELECTION_STATUS_PARTIAL,
+        POSE_SELECTION_STATUS_EMPTY,
+        POSE_SELECTION_STATUS_INFEASIBLE,
+        POSE_SELECTION_STATUS_FAILED,
+    }
+)
+
+
+POSE_SELECTION_METHOD_GREEDY: Final[str] = "greedy"
+POSE_SELECTION_METHOD_EXHAUSTIVE: Final[str] = "exhaustive"
+POSE_SELECTION_METHOD_AUTO: Final[str] = "auto"
+
+POSE_SELECTION_METHODS: Final[FrozenSet[str]] = frozenset(
+    {
+        POSE_SELECTION_METHOD_GREEDY,
+        POSE_SELECTION_METHOD_EXHAUSTIVE,
+        POSE_SELECTION_METHOD_AUTO,
+    }
+)
+
+
+POSE_SELECTION_TIE_BREAK_POSE_SCORE: Final[str] = "pose_score"
+POSE_SELECTION_TIE_BREAK_DIVERSITY: Final[str] = "diversity"
+POSE_SELECTION_TIE_BREAK_FEATURE_COUNT: Final[str] = "feature_count"
+POSE_SELECTION_TIE_BREAK_POSE_ID: Final[str] = "pose_id"
+
+POSE_SELECTION_TIE_BREAK_MODES: Final[FrozenSet[str]] = frozenset(
+    {
+        POSE_SELECTION_TIE_BREAK_POSE_SCORE,
+        POSE_SELECTION_TIE_BREAK_DIVERSITY,
+        POSE_SELECTION_TIE_BREAK_FEATURE_COUNT,
+        POSE_SELECTION_TIE_BREAK_POSE_ID,
+    }
+)
+
+
+POSE_SELECTION_OBJECTIVE_WEIGHTED_COVERAGE: Final[str] = (
+    "weighted_coverage"
+)
+POSE_SELECTION_OBJECTIVE_RAW_COVERAGE: Final[str] = "raw_coverage"
+POSE_SELECTION_OBJECTIVE_HYBRID: Final[str] = "hybrid"
+
+POSE_SELECTION_OBJECTIVES: Final[FrozenSet[str]] = frozenset(
+    {
+        POSE_SELECTION_OBJECTIVE_WEIGHTED_COVERAGE,
+        POSE_SELECTION_OBJECTIVE_RAW_COVERAGE,
+        POSE_SELECTION_OBJECTIVE_HYBRID,
+    }
+)
+
+
+DEFAULT_POSE_SELECTION_METHOD: Final[str] = POSE_SELECTION_METHOD_AUTO
+DEFAULT_POSE_SELECTION_OBJECTIVE: Final[str] = (
+    POSE_SELECTION_OBJECTIVE_WEIGHTED_COVERAGE
+)
+DEFAULT_POSE_SELECTION_TIE_BREAK: Final[str] = (
+    POSE_SELECTION_TIE_BREAK_POSE_SCORE
+)
+
+DEFAULT_MINIMUM_POSE_SET_SIZE: Final[int] = 1
+DEFAULT_MAXIMUM_POSE_SET_SIZE: Final[Optional[int]] = None
+DEFAULT_TARGET_COVERAGE_FRACTION: Final[float] = 1.0
+DEFAULT_MINIMUM_MARGINAL_GAIN: Final[float] = 0.0
+DEFAULT_EXHAUSTIVE_SEARCH_LIMIT: Final[int] = 18
+DEFAULT_MAXIMUM_EXHAUSTIVE_COMBINATIONS: Final[int] = 250_000
+DEFAULT_STOP_WHEN_TARGET_REACHED: Final[bool] = True
+DEFAULT_REQUIRE_TARGET_COVERAGE: Final[bool] = False
+DEFAULT_PREFER_SMALLER_SETS: Final[bool] = True
+DEFAULT_USE_DIVERSITY_TIE_BREAK: Final[bool] = True
+DEFAULT_POSE_SCORE_WEIGHT: Final[float] = 0.0
+DEFAULT_DIVERSITY_WEIGHT: Final[float] = 0.0
+DEFAULT_SET_SIZE_PENALTY: Final[float] = 0.0
+DEFAULT_OPTIMIZATION_EPSILON: Final[float] = 1.0e-12
+DEFAULT_OPTIMIZATION_VALIDATE_RESULT: Final[bool] = True
+
+
+# -----------------------------------------------------------------------------
+# 18.52. Optimization aliases and normalization
+# -----------------------------------------------------------------------------
+
+_POSE_SELECTION_STATUS_ALIASES: Final[
+    Mapping[str, str]
+] = MappingProxyType(
+    {
+        "complete": POSE_SELECTION_STATUS_COMPLETE,
+        "completed": POSE_SELECTION_STATUS_COMPLETE,
+        "success": POSE_SELECTION_STATUS_COMPLETE,
+
+        "partial": POSE_SELECTION_STATUS_PARTIAL,
+        "incomplete": POSE_SELECTION_STATUS_PARTIAL,
+
+        "empty": POSE_SELECTION_STATUS_EMPTY,
+        "no_poses": POSE_SELECTION_STATUS_EMPTY,
+
+        "infeasible": POSE_SELECTION_STATUS_INFEASIBLE,
+        "unreachable": POSE_SELECTION_STATUS_INFEASIBLE,
+
+        "failed": POSE_SELECTION_STATUS_FAILED,
+        "error": POSE_SELECTION_STATUS_FAILED,
+    }
+)
+
+
+_POSE_SELECTION_METHOD_ALIASES: Final[
+    Mapping[str, str]
+] = MappingProxyType(
+    {
+        "greedy": POSE_SELECTION_METHOD_GREEDY,
+        "forward": POSE_SELECTION_METHOD_GREEDY,
+        "forward_greedy": POSE_SELECTION_METHOD_GREEDY,
+
+        "exhaustive": POSE_SELECTION_METHOD_EXHAUSTIVE,
+        "exact": POSE_SELECTION_METHOD_EXHAUSTIVE,
+        "optimal": POSE_SELECTION_METHOD_EXHAUSTIVE,
+        "brute_force": POSE_SELECTION_METHOD_EXHAUSTIVE,
+
+        "auto": POSE_SELECTION_METHOD_AUTO,
+        "automatic": POSE_SELECTION_METHOD_AUTO,
+    }
+)
+
+
+_POSE_SELECTION_TIE_BREAK_ALIASES: Final[
+    Mapping[str, str]
+] = MappingProxyType(
+    {
+        "pose_score": POSE_SELECTION_TIE_BREAK_POSE_SCORE,
+        "score": POSE_SELECTION_TIE_BREAK_POSE_SCORE,
+
+        "diversity": POSE_SELECTION_TIE_BREAK_DIVERSITY,
+        "distance": POSE_SELECTION_TIE_BREAK_DIVERSITY,
+
+        "feature_count": POSE_SELECTION_TIE_BREAK_FEATURE_COUNT,
+        "features": POSE_SELECTION_TIE_BREAK_FEATURE_COUNT,
+
+        "pose_id": POSE_SELECTION_TIE_BREAK_POSE_ID,
+        "identifier": POSE_SELECTION_TIE_BREAK_POSE_ID,
+    }
+)
+
+
+_POSE_SELECTION_OBJECTIVE_ALIASES: Final[
+    Mapping[str, str]
+] = MappingProxyType(
+    {
+        "weighted_coverage": (
+            POSE_SELECTION_OBJECTIVE_WEIGHTED_COVERAGE
+        ),
+        "weighted": POSE_SELECTION_OBJECTIVE_WEIGHTED_COVERAGE,
+
+        "raw_coverage": POSE_SELECTION_OBJECTIVE_RAW_COVERAGE,
+        "coverage": POSE_SELECTION_OBJECTIVE_RAW_COVERAGE,
+        "raw": POSE_SELECTION_OBJECTIVE_RAW_COVERAGE,
+
+        "hybrid": POSE_SELECTION_OBJECTIVE_HYBRID,
+        "combined": POSE_SELECTION_OBJECTIVE_HYBRID,
+    }
+)
+
+
+def normalize_pose_selection_status(
+    value: Any,
+    *,
+    default: str = POSE_SELECTION_STATUS_FAILED,
+) -> str:
+    """
+    Normalize a pose-selection status.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if normalized in POSE_SELECTION_STATUSES:
+        return normalized
+
+    return _POSE_SELECTION_STATUS_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def normalize_pose_selection_method(
+    value: Any,
+    *,
+    default: str = DEFAULT_POSE_SELECTION_METHOD,
+) -> str:
+    """
+    Normalize a pose-selection method.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if normalized in POSE_SELECTION_METHODS:
+        return normalized
+
+    return _POSE_SELECTION_METHOD_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def normalize_pose_selection_tie_break(
+    value: Any,
+    *,
+    default: str = DEFAULT_POSE_SELECTION_TIE_BREAK,
+) -> str:
+    """
+    Normalize a pose-selection tie-break mode.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if normalized in POSE_SELECTION_TIE_BREAK_MODES:
+        return normalized
+
+    return _POSE_SELECTION_TIE_BREAK_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+def normalize_pose_selection_objective(
+    value: Any,
+    *,
+    default: str = DEFAULT_POSE_SELECTION_OBJECTIVE,
+) -> str:
+    """
+    Normalize a pose-selection objective.
+    """
+
+    normalized = _normalize_scoring_name(value)
+
+    if normalized in POSE_SELECTION_OBJECTIVES:
+        return normalized
+
+    return _POSE_SELECTION_OBJECTIVE_ALIASES.get(
+        normalized,
+        default,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.53. Optimization exceptions
+# -----------------------------------------------------------------------------
+
+class PoseSelectionError(ComplementarityError):
+    """
+    Base exception for pose-set optimization.
+    """
+
+
+class MarginalGainError(PoseSelectionError):
+    """
+    Raised when marginal gain cannot be calculated.
+    """
+
+
+class PoseSelectionInputError(PoseSelectionError):
+    """
+    Raised when pose-selection input is invalid.
+    """
+
+
+class ExhaustiveSearchLimitError(PoseSelectionError):
+    """
+    Raised when an exhaustive search exceeds configured limits.
+    """
+
+
+class PoseSelectionValidationError(PoseSelectionError):
+    """
+    Raised when an optimization result is inconsistent.
+    """
+
+
+# -----------------------------------------------------------------------------
+# 18.54. PoseSelectionOptions
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PoseSelectionOptions:
+    """
+    Immutable configuration for pose-set optimization.
+    """
+
+    method: str = DEFAULT_POSE_SELECTION_METHOD
+    objective: str = DEFAULT_POSE_SELECTION_OBJECTIVE
+    tie_break: str = DEFAULT_POSE_SELECTION_TIE_BREAK
+
+    minimum_set_size: int = DEFAULT_MINIMUM_POSE_SET_SIZE
+    maximum_set_size: Optional[int] = DEFAULT_MAXIMUM_POSE_SET_SIZE
+
+    target_coverage_fraction: float = (
+        DEFAULT_TARGET_COVERAGE_FRACTION
+    )
+    minimum_marginal_gain: float = (
+        DEFAULT_MINIMUM_MARGINAL_GAIN
+    )
+
+    exhaustive_search_limit: int = (
+        DEFAULT_EXHAUSTIVE_SEARCH_LIMIT
+    )
+    maximum_exhaustive_combinations: int = (
+        DEFAULT_MAXIMUM_EXHAUSTIVE_COMBINATIONS
+    )
+
+    stop_when_target_reached: bool = (
+        DEFAULT_STOP_WHEN_TARGET_REACHED
+    )
+    require_target_coverage: bool = (
+        DEFAULT_REQUIRE_TARGET_COVERAGE
+    )
+    prefer_smaller_sets: bool = (
+        DEFAULT_PREFER_SMALLER_SETS
+    )
+    use_diversity_tie_break: bool = (
+        DEFAULT_USE_DIVERSITY_TIE_BREAK
+    )
+
+    pose_score_weight: float = DEFAULT_POSE_SCORE_WEIGHT
+    diversity_weight: float = DEFAULT_DIVERSITY_WEIGHT
+    set_size_penalty: float = DEFAULT_SET_SIZE_PENALTY
+
+    required_pose_ids: Tuple[str, ...] = field(
+        default_factory=tuple
+    )
+    excluded_pose_ids: Tuple[str, ...] = field(
+        default_factory=tuple
+    )
+
+    epsilon: float = DEFAULT_OPTIMIZATION_EPSILON
+    validate_result: bool = (
+        DEFAULT_OPTIMIZATION_VALIDATE_RESULT
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize optimization configuration.
+        """
+
+        object.__setattr__(
+            self,
+            "method",
+            normalize_pose_selection_method(
+                self.method
+            ),
+        )
+        object.__setattr__(
+            self,
+            "objective",
+            normalize_pose_selection_objective(
+                self.objective
+            ),
+        )
+        object.__setattr__(
+            self,
+            "tie_break",
+            normalize_pose_selection_tie_break(
+                self.tie_break
+            ),
+        )
+
+        minimum_set_size = int(self.minimum_set_size)
+
+        if minimum_set_size < 0:
+            raise PoseSelectionInputError(
+                "minimum_set_size cannot be negative."
+            )
+
+        object.__setattr__(
+            self,
+            "minimum_set_size",
+            minimum_set_size,
+        )
+
+        maximum_set_size = (
+            None
+            if self.maximum_set_size is None
+            else int(self.maximum_set_size)
+        )
+
+        if maximum_set_size is not None:
+            if maximum_set_size < 0:
+                raise PoseSelectionInputError(
+                    "maximum_set_size cannot be negative."
+                )
+
+            if maximum_set_size < minimum_set_size:
+                raise PoseSelectionInputError(
+                    "maximum_set_size cannot be smaller than "
+                    "minimum_set_size."
+                )
+
+        object.__setattr__(
+            self,
+            "maximum_set_size",
+            maximum_set_size,
+        )
+
+        target = float(
+            _coerce_finite_score_value(
+                self.target_coverage_fraction,
+                name=(
+                    "PoseSelectionOptions."
+                    "target_coverage_fraction"
+                ),
+            )
+        )
+
+        if target < 0.0 or target > 1.0:
+            raise PoseSelectionInputError(
+                "target_coverage_fraction must be between "
+                "zero and one."
+            )
+
+        object.__setattr__(
+            self,
+            "target_coverage_fraction",
+            target,
+        )
+
+        minimum_gain = float(
+            _coerce_finite_score_value(
+                self.minimum_marginal_gain,
+                name=(
+                    "PoseSelectionOptions."
+                    "minimum_marginal_gain"
+                ),
+            )
+        )
+
+        if minimum_gain < 0.0:
+            raise PoseSelectionInputError(
+                "minimum_marginal_gain cannot be negative."
+            )
+
+        object.__setattr__(
+            self,
+            "minimum_marginal_gain",
+            minimum_gain,
+        )
+
+        exhaustive_limit = int(
+            self.exhaustive_search_limit
+        )
+        maximum_combinations = int(
+            self.maximum_exhaustive_combinations
+        )
+
+        if exhaustive_limit < 1:
+            raise PoseSelectionInputError(
+                "exhaustive_search_limit must be positive."
+            )
+
+        if maximum_combinations < 1:
+            raise PoseSelectionInputError(
+                "maximum_exhaustive_combinations must be positive."
+            )
+
+        object.__setattr__(
+            self,
+            "exhaustive_search_limit",
+            exhaustive_limit,
+        )
+        object.__setattr__(
+            self,
+            "maximum_exhaustive_combinations",
+            maximum_combinations,
+        )
+
+        for field_name in (
+            "stop_when_target_reached",
+            "require_target_coverage",
+            "prefer_smaller_sets",
+            "use_diversity_tie_break",
+            "validate_result",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                bool(getattr(self, field_name)),
+            )
+
+        for field_name in (
+            "pose_score_weight",
+            "diversity_weight",
+            "set_size_penalty",
+            "epsilon",
+        ):
+            value = float(
+                _coerce_finite_score_value(
+                    getattr(self, field_name),
+                    name=(
+                        f"PoseSelectionOptions.{field_name}"
+                    ),
+                )
+            )
+
+            if field_name == "epsilon":
+                if value <= 0.0:
+                    raise PoseSelectionInputError(
+                        "epsilon must be greater than zero."
+                    )
+            elif value < 0.0:
+                raise PoseSelectionInputError(
+                    f"{field_name} cannot be negative."
+                )
+
+            object.__setattr__(
+                self,
+                field_name,
+                value,
+            )
+
+        required_pose_ids = tuple(
+            sorted(
+                {
+                    _coerce_identifier(pose_id)
+                    for pose_id in self.required_pose_ids
+                    if _coerce_identifier(pose_id)
+                }
+            )
+        )
+        excluded_pose_ids = tuple(
+            sorted(
+                {
+                    _coerce_identifier(pose_id)
+                    for pose_id in self.excluded_pose_ids
+                    if _coerce_identifier(pose_id)
+                }
+            )
+        )
+
+        overlap = set(required_pose_ids) & set(
+            excluded_pose_ids
+        )
+
+        if overlap:
+            raise PoseSelectionInputError(
+                "The same pose cannot be both required and "
+                "excluded: "
+                + ", ".join(sorted(overlap))
+            )
+
+        object.__setattr__(
+            self,
+            "required_pose_ids",
+            required_pose_ids,
+        )
+        object.__setattr__(
+            self,
+            "excluded_pose_ids",
+            excluded_pose_ids,
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    def with_updates(
+        self,
+        **changes: Any,
+    ) -> "PoseSelectionOptions":
+        """
+        Return a validated configuration copy.
+        """
+
+        return replace(self, **changes)
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a serializable optimization configuration.
+        """
+
+        result: Dict[str, Any] = {
+            "method": self.method,
+            "objective": self.objective,
+            "tie_break": self.tie_break,
+            "minimum_set_size": self.minimum_set_size,
+            "maximum_set_size": self.maximum_set_size,
+            "target_coverage_fraction": (
+                self.target_coverage_fraction
+            ),
+            "minimum_marginal_gain": (
+                self.minimum_marginal_gain
+            ),
+            "exhaustive_search_limit": (
+                self.exhaustive_search_limit
+            ),
+            "maximum_exhaustive_combinations": (
+                self.maximum_exhaustive_combinations
+            ),
+            "stop_when_target_reached": (
+                self.stop_when_target_reached
+            ),
+            "require_target_coverage": (
+                self.require_target_coverage
+            ),
+            "prefer_smaller_sets": (
+                self.prefer_smaller_sets
+            ),
+            "use_diversity_tie_break": (
+                self.use_diversity_tie_break
+            ),
+            "pose_score_weight": self.pose_score_weight,
+            "diversity_weight": self.diversity_weight,
+            "set_size_penalty": self.set_size_penalty,
+            "required_pose_ids": list(
+                self.required_pose_ids
+            ),
+            "excluded_pose_ids": list(
+                self.excluded_pose_ids
+            ),
+            "epsilon": self.epsilon,
+            "validate_result": self.validate_result,
+        }
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+DEFAULT_POSE_SELECTION_OPTIONS: Final[
+    PoseSelectionOptions
+] = PoseSelectionOptions()
+
+
+# -----------------------------------------------------------------------------
+# 18.55. MarginalGainResult
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class MarginalGainResult:
+    """
+    Coverage gain produced by adding one candidate pose.
+    """
+
+    candidate_pose_id: str
+    baseline_pose_ids: Tuple[str, ...]
+    resulting_pose_ids: Tuple[str, ...]
+
+    baseline_weighted_coverage: float
+    resulting_weighted_coverage: float
+    weighted_coverage_gain: float
+
+    baseline_raw_coverage: float
+    resulting_raw_coverage: float
+    raw_coverage_gain: float
+
+    residue_gain: float
+    family_gain: float
+    type_gain: float
+    hotspot_gain: float
+
+    newly_covered_residues: Tuple[str, ...]
+    newly_covered_families: Tuple[str, ...]
+    newly_covered_types: Tuple[str, ...]
+    newly_covered_hotspots: Tuple[str, ...]
+
+    newly_covered_feature_count: int
+    candidate_pose_score: Optional[float]
+    diversity_tie_break_value: float
+
+    objective_gain: float
+    rank: int = 0
+
+    baseline_result: Optional[
+        PoseSetComplementarityResult
+    ] = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+    resulting_result: Optional[
+        PoseSetComplementarityResult
+    ] = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize a marginal-gain result.
+        """
+
+        object.__setattr__(
+            self,
+            "candidate_pose_id",
+            _coerce_identifier(
+                self.candidate_pose_id
+            ),
+        )
+        object.__setattr__(
+            self,
+            "baseline_pose_ids",
+            tuple(
+                _coerce_identifier(pose_id)
+                for pose_id in self.baseline_pose_ids
+                if _coerce_identifier(pose_id)
+            ),
+        )
+        object.__setattr__(
+            self,
+            "resulting_pose_ids",
+            tuple(
+                _coerce_identifier(pose_id)
+                for pose_id in self.resulting_pose_ids
+                if _coerce_identifier(pose_id)
+            ),
+        )
+
+        for field_name in (
+            "baseline_weighted_coverage",
+            "resulting_weighted_coverage",
+            "weighted_coverage_gain",
+            "baseline_raw_coverage",
+            "resulting_raw_coverage",
+            "raw_coverage_gain",
+            "residue_gain",
+            "family_gain",
+            "type_gain",
+            "hotspot_gain",
+            "diversity_tie_break_value",
+            "objective_gain",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                float(
+                    _coerce_finite_score_value(
+                        getattr(self, field_name),
+                        name=(
+                            f"MarginalGainResult."
+                            f"{field_name}"
+                        ),
+                    )
+                ),
+            )
+
+        for field_name in (
+            "newly_covered_residues",
+            "newly_covered_families",
+            "newly_covered_types",
+            "newly_covered_hotspots",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                tuple(
+                    sorted(
+                        set(
+                            getattr(
+                                self,
+                                field_name,
+                            )
+                        )
+                    )
+                ),
+            )
+
+        newly_covered_feature_count = int(
+            self.newly_covered_feature_count
+        )
+
+        if newly_covered_feature_count < 0:
+            raise PoseSelectionValidationError(
+                "newly_covered_feature_count cannot "
+                "be negative."
+            )
+
+        object.__setattr__(
+            self,
+            "newly_covered_feature_count",
+            newly_covered_feature_count,
+        )
+
+        candidate_pose_score = (
+            None
+            if self.candidate_pose_score is None
+            else float(
+                _coerce_finite_score_value(
+                    self.candidate_pose_score,
+                    name=(
+                        "MarginalGainResult."
+                        "candidate_pose_score"
+                    ),
+                )
+            )
+        )
+
+        object.__setattr__(
+            self,
+            "candidate_pose_score",
+            candidate_pose_score,
+        )
+
+        rank = int(self.rank)
+
+        if rank < 0:
+            raise PoseSelectionValidationError(
+                "Marginal-gain rank cannot be negative."
+            )
+
+        object.__setattr__(
+            self,
+            "rank",
+            rank,
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def improves_coverage(self) -> bool:
+        """
+        Return whether the candidate adds any new feature.
+        """
+
+        return self.newly_covered_feature_count > 0
+
+    @property
+    def newly_covered_features(self) -> Tuple[str, ...]:
+        """
+        Return every newly covered feature.
+        """
+
+        return tuple(
+            sorted(
+                {
+                    *self.newly_covered_residues,
+                    *self.newly_covered_families,
+                    *self.newly_covered_types,
+                    *self.newly_covered_hotspots,
+                }
+            )
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+        include_coverage_results: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Return a serializable marginal-gain result.
+        """
+
+        result: Dict[str, Any] = {
+            "candidate_pose_id": self.candidate_pose_id,
+            "baseline_pose_ids": list(
+                self.baseline_pose_ids
+            ),
+            "resulting_pose_ids": list(
+                self.resulting_pose_ids
+            ),
+            "baseline_weighted_coverage": (
+                self.baseline_weighted_coverage
+            ),
+            "resulting_weighted_coverage": (
+                self.resulting_weighted_coverage
+            ),
+            "weighted_coverage_gain": (
+                self.weighted_coverage_gain
+            ),
+            "baseline_raw_coverage": (
+                self.baseline_raw_coverage
+            ),
+            "resulting_raw_coverage": (
+                self.resulting_raw_coverage
+            ),
+            "raw_coverage_gain": self.raw_coverage_gain,
+            "residue_gain": self.residue_gain,
+            "family_gain": self.family_gain,
+            "type_gain": self.type_gain,
+            "hotspot_gain": self.hotspot_gain,
+            "newly_covered_residues": list(
+                self.newly_covered_residues
+            ),
+            "newly_covered_families": list(
+                self.newly_covered_families
+            ),
+            "newly_covered_types": list(
+                self.newly_covered_types
+            ),
+            "newly_covered_hotspots": list(
+                self.newly_covered_hotspots
+            ),
+            "newly_covered_features": list(
+                self.newly_covered_features
+            ),
+            "newly_covered_feature_count": (
+                self.newly_covered_feature_count
+            ),
+            "candidate_pose_score": (
+                self.candidate_pose_score
+            ),
+            "diversity_tie_break_value": (
+                self.diversity_tie_break_value
+            ),
+            "objective_gain": self.objective_gain,
+            "rank": self.rank,
+            "improves_coverage": (
+                self.improves_coverage
+            ),
+        }
+
+        if include_coverage_results:
+            result["baseline_result"] = (
+                None
+                if self.baseline_result is None
+                else self.baseline_result.to_dict(
+                    include_metadata=include_metadata,
+                    include_profiles=False,
+                )
+            )
+            result["resulting_result"] = (
+                None
+                if self.resulting_result is None
+                else self.resulting_result.to_dict(
+                    include_metadata=include_metadata,
+                    include_profiles=False,
+                )
+            )
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+# -----------------------------------------------------------------------------
+# 18.56. GreedySelectionStep
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class GreedySelectionStep:
+    """
+    One deterministic forward-selection step.
+    """
+
+    step_index: int
+    selected_pose_id: str
+    selected_pose_ids: Tuple[str, ...]
+
+    marginal_gain: MarginalGainResult
+
+    weighted_coverage_fraction: float
+    raw_coverage_fraction: float
+    target_reached: bool
+
+    candidate_count: int
+    rejected_candidate_ids: Tuple[str, ...]
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize one greedy-selection step.
+        """
+
+        step_index = int(self.step_index)
+
+        if step_index < 1:
+            raise PoseSelectionValidationError(
+                "step_index must be positive."
+            )
+
+        object.__setattr__(
+            self,
+            "step_index",
+            step_index,
+        )
+        object.__setattr__(
+            self,
+            "selected_pose_id",
+            _coerce_identifier(
+                self.selected_pose_id
+            ),
+        )
+        object.__setattr__(
+            self,
+            "selected_pose_ids",
+            tuple(
+                _coerce_identifier(pose_id)
+                for pose_id in self.selected_pose_ids
+                if _coerce_identifier(pose_id)
+            ),
+        )
+
+        if not isinstance(
+            self.marginal_gain,
+            MarginalGainResult,
+        ):
+            raise PoseSelectionValidationError(
+                "marginal_gain must be a "
+                "MarginalGainResult."
+            )
+
+        object.__setattr__(
+            self,
+            "weighted_coverage_fraction",
+            float(
+                _coerce_finite_score_value(
+                    self.weighted_coverage_fraction,
+                    name=(
+                        "GreedySelectionStep."
+                        "weighted_coverage_fraction"
+                    ),
+                )
+            ),
+        )
+        object.__setattr__(
+            self,
+            "raw_coverage_fraction",
+            float(
+                _coerce_finite_score_value(
+                    self.raw_coverage_fraction,
+                    name=(
+                        "GreedySelectionStep."
+                        "raw_coverage_fraction"
+                    ),
+                )
+            ),
+        )
+        object.__setattr__(
+            self,
+            "target_reached",
+            bool(self.target_reached),
+        )
+
+        candidate_count = int(self.candidate_count)
+
+        if candidate_count < 0:
+            raise PoseSelectionValidationError(
+                "candidate_count cannot be negative."
+            )
+
+        object.__setattr__(
+            self,
+            "candidate_count",
+            candidate_count,
+        )
+        object.__setattr__(
+            self,
+            "rejected_candidate_ids",
+            tuple(
+                sorted(
+                    {
+                        _coerce_identifier(pose_id)
+                        for pose_id
+                        in self.rejected_candidate_ids
+                        if _coerce_identifier(pose_id)
+                    }
+                )
+            ),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a serializable greedy step.
+        """
+
+        result: Dict[str, Any] = {
+            "step_index": self.step_index,
+            "selected_pose_id": self.selected_pose_id,
+            "selected_pose_ids": list(
+                self.selected_pose_ids
+            ),
+            "marginal_gain": self.marginal_gain.to_dict(
+                include_metadata=include_metadata,
+                include_coverage_results=False,
+            ),
+            "weighted_coverage_fraction": (
+                self.weighted_coverage_fraction
+            ),
+            "raw_coverage_fraction": (
+                self.raw_coverage_fraction
+            ),
+            "target_reached": self.target_reached,
+            "candidate_count": self.candidate_count,
+            "rejected_candidate_ids": list(
+                self.rejected_candidate_ids
+            ),
+        }
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+# -----------------------------------------------------------------------------
+# 18.57. PoseSetCandidate
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PoseSetCandidate:
+    """
+    Evaluated pose-set candidate.
+    """
+
+    pose_ids: Tuple[str, ...]
+    set_size: int
+
+    weighted_coverage_fraction: float
+    raw_coverage_fraction: float
+    objective_value: float
+
+    mean_pose_score: float
+    total_pose_score: float
+    mean_pairwise_diversity: float
+
+    target_reached: bool
+    coverage_result: PoseSetComplementarityResult = field(
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize a pose-set candidate.
+        """
+
+        object.__setattr__(
+            self,
+            "pose_ids",
+            tuple(
+                _coerce_identifier(pose_id)
+                for pose_id in self.pose_ids
+                if _coerce_identifier(pose_id)
+            ),
+        )
+
+        set_size = int(self.set_size)
+
+        if set_size < 0:
+            raise PoseSelectionValidationError(
+                "set_size cannot be negative."
+            )
+
+        if set_size != len(self.pose_ids):
+            raise PoseSelectionValidationError(
+                "set_size does not match pose_ids."
+            )
+
+        object.__setattr__(
+            self,
+            "set_size",
+            set_size,
+        )
+
+        for field_name in (
+            "weighted_coverage_fraction",
+            "raw_coverage_fraction",
+            "objective_value",
+            "mean_pose_score",
+            "total_pose_score",
+            "mean_pairwise_diversity",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                float(
+                    _coerce_finite_score_value(
+                        getattr(self, field_name),
+                        name=(
+                            f"PoseSetCandidate.{field_name}"
+                        ),
+                    )
+                ),
+            )
+
+        object.__setattr__(
+            self,
+            "target_reached",
+            bool(self.target_reached),
+        )
+
+        if not isinstance(
+            self.coverage_result,
+            PoseSetComplementarityResult,
+        ):
+            raise PoseSelectionValidationError(
+                "coverage_result must be a "
+                "PoseSetComplementarityResult."
+            )
+
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+        include_coverage_result: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Return a serializable candidate.
+        """
+
+        result: Dict[str, Any] = {
+            "pose_ids": list(self.pose_ids),
+            "set_size": self.set_size,
+            "weighted_coverage_fraction": (
+                self.weighted_coverage_fraction
+            ),
+            "raw_coverage_fraction": (
+                self.raw_coverage_fraction
+            ),
+            "objective_value": self.objective_value,
+            "mean_pose_score": self.mean_pose_score,
+            "total_pose_score": self.total_pose_score,
+            "mean_pairwise_diversity": (
+                self.mean_pairwise_diversity
+            ),
+            "target_reached": self.target_reached,
+        }
+
+        if include_coverage_result:
+            result["coverage_result"] = (
+                self.coverage_result.to_dict(
+                    include_metadata=include_metadata,
+                    include_profiles=False,
+                )
+            )
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+# -----------------------------------------------------------------------------
+# 18.58. PoseSetSelectionResult
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PoseSetSelectionResult:
+    """
+    Complete pose-set optimization result.
+    """
+
+    status: str
+    method: str
+    objective: str
+
+    selected_pose_ids: Tuple[str, ...]
+    required_pose_ids: Tuple[str, ...]
+    excluded_pose_ids: Tuple[str, ...]
+    available_pose_ids: Tuple[str, ...]
+
+    selected_candidate: Optional[PoseSetCandidate]
+
+    greedy_steps: Tuple[GreedySelectionStep, ...] = field(
+        default_factory=tuple
+    )
+    ranked_candidates: Tuple[PoseSetCandidate, ...] = field(
+        default_factory=tuple
+    )
+
+    evaluated_combination_count: int = 0
+    search_space_size: int = 0
+
+    target_coverage_fraction: float = 1.0
+    target_reached: bool = False
+    optimality_guaranteed: bool = False
+
+    message: str = ""
+
+    universe: Optional[CoverageUniverse] = field(
+        default=None,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+    profiles: Tuple[PoseCoverageProfile, ...] = field(
+        default_factory=tuple,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Normalize a pose-set selection result.
+        """
+
+        object.__setattr__(
+            self,
+            "status",
+            normalize_pose_selection_status(
+                self.status
+            ),
+        )
+        object.__setattr__(
+            self,
+            "method",
+            normalize_pose_selection_method(
+                self.method
+            ),
+        )
+        object.__setattr__(
+            self,
+            "objective",
+            normalize_pose_selection_objective(
+                self.objective
+            ),
+        )
+
+        for field_name in (
+            "selected_pose_ids",
+            "required_pose_ids",
+            "excluded_pose_ids",
+            "available_pose_ids",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                tuple(
+                    _coerce_identifier(pose_id)
+                    for pose_id in getattr(
+                        self,
+                        field_name,
+                    )
+                    if _coerce_identifier(pose_id)
+                ),
+            )
+
+        if (
+            self.selected_candidate is not None
+            and not isinstance(
+                self.selected_candidate,
+                PoseSetCandidate,
+            )
+        ):
+            raise PoseSelectionValidationError(
+                "selected_candidate must be a "
+                "PoseSetCandidate or None."
+            )
+
+        object.__setattr__(
+            self,
+            "greedy_steps",
+            tuple(self.greedy_steps),
+        )
+        object.__setattr__(
+            self,
+            "ranked_candidates",
+            tuple(self.ranked_candidates),
+        )
+
+        evaluated_combination_count = int(
+            self.evaluated_combination_count
+        )
+        search_space_size = int(
+            self.search_space_size
+        )
+
+        if evaluated_combination_count < 0:
+            raise PoseSelectionValidationError(
+                "evaluated_combination_count cannot "
+                "be negative."
+            )
+
+        if search_space_size < 0:
+            raise PoseSelectionValidationError(
+                "search_space_size cannot be negative."
+            )
+
+        object.__setattr__(
+            self,
+            "evaluated_combination_count",
+            evaluated_combination_count,
+        )
+        object.__setattr__(
+            self,
+            "search_space_size",
+            search_space_size,
+        )
+
+        object.__setattr__(
+            self,
+            "target_coverage_fraction",
+            float(
+                _coerce_finite_score_value(
+                    self.target_coverage_fraction,
+                    name=(
+                        "PoseSetSelectionResult."
+                        "target_coverage_fraction"
+                    ),
+                )
+            ),
+        )
+        object.__setattr__(
+            self,
+            "target_reached",
+            bool(self.target_reached),
+        )
+        object.__setattr__(
+            self,
+            "optimality_guaranteed",
+            bool(self.optimality_guaranteed),
+        )
+        object.__setattr__(
+            self,
+            "message",
+            _coerce_optional_text(self.message),
+        )
+
+        if (
+            self.universe is not None
+            and not isinstance(
+                self.universe,
+                CoverageUniverse,
+            )
+        ):
+            raise PoseSelectionValidationError(
+                "universe must be a CoverageUniverse or None."
+            )
+
+        object.__setattr__(
+            self,
+            "profiles",
+            tuple(self.profiles),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_result_metadata(self.metadata),
+        )
+
+    @property
+    def selected_coverage_result(
+        self,
+    ) -> Optional[PoseSetComplementarityResult]:
+        """
+        Return the selected set coverage result.
+        """
+
+        if self.selected_candidate is None:
+            return None
+
+        return self.selected_candidate.coverage_result
+
+    @property
+    def selected_set_size(self) -> int:
+        """
+        Return the selected pose-set size.
+        """
+
+        return len(self.selected_pose_ids)
+
+    def to_dict(
+        self,
+        *,
+        include_metadata: bool = True,
+        include_candidates: bool = True,
+        include_profiles: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Return a serializable optimization result.
+        """
+
+        result: Dict[str, Any] = {
+            "status": self.status,
+            "method": self.method,
+            "objective": self.objective,
+            "selected_pose_ids": list(
+                self.selected_pose_ids
+            ),
+            "required_pose_ids": list(
+                self.required_pose_ids
+            ),
+            "excluded_pose_ids": list(
+                self.excluded_pose_ids
+            ),
+            "available_pose_ids": list(
+                self.available_pose_ids
+            ),
+            "selected_set_size": (
+                self.selected_set_size
+            ),
+            "evaluated_combination_count": (
+                self.evaluated_combination_count
+            ),
+            "search_space_size": (
+                self.search_space_size
+            ),
+            "target_coverage_fraction": (
+                self.target_coverage_fraction
+            ),
+            "target_reached": self.target_reached,
+            "optimality_guaranteed": (
+                self.optimality_guaranteed
+            ),
+            "message": self.message,
+            "universe": (
+                None
+                if self.universe is None
+                else self.universe.to_dict(
+                    include_metadata=include_metadata
+                )
+            ),
+            "selected_candidate": (
+                None
+                if self.selected_candidate is None
+                else self.selected_candidate.to_dict(
+                    include_metadata=include_metadata,
+                    include_coverage_result=True,
+                )
+            ),
+            "greedy_steps": [
+                step.to_dict(
+                    include_metadata=include_metadata
+                )
+                for step in self.greedy_steps
+            ],
+        }
+
+        if include_candidates:
+            result["ranked_candidates"] = [
+                candidate.to_dict(
+                    include_metadata=include_metadata,
+                    include_coverage_result=False,
+                )
+                for candidate in self.ranked_candidates
+            ]
+
+        if include_profiles:
+            result["profiles"] = [
+                profile.to_dict(
+                    include_metadata=include_metadata,
+                    include_fingerprint=False,
+                    include_pose_result=False,
+                )
+                for profile in self.profiles
+            ]
+
+        if include_metadata:
+            result["metadata"] = dict(self.metadata)
+
+        return result
+
+
+# -----------------------------------------------------------------------------
+# 18.59. Optimization helper functions
+# -----------------------------------------------------------------------------
+
+def pose_profile_mapping(
+    profiles: Sequence[PoseCoverageProfile],
+) -> Mapping[str, PoseCoverageProfile]:
+    """
+    Return an immutable pose-id to profile mapping.
+    """
+
+    mapping: Dict[str, PoseCoverageProfile] = {}
+
+    for profile in profiles:
+        if profile.pose_id in mapping:
+            raise PoseSelectionInputError(
+                f"Duplicate pose identifier: "
+                f"{profile.pose_id!r}."
+            )
+
+        mapping[profile.pose_id] = profile
+
+    return MappingProxyType(mapping)
+
+
+def resolve_pose_selection_method(
+    pose_count: int,
+    *,
+    options: PoseSelectionOptions,
+) -> str:
+    """
+    Resolve automatic optimization method selection.
+    """
+
+    if options.method != POSE_SELECTION_METHOD_AUTO:
+        return options.method
+
+    if pose_count <= options.exhaustive_search_limit:
+        return POSE_SELECTION_METHOD_EXHAUSTIVE
+
+    return POSE_SELECTION_METHOD_GREEDY
+
+
+def resolve_maximum_pose_set_size(
+    available_pose_count: int,
+    *,
+    options: PoseSelectionOptions,
+) -> int:
+    """
+    Resolve the maximum pose-set size.
+    """
+
+    if options.maximum_set_size is None:
+        return available_pose_count
+
+    return min(
+        available_pose_count,
+        options.maximum_set_size,
+    )
+
+
+def validate_pose_selection_constraints(
+    profiles: Sequence[PoseCoverageProfile],
+    *,
+    options: PoseSelectionOptions,
+) -> None:
+    """
+    Validate required, excluded and size constraints.
+    """
+
+    profile_ids = {
+        profile.pose_id
+        for profile in profiles
+    }
+
+    missing_required = (
+        set(options.required_pose_ids) - profile_ids
+    )
+    missing_excluded = (
+        set(options.excluded_pose_ids) - profile_ids
+    )
+
+    if missing_required:
+        raise PoseSelectionInputError(
+            "Required poses were not found: "
+            + ", ".join(sorted(missing_required))
+        )
+
+    if missing_excluded:
+        raise PoseSelectionInputError(
+            "Excluded poses were not found: "
+            + ", ".join(sorted(missing_excluded))
+        )
+
+    selectable_ids = (
+        profile_ids - set(options.excluded_pose_ids)
+    )
+
+    maximum_set_size = resolve_maximum_pose_set_size(
+        len(selectable_ids),
+        options=options,
+    )
+
+    if len(options.required_pose_ids) > maximum_set_size:
+        raise PoseSelectionInputError(
+            "The required pose count exceeds "
+            "maximum_set_size."
+        )
+
+    if options.minimum_set_size > maximum_set_size:
+        raise PoseSelectionInputError(
+            "minimum_set_size exceeds the number of "
+            "selectable poses."
+        )
+
+
+def selected_pose_scores(
+    pose_ids: Sequence[str],
+    profiles_by_id: Mapping[
+        str,
+        PoseCoverageProfile,
+    ],
+) -> Tuple[float, ...]:
+    """
+    Return available pose scores for a selected set.
+    """
+
+    values: List[float] = []
+
+    for pose_id in pose_ids:
+        pose_score = profiles_by_id[
+            pose_id
+        ].pose_score
+
+        if pose_score is not None:
+            values.append(float(pose_score))
+
+    return tuple(values)
+
+
+def mean_pairwise_diversity_for_pose_set(
+    pose_ids: Sequence[str],
+    diversity_result: Optional[PoseDiversityResult],
+) -> float:
+    """
+    Return mean pairwise distance for a selected pose set.
+    """
+
+    if diversity_result is None:
+        return 0.0
+
+    normalized_pose_ids = tuple(pose_ids)
+
+    if len(normalized_pose_ids) < 2:
+        return 0.0
+
+    distances: List[float] = []
+
+    for index_a, pose_id_a in enumerate(
+        normalized_pose_ids
+    ):
+        for pose_id_b in normalized_pose_ids[
+            index_a + 1:
+        ]:
+            pair = get_pose_pair_diversity(
+                diversity_result,
+                pose_id_a,
+                pose_id_b,
+            )
+
+            if pair is not None:
+                distances.append(float(pair.distance))
+
+    if not distances:
+        return 0.0
+
+    return float(statistics.fmean(distances))
+
+
+def normalized_pose_score_component(
+    pose_ids: Sequence[str],
+    profiles_by_id: Mapping[
+        str,
+        PoseCoverageProfile,
+    ],
+) -> float:
+    """
+    Return a bounded pose-score component.
+
+    Scores are transformed through x / (1 + |x|), preserving sign.
+    """
+
+    scores = selected_pose_scores(
+        pose_ids,
+        profiles_by_id,
+    )
+
+    if not scores:
+        return 0.0
+
+    transformed = tuple(
+        score / (1.0 + abs(score))
+        for score in scores
+    )
+
+    return float(statistics.fmean(transformed))
+
+
+def calculate_pose_set_objective(
+    coverage_result: PoseSetComplementarityResult,
+    *,
+    pose_ids: Sequence[str],
+    profiles_by_id: Mapping[
+        str,
+        PoseCoverageProfile,
+    ],
+    diversity_result: Optional[PoseDiversityResult],
+    options: PoseSelectionOptions,
+) -> float:
+    """
+    Calculate the configured pose-set objective.
+    """
+
+    weighted_coverage = (
+        coverage_result.summary.weighted_coverage_fraction
+    )
+    raw_coverage = (
+        coverage_result.summary.overall_coverage_fraction
+    )
+
+    if (
+        options.objective
+        == POSE_SELECTION_OBJECTIVE_WEIGHTED_COVERAGE
+    ):
+        base_objective = weighted_coverage
+
+    elif (
+        options.objective
+        == POSE_SELECTION_OBJECTIVE_RAW_COVERAGE
+    ):
+        base_objective = raw_coverage
+
+    elif (
+        options.objective
+        == POSE_SELECTION_OBJECTIVE_HYBRID
+    ):
+        base_objective = (
+            0.5 * weighted_coverage
+            + 0.5 * raw_coverage
+        )
+
+    else:
+        raise PoseSelectionInputError(
+            f"Unsupported objective: "
+            f"{options.objective!r}."
+        )
+
+    pose_score_component = (
+        normalized_pose_score_component(
+            pose_ids,
+            profiles_by_id,
+        )
+    )
+    diversity_component = (
+        mean_pairwise_diversity_for_pose_set(
+            pose_ids,
+            diversity_result,
+        )
+    )
+    size_penalty = (
+        options.set_size_penalty
+        * len(tuple(pose_ids))
+    )
+
+    return float(
+        base_objective
+        + options.pose_score_weight
+        * pose_score_component
+        + options.diversity_weight
+        * diversity_component
+        - size_penalty
+    )
+
+
+def evaluate_pose_set_candidate(
+    profiles: Sequence[PoseCoverageProfile],
+    pose_ids: Sequence[str],
+    *,
+    universe: CoverageUniverse,
+    coverage_options: CoverageOptions,
+    selection_options: PoseSelectionOptions,
+    diversity_result: Optional[PoseDiversityResult] = None,
+) -> PoseSetCandidate:
+    """
+    Evaluate one pose-set candidate.
+    """
+
+    profiles_by_id = pose_profile_mapping(profiles)
+    normalized_pose_ids = tuple(
+        dict.fromkeys(
+            _coerce_identifier(pose_id)
+            for pose_id in pose_ids
+            if _coerce_identifier(pose_id)
+        )
+    )
+
+    unknown_pose_ids = tuple(
+        pose_id
+        for pose_id in normalized_pose_ids
+        if pose_id not in profiles_by_id
+    )
+
+    if unknown_pose_ids:
+        raise PoseSelectionInputError(
+            "Unknown candidate pose identifiers: "
+            + ", ".join(unknown_pose_ids)
+        )
+
+    coverage_result = compute_pose_set_coverage(
+        profiles,
+        selected_pose_ids=normalized_pose_ids,
+        universe=universe,
+        options=coverage_options,
+    )
+
+    pose_scores = selected_pose_scores(
+        normalized_pose_ids,
+        profiles_by_id,
+    )
+    total_pose_score = float(sum(pose_scores))
+    mean_pose_score = (
+        float(statistics.fmean(pose_scores))
+        if pose_scores
+        else 0.0
+    )
+    mean_diversity = (
+        mean_pairwise_diversity_for_pose_set(
+            normalized_pose_ids,
+            diversity_result,
+        )
+    )
+
+    objective_value = calculate_pose_set_objective(
+        coverage_result,
+        pose_ids=normalized_pose_ids,
+        profiles_by_id=profiles_by_id,
+        diversity_result=diversity_result,
+        options=selection_options,
+    )
+
+    target_reached = (
+        coverage_result.summary.weighted_coverage_fraction
+        + selection_options.epsilon
+        >= selection_options.target_coverage_fraction
+    )
+
+    return PoseSetCandidate(
+        pose_ids=normalized_pose_ids,
+        set_size=len(normalized_pose_ids),
+        weighted_coverage_fraction=(
+            coverage_result.summary
+            .weighted_coverage_fraction
+        ),
+        raw_coverage_fraction=(
+            coverage_result.summary
+            .overall_coverage_fraction
+        ),
+        objective_value=objective_value,
+        mean_pose_score=mean_pose_score,
+        total_pose_score=total_pose_score,
+        mean_pairwise_diversity=mean_diversity,
+        target_reached=target_reached,
+        coverage_result=coverage_result,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.60. Marginal gain calculation
+# -----------------------------------------------------------------------------
+
+def newly_covered_category_features(
+    baseline: CategoryCoverageResult,
+    resulting: CategoryCoverageResult,
+) -> Tuple[str, ...]:
+    """
+    Return features newly covered after adding a pose.
+    """
+
+    return tuple(
+        sorted(
+            set(resulting.covered_features)
+            - set(baseline.covered_features)
+        )
+    )
+
+
+def candidate_diversity_tie_break_value(
+    candidate_pose_id: str,
+    baseline_pose_ids: Sequence[str],
+    diversity_result: Optional[PoseDiversityResult],
+) -> float:
+    """
+    Return candidate distance from the current selected set.
+    """
+
+    if diversity_result is None:
+        return 0.0
+
+    if not baseline_pose_ids:
+        score = get_pose_diversity_score(
+            diversity_result,
+            candidate_pose_id,
+        )
+
+        if score is None:
+            return 0.0
+
+        return float(score.mean_distance)
+
+    distances: List[float] = []
+
+    for selected_pose_id in baseline_pose_ids:
+        pair = get_pose_pair_diversity(
+            diversity_result,
+            candidate_pose_id,
+            selected_pose_id,
+        )
+
+        if pair is not None:
+            distances.append(float(pair.distance))
+
+    if not distances:
+        return 0.0
+
+    return float(min(distances))
+
+
+def calculate_marginal_gain(
+    profiles: Sequence[PoseCoverageProfile],
+    *,
+    baseline_pose_ids: Sequence[str],
+    candidate_pose_id: str,
+    universe: CoverageUniverse,
+    coverage_options: CoverageOptions,
+    selection_options: PoseSelectionOptions,
+    diversity_result: Optional[PoseDiversityResult] = None,
+    baseline_result: Optional[
+        PoseSetComplementarityResult
+    ] = None,
+) -> MarginalGainResult:
+    """
+    Calculate the marginal gain of one candidate pose.
+    """
+
+    profiles_by_id = pose_profile_mapping(profiles)
+
+    normalized_candidate_pose_id = _coerce_identifier(
+        candidate_pose_id
+    )
+    normalized_baseline_pose_ids = tuple(
+        dict.fromkeys(
+            _coerce_identifier(pose_id)
+            for pose_id in baseline_pose_ids
+            if _coerce_identifier(pose_id)
+        )
+    )
+
+    if normalized_candidate_pose_id not in profiles_by_id:
+        raise MarginalGainError(
+            f"Candidate pose "
+            f"{normalized_candidate_pose_id!r} "
+            "was not found."
+        )
+
+    if (
+        normalized_candidate_pose_id
+        in normalized_baseline_pose_ids
+    ):
+        raise MarginalGainError(
+            "The candidate pose is already present in "
+            "the baseline set."
+        )
+
+    if baseline_result is None:
+        baseline_result = compute_pose_set_coverage(
+            profiles,
+            selected_pose_ids=normalized_baseline_pose_ids,
+            universe=universe,
+            options=coverage_options,
+        )
+
+    resulting_pose_ids = (
+        *normalized_baseline_pose_ids,
+        normalized_candidate_pose_id,
+    )
+
+    resulting_result = compute_pose_set_coverage(
+        profiles,
+        selected_pose_ids=resulting_pose_ids,
+        universe=universe,
+        options=coverage_options,
+    )
+
+    baseline_weighted = (
+        baseline_result.summary
+        .weighted_coverage_fraction
+    )
+    resulting_weighted = (
+        resulting_result.summary
+        .weighted_coverage_fraction
+    )
+
+    baseline_raw = (
+        baseline_result.summary
+        .overall_coverage_fraction
+    )
+    resulting_raw = (
+        resulting_result.summary
+        .overall_coverage_fraction
+    )
+
+    weighted_gain = (
+        resulting_weighted - baseline_weighted
+    )
+    raw_gain = resulting_raw - baseline_raw
+
+    residue_features = (
+        newly_covered_category_features(
+            baseline_result.residue_coverage,
+            resulting_result.residue_coverage,
+        )
+    )
+    family_features = (
+        newly_covered_category_features(
+            baseline_result.family_coverage,
+            resulting_result.family_coverage,
+        )
+    )
+    type_features = (
+        newly_covered_category_features(
+            baseline_result.type_coverage,
+            resulting_result.type_coverage,
+        )
+    )
+    hotspot_features = (
+        newly_covered_category_features(
+            baseline_result.hotspot_coverage,
+            resulting_result.hotspot_coverage,
+        )
+    )
+
+    residue_gain = (
+        resulting_result.residue_coverage
+        .coverage_fraction
+        - baseline_result.residue_coverage
+        .coverage_fraction
+    )
+    family_gain = (
+        resulting_result.family_coverage
+        .coverage_fraction
+        - baseline_result.family_coverage
+        .coverage_fraction
+    )
+    type_gain = (
+        resulting_result.type_coverage
+        .coverage_fraction
+        - baseline_result.type_coverage
+        .coverage_fraction
+    )
+    hotspot_gain = (
+        resulting_result.hotspot_coverage
+        .coverage_fraction
+        - baseline_result.hotspot_coverage
+        .coverage_fraction
+    )
+
+    baseline_objective = (
+        calculate_pose_set_objective(
+            baseline_result,
+            pose_ids=normalized_baseline_pose_ids,
+            profiles_by_id=profiles_by_id,
+            diversity_result=diversity_result,
+            options=selection_options,
+        )
+    )
+    resulting_objective = (
+        calculate_pose_set_objective(
+            resulting_result,
+            pose_ids=resulting_pose_ids,
+            profiles_by_id=profiles_by_id,
+            diversity_result=diversity_result,
+            options=selection_options,
+        )
+    )
+
+    candidate_profile = profiles_by_id[
+        normalized_candidate_pose_id
+    ]
+
+    diversity_value = (
+        candidate_diversity_tie_break_value(
+            normalized_candidate_pose_id,
+            normalized_baseline_pose_ids,
+            diversity_result,
+        )
+    )
+
+    newly_covered_feature_count = sum(
+        len(values)
+        for values in (
+            residue_features,
+            family_features,
+            type_features,
+            hotspot_features,
+        )
+    )
+
+    return MarginalGainResult(
+        candidate_pose_id=normalized_candidate_pose_id,
+        baseline_pose_ids=normalized_baseline_pose_ids,
+        resulting_pose_ids=resulting_pose_ids,
+        baseline_weighted_coverage=baseline_weighted,
+        resulting_weighted_coverage=resulting_weighted,
+        weighted_coverage_gain=weighted_gain,
+        baseline_raw_coverage=baseline_raw,
+        resulting_raw_coverage=resulting_raw,
+        raw_coverage_gain=raw_gain,
+        residue_gain=residue_gain,
+        family_gain=family_gain,
+        type_gain=type_gain,
+        hotspot_gain=hotspot_gain,
+        newly_covered_residues=residue_features,
+        newly_covered_families=family_features,
+        newly_covered_types=type_features,
+        newly_covered_hotspots=hotspot_features,
+        newly_covered_feature_count=(
+            newly_covered_feature_count
+        ),
+        candidate_pose_score=(
+            candidate_profile.pose_score
+        ),
+        diversity_tie_break_value=(
+            diversity_value
+        ),
+        objective_gain=(
+            resulting_objective
+            - baseline_objective
+        ),
+        baseline_result=baseline_result,
+        resulting_result=resulting_result,
+    )
+
+
+def marginal_gain_sort_key(
+    result: MarginalGainResult,
+    *,
+    options: PoseSelectionOptions,
+) -> Tuple[Any, ...]:
+    """
+    Return a deterministic descending marginal-gain key.
+    """
+
+    candidate_score = (
+        result.candidate_pose_score
+        if result.candidate_pose_score is not None
+        else float("-inf")
+    )
+
+    if (
+        options.tie_break
+        == POSE_SELECTION_TIE_BREAK_POSE_SCORE
+    ):
+        tie_break_key: Tuple[Any, ...] = (
+            candidate_score,
+            result.diversity_tie_break_value,
+            result.newly_covered_feature_count,
+        )
+
+    elif (
+        options.tie_break
+        == POSE_SELECTION_TIE_BREAK_DIVERSITY
+    ):
+        tie_break_key = (
+            result.diversity_tie_break_value,
+            candidate_score,
+            result.newly_covered_feature_count,
+        )
+
+    elif (
+        options.tie_break
+        == POSE_SELECTION_TIE_BREAK_FEATURE_COUNT
+    ):
+        tie_break_key = (
+            result.newly_covered_feature_count,
+            candidate_score,
+            result.diversity_tie_break_value,
+        )
+
+    else:
+        tie_break_key = (
+            0.0,
+            0.0,
+            0,
+        )
+
+    return (
+        result.objective_gain,
+        result.weighted_coverage_gain,
+        result.raw_coverage_gain,
+        *tie_break_key,
+        tuple(
+            -ord(character)
+            for character in result.candidate_pose_id
+        ),
+    )
+
+
+def rank_marginal_gains(
+    gains: Iterable[MarginalGainResult],
+    *,
+    options: PoseSelectionOptions,
+) -> Tuple[MarginalGainResult, ...]:
+    """
+    Rank marginal-gain results deterministically.
+    """
+
+    ranked = sorted(
+        gains,
+        key=lambda gain: marginal_gain_sort_key(
+            gain,
+            options=options,
+        ),
+        reverse=True,
+    )
+
+    return tuple(
+        replace(gain, rank=index)
+        for index, gain in enumerate(
+            ranked,
+            start=1,
+        )
+    )
+
+
+def evaluate_all_marginal_gains(
+    profiles: Sequence[PoseCoverageProfile],
+    *,
+    baseline_pose_ids: Sequence[str],
+    universe: CoverageUniverse,
+    coverage_options: CoverageOptions,
+    selection_options: PoseSelectionOptions,
+    diversity_result: Optional[PoseDiversityResult] = None,
+    candidate_pose_ids: Optional[
+        Iterable[str]
+    ] = None,
+) -> Tuple[MarginalGainResult, ...]:
+    """
+    Evaluate and rank all eligible candidate poses.
+    """
+
+    profile_ids = tuple(
+        profile.pose_id
+        for profile in profiles
+    )
+    baseline_set = set(baseline_pose_ids)
+    excluded_set = set(
+        selection_options.excluded_pose_ids
+    )
+
+    if candidate_pose_ids is None:
+        candidates = tuple(
+            pose_id
+            for pose_id in profile_ids
+            if (
+                pose_id not in baseline_set
+                and pose_id not in excluded_set
+            )
+        )
+    else:
+        candidates = tuple(
+            _coerce_identifier(pose_id)
+            for pose_id in candidate_pose_ids
+            if (
+                _coerce_identifier(pose_id)
+                and _coerce_identifier(pose_id)
+                not in baseline_set
+                and _coerce_identifier(pose_id)
+                not in excluded_set
+            )
+        )
+
+    baseline_result = compute_pose_set_coverage(
+        profiles,
+        selected_pose_ids=baseline_pose_ids,
+        universe=universe,
+        options=coverage_options,
+    )
+
+    gains = tuple(
+        calculate_marginal_gain(
+            profiles,
+            baseline_pose_ids=baseline_pose_ids,
+            candidate_pose_id=candidate_pose_id,
+            universe=universe,
+            coverage_options=coverage_options,
+            selection_options=selection_options,
+            diversity_result=diversity_result,
+            baseline_result=baseline_result,
+        )
+        for candidate_pose_id in candidates
+    )
+
+    return rank_marginal_gains(
+        gains,
+        options=selection_options,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.61. Greedy pose-set selection
+# -----------------------------------------------------------------------------
+
+def greedy_select_pose_set(
+    profiles: Sequence[PoseCoverageProfile],
+    *,
+    universe: Optional[CoverageUniverse] = None,
+    coverage_options: CoverageOptions = (
+        DEFAULT_COVERAGE_OPTIONS
+    ),
+    selection_options: PoseSelectionOptions = (
+        DEFAULT_POSE_SELECTION_OPTIONS
+    ),
+    diversity_result: Optional[PoseDiversityResult] = None,
+) -> PoseSetSelectionResult:
+    """
+    Select poses using deterministic forward greedy optimization.
+    """
+
+    normalized_profiles = tuple(profiles)
+
+    if not normalized_profiles:
+        return PoseSetSelectionResult(
+            status=POSE_SELECTION_STATUS_EMPTY,
+            method=POSE_SELECTION_METHOD_GREEDY,
+            objective=selection_options.objective,
+            selected_pose_ids=(),
+            required_pose_ids=(
+                selection_options.required_pose_ids
+            ),
+            excluded_pose_ids=(
+                selection_options.excluded_pose_ids
+            ),
+            available_pose_ids=(),
+            selected_candidate=None,
+            greedy_steps=(),
+            ranked_candidates=(),
+            evaluated_combination_count=0,
+            search_space_size=0,
+            target_coverage_fraction=(
+                selection_options
+                .target_coverage_fraction
+            ),
+            target_reached=False,
+            optimality_guaranteed=False,
+            message="No pose coverage profiles were supplied.",
+            universe=(
+                universe
+                if universe is not None
+                else CoverageUniverse()
+            ),
+            profiles=(),
+        )
+
+    validate_pose_selection_constraints(
+        normalized_profiles,
+        options=selection_options,
+    )
+
+    resolved_universe = (
+        universe
+        if universe is not None
+        else build_coverage_universe(
+            normalized_profiles,
+            options=coverage_options,
+        )
+    )
+
+    available_pose_ids = tuple(
+        profile.pose_id
+        for profile in normalized_profiles
+    )
+    excluded_pose_ids = set(
+        selection_options.excluded_pose_ids
+    )
+    selectable_pose_ids = tuple(
+        pose_id
+        for pose_id in available_pose_ids
+        if pose_id not in excluded_pose_ids
+    )
+
+    maximum_set_size = resolve_maximum_pose_set_size(
+        len(selectable_pose_ids),
+        options=selection_options,
+    )
+
+    selected_pose_ids: List[str] = list(
+        selection_options.required_pose_ids
+    )
+    steps: List[GreedySelectionStep] = []
+    evaluated_count = 0
+
+    current_result = compute_pose_set_coverage(
+        normalized_profiles,
+        selected_pose_ids=selected_pose_ids,
+        universe=resolved_universe,
+        options=coverage_options,
+    )
+
+    while len(selected_pose_ids) < maximum_set_size:
+        target_reached = (
+            current_result.summary
+            .weighted_coverage_fraction
+            + selection_options.epsilon
+            >= selection_options
+            .target_coverage_fraction
+        )
+
+        if (
+            target_reached
+            and selection_options.stop_when_target_reached
+            and len(selected_pose_ids)
+            >= selection_options.minimum_set_size
+        ):
+            break
+
+        candidate_pose_ids = tuple(
+            pose_id
+            for pose_id in selectable_pose_ids
+            if pose_id not in selected_pose_ids
+        )
+
+        if not candidate_pose_ids:
+            break
+
+        ranked_gains = evaluate_all_marginal_gains(
+            normalized_profiles,
+            baseline_pose_ids=selected_pose_ids,
+            universe=resolved_universe,
+            coverage_options=coverage_options,
+            selection_options=selection_options,
+            diversity_result=diversity_result,
+            candidate_pose_ids=candidate_pose_ids,
+        )
+        evaluated_count += len(ranked_gains)
+
+        if not ranked_gains:
+            break
+
+        best_gain = ranked_gains[0]
+
+        must_continue_for_minimum = (
+            len(selected_pose_ids)
+            < selection_options.minimum_set_size
+        )
+
+        if (
+            not must_continue_for_minimum
+            and best_gain.objective_gain
+            + selection_options.epsilon
+            < selection_options.minimum_marginal_gain
+        ):
+            break
+
+        selected_pose_ids.append(
+            best_gain.candidate_pose_id
+        )
+
+        if best_gain.resulting_result is None:
+            current_result = compute_pose_set_coverage(
+                normalized_profiles,
+                selected_pose_ids=selected_pose_ids,
+                universe=resolved_universe,
+                options=coverage_options,
+            )
+        else:
+            current_result = best_gain.resulting_result
+
+        step_target_reached = (
+            current_result.summary
+            .weighted_coverage_fraction
+            + selection_options.epsilon
+            >= selection_options
+            .target_coverage_fraction
+        )
+
+        rejected_candidate_ids = tuple(
+            gain.candidate_pose_id
+            for gain in ranked_gains[1:]
+        )
+
+        steps.append(
+            GreedySelectionStep(
+                step_index=len(steps) + 1,
+                selected_pose_id=(
+                    best_gain.candidate_pose_id
+                ),
+                selected_pose_ids=tuple(
+                    selected_pose_ids
+                ),
+                marginal_gain=best_gain,
+                weighted_coverage_fraction=(
+                    current_result.summary
+                    .weighted_coverage_fraction
+                ),
+                raw_coverage_fraction=(
+                    current_result.summary
+                    .overall_coverage_fraction
+                ),
+                target_reached=step_target_reached,
+                candidate_count=len(ranked_gains),
+                rejected_candidate_ids=(
+                    rejected_candidate_ids
+                ),
+            )
+        )
+
+    selected_candidate = evaluate_pose_set_candidate(
+        normalized_profiles,
+        selected_pose_ids,
+        universe=resolved_universe,
+        coverage_options=coverage_options,
+        selection_options=selection_options,
+        diversity_result=diversity_result,
+    )
+
+    target_reached = (
+        selected_candidate.target_reached
+    )
+
+    if (
+        len(selected_pose_ids)
+        < selection_options.minimum_set_size
+    ):
+        status = POSE_SELECTION_STATUS_INFEASIBLE
+        message = (
+            "The minimum pose-set size could not be reached."
+        )
+
+    elif (
+        selection_options.require_target_coverage
+        and not target_reached
+    ):
+        status = POSE_SELECTION_STATUS_INFEASIBLE
+        message = (
+            "The requested target coverage could not be "
+            "reached within the configured constraints."
+        )
+
+    elif target_reached:
+        status = POSE_SELECTION_STATUS_COMPLETE
+        message = (
+            "Greedy optimization reached the requested "
+            "coverage target."
+        )
+
+    else:
+        status = POSE_SELECTION_STATUS_PARTIAL
+        message = (
+            "Greedy optimization returned the best "
+            "available partial coverage set."
+        )
+
+    result = PoseSetSelectionResult(
+        status=status,
+        method=POSE_SELECTION_METHOD_GREEDY,
+        objective=selection_options.objective,
+        selected_pose_ids=tuple(selected_pose_ids),
+        required_pose_ids=(
+            selection_options.required_pose_ids
+        ),
+        excluded_pose_ids=(
+            selection_options.excluded_pose_ids
+        ),
+        available_pose_ids=available_pose_ids,
+        selected_candidate=selected_candidate,
+        greedy_steps=tuple(steps),
+        ranked_candidates=(selected_candidate,),
+        evaluated_combination_count=evaluated_count,
+        search_space_size=len(selectable_pose_ids),
+        target_coverage_fraction=(
+            selection_options.target_coverage_fraction
+        ),
+        target_reached=target_reached,
+        optimality_guaranteed=False,
+        message=message,
+        universe=resolved_universe,
+        profiles=normalized_profiles,
+        metadata={
+            "maximum_set_size": maximum_set_size,
+            "minimum_set_size": (
+                selection_options.minimum_set_size
+            ),
+            "minimum_marginal_gain": (
+                selection_options.minimum_marginal_gain
+            ),
+        },
+    )
+
+    if selection_options.validate_result:
+        validate_pose_set_selection_result(result)
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 18.62. Exhaustive combination enumeration
+# -----------------------------------------------------------------------------
+
+def combination_count(
+    item_count: int,
+    minimum_size: int,
+    maximum_size: int,
+) -> int:
+    """
+    Return the number of combinations in a size interval.
+    """
+
+    if item_count < 0:
+        raise PoseSelectionInputError(
+            "item_count cannot be negative."
+        )
+
+    lower = max(0, int(minimum_size))
+    upper = min(item_count, int(maximum_size))
+
+    if lower > upper:
+        return 0
+
+    return int(
+        sum(
+            math.comb(item_count, size)
+            for size in range(lower, upper + 1)
+        )
+    )
+
+
+def enumerate_pose_set_combinations(
+    selectable_pose_ids: Sequence[str],
+    *,
+    required_pose_ids: Sequence[str],
+    minimum_set_size: int,
+    maximum_set_size: int,
+) -> Iterator[Tuple[str, ...]]:
+    """
+    Yield deterministic valid pose combinations.
+    """
+
+    required = tuple(
+        dict.fromkeys(required_pose_ids)
+    )
+    required_set = set(required)
+
+    optional_pose_ids = tuple(
+        pose_id
+        for pose_id in selectable_pose_ids
+        if pose_id not in required_set
+    )
+
+    minimum_optional_size = max(
+        0,
+        minimum_set_size - len(required),
+    )
+    maximum_optional_size = max(
+        0,
+        maximum_set_size - len(required),
+    )
+
+    for optional_size in range(
+        minimum_optional_size,
+        maximum_optional_size + 1,
+    ):
+        for optional_combination in itertools.combinations(
+            optional_pose_ids,
+            optional_size,
+        ):
+            yield (
+                *required,
+                *optional_combination,
+            )
+
+
+def candidate_sort_key(
+    candidate: PoseSetCandidate,
+    *,
+    options: PoseSelectionOptions,
+) -> Tuple[Any, ...]:
+    """
+    Return a deterministic descending candidate key.
+    """
+
+    size_component = (
+        -candidate.set_size
+        if options.prefer_smaller_sets
+        else candidate.set_size
+    )
+
+    if (
+        options.tie_break
+        == POSE_SELECTION_TIE_BREAK_POSE_SCORE
+    ):
+        tie_break = (
+            candidate.mean_pose_score,
+            candidate.mean_pairwise_diversity,
+        )
+
+    elif (
+        options.tie_break
+        == POSE_SELECTION_TIE_BREAK_DIVERSITY
+    ):
+        tie_break = (
+            candidate.mean_pairwise_diversity,
+            candidate.mean_pose_score,
+        )
+
+    elif (
+        options.tie_break
+        == POSE_SELECTION_TIE_BREAK_FEATURE_COUNT
+    ):
+        tie_break = (
+            candidate.coverage_result.summary
+            .total_covered_features,
+            candidate.mean_pose_score,
+        )
+
+    else:
+        tie_break = (
+            0.0,
+            0.0,
+        )
+
+    return (
+        candidate.target_reached,
+        candidate.objective_value,
+        candidate.weighted_coverage_fraction,
+        candidate.raw_coverage_fraction,
+        size_component,
+        *tie_break,
+        tuple(
+            -ord(character)
+            for character in "|".join(
+                candidate.pose_ids
+            )
+        ),
+    )
+
+
+def rank_pose_set_candidates(
+    candidates: Iterable[PoseSetCandidate],
+    *,
+    options: PoseSelectionOptions,
+) -> Tuple[PoseSetCandidate, ...]:
+    """
+    Rank pose-set candidates deterministically.
+    """
+
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda candidate: candidate_sort_key(
+                candidate,
+                options=options,
+            ),
+            reverse=True,
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.63. Exhaustive optimal pose-set selection
+# -----------------------------------------------------------------------------
+
+def exhaustive_select_pose_set(
+    profiles: Sequence[PoseCoverageProfile],
+    *,
+    universe: Optional[CoverageUniverse] = None,
+    coverage_options: CoverageOptions = (
+        DEFAULT_COVERAGE_OPTIONS
+    ),
+    selection_options: PoseSelectionOptions = (
+        DEFAULT_POSE_SELECTION_OPTIONS
+    ),
+    diversity_result: Optional[PoseDiversityResult] = None,
+) -> PoseSetSelectionResult:
+    """
+    Find the optimal pose set through exhaustive enumeration.
+    """
+
+    normalized_profiles = tuple(profiles)
+
+    if not normalized_profiles:
+        return PoseSetSelectionResult(
+            status=POSE_SELECTION_STATUS_EMPTY,
+            method=POSE_SELECTION_METHOD_EXHAUSTIVE,
+            objective=selection_options.objective,
+            selected_pose_ids=(),
+            required_pose_ids=(
+                selection_options.required_pose_ids
+            ),
+            excluded_pose_ids=(
+                selection_options.excluded_pose_ids
+            ),
+            available_pose_ids=(),
+            selected_candidate=None,
+            greedy_steps=(),
+            ranked_candidates=(),
+            evaluated_combination_count=0,
+            search_space_size=0,
+            target_coverage_fraction=(
+                selection_options
+                .target_coverage_fraction
+            ),
+            target_reached=False,
+            optimality_guaranteed=True,
+            message="No pose coverage profiles were supplied.",
+            universe=(
+                universe
+                if universe is not None
+                else CoverageUniverse()
+            ),
+            profiles=(),
+        )
+
+    validate_pose_selection_constraints(
+        normalized_profiles,
+        options=selection_options,
+    )
+
+    resolved_universe = (
+        universe
+        if universe is not None
+        else build_coverage_universe(
+            normalized_profiles,
+            options=coverage_options,
+        )
+    )
+
+    available_pose_ids = tuple(
+        profile.pose_id
+        for profile in normalized_profiles
+    )
+    excluded_pose_ids = set(
+        selection_options.excluded_pose_ids
+    )
+    selectable_pose_ids = tuple(
+        pose_id
+        for pose_id in available_pose_ids
+        if pose_id not in excluded_pose_ids
+    )
+
+    if (
+        len(selectable_pose_ids)
+        > selection_options.exhaustive_search_limit
+    ):
+        raise ExhaustiveSearchLimitError(
+            "The number of selectable poses exceeds "
+            "exhaustive_search_limit."
+        )
+
+    maximum_set_size = resolve_maximum_pose_set_size(
+        len(selectable_pose_ids),
+        options=selection_options,
+    )
+    minimum_set_size = (
+        selection_options.minimum_set_size
+    )
+
+    required_count = len(
+        selection_options.required_pose_ids
+    )
+    optional_count = (
+        len(selectable_pose_ids) - required_count
+    )
+    minimum_optional_size = max(
+        0,
+        minimum_set_size - required_count,
+    )
+    maximum_optional_size = max(
+        0,
+        maximum_set_size - required_count,
+    )
+
+    search_space_size = combination_count(
+        optional_count,
+        minimum_optional_size,
+        maximum_optional_size,
+    )
+
+    if (
+        search_space_size
+        > selection_options
+        .maximum_exhaustive_combinations
+    ):
+        raise ExhaustiveSearchLimitError(
+            "The exhaustive search space exceeds "
+            "maximum_exhaustive_combinations."
+        )
+
+    candidates: List[PoseSetCandidate] = []
+
+    for pose_ids in enumerate_pose_set_combinations(
+        selectable_pose_ids,
+        required_pose_ids=(
+            selection_options.required_pose_ids
+        ),
+        minimum_set_size=minimum_set_size,
+        maximum_set_size=maximum_set_size,
+    ):
+        candidate = evaluate_pose_set_candidate(
+            normalized_profiles,
+            pose_ids,
+            universe=resolved_universe,
+            coverage_options=coverage_options,
+            selection_options=selection_options,
+            diversity_result=diversity_result,
+        )
+
+        if (
+            selection_options.require_target_coverage
+            and not candidate.target_reached
+        ):
+            continue
+
+        candidates.append(candidate)
+
+    ranked_candidates = rank_pose_set_candidates(
+        candidates,
+        options=selection_options,
+    )
+
+    selected_candidate = (
+        ranked_candidates[0]
+        if ranked_candidates
+        else None
+    )
+
+    if selected_candidate is None:
+        status = POSE_SELECTION_STATUS_INFEASIBLE
+        target_reached = False
+        selected_pose_ids: Tuple[str, ...] = ()
+        message = (
+            "No pose set satisfies the configured "
+            "selection constraints."
+        )
+
+    else:
+        target_reached = (
+            selected_candidate.target_reached
+        )
+        selected_pose_ids = (
+            selected_candidate.pose_ids
+        )
+
+        if target_reached:
+            status = POSE_SELECTION_STATUS_COMPLETE
+            message = (
+                "Exhaustive optimization identified an "
+                "optimal pose set that reaches the target."
+            )
+        else:
+            status = POSE_SELECTION_STATUS_PARTIAL
+            message = (
+                "Exhaustive optimization identified the "
+                "optimal partial-coverage pose set."
+            )
+
+    result = PoseSetSelectionResult(
+        status=status,
+        method=POSE_SELECTION_METHOD_EXHAUSTIVE,
+        objective=selection_options.objective,
+        selected_pose_ids=selected_pose_ids,
+        required_pose_ids=(
+            selection_options.required_pose_ids
+        ),
+        excluded_pose_ids=(
+            selection_options.excluded_pose_ids
+        ),
+        available_pose_ids=available_pose_ids,
+        selected_candidate=selected_candidate,
+        greedy_steps=(),
+        ranked_candidates=ranked_candidates,
+        evaluated_combination_count=(
+            search_space_size
+        ),
+        search_space_size=search_space_size,
+        target_coverage_fraction=(
+            selection_options.target_coverage_fraction
+        ),
+        target_reached=target_reached,
+        optimality_guaranteed=True,
+        message=message,
+        universe=resolved_universe,
+        profiles=normalized_profiles,
+        metadata={
+            "minimum_set_size": minimum_set_size,
+            "maximum_set_size": maximum_set_size,
+            "retained_candidate_count": len(
+                ranked_candidates
+            ),
+        },
+    )
+
+    if selection_options.validate_result:
+        validate_pose_set_selection_result(result)
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 18.64. Unified optimization API
+# -----------------------------------------------------------------------------
+
+def select_optimal_pose_set(
+    profiles: Sequence[PoseCoverageProfile],
+    *,
+    universe: Optional[CoverageUniverse] = None,
+    coverage_options: CoverageOptions = (
+        DEFAULT_COVERAGE_OPTIONS
+    ),
+    selection_options: PoseSelectionOptions = (
+        DEFAULT_POSE_SELECTION_OPTIONS
+    ),
+    diversity_result: Optional[PoseDiversityResult] = None,
+) -> PoseSetSelectionResult:
+    """
+    Select a complementary pose set using the configured method.
+    """
+
+    normalized_profiles = tuple(profiles)
+
+    method = resolve_pose_selection_method(
+        len(normalized_profiles),
+        options=selection_options,
+    )
+
+    if method == POSE_SELECTION_METHOD_GREEDY:
+        return greedy_select_pose_set(
+            normalized_profiles,
+            universe=universe,
+            coverage_options=coverage_options,
+            selection_options=selection_options,
+            diversity_result=diversity_result,
+        )
+
+    if method == POSE_SELECTION_METHOD_EXHAUSTIVE:
+        return exhaustive_select_pose_set(
+            normalized_profiles,
+            universe=universe,
+            coverage_options=coverage_options,
+            selection_options=selection_options,
+            diversity_result=diversity_result,
+        )
+
+    raise PoseSelectionInputError(
+        f"Unsupported resolved method: {method!r}."
+    )
+
+
+def optimize_pose_complementarity(
+    diversity_result: PoseDiversityResult,
+    *,
+    universe: Optional[CoverageUniverse] = None,
+    coverage_options: CoverageOptions = (
+        DEFAULT_COVERAGE_OPTIONS
+    ),
+    selection_options: PoseSelectionOptions = (
+        DEFAULT_POSE_SELECTION_OPTIONS
+    ),
+) -> PoseSetSelectionResult:
+    """
+    Optimize complementary pose selection from diversity output.
+    """
+
+    profiles = build_pose_coverage_profiles(
+        diversity_result,
+        options=coverage_options,
+    )
+
+    return select_optimal_pose_set(
+        profiles,
+        universe=universe,
+        coverage_options=coverage_options,
+        selection_options=selection_options,
+        diversity_result=diversity_result,
+    )
+
+
+def optimize_pose_complementarity_from_results(
+    pose_results: Iterable[PoseScoringResult],
+    *,
+    universe: Optional[CoverageUniverse] = None,
+    coverage_options: CoverageOptions = (
+        DEFAULT_COVERAGE_OPTIONS
+    ),
+    selection_options: PoseSelectionOptions = (
+        DEFAULT_POSE_SELECTION_OPTIONS
+    ),
+    fingerprint_options: FingerprintOptions = (
+        FingerprintOptions(
+            kind=FINGERPRINT_KIND_COMBINED,
+            value_mode=FINGERPRINT_VALUE_BINARY,
+        )
+    ),
+    diversity_options: DiversityOptions = (
+        DiversityOptions(
+            similarity_metric=SIMILARITY_JACCARD,
+            distance_metric=DISTANCE_COMPLEMENT,
+        )
+    ),
+) -> PoseSetSelectionResult:
+    """
+    Score diversity and optimize complementarity from pose results.
+    """
+
+    normalized_results = (
+        materialize_pose_scoring_results(
+            pose_results
+        )
+    )
+
+    diversity_result = compute_pose_diversity(
+        normalized_results,
+        fingerprint_options=fingerprint_options,
+        diversity_options=diversity_options,
+    )
+
+    return optimize_pose_complementarity(
+        diversity_result,
+        universe=universe,
+        coverage_options=coverage_options,
+        selection_options=selection_options,
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.65. Convenience APIs
+# -----------------------------------------------------------------------------
+
+def best_next_pose(
+    profiles: Sequence[PoseCoverageProfile],
+    *,
+    selected_pose_ids: Sequence[str],
+    universe: Optional[CoverageUniverse] = None,
+    coverage_options: CoverageOptions = (
+        DEFAULT_COVERAGE_OPTIONS
+    ),
+    selection_options: PoseSelectionOptions = (
+        DEFAULT_POSE_SELECTION_OPTIONS
+    ),
+    diversity_result: Optional[PoseDiversityResult] = None,
+) -> Optional[MarginalGainResult]:
+    """
+    Return the best next pose for the current selected set.
+    """
+
+    normalized_profiles = tuple(profiles)
+
+    if not normalized_profiles:
+        return None
+
+    resolved_universe = (
+        universe
+        if universe is not None
+        else build_coverage_universe(
+            normalized_profiles,
+            options=coverage_options,
+        )
+    )
+
+    ranked_gains = evaluate_all_marginal_gains(
+        normalized_profiles,
+        baseline_pose_ids=selected_pose_ids,
+        universe=resolved_universe,
+        coverage_options=coverage_options,
+        selection_options=selection_options,
+        diversity_result=diversity_result,
+    )
+
+    return ranked_gains[0] if ranked_gains else None
+
+
+def rank_candidate_poses_by_marginal_gain(
+    profiles: Sequence[PoseCoverageProfile],
+    *,
+    selected_pose_ids: Sequence[str],
+    universe: Optional[CoverageUniverse] = None,
+    coverage_options: CoverageOptions = (
+        DEFAULT_COVERAGE_OPTIONS
+    ),
+    selection_options: PoseSelectionOptions = (
+        DEFAULT_POSE_SELECTION_OPTIONS
+    ),
+    diversity_result: Optional[PoseDiversityResult] = None,
+) -> Tuple[MarginalGainResult, ...]:
+    """
+    Rank all remaining poses by marginal gain.
+    """
+
+    normalized_profiles = tuple(profiles)
+
+    if not normalized_profiles:
+        return ()
+
+    resolved_universe = (
+        universe
+        if universe is not None
+        else build_coverage_universe(
+            normalized_profiles,
+            options=coverage_options,
+        )
+    )
+
+    return evaluate_all_marginal_gains(
+        normalized_profiles,
+        baseline_pose_ids=selected_pose_ids,
+        universe=resolved_universe,
+        coverage_options=coverage_options,
+        selection_options=selection_options,
+        diversity_result=diversity_result,
+    )
+
+
+def selected_pose_profiles(
+    result: PoseSetSelectionResult,
+) -> Tuple[PoseCoverageProfile, ...]:
+    """
+    Return profiles selected by an optimization result.
+    """
+
+    selected_ids = set(result.selected_pose_ids)
+
+    return tuple(
+        profile
+        for profile in result.profiles
+        if profile.pose_id in selected_ids
+    )
+
+
+def rejected_pose_profiles(
+    result: PoseSetSelectionResult,
+) -> Tuple[PoseCoverageProfile, ...]:
+    """
+    Return non-selected and non-excluded profiles.
+    """
+
+    selected_ids = set(result.selected_pose_ids)
+    excluded_ids = set(result.excluded_pose_ids)
+
+    return tuple(
+        profile
+        for profile in result.profiles
+        if (
+            profile.pose_id not in selected_ids
+            and profile.pose_id not in excluded_ids
+        )
+    )
+
+
+# -----------------------------------------------------------------------------
+# 18.66. Optimization validation
+# -----------------------------------------------------------------------------
+
+def validate_pose_selection_options(
+    options: PoseSelectionOptions,
+) -> PoseSelectionOptions:
+    """
+    Validate pose-selection configuration.
+    """
+
+    if not isinstance(
+        options,
+        PoseSelectionOptions,
+    ):
+        raise PoseSelectionValidationError(
+            "Expected PoseSelectionOptions."
+        )
+
+    if (
+        options.target_coverage_fraction < 0.0
+        or options.target_coverage_fraction > 1.0
+    ):
+        raise PoseSelectionValidationError(
+            "target_coverage_fraction is invalid."
+        )
+
+    if (
+        options.maximum_set_size is not None
+        and options.maximum_set_size
+        < options.minimum_set_size
+    ):
+        raise PoseSelectionValidationError(
+            "Pose-set size constraints are inconsistent."
+        )
+
+    return options
+
+
+def validate_marginal_gain_result(
+    result: MarginalGainResult,
+) -> MarginalGainResult:
+    """
+    Validate a marginal-gain result.
+    """
+
+    if not isinstance(
+        result,
+        MarginalGainResult,
+    ):
+        raise PoseSelectionValidationError(
+            "Expected MarginalGainResult."
+        )
+
+    if (
+        result.candidate_pose_id
+        in result.baseline_pose_ids
+    ):
+        raise PoseSelectionValidationError(
+            "Candidate pose is already in the baseline set."
+        )
+
+    if (
+        result.resulting_pose_ids
+        != (
+            *result.baseline_pose_ids,
+            result.candidate_pose_id,
+        )
+    ):
+        raise PoseSelectionValidationError(
+            "resulting_pose_ids are inconsistent."
+        )
+
+    expected_feature_count = len(
+        result.newly_covered_features
+    )
+
+    if (
+        result.newly_covered_feature_count
+        != expected_feature_count
+    ):
+        raise PoseSelectionValidationError(
+            "newly_covered_feature_count is inconsistent."
+        )
+
+    expected_weighted_gain = (
+        result.resulting_weighted_coverage
+        - result.baseline_weighted_coverage
+    )
+
+    if (
+        abs(
+            result.weighted_coverage_gain
+            - expected_weighted_gain
+        )
+        > SCORE_COMPARISON_TOLERANCE
+    ):
+        raise PoseSelectionValidationError(
+            "weighted_coverage_gain is inconsistent."
+        )
+
+    expected_raw_gain = (
+        result.resulting_raw_coverage
+        - result.baseline_raw_coverage
+    )
+
+    if (
+        abs(
+            result.raw_coverage_gain
+            - expected_raw_gain
+        )
+        > SCORE_COMPARISON_TOLERANCE
+    ):
+        raise PoseSelectionValidationError(
+            "raw_coverage_gain is inconsistent."
+        )
+
+    return result
+
+
+def validate_greedy_selection_step(
+    step: GreedySelectionStep,
+) -> GreedySelectionStep:
+    """
+    Validate one greedy-selection step.
+    """
+
+    if not isinstance(
+        step,
+        GreedySelectionStep,
+    ):
+        raise PoseSelectionValidationError(
+            "Expected GreedySelectionStep."
+        )
+
+    validate_marginal_gain_result(
+        step.marginal_gain
+    )
+
+    if (
+        step.selected_pose_id
+        != step.marginal_gain.candidate_pose_id
+    ):
+        raise PoseSelectionValidationError(
+            "The selected pose does not match "
+            "the marginal-gain candidate."
+        )
+
+    if (
+        not step.selected_pose_ids
+        or step.selected_pose_ids[-1]
+        != step.selected_pose_id
+    ):
+        raise PoseSelectionValidationError(
+            "The selected pose must be the final pose "
+            "in selected_pose_ids."
+        )
+
+    return step
+
+
+def validate_pose_set_candidate(
+    candidate: PoseSetCandidate,
+) -> PoseSetCandidate:
+    """
+    Validate one pose-set candidate.
+    """
+
+    if not isinstance(
+        candidate,
+        PoseSetCandidate,
+    ):
+        raise PoseSelectionValidationError(
+            "Expected PoseSetCandidate."
+        )
+
+    validate_pose_set_complementarity_result(
+        candidate.coverage_result
+    )
+
+    if (
+        candidate.pose_ids
+        != candidate.coverage_result
+        .selected_pose_ids
+    ):
+        raise PoseSelectionValidationError(
+            "Candidate pose identifiers are inconsistent "
+            "with its coverage result."
+        )
+
+    if (
+        abs(
+            candidate.weighted_coverage_fraction
+            - candidate.coverage_result.summary
+            .weighted_coverage_fraction
+        )
+        > SCORE_COMPARISON_TOLERANCE
+    ):
+        raise PoseSelectionValidationError(
+            "Candidate weighted coverage is inconsistent."
+        )
+
+    if (
+        abs(
+            candidate.raw_coverage_fraction
+            - candidate.coverage_result.summary
+            .overall_coverage_fraction
+        )
+        > SCORE_COMPARISON_TOLERANCE
+    ):
+        raise PoseSelectionValidationError(
+            "Candidate raw coverage is inconsistent."
+        )
+
+    return candidate
+
+
+def validate_pose_set_selection_result(
+    result: PoseSetSelectionResult,
+) -> PoseSetSelectionResult:
+    """
+    Validate a complete optimization result.
+    """
+
+    if not isinstance(
+        result,
+        PoseSetSelectionResult,
+    ):
+        raise PoseSelectionValidationError(
+            "Expected PoseSetSelectionResult."
+        )
+
+    if result.universe is not None:
+        validate_coverage_universe(
+            result.universe
+        )
+
+    for profile in result.profiles:
+        validate_pose_coverage_profile(profile)
+
+    for step in result.greedy_steps:
+        validate_greedy_selection_step(step)
+
+    for candidate in result.ranked_candidates:
+        validate_pose_set_candidate(candidate)
+
+    if result.selected_candidate is not None:
+        validate_pose_set_candidate(
+            result.selected_candidate
+        )
+
+        if (
+            result.selected_pose_ids
+            != result.selected_candidate.pose_ids
+        ):
+            raise PoseSelectionValidationError(
+                "selected_pose_ids do not match "
+                "selected_candidate."
+            )
+
+        if (
+            result.target_reached
+            != result.selected_candidate.target_reached
+        ):
+            raise PoseSelectionValidationError(
+                "target_reached is inconsistent."
+            )
+
+    elif result.selected_pose_ids:
+        raise PoseSelectionValidationError(
+            "selected_pose_ids cannot be populated when "
+            "selected_candidate is None."
+        )
+
+    available_pose_ids = tuple(
+        profile.pose_id
+        for profile in result.profiles
+    )
+
+    if result.available_pose_ids != available_pose_ids:
+        raise PoseSelectionValidationError(
+            "available_pose_ids are inconsistent."
+        )
+
+    if (
+        set(result.selected_pose_ids)
+        & set(result.excluded_pose_ids)
+    ):
+        raise PoseSelectionValidationError(
+            "Selected and excluded poses overlap."
+        )
+
+    if not set(
+        result.required_pose_ids
+    ).issubset(
+        set(result.selected_pose_ids)
+    ):
+        if result.status not in {
+            POSE_SELECTION_STATUS_EMPTY,
+            POSE_SELECTION_STATUS_INFEASIBLE,
+        }:
+            raise PoseSelectionValidationError(
+                "Required poses are missing from the "
+                "selected set."
+            )
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 18.67. Part 3 import self-check
+# -----------------------------------------------------------------------------
+
+def _validate_section_18_complementarity_part_3() -> None:
+    """
+    Validate Section 18 Part 3 during module import.
+    """
+
+    profile_a = PoseCoverageProfile(
+        pose_id="pose_a",
+        model_id="model",
+        ligand_id="ligand",
+        residue_values={
+            "residue:A:10:LYS": 1.0,
+            "residue:A:20:VAL": 1.0,
+        },
+        family_values={
+            "family:hbond": 1.0,
+        },
+        type_values={
+            "type:hydrogen_bond": 1.0,
+        },
+        hotspot_values={
+            "hotspot:A:10:LYS": 1.0,
+        },
+        source=COVERAGE_SOURCE_FINGERPRINT,
+        pose_score=3.0,
+    )
+
+    profile_b = PoseCoverageProfile(
+        pose_id="pose_b",
+        model_id="model",
+        ligand_id="ligand",
+        residue_values={
+            "residue:A:20:VAL": 1.0,
+            "residue:A:30:PHE": 1.0,
+        },
+        family_values={
+            "family:pi": 1.0,
+        },
+        type_values={
+            "type:pi_stacking": 1.0,
+        },
+        hotspot_values={
+            "hotspot:A:30:PHE": 1.0,
+        },
+        source=COVERAGE_SOURCE_FINGERPRINT,
+        pose_score=2.0,
+    )
+
+    profile_c = PoseCoverageProfile(
+        pose_id="pose_c",
+        model_id="model",
+        ligand_id="ligand",
+        residue_values={
+            "residue:A:40:ASP": 1.0,
+        },
+        family_values={
+            "family:saltbridge": 1.0,
+        },
+        type_values={
+            "type:salt_bridge": 1.0,
+        },
+        hotspot_values={
+            "hotspot:A:40:ASP": 1.0,
+        },
+        source=COVERAGE_SOURCE_FINGERPRINT,
+        pose_score=1.0,
+    )
+
+    profiles = (
+        profile_a,
+        profile_b,
+        profile_c,
+    )
+
+    coverage_options = CoverageOptions(
+        value_mode=COVERAGE_VALUE_BINARY,
+        universe_mode=COVERAGE_UNIVERSE_OBSERVED,
+        aggregation_mode=COVERAGE_AGGREGATION_UNION,
+    )
+
+    selection_options = PoseSelectionOptions(
+        method=POSE_SELECTION_METHOD_GREEDY,
+        minimum_set_size=1,
+        maximum_set_size=3,
+        target_coverage_fraction=1.0,
+        minimum_marginal_gain=0.0,
+    )
+
+    universe = build_coverage_universe(
+        profiles,
+        options=coverage_options,
+    )
+
+    gain = calculate_marginal_gain(
+        profiles,
+        baseline_pose_ids=("pose_a",),
+        candidate_pose_id="pose_b",
+        universe=universe,
+        coverage_options=coverage_options,
+        selection_options=selection_options,
+    )
+
+    if gain.newly_covered_feature_count != 4:
+        raise RuntimeError(
+            "Marginal feature-gain validation failed."
+        )
+
+    if gain.weighted_coverage_gain <= 0.0:
+        raise RuntimeError(
+            "Marginal weighted-gain validation failed."
+        )
+
+    ranked_gains = evaluate_all_marginal_gains(
+        profiles,
+        baseline_pose_ids=("pose_a",),
+        universe=universe,
+        coverage_options=coverage_options,
+        selection_options=selection_options,
+    )
+
+    if not ranked_gains:
+        raise RuntimeError(
+            "Marginal-gain ranking validation failed."
+        )
+
+    greedy_result = greedy_select_pose_set(
+        profiles,
+        universe=universe,
+        coverage_options=coverage_options,
+        selection_options=selection_options,
+    )
+
+    if not greedy_result.target_reached:
+        raise RuntimeError(
+            "Greedy target validation failed."
+        )
+
+    if set(greedy_result.selected_pose_ids) != {
+        "pose_a",
+        "pose_b",
+        "pose_c",
+    }:
+        raise RuntimeError(
+            "Greedy pose selection validation failed."
+        )
+
+    exhaustive_options = (
+        selection_options.with_updates(
+            method=POSE_SELECTION_METHOD_EXHAUSTIVE,
+            minimum_set_size=1,
+            maximum_set_size=3,
+        )
+    )
+
+    exhaustive_result = exhaustive_select_pose_set(
+        profiles,
+        universe=universe,
+        coverage_options=coverage_options,
+        selection_options=exhaustive_options,
+    )
+
+    if not exhaustive_result.optimality_guaranteed:
+        raise RuntimeError(
+            "Exhaustive optimality validation failed."
+        )
+
+    if not exhaustive_result.target_reached:
+        raise RuntimeError(
+            "Exhaustive target validation failed."
+        )
+
+    if exhaustive_result.selected_candidate is None:
+        raise RuntimeError(
+            "Exhaustive candidate validation failed."
+        )
+
+    if (
+        exhaustive_result.selected_candidate
+        .weighted_coverage_fraction
+        < 1.0 - SCORE_COMPARISON_TOLERANCE
+    ):
+        raise RuntimeError(
+            "Exhaustive coverage validation failed."
+        )
+
+    validate_pose_selection_options(
+        selection_options
+    )
+    validate_marginal_gain_result(gain)
+    validate_pose_set_selection_result(
+        greedy_result
+    )
+    validate_pose_set_selection_result(
+        exhaustive_result
+    )
+
+
+_validate_section_18_complementarity_part_3()
+
+
+# -----------------------------------------------------------------------------
+# 18.68. Section 18 Part 3 public interface
+# -----------------------------------------------------------------------------
+
+_SECTION_18_PART_3_PUBLIC_NAMES: Final[
+    Tuple[str, ...]
+] = (
+    # Statuses
+    "POSE_SELECTION_STATUS_COMPLETE",
+    "POSE_SELECTION_STATUS_PARTIAL",
+    "POSE_SELECTION_STATUS_EMPTY",
+    "POSE_SELECTION_STATUS_INFEASIBLE",
+    "POSE_SELECTION_STATUS_FAILED",
+    "POSE_SELECTION_STATUSES",
+
+    # Methods
+    "POSE_SELECTION_METHOD_GREEDY",
+    "POSE_SELECTION_METHOD_EXHAUSTIVE",
+    "POSE_SELECTION_METHOD_AUTO",
+    "POSE_SELECTION_METHODS",
+
+    # Tie-break modes
+    "POSE_SELECTION_TIE_BREAK_POSE_SCORE",
+    "POSE_SELECTION_TIE_BREAK_DIVERSITY",
+    "POSE_SELECTION_TIE_BREAK_FEATURE_COUNT",
+    "POSE_SELECTION_TIE_BREAK_POSE_ID",
+    "POSE_SELECTION_TIE_BREAK_MODES",
+
+    # Objectives
+    "POSE_SELECTION_OBJECTIVE_WEIGHTED_COVERAGE",
+    "POSE_SELECTION_OBJECTIVE_RAW_COVERAGE",
+    "POSE_SELECTION_OBJECTIVE_HYBRID",
+    "POSE_SELECTION_OBJECTIVES",
+
+    # Defaults
+    "DEFAULT_POSE_SELECTION_METHOD",
+    "DEFAULT_POSE_SELECTION_OBJECTIVE",
+    "DEFAULT_POSE_SELECTION_TIE_BREAK",
+    "DEFAULT_MINIMUM_POSE_SET_SIZE",
+    "DEFAULT_MAXIMUM_POSE_SET_SIZE",
+    "DEFAULT_TARGET_COVERAGE_FRACTION",
+    "DEFAULT_MINIMUM_MARGINAL_GAIN",
+    "DEFAULT_EXHAUSTIVE_SEARCH_LIMIT",
+    "DEFAULT_MAXIMUM_EXHAUSTIVE_COMBINATIONS",
+    "DEFAULT_STOP_WHEN_TARGET_REACHED",
+    "DEFAULT_REQUIRE_TARGET_COVERAGE",
+    "DEFAULT_PREFER_SMALLER_SETS",
+    "DEFAULT_USE_DIVERSITY_TIE_BREAK",
+    "DEFAULT_POSE_SCORE_WEIGHT",
+    "DEFAULT_DIVERSITY_WEIGHT",
+    "DEFAULT_SET_SIZE_PENALTY",
+    "DEFAULT_OPTIMIZATION_EPSILON",
+    "DEFAULT_OPTIMIZATION_VALIDATE_RESULT",
+    "DEFAULT_POSE_SELECTION_OPTIONS",
+
+    # Exceptions
+    "PoseSelectionError",
+    "MarginalGainError",
+    "PoseSelectionInputError",
+    "ExhaustiveSearchLimitError",
+    "PoseSelectionValidationError",
+
+    # Dataclasses
+    "PoseSelectionOptions",
+    "MarginalGainResult",
+    "GreedySelectionStep",
+    "PoseSetCandidate",
+    "PoseSetSelectionResult",
+
+    # Normalization
+    "normalize_pose_selection_status",
+    "normalize_pose_selection_method",
+    "normalize_pose_selection_tie_break",
+    "normalize_pose_selection_objective",
+
+    # Helpers
+    "pose_profile_mapping",
+    "resolve_pose_selection_method",
+    "resolve_maximum_pose_set_size",
+    "validate_pose_selection_constraints",
+    "selected_pose_scores",
+    "mean_pairwise_diversity_for_pose_set",
+    "normalized_pose_score_component",
+    "calculate_pose_set_objective",
+    "evaluate_pose_set_candidate",
+
+    # Marginal gain
+    "newly_covered_category_features",
+    "candidate_diversity_tie_break_value",
+    "calculate_marginal_gain",
+    "marginal_gain_sort_key",
+    "rank_marginal_gains",
+    "evaluate_all_marginal_gains",
+
+    # Greedy optimization
+    "greedy_select_pose_set",
+
+    # Exhaustive search
+    "combination_count",
+    "enumerate_pose_set_combinations",
+    "candidate_sort_key",
+    "rank_pose_set_candidates",
+    "exhaustive_select_pose_set",
+
+    # Main APIs
+    "select_optimal_pose_set",
+    "optimize_pose_complementarity",
+    "optimize_pose_complementarity_from_results",
+
+    # Convenience APIs
+    "best_next_pose",
+    "rank_candidate_poses_by_marginal_gain",
+    "selected_pose_profiles",
+    "rejected_pose_profiles",
+
+    # Validation
+    "validate_pose_selection_options",
+    "validate_marginal_gain_result",
+    "validate_greedy_selection_step",
+    "validate_pose_set_candidate",
+    "validate_pose_set_selection_result",
+)
+
+for public_name in _SECTION_18_PART_3_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+# =============================================================================
+# End of Section 18 — Part 3
+# =============================================================================
+
+
