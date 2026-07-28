@@ -127013,3 +127013,2253 @@ validate_section_30_4_public_interface()
 # End of Section 30.4
 # =============================================================================
 
+
+# =============================================================================
+# DockAnalyzer — Interaction scoring
+# Section 30.5 — Final self-test runner
+# =============================================================================
+
+"""
+Final runner for the DockAnalyzer scoring self-test suite.
+
+Section 30.5 closes ``scoring.py`` by providing one deterministic entry point
+for the infrastructure check from Section 30.1 and the registered scientific
+self-tests from Sections 30.2–30.4. The runner supports section and tag
+filters, machine-readable reports, CI-friendly exit codes, test discovery,
+and direct command-line execution.
+
+The implementation intentionally remains independent of pytest and unittest.
+It reuses the registry, result structures, fixtures, assertions, and focused
+section runners defined by the preceding self-test sections. No test is run at
+import time. The complete suite runs only when one of the public runner
+functions is called or when the consolidated ``scoring.py`` module is executed
+as a script.
+
+This block is designed to be concatenated directly after Section 30.4. It does
+not repeat ``from __future__ import annotations``.
+"""
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from types import MappingProxyType
+from typing import (
+    Any,
+    Dict,
+    Final,
+    FrozenSet,
+    Iterable,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    TextIO,
+    Tuple,
+    Union,
+)
+import argparse
+import csv
+import io
+import json
+import os
+import sys
+import time
+import xml.etree.ElementTree as ET
+
+if "__all__" not in globals():
+    __all__: List[str] = []
+
+
+# -----------------------------------------------------------------------------
+# 30.5.1. Constants and canonical runner options
+# -----------------------------------------------------------------------------
+
+SCORING_FINAL_RUNNER_VERSION: Final[str] = "30.5"
+SCORING_FINAL_RUNNER_SCHEMA: Final[str] = (
+    "dockanalyzer.scoring.self_test.final_runner"
+)
+SCORING_FINAL_RUNNER_SCHEMA_VERSION: Final[str] = "1.0"
+
+SCORING_FINAL_RUNNER_SECTION_ORDER: Final[Tuple[str, ...]] = (
+    SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    SCORING_SELF_TEST_SECTION_AGGREGATION,
+)
+SCORING_FINAL_RUNNER_ALL_TOKEN: Final[str] = "all"
+SCORING_FINAL_RUNNER_DEFAULT_SECTIONS: Final[Tuple[str, ...]] = (
+    SCORING_FINAL_RUNNER_SECTION_ORDER
+)
+
+SCORING_FINAL_RUNNER_FORMAT_TEXT: Final[str] = "text"
+SCORING_FINAL_RUNNER_FORMAT_JSON: Final[str] = "json"
+SCORING_FINAL_RUNNER_FORMAT_JSONL: Final[str] = "jsonl"
+SCORING_FINAL_RUNNER_FORMAT_CSV: Final[str] = "csv"
+SCORING_FINAL_RUNNER_FORMAT_JUNIT: Final[str] = "junit"
+SCORING_FINAL_RUNNER_FORMATS: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_FINAL_RUNNER_FORMAT_TEXT,
+        SCORING_FINAL_RUNNER_FORMAT_JSON,
+        SCORING_FINAL_RUNNER_FORMAT_JSONL,
+        SCORING_FINAL_RUNNER_FORMAT_CSV,
+        SCORING_FINAL_RUNNER_FORMAT_JUNIT,
+    }
+)
+
+SCORING_FINAL_RUNNER_EXIT_SUCCESS: Final[int] = 0
+SCORING_FINAL_RUNNER_EXIT_TEST_FAILURE: Final[int] = 1
+SCORING_FINAL_RUNNER_EXIT_USAGE_ERROR: Final[int] = 2
+SCORING_FINAL_RUNNER_EXIT_INTERNAL_ERROR: Final[int] = 3
+
+SCORING_FINAL_RUNNER_EXPECTED_SECTION_COUNTS: Final[Mapping[str, int]] = (
+    MappingProxyType(
+        {
+            SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION:
+                SCORING_SECTION_30_2_EXPECTED_TEST_COUNT,
+            SCORING_SELF_TEST_SECTION_INDIVIDUAL:
+                SCORING_SECTION_30_3_EXPECTED_TEST_COUNT,
+            SCORING_SELF_TEST_SECTION_AGGREGATION:
+                SCORING_SECTION_30_4_EXPECTED_TEST_COUNT,
+        }
+    )
+)
+SCORING_FINAL_RUNNER_EXPECTED_TEST_COUNT: Final[int] = sum(
+    SCORING_FINAL_RUNNER_EXPECTED_SECTION_COUNTS.values()
+)
+
+SCORING_FINAL_RUNNER_DEFAULT_ENCODING: Final[str] = "utf-8"
+SCORING_FINAL_RUNNER_DEFAULT_INDENT: Final[int] = 2
+SCORING_FINAL_RUNNER_DEFAULT_TOP_FAILURES: Final[int] = 20
+SCORING_FINAL_RUNNER_DEFAULT_SLOWEST: Final[int] = 10
+
+
+# -----------------------------------------------------------------------------
+# 30.5.2. Exceptions
+# -----------------------------------------------------------------------------
+
+
+class ScoringFinalRunnerError(ScoringSelfTestError):
+    """Base exception for final-runner failures."""
+
+
+class ScoringFinalRunnerConfigurationError(ScoringFinalRunnerError):
+    """Raised when runner options are invalid."""
+
+
+class ScoringFinalRunnerRegistrationError(ScoringFinalRunnerError):
+    """Raised when the registered suite is incomplete or inconsistent."""
+
+
+class ScoringFinalRunnerExecutionError(ScoringFinalRunnerError):
+    """Raised when the complete suite cannot be executed safely."""
+
+
+class ScoringFinalRunnerSerializationError(ScoringFinalRunnerError):
+    """Raised when a final report cannot be serialized or written."""
+
+
+# -----------------------------------------------------------------------------
+# 30.5.3. Normalization helpers
+# -----------------------------------------------------------------------------
+
+
+def normalize_scoring_final_runner_format(value: Any) -> str:
+    """Normalize and validate a final-runner output format."""
+
+    text = str(value).strip().lower().replace("-", "_")
+    aliases = {
+        "txt": SCORING_FINAL_RUNNER_FORMAT_TEXT,
+        "plain": SCORING_FINAL_RUNNER_FORMAT_TEXT,
+        "ndjson": SCORING_FINAL_RUNNER_FORMAT_JSONL,
+        "json_lines": SCORING_FINAL_RUNNER_FORMAT_JSONL,
+        "comma_separated": SCORING_FINAL_RUNNER_FORMAT_CSV,
+        "xml": SCORING_FINAL_RUNNER_FORMAT_JUNIT,
+        "junit_xml": SCORING_FINAL_RUNNER_FORMAT_JUNIT,
+    }
+    normalized = aliases.get(text, text)
+    if normalized not in SCORING_FINAL_RUNNER_FORMATS:
+        supported = ", ".join(sorted(SCORING_FINAL_RUNNER_FORMATS))
+        raise ScoringFinalRunnerConfigurationError(
+            f"Unsupported output format {value!r}; expected one of "
+            f"{supported}."
+        )
+    return normalized
+
+
+def _split_scoring_final_runner_tokens(
+    values: Optional[Iterable[Any]],
+) -> Tuple[str, ...]:
+    """Split repeated or comma-separated command-line values."""
+
+    if values is None:
+        return ()
+    tokens: List[str] = []
+    for value in values:
+        for item in str(value).split(","):
+            text = item.strip()
+            if text:
+                tokens.append(text)
+    return tuple(tokens)
+
+
+def normalize_scoring_final_runner_sections(
+    values: Optional[Iterable[Any]],
+) -> Tuple[str, ...]:
+    """Normalize selected scientific self-test sections."""
+
+    tokens = _split_scoring_final_runner_tokens(values)
+    if not tokens:
+        return SCORING_FINAL_RUNNER_DEFAULT_SECTIONS
+    normalized: List[str] = []
+    for token in tokens:
+        text = str(token).strip().lower()
+        if text in {
+            SCORING_FINAL_RUNNER_ALL_TOKEN,
+            SCORING_SELF_TEST_ROOT_SECTION,
+            "suite",
+            "complete",
+        }:
+            return SCORING_FINAL_RUNNER_DEFAULT_SECTIONS
+        section = normalize_scoring_self_test_section(token)
+        if section == SCORING_SELF_TEST_SECTION_INFRASTRUCTURE:
+            continue
+        if section == SCORING_SELF_TEST_SECTION_RUNNER:
+            continue
+        if section not in SCORING_FINAL_RUNNER_SECTION_ORDER:
+            raise ScoringFinalRunnerConfigurationError(
+                f"Section {section!r} is not executable by the final runner."
+            )
+        if section not in normalized:
+            normalized.append(section)
+    if not normalized:
+        return ()
+    return tuple(
+        section
+        for section in SCORING_FINAL_RUNNER_SECTION_ORDER
+        if section in normalized
+    )
+
+
+def normalize_scoring_final_runner_tags(
+    values: Optional[Iterable[Any]],
+) -> FrozenSet[str]:
+    """Normalize a set of case-selection tags."""
+
+    tokens = _split_scoring_final_runner_tokens(values)
+    return frozenset(
+        token.strip().lower().replace("-", "_")
+        for token in tokens
+        if token.strip()
+    )
+
+
+def normalize_scoring_final_runner_path(
+    value: Optional[Union[str, os.PathLike[str]]],
+) -> Optional[Path]:
+    """Normalize an optional report path."""
+
+    if value is None:
+        return None
+    text = os.fspath(value).strip()
+    if not text:
+        return None
+    return Path(text).expanduser()
+
+
+# -----------------------------------------------------------------------------
+# 30.5.4. Runner configuration
+# -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringFinalRunnerOptions:
+    """Immutable options for the complete scoring self-test run."""
+
+    sections: Tuple[str, ...] = SCORING_FINAL_RUNNER_DEFAULT_SECTIONS
+    tags: FrozenSet[str] = frozenset()
+    seed: int = SCORING_SELF_TEST_DEFAULT_SEED
+    capture_output: bool = True
+    include_infrastructure_check: bool = True
+    validate_public_interfaces: bool = True
+    validate_registration: bool = True
+    fail_fast: bool = False
+    raise_on_failure: bool = False
+    include_passed: bool = False
+    include_tracebacks: bool = False
+    include_returned_values: bool = False
+    output_format: str = SCORING_FINAL_RUNNER_FORMAT_TEXT
+    output_path: Optional[Path] = None
+    encoding: str = SCORING_FINAL_RUNNER_DEFAULT_ENCODING
+    indent: Optional[int] = SCORING_FINAL_RUNNER_DEFAULT_INDENT
+    quiet: bool = False
+    top_failures: int = SCORING_FINAL_RUNNER_DEFAULT_TOP_FAILURES
+    slowest_cases: int = SCORING_FINAL_RUNNER_DEFAULT_SLOWEST
+
+    def __post_init__(self) -> None:
+        sections = normalize_scoring_final_runner_sections(self.sections)
+        tags = normalize_scoring_final_runner_tags(self.tags)
+        output_format = normalize_scoring_final_runner_format(
+            self.output_format
+        )
+        output_path = normalize_scoring_final_runner_path(self.output_path)
+        try:
+            seed = int(self.seed)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ScoringFinalRunnerConfigurationError(
+                "seed must be an integer."
+            ) from exc
+        if isinstance(self.top_failures, bool):
+            raise ScoringFinalRunnerConfigurationError(
+                "top_failures must be an integer."
+            )
+        if isinstance(self.slowest_cases, bool):
+            raise ScoringFinalRunnerConfigurationError(
+                "slowest_cases must be an integer."
+            )
+        top_failures = int(self.top_failures)
+        slowest_cases = int(self.slowest_cases)
+        if top_failures < 0:
+            raise ScoringFinalRunnerConfigurationError(
+                "top_failures cannot be negative."
+            )
+        if slowest_cases < 0:
+            raise ScoringFinalRunnerConfigurationError(
+                "slowest_cases cannot be negative."
+            )
+        encoding = str(self.encoding).strip()
+        if not encoding:
+            raise ScoringFinalRunnerConfigurationError(
+                "encoding cannot be empty."
+            )
+        indent = self.indent
+        if indent is not None:
+            if isinstance(indent, bool):
+                raise ScoringFinalRunnerConfigurationError(
+                    "indent must be an integer or None."
+                )
+            indent = int(indent)
+            if indent < 0:
+                raise ScoringFinalRunnerConfigurationError(
+                    "indent cannot be negative."
+                )
+        object.__setattr__(self, "sections", sections)
+        object.__setattr__(self, "tags", tags)
+        object.__setattr__(self, "seed", seed)
+        object.__setattr__(self, "output_format", output_format)
+        object.__setattr__(self, "output_path", output_path)
+        object.__setattr__(self, "encoding", encoding)
+        object.__setattr__(self, "indent", indent)
+        object.__setattr__(self, "top_failures", top_failures)
+        object.__setattr__(self, "slowest_cases", slowest_cases)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a serialization-safe options mapping."""
+
+        return {
+            "sections": list(self.sections),
+            "tags": sorted(self.tags),
+            "seed": self.seed,
+            "capture_output": self.capture_output,
+            "include_infrastructure_check": (
+                self.include_infrastructure_check
+            ),
+            "validate_public_interfaces": self.validate_public_interfaces,
+            "validate_registration": self.validate_registration,
+            "fail_fast": self.fail_fast,
+            "raise_on_failure": self.raise_on_failure,
+            "include_passed": self.include_passed,
+            "include_tracebacks": self.include_tracebacks,
+            "include_returned_values": self.include_returned_values,
+            "output_format": self.output_format,
+            "output_path": (
+                str(self.output_path)
+                if self.output_path is not None
+                else None
+            ),
+            "encoding": self.encoding,
+            "indent": self.indent,
+            "quiet": self.quiet,
+            "top_failures": self.top_failures,
+            "slowest_cases": self.slowest_cases,
+        }
+
+
+# -----------------------------------------------------------------------------
+# 30.5.5. Preflight and suite result structures
+# -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringFinalRunnerCheck:
+    """Outcome of one final-runner preflight check."""
+
+    name: str
+    success: bool
+    message: str = ""
+    duration_seconds: float = 0.0
+    details: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+
+    def __post_init__(self) -> None:
+        name = str(self.name).strip()
+        if not name:
+            raise ScoringFinalRunnerConfigurationError(
+                "Preflight check name cannot be empty."
+            )
+        duration = scoring_self_test_float(
+            self.duration_seconds,
+            name="preflight duration",
+        )
+        if duration < 0.0:
+            raise ScoringFinalRunnerConfigurationError(
+                "Preflight duration cannot be negative."
+            )
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "message", str(self.message))
+        object.__setattr__(self, "duration_seconds", duration)
+        object.__setattr__(
+            self,
+            "details",
+            scoring_self_test_freeze_mapping(self.details),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a serialization-safe mapping."""
+
+        return {
+            "name": self.name,
+            "success": self.success,
+            "message": self.message,
+            "duration_seconds": self.duration_seconds,
+            "details": dict(self.details),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringFinalSectionResult:
+    """Focused result for one scientific self-test section."""
+
+    section: str
+    report: ScoringSelfTestReport
+    expected_count: int
+    selected_count: int
+    stopped_suite: bool = False
+
+    def __post_init__(self) -> None:
+        section = normalize_scoring_self_test_section(self.section)
+        if section not in SCORING_FINAL_RUNNER_SECTION_ORDER:
+            raise ScoringFinalRunnerConfigurationError(
+                f"Unsupported final-runner section {section!r}."
+            )
+        validate_scoring_self_test_report(self.report)
+        expected_count = int(self.expected_count)
+        selected_count = int(self.selected_count)
+        if expected_count < 0 or selected_count < 0:
+            raise ScoringFinalRunnerConfigurationError(
+                "Section counts cannot be negative."
+            )
+        if self.report.total != selected_count:
+            raise ScoringFinalRunnerConfigurationError(
+                "selected_count must equal report.total."
+            )
+        object.__setattr__(self, "section", section)
+        object.__setattr__(self, "expected_count", expected_count)
+        object.__setattr__(self, "selected_count", selected_count)
+
+    @property
+    def success(self) -> bool:
+        return self.report.success
+
+    @property
+    def total(self) -> int:
+        return self.report.total
+
+    @property
+    def passed(self) -> int:
+        return self.report.passed
+
+    @property
+    def failed(self) -> int:
+        return self.report.failed
+
+    @property
+    def skipped(self) -> int:
+        return self.report.skipped
+
+    def to_dict(
+        self,
+        *,
+        include_returned_values: bool = False,
+    ) -> Dict[str, Any]:
+        """Return a serialization-safe mapping."""
+
+        return {
+            "section": self.section,
+            "success": self.success,
+            "expected_count": self.expected_count,
+            "selected_count": self.selected_count,
+            "stopped_suite": self.stopped_suite,
+            "report": scoring_self_test_report_to_dict(
+                self.report,
+                include_returned_values=include_returned_values,
+            ),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringFinalRunnerResult:
+    """Complete outcome of the final scoring self-test runner."""
+
+    options: ScoringFinalRunnerOptions
+    report: ScoringSelfTestReport
+    section_results: Tuple[ScoringFinalSectionResult, ...]
+    preflight_checks: Tuple[ScoringFinalRunnerCheck, ...]
+    started_at: str
+    finished_at: str
+    duration_seconds: float
+    stopped_early: bool = False
+    internal_error: Optional[str] = None
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.options, ScoringFinalRunnerOptions):
+            raise ScoringFinalRunnerConfigurationError(
+                "options must be ScoringFinalRunnerOptions."
+            )
+        validate_scoring_self_test_report(self.report)
+        duration = scoring_self_test_float(
+            self.duration_seconds,
+            name="final runner duration",
+        )
+        if duration < 0.0:
+            raise ScoringFinalRunnerConfigurationError(
+                "Final runner duration cannot be negative."
+            )
+        section_results = tuple(self.section_results)
+        checks = tuple(self.preflight_checks)
+        if len({item.section for item in section_results}) != len(
+            section_results
+        ):
+            raise ScoringFinalRunnerConfigurationError(
+                "section_results contains duplicate sections."
+            )
+        object.__setattr__(self, "section_results", section_results)
+        object.__setattr__(self, "preflight_checks", checks)
+        object.__setattr__(self, "duration_seconds", duration)
+        object.__setattr__(
+            self,
+            "metadata",
+            scoring_self_test_freeze_mapping(self.metadata),
+        )
+
+    @property
+    def preflight_success(self) -> bool:
+        return all(check.success for check in self.preflight_checks)
+
+    @property
+    def success(self) -> bool:
+        return (
+            self.internal_error is None
+            and self.preflight_success
+            and self.report.success
+        )
+
+    @property
+    def exit_code(self) -> int:
+        if self.internal_error is not None:
+            return SCORING_FINAL_RUNNER_EXIT_INTERNAL_ERROR
+        if not self.preflight_success or not self.report.success:
+            return SCORING_FINAL_RUNNER_EXIT_TEST_FAILURE
+        return SCORING_FINAL_RUNNER_EXIT_SUCCESS
+
+    @property
+    def total(self) -> int:
+        return self.report.total
+
+    @property
+    def passed(self) -> int:
+        return self.report.passed
+
+    @property
+    def failed(self) -> int:
+        return self.report.failed
+
+    @property
+    def skipped(self) -> int:
+        return self.report.skipped
+
+    @property
+    def failed_results(self) -> Tuple[ScoringSelfTestResult, ...]:
+        return tuple(result for result in self.report.results if result.failed)
+
+    @property
+    def slowest_results(self) -> Tuple[ScoringSelfTestResult, ...]:
+        limit = self.options.slowest_cases
+        if limit <= 0:
+            return ()
+        return tuple(
+            sorted(
+                self.report.results,
+                key=lambda result: result.duration_seconds,
+                reverse=True,
+            )[:limit]
+        )
+
+    def to_dict(
+        self,
+        *,
+        include_returned_values: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Return a serialization-safe final result mapping."""
+
+        include_values = (
+            self.options.include_returned_values
+            if include_returned_values is None
+            else bool(include_returned_values)
+        )
+        return {
+            "schema": SCORING_FINAL_RUNNER_SCHEMA,
+            "schema_version": SCORING_FINAL_RUNNER_SCHEMA_VERSION,
+            "runner_version": SCORING_FINAL_RUNNER_VERSION,
+            "success": self.success,
+            "exit_code": self.exit_code,
+            "preflight_success": self.preflight_success,
+            "stopped_early": self.stopped_early,
+            "internal_error": self.internal_error,
+            "total": self.total,
+            "passed": self.passed,
+            "failed": self.failed,
+            "skipped": self.skipped,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "duration_seconds": self.duration_seconds,
+            "options": self.options.to_dict(),
+            "preflight_checks": [
+                check.to_dict() for check in self.preflight_checks
+            ],
+            "sections": [
+                item.to_dict(
+                    include_returned_values=include_values,
+                )
+                for item in self.section_results
+            ],
+            "report": scoring_self_test_report_to_dict(
+                self.report,
+                include_returned_values=include_values,
+            ),
+            "metadata": dict(self.metadata),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 30.5.6. Registry discovery and readiness validation
+# -----------------------------------------------------------------------------
+
+
+def get_scoring_final_runner_registry(
+    registry: Optional[ScoringSelfTestRegistry] = None,
+) -> ScoringSelfTestRegistry:
+    """Return the registry used by the final runner."""
+
+    if registry is not None:
+        return registry
+    return _SCORING_SELF_TEST_REGISTRY
+
+
+def get_scoring_final_runner_cases(
+    *,
+    sections: Optional[Iterable[Any]] = None,
+    tags: Iterable[Any] = (),
+    enabled_only: bool = True,
+    registry: Optional[ScoringSelfTestRegistry] = None,
+) -> Tuple[ScoringSelfTestCase, ...]:
+    """Return final-suite cases in canonical section order."""
+
+    selected_sections = normalize_scoring_final_runner_sections(sections)
+    selected_tags = normalize_scoring_final_runner_tags(tags)
+    selected_registry = get_scoring_final_runner_registry(registry)
+    cases: List[ScoringSelfTestCase] = []
+    for section in selected_sections:
+        cases.extend(
+            selected_registry.cases(
+                section=section,
+                tags=selected_tags,
+                enabled_only=enabled_only,
+            )
+        )
+    return tuple(cases)
+
+
+def scoring_final_runner_section_counts(
+    *,
+    enabled_only: bool = False,
+    registry: Optional[ScoringSelfTestRegistry] = None,
+) -> Mapping[str, int]:
+    """Return registered case counts by scientific section."""
+
+    selected_registry = get_scoring_final_runner_registry(registry)
+    counts = {
+        section: len(
+            selected_registry.cases(
+                section=section,
+                enabled_only=enabled_only,
+            )
+        )
+        for section in SCORING_FINAL_RUNNER_SECTION_ORDER
+    }
+    return MappingProxyType(counts)
+
+
+def validate_scoring_final_runner_registration(
+    *,
+    registry: Optional[ScoringSelfTestRegistry] = None,
+    require_exact_counts: bool = True,
+) -> Mapping[str, int]:
+    """Validate final-suite registration and return section counts."""
+
+    selected_registry = get_scoring_final_runner_registry(registry)
+    cases = get_scoring_final_runner_cases(
+        sections=SCORING_FINAL_RUNNER_SECTION_ORDER,
+        enabled_only=False,
+        registry=selected_registry,
+    )
+    identifiers = tuple(case.identifier for case in cases)
+    assert_scoring_test_unique(identifiers)
+    counts = dict(
+        scoring_final_runner_section_counts(
+            enabled_only=False,
+            registry=selected_registry,
+        )
+    )
+    for section, expected in (
+        SCORING_FINAL_RUNNER_EXPECTED_SECTION_COUNTS.items()
+    ):
+        actual = counts.get(section, 0)
+        if require_exact_counts and actual != expected:
+            raise ScoringFinalRunnerRegistrationError(
+                f"Section {section} has {actual} registered tests; "
+                f"expected {expected}."
+            )
+        if not require_exact_counts and actual < 1:
+            raise ScoringFinalRunnerRegistrationError(
+                f"Section {section} has no registered tests."
+            )
+    if require_exact_counts and len(cases) != (
+        SCORING_FINAL_RUNNER_EXPECTED_TEST_COUNT
+    ):
+        raise ScoringFinalRunnerRegistrationError(
+            f"Final suite has {len(cases)} registered tests; expected "
+            f"{SCORING_FINAL_RUNNER_EXPECTED_TEST_COUNT}."
+        )
+    return MappingProxyType(counts)
+
+
+def validate_scoring_final_runner_dependencies() -> None:
+    """Validate required functions from Sections 30.1–30.4."""
+
+    required_names = (
+        "run_section_30_1_self_check",
+        "run_section_30_2_self_tests",
+        "run_section_30_3_self_tests",
+        "run_section_30_4_self_tests",
+        "validate_section_30_1_public_interface",
+        "validate_section_30_2_public_interface",
+        "validate_section_30_3_public_interface",
+        "validate_section_30_4_public_interface",
+    )
+    missing = tuple(name for name in required_names if name not in globals())
+    if missing:
+        raise ScoringFinalRunnerRegistrationError(
+            "Missing final-runner dependencies: " + ", ".join(missing)
+        )
+    not_callable = tuple(
+        name for name in required_names if not callable(globals()[name])
+    )
+    if not_callable:
+        raise ScoringFinalRunnerRegistrationError(
+            "Non-callable final-runner dependencies: "
+            + ", ".join(not_callable)
+        )
+
+
+def validate_scoring_final_runner_public_interfaces() -> None:
+    """Validate the public interfaces of all self-test subsections."""
+
+    validate_section_30_1_public_interface()
+    validate_section_30_2_public_interface()
+    validate_section_30_3_public_interface()
+    validate_section_30_4_public_interface()
+
+
+def _run_scoring_final_runner_check(
+    name: str,
+    function: Any,
+) -> ScoringFinalRunnerCheck:
+    """Execute one preflight operation as a structured check."""
+
+    start = time.perf_counter()
+    try:
+        returned = function()
+    except Exception as exc:
+        return ScoringFinalRunnerCheck(
+            name=name,
+            success=False,
+            message=f"{type(exc).__name__}: {exc}",
+            duration_seconds=time.perf_counter() - start,
+            details={"exception_type": type(exc).__name__},
+        )
+    details: Dict[str, Any] = {}
+    if isinstance(returned, Mapping):
+        for key, value in returned.items():
+            if key == "summary" and isinstance(value, Mapping):
+                details[key] = dict(value)
+            else:
+                details[key] = value
+    success = bool(details.get("success", True))
+    return ScoringFinalRunnerCheck(
+        name=name,
+        success=success,
+        message="passed" if success else "reported failure",
+        duration_seconds=time.perf_counter() - start,
+        details=details,
+    )
+
+
+def run_scoring_final_runner_preflight(
+    options: Optional[ScoringFinalRunnerOptions] = None,
+    *,
+    registry: Optional[ScoringSelfTestRegistry] = None,
+) -> Tuple[ScoringFinalRunnerCheck, ...]:
+    """Run dependency, interface, registration, and infrastructure checks."""
+
+    selected_options = options or ScoringFinalRunnerOptions()
+    checks: List[ScoringFinalRunnerCheck] = []
+    checks.append(
+        _run_scoring_final_runner_check(
+            "dependencies",
+            validate_scoring_final_runner_dependencies,
+        )
+    )
+    if selected_options.validate_public_interfaces:
+        checks.append(
+            _run_scoring_final_runner_check(
+                "public_interfaces",
+                validate_scoring_final_runner_public_interfaces,
+            )
+        )
+    if selected_options.validate_registration:
+        checks.append(
+            _run_scoring_final_runner_check(
+                "registration",
+                lambda: validate_scoring_final_runner_registration(
+                    registry=registry,
+                    require_exact_counts=True,
+                ),
+            )
+        )
+    if selected_options.include_infrastructure_check:
+        checks.append(
+            _run_scoring_final_runner_check(
+                "section_30_1_infrastructure",
+                run_section_30_1_self_check,
+            )
+        )
+    return tuple(checks)
+
+
+# -----------------------------------------------------------------------------
+# 30.5.7. Section execution and report aggregation
+# -----------------------------------------------------------------------------
+
+
+def _empty_scoring_self_test_report(
+    *,
+    options: ScoringFinalRunnerOptions,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringSelfTestReport:
+    """Create an empty aggregate report."""
+
+    timestamp = scoring_self_test_utc_now()
+    return ScoringSelfTestReport(
+        results=(),
+        started_at=timestamp,
+        finished_at=timestamp,
+        duration_seconds=0.0,
+        selected_section=SCORING_SELF_TEST_ROOT_SECTION,
+        selected_tags=options.tags,
+        seed=options.seed,
+        metadata=scoring_self_test_freeze_mapping(metadata),
+    )
+
+
+def _run_scoring_final_runner_section(
+    section: str,
+    *,
+    options: ScoringFinalRunnerOptions,
+    context: ScoringSelfTestContext,
+    registry: Optional[ScoringSelfTestRegistry] = None,
+) -> ScoringFinalSectionResult:
+    """Run one scientific section and return its focused result."""
+
+    selected_registry = get_scoring_final_runner_registry(registry)
+    expected_count = SCORING_FINAL_RUNNER_EXPECTED_SECTION_COUNTS[section]
+    selected_cases = selected_registry.cases(
+        section=section,
+        tags=options.tags,
+        enabled_only=True,
+    )
+    report = run_registered_scoring_self_tests(
+        section=section,
+        tags=options.tags,
+        seed=options.seed,
+        capture_output=options.capture_output,
+        raise_on_failure=False,
+        context=context,
+        registry=selected_registry,
+    )
+    validate_scoring_self_test_report(report)
+    return ScoringFinalSectionResult(
+        section=section,
+        report=report,
+        expected_count=expected_count,
+        selected_count=len(selected_cases),
+    )
+
+
+def merge_scoring_self_test_reports(
+    reports: Iterable[ScoringSelfTestReport],
+    *,
+    options: Optional[ScoringFinalRunnerOptions] = None,
+    started_at: Optional[str] = None,
+    finished_at: Optional[str] = None,
+    duration_seconds: Optional[float] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringSelfTestReport:
+    """Merge focused reports into one canonical final-suite report."""
+
+    selected_options = options or ScoringFinalRunnerOptions()
+    materialized = tuple(reports)
+    for report in materialized:
+        validate_scoring_self_test_report(report)
+    results = tuple(
+        result
+        for report in materialized
+        for result in report.results
+    )
+    if len({result.identifier for result in results}) != len(results):
+        raise ScoringFinalRunnerExecutionError(
+            "Cannot merge reports containing duplicate result identifiers."
+        )
+    if duration_seconds is None:
+        duration = sum(report.duration_seconds for report in materialized)
+    else:
+        duration = scoring_self_test_float(
+            duration_seconds,
+            name="merged report duration",
+        )
+    if duration < 0.0:
+        raise ScoringFinalRunnerExecutionError(
+            "Merged report duration cannot be negative."
+        )
+    if started_at is None:
+        started_at = (
+            materialized[0].started_at
+            if materialized
+            else scoring_self_test_utc_now()
+        )
+    if finished_at is None:
+        finished_at = (
+            materialized[-1].finished_at
+            if materialized
+            else started_at
+        )
+    payload = {
+        "runner": SCORING_FINAL_RUNNER_SCHEMA,
+        "runner_version": SCORING_FINAL_RUNNER_VERSION,
+        "section_count": len(materialized),
+        "result_count": len(results),
+    }
+    if metadata:
+        payload.update(dict(metadata))
+    return ScoringSelfTestReport(
+        results=results,
+        started_at=started_at,
+        finished_at=finished_at,
+        duration_seconds=duration,
+        selected_section=SCORING_SELF_TEST_ROOT_SECTION,
+        selected_tags=selected_options.tags,
+        seed=selected_options.seed,
+        metadata=scoring_self_test_freeze_mapping(payload),
+    )
+
+
+def run_scoring_self_tests(
+    *,
+    sections: Optional[Iterable[Any]] = None,
+    tags: Iterable[Any] = (),
+    seed: int = SCORING_SELF_TEST_DEFAULT_SEED,
+    capture_output: bool = True,
+    include_infrastructure_check: bool = True,
+    validate_public_interfaces: bool = True,
+    validate_registration: bool = True,
+    fail_fast: bool = False,
+    raise_on_failure: bool = False,
+    include_passed: bool = False,
+    include_tracebacks: bool = False,
+    include_returned_values: bool = False,
+    output_format: str = SCORING_FINAL_RUNNER_FORMAT_TEXT,
+    output_path: Optional[Union[str, os.PathLike[str]]] = None,
+    encoding: str = SCORING_FINAL_RUNNER_DEFAULT_ENCODING,
+    indent: Optional[int] = SCORING_FINAL_RUNNER_DEFAULT_INDENT,
+    quiet: bool = False,
+    top_failures: int = SCORING_FINAL_RUNNER_DEFAULT_TOP_FAILURES,
+    slowest_cases: int = SCORING_FINAL_RUNNER_DEFAULT_SLOWEST,
+    context: Optional[ScoringSelfTestContext] = None,
+    registry: Optional[ScoringSelfTestRegistry] = None,
+) -> ScoringFinalRunnerResult:
+    """Run the selected DockAnalyzer scoring self-tests."""
+
+    options = ScoringFinalRunnerOptions(
+        sections=normalize_scoring_final_runner_sections(sections),
+        tags=normalize_scoring_final_runner_tags(tags),
+        seed=seed,
+        capture_output=capture_output,
+        include_infrastructure_check=include_infrastructure_check,
+        validate_public_interfaces=validate_public_interfaces,
+        validate_registration=validate_registration,
+        fail_fast=fail_fast,
+        raise_on_failure=raise_on_failure,
+        include_passed=include_passed,
+        include_tracebacks=include_tracebacks,
+        include_returned_values=include_returned_values,
+        output_format=output_format,
+        output_path=normalize_scoring_final_runner_path(output_path),
+        encoding=encoding,
+        indent=indent,
+        quiet=quiet,
+        top_failures=top_failures,
+        slowest_cases=slowest_cases,
+    )
+    started_at = scoring_self_test_utc_now()
+    start = time.perf_counter()
+    selected_registry = get_scoring_final_runner_registry(registry)
+    current_context = context or ScoringSelfTestContext(seed=options.seed)
+    preflight_checks = run_scoring_final_runner_preflight(
+        options,
+        registry=selected_registry,
+    )
+    preflight_success = all(check.success for check in preflight_checks)
+    section_results: List[ScoringFinalSectionResult] = []
+    stopped_early = False
+    internal_error: Optional[str] = None
+    if preflight_success:
+        try:
+            for section in options.sections:
+                section_result = _run_scoring_final_runner_section(
+                    section,
+                    options=options,
+                    context=current_context,
+                    registry=selected_registry,
+                )
+                if options.fail_fast and not section_result.success:
+                    section_result = ScoringFinalSectionResult(
+                        section=section_result.section,
+                        report=section_result.report,
+                        expected_count=section_result.expected_count,
+                        selected_count=section_result.selected_count,
+                        stopped_suite=True,
+                    )
+                    section_results.append(section_result)
+                    stopped_early = True
+                    break
+                section_results.append(section_result)
+        except Exception as exc:
+            internal_error = f"{type(exc).__name__}: {exc}"
+            if options.raise_on_failure:
+                raise ScoringFinalRunnerExecutionError(
+                    internal_error
+                ) from exc
+    else:
+        stopped_early = True
+    finished_at = scoring_self_test_utc_now()
+    duration = time.perf_counter() - start
+    reports = tuple(item.report for item in section_results)
+    if reports:
+        aggregate_report = merge_scoring_self_test_reports(
+            reports,
+            options=options,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_seconds=duration,
+            metadata={
+                "stopped_early": stopped_early,
+                "preflight_success": preflight_success,
+            },
+        )
+    else:
+        aggregate_report = _empty_scoring_self_test_report(
+            options=options,
+            metadata={
+                "stopped_early": stopped_early,
+                "preflight_success": preflight_success,
+            },
+        )
+    result = ScoringFinalRunnerResult(
+        options=options,
+        report=aggregate_report,
+        section_results=tuple(section_results),
+        preflight_checks=preflight_checks,
+        started_at=started_at,
+        finished_at=finished_at,
+        duration_seconds=duration,
+        stopped_early=stopped_early,
+        internal_error=internal_error,
+        metadata={
+            "registered_test_count": len(selected_registry),
+            "selected_section_count": len(options.sections),
+            "executed_section_count": len(section_results),
+            "expected_test_count": (
+                SCORING_FINAL_RUNNER_EXPECTED_TEST_COUNT
+            ),
+        },
+    )
+    validate_scoring_final_runner_result(result)
+    if options.output_path is not None:
+        write_scoring_final_runner_result(
+            result,
+            options.output_path,
+            output_format=options.output_format,
+            encoding=options.encoding,
+            indent=options.indent,
+        )
+    if options.raise_on_failure and not result.success:
+        failed = ", ".join(
+            item.identifier for item in result.failed_results
+        )
+        message = "Scoring self-tests failed"
+        if failed:
+            message += ": " + failed
+        raise ScoringFinalRunnerExecutionError(message)
+    return result
+
+
+def run_all_scoring_self_tests(
+    **kwargs: Any,
+) -> ScoringFinalRunnerResult:
+    """Run all Sections 30.2–30.4 with Section 30.1 preflight."""
+
+    kwargs.pop("sections", None)
+    return run_scoring_self_tests(
+        sections=SCORING_FINAL_RUNNER_DEFAULT_SECTIONS,
+        **kwargs,
+    )
+
+
+def run_self_tests(
+    **kwargs: Any,
+) -> ScoringFinalRunnerResult:
+    """Public convenience alias for the complete scoring self-test suite."""
+
+    return run_all_scoring_self_tests(**kwargs)
+
+
+# -----------------------------------------------------------------------------
+# 30.5.8. Conversion, rows, and readable summaries
+# -----------------------------------------------------------------------------
+
+
+def scoring_final_runner_options_to_dict(
+    options: ScoringFinalRunnerOptions,
+) -> Dict[str, Any]:
+    """Convert final-runner options to a dictionary."""
+
+    if not isinstance(options, ScoringFinalRunnerOptions):
+        raise ScoringFinalRunnerConfigurationError(
+            "Expected ScoringFinalRunnerOptions."
+        )
+    return options.to_dict()
+
+
+def scoring_final_runner_result_to_dict(
+    result: ScoringFinalRunnerResult,
+    *,
+    include_returned_values: Optional[bool] = None,
+) -> Dict[str, Any]:
+    """Convert a final-runner result to a dictionary."""
+
+    validate_scoring_final_runner_result(result)
+    return result.to_dict(
+        include_returned_values=include_returned_values,
+    )
+
+
+def scoring_final_runner_rows(
+    result: ScoringFinalRunnerResult,
+) -> Tuple[Dict[str, Any], ...]:
+    """Return one flat row per executed test case."""
+
+    validate_scoring_final_runner_result(result)
+    rows: List[Dict[str, Any]] = []
+    for test_result in result.report.results:
+        rows.append(
+            {
+                "section": test_result.section,
+                "case": test_result.case_name,
+                "identifier": test_result.identifier,
+                "status": test_result.status,
+                "passed": test_result.passed,
+                "failed": test_result.failed,
+                "skipped": test_result.skipped,
+                "duration_seconds": test_result.duration_seconds,
+                "message": test_result.message,
+                "exception_type": test_result.exception_type,
+                "warning_count": len(test_result.warnings),
+                "stdout_length": len(test_result.stdout),
+                "stderr_length": len(test_result.stderr),
+            }
+        )
+    return tuple(rows)
+
+
+def scoring_final_runner_section_rows(
+    result: ScoringFinalRunnerResult,
+) -> Tuple[Dict[str, Any], ...]:
+    """Return one aggregate row per executed section."""
+
+    validate_scoring_final_runner_result(result)
+    rows: List[Dict[str, Any]] = []
+    for section_result in result.section_results:
+        report = section_result.report
+        rows.append(
+            {
+                "section": section_result.section,
+                "success": section_result.success,
+                "expected_count": section_result.expected_count,
+                "selected_count": section_result.selected_count,
+                "total": report.total,
+                "passed": report.passed,
+                "failed": report.failed,
+                "skipped": report.skipped,
+                "duration_seconds": report.duration_seconds,
+                "stopped_suite": section_result.stopped_suite,
+            }
+        )
+    return tuple(rows)
+
+
+def format_scoring_final_runner_result(
+    result: ScoringFinalRunnerResult,
+    *,
+    include_passed: Optional[bool] = None,
+    include_tracebacks: Optional[bool] = None,
+    top_failures: Optional[int] = None,
+    slowest_cases: Optional[int] = None,
+) -> str:
+    """Format the complete result as a readable text report."""
+
+    validate_scoring_final_runner_result(result)
+    show_passed = (
+        result.options.include_passed
+        if include_passed is None
+        else bool(include_passed)
+    )
+    show_tracebacks = (
+        result.options.include_tracebacks
+        if include_tracebacks is None
+        else bool(include_tracebacks)
+    )
+    failure_limit = (
+        result.options.top_failures
+        if top_failures is None
+        else max(0, int(top_failures))
+    )
+    slow_limit = (
+        result.options.slowest_cases
+        if slowest_cases is None
+        else max(0, int(slowest_cases))
+    )
+    status = "PASSED" if result.success else "FAILED"
+    lines = [
+        "DockAnalyzer scoring self-tests",
+        f"Status: {status} | Exit code: {result.exit_code}",
+        (
+            f"Total: {result.total} | Passed: {result.passed} | "
+            f"Failed: {result.failed} | Skipped: {result.skipped}"
+        ),
+        f"Duration: {result.duration_seconds:.6f} s",
+        (
+            "Sections: "
+            + (
+                ", ".join(result.options.sections)
+                if result.options.sections
+                else "none"
+            )
+        ),
+    ]
+    if result.options.tags:
+        lines.append("Tags: " + ", ".join(sorted(result.options.tags)))
+    lines.append("Preflight:")
+    for check in result.preflight_checks:
+        marker = "PASS" if check.success else "FAIL"
+        lines.append(
+            f"  [{marker}] {check.name} "
+            f"({check.duration_seconds:.6f} s): {check.message}"
+        )
+    if result.section_results:
+        lines.append("Sections:")
+        for item in result.section_results:
+            report = item.report
+            marker = "PASS" if item.success else "FAIL"
+            lines.append(
+                f"  [{marker}] {item.section}: total={report.total}, "
+                f"passed={report.passed}, failed={report.failed}, "
+                f"skipped={report.skipped}, "
+                f"duration={report.duration_seconds:.6f} s"
+            )
+    if result.internal_error:
+        lines.append("Internal error: " + result.internal_error)
+    failed_results = result.failed_results
+    if failed_results:
+        lines.append("Failures:")
+        displayed = failed_results[:failure_limit] if failure_limit else ()
+        for test_result in displayed:
+            lines.append(
+                f"  [{test_result.status.upper()}] "
+                f"{test_result.identifier}: {test_result.message}"
+            )
+            if show_tracebacks and test_result.traceback_text:
+                lines.extend(
+                    "    " + line
+                    for line in test_result.traceback_text.rstrip().splitlines()
+                )
+        hidden = len(failed_results) - len(displayed)
+        if hidden > 0:
+            lines.append(f"  ... {hidden} additional failure(s) omitted")
+    if show_passed:
+        passed_results = tuple(
+            item for item in result.report.results if item.passed
+        )
+        if passed_results:
+            lines.append("Passed cases:")
+            for test_result in passed_results:
+                lines.append(
+                    f"  [PASS] {test_result.identifier} "
+                    f"({test_result.duration_seconds:.6f} s)"
+                )
+    if slow_limit > 0 and result.report.results:
+        slowest = tuple(
+            sorted(
+                result.report.results,
+                key=lambda item: item.duration_seconds,
+                reverse=True,
+            )[:slow_limit]
+        )
+        lines.append("Slowest cases:")
+        for test_result in slowest:
+            lines.append(
+                f"  {test_result.identifier}: "
+                f"{test_result.duration_seconds:.6f} s"
+            )
+    if result.stopped_early:
+        lines.append("The suite stopped early because fail-fast was enabled.")
+    return "\n".join(lines)
+
+
+def format_scoring_final_runner_case_list(
+    cases: Iterable[ScoringSelfTestCase],
+) -> str:
+    """Format discovered cases for command-line listing."""
+
+    materialized = tuple(cases)
+    lines = [
+        "DockAnalyzer scoring self-test cases",
+        f"Registered: {len(materialized)}",
+    ]
+    current_section: Optional[str] = None
+    for case in materialized:
+        if case.section != current_section:
+            current_section = case.section
+            lines.append(f"Section {current_section}")
+        tags = ",".join(sorted(case.tags)) or "-"
+        enabled = "enabled" if case.enabled else "disabled"
+        lines.append(f"  {case.name} [{enabled}; tags={tags}]")
+    return "\n".join(lines)
+
+
+# -----------------------------------------------------------------------------
+# 30.5.9. JSON, JSON Lines, CSV, and JUnit XML
+# -----------------------------------------------------------------------------
+
+
+def serialize_scoring_final_runner_json(
+    result: ScoringFinalRunnerResult,
+    *,
+    indent: Optional[int] = SCORING_FINAL_RUNNER_DEFAULT_INDENT,
+    include_returned_values: Optional[bool] = None,
+) -> str:
+    """Serialize the complete result as JSON."""
+
+    try:
+        return json.dumps(
+            scoring_final_runner_result_to_dict(
+                result,
+                include_returned_values=include_returned_values,
+            ),
+            indent=indent,
+            sort_keys=True,
+            ensure_ascii=False,
+            default=scoring_self_test_safe_repr,
+        )
+    except Exception as exc:
+        raise ScoringFinalRunnerSerializationError(
+            f"Could not serialize final result as JSON: {exc}"
+        ) from exc
+
+
+def serialize_scoring_final_runner_jsonl(
+    result: ScoringFinalRunnerResult,
+) -> str:
+    """Serialize one JSON object per executed case."""
+
+    rows = scoring_final_runner_rows(result)
+    try:
+        return "\n".join(
+            json.dumps(
+                row,
+                sort_keys=True,
+                ensure_ascii=False,
+                default=scoring_self_test_safe_repr,
+            )
+            for row in rows
+        )
+    except Exception as exc:
+        raise ScoringFinalRunnerSerializationError(
+            f"Could not serialize final result as JSON Lines: {exc}"
+        ) from exc
+
+
+def serialize_scoring_final_runner_csv(
+    result: ScoringFinalRunnerResult,
+) -> str:
+    """Serialize executed case rows as CSV."""
+
+    rows = scoring_final_runner_rows(result)
+    fieldnames = (
+        "section",
+        "case",
+        "identifier",
+        "status",
+        "passed",
+        "failed",
+        "skipped",
+        "duration_seconds",
+        "message",
+        "exception_type",
+        "warning_count",
+        "stdout_length",
+        "stderr_length",
+    )
+    stream = io.StringIO(newline="")
+    writer = csv.DictWriter(stream, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row)
+    return stream.getvalue()
+
+
+def _scoring_final_runner_junit_text(
+    parent: ET.Element,
+    tag: str,
+    text: Optional[str],
+) -> None:
+    """Append a JUnit child element only when text is present."""
+
+    if text:
+        child = ET.SubElement(parent, tag)
+        child.text = text
+
+
+def serialize_scoring_final_runner_junit(
+    result: ScoringFinalRunnerResult,
+) -> str:
+    """Serialize the complete result as JUnit-compatible XML."""
+
+    validate_scoring_final_runner_result(result)
+    root = ET.Element(
+        "testsuites",
+        {
+            "name": "DockAnalyzer scoring self-tests",
+            "tests": str(result.total),
+            "failures": str(
+                result.report.status_counts[
+                    SCORING_SELF_TEST_STATUS_FAILED
+                ]
+            ),
+            "errors": str(
+                result.report.status_counts[
+                    SCORING_SELF_TEST_STATUS_ERROR
+                ]
+            ),
+            "skipped": str(result.skipped),
+            "time": f"{result.duration_seconds:.9f}",
+        },
+    )
+    by_section: MutableMapping[str, List[ScoringSelfTestResult]] = {}
+    for test_result in result.report.results:
+        by_section.setdefault(test_result.section, []).append(test_result)
+    for section in SCORING_FINAL_RUNNER_SECTION_ORDER:
+        section_results = by_section.get(section, [])
+        if not section_results:
+            continue
+        failures = sum(
+            item.status == SCORING_SELF_TEST_STATUS_FAILED
+            for item in section_results
+        )
+        errors = sum(
+            item.status == SCORING_SELF_TEST_STATUS_ERROR
+            for item in section_results
+        )
+        skipped = sum(item.skipped for item in section_results)
+        suite = ET.SubElement(
+            root,
+            "testsuite",
+            {
+                "name": f"scoring.section.{section}",
+                "tests": str(len(section_results)),
+                "failures": str(failures),
+                "errors": str(errors),
+                "skipped": str(skipped),
+                "time": (
+                    f"{sum(item.duration_seconds for item in section_results):.9f}"
+                ),
+            },
+        )
+        for item in section_results:
+            case = ET.SubElement(
+                suite,
+                "testcase",
+                {
+                    "classname": f"dockanalyzer.scoring.section_{section}",
+                    "name": item.case_name,
+                    "time": f"{item.duration_seconds:.9f}",
+                },
+            )
+            if item.skipped:
+                skipped_element = ET.SubElement(case, "skipped")
+                skipped_element.set("message", item.message or "skipped")
+            elif item.failed:
+                tag = (
+                    "error"
+                    if item.status == SCORING_SELF_TEST_STATUS_ERROR
+                    else "failure"
+                )
+                failure = ET.SubElement(case, tag)
+                failure.set("message", item.message or item.status)
+                if item.exception_type:
+                    failure.set("type", item.exception_type)
+                failure.text = item.traceback_text or item.message
+            _scoring_final_runner_junit_text(
+                case,
+                "system-out",
+                item.stdout,
+            )
+            _scoring_final_runner_junit_text(
+                case,
+                "system-err",
+                item.stderr,
+            )
+    return ET.tostring(root, encoding="unicode")
+
+
+def serialize_scoring_final_runner_result(
+    result: ScoringFinalRunnerResult,
+    *,
+    output_format: Optional[str] = None,
+    indent: Optional[int] = None,
+) -> str:
+    """Serialize a final result using the selected output format."""
+
+    selected_format = normalize_scoring_final_runner_format(
+        output_format or result.options.output_format
+    )
+    selected_indent = result.options.indent if indent is None else indent
+    if selected_format == SCORING_FINAL_RUNNER_FORMAT_TEXT:
+        return format_scoring_final_runner_result(result)
+    if selected_format == SCORING_FINAL_RUNNER_FORMAT_JSON:
+        return serialize_scoring_final_runner_json(
+            result,
+            indent=selected_indent,
+        )
+    if selected_format == SCORING_FINAL_RUNNER_FORMAT_JSONL:
+        return serialize_scoring_final_runner_jsonl(result)
+    if selected_format == SCORING_FINAL_RUNNER_FORMAT_CSV:
+        return serialize_scoring_final_runner_csv(result)
+    if selected_format == SCORING_FINAL_RUNNER_FORMAT_JUNIT:
+        return serialize_scoring_final_runner_junit(result)
+    raise ScoringFinalRunnerSerializationError(
+        f"Unsupported output format {selected_format!r}."
+    )
+
+
+def write_scoring_final_runner_result(
+    result: ScoringFinalRunnerResult,
+    path: Union[str, os.PathLike[str]],
+    *,
+    output_format: Optional[str] = None,
+    encoding: str = SCORING_FINAL_RUNNER_DEFAULT_ENCODING,
+    indent: Optional[int] = None,
+    create_parents: bool = True,
+) -> Path:
+    """Write a serialized final result and return the resolved path."""
+
+    target = Path(path).expanduser()
+    if create_parents:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    payload = serialize_scoring_final_runner_result(
+        result,
+        output_format=output_format,
+        indent=indent,
+    )
+    try:
+        target.write_text(payload, encoding=encoding)
+    except OSError as exc:
+        raise ScoringFinalRunnerSerializationError(
+            f"Could not write final report to {target}: {exc}"
+        ) from exc
+    return target
+
+
+# -----------------------------------------------------------------------------
+# 30.5.10. Validation
+# -----------------------------------------------------------------------------
+
+
+def validate_scoring_final_runner_options(
+    options: ScoringFinalRunnerOptions,
+) -> None:
+    """Validate final-runner options."""
+
+    if not isinstance(options, ScoringFinalRunnerOptions):
+        raise ScoringFinalRunnerConfigurationError(
+            "Expected ScoringFinalRunnerOptions."
+        )
+    normalize_scoring_final_runner_sections(options.sections)
+    normalize_scoring_final_runner_tags(options.tags)
+    normalize_scoring_final_runner_format(options.output_format)
+    if options.top_failures < 0 or options.slowest_cases < 0:
+        raise ScoringFinalRunnerConfigurationError(
+            "Display limits cannot be negative."
+        )
+
+
+def validate_scoring_final_runner_check(
+    check: ScoringFinalRunnerCheck,
+) -> None:
+    """Validate one preflight check."""
+
+    if not isinstance(check, ScoringFinalRunnerCheck):
+        raise ScoringFinalRunnerConfigurationError(
+            "Expected ScoringFinalRunnerCheck."
+        )
+    if not check.name:
+        raise ScoringFinalRunnerConfigurationError(
+            "Preflight check name cannot be empty."
+        )
+    assert_scoring_test_true(check.duration_seconds >= 0.0)
+
+
+def validate_scoring_final_section_result(
+    result: ScoringFinalSectionResult,
+) -> None:
+    """Validate one section-level final-runner result."""
+
+    if not isinstance(result, ScoringFinalSectionResult):
+        raise ScoringFinalRunnerConfigurationError(
+            "Expected ScoringFinalSectionResult."
+        )
+    validate_scoring_self_test_report(result.report)
+    if result.report.selected_section != result.section:
+        raise ScoringFinalRunnerConfigurationError(
+            "Section report selection does not match its wrapper."
+        )
+    if result.selected_count != result.report.total:
+        raise ScoringFinalRunnerConfigurationError(
+            "Section selected_count does not match report.total."
+        )
+
+
+def validate_scoring_final_runner_result(
+    result: ScoringFinalRunnerResult,
+) -> None:
+    """Validate the complete final-runner result."""
+
+    if not isinstance(result, ScoringFinalRunnerResult):
+        raise ScoringFinalRunnerConfigurationError(
+            "Expected ScoringFinalRunnerResult."
+        )
+    validate_scoring_final_runner_options(result.options)
+    validate_scoring_self_test_report(result.report)
+    for check in result.preflight_checks:
+        validate_scoring_final_runner_check(check)
+    for section_result in result.section_results:
+        validate_scoring_final_section_result(section_result)
+    flattened = tuple(
+        test_result
+        for section_result in result.section_results
+        for test_result in section_result.report.results
+    )
+    if flattened != result.report.results:
+        raise ScoringFinalRunnerConfigurationError(
+            "Aggregate report results do not match section reports."
+        )
+    expected_exit = (
+        SCORING_FINAL_RUNNER_EXIT_SUCCESS
+        if result.success
+        else (
+            SCORING_FINAL_RUNNER_EXIT_INTERNAL_ERROR
+            if result.internal_error is not None
+            else SCORING_FINAL_RUNNER_EXIT_TEST_FAILURE
+        )
+    )
+    if result.exit_code != expected_exit:
+        raise ScoringFinalRunnerConfigurationError(
+            "Final-runner exit code is inconsistent with its status."
+        )
+
+
+# -----------------------------------------------------------------------------
+# 30.5.11. Deterministic runner self-check
+# -----------------------------------------------------------------------------
+
+
+def _make_scoring_final_runner_test_result(
+    *,
+    case_name: str,
+    section: str,
+    status: str,
+    duration_seconds: float = 0.001,
+) -> ScoringSelfTestResult:
+    """Build a minimal result for final-runner infrastructure tests."""
+
+    timestamp = scoring_self_test_utc_now()
+    return ScoringSelfTestResult(
+        case_name=case_name,
+        section=section,
+        status=status,
+        duration_seconds=duration_seconds,
+        started_at=timestamp,
+        finished_at=timestamp,
+        message="synthetic result",
+    )
+
+
+def _make_scoring_final_runner_test_report(
+    section: str,
+    statuses: Sequence[str],
+) -> ScoringSelfTestReport:
+    """Build a minimal focused report for final-runner self-checks."""
+
+    normalized = normalize_scoring_self_test_section(section)
+    timestamp = scoring_self_test_utc_now()
+    results = tuple(
+        _make_scoring_final_runner_test_result(
+            case_name=f"synthetic_{index}",
+            section=normalized,
+            status=status,
+            duration_seconds=0.001 * (index + 1),
+        )
+        for index, status in enumerate(statuses)
+    )
+    return ScoringSelfTestReport(
+        results=results,
+        started_at=timestamp,
+        finished_at=timestamp,
+        duration_seconds=sum(item.duration_seconds for item in results),
+        selected_section=normalized,
+        seed=SCORING_SELF_TEST_DEFAULT_SEED,
+    )
+
+
+def run_section_30_5_self_check() -> Mapping[str, Any]:
+    """Run deterministic checks for the final runner itself."""
+
+    checks: Dict[str, bool] = {}
+    assert_scoring_test_equal(
+        normalize_scoring_final_runner_sections(("all",)),
+        SCORING_FINAL_RUNNER_DEFAULT_SECTIONS,
+    )
+    checks["section_normalization"] = True
+    assert_scoring_test_equal(
+        normalize_scoring_final_runner_sections(("30.4", "30.2")),
+        (
+            SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+            SCORING_SELF_TEST_SECTION_AGGREGATION,
+        ),
+    )
+    checks["section_ordering"] = True
+    tags = normalize_scoring_final_runner_tags(("Alpha,beta", "alpha"))
+    assert_scoring_test_equal(tags, frozenset({"alpha", "beta"}))
+    checks["tag_normalization"] = True
+    options = ScoringFinalRunnerOptions(
+        sections=("30.2",),
+        output_format="json",
+        top_failures=5,
+        slowest_cases=3,
+    )
+    validate_scoring_final_runner_options(options)
+    checks["options"] = True
+    passed_report = _make_scoring_final_runner_test_report(
+        SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+        (SCORING_SELF_TEST_STATUS_PASSED,),
+    )
+    failed_report = _make_scoring_final_runner_test_report(
+        SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+        (SCORING_SELF_TEST_STATUS_FAILED,),
+    )
+    merged = merge_scoring_self_test_reports(
+        (passed_report, failed_report),
+        options=ScoringFinalRunnerOptions(
+            sections=("30.2", "30.3"),
+        ),
+    )
+    assert_scoring_test_equal(merged.total, 2)
+    assert_scoring_test_equal(merged.passed, 1)
+    assert_scoring_test_equal(merged.failed, 1)
+    checks["report_merge"] = True
+    final_result = ScoringFinalRunnerResult(
+        options=ScoringFinalRunnerOptions(
+            sections=("30.2", "30.3"),
+            output_format="text",
+        ),
+        report=merged,
+        section_results=(
+            ScoringFinalSectionResult(
+                section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+                report=passed_report,
+                expected_count=1,
+                selected_count=1,
+            ),
+            ScoringFinalSectionResult(
+                section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+                report=failed_report,
+                expected_count=1,
+                selected_count=1,
+            ),
+        ),
+        preflight_checks=(
+            ScoringFinalRunnerCheck(
+                name="synthetic",
+                success=True,
+                message="passed",
+            ),
+        ),
+        started_at=merged.started_at,
+        finished_at=merged.finished_at,
+        duration_seconds=merged.duration_seconds,
+    )
+    validate_scoring_final_runner_result(final_result)
+    assert_scoring_test_false(final_result.success)
+    assert_scoring_test_equal(
+        final_result.exit_code,
+        SCORING_FINAL_RUNNER_EXIT_TEST_FAILURE,
+    )
+    checks["final_result"] = True
+    text = format_scoring_final_runner_result(final_result)
+    assert_scoring_test_contains(text, "DockAnalyzer scoring self-tests")
+    checks["text_format"] = True
+    json_text = serialize_scoring_final_runner_json(final_result)
+    assert_scoring_test_equal(json.loads(json_text)["failed"], 1)
+    checks["json_format"] = True
+    jsonl_text = serialize_scoring_final_runner_jsonl(final_result)
+    assert_scoring_test_equal(len(jsonl_text.splitlines()), 2)
+    checks["jsonl_format"] = True
+    csv_text = serialize_scoring_final_runner_csv(final_result)
+    assert_scoring_test_contains(csv_text, "identifier")
+    checks["csv_format"] = True
+    junit_text = serialize_scoring_final_runner_junit(final_result)
+    root = ET.fromstring(junit_text)
+    assert_scoring_test_equal(root.tag, "testsuites")
+    checks["junit_format"] = True
+    return MappingProxyType(
+        {
+            "status": SCORING_SELF_TEST_STATUS_PASSED,
+            "section": SCORING_SELF_TEST_SECTION_RUNNER,
+            "success": all(checks.values()),
+            "check_count": len(checks),
+            "checks": MappingProxyType(dict(checks)),
+        }
+    )
+
+
+# -----------------------------------------------------------------------------
+# 30.5.12. Command-line interface
+# -----------------------------------------------------------------------------
+
+
+def build_scoring_self_test_argument_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser for the final runner."""
+
+    parser = argparse.ArgumentParser(
+        prog="dockanalyzer-scoring-self-tests",
+        description=(
+            "Run the DockAnalyzer scoring self-tests from Sections "
+            "30.1–30.5."
+        ),
+    )
+    parser.add_argument(
+        "-s",
+        "--section",
+        action="append",
+        default=None,
+        help=(
+            "Section to run: 30.2, 30.3, 30.4, or all. The option may "
+            "be repeated or comma-separated."
+        ),
+    )
+    parser.add_argument(
+        "-t",
+        "--tag",
+        action="append",
+        default=None,
+        help="Required case tag; repeat or use comma-separated values.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=SCORING_SELF_TEST_DEFAULT_SEED,
+        help="Deterministic random seed.",
+    )
+    parser.add_argument(
+        "--format",
+        dest="output_format",
+        choices=sorted(SCORING_FINAL_RUNNER_FORMATS),
+        default=SCORING_FINAL_RUNNER_FORMAT_TEXT,
+        help="Report output format.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        dest="output_path",
+        default=None,
+        help="Optional path for the serialized report.",
+    )
+    parser.add_argument(
+        "--list",
+        dest="list_cases",
+        action="store_true",
+        help="List selected registered cases without running them.",
+    )
+    parser.add_argument(
+        "--self-check",
+        action="store_true",
+        help="Run only the deterministic Section 30.5 runner check.",
+    )
+    parser.add_argument(
+        "--no-infrastructure-check",
+        action="store_true",
+        help="Skip the Section 30.1 infrastructure preflight.",
+    )
+    parser.add_argument(
+        "--no-interface-validation",
+        action="store_true",
+        help="Skip public-interface validation during preflight.",
+    )
+    parser.add_argument(
+        "--no-registration-validation",
+        action="store_true",
+        help="Skip exact registered-test count validation.",
+    )
+    parser.add_argument(
+        "--no-capture",
+        action="store_true",
+        help="Do not capture stdout, stderr, or warnings from cases.",
+    )
+    parser.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="Stop before the next section after a section failure.",
+    )
+    parser.add_argument(
+        "--include-passed",
+        action="store_true",
+        help="Include passed cases in text output.",
+    )
+    parser.add_argument(
+        "--tracebacks",
+        action="store_true",
+        help="Include tracebacks for failed cases in text output.",
+    )
+    parser.add_argument(
+        "--returned-values",
+        action="store_true",
+        help="Include bounded returned values in JSON reports.",
+    )
+    parser.add_argument(
+        "--top-failures",
+        type=int,
+        default=SCORING_FINAL_RUNNER_DEFAULT_TOP_FAILURES,
+        help="Maximum failures shown in text output.",
+    )
+    parser.add_argument(
+        "--slowest",
+        dest="slowest_cases",
+        type=int,
+        default=SCORING_FINAL_RUNNER_DEFAULT_SLOWEST,
+        help="Number of slowest cases shown in text output.",
+    )
+    parser.add_argument(
+        "--compact",
+        action="store_true",
+        help="Use compact JSON output without indentation.",
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Suppress report text written to stdout.",
+    )
+    return parser
+
+
+def _write_scoring_final_runner_stream(
+    text: str,
+    stream: TextIO,
+) -> None:
+    """Write one payload to a text stream with a terminal newline."""
+
+    stream.write(text)
+    if text and not text.endswith("\n"):
+        stream.write("\n")
+    stream.flush()
+
+
+def run_scoring_self_tests_cli(
+    argv: Optional[Sequence[str]] = None,
+    *,
+    stdout: Optional[TextIO] = None,
+    stderr: Optional[TextIO] = None,
+) -> int:
+    """Execute the final runner command-line interface."""
+
+    output_stream = stdout or sys.stdout
+    error_stream = stderr or sys.stderr
+    parser = build_scoring_self_test_argument_parser()
+    try:
+        arguments = parser.parse_args(argv)
+        sections = normalize_scoring_final_runner_sections(
+            arguments.section
+        )
+        tags = normalize_scoring_final_runner_tags(arguments.tag)
+        if arguments.self_check:
+            payload = dict(run_section_30_5_self_check())
+            if isinstance(payload.get("checks"), Mapping):
+                payload["checks"] = dict(payload["checks"])
+            text = json.dumps(
+                payload,
+                indent=None if arguments.compact else 2,
+                sort_keys=True,
+                default=scoring_self_test_safe_repr,
+            )
+            if not arguments.quiet:
+                _write_scoring_final_runner_stream(text, output_stream)
+            return (
+                SCORING_FINAL_RUNNER_EXIT_SUCCESS
+                if payload.get("success")
+                else SCORING_FINAL_RUNNER_EXIT_TEST_FAILURE
+            )
+        if arguments.list_cases:
+            cases = get_scoring_final_runner_cases(
+                sections=sections,
+                tags=tags,
+                enabled_only=False,
+            )
+            if not arguments.quiet:
+                _write_scoring_final_runner_stream(
+                    format_scoring_final_runner_case_list(cases),
+                    output_stream,
+                )
+            return SCORING_FINAL_RUNNER_EXIT_SUCCESS
+        result = run_scoring_self_tests(
+            sections=sections,
+            tags=tags,
+            seed=arguments.seed,
+            capture_output=not arguments.no_capture,
+            include_infrastructure_check=(
+                not arguments.no_infrastructure_check
+            ),
+            validate_public_interfaces=(
+                not arguments.no_interface_validation
+            ),
+            validate_registration=(
+                not arguments.no_registration_validation
+            ),
+            fail_fast=arguments.fail_fast,
+            include_passed=arguments.include_passed,
+            include_tracebacks=arguments.tracebacks,
+            include_returned_values=arguments.returned_values,
+            output_format=arguments.output_format,
+            output_path=arguments.output_path,
+            indent=None if arguments.compact else 2,
+            quiet=arguments.quiet,
+            top_failures=arguments.top_failures,
+            slowest_cases=arguments.slowest_cases,
+        )
+        if not arguments.quiet:
+            payload = serialize_scoring_final_runner_result(
+                result,
+                output_format=arguments.output_format,
+                indent=None if arguments.compact else 2,
+            )
+            _write_scoring_final_runner_stream(payload, output_stream)
+        return result.exit_code
+    except ScoringFinalRunnerConfigurationError as exc:
+        _write_scoring_final_runner_stream(
+            f"Configuration error: {exc}",
+            error_stream,
+        )
+        return SCORING_FINAL_RUNNER_EXIT_USAGE_ERROR
+    except ScoringFinalRunnerError as exc:
+        _write_scoring_final_runner_stream(
+            f"Self-test runner error: {exc}",
+            error_stream,
+        )
+        return SCORING_FINAL_RUNNER_EXIT_INTERNAL_ERROR
+    except Exception as exc:
+        _write_scoring_final_runner_stream(
+            f"Unexpected self-test runner error: {type(exc).__name__}: {exc}",
+            error_stream,
+        )
+        return SCORING_FINAL_RUNNER_EXIT_INTERNAL_ERROR
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Command-line entry point for the complete scoring self-test suite."""
+
+    return run_scoring_self_tests_cli(argv)
+
+
+# -----------------------------------------------------------------------------
+# 30.5.13. Public interface
+# -----------------------------------------------------------------------------
+
+
+_SECTION_30_5_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    "SCORING_FINAL_RUNNER_VERSION",
+    "SCORING_FINAL_RUNNER_SCHEMA",
+    "SCORING_FINAL_RUNNER_SCHEMA_VERSION",
+    "SCORING_FINAL_RUNNER_SECTION_ORDER",
+    "SCORING_FINAL_RUNNER_ALL_TOKEN",
+    "SCORING_FINAL_RUNNER_DEFAULT_SECTIONS",
+    "SCORING_FINAL_RUNNER_FORMAT_TEXT",
+    "SCORING_FINAL_RUNNER_FORMAT_JSON",
+    "SCORING_FINAL_RUNNER_FORMAT_JSONL",
+    "SCORING_FINAL_RUNNER_FORMAT_CSV",
+    "SCORING_FINAL_RUNNER_FORMAT_JUNIT",
+    "SCORING_FINAL_RUNNER_FORMATS",
+    "SCORING_FINAL_RUNNER_EXIT_SUCCESS",
+    "SCORING_FINAL_RUNNER_EXIT_TEST_FAILURE",
+    "SCORING_FINAL_RUNNER_EXIT_USAGE_ERROR",
+    "SCORING_FINAL_RUNNER_EXIT_INTERNAL_ERROR",
+    "SCORING_FINAL_RUNNER_EXPECTED_SECTION_COUNTS",
+    "SCORING_FINAL_RUNNER_EXPECTED_TEST_COUNT",
+    "SCORING_FINAL_RUNNER_DEFAULT_ENCODING",
+    "SCORING_FINAL_RUNNER_DEFAULT_INDENT",
+    "SCORING_FINAL_RUNNER_DEFAULT_TOP_FAILURES",
+    "SCORING_FINAL_RUNNER_DEFAULT_SLOWEST",
+    "ScoringFinalRunnerError",
+    "ScoringFinalRunnerConfigurationError",
+    "ScoringFinalRunnerRegistrationError",
+    "ScoringFinalRunnerExecutionError",
+    "ScoringFinalRunnerSerializationError",
+    "ScoringFinalRunnerOptions",
+    "ScoringFinalRunnerCheck",
+    "ScoringFinalSectionResult",
+    "ScoringFinalRunnerResult",
+    "normalize_scoring_final_runner_format",
+    "normalize_scoring_final_runner_sections",
+    "normalize_scoring_final_runner_tags",
+    "normalize_scoring_final_runner_path",
+    "get_scoring_final_runner_registry",
+    "get_scoring_final_runner_cases",
+    "scoring_final_runner_section_counts",
+    "validate_scoring_final_runner_registration",
+    "validate_scoring_final_runner_dependencies",
+    "validate_scoring_final_runner_public_interfaces",
+    "run_scoring_final_runner_preflight",
+    "merge_scoring_self_test_reports",
+    "run_scoring_self_tests",
+    "run_all_scoring_self_tests",
+    "run_self_tests",
+    "scoring_final_runner_options_to_dict",
+    "scoring_final_runner_result_to_dict",
+    "scoring_final_runner_rows",
+    "scoring_final_runner_section_rows",
+    "format_scoring_final_runner_result",
+    "format_scoring_final_runner_case_list",
+    "serialize_scoring_final_runner_json",
+    "serialize_scoring_final_runner_jsonl",
+    "serialize_scoring_final_runner_csv",
+    "serialize_scoring_final_runner_junit",
+    "serialize_scoring_final_runner_result",
+    "write_scoring_final_runner_result",
+    "validate_scoring_final_runner_options",
+    "validate_scoring_final_runner_check",
+    "validate_scoring_final_section_result",
+    "validate_scoring_final_runner_result",
+    "run_section_30_5_self_check",
+    "build_scoring_self_test_argument_parser",
+    "run_scoring_self_tests_cli",
+    "main",
+)
+
+for public_name in _SECTION_30_5_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+def section_30_5_public_names() -> Tuple[str, ...]:
+    """Return the immutable Section 30.5 public interface."""
+
+    return _SECTION_30_5_PUBLIC_NAMES
+
+
+def validate_section_30_5_public_interface() -> None:
+    """Validate all Section 30.5 public names and exports."""
+
+    missing_names = tuple(
+        name for name in _SECTION_30_5_PUBLIC_NAMES if name not in globals()
+    )
+    if missing_names:
+        raise ScoringFinalRunnerRegistrationError(
+            "Missing Section 30.5 public names: " + ", ".join(missing_names)
+        )
+    missing_exports = tuple(
+        name for name in _SECTION_30_5_PUBLIC_NAMES if name not in __all__
+    )
+    if missing_exports:
+        raise ScoringFinalRunnerRegistrationError(
+            "Section 30.5 names missing from __all__: "
+            + ", ".join(missing_exports)
+        )
+    assert_scoring_test_unique(_SECTION_30_5_PUBLIC_NAMES)
+
+
+if "section_30_5_public_names" not in __all__:
+    __all__.append("section_30_5_public_names")
+if "validate_section_30_5_public_interface" not in __all__:
+    __all__.append("validate_section_30_5_public_interface")
+
+validate_section_30_5_public_interface()
+
+# =============================================================================
+# End of Section 30.5
+# End of scoring.py
+# =============================================================================
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
