@@ -112465,4 +112465,14551 @@ validate_section_28_public_interface()
 # =============================================================================
 
 
+# =============================================================================
+# DockAnalyzer — Interaction scoring
+# Section 29 — ChimeraX compatibility
+# =============================================================================
+
+"""
+Optional ChimeraX compatibility for DockAnalyzer scoring.
+
+Section 29 provides a narrow adapter layer between the scoring structures from
+Sections 1–28 and UCSF ChimeraX. The scientific scoring algorithms remain fully
+independent from ChimeraX. Imports from the ``chimerax`` package are performed
+only inside functions that require a live session, allowing this module to be
+imported, tested, and used outside ChimeraX.
+
+The section supports four complementary workflows:
+
+* generation of ChimeraX atom specifications and command sets;
+* creation of pseudobonds for scored interactions;
+* residue attributes for score, rank, and persistence visualization;
+* optional execution in a live ChimeraX session and DockModel binding.
+
+Offline workflows can write ``.cxc`` command scripts and ``.defattr`` attribute
+files. Live workflows use the public ChimeraX command runner or the session
+pseudobond manager when available. Serialization belongs to Section 25,
+reporting to Section 26, and complete module self-tests to Section 30.
+"""
+
+from dataclasses import dataclass, field, is_dataclass, asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from types import MappingProxyType
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Final,
+    FrozenSet,
+    Iterable,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Union,
+)
+import importlib
+import math
+import os
+import re
+
+if "__all__" not in globals():
+    __all__: List[str] = []
+
+# -----------------------------------------------------------------------------
+# 29.1. Constants and canonical names
+# -----------------------------------------------------------------------------
+
+SCORING_CHIMERAX_SCHEMA: Final[str] = "dockanalyzer.scoring.chimerax"
+SCORING_CHIMERAX_SCHEMA_VERSION: Final[str] = "1.0"
+SCORING_CHIMERAX_SECTION_VERSION: Final[str] = "29.0"
+
+SCORING_CHIMERAX_STATUS_READY: Final[str] = "ready"
+SCORING_CHIMERAX_STATUS_OFFLINE: Final[str] = "offline"
+SCORING_CHIMERAX_STATUS_PARTIAL: Final[str] = "partial"
+SCORING_CHIMERAX_STATUS_ERROR: Final[str] = "error"
+SCORING_CHIMERAX_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_CHIMERAX_STATUS_READY,
+        SCORING_CHIMERAX_STATUS_OFFLINE,
+        SCORING_CHIMERAX_STATUS_PARTIAL,
+        SCORING_CHIMERAX_STATUS_ERROR,
+    }
+)
+
+SCORING_CHIMERAX_LEVEL_ATOM: Final[str] = "atom"
+SCORING_CHIMERAX_LEVEL_RESIDUE: Final[str] = "residue"
+SCORING_CHIMERAX_LEVEL_MODEL: Final[str] = "model"
+SCORING_CHIMERAX_LEVEL_POSE: Final[str] = "pose"
+SCORING_CHIMERAX_LEVEL_INTERACTION: Final[str] = "interaction"
+SCORING_CHIMERAX_LEVELS: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_CHIMERAX_LEVEL_ATOM,
+        SCORING_CHIMERAX_LEVEL_RESIDUE,
+        SCORING_CHIMERAX_LEVEL_MODEL,
+        SCORING_CHIMERAX_LEVEL_POSE,
+        SCORING_CHIMERAX_LEVEL_INTERACTION,
+    }
+)
+
+SCORING_CHIMERAX_COMMAND_SELECT: Final[str] = "select"
+SCORING_CHIMERAX_COMMAND_SHOW: Final[str] = "show"
+SCORING_CHIMERAX_COMMAND_HIDE: Final[str] = "hide"
+SCORING_CHIMERAX_COMMAND_COLOR: Final[str] = "color"
+SCORING_CHIMERAX_COMMAND_PBOND: Final[str] = "pbond"
+SCORING_CHIMERAX_COMMAND_ATTRIBUTE: Final[str] = "attribute"
+SCORING_CHIMERAX_COMMAND_LABEL: Final[str] = "label"
+SCORING_CHIMERAX_COMMAND_VIEW: Final[str] = "view"
+SCORING_CHIMERAX_COMMAND_OTHER: Final[str] = "other"
+SCORING_CHIMERAX_COMMAND_CATEGORIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_CHIMERAX_COMMAND_SELECT,
+        SCORING_CHIMERAX_COMMAND_SHOW,
+        SCORING_CHIMERAX_COMMAND_HIDE,
+        SCORING_CHIMERAX_COMMAND_COLOR,
+        SCORING_CHIMERAX_COMMAND_PBOND,
+        SCORING_CHIMERAX_COMMAND_ATTRIBUTE,
+        SCORING_CHIMERAX_COMMAND_LABEL,
+        SCORING_CHIMERAX_COMMAND_VIEW,
+        SCORING_CHIMERAX_COMMAND_OTHER,
+    }
+)
+
+SCORING_CHIMERAX_TARGET_ATOMS: Final[str] = "atoms"
+SCORING_CHIMERAX_TARGET_RESIDUES: Final[str] = "residues"
+SCORING_CHIMERAX_TARGET_MODELS: Final[str] = "models"
+SCORING_CHIMERAX_ATTRIBUTE_TARGETS: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_CHIMERAX_TARGET_ATOMS,
+        SCORING_CHIMERAX_TARGET_RESIDUES,
+        SCORING_CHIMERAX_TARGET_MODELS,
+    }
+)
+
+SCORING_CHIMERAX_GROUP_INTERACTIONS: Final[str] = (
+    "DockAnalyzer scoring interactions"
+)
+SCORING_CHIMERAX_GROUP_HBONDS: Final[str] = "DockAnalyzer hydrogen bonds"
+SCORING_CHIMERAX_GROUP_HYDROPHOBIC: Final[str] = (
+    "DockAnalyzer hydrophobic contacts"
+)
+SCORING_CHIMERAX_GROUP_PI: Final[str] = "DockAnalyzer pi interactions"
+SCORING_CHIMERAX_GROUP_SALTBRIDGES: Final[str] = (
+    "DockAnalyzer salt bridges"
+)
+SCORING_CHIMERAX_GROUP_CLASHES: Final[str] = "DockAnalyzer clashes"
+
+SCORING_CHIMERAX_ATTR_SCORE: Final[str] = "dockanalyzer_score"
+SCORING_CHIMERAX_ATTR_SCORE_FRACTION: Final[str] = (
+    "dockanalyzer_score_fraction"
+)
+SCORING_CHIMERAX_ATTR_RANK: Final[str] = "dockanalyzer_rank"
+SCORING_CHIMERAX_ATTR_PERCENTILE: Final[str] = "dockanalyzer_percentile"
+SCORING_CHIMERAX_ATTR_PERSISTENCE: Final[str] = "dockanalyzer_persistence"
+SCORING_CHIMERAX_ATTR_CONSENSUS: Final[str] = "dockanalyzer_consensus"
+SCORING_CHIMERAX_ATTR_HOTSPOT: Final[str] = "dockanalyzer_hotspot"
+
+SCORING_CHIMERAX_DEFAULT_POSITIVE_COLOR: Final[str] = "#2166ac"
+SCORING_CHIMERAX_DEFAULT_NEUTRAL_COLOR: Final[str] = "#f7f7f7"
+SCORING_CHIMERAX_DEFAULT_NEGATIVE_COLOR: Final[str] = "#b2182b"
+SCORING_CHIMERAX_DEFAULT_MISSING_COLOR: Final[str] = "#bdbdbd"
+SCORING_CHIMERAX_DEFAULT_SELECTION_COLOR: Final[str] = "#ffd92f"
+SCORING_CHIMERAX_DEFAULT_PBOND_COLOR: Final[str] = "#4d4d4d"
+
+SCORING_CHIMERAX_FAMILY_COLORS: Final[Mapping[str, str]] = (
+    MappingProxyType(
+        {
+            "hbond": "#2b8cbe",
+            "hydrogen_bond": "#2b8cbe",
+            "hydrophobic": "#fdae6b",
+            "pi": "#984ea3",
+            "pi_pi": "#984ea3",
+            "cation_pi": "#756bb1",
+            "anion_pi": "#9e9ac8",
+            "saltbridge": "#31a354",
+            "salt_bridge": "#31a354",
+            "contact": "#636363",
+            "clash": "#de2d26",
+            "steric_clash": "#de2d26",
+            "unknown": SCORING_CHIMERAX_DEFAULT_PBOND_COLOR,
+        }
+    )
+)
+
+DEFAULT_SCORING_CHIMERAX_PBOND_RADIUS: Final[float] = 0.12
+DEFAULT_SCORING_CHIMERAX_MIN_PBOND_RADIUS: Final[float] = 0.06
+DEFAULT_SCORING_CHIMERAX_MAX_PBOND_RADIUS: Final[float] = 0.30
+DEFAULT_SCORING_CHIMERAX_PBOND_DASHES: Final[int] = 6
+DEFAULT_SCORING_CHIMERAX_MAX_COMMANDS: Final[int] = 50000
+DEFAULT_SCORING_CHIMERAX_MAX_PBONDS: Final[int] = 20000
+DEFAULT_SCORING_CHIMERAX_MAX_ATTR_ROWS: Final[int] = 100000
+DEFAULT_SCORING_CHIMERAX_HISTORY_LIMIT: Final[int] = 20
+DEFAULT_SCORING_CHIMERAX_TOP_POSES: Final[int] = 10
+DEFAULT_SCORING_CHIMERAX_TOP_RESIDUES: Final[int] = 30
+
+_MODEL_ID_PATTERN: Final[re.Pattern[str]] = re.compile(r"^#?([0-9]+(?:\.[0-9]+)*)$")
+_SAFE_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(r"[^A-Za-z0-9_.-]+")
+_HEX_COLOR_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?$"
+)
+
+# -----------------------------------------------------------------------------
+# 29.2. Exceptions
+# -----------------------------------------------------------------------------
+
+
+class ScoringChimeraXError(RuntimeError):
+    """Base exception for Section 29 ChimeraX compatibility."""
+
+
+class ScoringChimeraXUnavailableError(ScoringChimeraXError):
+    """Raised when an operation requires an unavailable ChimeraX session."""
+
+
+class ScoringChimeraXConfigurationError(ScoringChimeraXError, ValueError):
+    """Raised when a ChimeraX configuration is invalid."""
+
+
+class ScoringChimeraXSpecificationError(ScoringChimeraXError, ValueError):
+    """Raised when an atom or residue specification cannot be built."""
+
+
+class ScoringChimeraXCommandError(ScoringChimeraXError):
+    """Raised when a ChimeraX command cannot be generated or executed."""
+
+
+class ScoringChimeraXPseudobondError(ScoringChimeraXError):
+    """Raised when pseudobond construction fails."""
+
+
+class ScoringChimeraXAttributeError(ScoringChimeraXError):
+    """Raised when an attribute file cannot be generated or loaded."""
+
+
+class ScoringChimeraXBindingError(ScoringChimeraXError):
+    """Raised when DockModel and ChimeraX model binding fails."""
+
+
+class ScoringChimeraXValidationError(ScoringChimeraXError):
+    """Raised when a Section 29 structure fails validation."""
+
+
+# -----------------------------------------------------------------------------
+# 29.3. Dataclasses
+# -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ScoringChimeraXConfig:
+    """Configuration for command generation and live visualization."""
+
+    model_id: Optional[str] = None
+    group_name: str = SCORING_CHIMERAX_GROUP_INTERACTIONS
+    use_family_groups: bool = True
+    color_by_family: bool = True
+    color_by_score: bool = False
+    show_distance: bool = False
+    reveal_atoms: bool = True
+    select_participants: bool = True
+    show_participant_atoms: bool = True
+    show_participant_residues: bool = True
+    label_residues: bool = False
+    orient_selection: bool = False
+    clear_previous: bool = True
+    create_pseudobonds: bool = True
+    assign_residue_scores: bool = True
+    assign_pose_ranks: bool = True
+    assign_persistence: bool = True
+    use_direct_api: bool = False
+    continue_on_error: bool = True
+    execute_commands: bool = True
+    record_commands: bool = True
+    positive_color: str = SCORING_CHIMERAX_DEFAULT_POSITIVE_COLOR
+    neutral_color: str = SCORING_CHIMERAX_DEFAULT_NEUTRAL_COLOR
+    negative_color: str = SCORING_CHIMERAX_DEFAULT_NEGATIVE_COLOR
+    missing_color: str = SCORING_CHIMERAX_DEFAULT_MISSING_COLOR
+    selection_color: str = SCORING_CHIMERAX_DEFAULT_SELECTION_COLOR
+    pseudobond_radius: float = DEFAULT_SCORING_CHIMERAX_PBOND_RADIUS
+    min_pseudobond_radius: float = DEFAULT_SCORING_CHIMERAX_MIN_PBOND_RADIUS
+    max_pseudobond_radius: float = DEFAULT_SCORING_CHIMERAX_MAX_PBOND_RADIUS
+    pseudobond_dashes: int = DEFAULT_SCORING_CHIMERAX_PBOND_DASHES
+    top_poses: int = DEFAULT_SCORING_CHIMERAX_TOP_POSES
+    top_residues: int = DEFAULT_SCORING_CHIMERAX_TOP_RESIDUES
+    max_commands: int = DEFAULT_SCORING_CHIMERAX_MAX_COMMANDS
+    max_pseudobonds: int = DEFAULT_SCORING_CHIMERAX_MAX_PBONDS
+    max_attribute_rows: int = DEFAULT_SCORING_CHIMERAX_MAX_ATTR_ROWS
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ScoringChimeraXEnvironment:
+    """Detected ChimeraX runtime capabilities."""
+
+    available: bool
+    session_available: bool
+    command_runner_available: bool
+    pseudobond_manager_available: bool
+    version: Optional[str]
+    status: str
+    details: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ScoringChimeraXObjectSpec:
+    """Canonical ChimeraX atom-spec representation."""
+
+    specification: str
+    level: str
+    model_id: Optional[str] = None
+    chain_id: Optional[str] = None
+    residue_number: Optional[Union[int, str]] = None
+    insertion_code: Optional[str] = None
+    residue_name: Optional[str] = None
+    atom_name: Optional[str] = None
+    alt_loc: Optional[str] = None
+    source_id: Optional[str] = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ScoringChimeraXCommand:
+    """One generated ChimeraX command and its execution metadata."""
+
+    command: str
+    category: str = SCORING_CHIMERAX_COMMAND_OTHER
+    description: str = ""
+    required: bool = False
+    source_id: Optional[str] = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ScoringChimeraXCommandSet:
+    """Ordered collection of ChimeraX commands."""
+
+    name: str
+    commands: Tuple[ScoringChimeraXCommand, ...]
+    created_at: str
+    model_id: Optional[str] = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def command_count(self) -> int:
+        return len(self.commands)
+
+    @property
+    def text(self) -> str:
+        return "\n".join(item.command for item in self.commands)
+
+
+@dataclass(frozen=True)
+class ScoringChimeraXPseudobondSpec:
+    """One pseudobond representation for a scored interaction."""
+
+    interaction_id: str
+    atom1_spec: str
+    atom2_spec: str
+    family: str
+    interaction_type: str
+    score: Optional[float]
+    distance: Optional[float]
+    color: str
+    radius: float
+    dashes: int
+    group_name: str
+    show_distance: bool = False
+    reveal: bool = True
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ScoringChimeraXAttributeAssignment:
+    """One attribute assignment for a ChimeraX object specification."""
+
+    specification: str
+    value: Any
+    attribute_name: str
+    recipient: str = SCORING_CHIMERAX_TARGET_RESIDUES
+    source_id: Optional[str] = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ScoringChimeraXAttributeFile:
+    """In-memory representation of a ChimeraX ``.defattr`` file."""
+
+    attribute_name: str
+    recipient: str
+    assignments: Tuple[ScoringChimeraXAttributeAssignment, ...]
+    match_mode: str = "1-to-1"
+    none_handling: str = "None"
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def row_count(self) -> int:
+        return len(self.assignments)
+
+
+@dataclass(frozen=True)
+class ScoringChimeraXExecutionRecord:
+    """Result of one attempted ChimeraX command execution."""
+
+    command: str
+    category: str
+    success: bool
+    started_at: str
+    finished_at: str
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+    result_repr: Optional[str] = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ScoringChimeraXModelBinding:
+    """Binding between a DockModel-like object and a ChimeraX model."""
+
+    dock_model_id: str
+    chimerax_model_id: str
+    chimerax_model_name: Optional[str]
+    source_path: Optional[str]
+    verified: bool
+    binding_method: str
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ScoringChimeraXVisualizationResult:
+    """Complete result of command generation or live visualization."""
+
+    status: str
+    environment: ScoringChimeraXEnvironment
+    command_set: ScoringChimeraXCommandSet
+    pseudobonds: Tuple[ScoringChimeraXPseudobondSpec, ...]
+    attribute_files: Tuple[ScoringChimeraXAttributeFile, ...]
+    executions: Tuple[ScoringChimeraXExecutionRecord, ...]
+    bindings: Tuple[ScoringChimeraXModelBinding, ...]
+    warnings: Tuple[str, ...]
+    errors: Tuple[str, ...]
+    created_at: str
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def successful(self) -> bool:
+        return self.status in {
+            SCORING_CHIMERAX_STATUS_READY,
+            SCORING_CHIMERAX_STATUS_OFFLINE,
+        }
+
+
+# -----------------------------------------------------------------------------
+# 29.4. Generic extraction and normalization helpers
+# -----------------------------------------------------------------------------
+
+
+def _scoring_chimerax_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _scoring_chimerax_mapping(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    if is_dataclass(value):
+        try:
+            converted = asdict(value)
+        except Exception:
+            converted = None
+        if isinstance(converted, Mapping):
+            return converted
+    return {}
+
+
+def _scoring_chimerax_get(
+    value: Any,
+    names: Union[str, Sequence[str]],
+    default: Any = None,
+) -> Any:
+    candidates = (names,) if isinstance(names, str) else tuple(names)
+    if isinstance(value, Mapping):
+        for name in candidates:
+            if name in value:
+                return value[name]
+    for name in candidates:
+        try:
+            candidate = getattr(value, name)
+        except Exception:
+            continue
+        if candidate is not None:
+            return candidate
+    return default
+
+
+def _scoring_chimerax_iter(value: Any) -> Tuple[Any, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes, bytearray)):
+        return (value,)
+    if isinstance(value, Mapping):
+        return tuple(value.values())
+    if isinstance(value, Iterable):
+        try:
+            return tuple(value)
+        except Exception:
+            return (value,)
+    return (value,)
+
+
+def _scoring_chimerax_float(value: Any) -> Optional[float]:
+    try:
+        converted = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(converted):
+        return None
+    return converted
+
+
+def _scoring_chimerax_int(value: Any) -> Optional[int]:
+    try:
+        converted = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return converted
+
+
+def _scoring_chimerax_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _scoring_chimerax_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "y"}:
+        return True
+    if text in {"0", "false", "no", "off", "n"}:
+        return False
+    return default
+
+
+def _scoring_chimerax_unique(values: Iterable[str]) -> Tuple[str, ...]:
+    seen: Set[str] = set()
+    result: List[str] = []
+    for value in values:
+        text = str(value).strip()
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return tuple(result)
+
+
+def _scoring_chimerax_safe_name(value: Any, fallback: str) -> str:
+    text = _scoring_chimerax_text(value) or fallback
+    safe = _SAFE_NAME_PATTERN.sub("_", text).strip("_.-")
+    return safe or fallback
+
+
+def _scoring_chimerax_quote(value: Any) -> str:
+    text = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{text}"'
+
+
+def _scoring_chimerax_model_id(value: Any) -> Optional[str]:
+    text = _scoring_chimerax_text(value)
+    if text is None:
+        return None
+    match = _MODEL_ID_PATTERN.match(text)
+    if not match:
+        raise ScoringChimeraXSpecificationError(
+            f"Invalid ChimeraX model identifier: {text!r}."
+        )
+    return match.group(1)
+
+
+def _scoring_chimerax_color(value: Any, fallback: str) -> str:
+    text = _scoring_chimerax_text(value)
+    if text is None:
+        return fallback
+    if text.startswith("#") and not _HEX_COLOR_PATTERN.match(text):
+        raise ScoringChimeraXConfigurationError(
+            f"Invalid hexadecimal ChimeraX color: {text!r}."
+        )
+    return text
+
+
+def _scoring_chimerax_normalize_family(value: Any) -> str:
+    text = (_scoring_chimerax_text(value) or "unknown").lower()
+    normalized = re.sub(r"[\s-]+", "_", text)
+    aliases = {
+        "hbonds": "hbond",
+        "hydrogen_bonds": "hbond",
+        "hydrogenbond": "hbond",
+        "hydrogen_bond": "hbond",
+        "hydrophobics": "hydrophobic",
+        "pi_interaction": "pi",
+        "pi_interactions": "pi",
+        "saltbridges": "saltbridge",
+        "salt_bridges": "saltbridge",
+        "steric": "clash",
+        "steric_clashes": "clash",
+        "contacts": "contact",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _scoring_chimerax_interaction_id(value: Any, index: int = 0) -> str:
+    explicit = _scoring_chimerax_get(
+        value,
+        (
+            "interaction_id",
+            "identity",
+            "canonical_id",
+            "id",
+            "key",
+        ),
+    )
+    if explicit is not None:
+        return str(explicit)
+    family = _scoring_chimerax_normalize_family(
+        _scoring_chimerax_get(value, ("family", "category", "kind"))
+    )
+    return f"{family}:{index + 1}"
+
+
+def _scoring_chimerax_score(value: Any) -> Optional[float]:
+    return _scoring_chimerax_float(
+        _scoring_chimerax_get(
+            value,
+            (
+                "final_score",
+                "score",
+                "total_score",
+                "weighted_score",
+                "contribution",
+                "value",
+            ),
+        )
+    )
+
+
+def _scoring_chimerax_distance(value: Any) -> Optional[float]:
+    direct = _scoring_chimerax_float(
+        _scoring_chimerax_get(
+            value,
+            (
+                "distance",
+                "distance_angstrom",
+                "distance_a",
+                "minimum_distance",
+                "min_distance",
+            ),
+        )
+    )
+    if direct is not None:
+        return direct
+    interaction = _scoring_chimerax_get(value, "interaction")
+    return _scoring_chimerax_float(
+        _scoring_chimerax_get(
+            interaction,
+            ("distance", "minimum_distance", "min_distance"),
+        )
+    )
+
+
+def _scoring_chimerax_interactions(source: Any) -> Tuple[Any, ...]:
+    candidates = (
+        "interaction_scores",
+        "interactions",
+        "scored_interactions",
+        "items",
+        "records",
+    )
+    for name in candidates:
+        value = _scoring_chimerax_get(source, name)
+        if value is not None:
+            return _scoring_chimerax_iter(value)
+    nested = _scoring_chimerax_get(source, ("collection", "result"))
+    if nested is not None and nested is not source:
+        resolved = _scoring_chimerax_interactions(nested)
+        if resolved:
+            return resolved
+    if isinstance(source, Sequence) and not isinstance(
+        source,
+        (str, bytes, bytearray),
+    ):
+        return tuple(source)
+    return ()
+
+
+def _scoring_chimerax_residue_scores(source: Any) -> Tuple[Any, ...]:
+    candidates = (
+        "residue_scores",
+        "residues",
+        "residue_contributions",
+        "residue_results",
+    )
+    for name in candidates:
+        value = _scoring_chimerax_get(source, name)
+        if value is not None:
+            return _scoring_chimerax_iter(value)
+    nested = _scoring_chimerax_get(source, ("pose_score", "result"))
+    if nested is not None and nested is not source:
+        return _scoring_chimerax_residue_scores(nested)
+    return ()
+
+
+def _scoring_chimerax_ranked_entries(source: Any) -> Tuple[Any, ...]:
+    candidates = (
+        "ranked_poses",
+        "ranking",
+        "records",
+        "entries",
+        "pose_records",
+    )
+    for name in candidates:
+        value = _scoring_chimerax_get(source, name)
+        if value is not None:
+            return _scoring_chimerax_iter(value)
+    return ()
+
+
+def _scoring_chimerax_consensus_entries(source: Any) -> Tuple[Any, ...]:
+    candidates = (
+        "consensus_entries",
+        "persistence_records",
+        "records",
+        "entries",
+        "items",
+    )
+    for name in candidates:
+        value = _scoring_chimerax_get(source, name)
+        if value is not None:
+            return _scoring_chimerax_iter(value)
+    groups = _scoring_chimerax_get(source, ("groups", "group_results"))
+    if groups is not None:
+        combined: List[Any] = []
+        for group in _scoring_chimerax_iter(groups):
+            combined.extend(_scoring_chimerax_consensus_entries(group))
+        return tuple(combined)
+    return ()
+
+
+def normalize_scoring_chimerax_status(value: Any) -> str:
+    """Normalize and validate a Section 29 status."""
+
+    status = (_scoring_chimerax_text(value) or "").lower()
+    if status not in SCORING_CHIMERAX_STATUSES:
+        raise ScoringChimeraXConfigurationError(
+            f"Unsupported ChimeraX status: {value!r}."
+        )
+    return status
+
+
+def normalize_scoring_chimerax_level(value: Any) -> str:
+    """Normalize and validate an atom-spec level."""
+
+    level = (_scoring_chimerax_text(value) or "").lower()
+    aliases = {
+        "atoms": SCORING_CHIMERAX_LEVEL_ATOM,
+        "residues": SCORING_CHIMERAX_LEVEL_RESIDUE,
+        "models": SCORING_CHIMERAX_LEVEL_MODEL,
+        "poses": SCORING_CHIMERAX_LEVEL_POSE,
+        "interactions": SCORING_CHIMERAX_LEVEL_INTERACTION,
+    }
+    level = aliases.get(level, level)
+    if level not in SCORING_CHIMERAX_LEVELS:
+        raise ScoringChimeraXConfigurationError(
+            f"Unsupported ChimeraX specification level: {value!r}."
+        )
+    return level
+
+
+def normalize_scoring_chimerax_command_category(value: Any) -> str:
+    """Normalize and validate a command category."""
+
+    category = (_scoring_chimerax_text(value) or "").lower()
+    if category not in SCORING_CHIMERAX_COMMAND_CATEGORIES:
+        raise ScoringChimeraXConfigurationError(
+            f"Unsupported ChimeraX command category: {value!r}."
+        )
+    return category
+
+# -----------------------------------------------------------------------------
+# 29.5. Environment and session detection
+# -----------------------------------------------------------------------------
+
+
+def is_scoring_chimerax_available() -> bool:
+    """Return whether the ChimeraX Python package can be resolved."""
+
+    try:
+        return importlib.util.find_spec("chimerax") is not None
+    except (ImportError, AttributeError, ValueError):
+        return False
+
+
+def scoring_chimerax_version() -> Optional[str]:
+    """Return a best-effort ChimeraX version without requiring a session."""
+
+    if not is_scoring_chimerax_available():
+        return None
+    candidates = (
+        ("chimerax.core", "__version__"),
+        ("chimerax", "__version__"),
+    )
+    for module_name, attribute_name in candidates:
+        try:
+            module = importlib.import_module(module_name)
+            version = getattr(module, attribute_name, None)
+        except Exception:
+            continue
+        if version is not None:
+            return str(version)
+    return None
+
+
+def validate_scoring_chimerax_session(session: Any) -> None:
+    """Validate the minimum structural requirements of a live session."""
+
+    if session is None:
+        raise ScoringChimeraXUnavailableError(
+            "A live ChimeraX session is required for this operation."
+        )
+    has_models = hasattr(session, "models")
+    has_logger = hasattr(session, "logger")
+    has_commands = hasattr(session, "commands")
+    if not (has_models or has_logger or has_commands):
+        raise ScoringChimeraXUnavailableError(
+            "The supplied object does not appear to be a ChimeraX session."
+        )
+
+
+def detect_scoring_chimerax_environment(
+    session: Any = None,
+) -> ScoringChimeraXEnvironment:
+    """Detect package, session, command, and pseudobond capabilities."""
+
+    package_available = is_scoring_chimerax_available()
+    session_available = session is not None
+    command_runner_available = False
+    manager_available = False
+    details: Dict[str, Any] = {}
+    if session_available:
+        try:
+            validate_scoring_chimerax_session(session)
+        except ScoringChimeraXUnavailableError as exc:
+            details["session_validation_error"] = str(exc)
+            session_available = False
+        else:
+            command_runner_available = callable(
+                _scoring_chimerax_get(session, ("run", "run_command"))
+            )
+            if not command_runner_available and package_available:
+                try:
+                    command_module = importlib.import_module(
+                        "chimerax.core.commands"
+                    )
+                    command_runner_available = callable(
+                        getattr(command_module, "run", None)
+                    )
+                except Exception as exc:
+                    details["command_import_error"] = str(exc)
+            manager_available = any(
+                hasattr(session, name)
+                for name in ("pb_manager", "pseudobond_manager")
+            )
+    version = scoring_chimerax_version()
+    if package_available and session_available and command_runner_available:
+        status = SCORING_CHIMERAX_STATUS_READY
+    elif package_available or session_available:
+        status = SCORING_CHIMERAX_STATUS_PARTIAL
+    else:
+        status = SCORING_CHIMERAX_STATUS_OFFLINE
+    details.update(
+        {
+            "package_available": package_available,
+            "session_type": (
+                type(session).__name__ if session is not None else None
+            ),
+        }
+    )
+    return ScoringChimeraXEnvironment(
+        available=package_available,
+        session_available=session_available,
+        command_runner_available=command_runner_available,
+        pseudobond_manager_available=manager_available,
+        version=version,
+        status=status,
+        details=MappingProxyType(details),
+    )
+
+
+def scoring_chimerax_log(
+    session: Any,
+    message: str,
+    level: str = "info",
+) -> bool:
+    """Write to the ChimeraX logger when one is available."""
+
+    logger = _scoring_chimerax_get(session, "logger")
+    if logger is None:
+        return False
+    normalized = str(level).strip().lower()
+    method = getattr(logger, normalized, None)
+    if not callable(method):
+        method = getattr(logger, "info", None)
+    if not callable(method):
+        return False
+    method(str(message))
+    return True
+
+
+# -----------------------------------------------------------------------------
+# 29.6. Atom-spec construction
+# -----------------------------------------------------------------------------
+
+
+def build_scoring_chimerax_model_spec(model_id: Any) -> ScoringChimeraXObjectSpec:
+    """Build a canonical ChimeraX model specification."""
+
+    normalized = _scoring_chimerax_model_id(model_id)
+    if normalized is None:
+        raise ScoringChimeraXSpecificationError(
+            "A ChimeraX model identifier is required."
+        )
+    specification = f"#{normalized}"
+    return ScoringChimeraXObjectSpec(
+        specification=specification,
+        level=SCORING_CHIMERAX_LEVEL_MODEL,
+        model_id=normalized,
+    )
+
+
+def build_scoring_chimerax_residue_spec(
+    residue: Any = None,
+    *,
+    model_id: Any = None,
+    chain_id: Any = None,
+    residue_number: Any = None,
+    insertion_code: Any = None,
+    residue_name: Any = None,
+    source_id: Any = None,
+) -> ScoringChimeraXObjectSpec:
+    """Build a residue atom-spec from an object or explicit fields."""
+
+    explicit_spec = _scoring_chimerax_text(
+        _scoring_chimerax_get(
+            residue,
+            (
+                "chimerax_spec",
+                "atomspec",
+                "atom_spec",
+                "residue_spec",
+                "specification",
+            ),
+        )
+    )
+    if explicit_spec and "@" not in explicit_spec:
+        return ScoringChimeraXObjectSpec(
+            specification=explicit_spec,
+            level=SCORING_CHIMERAX_LEVEL_RESIDUE,
+            source_id=_scoring_chimerax_text(source_id),
+            metadata=MappingProxyType({"explicit": True}),
+        )
+    model_value = model_id
+    if model_value is None:
+        model_value = _scoring_chimerax_get(
+            residue,
+            ("model_id", "structure_id", "chimerax_model_id"),
+        )
+    chain_value = chain_id
+    if chain_value is None:
+        chain_value = _scoring_chimerax_get(
+            residue,
+            ("chain_id", "chain", "chain_name"),
+        )
+    number_value = residue_number
+    if number_value is None:
+        number_value = _scoring_chimerax_get(
+            residue,
+            (
+                "residue_number",
+                "residue_id",
+                "position",
+                "number",
+                "seq_id",
+            ),
+        )
+    insertion_value = insertion_code
+    if insertion_value is None:
+        insertion_value = _scoring_chimerax_get(
+            residue,
+            ("insertion_code", "icode", "insert"),
+        )
+    name_value = residue_name
+    if name_value is None:
+        name_value = _scoring_chimerax_get(
+            residue,
+            ("residue_name", "resname", "name"),
+        )
+    normalized_model = (
+        _scoring_chimerax_model_id(model_value)
+        if model_value is not None
+        else None
+    )
+    normalized_chain = _scoring_chimerax_text(chain_value)
+    normalized_number = _scoring_chimerax_text(number_value)
+    normalized_insert = _scoring_chimerax_text(insertion_value)
+    normalized_name = _scoring_chimerax_text(name_value)
+    if normalized_number is None:
+        identity = _scoring_chimerax_text(
+            _scoring_chimerax_get(
+                residue,
+                (
+                    "residue_key",
+                    "residue_identity",
+                    "canonical_residue",
+                    "label",
+                ),
+            )
+        )
+        if identity:
+            match = re.search(
+                r"(?:(?P<chain>[^:/\s]+)[:/])?"
+                r"(?:(?P<name>[A-Za-z]{1,4}))?"
+                r"(?P<number>-?\d+)(?P<insert>[A-Za-z]?)$",
+                identity,
+            )
+            if match:
+                normalized_chain = normalized_chain or match.group("chain")
+                normalized_name = normalized_name or match.group("name")
+                normalized_number = match.group("number")
+                normalized_insert = normalized_insert or match.group("insert")
+    if normalized_number is None:
+        raise ScoringChimeraXSpecificationError(
+            "A residue number or explicit residue specification is required."
+        )
+    model_part = f"#{normalized_model}" if normalized_model else ""
+    chain_part = f"/{normalized_chain}" if normalized_chain else ""
+    residue_token = normalized_number
+    if normalized_insert:
+        residue_token += normalized_insert
+    specification = f"{model_part}{chain_part}:{residue_token}"
+    return ScoringChimeraXObjectSpec(
+        specification=specification,
+        level=SCORING_CHIMERAX_LEVEL_RESIDUE,
+        model_id=normalized_model,
+        chain_id=normalized_chain,
+        residue_number=normalized_number,
+        insertion_code=normalized_insert,
+        residue_name=normalized_name,
+        source_id=_scoring_chimerax_text(source_id),
+    )
+
+
+def build_scoring_chimerax_atom_spec(
+    atom: Any = None,
+    *,
+    model_id: Any = None,
+    chain_id: Any = None,
+    residue_number: Any = None,
+    insertion_code: Any = None,
+    residue_name: Any = None,
+    atom_name: Any = None,
+    alt_loc: Any = None,
+    source_id: Any = None,
+) -> ScoringChimeraXObjectSpec:
+    """Build an atom specification from an atom-like object or fields."""
+
+    explicit_spec = _scoring_chimerax_text(
+        _scoring_chimerax_get(
+            atom,
+            (
+                "chimerax_spec",
+                "atomspec",
+                "atom_spec",
+                "specification",
+            ),
+        )
+    )
+    if explicit_spec and "@" in explicit_spec:
+        return ScoringChimeraXObjectSpec(
+            specification=explicit_spec,
+            level=SCORING_CHIMERAX_LEVEL_ATOM,
+            atom_name=_scoring_chimerax_text(atom_name),
+            source_id=_scoring_chimerax_text(source_id),
+            metadata=MappingProxyType({"explicit": True}),
+        )
+    residue = _scoring_chimerax_get(atom, ("residue", "parent_residue"))
+    residue_spec = build_scoring_chimerax_residue_spec(
+        residue if residue is not None else atom,
+        model_id=model_id,
+        chain_id=chain_id,
+        residue_number=residue_number,
+        insertion_code=insertion_code,
+        residue_name=residue_name,
+        source_id=source_id,
+    )
+    name_value = atom_name
+    if name_value is None:
+        name_value = _scoring_chimerax_get(
+            atom,
+            ("atom_name", "name", "atom", "label"),
+        )
+    normalized_name = _scoring_chimerax_text(name_value)
+    if normalized_name is None:
+        raise ScoringChimeraXSpecificationError(
+            "An atom name or explicit atom specification is required."
+        )
+    alt_value = alt_loc
+    if alt_value is None:
+        alt_value = _scoring_chimerax_get(
+            atom,
+            ("alt_loc", "altloc", "alternate_location"),
+        )
+    normalized_alt = _scoring_chimerax_text(alt_value)
+    specification = f"{residue_spec.specification}@{normalized_name}"
+    if normalized_alt:
+        specification += f"&altloc={normalized_alt}"
+    return ScoringChimeraXObjectSpec(
+        specification=specification,
+        level=SCORING_CHIMERAX_LEVEL_ATOM,
+        model_id=residue_spec.model_id,
+        chain_id=residue_spec.chain_id,
+        residue_number=residue_spec.residue_number,
+        insertion_code=residue_spec.insertion_code,
+        residue_name=residue_spec.residue_name,
+        atom_name=normalized_name,
+        alt_loc=normalized_alt,
+        source_id=_scoring_chimerax_text(source_id),
+    )
+
+
+def join_scoring_chimerax_specs(
+    specifications: Iterable[Union[str, ScoringChimeraXObjectSpec]],
+    operator: str = " ",
+) -> str:
+    """Join unique ChimeraX specifications in stable order."""
+
+    values: List[str] = []
+    for specification in specifications:
+        if isinstance(specification, ScoringChimeraXObjectSpec):
+            text = specification.specification
+        else:
+            text = str(specification).strip()
+        if text:
+            values.append(text)
+    return operator.join(_scoring_chimerax_unique(values))
+
+
+def build_scoring_chimerax_specs(
+    values: Iterable[Any],
+    *,
+    level: str = SCORING_CHIMERAX_LEVEL_RESIDUE,
+    model_id: Any = None,
+) -> Tuple[ScoringChimeraXObjectSpec, ...]:
+    """Build multiple object specifications with stable deduplication."""
+
+    normalized_level = normalize_scoring_chimerax_level(level)
+    output: List[ScoringChimeraXObjectSpec] = []
+    seen: Set[str] = set()
+    for value in values:
+        if normalized_level == SCORING_CHIMERAX_LEVEL_ATOM:
+            item = build_scoring_chimerax_atom_spec(value, model_id=model_id)
+        elif normalized_level == SCORING_CHIMERAX_LEVEL_MODEL:
+            item = build_scoring_chimerax_model_spec(
+                _scoring_chimerax_get(value, "model_id", model_id)
+            )
+        else:
+            item = build_scoring_chimerax_residue_spec(
+                value,
+                model_id=model_id,
+            )
+        if item.specification not in seen:
+            seen.add(item.specification)
+            output.append(item)
+    return tuple(output)
+
+
+def resolve_scoring_chimerax_interaction_atoms(
+    interaction_score: Any,
+) -> Tuple[Any, Any]:
+    """Resolve receptor/ligand atom-like objects from an interaction score."""
+
+    interaction = _scoring_chimerax_get(
+        interaction_score,
+        ("interaction", "raw_interaction", "source"),
+        interaction_score,
+    )
+    pair_candidates = (
+        ("atom1", "atom2"),
+        ("atom_a", "atom_b"),
+        ("receptor_atom", "ligand_atom"),
+        ("protein_atom", "ligand_atom"),
+        ("donor_atom", "acceptor_atom"),
+        ("donor", "acceptor"),
+        ("cation_atom", "anion_atom"),
+        ("source_atom", "target_atom"),
+    )
+    for left_name, right_name in pair_candidates:
+        left = _scoring_chimerax_get(interaction, left_name)
+        right = _scoring_chimerax_get(interaction, right_name)
+        if left is not None and right is not None:
+            return left, right
+    atom_pair = _scoring_chimerax_get(
+        interaction,
+        ("atom_pair", "atoms", "participants"),
+    )
+    values = _scoring_chimerax_iter(atom_pair)
+    if len(values) >= 2:
+        return values[0], values[1]
+    left = _scoring_chimerax_get(
+        interaction_score,
+        ("atom1", "receptor_atom", "protein_atom"),
+    )
+    right = _scoring_chimerax_get(
+        interaction_score,
+        ("atom2", "ligand_atom", "partner_atom"),
+    )
+    if left is not None and right is not None:
+        return left, right
+    raise ScoringChimeraXSpecificationError(
+        "Could not resolve two atom participants from the interaction."
+    )
+
+
+def resolve_scoring_chimerax_interaction_specs(
+    interaction_score: Any,
+    *,
+    model_id: Any = None,
+    index: int = 0,
+) -> Tuple[ScoringChimeraXObjectSpec, ScoringChimeraXObjectSpec]:
+    """Resolve the two atom specifications of a scored interaction."""
+
+    interaction_id = _scoring_chimerax_interaction_id(interaction_score, index)
+    explicit_left = _scoring_chimerax_get(
+        interaction_score,
+        ("atom1_spec", "receptor_atom_spec", "source_spec"),
+    )
+    explicit_right = _scoring_chimerax_get(
+        interaction_score,
+        ("atom2_spec", "ligand_atom_spec", "target_spec"),
+    )
+    if explicit_left and explicit_right:
+        return (
+            ScoringChimeraXObjectSpec(
+                specification=str(explicit_left),
+                level=SCORING_CHIMERAX_LEVEL_ATOM,
+                source_id=interaction_id,
+            ),
+            ScoringChimeraXObjectSpec(
+                specification=str(explicit_right),
+                level=SCORING_CHIMERAX_LEVEL_ATOM,
+                source_id=interaction_id,
+            ),
+        )
+    atom1, atom2 = resolve_scoring_chimerax_interaction_atoms(
+        interaction_score
+    )
+    return (
+        build_scoring_chimerax_atom_spec(
+            atom1,
+            model_id=model_id,
+            source_id=interaction_id,
+        ),
+        build_scoring_chimerax_atom_spec(
+            atom2,
+            model_id=model_id,
+            source_id=interaction_id,
+        ),
+    )
+
+
+def resolve_scoring_chimerax_residue_score_spec(
+    residue_score: Any,
+    *,
+    model_id: Any = None,
+) -> ScoringChimeraXObjectSpec:
+    """Resolve a residue specification from a residue-scoring record."""
+
+    residue = _scoring_chimerax_get(
+        residue_score,
+        ("residue", "receptor_residue", "target_residue"),
+        residue_score,
+    )
+    source_id = _scoring_chimerax_get(
+        residue_score,
+        ("residue_key", "residue_id", "identity", "id"),
+    )
+    return build_scoring_chimerax_residue_spec(
+        residue,
+        model_id=model_id,
+        source_id=source_id,
+    )
+
+
+def scoring_chimerax_participant_specs(
+    source: Any,
+    *,
+    model_id: Any = None,
+) -> Tuple[str, ...]:
+    """Return all unique atom and residue specifications in a score source."""
+
+    specifications: List[str] = []
+    for index, interaction in enumerate(_scoring_chimerax_interactions(source)):
+        try:
+            atom1, atom2 = resolve_scoring_chimerax_interaction_specs(
+                interaction,
+                model_id=model_id,
+                index=index,
+            )
+        except ScoringChimeraXSpecificationError:
+            continue
+        specifications.extend((atom1.specification, atom2.specification))
+    for residue_score in _scoring_chimerax_residue_scores(source):
+        try:
+            residue_spec = resolve_scoring_chimerax_residue_score_spec(
+                residue_score,
+                model_id=model_id,
+            )
+        except ScoringChimeraXSpecificationError:
+            continue
+        specifications.append(residue_spec.specification)
+    return _scoring_chimerax_unique(specifications)
+
+
+# -----------------------------------------------------------------------------
+# 29.7. Colors, widths, and interaction groups
+# -----------------------------------------------------------------------------
+
+
+def _scoring_chimerax_hex_to_rgb(color: str) -> Tuple[int, int, int]:
+    normalized = _scoring_chimerax_color(color, "#000000")
+    if not normalized.startswith("#") or len(normalized) < 7:
+        raise ScoringChimeraXConfigurationError(
+            "Color interpolation requires six-digit hexadecimal colors."
+        )
+    return tuple(
+        int(normalized[index : index + 2], 16)
+        for index in (1, 3, 5)
+    )
+
+
+def interpolate_scoring_chimerax_color(
+    color1: str,
+    color2: str,
+    fraction: float,
+) -> str:
+    """Linearly interpolate two hexadecimal colors."""
+
+    first = _scoring_chimerax_hex_to_rgb(color1)
+    second = _scoring_chimerax_hex_to_rgb(color2)
+    t = max(0.0, min(1.0, float(fraction)))
+    channels = tuple(
+        int(round(left + (right - left) * t))
+        for left, right in zip(first, second)
+    )
+    return "#" + "".join(f"{channel:02x}" for channel in channels)
+
+
+def scoring_chimerax_score_color(
+    score: Any,
+    *,
+    minimum: float = -1.0,
+    maximum: float = 1.0,
+    negative_color: str = SCORING_CHIMERAX_DEFAULT_NEGATIVE_COLOR,
+    neutral_color: str = SCORING_CHIMERAX_DEFAULT_NEUTRAL_COLOR,
+    positive_color: str = SCORING_CHIMERAX_DEFAULT_POSITIVE_COLOR,
+    missing_color: str = SCORING_CHIMERAX_DEFAULT_MISSING_COLOR,
+) -> str:
+    """Map a signed score to a diverging hexadecimal color."""
+
+    value = _scoring_chimerax_float(score)
+    if value is None:
+        return _scoring_chimerax_color(missing_color, "#bdbdbd")
+    if maximum <= minimum:
+        raise ScoringChimeraXConfigurationError(
+            "Score color maximum must be greater than minimum."
+        )
+    zero_fraction = (0.0 - minimum) / (maximum - minimum)
+    value_fraction = (value - minimum) / (maximum - minimum)
+    value_fraction = max(0.0, min(1.0, value_fraction))
+    if value_fraction <= zero_fraction:
+        denominator = max(zero_fraction, 1e-12)
+        local = value_fraction / denominator
+        return interpolate_scoring_chimerax_color(
+            negative_color,
+            neutral_color,
+            local,
+        )
+    denominator = max(1.0 - zero_fraction, 1e-12)
+    local = (value_fraction - zero_fraction) / denominator
+    return interpolate_scoring_chimerax_color(
+        neutral_color,
+        positive_color,
+        local,
+    )
+
+
+def scoring_chimerax_family_color(
+    family: Any,
+    fallback: str = SCORING_CHIMERAX_DEFAULT_PBOND_COLOR,
+) -> str:
+    """Return the canonical display color for an interaction family."""
+
+    normalized = _scoring_chimerax_normalize_family(family)
+    return SCORING_CHIMERAX_FAMILY_COLORS.get(normalized, fallback)
+
+
+def scoring_chimerax_pseudobond_radius(
+    score: Any,
+    *,
+    base_radius: float = DEFAULT_SCORING_CHIMERAX_PBOND_RADIUS,
+    minimum_radius: float = DEFAULT_SCORING_CHIMERAX_MIN_PBOND_RADIUS,
+    maximum_radius: float = DEFAULT_SCORING_CHIMERAX_MAX_PBOND_RADIUS,
+) -> float:
+    """Scale pseudobond radius using the absolute interaction score."""
+
+    if minimum_radius <= 0.0 or maximum_radius < minimum_radius:
+        raise ScoringChimeraXConfigurationError(
+            "Invalid pseudobond radius limits."
+        )
+    value = _scoring_chimerax_float(score)
+    if value is None:
+        return max(minimum_radius, min(maximum_radius, base_radius))
+    scaled = base_radius * (1.0 + min(abs(value), 4.0) * 0.25)
+    return max(minimum_radius, min(maximum_radius, scaled))
+
+
+def scoring_chimerax_rank_color(
+    rank: Any,
+    total: Any,
+    *,
+    best_color: str = "#1a9850",
+    middle_color: str = "#fee08b",
+    worst_color: str = "#d73027",
+) -> str:
+    """Map a rank to a best-to-worst diverging color."""
+
+    rank_value = _scoring_chimerax_int(rank)
+    total_value = _scoring_chimerax_int(total)
+    if rank_value is None or total_value is None or total_value <= 1:
+        return best_color
+    fraction = (rank_value - 1) / max(total_value - 1, 1)
+    if fraction <= 0.5:
+        return interpolate_scoring_chimerax_color(
+            best_color,
+            middle_color,
+            fraction * 2.0,
+        )
+    return interpolate_scoring_chimerax_color(
+        middle_color,
+        worst_color,
+        (fraction - 0.5) * 2.0,
+    )
+
+
+def scoring_chimerax_group_name(
+    family: Any,
+    default: str = SCORING_CHIMERAX_GROUP_INTERACTIONS,
+) -> str:
+    """Return a stable pseudobond group name for a family."""
+
+    normalized = _scoring_chimerax_normalize_family(family)
+    groups = {
+        "hbond": SCORING_CHIMERAX_GROUP_HBONDS,
+        "hydrophobic": SCORING_CHIMERAX_GROUP_HYDROPHOBIC,
+        "pi": SCORING_CHIMERAX_GROUP_PI,
+        "pi_pi": SCORING_CHIMERAX_GROUP_PI,
+        "cation_pi": SCORING_CHIMERAX_GROUP_PI,
+        "anion_pi": SCORING_CHIMERAX_GROUP_PI,
+        "saltbridge": SCORING_CHIMERAX_GROUP_SALTBRIDGES,
+        "clash": SCORING_CHIMERAX_GROUP_CLASHES,
+    }
+    return groups.get(normalized, default)
+
+
+# -----------------------------------------------------------------------------
+# 29.8. Pseudobond specifications and commands
+# -----------------------------------------------------------------------------
+
+
+def build_scoring_chimerax_pseudobond_spec(
+    interaction_score: Any,
+    *,
+    config: Optional[ScoringChimeraXConfig] = None,
+    model_id: Any = None,
+    index: int = 0,
+) -> ScoringChimeraXPseudobondSpec:
+    """Build one pseudobond specification from an interaction score."""
+
+    effective = config or ScoringChimeraXConfig(model_id=model_id)
+    effective_model = model_id if model_id is not None else effective.model_id
+    atom1, atom2 = resolve_scoring_chimerax_interaction_specs(
+        interaction_score,
+        model_id=effective_model,
+        index=index,
+    )
+    interaction_id = _scoring_chimerax_interaction_id(
+        interaction_score,
+        index,
+    )
+    family = _scoring_chimerax_normalize_family(
+        _scoring_chimerax_get(
+            interaction_score,
+            ("family", "interaction_family", "category"),
+            _scoring_chimerax_get(
+                _scoring_chimerax_get(interaction_score, "interaction"),
+                ("family", "category"),
+                "unknown",
+            ),
+        )
+    )
+    interaction_type = _scoring_chimerax_text(
+        _scoring_chimerax_get(
+            interaction_score,
+            ("interaction_type", "type", "subtype", "classification"),
+        )
+    ) or family
+    score = _scoring_chimerax_score(interaction_score)
+    distance = _scoring_chimerax_distance(interaction_score)
+    if effective.color_by_score:
+        color = scoring_chimerax_score_color(
+            score,
+            negative_color=effective.negative_color,
+            neutral_color=effective.neutral_color,
+            positive_color=effective.positive_color,
+            missing_color=effective.missing_color,
+        )
+    elif effective.color_by_family:
+        color = scoring_chimerax_family_color(family)
+    else:
+        color = SCORING_CHIMERAX_DEFAULT_PBOND_COLOR
+    group_name = (
+        scoring_chimerax_group_name(family, effective.group_name)
+        if effective.use_family_groups
+        else effective.group_name
+    )
+    radius = scoring_chimerax_pseudobond_radius(
+        score,
+        base_radius=effective.pseudobond_radius,
+        minimum_radius=effective.min_pseudobond_radius,
+        maximum_radius=effective.max_pseudobond_radius,
+    )
+    return ScoringChimeraXPseudobondSpec(
+        interaction_id=interaction_id,
+        atom1_spec=atom1.specification,
+        atom2_spec=atom2.specification,
+        family=family,
+        interaction_type=interaction_type,
+        score=score,
+        distance=distance,
+        color=color,
+        radius=radius,
+        dashes=effective.pseudobond_dashes,
+        group_name=group_name,
+        show_distance=effective.show_distance,
+        reveal=effective.reveal_atoms,
+        metadata=MappingProxyType(
+            {
+                "source_index": index,
+                "model_id": effective_model,
+            }
+        ),
+    )
+
+
+def build_scoring_chimerax_pseudobond_specs(
+    source: Any,
+    *,
+    config: Optional[ScoringChimeraXConfig] = None,
+    model_id: Any = None,
+    strict: bool = False,
+) -> Tuple[ScoringChimeraXPseudobondSpec, ...]:
+    """Build deduplicated pseudobonds for all score interactions."""
+
+    effective = config or ScoringChimeraXConfig(model_id=model_id)
+    interactions = _scoring_chimerax_interactions(source)
+    if len(interactions) > effective.max_pseudobonds:
+        raise ScoringChimeraXPseudobondError(
+            "Interaction count exceeds the configured pseudobond limit."
+        )
+    output: List[ScoringChimeraXPseudobondSpec] = []
+    seen: Set[Tuple[str, str, str]] = set()
+    failures: List[str] = []
+    for index, interaction in enumerate(interactions):
+        try:
+            item = build_scoring_chimerax_pseudobond_spec(
+                interaction,
+                config=effective,
+                model_id=model_id,
+                index=index,
+            )
+        except ScoringChimeraXError as exc:
+            failures.append(str(exc))
+            if strict:
+                raise
+            continue
+        endpoints = tuple(sorted((item.atom1_spec, item.atom2_spec)))
+        key = (endpoints[0], endpoints[1], item.interaction_type)
+        if key not in seen:
+            seen.add(key)
+            output.append(item)
+    if strict and failures:
+        raise ScoringChimeraXPseudobondError("; ".join(failures))
+    return tuple(output)
+
+
+def scoring_chimerax_pseudobond_command(
+    pseudobond: ScoringChimeraXPseudobondSpec,
+) -> ScoringChimeraXCommand:
+    """Convert a pseudobond specification into a ChimeraX command."""
+
+    validate_scoring_chimerax_pseudobond_spec(pseudobond)
+    command = (
+        f"pbond {pseudobond.atom1_spec} {pseudobond.atom2_spec} "
+        f"reveal {'true' if pseudobond.reveal else 'false'} "
+        f"showDist {'true' if pseudobond.show_distance else 'false'} "
+        f"color {pseudobond.color} radius {pseudobond.radius:.4f} "
+        f"dashes {pseudobond.dashes} "
+        f"name {_scoring_chimerax_quote(pseudobond.group_name)}"
+    )
+    return ScoringChimeraXCommand(
+        command=command,
+        category=SCORING_CHIMERAX_COMMAND_PBOND,
+        description=(
+            f"Create {pseudobond.family} pseudobond "
+            f"for {pseudobond.interaction_id}."
+        ),
+        source_id=pseudobond.interaction_id,
+        metadata=MappingProxyType(
+            {
+                "family": pseudobond.family,
+                "interaction_type": pseudobond.interaction_type,
+                "score": pseudobond.score,
+                "distance": pseudobond.distance,
+            }
+        ),
+    )
+
+
+def build_scoring_chimerax_delete_pseudobond_commands(
+    group_names: Iterable[str],
+) -> Tuple[ScoringChimeraXCommand, ...]:
+    """Build commands that remove previous DockAnalyzer pseudobond groups."""
+
+    output: List[ScoringChimeraXCommand] = []
+    for group_name in _scoring_chimerax_unique(group_names):
+        output.append(
+            ScoringChimeraXCommand(
+                command=(
+                    "pbond delete name "
+                    + _scoring_chimerax_quote(group_name)
+                ),
+                category=SCORING_CHIMERAX_COMMAND_PBOND,
+                description=f"Delete pseudobond group {group_name}.",
+                required=False,
+            )
+        )
+    return tuple(output)
+
+# -----------------------------------------------------------------------------
+# 29.9. Attribute files
+# -----------------------------------------------------------------------------
+
+
+def _scoring_chimerax_attribute_value(value: Any) -> str:
+    if value is None:
+        return "None"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return "None"
+        return format(value, ".12g")
+    text = str(value)
+    if any(character.isspace() for character in text):
+        return _scoring_chimerax_quote(text)
+    return text
+
+
+def build_scoring_chimerax_attribute_file(
+    attribute_name: str,
+    assignments: Iterable[ScoringChimeraXAttributeAssignment],
+    *,
+    recipient: str = SCORING_CHIMERAX_TARGET_RESIDUES,
+    match_mode: str = "1-to-1",
+    none_handling: str = "None",
+    max_rows: int = DEFAULT_SCORING_CHIMERAX_MAX_ATTR_ROWS,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> ScoringChimeraXAttributeFile:
+    """Build a validated in-memory ChimeraX attribute file."""
+
+    name = _scoring_chimerax_text(attribute_name)
+    if name is None:
+        raise ScoringChimeraXAttributeError(
+            "An attribute name is required."
+        )
+    normalized_recipient = str(recipient).strip().lower()
+    if normalized_recipient not in SCORING_CHIMERAX_ATTRIBUTE_TARGETS:
+        raise ScoringChimeraXAttributeError(
+            f"Unsupported attribute recipient: {recipient!r}."
+        )
+    values = tuple(assignments)
+    if len(values) > max_rows:
+        raise ScoringChimeraXAttributeError(
+            "Attribute assignment count exceeds the configured limit."
+        )
+    deduplicated: Dict[str, ScoringChimeraXAttributeAssignment] = {}
+    for assignment in values:
+        validate_scoring_chimerax_attribute_assignment(assignment)
+        deduplicated[assignment.specification] = assignment
+    result = ScoringChimeraXAttributeFile(
+        attribute_name=name,
+        recipient=normalized_recipient,
+        assignments=tuple(deduplicated.values()),
+        match_mode=str(match_mode),
+        none_handling=str(none_handling),
+        metadata=MappingProxyType(dict(metadata or {})),
+    )
+    validate_scoring_chimerax_attribute_file(result)
+    return result
+
+
+def scoring_chimerax_attribute_file_text(
+    attribute_file: ScoringChimeraXAttributeFile,
+) -> str:
+    """Render a ChimeraX ``.defattr`` file."""
+
+    validate_scoring_chimerax_attribute_file(attribute_file)
+    lines = [
+        f"attribute: {attribute_file.attribute_name}",
+        f"match mode: {attribute_file.match_mode}",
+        f"recipient: {attribute_file.recipient}",
+        f"none handling: {attribute_file.none_handling}",
+    ]
+    for assignment in attribute_file.assignments:
+        lines.append(
+            "\t"
+            + assignment.specification
+            + "\t"
+            + _scoring_chimerax_attribute_value(assignment.value)
+        )
+    return "\n".join(lines) + "\n"
+
+
+def write_scoring_chimerax_attribute_file(
+    attribute_file: ScoringChimeraXAttributeFile,
+    path: Union[str, os.PathLike[str]],
+    *,
+    overwrite: bool = True,
+    encoding: str = "utf-8",
+) -> Path:
+    """Write an attribute file and return its resolved path."""
+
+    target = Path(path).expanduser()
+    if target.suffix.lower() != ".defattr":
+        target = target.with_suffix(".defattr")
+    if target.exists() and not overwrite:
+        raise FileExistsError(str(target))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        scoring_chimerax_attribute_file_text(attribute_file),
+        encoding=encoding,
+    )
+    return target.resolve()
+
+
+def scoring_chimerax_open_attribute_command(
+    path: Union[str, os.PathLike[str]],
+    *,
+    description: str = "Load DockAnalyzer attributes.",
+) -> ScoringChimeraXCommand:
+    """Build a ChimeraX command that opens a ``.defattr`` file."""
+
+    resolved = str(Path(path).expanduser().resolve())
+    return ScoringChimeraXCommand(
+        command="open " + _scoring_chimerax_quote(resolved),
+        category=SCORING_CHIMERAX_COMMAND_ATTRIBUTE,
+        description=description,
+        required=True,
+        metadata=MappingProxyType({"path": resolved}),
+    )
+
+
+def scoring_chimerax_color_attribute_command(
+    attribute_name: str,
+    *,
+    target: str = "r",
+    palette: str = "red:white:blue",
+    range_value: Optional[str] = None,
+    no_value_color: Optional[str] = None,
+) -> ScoringChimeraXCommand:
+    """Build a command that colors objects by an assigned attribute."""
+
+    name = _scoring_chimerax_text(attribute_name)
+    if name is None:
+        raise ScoringChimeraXAttributeError(
+            "An attribute name is required for color byattribute."
+        )
+    command = (
+        f"color byattribute {name} target {target} "
+        f"palette {palette}"
+    )
+    if range_value:
+        command += f" range {range_value}"
+    if no_value_color:
+        command += f" noValueColor {no_value_color}"
+    return ScoringChimeraXCommand(
+        command=command,
+        category=SCORING_CHIMERAX_COMMAND_COLOR,
+        description=f"Color by attribute {name}.",
+        metadata=MappingProxyType({"attribute_name": name}),
+    )
+
+
+def build_scoring_chimerax_residue_score_attribute(
+    source: Any,
+    *,
+    model_id: Any = None,
+    attribute_name: str = SCORING_CHIMERAX_ATTR_SCORE,
+    fraction: bool = False,
+    max_rows: int = DEFAULT_SCORING_CHIMERAX_MAX_ATTR_ROWS,
+) -> ScoringChimeraXAttributeFile:
+    """Build residue score assignments from a pose or residue collection."""
+
+    records = _scoring_chimerax_residue_scores(source)
+    assignments: List[ScoringChimeraXAttributeAssignment] = []
+    score_names = (
+        "score_fraction",
+        "fraction",
+        "relative_contribution",
+        "normalized_score",
+    ) if fraction else (
+        "score",
+        "total_score",
+        "residue_score",
+        "contribution",
+        "raw_score",
+    )
+    for record in records:
+        try:
+            specification = resolve_scoring_chimerax_residue_score_spec(
+                record,
+                model_id=model_id,
+            )
+        except ScoringChimeraXSpecificationError:
+            continue
+        value = _scoring_chimerax_float(
+            _scoring_chimerax_get(record, score_names)
+        )
+        if value is None:
+            continue
+        assignments.append(
+            ScoringChimeraXAttributeAssignment(
+                specification=specification.specification,
+                value=value,
+                attribute_name=attribute_name,
+                recipient=SCORING_CHIMERAX_TARGET_RESIDUES,
+                source_id=specification.source_id,
+            )
+        )
+    return build_scoring_chimerax_attribute_file(
+        attribute_name,
+        assignments,
+        recipient=SCORING_CHIMERAX_TARGET_RESIDUES,
+        max_rows=max_rows,
+        metadata={"kind": "residue_score", "fraction": fraction},
+    )
+
+
+def _scoring_chimerax_rank_model_id(entry: Any) -> Optional[str]:
+    direct = _scoring_chimerax_get(
+        entry,
+        (
+            "chimerax_model_id",
+            "model_id",
+            "structure_id",
+        ),
+    )
+    if direct is not None:
+        try:
+            return _scoring_chimerax_model_id(direct)
+        except ScoringChimeraXSpecificationError:
+            pass
+    pose = _scoring_chimerax_get(entry, ("pose", "source", "record"))
+    direct = _scoring_chimerax_get(
+        pose,
+        ("chimerax_model_id", "model_id", "structure_id"),
+    )
+    if direct is None:
+        return None
+    try:
+        return _scoring_chimerax_model_id(direct)
+    except ScoringChimeraXSpecificationError:
+        return None
+
+
+def build_scoring_chimerax_pose_rank_attribute(
+    ranking: Any,
+    *,
+    attribute_name: str = SCORING_CHIMERAX_ATTR_RANK,
+    percentile: bool = False,
+    bindings: Optional[Mapping[str, str]] = None,
+    max_rows: int = DEFAULT_SCORING_CHIMERAX_MAX_ATTR_ROWS,
+) -> ScoringChimeraXAttributeFile:
+    """Build model-level rank or percentile assignments."""
+
+    entries = _scoring_chimerax_ranked_entries(ranking)
+    assignments: List[ScoringChimeraXAttributeAssignment] = []
+    binding_map = dict(bindings or {})
+    for entry in entries:
+        pose_id = _scoring_chimerax_text(
+            _scoring_chimerax_get(
+                entry,
+                ("pose_id", "id", "identity", "name"),
+            )
+        )
+        model_id = binding_map.get(pose_id or "")
+        if model_id is None:
+            model_id = _scoring_chimerax_rank_model_id(entry)
+        if model_id is None:
+            continue
+        value_names = (
+            "percentile",
+            "rank_percentile",
+            "normalized_rank",
+        ) if percentile else (
+            "rank",
+            "position",
+            "ordinal_rank",
+            "dense_rank",
+        )
+        value = _scoring_chimerax_float(
+            _scoring_chimerax_get(entry, value_names)
+        )
+        if value is None:
+            continue
+        specification = build_scoring_chimerax_model_spec(model_id)
+        assignments.append(
+            ScoringChimeraXAttributeAssignment(
+                specification=specification.specification,
+                value=value,
+                attribute_name=attribute_name,
+                recipient=SCORING_CHIMERAX_TARGET_MODELS,
+                source_id=pose_id,
+            )
+        )
+    return build_scoring_chimerax_attribute_file(
+        attribute_name,
+        assignments,
+        recipient=SCORING_CHIMERAX_TARGET_MODELS,
+        max_rows=max_rows,
+        metadata={"kind": "pose_rank", "percentile": percentile},
+    )
+
+
+def _scoring_chimerax_consensus_residue(entry: Any) -> Any:
+    for name in (
+        "residue",
+        "receptor_residue",
+        "target_residue",
+        "representative_residue",
+    ):
+        value = _scoring_chimerax_get(entry, name)
+        if value is not None:
+            return value
+    representative = _scoring_chimerax_get(
+        entry,
+        ("representative", "representative_interaction"),
+    )
+    if representative is not None:
+        for name in (
+            "receptor_residue",
+            "protein_residue",
+            "residue",
+        ):
+            value = _scoring_chimerax_get(representative, name)
+            if value is not None:
+                return value
+    return entry
+
+
+def build_scoring_chimerax_persistence_attribute(
+    consensus: Any,
+    *,
+    model_id: Any = None,
+    attribute_name: str = SCORING_CHIMERAX_ATTR_PERSISTENCE,
+    max_rows: int = DEFAULT_SCORING_CHIMERAX_MAX_ATTR_ROWS,
+) -> ScoringChimeraXAttributeFile:
+    """Build residue persistence assignments from Section 21 results."""
+
+    entries = _scoring_chimerax_consensus_entries(consensus)
+    by_spec: Dict[str, float] = {}
+    for entry in entries:
+        residue = _scoring_chimerax_consensus_residue(entry)
+        try:
+            specification = build_scoring_chimerax_residue_spec(
+                residue,
+                model_id=model_id,
+            )
+        except ScoringChimeraXSpecificationError:
+            continue
+        persistence = _scoring_chimerax_float(
+            _scoring_chimerax_get(
+                entry,
+                (
+                    "persistence",
+                    "persistence_fraction",
+                    "frequency",
+                    "support_fraction",
+                    "weighted_persistence",
+                ),
+            )
+        )
+        if persistence is None:
+            continue
+        current = by_spec.get(specification.specification)
+        if current is None or persistence > current:
+            by_spec[specification.specification] = persistence
+    assignments = tuple(
+        ScoringChimeraXAttributeAssignment(
+            specification=specification,
+            value=value,
+            attribute_name=attribute_name,
+            recipient=SCORING_CHIMERAX_TARGET_RESIDUES,
+        )
+        for specification, value in by_spec.items()
+    )
+    return build_scoring_chimerax_attribute_file(
+        attribute_name,
+        assignments,
+        recipient=SCORING_CHIMERAX_TARGET_RESIDUES,
+        max_rows=max_rows,
+        metadata={"kind": "persistence"},
+    )
+
+
+# -----------------------------------------------------------------------------
+# 29.10. Selection, ranking, and consensus commands
+# -----------------------------------------------------------------------------
+
+
+def build_scoring_chimerax_selection_commands(
+    source: Any,
+    *,
+    model_id: Any = None,
+    config: Optional[ScoringChimeraXConfig] = None,
+) -> Tuple[ScoringChimeraXCommand, ...]:
+    """Build participant selection, display, labeling, and view commands."""
+
+    effective = config or ScoringChimeraXConfig(model_id=model_id)
+    specifications = scoring_chimerax_participant_specs(
+        source,
+        model_id=model_id if model_id is not None else effective.model_id,
+    )
+    joined = join_scoring_chimerax_specs(specifications)
+    if not joined:
+        return ()
+    commands: List[ScoringChimeraXCommand] = []
+    if effective.select_participants:
+        commands.append(
+            ScoringChimeraXCommand(
+                command=f"select {joined}",
+                category=SCORING_CHIMERAX_COMMAND_SELECT,
+                description="Select scored interaction participants.",
+            )
+        )
+    if effective.show_participant_atoms:
+        commands.append(
+            ScoringChimeraXCommand(
+                command=f"show {joined} target a",
+                category=SCORING_CHIMERAX_COMMAND_SHOW,
+                description="Show atoms participating in scored interactions.",
+            )
+        )
+    if effective.show_participant_residues:
+        commands.append(
+            ScoringChimeraXCommand(
+                command=f"show {joined} target r",
+                category=SCORING_CHIMERAX_COMMAND_SHOW,
+                description="Show residues participating in scoring.",
+            )
+        )
+    if effective.label_residues:
+        commands.append(
+            ScoringChimeraXCommand(
+                command=f"label {joined} residues attribute name",
+                category=SCORING_CHIMERAX_COMMAND_LABEL,
+                description="Label scored residues.",
+            )
+        )
+    if effective.orient_selection:
+        commands.append(
+            ScoringChimeraXCommand(
+                command="view sel",
+                category=SCORING_CHIMERAX_COMMAND_VIEW,
+                description="Orient the view around scored participants.",
+            )
+        )
+    return tuple(commands)
+
+
+def build_scoring_chimerax_rank_commands(
+    ranking: Any,
+    *,
+    bindings: Optional[Mapping[str, str]] = None,
+    top_n: int = DEFAULT_SCORING_CHIMERAX_TOP_POSES,
+    hide_unranked: bool = False,
+) -> Tuple[ScoringChimeraXCommand, ...]:
+    """Build commands that display and color top-ranked pose models."""
+
+    entries = _scoring_chimerax_ranked_entries(ranking)
+    if top_n < 1:
+        return ()
+    binding_map = dict(bindings or {})
+    ranked: List[Tuple[int, str, str]] = []
+    for index, entry in enumerate(entries):
+        rank = _scoring_chimerax_int(
+            _scoring_chimerax_get(
+                entry,
+                ("rank", "position", "ordinal_rank"),
+                index + 1,
+            )
+        ) or index + 1
+        if rank > top_n:
+            continue
+        pose_id = _scoring_chimerax_text(
+            _scoring_chimerax_get(
+                entry,
+                ("pose_id", "id", "identity", "name"),
+            )
+        ) or f"pose_{index + 1}"
+        model_id = binding_map.get(pose_id)
+        if model_id is None:
+            model_id = _scoring_chimerax_rank_model_id(entry)
+        if model_id is None:
+            continue
+        ranked.append((rank, pose_id, model_id))
+    if not ranked:
+        return ()
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    commands: List[ScoringChimeraXCommand] = []
+    if hide_unranked:
+        commands.append(
+            ScoringChimeraXCommand(
+                command="hide models",
+                category=SCORING_CHIMERAX_COMMAND_HIDE,
+                description="Hide models before displaying ranked poses.",
+            )
+        )
+    total = max(len(ranked), 1)
+    for rank, pose_id, model_id in ranked:
+        model_spec = build_scoring_chimerax_model_spec(model_id).specification
+        color = scoring_chimerax_rank_color(rank, total)
+        commands.extend(
+            (
+                ScoringChimeraXCommand(
+                    command=f"show {model_spec} models",
+                    category=SCORING_CHIMERAX_COMMAND_SHOW,
+                    description=f"Show ranked pose {pose_id}.",
+                    source_id=pose_id,
+                ),
+                ScoringChimeraXCommand(
+                    command=f"color {model_spec} {color}",
+                    category=SCORING_CHIMERAX_COMMAND_COLOR,
+                    description=(
+                        f"Color pose {pose_id} by multipose rank {rank}."
+                    ),
+                    source_id=pose_id,
+                    metadata=MappingProxyType({"rank": rank}),
+                ),
+            )
+        )
+    top_specs = join_scoring_chimerax_specs(
+        build_scoring_chimerax_model_spec(item[2]) for item in ranked
+    )
+    if top_specs:
+        commands.append(
+            ScoringChimeraXCommand(
+                command=f"view {top_specs}",
+                category=SCORING_CHIMERAX_COMMAND_VIEW,
+                description="Orient the view around top-ranked poses.",
+            )
+        )
+    return tuple(commands)
+
+
+def build_scoring_chimerax_consensus_commands(
+    consensus: Any,
+    *,
+    model_id: Any = None,
+    minimum_persistence: float = 0.5,
+    color: str = "#54278f",
+    label: bool = False,
+) -> Tuple[ScoringChimeraXCommand, ...]:
+    """Build selection and color commands for persistent residues."""
+
+    if not 0.0 <= minimum_persistence <= 1.0:
+        raise ScoringChimeraXConfigurationError(
+            "Minimum persistence must be between zero and one."
+        )
+    specifications: List[str] = []
+    for entry in _scoring_chimerax_consensus_entries(consensus):
+        persistence = _scoring_chimerax_float(
+            _scoring_chimerax_get(
+                entry,
+                (
+                    "persistence",
+                    "persistence_fraction",
+                    "frequency",
+                    "support_fraction",
+                    "weighted_persistence",
+                ),
+            )
+        )
+        if persistence is None or persistence < minimum_persistence:
+            continue
+        residue = _scoring_chimerax_consensus_residue(entry)
+        try:
+            residue_spec = build_scoring_chimerax_residue_spec(
+                residue,
+                model_id=model_id,
+            )
+        except ScoringChimeraXSpecificationError:
+            continue
+        specifications.append(residue_spec.specification)
+    joined = join_scoring_chimerax_specs(specifications)
+    if not joined:
+        return ()
+    commands = [
+        ScoringChimeraXCommand(
+            command=f"select {joined}",
+            category=SCORING_CHIMERAX_COMMAND_SELECT,
+            description="Select persistent consensus residues.",
+        ),
+        ScoringChimeraXCommand(
+            command=f"show {joined} target r",
+            category=SCORING_CHIMERAX_COMMAND_SHOW,
+            description="Show persistent consensus residues.",
+        ),
+        ScoringChimeraXCommand(
+            command=f"color {joined} {color}",
+            category=SCORING_CHIMERAX_COMMAND_COLOR,
+            description="Color persistent consensus residues.",
+        ),
+    ]
+    if label:
+        commands.append(
+            ScoringChimeraXCommand(
+                command=f"label {joined} residues attribute name",
+                category=SCORING_CHIMERAX_COMMAND_LABEL,
+                description="Label persistent consensus residues.",
+            )
+        )
+    return tuple(commands)
+
+
+# -----------------------------------------------------------------------------
+# 29.11. Command-set assembly and script files
+# -----------------------------------------------------------------------------
+
+
+def build_scoring_chimerax_command_set(
+    source: Any,
+    *,
+    config: Optional[ScoringChimeraXConfig] = None,
+    ranking: Any = None,
+    consensus: Any = None,
+    bindings: Optional[Mapping[str, str]] = None,
+    name: str = "DockAnalyzer scoring visualization",
+) -> ScoringChimeraXCommandSet:
+    """Build a complete offline/live ChimeraX command sequence."""
+
+    effective = config or ScoringChimeraXConfig()
+    validate_scoring_chimerax_config(effective)
+    commands: List[ScoringChimeraXCommand] = []
+    pseudobonds = build_scoring_chimerax_pseudobond_specs(
+        source,
+        config=effective,
+        model_id=effective.model_id,
+        strict=False,
+    )
+    if effective.clear_previous and pseudobonds:
+        commands.extend(
+            build_scoring_chimerax_delete_pseudobond_commands(
+                item.group_name for item in pseudobonds
+            )
+        )
+    commands.extend(
+        build_scoring_chimerax_selection_commands(
+            source,
+            model_id=effective.model_id,
+            config=effective,
+        )
+    )
+    if effective.create_pseudobonds:
+        commands.extend(
+            scoring_chimerax_pseudobond_command(item)
+            for item in pseudobonds
+        )
+    if ranking is not None:
+        commands.extend(
+            build_scoring_chimerax_rank_commands(
+                ranking,
+                bindings=bindings,
+                top_n=effective.top_poses,
+            )
+        )
+    if consensus is not None:
+        commands.extend(
+            build_scoring_chimerax_consensus_commands(
+                consensus,
+                model_id=effective.model_id,
+            )
+        )
+    if len(commands) > effective.max_commands:
+        raise ScoringChimeraXCommandError(
+            "Generated command count exceeds the configured limit."
+        )
+    result = ScoringChimeraXCommandSet(
+        name=name,
+        commands=tuple(commands),
+        created_at=_scoring_chimerax_now(),
+        model_id=effective.model_id,
+        metadata=MappingProxyType(
+            {
+                "schema": SCORING_CHIMERAX_SCHEMA,
+                "schema_version": SCORING_CHIMERAX_SCHEMA_VERSION,
+                "pseudobond_count": len(pseudobonds),
+            }
+        ),
+    )
+    validate_scoring_chimerax_command_set(result)
+    return result
+
+
+def scoring_chimerax_script_text(
+    command_set: ScoringChimeraXCommandSet,
+    *,
+    include_header: bool = True,
+) -> str:
+    """Render a ChimeraX command script."""
+
+    validate_scoring_chimerax_command_set(command_set)
+    lines: List[str] = []
+    if include_header:
+        lines.extend(
+            (
+                "# DockAnalyzer ChimeraX command script",
+                f"# Name: {command_set.name}",
+                f"# Created: {command_set.created_at}",
+                f"# Commands: {command_set.command_count}",
+                "",
+            )
+        )
+    lines.extend(command.command for command in command_set.commands)
+    return "\n".join(lines) + "\n"
+
+
+def write_scoring_chimerax_script(
+    command_set: ScoringChimeraXCommandSet,
+    path: Union[str, os.PathLike[str]],
+    *,
+    overwrite: bool = True,
+    include_header: bool = True,
+    encoding: str = "utf-8",
+) -> Path:
+    """Write a ``.cxc`` command script and return its resolved path."""
+
+    target = Path(path).expanduser()
+    if target.suffix.lower() != ".cxc":
+        target = target.with_suffix(".cxc")
+    if target.exists() and not overwrite:
+        raise FileExistsError(str(target))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        scoring_chimerax_script_text(
+            command_set,
+            include_header=include_header,
+        ),
+        encoding=encoding,
+    )
+    return target.resolve()
+
+# -----------------------------------------------------------------------------
+# 29.12. Live command execution
+# -----------------------------------------------------------------------------
+
+
+def _resolve_scoring_chimerax_command_runner(
+    session: Any,
+) -> Callable[[Any, str], Any]:
+    validate_scoring_chimerax_session(session)
+    direct = _scoring_chimerax_get(session, ("run", "run_command"))
+    if callable(direct):
+        def direct_runner(active_session: Any, command: str) -> Any:
+            try:
+                return direct(command)
+            except TypeError:
+                return direct(active_session, command)
+        return direct_runner
+    try:
+        module = importlib.import_module("chimerax.core.commands")
+        runner = getattr(module, "run")
+    except Exception as exc:
+        raise ScoringChimeraXUnavailableError(
+            "Could not import chimerax.core.commands.run."
+        ) from exc
+    if not callable(runner):
+        raise ScoringChimeraXUnavailableError(
+            "The ChimeraX command runner is not callable."
+        )
+    return runner
+
+
+def execute_scoring_chimerax_command(
+    session: Any,
+    command: Union[str, ScoringChimeraXCommand],
+    *,
+    raise_on_error: bool = False,
+) -> ScoringChimeraXExecutionRecord:
+    """Execute one command in a live ChimeraX session."""
+
+    item = (
+        command
+        if isinstance(command, ScoringChimeraXCommand)
+        else ScoringChimeraXCommand(command=str(command))
+    )
+    started_at = _scoring_chimerax_now()
+    try:
+        runner = _resolve_scoring_chimerax_command_runner(session)
+        result = runner(session, item.command)
+    except Exception as exc:
+        finished_at = _scoring_chimerax_now()
+        if raise_on_error:
+            raise ScoringChimeraXCommandError(
+                f"ChimeraX command failed: {item.command}"
+            ) from exc
+        return ScoringChimeraXExecutionRecord(
+            command=item.command,
+            category=item.category,
+            success=False,
+            started_at=started_at,
+            finished_at=finished_at,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            metadata=item.metadata,
+        )
+    return ScoringChimeraXExecutionRecord(
+        command=item.command,
+        category=item.category,
+        success=True,
+        started_at=started_at,
+        finished_at=_scoring_chimerax_now(),
+        result_repr=repr(result)[:500] if result is not None else None,
+        metadata=item.metadata,
+    )
+
+
+def execute_scoring_chimerax_command_set(
+    session: Any,
+    command_set: ScoringChimeraXCommandSet,
+    *,
+    continue_on_error: bool = True,
+) -> Tuple[ScoringChimeraXExecutionRecord, ...]:
+    """Execute an ordered command set and return structured records."""
+
+    validate_scoring_chimerax_command_set(command_set)
+    records: List[ScoringChimeraXExecutionRecord] = []
+    for command in command_set.commands:
+        record = execute_scoring_chimerax_command(
+            session,
+            command,
+            raise_on_error=False,
+        )
+        records.append(record)
+        if not record.success and (command.required or not continue_on_error):
+            break
+    return tuple(records)
+
+
+def _scoring_chimerax_all_models(session: Any) -> Tuple[Any, ...]:
+    models_manager = _scoring_chimerax_get(session, "models")
+    if models_manager is None:
+        return ()
+    list_method = getattr(models_manager, "list", None)
+    if callable(list_method):
+        try:
+            return tuple(list_method())
+        except TypeError:
+            try:
+                return tuple(list_method(type=None))
+            except Exception:
+                pass
+        except Exception:
+            pass
+    return _scoring_chimerax_iter(models_manager)
+
+
+def _scoring_chimerax_model_identifier(model: Any) -> Optional[str]:
+    value = _scoring_chimerax_get(
+        model,
+        ("id_string", "id", "model_id", "atomspec"),
+    )
+    if isinstance(value, (tuple, list)):
+        text = ".".join(str(part) for part in value)
+    else:
+        text = _scoring_chimerax_text(value)
+    if text is None:
+        return None
+    text = text.lstrip("#")
+    try:
+        return _scoring_chimerax_model_id(text)
+    except ScoringChimeraXSpecificationError:
+        return None
+
+
+def find_scoring_chimerax_model(
+    session: Any,
+    *,
+    model_id: Any = None,
+    name: Optional[str] = None,
+    source_path: Optional[Union[str, os.PathLike[str]]] = None,
+) -> Any:
+    """Find a live ChimeraX model by ID, name, or source path."""
+
+    validate_scoring_chimerax_session(session)
+    normalized_id = (
+        _scoring_chimerax_model_id(model_id)
+        if model_id is not None
+        else None
+    )
+    normalized_name = _scoring_chimerax_text(name)
+    normalized_path = (
+        str(Path(source_path).expanduser().resolve())
+        if source_path is not None
+        else None
+    )
+    for model in _scoring_chimerax_all_models(session):
+        if normalized_id is not None:
+            candidate_id = _scoring_chimerax_model_identifier(model)
+            if candidate_id == normalized_id:
+                return model
+        if normalized_name is not None:
+            candidate_name = _scoring_chimerax_text(
+                _scoring_chimerax_get(model, "name")
+            )
+            if candidate_name == normalized_name:
+                return model
+        if normalized_path is not None:
+            candidate_path = _scoring_chimerax_text(
+                _scoring_chimerax_get(
+                    model,
+                    ("filename", "path", "source_path"),
+                )
+            )
+            if candidate_path:
+                try:
+                    candidate_path = str(Path(candidate_path).resolve())
+                except Exception:
+                    pass
+                if candidate_path == normalized_path:
+                    return model
+    return None
+
+
+def _scoring_chimerax_atom_collection(model: Any) -> Tuple[Any, ...]:
+    atoms = _scoring_chimerax_get(model, "atoms")
+    if atoms is None:
+        residues = _scoring_chimerax_get(model, "residues")
+        combined: List[Any] = []
+        for residue in _scoring_chimerax_iter(residues):
+            combined.extend(_scoring_chimerax_iter(
+                _scoring_chimerax_get(residue, "atoms")
+            ))
+        return tuple(combined)
+    return _scoring_chimerax_iter(atoms)
+
+
+def resolve_scoring_chimerax_live_atom(
+    session: Any,
+    specification: str,
+) -> Any:
+    """Resolve one live atom using ChimeraX atom-spec evaluation."""
+
+    validate_scoring_chimerax_session(session)
+    try:
+        module = importlib.import_module("chimerax.core.commands")
+        atomspec_type = getattr(module, "AtomSpec")
+        evaluated = atomspec_type(str(specification)).evaluate(session)
+    except Exception as first_error:
+        try:
+            atomic_module = importlib.import_module("chimerax.atomic")
+            evaluate = getattr(atomic_module, "eval_atom_spec")
+            evaluated = evaluate(session, str(specification))
+        except Exception as second_error:
+            raise ScoringChimeraXSpecificationError(
+                f"Could not evaluate atom specification {specification!r}."
+            ) from second_error
+    atoms = _scoring_chimerax_get(evaluated, "atoms")
+    values = _scoring_chimerax_iter(atoms)
+    if not values:
+        raise ScoringChimeraXSpecificationError(
+            f"No atom matched specification {specification!r}."
+        ) from first_error if 'first_error' in locals() else None
+    return values[0]
+
+
+def create_scoring_chimerax_pseudobonds_direct(
+    session: Any,
+    pseudobonds: Iterable[ScoringChimeraXPseudobondSpec],
+    *,
+    continue_on_error: bool = True,
+) -> Tuple[ScoringChimeraXExecutionRecord, ...]:
+    """Create pseudobonds through the live pseudobond manager API."""
+
+    validate_scoring_chimerax_session(session)
+    manager = _scoring_chimerax_get(
+        session,
+        ("pb_manager", "pseudobond_manager"),
+    )
+    if manager is None:
+        raise ScoringChimeraXUnavailableError(
+            "The live session has no pseudobond manager."
+        )
+    get_group = getattr(manager, "get_group", None)
+    if not callable(get_group):
+        raise ScoringChimeraXUnavailableError(
+            "The pseudobond manager has no get_group method."
+        )
+    records: List[ScoringChimeraXExecutionRecord] = []
+    groups: Dict[str, Any] = {}
+    for item in pseudobonds:
+        started_at = _scoring_chimerax_now()
+        command_text = (
+            f"direct pbond {item.atom1_spec} {item.atom2_spec} "
+            f"name {item.group_name}"
+        )
+        try:
+            group = groups.get(item.group_name)
+            if group is None:
+                group = get_group(item.group_name)
+                groups[item.group_name] = group
+            atom1 = resolve_scoring_chimerax_live_atom(
+                session,
+                item.atom1_spec,
+            )
+            atom2 = resolve_scoring_chimerax_live_atom(
+                session,
+                item.atom2_spec,
+            )
+            creator = getattr(group, "new_pseudobond")
+            pseudobond = creator(atom1, atom2)
+            if hasattr(group, "color"):
+                try:
+                    group.color = _scoring_chimerax_color_bytes(item.color)
+                except Exception:
+                    pass
+            if hasattr(group, "radius"):
+                try:
+                    group.radius = item.radius
+                except Exception:
+                    pass
+            if hasattr(group, "dashes"):
+                try:
+                    group.dashes = item.dashes
+                except Exception:
+                    pass
+            if item.show_distance and hasattr(group, "show_distances"):
+                try:
+                    group.show_distances = True
+                except Exception:
+                    pass
+        except Exception as exc:
+            records.append(
+                ScoringChimeraXExecutionRecord(
+                    command=command_text,
+                    category=SCORING_CHIMERAX_COMMAND_PBOND,
+                    success=False,
+                    started_at=started_at,
+                    finished_at=_scoring_chimerax_now(),
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    metadata=MappingProxyType(
+                        {"interaction_id": item.interaction_id}
+                    ),
+                )
+            )
+            if not continue_on_error:
+                break
+            continue
+        records.append(
+            ScoringChimeraXExecutionRecord(
+                command=command_text,
+                category=SCORING_CHIMERAX_COMMAND_PBOND,
+                success=True,
+                started_at=started_at,
+                finished_at=_scoring_chimerax_now(),
+                result_repr=repr(pseudobond)[:500],
+                metadata=MappingProxyType(
+                    {"interaction_id": item.interaction_id}
+                ),
+            )
+        )
+    return tuple(records)
+
+
+def _scoring_chimerax_color_bytes(color: str) -> Tuple[int, int, int, int]:
+    normalized = _scoring_chimerax_color(color, "#000000")
+    if normalized.startswith("#") and len(normalized) in {7, 9}:
+        red = int(normalized[1:3], 16)
+        green = int(normalized[3:5], 16)
+        blue = int(normalized[5:7], 16)
+        alpha = int(normalized[7:9], 16) if len(normalized) == 9 else 255
+        return red, green, blue, alpha
+    raise ScoringChimeraXConfigurationError(
+        "Direct pseudobond colors must be hexadecimal."
+    )
+
+
+# -----------------------------------------------------------------------------
+# 29.13. DockModel and model bindings
+# -----------------------------------------------------------------------------
+
+
+def _scoring_chimerax_dock_model_id(dock_model: Any) -> str:
+    value = _scoring_chimerax_get(
+        dock_model,
+        (
+            "pose_id",
+            "model_id",
+            "dock_model_id",
+            "identity",
+            "name",
+            "id",
+        ),
+    )
+    if value is None:
+        return f"dock_model_{id(dock_model)}"
+    return str(value)
+
+
+def _scoring_chimerax_dock_model_path(dock_model: Any) -> Optional[str]:
+    value = _scoring_chimerax_get(
+        dock_model,
+        (
+            "source_path",
+            "file_path",
+            "filepath",
+            "path",
+            "filename",
+            "source_file",
+        ),
+    )
+    return _scoring_chimerax_text(value)
+
+
+def bind_scoring_dock_model_to_chimerax(
+    dock_model: Any,
+    session: Any,
+    *,
+    chimerax_model: Any = None,
+    chimerax_model_id: Any = None,
+    verify: bool = True,
+    attach: bool = True,
+) -> ScoringChimeraXModelBinding:
+    """Bind a DockModel-like object to an open ChimeraX model."""
+
+    validate_scoring_chimerax_session(session)
+    dock_model_id = _scoring_chimerax_dock_model_id(dock_model)
+    source_path = _scoring_chimerax_dock_model_path(dock_model)
+    method = "explicit_object"
+    model = chimerax_model
+    if model is None and chimerax_model_id is not None:
+        method = "model_id"
+        model = find_scoring_chimerax_model(
+            session,
+            model_id=chimerax_model_id,
+        )
+    if model is None and source_path is not None:
+        method = "source_path"
+        model = find_scoring_chimerax_model(
+            session,
+            source_path=source_path,
+        )
+    if model is None:
+        candidate_name = _scoring_chimerax_text(
+            _scoring_chimerax_get(dock_model, ("name", "pose_id"))
+        )
+        if candidate_name:
+            method = "name"
+            model = find_scoring_chimerax_model(
+                session,
+                name=candidate_name,
+            )
+    if model is None:
+        raise ScoringChimeraXBindingError(
+            f"No open ChimeraX model matched DockModel {dock_model_id!r}."
+        )
+    model_identifier = _scoring_chimerax_model_identifier(model)
+    if model_identifier is None:
+        raise ScoringChimeraXBindingError(
+            "The matched ChimeraX model has no usable model identifier."
+        )
+    model_name = _scoring_chimerax_text(
+        _scoring_chimerax_get(model, "name")
+    )
+    verified = True
+    if verify and source_path is not None:
+        model_path = _scoring_chimerax_text(
+            _scoring_chimerax_get(
+                model,
+                ("filename", "path", "source_path"),
+            )
+        )
+        if model_path:
+            try:
+                verified = Path(model_path).resolve() == Path(
+                    source_path
+                ).resolve()
+            except Exception:
+                verified = os.path.basename(model_path) == os.path.basename(
+                    source_path
+                )
+    binding = ScoringChimeraXModelBinding(
+        dock_model_id=dock_model_id,
+        chimerax_model_id=model_identifier,
+        chimerax_model_name=model_name,
+        source_path=source_path,
+        verified=verified,
+        binding_method=method,
+        metadata=MappingProxyType(
+            {
+                "model_type": type(model).__name__,
+                "attached": attach,
+            }
+        ),
+    )
+    validate_scoring_chimerax_model_binding(binding)
+    if attach:
+        _attach_scoring_chimerax_binding(dock_model, binding, model)
+    return binding
+
+
+def _attach_scoring_chimerax_binding(
+    dock_model: Any,
+    binding: ScoringChimeraXModelBinding,
+    model: Any,
+) -> None:
+    try:
+        setattr(dock_model, "chimerax_model_id", binding.chimerax_model_id)
+        setattr(dock_model, "chimerax_model", model)
+        setattr(dock_model, "scoring_chimerax_binding", binding)
+    except Exception as exc:
+        metadata = _scoring_chimerax_get(dock_model, "metadata")
+        if isinstance(metadata, MutableMapping):
+            metadata["chimerax_model_id"] = binding.chimerax_model_id
+            metadata["scoring_chimerax_binding"] = (
+                scoring_chimerax_model_binding_to_dict(binding)
+            )
+            return
+        raise ScoringChimeraXBindingError(
+            "Could not attach ChimeraX binding to DockModel."
+        ) from exc
+
+
+def bind_multiple_scoring_dock_models_to_chimerax(
+    dock_models: Iterable[Any],
+    session: Any,
+    *,
+    continue_on_error: bool = True,
+) -> Tuple[ScoringChimeraXModelBinding, ...]:
+    """Bind multiple DockModel-like objects to open ChimeraX models."""
+
+    bindings: List[ScoringChimeraXModelBinding] = []
+    for dock_model in dock_models:
+        try:
+            binding = bind_scoring_dock_model_to_chimerax(
+                dock_model,
+                session,
+            )
+        except ScoringChimeraXBindingError:
+            if not continue_on_error:
+                raise
+            continue
+        bindings.append(binding)
+    return tuple(bindings)
+
+
+def scoring_chimerax_binding_map(
+    bindings: Iterable[ScoringChimeraXModelBinding],
+) -> Mapping[str, str]:
+    """Return an immutable DockModel/pose-to-ChimeraX model map."""
+
+    result = {
+        binding.dock_model_id: binding.chimerax_model_id
+        for binding in bindings
+    }
+    return MappingProxyType(result)
+
+
+# -----------------------------------------------------------------------------
+# 29.14. Main visualization and cleanup workflows
+# -----------------------------------------------------------------------------
+
+
+def _build_scoring_chimerax_attribute_files(
+    source: Any,
+    *,
+    config: ScoringChimeraXConfig,
+    ranking: Any = None,
+    consensus: Any = None,
+    bindings: Optional[Mapping[str, str]] = None,
+) -> Tuple[ScoringChimeraXAttributeFile, ...]:
+    output: List[ScoringChimeraXAttributeFile] = []
+    if config.assign_residue_scores:
+        score_file = build_scoring_chimerax_residue_score_attribute(
+            source,
+            model_id=config.model_id,
+            attribute_name=SCORING_CHIMERAX_ATTR_SCORE,
+            max_rows=config.max_attribute_rows,
+        )
+        if score_file.assignments:
+            output.append(score_file)
+    if config.assign_pose_ranks and ranking is not None:
+        rank_file = build_scoring_chimerax_pose_rank_attribute(
+            ranking,
+            attribute_name=SCORING_CHIMERAX_ATTR_RANK,
+            bindings=bindings,
+            max_rows=config.max_attribute_rows,
+        )
+        if rank_file.assignments:
+            output.append(rank_file)
+    if config.assign_persistence and consensus is not None:
+        persistence_file = build_scoring_chimerax_persistence_attribute(
+            consensus,
+            model_id=config.model_id,
+            attribute_name=SCORING_CHIMERAX_ATTR_PERSISTENCE,
+            max_rows=config.max_attribute_rows,
+        )
+        if persistence_file.assignments:
+            output.append(persistence_file)
+    return tuple(output)
+
+
+def visualize_scoring_in_chimerax(
+    source: Any,
+    *,
+    session: Any = None,
+    config: Optional[ScoringChimeraXConfig] = None,
+    ranking: Any = None,
+    consensus: Any = None,
+    bindings: Optional[Mapping[str, str]] = None,
+    attribute_directory: Optional[Union[str, os.PathLike[str]]] = None,
+) -> ScoringChimeraXVisualizationResult:
+    """Generate or execute a complete DockAnalyzer visualization workflow."""
+
+    effective = config or ScoringChimeraXConfig()
+    validate_scoring_chimerax_config(effective)
+    environment = detect_scoring_chimerax_environment(session)
+    warnings: List[str] = []
+    errors: List[str] = []
+    pseudobonds = build_scoring_chimerax_pseudobond_specs(
+        source,
+        config=effective,
+        model_id=effective.model_id,
+        strict=False,
+    )
+    command_set = build_scoring_chimerax_command_set(
+        source,
+        config=effective,
+        ranking=ranking,
+        consensus=consensus,
+        bindings=bindings,
+    )
+    attribute_files = _build_scoring_chimerax_attribute_files(
+        source,
+        config=effective,
+        ranking=ranking,
+        consensus=consensus,
+        bindings=bindings,
+    )
+    commands = list(command_set.commands)
+    if attribute_files and attribute_directory is not None:
+        directory = Path(attribute_directory).expanduser()
+        directory.mkdir(parents=True, exist_ok=True)
+        for attribute_file in attribute_files:
+            filename = (
+                _scoring_chimerax_safe_name(
+                    attribute_file.attribute_name,
+                    "dockanalyzer",
+                )
+                + ".defattr"
+            )
+            path = write_scoring_chimerax_attribute_file(
+                attribute_file,
+                directory / filename,
+            )
+            commands.append(scoring_chimerax_open_attribute_command(path))
+    elif attribute_files and session is not None:
+        warnings.append(
+            "Attribute assignments were generated but not loaded because "
+            "attribute_directory was not provided."
+        )
+    if tuple(commands) != command_set.commands:
+        command_set = ScoringChimeraXCommandSet(
+            name=command_set.name,
+            commands=tuple(commands),
+            created_at=command_set.created_at,
+            model_id=command_set.model_id,
+            metadata=command_set.metadata,
+        )
+    executions: Tuple[ScoringChimeraXExecutionRecord, ...] = ()
+    if session is None or not effective.execute_commands:
+        status = SCORING_CHIMERAX_STATUS_OFFLINE
+    elif not environment.session_available:
+        status = SCORING_CHIMERAX_STATUS_ERROR
+        errors.append("No valid ChimeraX session was available.")
+    else:
+        if effective.use_direct_api and pseudobonds:
+            non_pbond_commands = ScoringChimeraXCommandSet(
+                name=command_set.name,
+                commands=tuple(
+                    command
+                    for command in command_set.commands
+                    if command.category != SCORING_CHIMERAX_COMMAND_PBOND
+                ),
+                created_at=command_set.created_at,
+                model_id=command_set.model_id,
+                metadata=command_set.metadata,
+            )
+            command_records = execute_scoring_chimerax_command_set(
+                session,
+                non_pbond_commands,
+                continue_on_error=effective.continue_on_error,
+            )
+            try:
+                pbond_records = create_scoring_chimerax_pseudobonds_direct(
+                    session,
+                    pseudobonds,
+                    continue_on_error=effective.continue_on_error,
+                )
+            except ScoringChimeraXError as exc:
+                errors.append(str(exc))
+                pbond_records = ()
+            executions = command_records + pbond_records
+        else:
+            executions = execute_scoring_chimerax_command_set(
+                session,
+                command_set,
+                continue_on_error=effective.continue_on_error,
+            )
+        failed = tuple(record for record in executions if not record.success)
+        if failed:
+            errors.extend(
+                record.error_message or "Unknown ChimeraX command error."
+                for record in failed
+            )
+            status = SCORING_CHIMERAX_STATUS_PARTIAL
+        else:
+            status = SCORING_CHIMERAX_STATUS_READY
+    result = ScoringChimeraXVisualizationResult(
+        status=status,
+        environment=environment,
+        command_set=command_set,
+        pseudobonds=pseudobonds,
+        attribute_files=attribute_files,
+        executions=executions,
+        bindings=(),
+        warnings=tuple(warnings),
+        errors=tuple(errors),
+        created_at=_scoring_chimerax_now(),
+        metadata=MappingProxyType(
+            {
+                "schema": SCORING_CHIMERAX_SCHEMA,
+                "schema_version": SCORING_CHIMERAX_SCHEMA_VERSION,
+                "offline": session is None,
+            }
+        ),
+    )
+    validate_scoring_chimerax_visualization_result(result)
+    return result
+
+
+def attach_scoring_chimerax_result(
+    dock_model: Any,
+    result: ScoringChimeraXVisualizationResult,
+    *,
+    history_limit: int = DEFAULT_SCORING_CHIMERAX_HISTORY_LIMIT,
+) -> None:
+    """Attach a visualization result and bounded history to DockModel."""
+
+    validate_scoring_chimerax_visualization_result(result)
+    try:
+        previous = _scoring_chimerax_get(
+            dock_model,
+            "scoring_chimerax_result",
+        )
+        history = list(
+            _scoring_chimerax_iter(
+                _scoring_chimerax_get(
+                    dock_model,
+                    "scoring_chimerax_history",
+                )
+            )
+        )
+        if previous is not None:
+            history.append(previous)
+        if history_limit >= 0:
+            history = history[-history_limit:] if history_limit else []
+        setattr(dock_model, "scoring_chimerax_result", result)
+        setattr(dock_model, "scoring_chimerax_history", history)
+    except Exception as exc:
+        metadata = _scoring_chimerax_get(dock_model, "metadata")
+        if isinstance(metadata, MutableMapping):
+            metadata["scoring_chimerax_result"] = (
+                scoring_chimerax_visualization_result_to_dict(result)
+            )
+            return
+        raise ScoringChimeraXBindingError(
+            "Could not attach ChimeraX visualization result to DockModel."
+        ) from exc
+
+
+def visualize_dock_model_scoring_in_chimerax(
+    dock_model: Any,
+    *,
+    session: Any = None,
+    scoring_result: Any = None,
+    config: Optional[ScoringChimeraXConfig] = None,
+    ranking: Any = None,
+    consensus: Any = None,
+    attribute_directory: Optional[Union[str, os.PathLike[str]]] = None,
+    attach: bool = True,
+) -> ScoringChimeraXVisualizationResult:
+    """Visualize scoring attached to one DockModel-like object."""
+
+    source = scoring_result
+    if source is None:
+        source = _scoring_chimerax_get(
+            dock_model,
+            (
+                "scoring_result",
+                "pose_scoring_result",
+                "dockanalyzer_scoring_result",
+                "score_result",
+            ),
+        )
+    if source is None:
+        source = dock_model
+    effective = config or ScoringChimeraXConfig()
+    binding: Optional[ScoringChimeraXModelBinding] = None
+    if session is not None:
+        try:
+            binding = bind_scoring_dock_model_to_chimerax(
+                dock_model,
+                session,
+                attach=attach,
+            )
+        except ScoringChimeraXBindingError:
+            if effective.model_id is None:
+                raise
+        else:
+            effective = ScoringChimeraXConfig(
+                **{
+                    **_scoring_chimerax_plain(effective),
+                    "model_id": binding.chimerax_model_id,
+                }
+            )
+    result = visualize_scoring_in_chimerax(
+        source,
+        session=session,
+        config=effective,
+        ranking=ranking,
+        consensus=consensus,
+        bindings=(
+            {binding.dock_model_id: binding.chimerax_model_id}
+            if binding is not None
+            else None
+        ),
+        attribute_directory=attribute_directory,
+    )
+    if binding is not None:
+        result = ScoringChimeraXVisualizationResult(
+            status=result.status,
+            environment=result.environment,
+            command_set=result.command_set,
+            pseudobonds=result.pseudobonds,
+            attribute_files=result.attribute_files,
+            executions=result.executions,
+            bindings=(binding,),
+            warnings=result.warnings,
+            errors=result.errors,
+            created_at=result.created_at,
+            metadata=result.metadata,
+        )
+    if attach:
+        attach_scoring_chimerax_result(dock_model, result)
+    return result
+
+
+def cleanup_scoring_chimerax_visualization(
+    *,
+    session: Any = None,
+    group_names: Optional[Iterable[str]] = None,
+    clear_selection: bool = True,
+    execute: bool = True,
+) -> ScoringChimeraXCommandSet:
+    """Build and optionally execute cleanup commands."""
+
+    groups = tuple(group_names or (
+        SCORING_CHIMERAX_GROUP_INTERACTIONS,
+        SCORING_CHIMERAX_GROUP_HBONDS,
+        SCORING_CHIMERAX_GROUP_HYDROPHOBIC,
+        SCORING_CHIMERAX_GROUP_PI,
+        SCORING_CHIMERAX_GROUP_SALTBRIDGES,
+        SCORING_CHIMERAX_GROUP_CLASHES,
+    ))
+    commands = list(build_scoring_chimerax_delete_pseudobond_commands(groups))
+    if clear_selection:
+        commands.append(
+            ScoringChimeraXCommand(
+                command="select clear",
+                category=SCORING_CHIMERAX_COMMAND_SELECT,
+                description="Clear the ChimeraX selection.",
+            )
+        )
+    command_set = ScoringChimeraXCommandSet(
+        name="DockAnalyzer scoring cleanup",
+        commands=tuple(commands),
+        created_at=_scoring_chimerax_now(),
+    )
+    if session is not None and execute:
+        execute_scoring_chimerax_command_set(
+            session,
+            command_set,
+            continue_on_error=True,
+        )
+    return command_set
+
+# -----------------------------------------------------------------------------
+# 29.15. Dictionary, row, and summary adapters
+# -----------------------------------------------------------------------------
+
+
+def _scoring_chimerax_plain(value: Any) -> Any:
+    if is_dataclass(value):
+        return {
+            str(name): _scoring_chimerax_plain(getattr(value, name))
+            for name in value.__dataclass_fields__
+        }
+    if isinstance(value, Mapping):
+        return {
+            str(key): _scoring_chimerax_plain(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, tuple):
+        return [_scoring_chimerax_plain(item) for item in value]
+    if isinstance(value, list):
+        return [_scoring_chimerax_plain(item) for item in value]
+    if isinstance(value, set):
+        return [_scoring_chimerax_plain(item) for item in sorted(value)]
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def scoring_chimerax_config_to_dict(
+    config: ScoringChimeraXConfig,
+) -> Dict[str, Any]:
+    """Convert a Section 29 configuration to a plain dictionary."""
+
+    validate_scoring_chimerax_config(config)
+    return _scoring_chimerax_plain(config)
+
+
+def scoring_chimerax_environment_to_dict(
+    environment: ScoringChimeraXEnvironment,
+) -> Dict[str, Any]:
+    """Convert detected environment information to a dictionary."""
+
+    validate_scoring_chimerax_environment(environment)
+    return _scoring_chimerax_plain(environment)
+
+
+def scoring_chimerax_object_spec_to_dict(
+    specification: ScoringChimeraXObjectSpec,
+) -> Dict[str, Any]:
+    """Convert an object specification to a dictionary."""
+
+    validate_scoring_chimerax_object_spec(specification)
+    return _scoring_chimerax_plain(specification)
+
+
+def scoring_chimerax_command_to_dict(
+    command: ScoringChimeraXCommand,
+) -> Dict[str, Any]:
+    """Convert one command to a dictionary."""
+
+    validate_scoring_chimerax_command(command)
+    return _scoring_chimerax_plain(command)
+
+
+def scoring_chimerax_command_set_to_dict(
+    command_set: ScoringChimeraXCommandSet,
+) -> Dict[str, Any]:
+    """Convert a command set to a dictionary."""
+
+    validate_scoring_chimerax_command_set(command_set)
+    result = _scoring_chimerax_plain(command_set)
+    result["command_count"] = command_set.command_count
+    return result
+
+
+def scoring_chimerax_pseudobond_to_dict(
+    pseudobond: ScoringChimeraXPseudobondSpec,
+) -> Dict[str, Any]:
+    """Convert one pseudobond specification to a dictionary."""
+
+    validate_scoring_chimerax_pseudobond_spec(pseudobond)
+    return _scoring_chimerax_plain(pseudobond)
+
+
+def scoring_chimerax_attribute_file_to_dict(
+    attribute_file: ScoringChimeraXAttributeFile,
+) -> Dict[str, Any]:
+    """Convert an attribute file to a dictionary."""
+
+    validate_scoring_chimerax_attribute_file(attribute_file)
+    result = _scoring_chimerax_plain(attribute_file)
+    result["row_count"] = attribute_file.row_count
+    return result
+
+
+def scoring_chimerax_execution_record_to_dict(
+    record: ScoringChimeraXExecutionRecord,
+) -> Dict[str, Any]:
+    """Convert an execution record to a dictionary."""
+
+    validate_scoring_chimerax_execution_record(record)
+    return _scoring_chimerax_plain(record)
+
+
+def scoring_chimerax_model_binding_to_dict(
+    binding: ScoringChimeraXModelBinding,
+) -> Dict[str, Any]:
+    """Convert a model binding to a dictionary."""
+
+    validate_scoring_chimerax_model_binding(binding)
+    return _scoring_chimerax_plain(binding)
+
+
+def scoring_chimerax_visualization_result_to_dict(
+    result: ScoringChimeraXVisualizationResult,
+) -> Dict[str, Any]:
+    """Convert a visualization result to a dictionary."""
+
+    validate_scoring_chimerax_visualization_result(result)
+    converted = _scoring_chimerax_plain(result)
+    converted["successful"] = result.successful
+    converted["command_count"] = result.command_set.command_count
+    converted["pseudobond_count"] = len(result.pseudobonds)
+    converted["attribute_file_count"] = len(result.attribute_files)
+    converted["execution_count"] = len(result.executions)
+    return converted
+
+
+def scoring_chimerax_to_rows(
+    value: Any,
+) -> Tuple[Dict[str, Any], ...]:
+    """Convert Section 29 results into flat table-friendly rows."""
+
+    if isinstance(value, ScoringChimeraXVisualizationResult):
+        rows: List[Dict[str, Any]] = []
+        for index, pseudobond in enumerate(value.pseudobonds, start=1):
+            row = scoring_chimerax_pseudobond_to_dict(pseudobond)
+            row.update(
+                {
+                    "row_type": "pseudobond",
+                    "row_index": index,
+                    "status": value.status,
+                }
+            )
+            rows.append(row)
+        for index, execution in enumerate(value.executions, start=1):
+            row = scoring_chimerax_execution_record_to_dict(execution)
+            row.update(
+                {
+                    "row_type": "execution",
+                    "row_index": index,
+                    "status": value.status,
+                }
+            )
+            rows.append(row)
+        return tuple(rows)
+    if isinstance(value, ScoringChimeraXCommandSet):
+        return tuple(
+            {
+                **scoring_chimerax_command_to_dict(command),
+                "row_type": "command",
+                "row_index": index,
+                "command_set": value.name,
+            }
+            for index, command in enumerate(value.commands, start=1)
+        )
+    if isinstance(value, ScoringChimeraXAttributeFile):
+        return tuple(
+            {
+                **_scoring_chimerax_plain(assignment),
+                "row_type": "attribute",
+                "row_index": index,
+            }
+            for index, assignment in enumerate(
+                value.assignments,
+                start=1,
+            )
+        )
+    if isinstance(value, ScoringChimeraXPseudobondSpec):
+        return (scoring_chimerax_pseudobond_to_dict(value),)
+    if isinstance(value, ScoringChimeraXExecutionRecord):
+        return (scoring_chimerax_execution_record_to_dict(value),)
+    if isinstance(value, Iterable) and not isinstance(
+        value,
+        (str, bytes, bytearray, Mapping),
+    ):
+        rows: List[Dict[str, Any]] = []
+        for item in value:
+            rows.extend(scoring_chimerax_to_rows(item))
+        return tuple(rows)
+    return ()
+
+
+def summarize_scoring_chimerax(
+    value: Any,
+) -> Mapping[str, Any]:
+    """Return compact Section 29 diagnostic summary values."""
+
+    if isinstance(value, ScoringChimeraXVisualizationResult):
+        successful_executions = sum(
+            1 for record in value.executions if record.success
+        )
+        return MappingProxyType(
+            {
+                "status": value.status,
+                "available": value.environment.available,
+                "session_available": value.environment.session_available,
+                "command_count": value.command_set.command_count,
+                "pseudobond_count": len(value.pseudobonds),
+                "attribute_file_count": len(value.attribute_files),
+                "attribute_row_count": sum(
+                    item.row_count for item in value.attribute_files
+                ),
+                "execution_count": len(value.executions),
+                "successful_executions": successful_executions,
+                "failed_executions": (
+                    len(value.executions) - successful_executions
+                ),
+                "binding_count": len(value.bindings),
+                "warning_count": len(value.warnings),
+                "error_count": len(value.errors),
+            }
+        )
+    if isinstance(value, ScoringChimeraXCommandSet):
+        categories: Dict[str, int] = {}
+        for command in value.commands:
+            categories[command.category] = categories.get(
+                command.category,
+                0,
+            ) + 1
+        return MappingProxyType(
+            {
+                "name": value.name,
+                "command_count": value.command_count,
+                "categories": MappingProxyType(categories),
+            }
+        )
+    if isinstance(value, ScoringChimeraXAttributeFile):
+        return MappingProxyType(
+            {
+                "attribute_name": value.attribute_name,
+                "recipient": value.recipient,
+                "row_count": value.row_count,
+            }
+        )
+    return MappingProxyType({"type": type(value).__name__})
+
+
+def format_scoring_chimerax_summary(value: Any) -> str:
+    """Format a compact human-readable ChimeraX compatibility summary."""
+
+    summary = summarize_scoring_chimerax(value)
+    if isinstance(value, ScoringChimeraXVisualizationResult):
+        lines = [
+            "DockAnalyzer ChimeraX visualization",
+            f"Status: {summary['status']}",
+            f"Commands: {summary['command_count']}",
+            f"Pseudobonds: {summary['pseudobond_count']}",
+            f"Attribute files: {summary['attribute_file_count']}",
+            f"Attribute rows: {summary['attribute_row_count']}",
+            f"Executions: {summary['successful_executions']} successful, "
+            f"{summary['failed_executions']} failed",
+            f"Warnings: {summary['warning_count']}",
+            f"Errors: {summary['error_count']}",
+        ]
+        return "\n".join(lines)
+    return "\n".join(f"{key}: {item}" for key, item in summary.items())
+
+
+# -----------------------------------------------------------------------------
+# 29.16. Validation
+# -----------------------------------------------------------------------------
+
+
+def validate_scoring_chimerax_config(
+    config: ScoringChimeraXConfig,
+) -> None:
+    """Validate Section 29 configuration values."""
+
+    if not isinstance(config, ScoringChimeraXConfig):
+        raise ScoringChimeraXValidationError(
+            "Expected ScoringChimeraXConfig."
+        )
+    if config.model_id is not None:
+        _scoring_chimerax_model_id(config.model_id)
+    if not config.group_name.strip():
+        raise ScoringChimeraXValidationError(
+            "Pseudobond group name cannot be empty."
+        )
+    for color in (
+        config.positive_color,
+        config.neutral_color,
+        config.negative_color,
+        config.missing_color,
+        config.selection_color,
+    ):
+        _scoring_chimerax_color(color, "#000000")
+    if config.min_pseudobond_radius <= 0.0:
+        raise ScoringChimeraXValidationError(
+            "Minimum pseudobond radius must be positive."
+        )
+    if config.max_pseudobond_radius < config.min_pseudobond_radius:
+        raise ScoringChimeraXValidationError(
+            "Maximum pseudobond radius cannot be below the minimum."
+        )
+    if not (
+        config.min_pseudobond_radius
+        <= config.pseudobond_radius
+        <= config.max_pseudobond_radius
+    ):
+        raise ScoringChimeraXValidationError(
+            "Default pseudobond radius must lie within configured limits."
+        )
+    if config.pseudobond_dashes < 0:
+        raise ScoringChimeraXValidationError(
+            "Pseudobond dash count cannot be negative."
+        )
+    for value, name in (
+        (config.top_poses, "top_poses"),
+        (config.top_residues, "top_residues"),
+        (config.max_commands, "max_commands"),
+        (config.max_pseudobonds, "max_pseudobonds"),
+        (config.max_attribute_rows, "max_attribute_rows"),
+    ):
+        if value < 1:
+            raise ScoringChimeraXValidationError(
+                f"{name} must be at least one."
+            )
+
+
+def validate_scoring_chimerax_environment(
+    environment: ScoringChimeraXEnvironment,
+) -> None:
+    """Validate detected environment information."""
+
+    if not isinstance(environment, ScoringChimeraXEnvironment):
+        raise ScoringChimeraXValidationError(
+            "Expected ScoringChimeraXEnvironment."
+        )
+    normalize_scoring_chimerax_status(environment.status)
+    if environment.command_runner_available and not (
+        environment.available or environment.session_available
+    ):
+        raise ScoringChimeraXValidationError(
+            "Command runner cannot be available without package or session."
+        )
+
+
+def validate_scoring_chimerax_object_spec(
+    specification: ScoringChimeraXObjectSpec,
+) -> None:
+    """Validate one ChimeraX object specification."""
+
+    if not isinstance(specification, ScoringChimeraXObjectSpec):
+        raise ScoringChimeraXValidationError(
+            "Expected ScoringChimeraXObjectSpec."
+        )
+    if not specification.specification.strip():
+        raise ScoringChimeraXValidationError(
+            "Object specification cannot be empty."
+        )
+    normalize_scoring_chimerax_level(specification.level)
+    if specification.model_id is not None:
+        _scoring_chimerax_model_id(specification.model_id)
+
+
+def validate_scoring_chimerax_command(
+    command: ScoringChimeraXCommand,
+) -> None:
+    """Validate one generated command."""
+
+    if not isinstance(command, ScoringChimeraXCommand):
+        raise ScoringChimeraXValidationError(
+            "Expected ScoringChimeraXCommand."
+        )
+    if not command.command.strip():
+        raise ScoringChimeraXValidationError(
+            "ChimeraX command cannot be empty."
+        )
+    normalize_scoring_chimerax_command_category(command.category)
+
+
+def validate_scoring_chimerax_command_set(
+    command_set: ScoringChimeraXCommandSet,
+) -> None:
+    """Validate a generated command set."""
+
+    if not isinstance(command_set, ScoringChimeraXCommandSet):
+        raise ScoringChimeraXValidationError(
+            "Expected ScoringChimeraXCommandSet."
+        )
+    if not command_set.name.strip():
+        raise ScoringChimeraXValidationError(
+            "Command-set name cannot be empty."
+        )
+    for command in command_set.commands:
+        validate_scoring_chimerax_command(command)
+
+
+def validate_scoring_chimerax_pseudobond_spec(
+    pseudobond: ScoringChimeraXPseudobondSpec,
+) -> None:
+    """Validate one pseudobond specification."""
+
+    if not isinstance(pseudobond, ScoringChimeraXPseudobondSpec):
+        raise ScoringChimeraXValidationError(
+            "Expected ScoringChimeraXPseudobondSpec."
+        )
+    if not pseudobond.interaction_id.strip():
+        raise ScoringChimeraXValidationError(
+            "Pseudobond interaction ID cannot be empty."
+        )
+    if not pseudobond.atom1_spec.strip() or not pseudobond.atom2_spec.strip():
+        raise ScoringChimeraXValidationError(
+            "Pseudobond atom specifications cannot be empty."
+        )
+    if pseudobond.atom1_spec == pseudobond.atom2_spec:
+        raise ScoringChimeraXValidationError(
+            "Pseudobond endpoints must be different."
+        )
+    if pseudobond.radius <= 0.0:
+        raise ScoringChimeraXValidationError(
+            "Pseudobond radius must be positive."
+        )
+    if pseudobond.dashes < 0:
+        raise ScoringChimeraXValidationError(
+            "Pseudobond dash count cannot be negative."
+        )
+    _scoring_chimerax_color(pseudobond.color, "#000000")
+
+
+def validate_scoring_chimerax_attribute_assignment(
+    assignment: ScoringChimeraXAttributeAssignment,
+) -> None:
+    """Validate one attribute assignment."""
+
+    if not isinstance(assignment, ScoringChimeraXAttributeAssignment):
+        raise ScoringChimeraXValidationError(
+            "Expected ScoringChimeraXAttributeAssignment."
+        )
+    if not assignment.specification.strip():
+        raise ScoringChimeraXValidationError(
+            "Attribute assignment specification cannot be empty."
+        )
+    if not assignment.attribute_name.strip():
+        raise ScoringChimeraXValidationError(
+            "Attribute assignment name cannot be empty."
+        )
+    if assignment.recipient not in SCORING_CHIMERAX_ATTRIBUTE_TARGETS:
+        raise ScoringChimeraXValidationError(
+            f"Unsupported attribute recipient: {assignment.recipient!r}."
+        )
+
+
+def validate_scoring_chimerax_attribute_file(
+    attribute_file: ScoringChimeraXAttributeFile,
+) -> None:
+    """Validate an in-memory attribute file."""
+
+    if not isinstance(attribute_file, ScoringChimeraXAttributeFile):
+        raise ScoringChimeraXValidationError(
+            "Expected ScoringChimeraXAttributeFile."
+        )
+    if not attribute_file.attribute_name.strip():
+        raise ScoringChimeraXValidationError(
+            "Attribute file name cannot be empty."
+        )
+    if attribute_file.recipient not in SCORING_CHIMERAX_ATTRIBUTE_TARGETS:
+        raise ScoringChimeraXValidationError(
+            f"Unsupported recipient: {attribute_file.recipient!r}."
+        )
+    for assignment in attribute_file.assignments:
+        validate_scoring_chimerax_attribute_assignment(assignment)
+        if assignment.attribute_name != attribute_file.attribute_name:
+            raise ScoringChimeraXValidationError(
+                "Assignment attribute name differs from file attribute name."
+            )
+
+
+def validate_scoring_chimerax_execution_record(
+    record: ScoringChimeraXExecutionRecord,
+) -> None:
+    """Validate one command execution record."""
+
+    if not isinstance(record, ScoringChimeraXExecutionRecord):
+        raise ScoringChimeraXValidationError(
+            "Expected ScoringChimeraXExecutionRecord."
+        )
+    if not record.command.strip():
+        raise ScoringChimeraXValidationError(
+            "Execution command cannot be empty."
+        )
+    normalize_scoring_chimerax_command_category(record.category)
+    if record.success and record.error_message:
+        raise ScoringChimeraXValidationError(
+            "Successful execution cannot contain an error message."
+        )
+
+
+def validate_scoring_chimerax_model_binding(
+    binding: ScoringChimeraXModelBinding,
+) -> None:
+    """Validate a DockModel/ChimeraX model binding."""
+
+    if not isinstance(binding, ScoringChimeraXModelBinding):
+        raise ScoringChimeraXValidationError(
+            "Expected ScoringChimeraXModelBinding."
+        )
+    if not binding.dock_model_id.strip():
+        raise ScoringChimeraXValidationError(
+            "DockModel binding ID cannot be empty."
+        )
+    _scoring_chimerax_model_id(binding.chimerax_model_id)
+    if not binding.binding_method.strip():
+        raise ScoringChimeraXValidationError(
+            "Binding method cannot be empty."
+        )
+
+
+def validate_scoring_chimerax_visualization_result(
+    result: ScoringChimeraXVisualizationResult,
+) -> None:
+    """Validate a complete Section 29 visualization result."""
+
+    if not isinstance(result, ScoringChimeraXVisualizationResult):
+        raise ScoringChimeraXValidationError(
+            "Expected ScoringChimeraXVisualizationResult."
+        )
+    normalize_scoring_chimerax_status(result.status)
+    validate_scoring_chimerax_environment(result.environment)
+    validate_scoring_chimerax_command_set(result.command_set)
+    for pseudobond in result.pseudobonds:
+        validate_scoring_chimerax_pseudobond_spec(pseudobond)
+    for attribute_file in result.attribute_files:
+        validate_scoring_chimerax_attribute_file(attribute_file)
+    for execution in result.executions:
+        validate_scoring_chimerax_execution_record(execution)
+    for binding in result.bindings:
+        validate_scoring_chimerax_model_binding(binding)
+    if result.status == SCORING_CHIMERAX_STATUS_READY:
+        if any(not record.success for record in result.executions):
+            raise ScoringChimeraXValidationError(
+                "Ready visualization cannot contain failed executions."
+            )
+
+
+# -----------------------------------------------------------------------------
+# 29.17. Section self-check and public interface
+# -----------------------------------------------------------------------------
+
+
+def run_section_29_self_check() -> Mapping[str, Any]:
+    """Run deterministic tests that do not require a ChimeraX installation."""
+
+    atom1 = {
+        "name": "N",
+        "residue": {
+            "chain_id": "A",
+            "residue_number": 10,
+            "residue_name": "LYS",
+        },
+    }
+    atom2 = {
+        "name": "O1",
+        "residue": {
+            "chain_id": "L",
+            "residue_number": 1,
+            "residue_name": "LIG",
+        },
+    }
+    interaction = {
+        "interaction_id": "hbond:1",
+        "family": "hbond",
+        "interaction_type": "conventional",
+        "score": 2.0,
+        "distance": 2.8,
+        "interaction": {
+            "receptor_atom": atom1,
+            "ligand_atom": atom2,
+        },
+    }
+    residue_score = {
+        "residue_key": "A:LYS10",
+        "residue": {
+            "chain_id": "A",
+            "residue_number": 10,
+            "residue_name": "LYS",
+        },
+        "score": 2.5,
+    }
+    source = {
+        "interaction_scores": [interaction],
+        "residue_scores": [residue_score],
+    }
+    config = ScoringChimeraXConfig(
+        model_id="1",
+        execute_commands=False,
+    )
+    validate_scoring_chimerax_config(config)
+    atom_spec = build_scoring_chimerax_atom_spec(atom1, model_id="1")
+    residue_spec = build_scoring_chimerax_residue_spec(
+        residue_score["residue"],
+        model_id="1",
+    )
+    pseudobonds = build_scoring_chimerax_pseudobond_specs(
+        source,
+        config=config,
+    )
+    command_set = build_scoring_chimerax_command_set(
+        source,
+        config=config,
+    )
+    attribute_file = build_scoring_chimerax_residue_score_attribute(
+        source,
+        model_id="1",
+    )
+    attribute_text = scoring_chimerax_attribute_file_text(attribute_file)
+    result = visualize_scoring_in_chimerax(
+        source,
+        config=config,
+    )
+    validate_scoring_chimerax_visualization_result(result)
+    checks = {
+        "atom_spec": atom_spec.specification == "#1/A:10@N",
+        "residue_spec": residue_spec.specification == "#1/A:10",
+        "pseudobond_count": len(pseudobonds) == 1,
+        "pseudobond_endpoints": (
+            pseudobonds[0].atom1_spec == "#1/A:10@N"
+            and pseudobonds[0].atom2_spec == "#1/L:1@O1"
+        ),
+        "pseudobond_command": any(
+            command.command.startswith("pbond #1/A:10@N #1/L:1@O1")
+            for command in command_set.commands
+        ),
+        "attribute_rows": attribute_file.row_count == 1,
+        "attribute_text": "\t#1/A:10\t2.5" in attribute_text,
+        "offline_status": (
+            result.status == SCORING_CHIMERAX_STATUS_OFFLINE
+        ),
+        "dictionary": (
+            scoring_chimerax_visualization_result_to_dict(result)[
+                "pseudobond_count"
+            ]
+            == 1
+        ),
+        "summary": "Pseudobonds: 1" in format_scoring_chimerax_summary(
+            result
+        ),
+        "script": "# DockAnalyzer" in scoring_chimerax_script_text(
+            command_set
+        ),
+        "color": scoring_chimerax_score_color(1.0).startswith("#"),
+        "rank_color": scoring_chimerax_rank_color(1, 3).startswith("#"),
+    }
+    failed = tuple(name for name, passed in checks.items() if not passed)
+    if failed:
+        raise ScoringChimeraXValidationError(
+            "Section 29 self-check failed: " + ", ".join(failed)
+        )
+    return MappingProxyType(
+        {
+            "status": "passed",
+            "check_count": len(checks),
+            "checks": MappingProxyType(dict(checks)),
+        }
+    )
+
+
+_SECTION_29_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    "SCORING_CHIMERAX_SCHEMA",
+    "SCORING_CHIMERAX_SCHEMA_VERSION",
+    "SCORING_CHIMERAX_SECTION_VERSION",
+    "SCORING_CHIMERAX_STATUS_READY",
+    "SCORING_CHIMERAX_STATUS_OFFLINE",
+    "SCORING_CHIMERAX_STATUS_PARTIAL",
+    "SCORING_CHIMERAX_STATUS_ERROR",
+    "SCORING_CHIMERAX_STATUSES",
+    "SCORING_CHIMERAX_LEVEL_ATOM",
+    "SCORING_CHIMERAX_LEVEL_RESIDUE",
+    "SCORING_CHIMERAX_LEVEL_MODEL",
+    "SCORING_CHIMERAX_LEVEL_POSE",
+    "SCORING_CHIMERAX_LEVEL_INTERACTION",
+    "SCORING_CHIMERAX_LEVELS",
+    "SCORING_CHIMERAX_COMMAND_SELECT",
+    "SCORING_CHIMERAX_COMMAND_SHOW",
+    "SCORING_CHIMERAX_COMMAND_HIDE",
+    "SCORING_CHIMERAX_COMMAND_COLOR",
+    "SCORING_CHIMERAX_COMMAND_PBOND",
+    "SCORING_CHIMERAX_COMMAND_ATTRIBUTE",
+    "SCORING_CHIMERAX_COMMAND_LABEL",
+    "SCORING_CHIMERAX_COMMAND_VIEW",
+    "SCORING_CHIMERAX_COMMAND_OTHER",
+    "SCORING_CHIMERAX_COMMAND_CATEGORIES",
+    "SCORING_CHIMERAX_TARGET_ATOMS",
+    "SCORING_CHIMERAX_TARGET_RESIDUES",
+    "SCORING_CHIMERAX_TARGET_MODELS",
+    "SCORING_CHIMERAX_ATTRIBUTE_TARGETS",
+    "SCORING_CHIMERAX_GROUP_INTERACTIONS",
+    "SCORING_CHIMERAX_GROUP_HBONDS",
+    "SCORING_CHIMERAX_GROUP_HYDROPHOBIC",
+    "SCORING_CHIMERAX_GROUP_PI",
+    "SCORING_CHIMERAX_GROUP_SALTBRIDGES",
+    "SCORING_CHIMERAX_GROUP_CLASHES",
+    "SCORING_CHIMERAX_ATTR_SCORE",
+    "SCORING_CHIMERAX_ATTR_SCORE_FRACTION",
+    "SCORING_CHIMERAX_ATTR_RANK",
+    "SCORING_CHIMERAX_ATTR_PERCENTILE",
+    "SCORING_CHIMERAX_ATTR_PERSISTENCE",
+    "SCORING_CHIMERAX_ATTR_CONSENSUS",
+    "SCORING_CHIMERAX_ATTR_HOTSPOT",
+    "SCORING_CHIMERAX_FAMILY_COLORS",
+    "ScoringChimeraXError",
+    "ScoringChimeraXUnavailableError",
+    "ScoringChimeraXConfigurationError",
+    "ScoringChimeraXSpecificationError",
+    "ScoringChimeraXCommandError",
+    "ScoringChimeraXPseudobondError",
+    "ScoringChimeraXAttributeError",
+    "ScoringChimeraXBindingError",
+    "ScoringChimeraXValidationError",
+    "ScoringChimeraXConfig",
+    "ScoringChimeraXEnvironment",
+    "ScoringChimeraXObjectSpec",
+    "ScoringChimeraXCommand",
+    "ScoringChimeraXCommandSet",
+    "ScoringChimeraXPseudobondSpec",
+    "ScoringChimeraXAttributeAssignment",
+    "ScoringChimeraXAttributeFile",
+    "ScoringChimeraXExecutionRecord",
+    "ScoringChimeraXModelBinding",
+    "ScoringChimeraXVisualizationResult",
+    "normalize_scoring_chimerax_status",
+    "normalize_scoring_chimerax_level",
+    "normalize_scoring_chimerax_command_category",
+    "is_scoring_chimerax_available",
+    "scoring_chimerax_version",
+    "validate_scoring_chimerax_session",
+    "detect_scoring_chimerax_environment",
+    "scoring_chimerax_log",
+    "build_scoring_chimerax_model_spec",
+    "build_scoring_chimerax_residue_spec",
+    "build_scoring_chimerax_atom_spec",
+    "join_scoring_chimerax_specs",
+    "build_scoring_chimerax_specs",
+    "resolve_scoring_chimerax_interaction_atoms",
+    "resolve_scoring_chimerax_interaction_specs",
+    "resolve_scoring_chimerax_residue_score_spec",
+    "scoring_chimerax_participant_specs",
+    "interpolate_scoring_chimerax_color",
+    "scoring_chimerax_score_color",
+    "scoring_chimerax_family_color",
+    "scoring_chimerax_pseudobond_radius",
+    "scoring_chimerax_rank_color",
+    "scoring_chimerax_group_name",
+    "build_scoring_chimerax_pseudobond_spec",
+    "build_scoring_chimerax_pseudobond_specs",
+    "scoring_chimerax_pseudobond_command",
+    "build_scoring_chimerax_delete_pseudobond_commands",
+    "build_scoring_chimerax_attribute_file",
+    "scoring_chimerax_attribute_file_text",
+    "write_scoring_chimerax_attribute_file",
+    "scoring_chimerax_open_attribute_command",
+    "scoring_chimerax_color_attribute_command",
+    "build_scoring_chimerax_residue_score_attribute",
+    "build_scoring_chimerax_pose_rank_attribute",
+    "build_scoring_chimerax_persistence_attribute",
+    "build_scoring_chimerax_selection_commands",
+    "build_scoring_chimerax_rank_commands",
+    "build_scoring_chimerax_consensus_commands",
+    "build_scoring_chimerax_command_set",
+    "scoring_chimerax_script_text",
+    "write_scoring_chimerax_script",
+    "execute_scoring_chimerax_command",
+    "execute_scoring_chimerax_command_set",
+    "find_scoring_chimerax_model",
+    "resolve_scoring_chimerax_live_atom",
+    "create_scoring_chimerax_pseudobonds_direct",
+    "bind_scoring_dock_model_to_chimerax",
+    "bind_multiple_scoring_dock_models_to_chimerax",
+    "scoring_chimerax_binding_map",
+    "visualize_scoring_in_chimerax",
+    "attach_scoring_chimerax_result",
+    "visualize_dock_model_scoring_in_chimerax",
+    "cleanup_scoring_chimerax_visualization",
+    "scoring_chimerax_config_to_dict",
+    "scoring_chimerax_environment_to_dict",
+    "scoring_chimerax_object_spec_to_dict",
+    "scoring_chimerax_command_to_dict",
+    "scoring_chimerax_command_set_to_dict",
+    "scoring_chimerax_pseudobond_to_dict",
+    "scoring_chimerax_attribute_file_to_dict",
+    "scoring_chimerax_execution_record_to_dict",
+    "scoring_chimerax_model_binding_to_dict",
+    "scoring_chimerax_visualization_result_to_dict",
+    "scoring_chimerax_to_rows",
+    "summarize_scoring_chimerax",
+    "format_scoring_chimerax_summary",
+    "validate_scoring_chimerax_config",
+    "validate_scoring_chimerax_environment",
+    "validate_scoring_chimerax_object_spec",
+    "validate_scoring_chimerax_command",
+    "validate_scoring_chimerax_command_set",
+    "validate_scoring_chimerax_pseudobond_spec",
+    "validate_scoring_chimerax_attribute_assignment",
+    "validate_scoring_chimerax_attribute_file",
+    "validate_scoring_chimerax_execution_record",
+    "validate_scoring_chimerax_model_binding",
+    "validate_scoring_chimerax_visualization_result",
+    "run_section_29_self_check",
+)
+
+for public_name in _SECTION_29_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+def section_29_public_names() -> Tuple[str, ...]:
+    """Return the immutable Section 29 public interface."""
+
+    return _SECTION_29_PUBLIC_NAMES
+
+
+def validate_section_29_public_interface() -> None:
+    """Validate all Section 29 public names and exports."""
+
+    missing_names = tuple(
+        name for name in _SECTION_29_PUBLIC_NAMES if name not in globals()
+    )
+    if missing_names:
+        raise ScoringChimeraXError(
+            "Missing Section 29 public names: " + ", ".join(missing_names)
+        )
+    missing_exports = tuple(
+        name for name in _SECTION_29_PUBLIC_NAMES if name not in __all__
+    )
+    if missing_exports:
+        raise ScoringChimeraXError(
+            "Section 29 names missing from __all__: "
+            + ", ".join(missing_exports)
+        )
+
+
+if "section_29_public_names" not in __all__:
+    __all__.append("section_29_public_names")
+if "validate_section_29_public_interface" not in __all__:
+    __all__.append("validate_section_29_public_interface")
+
+validate_section_29_public_interface()
+
+# =============================================================================
+# End of Section 29
+# =============================================================================
+
+
+# =============================================================================
+# DockAnalyzer — Interaction scoring
+# Section 30.1 — Self-test infrastructure
+# =============================================================================
+
+"""
+Reusable self-test infrastructure for DockAnalyzer scoring.
+
+Section 30.1 defines the deterministic fixtures, molecular test doubles,
+assertion helpers, case registry, execution context, capture utilities, and
+result structures used by Sections 30.2–30.5. It intentionally contains only
+infrastructure and infrastructure self-checks. Scientific scoring assertions
+belong to the later Section 30 subsections.
+
+The infrastructure has no dependency on pytest, unittest, ChimeraX, NumPy, or
+third-party test runners. When those packages are present, the same fixtures can
+still be consumed by external test suites. All ChimeraX-like objects implemented
+here are deliberately minimal and expose only structural attributes commonly
+read by DockAnalyzer.
+
+This block is designed to be concatenated directly after Section 29. It does
+not repeat ``from __future__ import annotations`` and does not execute the final
+module test runner. The final runner remains the responsibility of Section 30.5.
+"""
+
+from collections import OrderedDict
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from dataclasses import dataclass, field, fields, is_dataclass
+from datetime import datetime, timezone
+from enum import Enum
+from io import StringIO
+from pathlib import Path
+from types import MappingProxyType
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Final,
+    FrozenSet,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+)
+import copy
+import inspect
+import math
+import os
+import random
+import shutil
+import tempfile
+import time
+import traceback
+import warnings
+
+if "__all__" not in globals():
+    __all__: List[str] = []
+
+
+# -----------------------------------------------------------------------------
+# 30.1.1. Constants and canonical names
+# -----------------------------------------------------------------------------
+
+SCORING_SELF_TEST_SCHEMA: Final[str] = "dockanalyzer.scoring.self_test"
+SCORING_SELF_TEST_SCHEMA_VERSION: Final[str] = "1.0"
+SCORING_SELF_TEST_SECTION_VERSION: Final[str] = "30.1"
+
+SCORING_SELF_TEST_ROOT_SECTION: Final[str] = "30"
+SCORING_SELF_TEST_SECTION_INFRASTRUCTURE: Final[str] = "30.1"
+SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION: Final[str] = "30.2"
+SCORING_SELF_TEST_SECTION_INDIVIDUAL: Final[str] = "30.3"
+SCORING_SELF_TEST_SECTION_AGGREGATION: Final[str] = "30.4"
+SCORING_SELF_TEST_SECTION_RUNNER: Final[str] = "30.5"
+
+SCORING_SELF_TEST_SECTIONS: Final[Tuple[str, ...]] = (
+    SCORING_SELF_TEST_SECTION_INFRASTRUCTURE,
+    SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    SCORING_SELF_TEST_SECTION_AGGREGATION,
+    SCORING_SELF_TEST_SECTION_RUNNER,
+)
+
+SCORING_SELF_TEST_STATUS_PENDING: Final[str] = "pending"
+SCORING_SELF_TEST_STATUS_RUNNING: Final[str] = "running"
+SCORING_SELF_TEST_STATUS_PASSED: Final[str] = "passed"
+SCORING_SELF_TEST_STATUS_FAILED: Final[str] = "failed"
+SCORING_SELF_TEST_STATUS_SKIPPED: Final[str] = "skipped"
+SCORING_SELF_TEST_STATUS_ERROR: Final[str] = "error"
+
+SCORING_SELF_TEST_STATUSES: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_SELF_TEST_STATUS_PENDING,
+        SCORING_SELF_TEST_STATUS_RUNNING,
+        SCORING_SELF_TEST_STATUS_PASSED,
+        SCORING_SELF_TEST_STATUS_FAILED,
+        SCORING_SELF_TEST_STATUS_SKIPPED,
+        SCORING_SELF_TEST_STATUS_ERROR,
+    }
+)
+
+SCORING_SELF_TEST_DEFAULT_SEED: Final[int] = 1729
+SCORING_SELF_TEST_DEFAULT_ABS_TOLERANCE: Final[float] = 1.0e-9
+SCORING_SELF_TEST_DEFAULT_REL_TOLERANCE: Final[float] = 1.0e-7
+SCORING_SELF_TEST_DEFAULT_TIMEOUT: Final[float] = 30.0
+SCORING_SELF_TEST_DEFAULT_REPORT_LIMIT: Final[int] = 1000
+SCORING_SELF_TEST_DEFAULT_TRACEBACK_LIMIT: Final[int] = 20
+SCORING_SELF_TEST_DEFAULT_CAPTURE_LIMIT: Final[int] = 100000
+
+SCORING_SELF_TEST_FAMILY_CONTACT: Final[str] = "contact"
+SCORING_SELF_TEST_FAMILY_HBOND: Final[str] = "hydrogen_bond"
+SCORING_SELF_TEST_FAMILY_HYDROPHOBIC: Final[str] = "hydrophobic"
+SCORING_SELF_TEST_FAMILY_PI: Final[str] = "pi"
+SCORING_SELF_TEST_FAMILY_SALT_BRIDGE: Final[str] = "salt_bridge"
+SCORING_SELF_TEST_FAMILY_CLASH: Final[str] = "clash"
+
+SCORING_SELF_TEST_FAMILIES: Final[Tuple[str, ...]] = (
+    SCORING_SELF_TEST_FAMILY_CONTACT,
+    SCORING_SELF_TEST_FAMILY_HBOND,
+    SCORING_SELF_TEST_FAMILY_HYDROPHOBIC,
+    SCORING_SELF_TEST_FAMILY_PI,
+    SCORING_SELF_TEST_FAMILY_SALT_BRIDGE,
+    SCORING_SELF_TEST_FAMILY_CLASH,
+)
+
+SCORING_SELF_TEST_STRENGTH_STRONG: Final[str] = "strong"
+SCORING_SELF_TEST_STRENGTH_MODERATE: Final[str] = "moderate"
+SCORING_SELF_TEST_STRENGTH_WEAK: Final[str] = "weak"
+SCORING_SELF_TEST_STRENGTH_UNKNOWN: Final[str] = "unknown"
+
+SCORING_SELF_TEST_GEOMETRY_OPTIMAL: Final[str] = "optimal"
+SCORING_SELF_TEST_GEOMETRY_FAVORABLE: Final[str] = "favorable"
+SCORING_SELF_TEST_GEOMETRY_BORDERLINE: Final[str] = "borderline"
+SCORING_SELF_TEST_GEOMETRY_REJECTED: Final[str] = "rejected"
+SCORING_SELF_TEST_GEOMETRY_UNKNOWN: Final[str] = "unknown"
+
+SCORING_SELF_TEST_LIGAND_CHAIN: Final[str] = "L"
+SCORING_SELF_TEST_RECEPTOR_CHAIN: Final[str] = "A"
+SCORING_SELF_TEST_LIGAND_RESIDUE: Final[str] = "LIG"
+SCORING_SELF_TEST_DEFAULT_MODEL_ID: Final[str] = "1"
+
+_SCORING_SELF_TEST_MISSING: Final[object] = object()
+_SCORING_SELF_TEST_REGISTRY_NAME: Final[str] = "scoring"
+
+
+# -----------------------------------------------------------------------------
+# 30.1.2. Exceptions
+# -----------------------------------------------------------------------------
+
+
+class ScoringSelfTestError(AssertionError):
+    """Base exception for DockAnalyzer scoring self-tests."""
+
+
+class ScoringSelfTestAssertionError(ScoringSelfTestError):
+    """Raised when a scoring self-test assertion fails."""
+
+
+class ScoringSelfTestFixtureError(ScoringSelfTestError):
+    """Raised when a scoring fixture cannot be constructed."""
+
+
+class ScoringSelfTestRegistrationError(ScoringSelfTestError):
+    """Raised when a self-test case cannot be registered."""
+
+
+class ScoringSelfTestExecutionError(ScoringSelfTestError):
+    """Raised when a self-test case cannot be executed safely."""
+
+
+class ScoringSelfTestTimeoutError(ScoringSelfTestExecutionError):
+    """Raised when a self-test exceeds its configured soft timeout."""
+
+
+class ScoringSelfTestSkipped(ScoringSelfTestError):
+    """Raised internally to mark a self-test as skipped."""
+
+
+# -----------------------------------------------------------------------------
+# 30.1.3. Generic helpers
+# -----------------------------------------------------------------------------
+
+
+TScoringSelfTest = TypeVar("TScoringSelfTest")
+
+
+def scoring_self_test_utc_now() -> str:
+    """Return a stable ISO-8601 UTC timestamp."""
+
+    return datetime.now(timezone.utc).isoformat()
+
+
+def normalize_scoring_self_test_status(value: Any) -> str:
+    """Normalize and validate a self-test status."""
+
+    text = str(value).strip().lower().replace("-", "_")
+    aliases = {
+        "ok": SCORING_SELF_TEST_STATUS_PASSED,
+        "pass": SCORING_SELF_TEST_STATUS_PASSED,
+        "success": SCORING_SELF_TEST_STATUS_PASSED,
+        "fail": SCORING_SELF_TEST_STATUS_FAILED,
+        "failure": SCORING_SELF_TEST_STATUS_FAILED,
+        "skip": SCORING_SELF_TEST_STATUS_SKIPPED,
+        "exception": SCORING_SELF_TEST_STATUS_ERROR,
+    }
+    normalized = aliases.get(text, text)
+    if normalized not in SCORING_SELF_TEST_STATUSES:
+        raise ScoringSelfTestFixtureError(
+            f"Unsupported self-test status: {value!r}."
+        )
+    return normalized
+
+
+def normalize_scoring_self_test_section(value: Any) -> str:
+    """Normalize a Section 30 subsection identifier."""
+
+    text = str(value).strip().lower()
+    text = text.removeprefix("section").strip()
+    aliases = {
+        "infrastructure": SCORING_SELF_TEST_SECTION_INFRASTRUCTURE,
+        "config": SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+        "configuration": SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+        "recognition": SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+        "individual": SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+        "scoring": SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+        "aggregation": SCORING_SELF_TEST_SECTION_AGGREGATION,
+        "integration": SCORING_SELF_TEST_SECTION_AGGREGATION,
+        "runner": SCORING_SELF_TEST_SECTION_RUNNER,
+        "final": SCORING_SELF_TEST_SECTION_RUNNER,
+    }
+    normalized = aliases.get(text, text)
+    if normalized == SCORING_SELF_TEST_ROOT_SECTION:
+        return normalized
+    if normalized not in SCORING_SELF_TEST_SECTIONS:
+        raise ScoringSelfTestFixtureError(
+            f"Unsupported scoring self-test section: {value!r}."
+        )
+    return normalized
+
+
+def scoring_self_test_safe_repr(
+    value: Any,
+    *,
+    max_length: int = 500,
+) -> str:
+    """Return a bounded representation suitable for diagnostics."""
+
+    try:
+        text = repr(value)
+    except Exception as exc:
+        text = f"<unrepresentable {type(value).__name__}: {exc}>"
+    if max_length < 4:
+        return text[:max_length]
+    if len(text) > max_length:
+        return text[: max_length - 3] + "..."
+    return text
+
+
+def scoring_self_test_qualified_name(value: Any) -> str:
+    """Return a readable qualified name for a callable or object."""
+
+    target = value if inspect.isclass(value) else type(value)
+    if callable(value) and not inspect.isclass(value):
+        target = value
+    module = getattr(target, "__module__", "")
+    name = getattr(target, "__qualname__", None)
+    if name is None:
+        name = getattr(target, "__name__", type(value).__name__)
+    return f"{module}.{name}" if module else str(name)
+
+
+def scoring_self_test_freeze_mapping(
+    value: Optional[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    """Copy a mapping into an immutable proxy."""
+
+    return MappingProxyType(dict(value or {}))
+
+
+def scoring_self_test_copy(value: TScoringSelfTest) -> TScoringSelfTest:
+    """Return a deep copy and raise a fixture-specific error on failure."""
+
+    try:
+        return copy.deepcopy(value)
+    except Exception as exc:
+        raise ScoringSelfTestFixtureError(
+            f"Cannot copy test value {type(value).__name__}: {exc}"
+        ) from exc
+
+
+def scoring_self_test_is_finite_number(value: Any) -> bool:
+    """Return whether a value is a finite non-boolean number."""
+
+    if isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def scoring_self_test_float(
+    value: Any,
+    *,
+    name: str = "value",
+) -> float:
+    """Convert a finite value to float."""
+
+    try:
+        converted = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ScoringSelfTestFixtureError(
+            f"{name} must be numeric; received {value!r}."
+        ) from exc
+    if not math.isfinite(converted):
+        raise ScoringSelfTestFixtureError(
+            f"{name} must be finite; received {value!r}."
+        )
+    return converted
+
+
+def scoring_self_test_coordinate(
+    value: Sequence[Any],
+    *,
+    name: str = "coordinate",
+) -> Tuple[float, float, float]:
+    """Validate and return a three-dimensional coordinate."""
+
+    if isinstance(value, (str, bytes)) or len(value) != 3:
+        raise ScoringSelfTestFixtureError(
+            f"{name} must contain exactly three numeric values."
+        )
+    return (
+        scoring_self_test_float(value[0], name=f"{name}[0]"),
+        scoring_self_test_float(value[1], name=f"{name}[1]"),
+        scoring_self_test_float(value[2], name=f"{name}[2]"),
+    )
+
+
+def scoring_self_test_distance(
+    first: Sequence[Any],
+    second: Sequence[Any],
+) -> float:
+    """Return the Euclidean distance between two coordinates."""
+
+    a = scoring_self_test_coordinate(first, name="first")
+    b = scoring_self_test_coordinate(second, name="second")
+    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
+
+
+def scoring_self_test_translate_coordinate(
+    coordinate: Sequence[Any],
+    translation: Sequence[Any],
+) -> Tuple[float, float, float]:
+    """Translate one coordinate by a vector."""
+
+    point = scoring_self_test_coordinate(coordinate)
+    vector = scoring_self_test_coordinate(translation, name="translation")
+    return tuple(point[index] + vector[index] for index in range(3))
+
+
+def scoring_self_test_rotate_z(
+    coordinate: Sequence[Any],
+    angle_degrees: float,
+) -> Tuple[float, float, float]:
+    """Rotate one coordinate around the z axis."""
+
+    x, y, z = scoring_self_test_coordinate(coordinate)
+    angle = math.radians(scoring_self_test_float(angle_degrees))
+    cosine = math.cos(angle)
+    sine = math.sin(angle)
+    return (
+        x * cosine - y * sine,
+        x * sine + y * cosine,
+        z,
+    )
+
+
+def scoring_self_test_stable_key(value: Any) -> str:
+    """Return a deterministic key for heterogeneous fixture values."""
+
+    if value is None:
+        return "none"
+    if isinstance(value, Enum):
+        return scoring_self_test_stable_key(value.value)
+    if isinstance(value, Mapping):
+        parts = (
+            f"{scoring_self_test_stable_key(key)}="
+            f"{scoring_self_test_stable_key(item)}"
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        )
+        return "{" + ",".join(parts) + "}"
+    if isinstance(value, (list, tuple, set, frozenset)):
+        items = value
+        if isinstance(value, (set, frozenset)):
+            items = sorted(value, key=scoring_self_test_stable_key)
+        return "[" + ",".join(scoring_self_test_stable_key(v) for v in items) + "]"
+    if is_dataclass(value) and not isinstance(value, type):
+        payload = {
+            item.name: getattr(value, item.name)
+            for item in fields(value)
+        }
+        return scoring_self_test_stable_key(payload)
+    if hasattr(value, "to_dict") and callable(value.to_dict):
+        try:
+            return scoring_self_test_stable_key(value.to_dict())
+        except Exception:
+            pass
+    return str(value)
+
+
+# -----------------------------------------------------------------------------
+# 30.1.4. Minimal molecular test doubles
+# -----------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class MockScoringElement:
+    """Minimal element-like object used by atom fixtures."""
+
+    name: str
+    symbol: Optional[str] = None
+    atomic_number: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        self.name = str(self.name).strip() or "C"
+        if self.symbol is None:
+            self.symbol = self.name
+        self.symbol = str(self.symbol).strip() or self.name
+
+
+@dataclass(slots=True)
+class MockScoringStructure:
+    """Minimal ChimeraX-like molecular structure."""
+
+    name: str = "mock_structure"
+    id_string: str = SCORING_SELF_TEST_DEFAULT_MODEL_ID
+    atoms: List[Any] = field(default_factory=list)
+    residues: List[Any] = field(default_factory=list)
+    session: Any = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def id(self) -> Tuple[int, ...]:
+        """Return a ChimeraX-like model identifier tuple."""
+
+        values: List[int] = []
+        for token in str(self.id_string).lstrip("#").split("."):
+            try:
+                values.append(int(token))
+            except ValueError:
+                values.append(1)
+        return tuple(values or [1])
+
+    def add_residue(self, residue: Any) -> Any:
+        """Attach a residue to the structure."""
+
+        if residue not in self.residues:
+            self.residues.append(residue)
+        residue.structure = self
+        for atom in getattr(residue, "atoms", ()):
+            self.add_atom(atom)
+        return residue
+
+    def add_atom(self, atom: Any) -> Any:
+        """Attach an atom to the structure."""
+
+        if atom not in self.atoms:
+            self.atoms.append(atom)
+        atom.structure = self
+        return atom
+
+
+@dataclass(slots=True)
+class MockScoringChain:
+    """Minimal chain-like object."""
+
+    chain_id: str = SCORING_SELF_TEST_RECEPTOR_CHAIN
+    structure: Optional[MockScoringStructure] = None
+
+    @property
+    def id(self) -> str:
+        """Return the canonical chain identifier."""
+
+        return self.chain_id
+
+
+@dataclass(slots=True)
+class MockScoringResidue:
+    """Minimal residue-like object accepted by scoring adapters."""
+
+    name: str
+    number: int
+    chain_id: str = SCORING_SELF_TEST_RECEPTOR_CHAIN
+    insertion_code: str = ""
+    atoms: List[Any] = field(default_factory=list)
+    structure: Optional[MockScoringStructure] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    is_ligand: bool = False
+    chain: MockScoringChain = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.name = str(self.name).strip().upper() or "UNK"
+        self.number = int(self.number)
+        self.chain_id = str(self.chain_id).strip() or "_"
+        self.chain = MockScoringChain(self.chain_id, self.structure)
+        if self.structure is None:
+            self.structure = MockScoringStructure()
+        self.chain.structure = self.structure
+        if self not in self.structure.residues:
+            self.structure.residues.append(self)
+        for atom in tuple(self.atoms):
+            self.add_atom(atom)
+
+    @property
+    def id(self) -> int:
+        """Return the residue number."""
+
+        return self.number
+
+    @property
+    def principal_atom(self) -> Any:
+        """Return the first atom when available."""
+
+        return self.atoms[0] if self.atoms else None
+
+    @property
+    def one_letter_code(self) -> str:
+        """Return a conservative one-letter residue code."""
+
+        codes = {
+            "ALA": "A",
+            "ARG": "R",
+            "ASN": "N",
+            "ASP": "D",
+            "CYS": "C",
+            "GLN": "Q",
+            "GLU": "E",
+            "GLY": "G",
+            "HIS": "H",
+            "ILE": "I",
+            "LEU": "L",
+            "LYS": "K",
+            "MET": "M",
+            "PHE": "F",
+            "PRO": "P",
+            "SER": "S",
+            "THR": "T",
+            "TRP": "W",
+            "TYR": "Y",
+            "VAL": "V",
+        }
+        return codes.get(self.name, "X")
+
+    def add_atom(self, atom: Any) -> Any:
+        """Attach an atom to this residue and structure."""
+
+        if atom not in self.atoms:
+            self.atoms.append(atom)
+        atom.residue = self
+        atom.structure = self.structure
+        if atom not in self.structure.atoms:
+            self.structure.atoms.append(atom)
+        return atom
+
+    def __str__(self) -> str:
+        insertion = self.insertion_code or ""
+        return f"{self.chain_id}:{self.name}{self.number}{insertion}"
+
+
+@dataclass(slots=True)
+class MockScoringAtom:
+    """Minimal atom-like object with common DockAnalyzer aliases."""
+
+    name: str
+    element: Union[str, MockScoringElement]
+    coord: Tuple[float, float, float]
+    serial_number: int = 1
+    residue: Optional[MockScoringResidue] = None
+    structure: Optional[MockScoringStructure] = None
+    formal_charge: Optional[float] = None
+    partial_charge: Optional[float] = None
+    atom_type: Optional[str] = None
+    aromatic: bool = False
+    bonds: List[Any] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.name = str(self.name).strip() or "C"
+        if isinstance(self.element, str):
+            self.element = MockScoringElement(self.element)
+        self.coord = scoring_self_test_coordinate(self.coord)
+        self.serial_number = int(self.serial_number)
+        if self.residue is not None:
+            self.residue.add_atom(self)
+        elif self.structure is not None:
+            self.structure.add_atom(self)
+
+    @property
+    def coordinates(self) -> Tuple[float, float, float]:
+        """Return atom coordinates."""
+
+        return self.coord
+
+    @coordinates.setter
+    def coordinates(self, value: Sequence[Any]) -> None:
+        self.coord = scoring_self_test_coordinate(value)
+
+    @property
+    def scene_coord(self) -> Tuple[float, float, float]:
+        """Return a ChimeraX-like scene coordinate."""
+
+        return self.coord
+
+    @property
+    def serial(self) -> int:
+        """Return the atom serial number."""
+
+        return self.serial_number
+
+    @property
+    def idatm_type(self) -> str:
+        """Return a minimal atom-type value."""
+
+        if self.atom_type:
+            return self.atom_type
+        return self.element.symbol or self.element.name
+
+    def distance(self, other: Any) -> float:
+        """Return the distance to another atom-like object."""
+
+        coordinate = getattr(other, "coord", None)
+        if coordinate is None:
+            coordinate = getattr(other, "coordinates", None)
+        return scoring_self_test_distance(self.coord, coordinate)
+
+    def __str__(self) -> str:
+        if self.residue is None:
+            return self.name
+        return f"{self.residue}@{self.name}"
+
+
+@dataclass(slots=True)
+class MockScoringBond:
+    """Minimal bond-like object linking two atoms."""
+
+    atom1: MockScoringAtom
+    atom2: MockScoringAtom
+    order: float = 1.0
+    aromatic: bool = False
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.order = scoring_self_test_float(self.order, name="bond order")
+        if self not in self.atom1.bonds:
+            self.atom1.bonds.append(self)
+        if self not in self.atom2.bonds:
+            self.atom2.bonds.append(self)
+
+    @property
+    def atoms(self) -> Tuple[MockScoringAtom, MockScoringAtom]:
+        """Return both bonded atoms."""
+
+        return self.atom1, self.atom2
+
+    def other_atom(self, atom: MockScoringAtom) -> MockScoringAtom:
+        """Return the atom on the opposite side of the bond."""
+
+        if atom is self.atom1:
+            return self.atom2
+        if atom is self.atom2:
+            return self.atom1
+        raise ScoringSelfTestFixtureError("Atom is not part of this bond.")
+
+
+@dataclass(slots=True)
+class MockScoringInteraction:
+    """Generic interaction-like object covering all scoring families."""
+
+    interaction_type: str
+    atom1: Optional[MockScoringAtom] = None
+    atom2: Optional[MockScoringAtom] = None
+    distance: Optional[float] = None
+    strength: str = SCORING_SELF_TEST_STRENGTH_MODERATE
+    classification: str = SCORING_SELF_TEST_GEOMETRY_FAVORABLE
+    score: Optional[float] = None
+    geometry_score: Optional[float] = None
+    confidence: float = 1.0
+    pose_id: Optional[str] = None
+    model_id: Optional[str] = SCORING_SELF_TEST_DEFAULT_MODEL_ID
+    interaction_id: Optional[str] = None
+    source: str = "self_test"
+    favorable: Optional[bool] = None
+    valid: bool = True
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.interaction_type = str(self.interaction_type).strip().lower()
+        if self.distance is None and self.atom1 is not None and self.atom2 is not None:
+            self.distance = self.atom1.distance(self.atom2)
+        if self.distance is not None:
+            self.distance = scoring_self_test_float(
+                self.distance,
+                name="interaction distance",
+            )
+        self.confidence = scoring_self_test_float(
+            self.confidence,
+            name="interaction confidence",
+        )
+        if self.interaction_id is None:
+            self.interaction_id = self._default_identifier()
+        if self.favorable is None:
+            self.favorable = self.interaction_type != (
+                SCORING_SELF_TEST_FAMILY_CLASH
+            )
+
+    @property
+    def type(self) -> str:
+        """Return a common interaction-type alias."""
+
+        return self.interaction_type
+
+    @property
+    def family(self) -> str:
+        """Return the canonical interaction family."""
+
+        text = self.interaction_type
+        if "hbond" in text or "hydrogen" in text:
+            return SCORING_SELF_TEST_FAMILY_HBOND
+        if "hydroph" in text:
+            return SCORING_SELF_TEST_FAMILY_HYDROPHOBIC
+        if "pi" in text or "stack" in text:
+            return SCORING_SELF_TEST_FAMILY_PI
+        if "salt" in text or "ionic" in text:
+            return SCORING_SELF_TEST_FAMILY_SALT_BRIDGE
+        if "clash" in text or "steric" in text:
+            return SCORING_SELF_TEST_FAMILY_CLASH
+        return SCORING_SELF_TEST_FAMILY_CONTACT
+
+    @property
+    def atoms(self) -> Tuple[MockScoringAtom, ...]:
+        """Return available participant atoms."""
+
+        return tuple(atom for atom in (self.atom1, self.atom2) if atom is not None)
+
+    @property
+    def receptor_atom(self) -> Optional[MockScoringAtom]:
+        """Return the first participant as the receptor atom."""
+
+        return self.atom1
+
+    @property
+    def ligand_atom(self) -> Optional[MockScoringAtom]:
+        """Return the second participant as the ligand atom."""
+
+        return self.atom2
+
+    @property
+    def residue1(self) -> Optional[MockScoringResidue]:
+        return self.atom1.residue if self.atom1 is not None else None
+
+    @property
+    def residue2(self) -> Optional[MockScoringResidue]:
+        return self.atom2.residue if self.atom2 is not None else None
+
+    @property
+    def receptor_residue(self) -> Optional[MockScoringResidue]:
+        return self.residue1
+
+    @property
+    def ligand_residue(self) -> Optional[MockScoringResidue]:
+        return self.residue2
+
+    def _default_identifier(self) -> str:
+        first = str(self.atom1) if self.atom1 is not None else "none"
+        second = str(self.atom2) if self.atom2 is not None else "none"
+        return f"{self.pose_id or 'pose'}:{self.interaction_type}:{first}:{second}"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a dictionary representation used by adapter tests."""
+
+        return {
+            "interaction_id": self.interaction_id,
+            "interaction_type": self.interaction_type,
+            "family": self.family,
+            "atom1": self.atom1,
+            "atom2": self.atom2,
+            "distance": self.distance,
+            "strength": self.strength,
+            "classification": self.classification,
+            "score": self.score,
+            "geometry_score": self.geometry_score,
+            "confidence": self.confidence,
+            "pose_id": self.pose_id,
+            "model_id": self.model_id,
+            "source": self.source,
+            "favorable": self.favorable,
+            "valid": self.valid,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(slots=True)
+class MockScoringInteractionCollection:
+    """Container exposing general and family-specific interaction fields."""
+
+    interactions: List[Any] = field(default_factory=list)
+    contacts: List[Any] = field(default_factory=list)
+    hbonds: List[Any] = field(default_factory=list)
+    hydrophobic: List[Any] = field(default_factory=list)
+    pi: List[Any] = field(default_factory=list)
+    saltbridge: List[Any] = field(default_factory=list)
+    clashes: List[Any] = field(default_factory=list)
+    pose_id: Optional[str] = None
+    model_id: Optional[str] = SCORING_SELF_TEST_DEFAULT_MODEL_ID
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def add(self, interaction: Any) -> Any:
+        """Add an interaction to the general and family collection."""
+
+        if interaction not in self.interactions:
+            self.interactions.append(interaction)
+        family = getattr(interaction, "family", "contact")
+        target = {
+            SCORING_SELF_TEST_FAMILY_HBOND: self.hbonds,
+            SCORING_SELF_TEST_FAMILY_HYDROPHOBIC: self.hydrophobic,
+            SCORING_SELF_TEST_FAMILY_PI: self.pi,
+            SCORING_SELF_TEST_FAMILY_SALT_BRIDGE: self.saltbridge,
+            SCORING_SELF_TEST_FAMILY_CLASH: self.clashes,
+        }.get(family, self.contacts)
+        if interaction not in target:
+            target.append(interaction)
+        return interaction
+
+    def all_interactions(self) -> Tuple[Any, ...]:
+        """Return all unique interactions in insertion order."""
+
+        seen: Set[int] = set()
+        output: List[Any] = []
+        for collection in (
+            self.interactions,
+            self.contacts,
+            self.hbonds,
+            self.hydrophobic,
+            self.pi,
+            self.saltbridge,
+            self.clashes,
+        ):
+            for interaction in collection:
+                marker = id(interaction)
+                if marker not in seen:
+                    seen.add(marker)
+                    output.append(interaction)
+        return tuple(output)
+
+
+@dataclass
+class MockScoringDockModel:
+    """Mutable DockModel-like object for scoring integration tests."""
+
+    name: str = "mock_pose"
+    pose_id: str = "pose_1"
+    model_id: str = SCORING_SELF_TEST_DEFAULT_MODEL_ID
+    ligand_name: str = SCORING_SELF_TEST_LIGAND_RESIDUE
+    contacts: List[Any] = field(default_factory=list)
+    hbonds: List[Any] = field(default_factory=list)
+    hydrophobic: List[Any] = field(default_factory=list)
+    pi: List[Any] = field(default_factory=list)
+    saltbridge: List[Any] = field(default_factory=list)
+    clashes: List[Any] = field(default_factory=list)
+    score: Optional[float] = None
+    docking_affinity: Optional[float] = None
+    fused_score: Optional[float] = None
+    statistics: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def interactions(self) -> Tuple[Any, ...]:
+        """Return all family collections as one ordered tuple."""
+
+        output: List[Any] = []
+        seen: Set[int] = set()
+        for collection in (
+            self.contacts,
+            self.hbonds,
+            self.hydrophobic,
+            self.pi,
+            self.saltbridge,
+            self.clashes,
+        ):
+            for interaction in collection:
+                marker = id(interaction)
+                if marker not in seen:
+                    seen.add(marker)
+                    output.append(interaction)
+        return tuple(output)
+
+    def add_interaction(self, interaction: Any) -> Any:
+        """Add an interaction to the matching family collection."""
+
+        family = getattr(interaction, "family", "contact")
+        target = {
+            SCORING_SELF_TEST_FAMILY_HBOND: self.hbonds,
+            SCORING_SELF_TEST_FAMILY_HYDROPHOBIC: self.hydrophobic,
+            SCORING_SELF_TEST_FAMILY_PI: self.pi,
+            SCORING_SELF_TEST_FAMILY_SALT_BRIDGE: self.saltbridge,
+            SCORING_SELF_TEST_FAMILY_CLASH: self.clashes,
+        }.get(family, self.contacts)
+        if interaction not in target:
+            target.append(interaction)
+        return interaction
+
+
+@dataclass(slots=True)
+class MockScoringLogger:
+    """Logger-like object that records messages for assertions."""
+
+    records: List[Tuple[str, str]] = field(default_factory=list)
+
+    def _record(self, level: str, message: Any) -> None:
+        self.records.append((level, str(message)))
+
+    def debug(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._record("debug", message)
+
+    def info(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._record("info", message)
+
+    def warning(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._record("warning", message)
+
+    warn = warning
+
+    def error(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._record("error", message)
+
+    def status(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._record("status", message)
+
+
+@dataclass(slots=True)
+class MockScoringSession:
+    """Minimal ChimeraX-like session used by Section 29 tests."""
+
+    logger: MockScoringLogger = field(default_factory=MockScoringLogger)
+    models: List[Any] = field(default_factory=list)
+    command_history: List[str] = field(default_factory=list)
+    pseudobond_manager: Any = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def run(self, command: str) -> None:
+        """Record a command as a simple command-runner fallback."""
+
+        self.command_history.append(str(command))
+
+
+# -----------------------------------------------------------------------------
+# 30.1.5. Fixture builders
+# -----------------------------------------------------------------------------
+
+
+def make_scoring_test_structure(
+    *,
+    name: str = "mock_structure",
+    model_id: Union[str, int] = SCORING_SELF_TEST_DEFAULT_MODEL_ID,
+    session: Any = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> MockScoringStructure:
+    """Create one structure fixture."""
+
+    return MockScoringStructure(
+        name=str(name),
+        id_string=str(model_id),
+        session=session,
+        metadata=dict(metadata or {}),
+    )
+
+
+def make_scoring_test_residue(
+    name: str,
+    number: int,
+    *,
+    chain_id: str = SCORING_SELF_TEST_RECEPTOR_CHAIN,
+    insertion_code: str = "",
+    structure: Optional[MockScoringStructure] = None,
+    is_ligand: bool = False,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> MockScoringResidue:
+    """Create one residue fixture."""
+
+    return MockScoringResidue(
+        name=name,
+        number=number,
+        chain_id=chain_id,
+        insertion_code=insertion_code,
+        structure=structure,
+        is_ligand=is_ligand,
+        metadata=dict(metadata or {}),
+    )
+
+
+def make_scoring_test_atom(
+    name: str,
+    element: str,
+    coordinate: Sequence[Any],
+    *,
+    serial_number: int = 1,
+    residue: Optional[MockScoringResidue] = None,
+    structure: Optional[MockScoringStructure] = None,
+    formal_charge: Optional[float] = None,
+    partial_charge: Optional[float] = None,
+    atom_type: Optional[str] = None,
+    aromatic: bool = False,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> MockScoringAtom:
+    """Create one atom fixture."""
+
+    return MockScoringAtom(
+        name=name,
+        element=element,
+        coord=scoring_self_test_coordinate(coordinate),
+        serial_number=serial_number,
+        residue=residue,
+        structure=structure,
+        formal_charge=formal_charge,
+        partial_charge=partial_charge,
+        atom_type=atom_type,
+        aromatic=aromatic,
+        metadata=dict(metadata or {}),
+    )
+
+
+def make_scoring_test_bond(
+    atom1: MockScoringAtom,
+    atom2: MockScoringAtom,
+    *,
+    order: float = 1.0,
+    aromatic: bool = False,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> MockScoringBond:
+    """Create one bond fixture."""
+
+    return MockScoringBond(
+        atom1=atom1,
+        atom2=atom2,
+        order=order,
+        aromatic=aromatic,
+        metadata=dict(metadata or {}),
+    )
+
+
+def make_scoring_test_interaction(
+    interaction_type: str,
+    atom1: Optional[MockScoringAtom] = None,
+    atom2: Optional[MockScoringAtom] = None,
+    *,
+    distance: Optional[float] = None,
+    strength: str = SCORING_SELF_TEST_STRENGTH_MODERATE,
+    classification: str = SCORING_SELF_TEST_GEOMETRY_FAVORABLE,
+    score: Optional[float] = None,
+    geometry_score: Optional[float] = None,
+    confidence: float = 1.0,
+    pose_id: Optional[str] = None,
+    model_id: Optional[str] = SCORING_SELF_TEST_DEFAULT_MODEL_ID,
+    interaction_id: Optional[str] = None,
+    source: str = "self_test",
+    favorable: Optional[bool] = None,
+    valid: bool = True,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> MockScoringInteraction:
+    """Create one generic interaction fixture."""
+
+    return MockScoringInteraction(
+        interaction_type=interaction_type,
+        atom1=atom1,
+        atom2=atom2,
+        distance=distance,
+        strength=strength,
+        classification=classification,
+        score=score,
+        geometry_score=geometry_score,
+        confidence=confidence,
+        pose_id=pose_id,
+        model_id=model_id,
+        interaction_id=interaction_id,
+        source=source,
+        favorable=favorable,
+        valid=valid,
+        metadata=dict(metadata or {}),
+    )
+
+
+def make_scoring_test_interaction_mapping(
+    interaction: MockScoringInteraction,
+    *,
+    include_objects: bool = True,
+) -> Dict[str, Any]:
+    """Convert an interaction fixture into an adapter-friendly mapping."""
+
+    payload = interaction.to_dict()
+    if not include_objects:
+        for key in ("atom1", "atom2"):
+            atom = payload.get(key)
+            payload[key] = str(atom) if atom is not None else None
+        payload["receptor_residue"] = str(interaction.receptor_residue)
+        payload["ligand_residue"] = str(interaction.ligand_residue)
+    return payload
+
+
+def make_scoring_test_dock_model(
+    *,
+    name: str = "mock_pose",
+    pose_id: str = "pose_1",
+    model_id: Union[str, int] = SCORING_SELF_TEST_DEFAULT_MODEL_ID,
+    ligand_name: str = SCORING_SELF_TEST_LIGAND_RESIDUE,
+    interactions: Iterable[Any] = (),
+    docking_affinity: Optional[float] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> MockScoringDockModel:
+    """Create one DockModel-like pose and attach interactions by family."""
+
+    model = MockScoringDockModel(
+        name=name,
+        pose_id=pose_id,
+        model_id=str(model_id),
+        ligand_name=ligand_name,
+        docking_affinity=docking_affinity,
+        metadata=dict(metadata or {}),
+    )
+    for interaction in interactions:
+        model.add_interaction(interaction)
+    return model
+
+
+def clone_scoring_test_interaction(
+    interaction: MockScoringInteraction,
+    *,
+    pose_id: Optional[str] = None,
+    translation: Sequence[Any] = (0.0, 0.0, 0.0),
+    interaction_id: Optional[str] = None,
+) -> MockScoringInteraction:
+    """Clone an interaction and optionally translate its participant atoms."""
+
+    cloned = scoring_self_test_copy(interaction)
+    vector = scoring_self_test_coordinate(translation, name="translation")
+    for atom in cloned.atoms:
+        atom.coordinates = scoring_self_test_translate_coordinate(
+            atom.coordinates,
+            vector,
+        )
+    if pose_id is not None:
+        cloned.pose_id = pose_id
+    if interaction_id is not None:
+        cloned.interaction_id = interaction_id
+    elif pose_id is not None:
+        cloned.interaction_id = cloned._default_identifier()
+    if cloned.atom1 is not None and cloned.atom2 is not None:
+        cloned.distance = cloned.atom1.distance(cloned.atom2)
+    return cloned
+
+
+@dataclass(slots=True)
+class ScoringSelfTestFixtureBundle:
+    """Reusable deterministic fixture set for Sections 30.2–30.4."""
+
+    receptor_structure: MockScoringStructure
+    ligand_structure: MockScoringStructure
+    receptor_residues: Tuple[MockScoringResidue, ...]
+    ligand_residue: MockScoringResidue
+    receptor_atoms: Tuple[MockScoringAtom, ...]
+    ligand_atoms: Tuple[MockScoringAtom, ...]
+    interactions: Tuple[MockScoringInteraction, ...]
+    poses: Tuple[MockScoringDockModel, ...]
+    session: MockScoringSession
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+
+    def interaction_by_family(self, family: str) -> MockScoringInteraction:
+        """Return the first interaction matching a family."""
+
+        for interaction in self.interactions:
+            if interaction.family == family:
+                return interaction
+        raise ScoringSelfTestFixtureError(
+            f"Fixture has no interaction for family {family!r}."
+        )
+
+    def pose_by_id(self, pose_id: str) -> MockScoringDockModel:
+        """Return one pose by identifier."""
+
+        for pose in self.poses:
+            if pose.pose_id == pose_id:
+                return pose
+        raise ScoringSelfTestFixtureError(
+            f"Fixture has no pose with identifier {pose_id!r}."
+        )
+
+    def as_mapping(self) -> Dict[str, Any]:
+        """Return a shallow mapping of all fixture components."""
+
+        return {
+            "receptor_structure": self.receptor_structure,
+            "ligand_structure": self.ligand_structure,
+            "receptor_residues": self.receptor_residues,
+            "ligand_residue": self.ligand_residue,
+            "receptor_atoms": self.receptor_atoms,
+            "ligand_atoms": self.ligand_atoms,
+            "interactions": self.interactions,
+            "poses": self.poses,
+            "session": self.session,
+            "metadata": dict(self.metadata),
+        }
+
+
+def build_scoring_self_test_fixture(
+    *,
+    seed: int = SCORING_SELF_TEST_DEFAULT_SEED,
+    pose_count: int = 4,
+) -> ScoringSelfTestFixtureBundle:
+    """Build the standard mixed-family and multipose fixture."""
+
+    if pose_count < 1:
+        raise ScoringSelfTestFixtureError("pose_count must be at least one.")
+    generator = random.Random(int(seed))
+    session = MockScoringSession()
+    receptor_structure = make_scoring_test_structure(
+        name="receptor",
+        model_id="1",
+        session=session,
+    )
+    ligand_structure = make_scoring_test_structure(
+        name="ligand",
+        model_id="2",
+        session=session,
+    )
+    session.models.extend((receptor_structure, ligand_structure))
+
+    residue_specs = (
+        ("ASP", 10),
+        ("LYS", 25),
+        ("PHE", 40),
+        ("LEU", 55),
+        ("SER", 70),
+        ("VAL", 85),
+    )
+    receptor_residues = tuple(
+        make_scoring_test_residue(
+            name,
+            number,
+            structure=receptor_structure,
+        )
+        for name, number in residue_specs
+    )
+    ligand_residue = make_scoring_test_residue(
+        SCORING_SELF_TEST_LIGAND_RESIDUE,
+        1,
+        chain_id=SCORING_SELF_TEST_LIGAND_CHAIN,
+        structure=ligand_structure,
+        is_ligand=True,
+    )
+
+    receptor_atom_specs = (
+        ("OD1", "O", (0.0, 0.0, 0.0), -1.0, False),
+        ("NZ", "N", (0.0, 4.0, 0.0), 1.0, False),
+        ("CZ", "C", (4.0, 0.0, 0.0), 0.0, True),
+        ("CD1", "C", (4.0, 1.4, 0.0), 0.0, True),
+        ("CB", "C", (0.0, 8.0, 0.0), 0.0, False),
+        ("OG", "O", (8.0, 0.0, 0.0), 0.0, False),
+        ("CG1", "C", (8.0, 4.0, 0.0), 0.0, False),
+    )
+    receptor_atoms: List[MockScoringAtom] = []
+    for index, spec in enumerate(receptor_atom_specs):
+        name, element, coordinate, charge, aromatic = spec
+        residue = receptor_residues[min(index, len(receptor_residues) - 1)]
+        receptor_atoms.append(
+            make_scoring_test_atom(
+                name,
+                element,
+                coordinate,
+                serial_number=index + 1,
+                residue=residue,
+                formal_charge=charge,
+                partial_charge=charge,
+                aromatic=aromatic,
+            )
+        )
+
+    ligand_atom_specs = (
+        ("N1", "N", (0.0, 0.0, 2.8), 1.0, False),
+        ("O1", "O", (0.0, 4.0, 2.9), -1.0, False),
+        ("C1", "C", (4.0, 0.0, 3.6), 0.0, True),
+        ("C2", "C", (4.0, 1.4, 3.6), 0.0, True),
+        ("C3", "C", (0.0, 8.0, 3.7), 0.0, False),
+        ("O2", "O", (8.0, 0.0, 2.7), 0.0, False),
+        ("C4", "C", (8.0, 4.0, 1.7), 0.0, False),
+    )
+    ligand_atoms: List[MockScoringAtom] = []
+    for index, spec in enumerate(ligand_atom_specs):
+        name, element, coordinate, charge, aromatic = spec
+        ligand_atoms.append(
+            make_scoring_test_atom(
+                name,
+                element,
+                coordinate,
+                serial_number=100 + index,
+                residue=ligand_residue,
+                formal_charge=charge,
+                partial_charge=charge,
+                aromatic=aromatic,
+            )
+        )
+
+    interaction_specs = (
+        (
+            "contact",
+            receptor_atoms[6],
+            ligand_atoms[6],
+            SCORING_SELF_TEST_STRENGTH_WEAK,
+            SCORING_SELF_TEST_GEOMETRY_BORDERLINE,
+            0.6,
+        ),
+        (
+            "hydrogen_bond_direct",
+            receptor_atoms[5],
+            ligand_atoms[5],
+            SCORING_SELF_TEST_STRENGTH_STRONG,
+            SCORING_SELF_TEST_GEOMETRY_OPTIMAL,
+            1.0,
+        ),
+        (
+            "hydrophobic_atomic",
+            receptor_atoms[4],
+            ligand_atoms[4],
+            SCORING_SELF_TEST_STRENGTH_MODERATE,
+            SCORING_SELF_TEST_GEOMETRY_FAVORABLE,
+            0.9,
+        ),
+        (
+            "pi_parallel",
+            receptor_atoms[2],
+            ligand_atoms[2],
+            SCORING_SELF_TEST_STRENGTH_STRONG,
+            SCORING_SELF_TEST_GEOMETRY_OPTIMAL,
+            0.95,
+        ),
+        (
+            "salt_bridge_atomic",
+            receptor_atoms[0],
+            ligand_atoms[0],
+            SCORING_SELF_TEST_STRENGTH_STRONG,
+            SCORING_SELF_TEST_GEOMETRY_OPTIMAL,
+            1.0,
+        ),
+        (
+            "clash_moderate",
+            receptor_atoms[1],
+            ligand_atoms[1],
+            SCORING_SELF_TEST_STRENGTH_MODERATE,
+            SCORING_SELF_TEST_GEOMETRY_REJECTED,
+            1.0,
+        ),
+    )
+    interactions: List[MockScoringInteraction] = []
+    for index, spec in enumerate(interaction_specs):
+        interaction_type, atom1, atom2, strength, classification, confidence = spec
+        interactions.append(
+            make_scoring_test_interaction(
+                interaction_type,
+                atom1,
+                atom2,
+                strength=strength,
+                classification=classification,
+                confidence=confidence,
+                pose_id="pose_1",
+                interaction_id=f"pose_1:int_{index + 1}",
+                favorable=interaction_type != "clash_moderate",
+            )
+        )
+
+    poses: List[MockScoringDockModel] = []
+    for pose_index in range(pose_count):
+        pose_id = f"pose_{pose_index + 1}"
+        translated: List[MockScoringInteraction] = []
+        for interaction_index, interaction in enumerate(interactions):
+            keep_probability = max(0.35, 1.0 - pose_index * 0.12)
+            if pose_index and generator.random() > keep_probability:
+                continue
+            shift = (
+                pose_index * 0.12,
+                interaction_index * 0.01,
+                pose_index * 0.04,
+            )
+            translated.append(
+                clone_scoring_test_interaction(
+                    interaction,
+                    pose_id=pose_id,
+                    translation=shift,
+                    interaction_id=(
+                        f"{pose_id}:int_{interaction_index + 1}"
+                    ),
+                )
+            )
+        poses.append(
+            make_scoring_test_dock_model(
+                name=pose_id,
+                pose_id=pose_id,
+                model_id=pose_index + 1,
+                interactions=translated,
+                docking_affinity=-8.0 + pose_index * 0.4,
+                metadata={"fixture_seed": seed, "pose_index": pose_index},
+            )
+        )
+
+    return ScoringSelfTestFixtureBundle(
+        receptor_structure=receptor_structure,
+        ligand_structure=ligand_structure,
+        receptor_residues=receptor_residues,
+        ligand_residue=ligand_residue,
+        receptor_atoms=tuple(receptor_atoms),
+        ligand_atoms=tuple(ligand_atoms),
+        interactions=tuple(interactions),
+        poses=tuple(poses),
+        session=session,
+        metadata=MappingProxyType(
+            {
+                "seed": int(seed),
+                "pose_count": pose_count,
+                "family_count": len(SCORING_SELF_TEST_FAMILIES),
+            }
+        ),
+    )
+
+
+def build_scoring_self_test_edge_cases() -> Mapping[str, Any]:
+    """Build reusable empty, invalid, and boundary-value fixtures."""
+
+    structure = make_scoring_test_structure(name="edge_cases")
+    residue = make_scoring_test_residue(
+        "UNK",
+        0,
+        chain_id="_",
+        structure=structure,
+    )
+    atom = make_scoring_test_atom(
+        "X",
+        "C",
+        (0.0, 0.0, 0.0),
+        residue=residue,
+    )
+    return MappingProxyType(
+        {
+            "empty_list": [],
+            "empty_tuple": (),
+            "empty_mapping": {},
+            "none": None,
+            "zero": 0.0,
+            "negative_zero": -0.0,
+            "small_positive": 1.0e-15,
+            "small_negative": -1.0e-15,
+            "nan": float("nan"),
+            "positive_infinity": float("inf"),
+            "negative_infinity": float("-inf"),
+            "unknown_residue": residue,
+            "minimal_atom": atom,
+            "unknown_interaction": make_scoring_test_interaction(
+                "unknown",
+                atom,
+                atom,
+                distance=0.0,
+                strength=SCORING_SELF_TEST_STRENGTH_UNKNOWN,
+                classification=SCORING_SELF_TEST_GEOMETRY_UNKNOWN,
+                confidence=0.0,
+                valid=False,
+            ),
+        }
+    )
+
+
+# -----------------------------------------------------------------------------
+# 30.1.6. Dynamic construction and structural adaptation
+# -----------------------------------------------------------------------------
+
+
+def scoring_self_test_resolve_global(name: str) -> Any:
+    """Resolve one previously defined scoring symbol by name."""
+
+    if name not in globals():
+        raise ScoringSelfTestFixtureError(
+            f"Required scoring symbol {name!r} is not defined."
+        )
+    return globals()[name]
+
+
+def scoring_self_test_optional_global(
+    name: str,
+    default: Any = None,
+) -> Any:
+    """Return one scoring symbol when available."""
+
+    return globals().get(name, default)
+
+
+def scoring_self_test_dataclass_field_names(cls: Type[Any]) -> Tuple[str, ...]:
+    """Return dataclass field names or an empty tuple."""
+
+    if not is_dataclass(cls):
+        return ()
+    return tuple(item.name for item in fields(cls))
+
+
+def scoring_self_test_signature_parameters(
+    target: Callable[..., Any],
+) -> Mapping[str, inspect.Parameter]:
+    """Return constructor or callable parameters."""
+
+    try:
+        signature = inspect.signature(target)
+    except (TypeError, ValueError) as exc:
+        raise ScoringSelfTestFixtureError(
+            f"Cannot inspect {scoring_self_test_qualified_name(target)}."
+        ) from exc
+    return MappingProxyType(dict(signature.parameters))
+
+
+def scoring_self_test_default_for_parameter(
+    name: str,
+    annotation: Any = inspect.Parameter.empty,
+) -> Any:
+    """Infer a conservative placeholder for one constructor parameter."""
+
+    normalized = name.lower()
+    if any(token in normalized for token in ("metadata", "statistics", "details")):
+        return {}
+    if normalized.endswith("_ids") or normalized in {
+        "warnings",
+        "errors",
+        "interactions",
+        "components",
+        "residues",
+        "poses",
+        "results",
+        "entries",
+        "items",
+        "rows",
+    }:
+        return ()
+    if normalized.startswith("is_") or normalized in {
+        "valid",
+        "enabled",
+        "favorable",
+        "success",
+        "passed",
+        "selected",
+    }:
+        return False
+    if normalized.endswith("_id") or normalized in {
+        "name",
+        "status",
+        "family",
+        "type",
+        "interaction_type",
+        "classification",
+        "strength",
+        "source",
+        "method",
+        "mode",
+        "label",
+    }:
+        return f"test_{normalized}"
+    if any(
+        token in normalized
+        for token in (
+            "score",
+            "weight",
+            "distance",
+            "angle",
+            "fraction",
+            "ratio",
+            "confidence",
+            "value",
+            "mean",
+            "minimum",
+            "maximum",
+            "total",
+        )
+    ):
+        return 0.0
+    if any(token in normalized for token in ("count", "rank", "index", "number")):
+        return 0
+    if annotation is bool:
+        return False
+    if annotation is int:
+        return 0
+    if annotation is float:
+        return 0.0
+    if annotation is str:
+        return f"test_{normalized}"
+    return None
+
+
+def construct_scoring_self_test_object(
+    target: Union[str, Type[TScoringSelfTest], Callable[..., TScoringSelfTest]],
+    *,
+    values: Optional[Mapping[str, Any]] = None,
+    strict: bool = False,
+) -> TScoringSelfTest:
+    """Construct a scoring object by signature introspection.
+
+    This utility allows later self-tests to create result dataclasses without
+    hard-coding every field introduced by previous sections. Explicit values
+    always take precedence over inferred placeholders and declared defaults.
+    """
+
+    resolved = (
+        scoring_self_test_resolve_global(target)
+        if isinstance(target, str)
+        else target
+    )
+    supplied = dict(values or {})
+    parameters = scoring_self_test_signature_parameters(resolved)
+    kwargs: Dict[str, Any] = {}
+    unknown = set(supplied).difference(parameters)
+    if unknown and strict:
+        raise ScoringSelfTestFixtureError(
+            "Unknown constructor values: " + ", ".join(sorted(unknown))
+        )
+    for name, parameter in parameters.items():
+        if name in {"self", "args", "kwargs"}:
+            continue
+        if parameter.kind in {
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+            inspect.Parameter.POSITIONAL_ONLY,
+        }:
+            continue
+        if name in supplied:
+            kwargs[name] = supplied[name]
+            continue
+        if parameter.default is not inspect.Parameter.empty:
+            continue
+        kwargs[name] = scoring_self_test_default_for_parameter(
+            name,
+            parameter.annotation,
+        )
+    try:
+        return resolved(**kwargs)
+    except Exception as exc:
+        raise ScoringSelfTestFixtureError(
+            "Cannot construct "
+            f"{scoring_self_test_qualified_name(resolved)} with "
+            f"{scoring_self_test_safe_repr(kwargs)}: {exc}"
+        ) from exc
+
+
+def scoring_self_test_object_mapping(value: Any) -> Dict[str, Any]:
+    """Convert a result-like object into a shallow diagnostic mapping."""
+
+    if value is None:
+        return {}
+    if isinstance(value, Mapping):
+        return dict(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        return {item.name: getattr(value, item.name) for item in fields(value)}
+    if hasattr(value, "to_dict") and callable(value.to_dict):
+        try:
+            converted = value.to_dict()
+        except Exception as exc:
+            raise ScoringSelfTestFixtureError(
+                f"to_dict() failed for {type(value).__name__}: {exc}"
+            ) from exc
+        if not isinstance(converted, Mapping):
+            raise ScoringSelfTestFixtureError(
+                "to_dict() must return a mapping for self-test adaptation."
+            )
+        return dict(converted)
+    attributes = getattr(value, "__dict__", None)
+    if isinstance(attributes, Mapping):
+        return dict(attributes)
+    raise ScoringSelfTestFixtureError(
+        f"Cannot adapt {type(value).__name__} into a mapping."
+    )
+
+
+def scoring_self_test_get(
+    value: Any,
+    *names: str,
+    default: Any = None,
+) -> Any:
+    """Read the first matching mapping key or object attribute."""
+
+    for name in names:
+        if isinstance(value, Mapping) and name in value:
+            return value[name]
+        if hasattr(value, name):
+            try:
+                return getattr(value, name)
+            except Exception:
+                continue
+    return default
+
+
+# -----------------------------------------------------------------------------
+# 30.1.7. Assertion helpers
+# -----------------------------------------------------------------------------
+
+
+def _scoring_self_test_message(
+    message: Optional[str],
+    fallback: str,
+) -> str:
+    return str(message) if message else fallback
+
+
+def assert_scoring_test_true(
+    condition: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert that a condition is truthy."""
+
+    if not condition:
+        raise ScoringSelfTestAssertionError(
+            _scoring_self_test_message(message, "Expected a truthy value.")
+        )
+
+
+def assert_scoring_test_false(
+    condition: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert that a condition is falsy."""
+
+    if condition:
+        raise ScoringSelfTestAssertionError(
+            _scoring_self_test_message(message, "Expected a falsy value.")
+        )
+
+
+def assert_scoring_test_equal(
+    actual: Any,
+    expected: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert exact equality."""
+
+    if actual != expected:
+        fallback = (
+            f"Expected {scoring_self_test_safe_repr(expected)}, received "
+            f"{scoring_self_test_safe_repr(actual)}."
+        )
+        raise ScoringSelfTestAssertionError(
+            _scoring_self_test_message(message, fallback)
+        )
+
+
+def assert_scoring_test_not_equal(
+    actual: Any,
+    unexpected: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert inequality."""
+
+    if actual == unexpected:
+        fallback = f"Did not expect {scoring_self_test_safe_repr(unexpected)}."
+        raise ScoringSelfTestAssertionError(
+            _scoring_self_test_message(message, fallback)
+        )
+
+
+def assert_scoring_test_is(
+    actual: Any,
+    expected: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert object identity."""
+
+    if actual is not expected:
+        fallback = "Expected both values to reference the same object."
+        raise ScoringSelfTestAssertionError(
+            _scoring_self_test_message(message, fallback)
+        )
+
+
+def assert_scoring_test_is_not(
+    actual: Any,
+    unexpected: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert distinct object identity."""
+
+    if actual is unexpected:
+        fallback = "Expected both values to reference distinct objects."
+        raise ScoringSelfTestAssertionError(
+            _scoring_self_test_message(message, fallback)
+        )
+
+
+def assert_scoring_test_none(
+    value: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert that a value is None."""
+
+    if value is not None:
+        fallback = f"Expected None, received {scoring_self_test_safe_repr(value)}."
+        raise ScoringSelfTestAssertionError(
+            _scoring_self_test_message(message, fallback)
+        )
+
+
+def assert_scoring_test_not_none(
+    value: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert that a value is not None."""
+
+    if value is None:
+        raise ScoringSelfTestAssertionError(
+            _scoring_self_test_message(message, "Expected a non-None value.")
+        )
+
+
+def assert_scoring_test_instance(
+    value: Any,
+    expected_type: Union[Type[Any], Tuple[Type[Any], ...]],
+    message: Optional[str] = None,
+) -> None:
+    """Assert an instance relationship."""
+
+    if not isinstance(value, expected_type):
+        fallback = (
+            f"Expected instance of {expected_type!r}, received "
+            f"{type(value).__name__}."
+        )
+        raise ScoringSelfTestAssertionError(
+            _scoring_self_test_message(message, fallback)
+        )
+
+
+def assert_scoring_test_almost_equal(
+    actual: Any,
+    expected: Any,
+    *,
+    abs_tolerance: float = SCORING_SELF_TEST_DEFAULT_ABS_TOLERANCE,
+    rel_tolerance: float = SCORING_SELF_TEST_DEFAULT_REL_TOLERANCE,
+    message: Optional[str] = None,
+) -> None:
+    """Assert numeric equality within absolute and relative tolerances."""
+
+    actual_value = scoring_self_test_float(actual, name="actual")
+    expected_value = scoring_self_test_float(expected, name="expected")
+    if not math.isclose(
+        actual_value,
+        expected_value,
+        abs_tol=abs_tolerance,
+        rel_tol=rel_tolerance,
+    ):
+        difference = abs(actual_value - expected_value)
+        fallback = (
+            f"Expected {expected_value!r}, received {actual_value!r}; "
+            f"absolute difference is {difference!r}."
+        )
+        raise ScoringSelfTestAssertionError(
+            _scoring_self_test_message(message, fallback)
+        )
+
+
+def assert_scoring_test_sequence_almost_equal(
+    actual: Sequence[Any],
+    expected: Sequence[Any],
+    *,
+    abs_tolerance: float = SCORING_SELF_TEST_DEFAULT_ABS_TOLERANCE,
+    rel_tolerance: float = SCORING_SELF_TEST_DEFAULT_REL_TOLERANCE,
+    message: Optional[str] = None,
+) -> None:
+    """Assert element-wise numeric equality for two sequences."""
+
+    if len(actual) != len(expected):
+        raise ScoringSelfTestAssertionError(
+            _scoring_self_test_message(
+                message,
+                f"Sequence lengths differ: {len(actual)} != {len(expected)}.",
+            )
+        )
+    for index, (observed, reference) in enumerate(zip(actual, expected)):
+        try:
+            assert_scoring_test_almost_equal(
+                observed,
+                reference,
+                abs_tolerance=abs_tolerance,
+                rel_tolerance=rel_tolerance,
+            )
+        except ScoringSelfTestAssertionError as exc:
+            raise ScoringSelfTestAssertionError(
+                _scoring_self_test_message(
+                    message,
+                    f"Sequence values differ at index {index}: {exc}",
+                )
+            ) from exc
+
+
+def assert_scoring_test_finite(
+    value: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert that a value is finite and numeric."""
+
+    if not scoring_self_test_is_finite_number(value):
+        fallback = f"Expected a finite number, received {value!r}."
+        raise ScoringSelfTestAssertionError(
+            _scoring_self_test_message(message, fallback)
+        )
+
+
+def assert_scoring_test_between(
+    value: Any,
+    minimum: Any,
+    maximum: Any,
+    *,
+    inclusive: bool = True,
+    message: Optional[str] = None,
+) -> None:
+    """Assert that a numeric value falls within a range."""
+
+    observed = scoring_self_test_float(value)
+    lower = scoring_self_test_float(minimum, name="minimum")
+    upper = scoring_self_test_float(maximum, name="maximum")
+    if lower > upper:
+        raise ScoringSelfTestFixtureError("minimum cannot exceed maximum.")
+    passed = lower <= observed <= upper if inclusive else lower < observed < upper
+    if not passed:
+        operator = "inclusive" if inclusive else "exclusive"
+        fallback = (
+            f"Expected {observed!r} within the {operator} range "
+            f"[{lower!r}, {upper!r}]."
+        )
+        raise ScoringSelfTestAssertionError(
+            _scoring_self_test_message(message, fallback)
+        )
+
+
+def assert_scoring_test_contains(
+    container: Any,
+    item: Any,
+    message: Optional[str] = None,
+) -> None:
+    """Assert membership."""
+
+    if item not in container:
+        fallback = (
+            f"Expected {scoring_self_test_safe_repr(item)} in "
+            f"{scoring_self_test_safe_repr(container)}."
+        )
+        raise ScoringSelfTestAssertionError(
+            _scoring_self_test_message(message, fallback)
+        )
+
+
+def assert_scoring_test_mapping_contains(
+    mapping: Mapping[Any, Any],
+    expected: Mapping[Any, Any],
+    message: Optional[str] = None,
+) -> None:
+    """Assert that a mapping contains all requested key-value pairs."""
+
+    missing = [key for key in expected if key not in mapping]
+    mismatched = [
+        key
+        for key, value in expected.items()
+        if key in mapping and mapping[key] != value
+    ]
+    if missing or mismatched:
+        fallback = (
+            f"Mapping mismatch; missing={missing!r}, mismatched={mismatched!r}."
+        )
+        raise ScoringSelfTestAssertionError(
+            _scoring_self_test_message(message, fallback)
+        )
+
+
+def assert_scoring_test_unique(
+    values: Iterable[Any],
+    *,
+    key: Optional[Callable[[Any], Any]] = None,
+    message: Optional[str] = None,
+) -> None:
+    """Assert that iterable values are unique."""
+
+    resolver = key or (lambda value: value)
+    seen: Set[Any] = set()
+    duplicates: List[Any] = []
+    for value in values:
+        marker = resolver(value)
+        if marker in seen:
+            duplicates.append(marker)
+        seen.add(marker)
+    if duplicates:
+        fallback = f"Expected unique values; duplicates={duplicates!r}."
+        raise ScoringSelfTestAssertionError(
+            _scoring_self_test_message(message, fallback)
+        )
+
+
+def assert_scoring_test_sorted(
+    values: Sequence[Any],
+    *,
+    key: Optional[Callable[[Any], Any]] = None,
+    reverse: bool = False,
+    message: Optional[str] = None,
+) -> None:
+    """Assert deterministic ordering."""
+
+    expected = sorted(values, key=key, reverse=reverse)
+    if list(values) != expected:
+        fallback = f"Values are not sorted with reverse={reverse}."
+        raise ScoringSelfTestAssertionError(
+            _scoring_self_test_message(message, fallback)
+        )
+
+
+@contextmanager
+def assert_scoring_test_raises(
+    expected_exception: Union[Type[BaseException], Tuple[Type[BaseException], ...]],
+    *,
+    match: Optional[str] = None,
+) -> Iterator[None]:
+    """Assert that a context raises the requested exception."""
+
+    try:
+        yield
+    except expected_exception as exc:
+        if match is not None and match not in str(exc):
+            raise ScoringSelfTestAssertionError(
+                f"Exception message does not contain {match!r}: {exc}"
+            ) from exc
+    except BaseException as exc:
+        raise ScoringSelfTestAssertionError(
+            f"Expected {expected_exception!r}, received {type(exc).__name__}: {exc}"
+        ) from exc
+    else:
+        raise ScoringSelfTestAssertionError(
+            f"Expected {expected_exception!r} to be raised."
+        )
+
+
+def assert_scoring_test_public_names(
+    names: Iterable[str],
+    namespace: Optional[Mapping[str, Any]] = None,
+    exports: Optional[Sequence[str]] = None,
+) -> None:
+    """Assert that names exist and are exported."""
+
+    current_namespace = globals() if namespace is None else namespace
+    current_exports = __all__ if exports is None else exports
+    requested = tuple(str(name) for name in names)
+    missing = tuple(name for name in requested if name not in current_namespace)
+    unexported = tuple(name for name in requested if name not in current_exports)
+    if missing or unexported:
+        raise ScoringSelfTestAssertionError(
+            f"Public interface mismatch; missing={missing!r}, "
+            f"unexported={unexported!r}."
+        )
+
+
+# -----------------------------------------------------------------------------
+# 30.1.8. Capture, patching, and deterministic execution contexts
+# -----------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class ScoringSelfTestCapture:
+    """Captured standard output, standard error, and warning records."""
+
+    stdout: str = ""
+    stderr: str = ""
+    warnings: Tuple[Any, ...] = ()
+
+    def truncated(
+        self,
+        limit: int = SCORING_SELF_TEST_DEFAULT_CAPTURE_LIMIT,
+    ) -> "ScoringSelfTestCapture":
+        """Return a copy with bounded text fields."""
+
+        return ScoringSelfTestCapture(
+            stdout=self.stdout[:limit],
+            stderr=self.stderr[:limit],
+            warnings=self.warnings,
+        )
+
+
+@contextmanager
+def capture_scoring_self_test_output(
+    *,
+    capture_warnings: bool = True,
+) -> Iterator[ScoringSelfTestCapture]:
+    """Capture stdout, stderr, and optionally warnings."""
+
+    stdout_buffer = StringIO()
+    stderr_buffer = StringIO()
+    capture = ScoringSelfTestCapture()
+    with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
+        if capture_warnings:
+            with warnings.catch_warnings(record=True) as warning_records:
+                warnings.simplefilter("always")
+                yield capture
+                capture.warnings = tuple(warning_records)
+        else:
+            yield capture
+    capture.stdout = stdout_buffer.getvalue()
+    capture.stderr = stderr_buffer.getvalue()
+
+
+@contextmanager
+def scoring_self_test_random_seed(
+    seed: int = SCORING_SELF_TEST_DEFAULT_SEED,
+) -> Iterator[random.Random]:
+    """Temporarily seed the global generator and provide a local generator."""
+
+    previous_state = random.getstate()
+    random.seed(seed)
+    local = random.Random(seed)
+    try:
+        yield local
+    finally:
+        random.setstate(previous_state)
+
+
+@contextmanager
+def scoring_self_test_temporary_directory(
+    *,
+    prefix: str = "dockanalyzer_scoring_test_",
+    keep: bool = False,
+) -> Iterator[Path]:
+    """Create and optionally preserve a temporary directory."""
+
+    path = Path(tempfile.mkdtemp(prefix=prefix))
+    try:
+        yield path
+    finally:
+        if not keep:
+            shutil.rmtree(path, ignore_errors=True)
+
+
+@contextmanager
+def patch_scoring_self_test_attribute(
+    target: Any,
+    name: str,
+    value: Any,
+    *,
+    create: bool = False,
+) -> Iterator[Any]:
+    """Temporarily replace one object attribute."""
+
+    had_attribute = hasattr(target, name)
+    if not had_attribute and not create:
+        raise ScoringSelfTestFixtureError(
+            f"Cannot patch missing attribute {name!r}."
+        )
+    original = getattr(target, name, _SCORING_SELF_TEST_MISSING)
+    setattr(target, name, value)
+    try:
+        yield target
+    finally:
+        if original is _SCORING_SELF_TEST_MISSING:
+            try:
+                delattr(target, name)
+            except AttributeError:
+                pass
+        else:
+            setattr(target, name, original)
+
+
+@contextmanager
+def patch_scoring_self_test_mapping(
+    mapping: MutableMapping[Any, Any],
+    updates: Mapping[Any, Any],
+    *,
+    clear: bool = False,
+) -> Iterator[MutableMapping[Any, Any]]:
+    """Temporarily update a mutable mapping."""
+
+    original = dict(mapping)
+    if clear:
+        mapping.clear()
+    mapping.update(updates)
+    try:
+        yield mapping
+    finally:
+        mapping.clear()
+        mapping.update(original)
+
+
+@contextmanager
+def patch_scoring_self_test_environment(
+    updates: Mapping[str, Optional[str]],
+    *,
+    clear: bool = False,
+) -> Iterator[Mapping[str, str]]:
+    """Temporarily update environment variables."""
+
+    original = dict(os.environ)
+    if clear:
+        os.environ.clear()
+    for name, value in updates.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[str(name)] = str(value)
+    try:
+        yield MappingProxyType(dict(os.environ))
+    finally:
+        os.environ.clear()
+        os.environ.update(original)
+
+
+# -----------------------------------------------------------------------------
+# 30.1.9. Self-test case, result, and report structures
+# -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringSelfTestCase:
+    """Registered scoring self-test case."""
+
+    name: str
+    function: Callable[..., Any]
+    section: str = SCORING_SELF_TEST_SECTION_INFRASTRUCTURE
+    description: str = ""
+    tags: FrozenSet[str] = frozenset()
+    enabled: bool = True
+    timeout_seconds: Optional[float] = SCORING_SELF_TEST_DEFAULT_TIMEOUT
+    expected_exception: Optional[Type[BaseException]] = None
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+
+    def __post_init__(self) -> None:
+        if not str(self.name).strip():
+            raise ScoringSelfTestRegistrationError(
+                "Self-test case name cannot be empty."
+            )
+        if not callable(self.function):
+            raise ScoringSelfTestRegistrationError(
+                "Self-test case function must be callable."
+            )
+        object.__setattr__(
+            self,
+            "section",
+            normalize_scoring_self_test_section(self.section),
+        )
+        object.__setattr__(
+            self,
+            "tags",
+            frozenset(
+                str(tag).strip().lower()
+                for tag in self.tags
+                if str(tag).strip()
+            ),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            scoring_self_test_freeze_mapping(self.metadata),
+        )
+        if self.timeout_seconds is not None and self.timeout_seconds <= 0.0:
+            raise ScoringSelfTestRegistrationError(
+                "timeout_seconds must be positive or None."
+            )
+
+    @property
+    def identifier(self) -> str:
+        """Return the stable section-qualified case identifier."""
+
+        return f"{self.section}:{self.name}"
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringSelfTestResult:
+    """Outcome of one scoring self-test case."""
+
+    case_name: str
+    section: str
+    status: str
+    duration_seconds: float
+    started_at: str
+    finished_at: str
+    message: str = ""
+    exception_type: Optional[str] = None
+    traceback_text: Optional[str] = None
+    stdout: str = ""
+    stderr: str = ""
+    warnings: Tuple[str, ...] = ()
+    returned_value: Any = None
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "section",
+            normalize_scoring_self_test_section(self.section),
+        )
+        object.__setattr__(
+            self,
+            "status",
+            normalize_scoring_self_test_status(self.status),
+        )
+        duration = scoring_self_test_float(
+            self.duration_seconds,
+            name="duration_seconds",
+        )
+        if duration < 0.0:
+            raise ScoringSelfTestFixtureError(
+                "duration_seconds cannot be negative."
+            )
+        object.__setattr__(self, "duration_seconds", duration)
+        object.__setattr__(
+            self,
+            "warnings",
+            tuple(str(item) for item in self.warnings),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            scoring_self_test_freeze_mapping(self.metadata),
+        )
+
+    @property
+    def passed(self) -> bool:
+        return self.status == SCORING_SELF_TEST_STATUS_PASSED
+
+    @property
+    def failed(self) -> bool:
+        return self.status in {
+            SCORING_SELF_TEST_STATUS_FAILED,
+            SCORING_SELF_TEST_STATUS_ERROR,
+        }
+
+    @property
+    def skipped(self) -> bool:
+        return self.status == SCORING_SELF_TEST_STATUS_SKIPPED
+
+    @property
+    def identifier(self) -> str:
+        return f"{self.section}:{self.case_name}"
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringSelfTestReport:
+    """Aggregate outcome of one scoring self-test run."""
+
+    results: Tuple[ScoringSelfTestResult, ...]
+    started_at: str
+    finished_at: str
+    duration_seconds: float
+    selected_section: Optional[str] = None
+    selected_tags: FrozenSet[str] = frozenset()
+    seed: int = SCORING_SELF_TEST_DEFAULT_SEED
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "results", tuple(self.results))
+        object.__setattr__(
+            self,
+            "selected_tags",
+            frozenset(str(tag).strip().lower() for tag in self.selected_tags),
+        )
+        if self.selected_section is not None:
+            object.__setattr__(
+                self,
+                "selected_section",
+                normalize_scoring_self_test_section(self.selected_section),
+            )
+        object.__setattr__(
+            self,
+            "duration_seconds",
+            scoring_self_test_float(
+                self.duration_seconds,
+                name="duration_seconds",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            scoring_self_test_freeze_mapping(self.metadata),
+        )
+
+    @property
+    def total(self) -> int:
+        return len(self.results)
+
+    @property
+    def passed(self) -> int:
+        return sum(result.passed for result in self.results)
+
+    @property
+    def failed(self) -> int:
+        return sum(result.failed for result in self.results)
+
+    @property
+    def skipped(self) -> int:
+        return sum(result.skipped for result in self.results)
+
+    @property
+    def success(self) -> bool:
+        return self.failed == 0
+
+    @property
+    def status_counts(self) -> Mapping[str, int]:
+        counts = {status: 0 for status in SCORING_SELF_TEST_STATUSES}
+        for result in self.results:
+            counts[result.status] += 1
+        return MappingProxyType(counts)
+
+    @property
+    def section_counts(self) -> Mapping[str, int]:
+        counts = {section: 0 for section in SCORING_SELF_TEST_SECTIONS}
+        for result in self.results:
+            counts[result.section] = counts.get(result.section, 0) + 1
+        return MappingProxyType(counts)
+
+
+@dataclass
+class ScoringSelfTestContext:
+    """Mutable context supplied to test functions that request it."""
+
+    seed: int = SCORING_SELF_TEST_DEFAULT_SEED
+    fixture: Optional[ScoringSelfTestFixtureBundle] = None
+    edge_cases: Optional[Mapping[str, Any]] = None
+    temporary_directory: Optional[Path] = None
+    shared: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def ensure_fixture(self) -> ScoringSelfTestFixtureBundle:
+        """Build and return the standard fixture lazily."""
+
+        if self.fixture is None:
+            self.fixture = build_scoring_self_test_fixture(seed=self.seed)
+        return self.fixture
+
+    def ensure_edge_cases(self) -> Mapping[str, Any]:
+        """Build and return edge-case fixtures lazily."""
+
+        if self.edge_cases is None:
+            self.edge_cases = build_scoring_self_test_edge_cases()
+        return self.edge_cases
+
+
+# -----------------------------------------------------------------------------
+# 30.1.10. Registry
+# -----------------------------------------------------------------------------
+
+
+class ScoringSelfTestRegistry:
+    """Ordered, section-aware registry for scoring self-tests."""
+
+    def __init__(self, name: str = _SCORING_SELF_TEST_REGISTRY_NAME) -> None:
+        self.name = str(name).strip() or _SCORING_SELF_TEST_REGISTRY_NAME
+        self._cases: "OrderedDict[str, ScoringSelfTestCase]" = OrderedDict()
+
+    def register(
+        self,
+        case: ScoringSelfTestCase,
+        *,
+        replace: bool = False,
+    ) -> ScoringSelfTestCase:
+        """Register one test case."""
+
+        if not isinstance(case, ScoringSelfTestCase):
+            raise ScoringSelfTestRegistrationError(
+                "registry accepts ScoringSelfTestCase objects only."
+            )
+        identifier = case.identifier
+        if identifier in self._cases and not replace:
+            raise ScoringSelfTestRegistrationError(
+                f"Self-test case {identifier!r} is already registered."
+            )
+        self._cases[identifier] = case
+        return case
+
+    def unregister(self, identifier: str) -> ScoringSelfTestCase:
+        """Remove and return one registered case."""
+
+        try:
+            return self._cases.pop(str(identifier))
+        except KeyError as exc:
+            raise ScoringSelfTestRegistrationError(
+                f"Unknown self-test case {identifier!r}."
+            ) from exc
+
+    def clear(self, *, section: Optional[str] = None) -> int:
+        """Clear all cases or only cases from one section."""
+
+        if section is None:
+            count = len(self._cases)
+            self._cases.clear()
+            return count
+        normalized = normalize_scoring_self_test_section(section)
+        identifiers = [
+            identifier
+            for identifier, case in self._cases.items()
+            if case.section == normalized
+        ]
+        for identifier in identifiers:
+            del self._cases[identifier]
+        return len(identifiers)
+
+    def cases(
+        self,
+        *,
+        section: Optional[str] = None,
+        tags: Iterable[str] = (),
+        enabled_only: bool = True,
+    ) -> Tuple[ScoringSelfTestCase, ...]:
+        """Return matching cases in registration order."""
+
+        normalized_section = (
+            normalize_scoring_self_test_section(section)
+            if section is not None
+            else None
+        )
+        requested_tags = frozenset(
+            str(tag).strip().lower() for tag in tags if str(tag).strip()
+        )
+        selected: List[ScoringSelfTestCase] = []
+        for case in self._cases.values():
+            if enabled_only and not case.enabled:
+                continue
+            if normalized_section is not None and case.section != normalized_section:
+                continue
+            if requested_tags and not requested_tags.issubset(case.tags):
+                continue
+            selected.append(case)
+        return tuple(selected)
+
+    def get(self, identifier: str) -> ScoringSelfTestCase:
+        """Return one case by its section-qualified identifier."""
+
+        try:
+            return self._cases[str(identifier)]
+        except KeyError as exc:
+            raise ScoringSelfTestRegistrationError(
+                f"Unknown self-test case {identifier!r}."
+            ) from exc
+
+    def __contains__(self, identifier: object) -> bool:
+        return str(identifier) in self._cases
+
+    def __len__(self) -> int:
+        return len(self._cases)
+
+    def __iter__(self) -> Iterator[ScoringSelfTestCase]:
+        return iter(self._cases.values())
+
+
+_SCORING_SELF_TEST_REGISTRY: Final[ScoringSelfTestRegistry] = (
+    ScoringSelfTestRegistry()
+)
+
+
+def register_scoring_self_test(
+    function: Optional[Callable[..., Any]] = None,
+    *,
+    name: Optional[str] = None,
+    section: str = SCORING_SELF_TEST_SECTION_INFRASTRUCTURE,
+    description: str = "",
+    tags: Iterable[str] = (),
+    enabled: bool = True,
+    timeout_seconds: Optional[float] = SCORING_SELF_TEST_DEFAULT_TIMEOUT,
+    expected_exception: Optional[Type[BaseException]] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+    replace: bool = False,
+    registry: Optional[ScoringSelfTestRegistry] = None,
+) -> Any:
+    """Register a function directly or use this function as a decorator."""
+
+    selected_registry = registry or _SCORING_SELF_TEST_REGISTRY
+
+    def decorator(target: Callable[..., Any]) -> Callable[..., Any]:
+        case = ScoringSelfTestCase(
+            name=name or target.__name__,
+            function=target,
+            section=section,
+            description=description or inspect.getdoc(target) or "",
+            tags=frozenset(tags),
+            enabled=enabled,
+            timeout_seconds=timeout_seconds,
+            expected_exception=expected_exception,
+            metadata=scoring_self_test_freeze_mapping(metadata),
+        )
+        selected_registry.register(case, replace=replace)
+        return target
+
+    if function is None:
+        return decorator
+    return decorator(function)
+
+
+def get_registered_scoring_self_tests(
+    *,
+    section: Optional[str] = None,
+    tags: Iterable[str] = (),
+    enabled_only: bool = True,
+    registry: Optional[ScoringSelfTestRegistry] = None,
+) -> Tuple[ScoringSelfTestCase, ...]:
+    """Return registered scoring self-tests."""
+
+    selected_registry = registry or _SCORING_SELF_TEST_REGISTRY
+    return selected_registry.cases(
+        section=section,
+        tags=tags,
+        enabled_only=enabled_only,
+    )
+
+
+def clear_registered_scoring_self_tests(
+    *,
+    section: Optional[str] = None,
+    registry: Optional[ScoringSelfTestRegistry] = None,
+) -> int:
+    """Clear registered tests and return the number removed."""
+
+    selected_registry = registry or _SCORING_SELF_TEST_REGISTRY
+    return selected_registry.clear(section=section)
+
+
+# -----------------------------------------------------------------------------
+# 30.1.11. Case execution
+# -----------------------------------------------------------------------------
+
+
+def _scoring_self_test_invoke(
+    case: ScoringSelfTestCase,
+    context: ScoringSelfTestContext,
+) -> Any:
+    """Invoke a case with zero arguments or one context argument."""
+
+    parameters = scoring_self_test_signature_parameters(case.function)
+    positional = [
+        parameter
+        for parameter in parameters.values()
+        if parameter.kind
+        in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }
+        and parameter.default is inspect.Parameter.empty
+    ]
+    if not positional:
+        return case.function()
+    if len(positional) == 1:
+        return case.function(context)
+    raise ScoringSelfTestExecutionError(
+        f"Self-test {case.identifier!r} must accept zero arguments or one "
+        "ScoringSelfTestContext argument."
+    )
+
+
+def _scoring_self_test_traceback(exc: BaseException) -> str:
+    """Format a bounded traceback."""
+
+    lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    if len(lines) > SCORING_SELF_TEST_DEFAULT_TRACEBACK_LIMIT:
+        lines = lines[-SCORING_SELF_TEST_DEFAULT_TRACEBACK_LIMIT :]
+    return "".join(lines)
+
+
+def run_scoring_self_test_case(
+    case: ScoringSelfTestCase,
+    *,
+    context: Optional[ScoringSelfTestContext] = None,
+    capture_output: bool = True,
+    raise_on_failure: bool = False,
+) -> ScoringSelfTestResult:
+    """Execute one registered scoring self-test case."""
+
+    if not isinstance(case, ScoringSelfTestCase):
+        raise ScoringSelfTestExecutionError(
+            "run_scoring_self_test_case requires ScoringSelfTestCase."
+        )
+    current_context = context or ScoringSelfTestContext()
+    started_at = scoring_self_test_utc_now()
+    start = time.perf_counter()
+    status = SCORING_SELF_TEST_STATUS_PENDING
+    message = ""
+    exception_type: Optional[str] = None
+    traceback_text: Optional[str] = None
+    returned_value: Any = None
+    capture = ScoringSelfTestCapture()
+
+    try:
+        if not case.enabled:
+            raise ScoringSelfTestSkipped("Self-test case is disabled.")
+        if capture_output:
+            with capture_scoring_self_test_output() as active_capture:
+                returned_value = _scoring_self_test_invoke(case, current_context)
+            capture = active_capture.truncated()
+        else:
+            returned_value = _scoring_self_test_invoke(case, current_context)
+        if case.expected_exception is not None:
+            raise ScoringSelfTestAssertionError(
+                f"Expected {case.expected_exception.__name__} was not raised."
+            )
+        status = SCORING_SELF_TEST_STATUS_PASSED
+        message = "passed"
+    except ScoringSelfTestSkipped as exc:
+        status = SCORING_SELF_TEST_STATUS_SKIPPED
+        message = str(exc)
+    except BaseException as exc:
+        if case.expected_exception is not None and isinstance(
+            exc,
+            case.expected_exception,
+        ):
+            status = SCORING_SELF_TEST_STATUS_PASSED
+            message = f"raised expected {type(exc).__name__}"
+            returned_value = exc
+        elif isinstance(exc, ScoringSelfTestAssertionError):
+            status = SCORING_SELF_TEST_STATUS_FAILED
+            message = str(exc)
+            exception_type = type(exc).__name__
+            traceback_text = _scoring_self_test_traceback(exc)
+        else:
+            status = SCORING_SELF_TEST_STATUS_ERROR
+            message = str(exc)
+            exception_type = type(exc).__name__
+            traceback_text = _scoring_self_test_traceback(exc)
+        if raise_on_failure and status in {
+            SCORING_SELF_TEST_STATUS_FAILED,
+            SCORING_SELF_TEST_STATUS_ERROR,
+        }:
+            raise
+
+    duration = time.perf_counter() - start
+    if (
+        case.timeout_seconds is not None
+        and duration > case.timeout_seconds
+        and status == SCORING_SELF_TEST_STATUS_PASSED
+    ):
+        status = SCORING_SELF_TEST_STATUS_FAILED
+        message = (
+            f"Soft timeout exceeded: {duration:.6f}s > "
+            f"{case.timeout_seconds:.6f}s."
+        )
+        exception_type = ScoringSelfTestTimeoutError.__name__
+    warning_texts = tuple(
+        f"{record.category.__name__}: {record.message}"
+        for record in capture.warnings
+    )
+    return ScoringSelfTestResult(
+        case_name=case.name,
+        section=case.section,
+        status=status,
+        duration_seconds=duration,
+        started_at=started_at,
+        finished_at=scoring_self_test_utc_now(),
+        message=message,
+        exception_type=exception_type,
+        traceback_text=traceback_text,
+        stdout=capture.stdout,
+        stderr=capture.stderr,
+        warnings=warning_texts,
+        returned_value=returned_value,
+        metadata=case.metadata,
+    )
+
+
+def run_registered_scoring_self_tests(
+    *,
+    section: Optional[str] = None,
+    tags: Iterable[str] = (),
+    enabled_only: bool = True,
+    seed: int = SCORING_SELF_TEST_DEFAULT_SEED,
+    capture_output: bool = True,
+    raise_on_failure: bool = False,
+    registry: Optional[ScoringSelfTestRegistry] = None,
+    context: Optional[ScoringSelfTestContext] = None,
+) -> ScoringSelfTestReport:
+    """Execute matching registered scoring self-tests."""
+
+    selected_registry = registry or _SCORING_SELF_TEST_REGISTRY
+    selected_tags = frozenset(
+        str(tag).strip().lower() for tag in tags if str(tag).strip()
+    )
+    cases = selected_registry.cases(
+        section=section,
+        tags=selected_tags,
+        enabled_only=enabled_only,
+    )
+    started_at = scoring_self_test_utc_now()
+    start = time.perf_counter()
+    current_context = context or ScoringSelfTestContext(seed=seed)
+    results: List[ScoringSelfTestResult] = []
+    with scoring_self_test_random_seed(seed):
+        with scoring_self_test_temporary_directory() as temp_directory:
+            current_context.temporary_directory = temp_directory
+            for case in cases:
+                result = run_scoring_self_test_case(
+                    case,
+                    context=current_context,
+                    capture_output=capture_output,
+                    raise_on_failure=raise_on_failure,
+                )
+                results.append(result)
+                if raise_on_failure and result.failed:
+                    raise ScoringSelfTestExecutionError(
+                        f"Self-test {result.identifier} failed: {result.message}"
+                    )
+    return ScoringSelfTestReport(
+        results=tuple(results),
+        started_at=started_at,
+        finished_at=scoring_self_test_utc_now(),
+        duration_seconds=time.perf_counter() - start,
+        selected_section=section,
+        selected_tags=selected_tags,
+        seed=seed,
+        metadata=MappingProxyType(
+            {
+                "registry": selected_registry.name,
+                "case_count": len(cases),
+                "capture_output": capture_output,
+            }
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 30.1.12. Conversion and formatting
+# -----------------------------------------------------------------------------
+
+
+def scoring_self_test_case_to_dict(
+    case: ScoringSelfTestCase,
+) -> Dict[str, Any]:
+    """Convert a case definition into a serialization-safe dictionary."""
+
+    return {
+        "name": case.name,
+        "identifier": case.identifier,
+        "section": case.section,
+        "description": case.description,
+        "tags": sorted(case.tags),
+        "enabled": case.enabled,
+        "timeout_seconds": case.timeout_seconds,
+        "expected_exception": (
+            case.expected_exception.__name__
+            if case.expected_exception is not None
+            else None
+        ),
+        "function": scoring_self_test_qualified_name(case.function),
+        "metadata": dict(case.metadata),
+    }
+
+
+def scoring_self_test_result_to_dict(
+    result: ScoringSelfTestResult,
+    *,
+    include_returned_value: bool = False,
+) -> Dict[str, Any]:
+    """Convert one result into a serialization-safe dictionary."""
+
+    payload = {
+        "case_name": result.case_name,
+        "identifier": result.identifier,
+        "section": result.section,
+        "status": result.status,
+        "passed": result.passed,
+        "failed": result.failed,
+        "skipped": result.skipped,
+        "duration_seconds": result.duration_seconds,
+        "started_at": result.started_at,
+        "finished_at": result.finished_at,
+        "message": result.message,
+        "exception_type": result.exception_type,
+        "traceback": result.traceback_text,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "warnings": list(result.warnings),
+        "metadata": dict(result.metadata),
+    }
+    if include_returned_value:
+        payload["returned_value"] = scoring_self_test_safe_repr(
+            result.returned_value
+        )
+    return payload
+
+
+def scoring_self_test_report_to_dict(
+    report: ScoringSelfTestReport,
+    *,
+    include_returned_values: bool = False,
+) -> Dict[str, Any]:
+    """Convert a report into a serialization-safe dictionary."""
+
+    return {
+        "schema": SCORING_SELF_TEST_SCHEMA,
+        "schema_version": SCORING_SELF_TEST_SCHEMA_VERSION,
+        "section_version": SCORING_SELF_TEST_SECTION_VERSION,
+        "success": report.success,
+        "total": report.total,
+        "passed": report.passed,
+        "failed": report.failed,
+        "skipped": report.skipped,
+        "status_counts": dict(report.status_counts),
+        "section_counts": dict(report.section_counts),
+        "started_at": report.started_at,
+        "finished_at": report.finished_at,
+        "duration_seconds": report.duration_seconds,
+        "selected_section": report.selected_section,
+        "selected_tags": sorted(report.selected_tags),
+        "seed": report.seed,
+        "metadata": dict(report.metadata),
+        "results": [
+            scoring_self_test_result_to_dict(
+                result,
+                include_returned_value=include_returned_values,
+            )
+            for result in report.results
+        ],
+    }
+
+
+def scoring_self_test_report_rows(
+    report: ScoringSelfTestReport,
+) -> Tuple[Dict[str, Any], ...]:
+    """Return one flat table row per result."""
+
+    rows: List[Dict[str, Any]] = []
+    for result in report.results:
+        rows.append(
+            {
+                "section": result.section,
+                "case": result.case_name,
+                "status": result.status,
+                "duration_seconds": result.duration_seconds,
+                "message": result.message,
+                "exception_type": result.exception_type,
+                "warning_count": len(result.warnings),
+                "stdout_length": len(result.stdout),
+                "stderr_length": len(result.stderr),
+            }
+        )
+    return tuple(rows)
+
+
+def format_scoring_self_test_report(
+    report: ScoringSelfTestReport,
+    *,
+    include_passed: bool = False,
+    include_tracebacks: bool = False,
+) -> str:
+    """Format a readable self-test report."""
+
+    lines = [
+        "DockAnalyzer scoring self-tests",
+        (
+            f"Total: {report.total} | Passed: {report.passed} | "
+            f"Failed: {report.failed} | Skipped: {report.skipped}"
+        ),
+        f"Duration: {report.duration_seconds:.6f} s",
+    ]
+    for result in report.results:
+        if result.passed and not include_passed:
+            continue
+        lines.append(
+            f"[{result.status.upper()}] {result.identifier} "
+            f"({result.duration_seconds:.6f} s): {result.message}"
+        )
+        if include_tracebacks and result.traceback_text:
+            lines.append(result.traceback_text.rstrip())
+    return "\n".join(lines)
+
+
+# -----------------------------------------------------------------------------
+# 30.1.13. Infrastructure validation
+# -----------------------------------------------------------------------------
+
+
+def validate_scoring_self_test_case(case: ScoringSelfTestCase) -> None:
+    """Validate one self-test case."""
+
+    if not isinstance(case, ScoringSelfTestCase):
+        raise ScoringSelfTestFixtureError(
+            "Expected ScoringSelfTestCase."
+        )
+    normalize_scoring_self_test_section(case.section)
+    if not callable(case.function):
+        raise ScoringSelfTestFixtureError("case.function must be callable.")
+    if case.timeout_seconds is not None and case.timeout_seconds <= 0.0:
+        raise ScoringSelfTestFixtureError(
+            "case.timeout_seconds must be positive or None."
+        )
+
+
+def validate_scoring_self_test_result(
+    result: ScoringSelfTestResult,
+) -> None:
+    """Validate one self-test result."""
+
+    if not isinstance(result, ScoringSelfTestResult):
+        raise ScoringSelfTestFixtureError(
+            "Expected ScoringSelfTestResult."
+        )
+    normalize_scoring_self_test_status(result.status)
+    normalize_scoring_self_test_section(result.section)
+    assert_scoring_test_true(result.duration_seconds >= 0.0)
+    if result.passed and result.exception_type is not None:
+        expected_exception_pass = result.message.startswith("raised expected")
+        assert_scoring_test_true(expected_exception_pass)
+
+
+def validate_scoring_self_test_report(
+    report: ScoringSelfTestReport,
+) -> None:
+    """Validate one aggregate report."""
+
+    if not isinstance(report, ScoringSelfTestReport):
+        raise ScoringSelfTestFixtureError(
+            "Expected ScoringSelfTestReport."
+        )
+    assert_scoring_test_equal(report.total, len(report.results))
+    assert_scoring_test_equal(
+        report.total,
+        report.passed + report.failed + report.skipped,
+    )
+    for result in report.results:
+        validate_scoring_self_test_result(result)
+
+
+def validate_scoring_self_test_fixture(
+    fixture: ScoringSelfTestFixtureBundle,
+) -> None:
+    """Validate the standard molecular and multipose fixture."""
+
+    if not isinstance(fixture, ScoringSelfTestFixtureBundle):
+        raise ScoringSelfTestFixtureError(
+            "Expected ScoringSelfTestFixtureBundle."
+        )
+    assert_scoring_test_true(bool(fixture.receptor_residues))
+    assert_scoring_test_true(bool(fixture.receptor_atoms))
+    assert_scoring_test_true(bool(fixture.ligand_atoms))
+    assert_scoring_test_true(bool(fixture.interactions))
+    assert_scoring_test_true(bool(fixture.poses))
+    assert_scoring_test_equal(
+        {interaction.family for interaction in fixture.interactions},
+        set(SCORING_SELF_TEST_FAMILIES),
+    )
+    assert_scoring_test_unique(
+        (interaction.interaction_id for interaction in fixture.interactions)
+    )
+    assert_scoring_test_unique((pose.pose_id for pose in fixture.poses))
+    for interaction in fixture.interactions:
+        assert_scoring_test_not_none(interaction.atom1)
+        assert_scoring_test_not_none(interaction.atom2)
+        assert_scoring_test_finite(interaction.distance)
+        assert_scoring_test_true(interaction.distance >= 0.0)
+
+
+# -----------------------------------------------------------------------------
+# 30.1.14. Infrastructure self-check
+# -----------------------------------------------------------------------------
+
+
+def run_section_30_1_self_check() -> Mapping[str, Any]:
+    """Run deterministic checks for the Section 30.1 infrastructure."""
+
+    checks: Dict[str, bool] = {}
+    fixture = build_scoring_self_test_fixture(seed=1729, pose_count=4)
+    validate_scoring_self_test_fixture(fixture)
+    checks["fixture_families"] = {
+        interaction.family for interaction in fixture.interactions
+    } == set(SCORING_SELF_TEST_FAMILIES)
+    checks["fixture_pose_count"] = len(fixture.poses) == 4
+    checks["fixture_deterministic"] = (
+        scoring_self_test_stable_key(
+            build_scoring_self_test_fixture(seed=1729, pose_count=4).metadata
+        )
+        == scoring_self_test_stable_key(fixture.metadata)
+    )
+    checks["distance"] = math.isclose(
+        scoring_self_test_distance((0, 0, 0), (0, 3, 4)),
+        5.0,
+    )
+    checks["translation"] = scoring_self_test_translate_coordinate(
+        (1, 2, 3),
+        (4, 5, 6),
+    ) == (5.0, 7.0, 9.0)
+    rotated = scoring_self_test_rotate_z((1, 0, 0), 90.0)
+    checks["rotation"] = math.isclose(rotated[0], 0.0, abs_tol=1.0e-9) and (
+        math.isclose(rotated[1], 1.0, abs_tol=1.0e-9)
+    )
+
+    local_registry = ScoringSelfTestRegistry("section_30_1_self_check")
+
+    def passing_case(context: ScoringSelfTestContext) -> str:
+        assert_scoring_test_true(context.ensure_fixture().poses)
+        print("captured output")
+        warnings.warn("captured warning", RuntimeWarning)
+        return "ok"
+
+    def skipped_case() -> None:
+        raise ScoringSelfTestSkipped("expected skip")
+
+    def expected_error_case() -> None:
+        raise ValueError("expected value error")
+
+    local_registry.register(
+        ScoringSelfTestCase(
+            name="passing_case",
+            function=passing_case,
+            tags=frozenset({"infrastructure", "capture"}),
+        )
+    )
+    local_registry.register(
+        ScoringSelfTestCase(
+            name="skipped_case",
+            function=skipped_case,
+        )
+    )
+    local_registry.register(
+        ScoringSelfTestCase(
+            name="expected_error_case",
+            function=expected_error_case,
+            expected_exception=ValueError,
+        )
+    )
+    report = run_registered_scoring_self_tests(
+        registry=local_registry,
+        seed=1729,
+        capture_output=True,
+    )
+    validate_scoring_self_test_report(report)
+    checks["registry_length"] = len(local_registry) == 3
+    checks["runner_total"] = report.total == 3
+    checks["runner_passed"] = report.passed == 2
+    checks["runner_skipped"] = report.skipped == 1
+    checks["runner_success"] = report.success
+    checks["capture_stdout"] = (
+        "captured output" in report.results[0].stdout
+    )
+    checks["capture_warning"] = bool(report.results[0].warnings)
+    checks["report_mapping"] = (
+        scoring_self_test_report_to_dict(report)["total"] == 3
+    )
+    checks["report_rows"] = len(scoring_self_test_report_rows(report)) == 3
+    checks["report_text"] = (
+        "DockAnalyzer scoring self-tests"
+        in format_scoring_self_test_report(report)
+    )
+
+    edge_cases = build_scoring_self_test_edge_cases()
+    checks["edge_cases"] = (
+        math.isnan(edge_cases["nan"])
+        and math.isinf(edge_cases["positive_infinity"])
+    )
+
+    with scoring_self_test_temporary_directory() as directory:
+        marker = directory / "marker.txt"
+        marker.write_text("ok", encoding="utf-8")
+        checks["temporary_directory"] = marker.read_text(
+            encoding="utf-8"
+        ) == "ok"
+
+    mapping = {"original": 1}
+    with patch_scoring_self_test_mapping(mapping, {"patched": 2}):
+        patch_inside = mapping == {"original": 1, "patched": 2}
+    checks["mapping_patch"] = patch_inside and mapping == {"original": 1}
+
+    holder = type("Holder", (), {"value": 1})()
+    with patch_scoring_self_test_attribute(holder, "value", 2):
+        attribute_inside = holder.value == 2
+    checks["attribute_patch"] = attribute_inside and holder.value == 1
+
+    with assert_scoring_test_raises(
+        ScoringSelfTestAssertionError,
+        match="truthy",
+    ):
+        assert_scoring_test_true(False)
+    checks["raises_assertion"] = True
+
+    failed = tuple(name for name, passed in checks.items() if not passed)
+    if failed:
+        raise ScoringSelfTestFixtureError(
+            "Section 30.1 self-check failed: " + ", ".join(failed)
+        )
+    return MappingProxyType(
+        {
+            "status": SCORING_SELF_TEST_STATUS_PASSED,
+            "section": SCORING_SELF_TEST_SECTION_INFRASTRUCTURE,
+            "check_count": len(checks),
+            "checks": MappingProxyType(dict(checks)),
+        }
+    )
+
+
+# -----------------------------------------------------------------------------
+# 30.1.15. Public interface
+# -----------------------------------------------------------------------------
+
+
+_SECTION_30_1_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    "SCORING_SELF_TEST_SCHEMA",
+    "SCORING_SELF_TEST_SCHEMA_VERSION",
+    "SCORING_SELF_TEST_SECTION_VERSION",
+    "SCORING_SELF_TEST_ROOT_SECTION",
+    "SCORING_SELF_TEST_SECTION_INFRASTRUCTURE",
+    "SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION",
+    "SCORING_SELF_TEST_SECTION_INDIVIDUAL",
+    "SCORING_SELF_TEST_SECTION_AGGREGATION",
+    "SCORING_SELF_TEST_SECTION_RUNNER",
+    "SCORING_SELF_TEST_SECTIONS",
+    "SCORING_SELF_TEST_STATUS_PENDING",
+    "SCORING_SELF_TEST_STATUS_RUNNING",
+    "SCORING_SELF_TEST_STATUS_PASSED",
+    "SCORING_SELF_TEST_STATUS_FAILED",
+    "SCORING_SELF_TEST_STATUS_SKIPPED",
+    "SCORING_SELF_TEST_STATUS_ERROR",
+    "SCORING_SELF_TEST_STATUSES",
+    "SCORING_SELF_TEST_DEFAULT_SEED",
+    "SCORING_SELF_TEST_DEFAULT_ABS_TOLERANCE",
+    "SCORING_SELF_TEST_DEFAULT_REL_TOLERANCE",
+    "SCORING_SELF_TEST_DEFAULT_TIMEOUT",
+    "SCORING_SELF_TEST_FAMILY_CONTACT",
+    "SCORING_SELF_TEST_FAMILY_HBOND",
+    "SCORING_SELF_TEST_FAMILY_HYDROPHOBIC",
+    "SCORING_SELF_TEST_FAMILY_PI",
+    "SCORING_SELF_TEST_FAMILY_SALT_BRIDGE",
+    "SCORING_SELF_TEST_FAMILY_CLASH",
+    "SCORING_SELF_TEST_FAMILIES",
+    "ScoringSelfTestError",
+    "ScoringSelfTestAssertionError",
+    "ScoringSelfTestFixtureError",
+    "ScoringSelfTestRegistrationError",
+    "ScoringSelfTestExecutionError",
+    "ScoringSelfTestTimeoutError",
+    "ScoringSelfTestSkipped",
+    "MockScoringElement",
+    "MockScoringStructure",
+    "MockScoringChain",
+    "MockScoringResidue",
+    "MockScoringAtom",
+    "MockScoringBond",
+    "MockScoringInteraction",
+    "MockScoringInteractionCollection",
+    "MockScoringDockModel",
+    "MockScoringLogger",
+    "MockScoringSession",
+    "ScoringSelfTestFixtureBundle",
+    "ScoringSelfTestCapture",
+    "ScoringSelfTestCase",
+    "ScoringSelfTestResult",
+    "ScoringSelfTestReport",
+    "ScoringSelfTestContext",
+    "ScoringSelfTestRegistry",
+    "scoring_self_test_utc_now",
+    "normalize_scoring_self_test_status",
+    "normalize_scoring_self_test_section",
+    "scoring_self_test_safe_repr",
+    "scoring_self_test_qualified_name",
+    "scoring_self_test_freeze_mapping",
+    "scoring_self_test_copy",
+    "scoring_self_test_is_finite_number",
+    "scoring_self_test_float",
+    "scoring_self_test_coordinate",
+    "scoring_self_test_distance",
+    "scoring_self_test_translate_coordinate",
+    "scoring_self_test_rotate_z",
+    "scoring_self_test_stable_key",
+    "make_scoring_test_structure",
+    "make_scoring_test_residue",
+    "make_scoring_test_atom",
+    "make_scoring_test_bond",
+    "make_scoring_test_interaction",
+    "make_scoring_test_interaction_mapping",
+    "make_scoring_test_dock_model",
+    "clone_scoring_test_interaction",
+    "build_scoring_self_test_fixture",
+    "build_scoring_self_test_edge_cases",
+    "scoring_self_test_resolve_global",
+    "scoring_self_test_optional_global",
+    "scoring_self_test_dataclass_field_names",
+    "scoring_self_test_signature_parameters",
+    "scoring_self_test_default_for_parameter",
+    "construct_scoring_self_test_object",
+    "scoring_self_test_object_mapping",
+    "scoring_self_test_get",
+    "assert_scoring_test_true",
+    "assert_scoring_test_false",
+    "assert_scoring_test_equal",
+    "assert_scoring_test_not_equal",
+    "assert_scoring_test_is",
+    "assert_scoring_test_is_not",
+    "assert_scoring_test_none",
+    "assert_scoring_test_not_none",
+    "assert_scoring_test_instance",
+    "assert_scoring_test_almost_equal",
+    "assert_scoring_test_sequence_almost_equal",
+    "assert_scoring_test_finite",
+    "assert_scoring_test_between",
+    "assert_scoring_test_contains",
+    "assert_scoring_test_mapping_contains",
+    "assert_scoring_test_unique",
+    "assert_scoring_test_sorted",
+    "assert_scoring_test_raises",
+    "assert_scoring_test_public_names",
+    "capture_scoring_self_test_output",
+    "scoring_self_test_random_seed",
+    "scoring_self_test_temporary_directory",
+    "patch_scoring_self_test_attribute",
+    "patch_scoring_self_test_mapping",
+    "patch_scoring_self_test_environment",
+    "register_scoring_self_test",
+    "get_registered_scoring_self_tests",
+    "clear_registered_scoring_self_tests",
+    "run_scoring_self_test_case",
+    "run_registered_scoring_self_tests",
+    "scoring_self_test_case_to_dict",
+    "scoring_self_test_result_to_dict",
+    "scoring_self_test_report_to_dict",
+    "scoring_self_test_report_rows",
+    "format_scoring_self_test_report",
+    "validate_scoring_self_test_case",
+    "validate_scoring_self_test_result",
+    "validate_scoring_self_test_report",
+    "validate_scoring_self_test_fixture",
+    "run_section_30_1_self_check",
+)
+
+for public_name in _SECTION_30_1_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+def section_30_1_public_names() -> Tuple[str, ...]:
+    """Return the immutable Section 30.1 public interface."""
+
+    return _SECTION_30_1_PUBLIC_NAMES
+
+
+def validate_section_30_1_public_interface() -> None:
+    """Validate all Section 30.1 public names and exports."""
+
+    missing_names = tuple(
+        name for name in _SECTION_30_1_PUBLIC_NAMES if name not in globals()
+    )
+    if missing_names:
+        raise ScoringSelfTestFixtureError(
+            "Missing Section 30.1 public names: " + ", ".join(missing_names)
+        )
+    missing_exports = tuple(
+        name for name in _SECTION_30_1_PUBLIC_NAMES if name not in __all__
+    )
+    if missing_exports:
+        raise ScoringSelfTestFixtureError(
+            "Section 30.1 names missing from __all__: "
+            + ", ".join(missing_exports)
+        )
+    assert_scoring_test_unique(_SECTION_30_1_PUBLIC_NAMES)
+
+
+if "section_30_1_public_names" not in __all__:
+    __all__.append("section_30_1_public_names")
+if "validate_section_30_1_public_interface" not in __all__:
+    __all__.append("validate_section_30_1_public_interface")
+
+validate_section_30_1_public_interface()
+
+# =============================================================================
+# End of Section 30.1
+# =============================================================================
+
+
+# =============================================================================
+# DockAnalyzer — Interaction scoring
+# Section 30.2 — Configuration and recognition self-tests
+# =============================================================================
+
+"""
+Self-tests for scoring configuration and interaction recognition.
+
+Section 30.2 validates the canonical names and category relationships defined
+in Section 2, the immutable scoring configuration defined in Section 3, the
+extraction and adaptation assumptions used by Section 5, and the recognition
+pipeline implemented in Section 6.
+
+The tests use only the infrastructure introduced in Section 30.1. They are
+registered when this block is imported but are not executed automatically. The
+final Section 30.5 runner is responsible for executing all registered scoring
+self-tests. ``run_section_30_2_self_tests()`` remains available for focused
+local validation during development.
+
+This block is designed to be concatenated directly after Section 30.1. It does
+not repeat ``from __future__ import annotations`` and does not import detector
+modules globally. Synthetic objects deliberately expose the same structural
+attributes that detector results, mappings, and ChimeraX-compatible objects may
+provide to the scoring layer.
+"""
+
+from dataclasses import dataclass, field, replace
+from types import MappingProxyType, SimpleNamespace
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Final,
+    FrozenSet,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
+import math
+
+if "__all__" not in globals():
+    __all__: List[str] = []
+
+
+# -----------------------------------------------------------------------------
+# 30.2.1. Constants, tags, and canonical test names
+# -----------------------------------------------------------------------------
+
+SCORING_CONFIG_RECOGNITION_TEST_VERSION: Final[str] = "30.2"
+SCORING_CONFIG_RECOGNITION_TEST_SCHEMA: Final[str] = (
+    "dockanalyzer.scoring.self_test.config_recognition"
+)
+
+SCORING_SELF_TEST_TAG_CONFIGURATION: Final[str] = "configuration"
+SCORING_SELF_TEST_TAG_CONSTANTS: Final[str] = "constants"
+SCORING_SELF_TEST_TAG_NORMALIZATION: Final[str] = "normalization"
+SCORING_SELF_TEST_TAG_RECOGNITION: Final[str] = "recognition"
+SCORING_SELF_TEST_TAG_EXTRACTION: Final[str] = "extraction"
+SCORING_SELF_TEST_TAG_MAPPING: Final[str] = "mapping"
+SCORING_SELF_TEST_TAG_OBJECT: Final[str] = "object"
+SCORING_SELF_TEST_TAG_COLLECTION: Final[str] = "collection"
+SCORING_SELF_TEST_TAG_DOCK_MODEL: Final[str] = "dock_model"
+SCORING_SELF_TEST_TAG_ERRORS: Final[str] = "errors"
+SCORING_SELF_TEST_TAG_EXPLAINABILITY: Final[str] = "explainability"
+SCORING_SELF_TEST_TAG_DETERMINISM: Final[str] = "determinism"
+
+SCORING_CONFIG_RECOGNITION_TEST_TAGS: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_SELF_TEST_TAG_CONFIGURATION,
+        SCORING_SELF_TEST_TAG_CONSTANTS,
+        SCORING_SELF_TEST_TAG_NORMALIZATION,
+        SCORING_SELF_TEST_TAG_RECOGNITION,
+        SCORING_SELF_TEST_TAG_EXTRACTION,
+        SCORING_SELF_TEST_TAG_MAPPING,
+        SCORING_SELF_TEST_TAG_OBJECT,
+        SCORING_SELF_TEST_TAG_COLLECTION,
+        SCORING_SELF_TEST_TAG_DOCK_MODEL,
+        SCORING_SELF_TEST_TAG_ERRORS,
+        SCORING_SELF_TEST_TAG_EXPLAINABILITY,
+        SCORING_SELF_TEST_TAG_DETERMINISM,
+    }
+)
+
+SCORING_CONFIG_TEST_CANONICAL_COLLECTIONS: Final[str] = (
+    "canonical_collections"
+)
+SCORING_CONFIG_TEST_TYPE_ALIASES: Final[str] = "interaction_type_aliases"
+SCORING_CONFIG_TEST_QUALITATIVE_ALIASES: Final[str] = (
+    "qualitative_aliases"
+)
+SCORING_CONFIG_TEST_POLARITY: Final[str] = "interaction_polarity"
+SCORING_CONFIG_TEST_ORDERING: Final[str] = "interaction_ordering"
+SCORING_CONFIG_TEST_DEFAULT_MAPPINGS: Final[str] = "default_mappings"
+SCORING_CONFIG_TEST_DEFAULT_CONFIG: Final[str] = "default_config"
+SCORING_CONFIG_TEST_COPY: Final[str] = "config_copy"
+SCORING_CONFIG_TEST_MERGE: Final[str] = "config_merge"
+SCORING_CONFIG_TEST_MAPPING_ROUND_TRIP: Final[str] = (
+    "config_mapping_round_trip"
+)
+SCORING_CONFIG_TEST_INVALID_WEIGHT: Final[str] = "invalid_weight"
+SCORING_CONFIG_TEST_INVALID_MULTIPLIER: Final[str] = (
+    "invalid_multiplier"
+)
+SCORING_CONFIG_TEST_INVALID_FIELD: Final[str] = "invalid_config_field"
+
+SCORING_RECOGNITION_TEST_NORMALIZATION: Final[str] = (
+    "recognition_normalization"
+)
+SCORING_RECOGNITION_TEST_CONFIDENCE: Final[str] = (
+    "recognition_confidence"
+)
+SCORING_RECOGNITION_TEST_EXPLICIT_TYPES: Final[str] = (
+    "recognition_explicit_types"
+)
+SCORING_RECOGNITION_TEST_EXPLICIT_FAMILIES: Final[str] = (
+    "recognition_explicit_families"
+)
+SCORING_RECOGNITION_TEST_CLASS_NAMES: Final[str] = (
+    "recognition_class_names"
+)
+SCORING_RECOGNITION_TEST_CONTAINER_NAMES: Final[str] = (
+    "recognition_container_names"
+)
+SCORING_RECOGNITION_TEST_ATTRIBUTES: Final[str] = (
+    "recognition_attribute_patterns"
+)
+SCORING_RECOGNITION_TEST_GEOMETRY: Final[str] = (
+    "recognition_geometry_patterns"
+)
+SCORING_RECOGNITION_TEST_ATOMS: Final[str] = (
+    "recognition_atom_patterns"
+)
+SCORING_RECOGNITION_TEST_RESIDUES: Final[str] = (
+    "recognition_residue_patterns"
+)
+SCORING_RECOGNITION_TEST_UNKNOWN: Final[str] = "recognition_unknown"
+SCORING_RECOGNITION_TEST_STRICT_UNKNOWN: Final[str] = (
+    "recognition_strict_unknown"
+)
+SCORING_RECOGNITION_TEST_CUSTOM_RULE: Final[str] = (
+    "recognition_custom_rule"
+)
+SCORING_RECOGNITION_TEST_AGGREGATION: Final[str] = (
+    "recognition_evidence_aggregation"
+)
+SCORING_RECOGNITION_TEST_COLLECTION: Final[str] = (
+    "recognition_collection"
+)
+SCORING_RECOGNITION_TEST_GROUPS: Final[str] = "recognition_groups"
+SCORING_RECOGNITION_TEST_DOCK_MODEL: Final[str] = (
+    "recognition_dock_model"
+)
+SCORING_RECOGNITION_TEST_EXTRACTION: Final[str] = (
+    "recognition_extraction_integration"
+)
+SCORING_RECOGNITION_TEST_VALIDATION: Final[str] = (
+    "recognition_validation"
+)
+SCORING_RECOGNITION_TEST_EXPLANATION: Final[str] = (
+    "recognition_explanation"
+)
+SCORING_RECOGNITION_TEST_DETERMINISM: Final[str] = (
+    "recognition_determinism"
+)
+
+SCORING_SECTION_30_2_TEST_NAMES: Final[Tuple[str, ...]] = (
+    SCORING_CONFIG_TEST_CANONICAL_COLLECTIONS,
+    SCORING_CONFIG_TEST_TYPE_ALIASES,
+    SCORING_CONFIG_TEST_QUALITATIVE_ALIASES,
+    SCORING_CONFIG_TEST_POLARITY,
+    SCORING_CONFIG_TEST_ORDERING,
+    SCORING_CONFIG_TEST_DEFAULT_MAPPINGS,
+    SCORING_CONFIG_TEST_DEFAULT_CONFIG,
+    SCORING_CONFIG_TEST_COPY,
+    SCORING_CONFIG_TEST_MERGE,
+    SCORING_CONFIG_TEST_MAPPING_ROUND_TRIP,
+    SCORING_CONFIG_TEST_INVALID_WEIGHT,
+    SCORING_CONFIG_TEST_INVALID_MULTIPLIER,
+    SCORING_CONFIG_TEST_INVALID_FIELD,
+    SCORING_RECOGNITION_TEST_NORMALIZATION,
+    SCORING_RECOGNITION_TEST_CONFIDENCE,
+    SCORING_RECOGNITION_TEST_EXPLICIT_TYPES,
+    SCORING_RECOGNITION_TEST_EXPLICIT_FAMILIES,
+    SCORING_RECOGNITION_TEST_CLASS_NAMES,
+    SCORING_RECOGNITION_TEST_CONTAINER_NAMES,
+    SCORING_RECOGNITION_TEST_ATTRIBUTES,
+    SCORING_RECOGNITION_TEST_GEOMETRY,
+    SCORING_RECOGNITION_TEST_ATOMS,
+    SCORING_RECOGNITION_TEST_RESIDUES,
+    SCORING_RECOGNITION_TEST_UNKNOWN,
+    SCORING_RECOGNITION_TEST_STRICT_UNKNOWN,
+    SCORING_RECOGNITION_TEST_CUSTOM_RULE,
+    SCORING_RECOGNITION_TEST_AGGREGATION,
+    SCORING_RECOGNITION_TEST_COLLECTION,
+    SCORING_RECOGNITION_TEST_GROUPS,
+    SCORING_RECOGNITION_TEST_DOCK_MODEL,
+    SCORING_RECOGNITION_TEST_EXTRACTION,
+    SCORING_RECOGNITION_TEST_VALIDATION,
+    SCORING_RECOGNITION_TEST_EXPLANATION,
+    SCORING_RECOGNITION_TEST_DETERMINISM,
+)
+
+SCORING_SECTION_30_2_EXPECTED_TEST_COUNT: Final[int] = len(
+    SCORING_SECTION_30_2_TEST_NAMES
+)
+
+
+# -----------------------------------------------------------------------------
+# 30.2.2. Exceptions and result structures
+# -----------------------------------------------------------------------------
+
+
+class ScoringConfigRecognitionSelfTestError(ScoringSelfTestError):
+    """Base exception for Section 30.2 self-test failures."""
+
+
+class ScoringConfigRecognitionFixtureError(
+    ScoringConfigRecognitionSelfTestError
+):
+    """Raised when a Section 30.2 fixture cannot be constructed."""
+
+
+class ScoringConfigRecognitionValidationError(
+    ScoringConfigRecognitionSelfTestError
+):
+    """Raised when Section 30.2 registration or results are inconsistent."""
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringConfigRecognitionSelfTestSummary:
+    """Compact summary of the Section 30.2 test execution."""
+
+    section: str
+    status: str
+    total: int
+    passed: int
+    failed: int
+    skipped: int
+    errors: int
+    duration_seconds: float
+    test_names: Tuple[str, ...] = ()
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        normalized_section = normalize_scoring_self_test_section(self.section)
+        normalized_status = normalize_scoring_self_test_status(self.status)
+        counts = {
+            "total": self.total,
+            "passed": self.passed,
+            "failed": self.failed,
+            "skipped": self.skipped,
+            "errors": self.errors,
+        }
+        normalized_counts: Dict[str, int] = {}
+        for name, value in counts.items():
+            if isinstance(value, bool):
+                raise ScoringConfigRecognitionValidationError(
+                    f"{name} must be an integer."
+                )
+            try:
+                number = int(value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ScoringConfigRecognitionValidationError(
+                    f"{name} must be an integer."
+                ) from exc
+            if number < 0:
+                raise ScoringConfigRecognitionValidationError(
+                    f"{name} cannot be negative."
+                )
+            normalized_counts[name] = number
+        duration = scoring_self_test_float(
+            self.duration_seconds,
+            name="Section 30.2 duration",
+        )
+        if duration < 0.0:
+            raise ScoringConfigRecognitionValidationError(
+                "duration_seconds cannot be negative."
+            )
+        names = tuple(str(name).strip() for name in self.test_names)
+        if any(not name for name in names):
+            raise ScoringConfigRecognitionValidationError(
+                "test_names cannot contain empty names."
+            )
+        if len(set(names)) != len(names):
+            raise ScoringConfigRecognitionValidationError(
+                "test_names must be unique."
+            )
+        if normalized_counts["total"] != (
+            normalized_counts["passed"]
+            + normalized_counts["failed"]
+            + normalized_counts["skipped"]
+            + normalized_counts["errors"]
+        ):
+            raise ScoringConfigRecognitionValidationError(
+                "Section 30.2 summary counts are inconsistent."
+            )
+        object.__setattr__(self, "section", normalized_section)
+        object.__setattr__(self, "status", normalized_status)
+        for name, value in normalized_counts.items():
+            object.__setattr__(self, name, value)
+        object.__setattr__(self, "duration_seconds", duration)
+        object.__setattr__(self, "test_names", names)
+        object.__setattr__(
+            self,
+            "metadata",
+            scoring_self_test_freeze_mapping(self.metadata),
+        )
+
+    @property
+    def success(self) -> bool:
+        """Return whether every executed Section 30.2 test passed."""
+
+        return self.failed == 0 and self.errors == 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a mutable dictionary representation."""
+
+        return {
+            "schema": SCORING_CONFIG_RECOGNITION_TEST_SCHEMA,
+            "version": SCORING_CONFIG_RECOGNITION_TEST_VERSION,
+            "section": self.section,
+            "status": self.status,
+            "success": self.success,
+            "total": self.total,
+            "passed": self.passed,
+            "failed": self.failed,
+            "skipped": self.skipped,
+            "errors": self.errors,
+            "duration_seconds": self.duration_seconds,
+            "test_names": list(self.test_names),
+            "metadata": dict(self.metadata),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 30.2.3. Global resolution and compatibility helpers
+# -----------------------------------------------------------------------------
+
+
+def _section_30_2_require(name: str) -> Any:
+    """Resolve a required symbol from the combined scoring module."""
+
+    try:
+        return scoring_self_test_resolve_global(name)
+    except Exception as exc:
+        raise ScoringConfigRecognitionFixtureError(
+            f"Section 30.2 requires scoring symbol {name!r}."
+        ) from exc
+
+
+def _section_30_2_optional(name: str, default: Any = None) -> Any:
+    """Resolve an optional scoring symbol without failing the test module."""
+
+    try:
+        value = scoring_self_test_optional_global(name)
+    except Exception:
+        return default
+    return default if value is None else value
+
+
+def _section_30_2_call(name: str, *args: Any, **kwargs: Any) -> Any:
+    """Call a required scoring function by name."""
+
+    function = _section_30_2_require(name)
+    if not callable(function):
+        raise ScoringConfigRecognitionFixtureError(
+            f"Scoring symbol {name!r} is not callable."
+        )
+    return function(*args, **kwargs)
+
+
+def _section_30_2_constant(name: str) -> Any:
+    """Return a required constant by name."""
+
+    return _section_30_2_require(name)
+
+
+def _section_30_2_family(type_name: str) -> str:
+    """Return the canonical family for one interaction type."""
+
+    return str(_section_30_2_call("canonical_interaction_family", type_name))
+
+
+def _section_30_2_result_type(result: Any) -> str:
+    """Return the selected canonical type from a recognition result."""
+
+    return str(scoring_self_test_get(result, "interaction_type", ""))
+
+
+def _section_30_2_result_family(result: Any) -> str:
+    """Return the selected canonical family from a recognition result."""
+
+    return str(scoring_self_test_get(result, "interaction_family", ""))
+
+
+def _section_30_2_result_status(result: Any) -> str:
+    """Return the normalized status from a recognition result."""
+
+    return str(scoring_self_test_get(result, "status", ""))
+
+
+def _section_30_2_result_score(result: Any) -> float:
+    """Return the finite score from a recognition result."""
+
+    return scoring_self_test_float(
+        scoring_self_test_get(result, "score", 0.0),
+        name="recognition score",
+    )
+
+
+def _section_30_2_result_candidates(result: Any) -> Tuple[Any, ...]:
+    """Return recognition candidates as an immutable tuple."""
+
+    candidates = scoring_self_test_get(result, "candidates", ())
+    return tuple(candidates or ())
+
+
+def _section_30_2_assert_recognition(
+    result: Any,
+    expected_type: str,
+    *,
+    allowed_statuses: Optional[Iterable[str]] = None,
+    minimum_score: Optional[float] = None,
+) -> None:
+    """Assert the essential invariants of one recognition result."""
+
+    result_class = _section_30_2_require("InteractionRecognitionResult")
+    assert_scoring_test_instance(result, result_class)
+    canonical_type = _section_30_2_call(
+        "normalize_interaction_type",
+        expected_type,
+        preserve_unknown=True,
+    )
+    assert_scoring_test_equal(
+        _section_30_2_result_type(result),
+        canonical_type,
+    )
+    assert_scoring_test_equal(
+        _section_30_2_result_family(result),
+        _section_30_2_family(canonical_type),
+    )
+    if allowed_statuses is not None:
+        assert_scoring_test_contains(
+            frozenset(allowed_statuses),
+            _section_30_2_result_status(result),
+        )
+    assert_scoring_test_finite(_section_30_2_result_score(result))
+    if minimum_score is not None:
+        assert_scoring_test_true(
+            _section_30_2_result_score(result) >= minimum_score,
+            message=(
+                f"Recognition score {_section_30_2_result_score(result)!r} "
+                f"is lower than {minimum_score!r}."
+            ),
+        )
+    _section_30_2_call("validate_interaction_recognition_result", result)
+
+
+def _section_30_2_make_type_object(
+    interaction_type: str,
+    *,
+    family: Optional[str] = None,
+    **attributes: Any,
+) -> Any:
+    """Build a simple object exposing explicit recognition fields."""
+
+    values = dict(attributes)
+    values["interaction_type"] = interaction_type
+    if family is not None:
+        values["interaction_family"] = family
+    return SimpleNamespace(**values)
+
+
+def _section_30_2_make_class_named(
+    class_name: str,
+    **attributes: Any,
+) -> Any:
+    """Create an object whose class name is recognition evidence."""
+
+    class_type = type(class_name, (), {})
+    instance = class_type()
+    for name, value in attributes.items():
+        setattr(instance, name, value)
+    return instance
+
+
+def _section_30_2_make_unknown_object() -> Any:
+    """Build an interaction-like object without recognition evidence."""
+
+    return SimpleNamespace(note="no molecular recognition attributes")
+
+
+def _section_30_2_make_recognition_config(**updates: Any) -> Any:
+    """Create a recognition configuration with selected updates."""
+
+    config_type = _section_30_2_require("InteractionRecognitionConfig")
+    return config_type(**updates)
+
+
+def _section_30_2_make_scoring_config(**updates: Any) -> Any:
+    """Create a scoring configuration from the current defaults."""
+
+    default = _section_30_2_call("get_default_scoring_config")
+    if not updates:
+        return default
+    return _section_30_2_call(
+        "merge_scoring_config",
+        default,
+        **updates,
+    )
+
+
+def _section_30_2_config_mapping(config: Any) -> Dict[str, Any]:
+    """Return a public dictionary representation of a scoring config."""
+
+    converter = getattr(config, "to_dict", None)
+    if callable(converter):
+        data = converter()
+        if isinstance(data, Mapping):
+            return dict(data)
+    return scoring_self_test_object_mapping(config)
+
+
+def _section_30_2_summary_from_report(
+    report: ScoringSelfTestReport,
+) -> ScoringConfigRecognitionSelfTestSummary:
+    """Convert a Section 30.1 report to the focused Section 30.2 summary."""
+
+    validate_scoring_self_test_report(report)
+    status = (
+        SCORING_SELF_TEST_STATUS_PASSED
+        if report.success
+        else SCORING_SELF_TEST_STATUS_FAILED
+    )
+    names = tuple(result.case_name for result in report.results)
+    return ScoringConfigRecognitionSelfTestSummary(
+        section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+        status=status,
+        total=report.total,
+        passed=report.passed,
+        failed=report.status_counts[SCORING_SELF_TEST_STATUS_FAILED],
+        skipped=report.skipped,
+        errors=report.status_counts[SCORING_SELF_TEST_STATUS_ERROR],
+        duration_seconds=report.duration_seconds,
+        test_names=names,
+        metadata={
+            "seed": report.seed,
+            "selected_tags": sorted(report.selected_tags),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 30.2.4. Reusable recognition fixtures
+# -----------------------------------------------------------------------------
+
+
+def build_scoring_config_alias_cases() -> Mapping[str, str]:
+    """Return representative aliases and their expected canonical types."""
+
+    return MappingProxyType(
+        {
+            "contacts": "contact",
+            "vdw": "van_der_waals",
+            "hbond": "hydrogen_bond",
+            "charge assisted hbond": "hydrogen_bond_charge_assisted",
+            "nonpolar interaction": "hydrophobic",
+            "pi stack": "pi_stacking",
+            "parallel displaced": "pi_offset",
+            "t shaped": "pi_t_shaped",
+            "cationpi": "cation_pi",
+            "saltbridge": "salt_bridge",
+            "ion pair": "salt_bridge",
+            "steric overlap": "clash",
+            "severe clash": "clash_severe",
+        }
+    )
+
+
+def build_scoring_recognition_explicit_cases() -> Mapping[str, Any]:
+    """Return explicit objects spanning the principal scoring families."""
+
+    return MappingProxyType(
+        {
+            "contact": _section_30_2_make_type_object("contact"),
+            "hydrogen_bond": _section_30_2_make_type_object(
+                "hbond",
+                donor="N1",
+                acceptor="O1",
+                distance=2.8,
+                angle=165.0,
+            ),
+            "hydrophobic": _section_30_2_make_type_object(
+                "hydrophobic_contact",
+                distance=3.7,
+            ),
+            "pi": _section_30_2_make_type_object(
+                "pi_stack",
+                distance=4.6,
+                angle=10.0,
+                offset=1.1,
+            ),
+            "salt_bridge": _section_30_2_make_type_object(
+                "saltbridge",
+                cation_group="LYS",
+                anion_group="ASP",
+                distance=3.2,
+            ),
+            "clash": _section_30_2_make_type_object(
+                "steric_clash",
+                overlap=0.65,
+                distance=1.5,
+            ),
+        }
+    )
+
+
+def build_scoring_recognition_class_name_cases() -> Mapping[str, Any]:
+    """Return objects recognized primarily from their class names."""
+
+    return MappingProxyType(
+        {
+            "hydrogen_bond": _section_30_2_make_class_named(
+                "HydrogenBondInteraction",
+                donor="N1",
+                acceptor="O1",
+                distance=2.9,
+                angle=155.0,
+            ),
+            "hydrophobic": _section_30_2_make_class_named(
+                "HydrophobicInteraction",
+                atom1="C1",
+                atom2="C2",
+                distance=3.8,
+            ),
+            "pi": _section_30_2_make_class_named(
+                "PiStackingInteraction",
+                distance=4.8,
+                angle=12.0,
+                offset=1.2,
+            ),
+            "salt_bridge": _section_30_2_make_class_named(
+                "SaltBridgeInteraction",
+                cation_group="ARG",
+                anion_group="GLU",
+                distance=3.1,
+            ),
+            "clash": _section_30_2_make_class_named(
+                "StericClash",
+                overlap=0.5,
+            ),
+        }
+    )
+
+
+def build_scoring_recognition_geometry_cases() -> Mapping[str, Any]:
+    """Return conservative geometry-only recognition fixtures."""
+
+    return MappingProxyType(
+        {
+            "hydrogen_bond": SimpleNamespace(
+                distance=2.8,
+                angle=165.0,
+            ),
+            "pi_stacking": SimpleNamespace(
+                distance=4.8,
+                angle=10.0,
+                offset=1.0,
+            ),
+            "pi_t_shaped": SimpleNamespace(
+                distance=5.0,
+                angle=90.0,
+                offset=1.2,
+            ),
+            "clash": SimpleNamespace(
+                overlap=0.7,
+            ),
+        }
+    )
+
+
+def build_scoring_recognition_atom_cases() -> Mapping[str, Tuple[str, str]]:
+    """Return element pairs and the expected weak recognition family."""
+
+    return MappingProxyType(
+        {
+            "hydrogen_bond": ("N", "O"),
+            "hydrophobic": ("C", "C"),
+        }
+    )
+
+
+def build_scoring_recognition_residue_cases() -> Mapping[str, Tuple[str, str]]:
+    """Return residue pairs and their expected recognition candidates."""
+
+    return MappingProxyType(
+        {
+            "salt_bridge": ("LYS", "ASP"),
+            "pi_stacking": ("PHE", "TRP"),
+            "hydrophobic": ("LEU", "ILE"),
+        }
+    )
+
+
+def _section_30_2_make_atom_pair(
+    first_element: str,
+    second_element: str,
+) -> Any:
+    """Build one interaction exposing two test atoms."""
+
+    first_residue = make_scoring_test_residue("ASN", 10, chain_id="A")
+    second_residue = make_scoring_test_residue("LIG", 1, chain_id="L")
+    first = make_scoring_test_atom(
+        "A1",
+        first_element,
+        (0.0, 0.0, 0.0),
+        residue=first_residue,
+    )
+    second = make_scoring_test_atom(
+        "A2",
+        second_element,
+        (2.9, 0.0, 0.0),
+        residue=second_residue,
+    )
+    return SimpleNamespace(atom1=first, atom2=second, distance=2.9)
+
+
+def _section_30_2_make_residue_pair(
+    first_name: str,
+    second_name: str,
+) -> Any:
+    """Build one interaction exposing two test residues."""
+
+    first = make_scoring_test_residue(first_name, 10, chain_id="A")
+    second = make_scoring_test_residue(second_name, 1, chain_id="L")
+    return SimpleNamespace(residue1=first, residue2=second)
+
+
+# -----------------------------------------------------------------------------
+# 30.2.5. Canonical names and configuration tests
+# -----------------------------------------------------------------------------
+
+
+@register_scoring_self_test(
+    name=SCORING_CONFIG_TEST_CANONICAL_COLLECTIONS,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_CONSTANTS, SCORING_SELF_TEST_TAG_CONFIGURATION},
+    replace=True,
+)
+def test_scoring_canonical_collections() -> None:
+    """Validate interaction-family and interaction-type set relationships."""
+
+    families = frozenset(_section_30_2_constant("CANONICAL_INTERACTION_FAMILIES"))
+    types = frozenset(_section_30_2_constant("CANONICAL_INTERACTION_TYPES"))
+    family_sets = {
+        "contact": frozenset(_section_30_2_constant("CONTACT_INTERACTION_TYPES")),
+        "hydrogen_bond": frozenset(
+            _section_30_2_constant("HYDROGEN_BOND_INTERACTION_TYPES")
+        ),
+        "hydrophobic": frozenset(
+            _section_30_2_constant("HYDROPHOBIC_INTERACTION_TYPES")
+        ),
+        "pi": frozenset(_section_30_2_constant("PI_INTERACTION_TYPES")),
+        "salt_bridge": frozenset(
+            _section_30_2_constant("SALT_BRIDGE_INTERACTION_TYPES")
+        ),
+        "clash": frozenset(_section_30_2_constant("CLASH_INTERACTION_TYPES")),
+    }
+    assert_scoring_test_contains(families, "unknown")
+    for family, member_types in family_sets.items():
+        assert_scoring_test_contains(families, family)
+        assert_scoring_test_true(bool(member_types))
+        assert_scoring_test_true(member_types.issubset(types))
+        for interaction_type in member_types:
+            assert_scoring_test_equal(
+                _section_30_2_family(interaction_type),
+                family,
+            )
+    favorable = frozenset(
+        _section_30_2_constant("FAVORABLE_INTERACTION_TYPES")
+    )
+    penalties = frozenset(_section_30_2_constant("PENALTY_INTERACTION_TYPES"))
+    neutral = frozenset(_section_30_2_constant("NEUTRAL_INTERACTION_TYPES"))
+    assert_scoring_test_true(favorable.isdisjoint(penalties))
+    assert_scoring_test_true(favorable.isdisjoint(neutral))
+    assert_scoring_test_true(penalties.isdisjoint(neutral))
+
+
+@register_scoring_self_test(
+    name=SCORING_CONFIG_TEST_TYPE_ALIASES,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_CONSTANTS, SCORING_SELF_TEST_TAG_NORMALIZATION},
+    replace=True,
+)
+def test_scoring_interaction_type_aliases() -> None:
+    """Validate representative type aliases and unknown preservation."""
+
+    for alias, expected in build_scoring_config_alias_cases().items():
+        normalized = _section_30_2_call("normalize_interaction_type", alias)
+        assert_scoring_test_equal(normalized, expected)
+        assert_scoring_test_true(
+            _section_30_2_call("is_known_interaction_type", normalized)
+        )
+    custom = _section_30_2_call(
+        "normalize_interaction_type",
+        "Custom Metal Coordination",
+        preserve_unknown=True,
+    )
+    assert_scoring_test_equal(custom, "custom_metal_coordination")
+    collapsed = _section_30_2_call(
+        "normalize_interaction_type",
+        "Custom Metal Coordination",
+        preserve_unknown=False,
+    )
+    assert_scoring_test_equal(collapsed, "unknown")
+
+
+@register_scoring_self_test(
+    name=SCORING_CONFIG_TEST_QUALITATIVE_ALIASES,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_CONSTANTS, SCORING_SELF_TEST_TAG_NORMALIZATION},
+    replace=True,
+)
+def test_scoring_qualitative_aliases() -> None:
+    """Validate strength, geometry, classification, and mode aliases."""
+
+    assert_scoring_test_equal(
+        _section_30_2_call("normalize_interaction_strength", "high"),
+        "strong",
+    )
+    assert_scoring_test_equal(
+        _section_30_2_call("normalize_interaction_strength", "medium"),
+        "moderate",
+    )
+    assert_scoring_test_equal(
+        _section_30_2_call("normalize_geometry_quality", "good"),
+        "favorable",
+    )
+    assert_scoring_test_equal(
+        _section_30_2_call(
+            "normalize_interaction_classification",
+            "T shaped",
+        ),
+        "t_shaped",
+    )
+    assert_scoring_test_equal(
+        _section_30_2_call("normalize_normalization_mode", "per residue"),
+        "residue_count",
+    )
+    assert_scoring_test_equal(
+        _section_30_2_call("normalize_aggregation_mode", "average"),
+        "mean",
+    )
+    assert_scoring_test_equal(
+        _section_30_2_call("normalize_deduplication_mode", "atoms"),
+        "atom_pair",
+    )
+    assert_scoring_test_equal(
+        _section_30_2_call("normalize_score_direction", "descending"),
+        "higher_is_better",
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_CONFIG_TEST_POLARITY,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_CONSTANTS},
+    replace=True,
+)
+def test_scoring_interaction_polarity() -> None:
+    """Validate favorable, neutral, penalty, and unknown polarity helpers."""
+
+    cases = {
+        "hydrogen_bond": "favorable",
+        "hydrophobic": "favorable",
+        "pi_stacking": "favorable",
+        "salt_bridge": "favorable",
+        "contact": "neutral",
+        "clash": "penalty",
+        "unknown": "neutral",
+    }
+    for interaction_type, expected in cases.items():
+        assert_scoring_test_equal(
+            _section_30_2_call("get_interaction_polarity", interaction_type),
+            expected,
+        )
+    assert_scoring_test_true(
+        _section_30_2_call("is_favorable_interaction_type", "hbond")
+    )
+    assert_scoring_test_true(
+        _section_30_2_call("is_penalty_interaction_type", "steric_clash")
+    )
+    assert_scoring_test_true(
+        _section_30_2_call("is_neutral_interaction_type", "contact")
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_CONFIG_TEST_ORDERING,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_CONSTANTS, SCORING_SELF_TEST_TAG_DETERMINISM},
+    replace=True,
+)
+def test_scoring_interaction_ordering() -> None:
+    """Validate deterministic canonical sort keys and display names."""
+
+    values = [
+        "clash",
+        "saltbridge",
+        "hbond",
+        "hydrophobic",
+        "contact",
+        "pi_stack",
+        "unknown",
+    ]
+    first = sorted(values, key=_section_30_2_require("interaction_type_sort_key"))
+    second = sorted(values, key=_section_30_2_require("interaction_type_sort_key"))
+    assert_scoring_test_equal(first, second)
+    for value in values:
+        display_name = _section_30_2_call(
+            "interaction_type_display_name",
+            value,
+        )
+        assert_scoring_test_true(isinstance(display_name, str))
+        assert_scoring_test_true(bool(display_name.strip()))
+
+
+@register_scoring_self_test(
+    name=SCORING_CONFIG_TEST_DEFAULT_MAPPINGS,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_CONFIGURATION, SCORING_SELF_TEST_TAG_MAPPING},
+    replace=True,
+)
+def test_scoring_default_mappings() -> None:
+    """Validate complete finite default weights, multipliers, and penalties."""
+
+    canonical_types = set(_section_30_2_constant("CANONICAL_INTERACTION_TYPES"))
+    weights = _section_30_2_constant("DEFAULT_INTERACTION_WEIGHTS")
+    assert_scoring_test_true(canonical_types.issubset(set(weights)))
+    for value in weights.values():
+        assert_scoring_test_finite(value)
+    multiplier_specs = (
+        ("DEFAULT_STRENGTH_MULTIPLIERS", "CANONICAL_STRENGTHS"),
+        ("DEFAULT_GEOMETRY_MULTIPLIERS", "CANONICAL_GEOMETRY_QUALITIES"),
+        (
+            "DEFAULT_CLASSIFICATION_MULTIPLIERS",
+            "CANONICAL_CLASSIFICATIONS",
+        ),
+    )
+    for mapping_name, collection_name in multiplier_specs:
+        mapping = _section_30_2_constant(mapping_name)
+        required = set(_section_30_2_constant(collection_name))
+        assert_scoring_test_true(required.issubset(set(mapping)))
+        for value in mapping.values():
+            assert_scoring_test_finite(value)
+            assert_scoring_test_true(float(value) >= 0.0)
+    penalties = _section_30_2_constant("DEFAULT_PENALTIES")
+    allowed_penalties = set(_section_30_2_constant("PENALTY_NAMES"))
+    assert_scoring_test_true(set(penalties).issubset(allowed_penalties))
+    for value in penalties.values():
+        assert_scoring_test_finite(value)
+
+
+@register_scoring_self_test(
+    name=SCORING_CONFIG_TEST_DEFAULT_CONFIG,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_CONFIGURATION},
+    replace=True,
+)
+def test_scoring_default_configuration() -> None:
+    """Validate the default immutable scoring configuration."""
+
+    config_type = _section_30_2_require("ScoringConfig")
+    default = _section_30_2_constant("DEFAULT_SCORING_CONFIG")
+    factory_default = _section_30_2_call("get_default_scoring_config")
+    assert_scoring_test_instance(default, config_type)
+    assert_scoring_test_instance(factory_default, config_type)
+    _section_30_2_call("validate_scoring_config", default)
+    assert_scoring_test_true(
+        _section_30_2_call(
+            "scoring_configs_equal",
+            default,
+            factory_default,
+            compare_metadata=True,
+        )
+    )
+    summary = _section_30_2_call("summarize_scoring_config", default)
+    assert_scoring_test_mapping_contains(
+        summary,
+        {
+            "interaction_weight_count",
+            "family_weights",
+            "normalization_mode",
+            "aggregation_mode",
+            "deduplication_mode",
+            "score_direction",
+        },
+    )
+    assert_scoring_test_equal(
+        summary["interaction_weight_count"],
+        len(default.interaction_weights),
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_CONFIG_TEST_COPY,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_CONFIGURATION},
+    replace=True,
+)
+def test_scoring_configuration_copy() -> None:
+    """Validate functional equality and independent mapping copies."""
+
+    original = _section_30_2_call("get_default_scoring_config")
+    copied = _section_30_2_call("copy_scoring_config", original)
+    assert_scoring_test_is_not(original, copied)
+    assert_scoring_test_true(
+        _section_30_2_call(
+            "scoring_configs_equal",
+            original,
+            copied,
+            compare_metadata=True,
+        )
+    )
+    assert_scoring_test_is_not(
+        original.interaction_weights,
+        copied.interaction_weights,
+    )
+    assert_scoring_test_equal(
+        dict(original.interaction_weights),
+        dict(copied.interaction_weights),
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_CONFIG_TEST_MERGE,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_CONFIGURATION, SCORING_SELF_TEST_TAG_MAPPING},
+    replace=True,
+)
+def test_scoring_configuration_merge() -> None:
+    """Validate mapping merge semantics and scalar overrides."""
+
+    base = _section_30_2_call("get_default_scoring_config")
+    merged = _section_30_2_call(
+        "merge_scoring_config",
+        base,
+        interaction_weights={"hbond": 4.25},
+        strength_multipliers={"high": 1.75},
+        metadata={"self_test": "30.2"},
+        deduplicate=False,
+        decimal_places=5,
+    )
+    _section_30_2_call("validate_scoring_config", merged)
+    assert_scoring_test_almost_equal(
+        merged.interaction_weights["hydrogen_bond"],
+        4.25,
+    )
+    assert_scoring_test_almost_equal(
+        merged.strength_multipliers["strong"],
+        1.75,
+    )
+    assert_scoring_test_false(merged.deduplicate)
+    assert_scoring_test_equal(merged.decimal_places, 5)
+    assert_scoring_test_equal(merged.metadata["self_test"], "30.2")
+    assert_scoring_test_almost_equal(
+        base.interaction_weights["hydrogen_bond"],
+        _section_30_2_constant("DEFAULT_INTERACTION_WEIGHTS")[
+            "hydrogen_bond"
+        ],
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_CONFIG_TEST_MAPPING_ROUND_TRIP,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_CONFIGURATION, SCORING_SELF_TEST_TAG_MAPPING},
+    replace=True,
+)
+def test_scoring_configuration_mapping_round_trip() -> None:
+    """Validate dictionary construction and public representation stability."""
+
+    original = _section_30_2_make_scoring_config(
+        interaction_weights={"saltbridge": 3.75},
+        use_geometry_quality=False,
+        metadata={"round_trip": True},
+    )
+    data = _section_30_2_config_mapping(original)
+    restored = _section_30_2_call("scoring_config_from_dict", data)
+    assert_scoring_test_true(
+        _section_30_2_call(
+            "scoring_configs_equal",
+            original,
+            restored,
+            compare_metadata=True,
+        )
+    )
+    assert_scoring_test_equal(
+        restored.interaction_weights["salt_bridge"],
+        3.75,
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_CONFIG_TEST_INVALID_WEIGHT,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_CONFIGURATION, SCORING_SELF_TEST_TAG_ERRORS},
+    replace=True,
+)
+def test_scoring_invalid_weight_mapping() -> None:
+    """Validate rejection of non-finite and non-numeric weights."""
+
+    error_type = _section_30_2_require("ScoringWeightError")
+    with assert_scoring_test_raises(error_type):
+        _section_30_2_call(
+            "normalize_weight_mapping",
+            {"hbond": math.nan},
+        )
+    with assert_scoring_test_raises(error_type):
+        _section_30_2_call(
+            "normalize_weight_mapping",
+            {"hbond": "not-a-number"},
+        )
+
+
+@register_scoring_self_test(
+    name=SCORING_CONFIG_TEST_INVALID_MULTIPLIER,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_CONFIGURATION, SCORING_SELF_TEST_TAG_ERRORS},
+    replace=True,
+)
+def test_scoring_invalid_multiplier_mapping() -> None:
+    """Validate rejection of negative and non-finite multipliers."""
+
+    error_type = _section_30_2_require("ScoringMultiplierError")
+    normalizer = _section_30_2_require("normalize_interaction_strength")
+    with assert_scoring_test_raises(error_type):
+        _section_30_2_call(
+            "normalize_multiplier_mapping",
+            {"strong": -1.0},
+            normalizer=normalizer,
+            minimum=0.0,
+            mapping_name="strength multiplier",
+        )
+    with assert_scoring_test_raises(error_type):
+        _section_30_2_call(
+            "normalize_multiplier_mapping",
+            {"strong": math.inf},
+            normalizer=normalizer,
+            minimum=0.0,
+            mapping_name="strength multiplier",
+        )
+
+
+@register_scoring_self_test(
+    name=SCORING_CONFIG_TEST_INVALID_FIELD,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_CONFIGURATION, SCORING_SELF_TEST_TAG_ERRORS},
+    replace=True,
+)
+def test_scoring_invalid_config_field() -> None:
+    """Validate rejection of unknown config keys and inconsistent bounds."""
+
+    error_type = _section_30_2_require("ScoringConfigurationError")
+    with assert_scoring_test_raises(error_type):
+        _section_30_2_call(
+            "scoring_config_from_dict",
+            {"nonexistent_scoring_field": 1},
+        )
+    with assert_scoring_test_raises(error_type):
+        _section_30_2_make_scoring_config(
+            minimum_score=10.0,
+            maximum_score=1.0,
+        )
+
+
+# -----------------------------------------------------------------------------
+# 30.2.6. Recognition normalization and direct recognition tests
+# -----------------------------------------------------------------------------
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_NORMALIZATION,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION, SCORING_SELF_TEST_TAG_NORMALIZATION},
+    replace=True,
+)
+def test_recognition_normalization() -> None:
+    """Validate recognition status and confidence aliases."""
+
+    status_cases = {
+        "recognised": "recognized",
+        "predicted": "inferred",
+        "uncertain": "ambiguous",
+        "unrecognised": "unknown",
+        "excluded": "rejected",
+        "error": "invalid",
+    }
+    for alias, expected in status_cases.items():
+        assert_scoring_test_equal(
+            _section_30_2_call("normalize_recognition_status", alias),
+            expected,
+        )
+    confidence_cases = {
+        "definite": "certain",
+        "strong": "high",
+        "moderate": "medium",
+        "weak": "low",
+        "undefined": "none",
+    }
+    for alias, expected in confidence_cases.items():
+        assert_scoring_test_equal(
+            _section_30_2_call("normalize_recognition_confidence", alias),
+            expected,
+        )
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_CONFIDENCE,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION},
+    replace=True,
+)
+def test_recognition_confidence_thresholds() -> None:
+    """Validate monotonic recognition confidence thresholds."""
+
+    scores = [0.0, 20.0, 45.0, 70.0, 100.0, 150.0]
+    labels = [
+        _section_30_2_call("recognition_confidence_from_score", score)
+        for score in scores
+    ]
+    allowed = frozenset(
+        _section_30_2_constant("RECOGNITION_CONFIDENCE_LEVELS")
+    )
+    for label in labels:
+        assert_scoring_test_contains(allowed, label)
+    assert_scoring_test_equal(labels[-1], "certain")
+    assert_scoring_test_equal(labels[0], "none")
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_EXPLICIT_TYPES,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION, SCORING_SELF_TEST_TAG_OBJECT},
+    replace=True,
+)
+def test_recognition_explicit_types() -> None:
+    """Validate explicit type recognition for every principal family."""
+
+    allowed = {"recognized", "inferred"}
+    for expected_family, interaction in (
+        build_scoring_recognition_explicit_cases().items()
+    ):
+        result = _section_30_2_call("recognize_interaction", interaction)
+        expected_type = _section_30_2_call(
+            "normalize_interaction_type",
+            interaction.interaction_type,
+        )
+        _section_30_2_assert_recognition(
+            result,
+            expected_type,
+            allowed_statuses=allowed,
+            minimum_score=_section_30_2_constant(
+                "RECOGNITION_SCORE_EXPLICIT_TYPE"
+            ),
+        )
+        assert_scoring_test_equal(
+            _section_30_2_result_family(result),
+            expected_family,
+        )
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_EXPLICIT_FAMILIES,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION, SCORING_SELF_TEST_TAG_OBJECT},
+    replace=True,
+)
+def test_recognition_explicit_families() -> None:
+    """Validate explicit-family extraction and conservative evidence."""
+
+    type_to_family = dict(
+        _section_30_2_constant("INTERACTION_TYPE_TO_FAMILY")
+    )
+    for family in (
+        "contact",
+        "hydrogen_bond",
+        "hydrophobic",
+        "pi",
+        "salt_bridge",
+        "clash",
+    ):
+        family_only = SimpleNamespace(interaction_family=family)
+        evidence = _section_30_2_call(
+            "recognize_explicit_family_evidence",
+            family_only,
+        )
+        compatible_types = {
+            interaction_type
+            for interaction_type, mapped_family in type_to_family.items()
+            if mapped_family == family
+        }
+        if len(compatible_types) == 1:
+            assert_scoring_test_equal(len(evidence), 1)
+            assert_scoring_test_contains(
+                compatible_types,
+                scoring_self_test_get(
+                    evidence[0],
+                    "interaction_type",
+                    "",
+                ),
+            )
+        else:
+            assert_scoring_test_equal(evidence, ())
+
+        explicit = SimpleNamespace(
+            interaction_type=family,
+            interaction_family=family,
+        )
+        result = _section_30_2_call(
+            "recognize_interaction",
+            explicit,
+        )
+        assert_scoring_test_equal(
+            _section_30_2_result_family(result),
+            family,
+        )
+        assert_scoring_test_equal(
+            scoring_self_test_get(result, "explicit_family", ""),
+            family,
+        )
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_CLASS_NAMES,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION, SCORING_SELF_TEST_TAG_OBJECT},
+    replace=True,
+)
+def test_recognition_class_names() -> None:
+    """Validate fallback recognition from detector-style class names."""
+
+    allowed = {"inferred", "recognized"}
+    for expected_family, interaction in (
+        build_scoring_recognition_class_name_cases().items()
+    ):
+        result = _section_30_2_call("recognize_interaction", interaction)
+        assert_scoring_test_equal(
+            _section_30_2_result_family(result),
+            expected_family,
+        )
+        assert_scoring_test_contains(
+            allowed,
+            _section_30_2_result_status(result),
+        )
+        sources = {
+            scoring_self_test_get(evidence, "source", "")
+            for candidate in _section_30_2_result_candidates(result)
+            for evidence in scoring_self_test_get(candidate, "evidence", ())
+        }
+        assert_scoring_test_contains(sources, "class_name")
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_CONTAINER_NAMES,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION, SCORING_SELF_TEST_TAG_COLLECTION},
+    replace=True,
+)
+def test_recognition_container_names() -> None:
+    """Validate detector-container names as recognition evidence."""
+
+    cases = {
+        "hbonds": "hydrogen_bond",
+        "hydrophobic_interactions": "hydrophobic",
+        "pi_interactions": "pi",
+        "salt_bridges": "salt_bridge",
+        "steric_clashes": "clash",
+    }
+    for container_name, family in cases.items():
+        result = _section_30_2_call(
+            "recognize_interaction",
+            _section_30_2_make_unknown_object(),
+            container_name=container_name,
+        )
+        assert_scoring_test_equal(_section_30_2_result_family(result), family)
+        sources = {
+            scoring_self_test_get(evidence, "source", "")
+            for candidate in _section_30_2_result_candidates(result)
+            for evidence in scoring_self_test_get(candidate, "evidence", ())
+        }
+        assert_scoring_test_contains(sources, "container_name")
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_ATTRIBUTES,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION, SCORING_SELF_TEST_TAG_OBJECT},
+    replace=True,
+)
+def test_recognition_attribute_patterns() -> None:
+    """Validate detector-specific attribute signatures."""
+
+    cases = (
+        (
+            SimpleNamespace(
+                donor="N1",
+                acceptor="O1",
+                distance=2.8,
+                angle=160.0,
+            ),
+            "hydrogen_bond",
+        ),
+        (
+            SimpleNamespace(
+                cation_group="LYS",
+                anion_group="ASP",
+                center_distance=3.1,
+            ),
+            "salt_bridge",
+        ),
+        (
+            SimpleNamespace(
+                ring1="PHE",
+                ring2="TRP",
+                centroid_distance=4.8,
+                normal_angle=15.0,
+                offset=1.1,
+            ),
+            "pi",
+        ),
+        (
+            SimpleNamespace(overlap=0.8, severity="severe"),
+            "clash",
+        ),
+    )
+    for interaction, expected_family in cases:
+        result = _section_30_2_call("recognize_interaction", interaction)
+        assert_scoring_test_equal(
+            _section_30_2_result_family(result),
+            expected_family,
+        )
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_GEOMETRY,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION},
+    replace=True,
+)
+def test_recognition_geometry_patterns() -> None:
+    """Validate conservative geometry-only evidence generation."""
+
+    for expected_type, interaction in (
+        build_scoring_recognition_geometry_cases().items()
+    ):
+        evidence = _section_30_2_call(
+            "recognize_geometry_pattern_evidence",
+            interaction,
+        )
+        observed = {
+            scoring_self_test_get(item, "interaction_type", "")
+            for item in evidence
+        }
+        canonical = _section_30_2_call(
+            "normalize_interaction_type",
+            expected_type,
+        )
+        assert_scoring_test_contains(observed, canonical)
+        for item in evidence:
+            _section_30_2_call("validate_recognition_evidence", item)
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_ATOMS,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION, SCORING_SELF_TEST_TAG_OBJECT},
+    replace=True,
+)
+def test_recognition_atom_patterns() -> None:
+    """Validate weak recognition evidence from atom elements."""
+
+    for expected_type, elements in build_scoring_recognition_atom_cases().items():
+        interaction = _section_30_2_make_atom_pair(*elements)
+        evidence = _section_30_2_call(
+            "recognize_atom_pattern_evidence",
+            interaction,
+        )
+        observed = {
+            scoring_self_test_get(item, "interaction_type", "")
+            for item in evidence
+        }
+        assert_scoring_test_contains(observed, expected_type)
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_RESIDUES,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION, SCORING_SELF_TEST_TAG_OBJECT},
+    replace=True,
+)
+def test_recognition_residue_patterns() -> None:
+    """Validate weak recognition evidence from residue identities."""
+
+    for expected_type, residue_names in (
+        build_scoring_recognition_residue_cases().items()
+    ):
+        interaction = _section_30_2_make_residue_pair(*residue_names)
+        evidence = _section_30_2_call(
+            "recognize_residue_pattern_evidence",
+            interaction,
+        )
+        observed = {
+            scoring_self_test_get(item, "interaction_type", "")
+            for item in evidence
+        }
+        assert_scoring_test_contains(observed, expected_type)
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_UNKNOWN,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION, SCORING_SELF_TEST_TAG_ERRORS},
+    replace=True,
+)
+def test_recognition_unknown_interaction() -> None:
+    """Validate non-strict handling of interactions without evidence."""
+
+    result = _section_30_2_call(
+        "recognize_interaction",
+        _section_30_2_make_unknown_object(),
+    )
+    assert_scoring_test_equal(_section_30_2_result_type(result), "unknown")
+    assert_scoring_test_equal(_section_30_2_result_family(result), "unknown")
+    assert_scoring_test_equal(_section_30_2_result_status(result), "unknown")
+    assert_scoring_test_false(bool(result))
+    assert_scoring_test_equal(_section_30_2_result_candidates(result), ())
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_STRICT_UNKNOWN,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION, SCORING_SELF_TEST_TAG_ERRORS},
+    replace=True,
+)
+def test_recognition_strict_unknown_interaction() -> None:
+    """Validate configured rejection of unknown interactions."""
+
+    error_type = _section_30_2_require("UnknownInteractionRecognitionError")
+    config = _section_30_2_make_recognition_config(reject_unknown=True)
+    with assert_scoring_test_raises(error_type):
+        _section_30_2_call(
+            "recognize_interaction",
+            _section_30_2_make_unknown_object(),
+            config=config,
+        )
+
+
+# -----------------------------------------------------------------------------
+# 30.2.7. Custom rules, collections, integration, and determinism
+# -----------------------------------------------------------------------------
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_CUSTOM_RULE,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION},
+    replace=True,
+)
+def test_recognition_custom_rule() -> None:
+    """Validate custom recognition-rule evaluation and selection."""
+
+    evidence_type = _section_30_2_require("RecognitionEvidence")
+    rule_type = _section_30_2_require("InteractionRecognitionRule")
+
+    def custom_rule(interaction: Any) -> Tuple[Any, ...]:
+        if not getattr(interaction, "custom_ionic", False):
+            return ()
+        return (
+            evidence_type(
+                interaction_type="salt_bridge",
+                score=_section_30_2_constant("RECOGNITION_SCORE_CUSTOM_RULE"),
+                source="custom_rule",
+                field_name="custom_ionic",
+                observed_value=True,
+                description="Synthetic custom ionic evidence.",
+            ),
+        )
+
+    rule = rule_type(
+        name="synthetic ionic rule",
+        function=custom_rule,
+        priority=10,
+        interaction_types=frozenset({"salt_bridge"}),
+    )
+    result = _section_30_2_call(
+        "recognize_interaction",
+        SimpleNamespace(custom_ionic=True),
+        custom_rules=(rule,),
+    )
+    _section_30_2_assert_recognition(
+        result,
+        "salt_bridge",
+        allowed_statuses={"inferred", "recognized"},
+    )
+    assert_scoring_test_equal(rule.name, "synthetic_ionic_rule")
+    assert_scoring_test_true(bool(rule.evaluate(SimpleNamespace(custom_ionic=True))))
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_AGGREGATION,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION, SCORING_SELF_TEST_TAG_DETERMINISM},
+    replace=True,
+)
+def test_recognition_evidence_aggregation() -> None:
+    """Validate evidence accumulation, candidate ordering, and margin."""
+
+    evidence_type = _section_30_2_require("RecognitionEvidence")
+    evidence = (
+        evidence_type(
+            interaction_type="hbond",
+            score=40.0,
+            source="attribute_pattern",
+        ),
+        evidence_type(
+            interaction_type="hydrogen_bond",
+            score=30.0,
+            source="geometry_pattern",
+        ),
+        evidence_type(
+            interaction_type="hydrophobic",
+            score=20.0,
+            source="atom_pattern",
+        ),
+    )
+    candidates = _section_30_2_call(
+        "aggregate_recognition_evidence",
+        evidence,
+    )
+    assert_scoring_test_equal(len(candidates), 2)
+    assert_scoring_test_equal(candidates[0].interaction_type, "hydrogen_bond")
+    assert_scoring_test_almost_equal(candidates[0].score, 70.0)
+    assert_scoring_test_equal(candidates[1].interaction_type, "hydrophobic")
+    margin = _section_30_2_call("calculate_recognition_margin", candidates)
+    assert_scoring_test_almost_equal(margin, 50.0)
+    for candidate in candidates:
+        _section_30_2_call("validate_recognition_candidate", candidate)
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_COLLECTION,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION, SCORING_SELF_TEST_TAG_COLLECTION},
+    replace=True,
+)
+def test_recognition_collection() -> None:
+    """Validate heterogeneous collection recognition and summaries."""
+
+    interactions = tuple(build_scoring_recognition_explicit_cases().values())
+    results = _section_30_2_call("recognize_interactions", interactions)
+    assert_scoring_test_equal(len(results), len(interactions))
+    assert_scoring_test_true(all(bool(result) for result in results))
+    statuses = _section_30_2_call("count_recognition_statuses", results)
+    assert_scoring_test_equal(sum(statuses.values()), len(results))
+    types = _section_30_2_call(
+        "count_recognized_interaction_types",
+        results,
+    )
+    assert_scoring_test_equal(sum(types.values()), len(results))
+    rate = _section_30_2_call("recognition_success_rate", results)
+    assert_scoring_test_almost_equal(rate, 1.0)
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_GROUPS,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION, SCORING_SELF_TEST_TAG_COLLECTION},
+    replace=True,
+)
+def test_recognition_groups() -> None:
+    """Validate grouped recognition and flattening."""
+
+    groups = {
+        "hbonds": [
+            SimpleNamespace(donor="N1", acceptor="O1", distance=2.8, angle=160.0)
+        ],
+        "hydrophobic": [SimpleNamespace(atom1="C1", atom2="C2", distance=3.8)],
+        "salt_bridges": [SimpleNamespace(cation_group="LYS", anion_group="ASP")],
+    }
+    recognized = _section_30_2_call("recognize_interaction_groups", groups)
+    assert_scoring_test_equal(set(recognized), set(groups))
+    flattened = _section_30_2_call("flatten_recognition_groups", recognized)
+    assert_scoring_test_equal(len(flattened), 3)
+    assert_scoring_test_true(all(bool(result) for result in flattened))
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_DOCK_MODEL,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION, SCORING_SELF_TEST_TAG_DOCK_MODEL},
+    replace=True,
+)
+def test_recognition_dock_model() -> None:
+    """Validate recognition of interactions stored by DockModel family."""
+
+    fixture = build_scoring_self_test_fixture()
+    model = fixture.poses[0]
+    groups = _section_30_2_call(
+        "recognize_dock_model_interactions",
+        model,
+    )
+    flattened = _section_30_2_call("flatten_recognition_groups", groups)
+    assert_scoring_test_equal(len(flattened), len(model.interactions))
+    observed_families = {
+        _section_30_2_result_family(result) for result in flattened
+    }
+    expected_families = {
+        interaction.family for interaction in model.interactions
+    }
+    assert_scoring_test_true(expected_families.issubset(observed_families))
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_EXTRACTION,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION, SCORING_SELF_TEST_TAG_EXTRACTION},
+    replace=True,
+)
+def test_recognition_extraction_integration() -> None:
+    """Validate extraction followed by recognition for objects and mappings."""
+
+    interaction = _section_30_2_make_type_object(
+        "hbond",
+        donor="N1",
+        acceptor="O1",
+        distance=2.8,
+        angle=165.0,
+    )
+    extracted = _section_30_2_call(
+        "extract_and_recognize_interaction",
+        interaction,
+        index=3,
+    )
+    assert_scoring_test_equal(extracted.interaction_type, "hydrogen_bond")
+    mapping = {
+        "interaction_type": "saltbridge",
+        "cation_group": "LYS",
+        "anion_group": "ASP",
+        "distance": 3.1,
+    }
+    extracted_mapping = _section_30_2_call(
+        "extract_and_recognize_interaction",
+        mapping,
+        index=4,
+    )
+    assert_scoring_test_equal(
+        extracted_mapping.interaction_type,
+        "salt_bridge",
+    )
+    collection = _section_30_2_call(
+        "extract_and_recognize_interactions",
+        (interaction, mapping),
+    )
+    assert_scoring_test_equal(len(collection), 2)
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_VALIDATION,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION, SCORING_SELF_TEST_TAG_ERRORS},
+    replace=True,
+)
+def test_recognition_validation() -> None:
+    """Validate recognition dataclasses and invalid recognition configs."""
+
+    result = _section_30_2_call(
+        "recognize_interaction",
+        _section_30_2_make_type_object("hbond"),
+    )
+    _section_30_2_call("validate_interaction_recognition_result", result)
+    for candidate in _section_30_2_result_candidates(result):
+        _section_30_2_call("validate_recognition_candidate", candidate)
+        for evidence in candidate.evidence:
+            _section_30_2_call("validate_recognition_evidence", evidence)
+    error_type = _section_30_2_require("InteractionRecognitionError")
+    with assert_scoring_test_raises(error_type):
+        _section_30_2_make_recognition_config(minimum_score=-1.0)
+    with assert_scoring_test_raises(error_type):
+        _section_30_2_make_recognition_config(maximum_candidates=0)
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_EXPLANATION,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={
+        SCORING_SELF_TEST_TAG_RECOGNITION,
+        SCORING_SELF_TEST_TAG_EXPLAINABILITY,
+    },
+    replace=True,
+)
+def test_recognition_explanation() -> None:
+    """Validate recognition explainability structure and evidence trace."""
+
+    result = _section_30_2_call(
+        "recognize_interaction",
+        _section_30_2_make_type_object(
+            "saltbridge",
+            cation_group="LYS",
+            anion_group="ASP",
+        ),
+    )
+    explanation = _section_30_2_call(
+        "explain_interaction_recognition",
+        result,
+    )
+    assert_scoring_test_equal(
+        scoring_self_test_get(explanation, "scope", ""),
+        "interaction",
+    )
+    assert_scoring_test_true(
+        bool(scoring_self_test_get(explanation, "message", ""))
+    )
+    assert_scoring_test_true(
+        bool(scoring_self_test_get(explanation, "children", ()))
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_RECOGNITION_TEST_DETERMINISM,
+    section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+    tags={SCORING_SELF_TEST_TAG_RECOGNITION, SCORING_SELF_TEST_TAG_DETERMINISM},
+    replace=True,
+)
+def test_recognition_determinism() -> None:
+    """Validate stable candidates, scores, and serialization across runs."""
+
+    interaction = _section_30_2_make_class_named(
+        "HydrogenBondInteraction",
+        donor="N1",
+        acceptor="O1",
+        distance=2.8,
+        angle=165.0,
+    )
+    results = tuple(
+        _section_30_2_call("recognize_interaction", interaction)
+        for _ in range(5)
+    )
+    baseline = results[0].to_dict(include_interaction=False)
+    for result in results[1:]:
+        assert_scoring_test_equal(
+            result.to_dict(include_interaction=False),
+            baseline,
+        )
+        assert_scoring_test_equal(hash(result), hash(results[0]))
+
+
+# -----------------------------------------------------------------------------
+# 30.2.8. Focused execution, reporting, and validation
+# -----------------------------------------------------------------------------
+
+
+def get_section_30_2_self_tests(
+    *,
+    tags: Iterable[str] = (),
+    enabled_only: bool = True,
+) -> Tuple[ScoringSelfTestCase, ...]:
+    """Return registered Section 30.2 cases."""
+
+    return get_registered_scoring_self_tests(
+        section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+        tags=tags,
+        enabled_only=enabled_only,
+    )
+
+
+def run_section_30_2_self_tests(
+    *,
+    tags: Iterable[str] = (),
+    seed: int = SCORING_SELF_TEST_DEFAULT_SEED,
+    capture_output: bool = True,
+    raise_on_failure: bool = False,
+    context: Optional[ScoringSelfTestContext] = None,
+) -> ScoringSelfTestReport:
+    """Execute only configuration and recognition self-tests."""
+
+    report = run_registered_scoring_self_tests(
+        section=SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION,
+        tags=tags,
+        seed=seed,
+        capture_output=capture_output,
+        raise_on_failure=raise_on_failure,
+        context=context,
+    )
+    validate_section_30_2_report(report)
+    return report
+
+
+def summarize_section_30_2_self_tests(
+    report: ScoringSelfTestReport,
+) -> ScoringConfigRecognitionSelfTestSummary:
+    """Return a compact validated Section 30.2 summary."""
+
+    validate_section_30_2_report(report)
+    summary = _section_30_2_summary_from_report(report)
+    validate_scoring_config_recognition_summary(summary)
+    return summary
+
+
+def scoring_config_recognition_summary_to_dict(
+    summary: ScoringConfigRecognitionSelfTestSummary,
+) -> Dict[str, Any]:
+    """Convert the focused summary to a dictionary."""
+
+    validate_scoring_config_recognition_summary(summary)
+    return summary.to_dict()
+
+
+def format_section_30_2_self_test_summary(
+    summary: ScoringConfigRecognitionSelfTestSummary,
+) -> str:
+    """Format a concise human-readable Section 30.2 summary."""
+
+    validate_scoring_config_recognition_summary(summary)
+    outcome = "PASS" if summary.success else "FAIL"
+    return (
+        "DockAnalyzer scoring self-tests — Section 30.2\n"
+        f"Status: {outcome}\n"
+        f"Total: {summary.total}\n"
+        f"Passed: {summary.passed}\n"
+        f"Failed: {summary.failed}\n"
+        f"Errors: {summary.errors}\n"
+        f"Skipped: {summary.skipped}\n"
+        f"Duration: {summary.duration_seconds:.6f} s"
+    )
+
+
+def validate_scoring_config_recognition_summary(
+    summary: Any,
+) -> None:
+    """Validate a focused Section 30.2 summary."""
+
+    if not isinstance(summary, ScoringConfigRecognitionSelfTestSummary):
+        raise ScoringConfigRecognitionValidationError(
+            "Expected ScoringConfigRecognitionSelfTestSummary."
+        )
+    if summary.section != SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION:
+        raise ScoringConfigRecognitionValidationError(
+            "Section 30.2 summary has an incorrect section identifier."
+        )
+    if summary.total != len(summary.test_names):
+        raise ScoringConfigRecognitionValidationError(
+            "Section 30.2 summary test_names do not match total."
+        )
+
+
+def validate_section_30_2_registration() -> None:
+    """Validate that every expected Section 30.2 test is registered once."""
+
+    cases = get_section_30_2_self_tests(enabled_only=False)
+    names = tuple(case.name for case in cases)
+    assert_scoring_test_unique(names)
+    missing = tuple(
+        name for name in SCORING_SECTION_30_2_TEST_NAMES if name not in names
+    )
+    unexpected = tuple(
+        name for name in names if name not in SCORING_SECTION_30_2_TEST_NAMES
+    )
+    if missing:
+        raise ScoringConfigRecognitionValidationError(
+            "Missing Section 30.2 tests: " + ", ".join(missing)
+        )
+    if unexpected:
+        raise ScoringConfigRecognitionValidationError(
+            "Unexpected Section 30.2 tests: " + ", ".join(unexpected)
+        )
+    if len(cases) != SCORING_SECTION_30_2_EXPECTED_TEST_COUNT:
+        raise ScoringConfigRecognitionValidationError(
+            "Section 30.2 registered test count is inconsistent."
+        )
+    for case in cases:
+        validate_scoring_self_test_case(case)
+        if case.section != SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION:
+            raise ScoringConfigRecognitionValidationError(
+                f"Case {case.name!r} has an incorrect section."
+            )
+
+
+def validate_section_30_2_report(report: Any) -> None:
+    """Validate a report produced by the focused Section 30.2 runner."""
+
+    validate_scoring_self_test_report(report)
+    if report.selected_section != SCORING_SELF_TEST_SECTION_CONFIG_RECOGNITION:
+        raise ScoringConfigRecognitionValidationError(
+            "The report was not generated for Section 30.2."
+        )
+    expected_names = {
+        case.name
+        for case in get_section_30_2_self_tests(tags=report.selected_tags)
+    }
+    observed_names = {result.case_name for result in report.results}
+    if expected_names != observed_names:
+        missing = sorted(expected_names - observed_names)
+        unexpected = sorted(observed_names - expected_names)
+        details: List[str] = []
+        if missing:
+            details.append("missing=" + ",".join(missing))
+        if unexpected:
+            details.append("unexpected=" + ",".join(unexpected))
+        raise ScoringConfigRecognitionValidationError(
+            "Section 30.2 report cases are inconsistent: "
+            + "; ".join(details)
+        )
+
+
+def run_section_30_2_self_check(
+    *,
+    raise_on_failure: bool = True,
+) -> Mapping[str, Any]:
+    """Run and summarize all Section 30.2 configuration/recognition tests."""
+
+    validate_section_30_2_registration()
+    report = run_section_30_2_self_tests(
+        capture_output=True,
+        raise_on_failure=raise_on_failure,
+    )
+    summary = summarize_section_30_2_self_tests(report)
+    if not summary.success and raise_on_failure:
+        failed = tuple(
+            result.case_name
+            for result in report.results
+            if result.failed
+        )
+        raise ScoringConfigRecognitionSelfTestError(
+            "Section 30.2 self-check failed: " + ", ".join(failed)
+        )
+    return MappingProxyType(
+        {
+            "status": summary.status,
+            "section": summary.section,
+            "success": summary.success,
+            "total": summary.total,
+            "passed": summary.passed,
+            "failed": summary.failed,
+            "skipped": summary.skipped,
+            "errors": summary.errors,
+            "duration_seconds": summary.duration_seconds,
+            "summary": MappingProxyType(summary.to_dict()),
+        }
+    )
+
+
+# -----------------------------------------------------------------------------
+# 30.2.9. Public interface
+# -----------------------------------------------------------------------------
+
+
+_SECTION_30_2_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    "SCORING_CONFIG_RECOGNITION_TEST_VERSION",
+    "SCORING_CONFIG_RECOGNITION_TEST_SCHEMA",
+    "SCORING_SELF_TEST_TAG_CONFIGURATION",
+    "SCORING_SELF_TEST_TAG_CONSTANTS",
+    "SCORING_SELF_TEST_TAG_NORMALIZATION",
+    "SCORING_SELF_TEST_TAG_RECOGNITION",
+    "SCORING_SELF_TEST_TAG_EXTRACTION",
+    "SCORING_SELF_TEST_TAG_MAPPING",
+    "SCORING_SELF_TEST_TAG_OBJECT",
+    "SCORING_SELF_TEST_TAG_COLLECTION",
+    "SCORING_SELF_TEST_TAG_DOCK_MODEL",
+    "SCORING_SELF_TEST_TAG_ERRORS",
+    "SCORING_SELF_TEST_TAG_EXPLAINABILITY",
+    "SCORING_SELF_TEST_TAG_DETERMINISM",
+    "SCORING_CONFIG_RECOGNITION_TEST_TAGS",
+    "SCORING_SECTION_30_2_TEST_NAMES",
+    "SCORING_SECTION_30_2_EXPECTED_TEST_COUNT",
+    "ScoringConfigRecognitionSelfTestError",
+    "ScoringConfigRecognitionFixtureError",
+    "ScoringConfigRecognitionValidationError",
+    "ScoringConfigRecognitionSelfTestSummary",
+    "build_scoring_config_alias_cases",
+    "build_scoring_recognition_explicit_cases",
+    "build_scoring_recognition_class_name_cases",
+    "build_scoring_recognition_geometry_cases",
+    "build_scoring_recognition_atom_cases",
+    "build_scoring_recognition_residue_cases",
+    "test_scoring_canonical_collections",
+    "test_scoring_interaction_type_aliases",
+    "test_scoring_qualitative_aliases",
+    "test_scoring_interaction_polarity",
+    "test_scoring_interaction_ordering",
+    "test_scoring_default_mappings",
+    "test_scoring_default_configuration",
+    "test_scoring_configuration_copy",
+    "test_scoring_configuration_merge",
+    "test_scoring_configuration_mapping_round_trip",
+    "test_scoring_invalid_weight_mapping",
+    "test_scoring_invalid_multiplier_mapping",
+    "test_scoring_invalid_config_field",
+    "test_recognition_normalization",
+    "test_recognition_confidence_thresholds",
+    "test_recognition_explicit_types",
+    "test_recognition_explicit_families",
+    "test_recognition_class_names",
+    "test_recognition_container_names",
+    "test_recognition_attribute_patterns",
+    "test_recognition_geometry_patterns",
+    "test_recognition_atom_patterns",
+    "test_recognition_residue_patterns",
+    "test_recognition_unknown_interaction",
+    "test_recognition_strict_unknown_interaction",
+    "test_recognition_custom_rule",
+    "test_recognition_evidence_aggregation",
+    "test_recognition_collection",
+    "test_recognition_groups",
+    "test_recognition_dock_model",
+    "test_recognition_extraction_integration",
+    "test_recognition_validation",
+    "test_recognition_explanation",
+    "test_recognition_determinism",
+    "get_section_30_2_self_tests",
+    "run_section_30_2_self_tests",
+    "summarize_section_30_2_self_tests",
+    "scoring_config_recognition_summary_to_dict",
+    "format_section_30_2_self_test_summary",
+    "validate_scoring_config_recognition_summary",
+    "validate_section_30_2_registration",
+    "validate_section_30_2_report",
+    "run_section_30_2_self_check",
+)
+
+for public_name in _SECTION_30_2_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+def section_30_2_public_names() -> Tuple[str, ...]:
+    """Return the immutable Section 30.2 public interface."""
+
+    return _SECTION_30_2_PUBLIC_NAMES
+
+
+def validate_section_30_2_public_interface() -> None:
+    """Validate all Section 30.2 public names and exports."""
+
+    missing_names = tuple(
+        name for name in _SECTION_30_2_PUBLIC_NAMES if name not in globals()
+    )
+    if missing_names:
+        raise ScoringConfigRecognitionValidationError(
+            "Missing Section 30.2 public names: " + ", ".join(missing_names)
+        )
+    missing_exports = tuple(
+        name for name in _SECTION_30_2_PUBLIC_NAMES if name not in __all__
+    )
+    if missing_exports:
+        raise ScoringConfigRecognitionValidationError(
+            "Section 30.2 names missing from __all__: "
+            + ", ".join(missing_exports)
+        )
+    assert_scoring_test_unique(_SECTION_30_2_PUBLIC_NAMES)
+    validate_section_30_2_registration()
+
+
+if "section_30_2_public_names" not in __all__:
+    __all__.append("section_30_2_public_names")
+if "validate_section_30_2_public_interface" not in __all__:
+    __all__.append("validate_section_30_2_public_interface")
+
+validate_section_30_2_public_interface()
+
+# =============================================================================
+# End of Section 30.2
+# =============================================================================
+
+# =============================================================================
+# DockAnalyzer — Interaction scoring
+# Section 30.3 — Individual scoring self-tests
+# =============================================================================
+
+"""
+Self-tests for individual interaction scoring.
+
+Section 30.3 validates the complete single-interaction scoring path implemented
+by Sections 8–13. The tests cover base weights, strength and classification
+multipliers, geometry-quality evaluation, family-specific contributions,
+penalties and corrections, and the final individual-scoring pipeline.
+
+The section uses the deterministic molecular fixtures and registry introduced
+in Section 30.1. It assumes that Section 30.2 has already registered the
+configuration and recognition tests, but it does not execute either section at
+import time. The final Section 30.5 runner remains responsible for executing
+the complete scoring self-test suite.
+
+This block is designed to be concatenated directly after Section 30.2. It does
+not repeat ``from __future__ import annotations`` and does not import detector
+modules globally. All scientific assertions are performed through the public
+scoring interfaces defined by Sections 8–13.
+"""
+
+from dataclasses import dataclass, field, replace
+from types import MappingProxyType, SimpleNamespace
+from typing import (
+    Any,
+    Dict,
+    Final,
+    FrozenSet,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
+import json
+import math
+
+if "__all__" not in globals():
+    __all__: List[str] = []
+
+
+# -----------------------------------------------------------------------------
+# 30.3.1. Constants, tags, and canonical test names
+# -----------------------------------------------------------------------------
+
+SCORING_INDIVIDUAL_TEST_VERSION: Final[str] = "30.3"
+SCORING_INDIVIDUAL_TEST_SCHEMA: Final[str] = (
+    "dockanalyzer.scoring.self_test.individual"
+)
+
+SCORING_SELF_TEST_TAG_BASE_WEIGHT: Final[str] = "base_weight"
+SCORING_SELF_TEST_TAG_MULTIPLIERS: Final[str] = "multipliers"
+SCORING_SELF_TEST_TAG_GEOMETRY: Final[str] = "geometry"
+SCORING_SELF_TEST_TAG_FAMILY_SCORING: Final[str] = "family_scoring"
+SCORING_SELF_TEST_TAG_ADJUSTMENTS: Final[str] = "adjustments"
+SCORING_SELF_TEST_TAG_INDIVIDUAL_SCORING: Final[str] = "individual_scoring"
+SCORING_SELF_TEST_TAG_PIPELINE: Final[str] = "pipeline"
+SCORING_SELF_TEST_TAG_MAPPING_INPUT: Final[str] = "mapping_input"
+SCORING_SELF_TEST_TAG_OBJECT_INPUT: Final[str] = "object_input"
+SCORING_SELF_TEST_TAG_RESCORING: Final[str] = "rescoring"
+SCORING_SELF_TEST_TAG_DECOMPOSITION: Final[str] = "decomposition"
+SCORING_SELF_TEST_TAG_INDIVIDUAL_VALIDATION: Final[str] = "validation"
+SCORING_SELF_TEST_TAG_INDIVIDUAL_ERRORS: Final[str] = "errors"
+SCORING_SELF_TEST_TAG_INDIVIDUAL_EXPLAINABILITY: Final[str] = "explainability"
+SCORING_SELF_TEST_TAG_INDIVIDUAL_SERIALIZATION: Final[str] = "serialization"
+SCORING_SELF_TEST_TAG_INDIVIDUAL_DETERMINISM: Final[str] = "determinism"
+
+SCORING_INDIVIDUAL_TEST_TAGS: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_SELF_TEST_TAG_BASE_WEIGHT,
+        SCORING_SELF_TEST_TAG_MULTIPLIERS,
+        SCORING_SELF_TEST_TAG_GEOMETRY,
+        SCORING_SELF_TEST_TAG_FAMILY_SCORING,
+        SCORING_SELF_TEST_TAG_ADJUSTMENTS,
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_SCORING,
+        SCORING_SELF_TEST_TAG_PIPELINE,
+        SCORING_SELF_TEST_TAG_MAPPING_INPUT,
+        SCORING_SELF_TEST_TAG_OBJECT_INPUT,
+        SCORING_SELF_TEST_TAG_RESCORING,
+        SCORING_SELF_TEST_TAG_DECOMPOSITION,
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_VALIDATION,
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_ERRORS,
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_EXPLAINABILITY,
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_SERIALIZATION,
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_DETERMINISM,
+    }
+)
+
+SCORING_BASE_WEIGHT_TEST_TYPE: Final[str] = "base_weight_type_resolution"
+SCORING_BASE_WEIGHT_TEST_FAMILY: Final[str] = "base_weight_family_fallback"
+SCORING_BASE_WEIGHT_TEST_OVERRIDE: Final[str] = "base_weight_override"
+SCORING_BASE_WEIGHT_TEST_UNKNOWN: Final[str] = "base_weight_unknown_fallback"
+SCORING_BASE_WEIGHT_TEST_STRICT: Final[str] = "base_weight_strict_unknown"
+SCORING_BASE_WEIGHT_TEST_SCORE: Final[str] = "base_weight_score_integration"
+
+SCORING_MULTIPLIER_TEST_STRENGTH: Final[str] = "strength_multiplier"
+SCORING_MULTIPLIER_TEST_CLASSIFICATION: Final[str] = (
+    "classification_multiplier"
+)
+SCORING_MULTIPLIER_TEST_COMBINED: Final[str] = "combined_multipliers"
+SCORING_MULTIPLIER_TEST_OVERRIDE: Final[str] = "multiplier_overrides"
+SCORING_MULTIPLIER_TEST_APPLICATION: Final[str] = "multiplier_application"
+
+SCORING_GEOMETRY_TEST_LOWER: Final[str] = "geometry_lower_is_better"
+SCORING_GEOMETRY_TEST_HIGHER: Final[str] = "geometry_higher_is_better"
+SCORING_GEOMETRY_TEST_TARGET: Final[str] = "geometry_target_range"
+SCORING_GEOMETRY_TEST_EXPLICIT: Final[str] = "geometry_explicit_quality"
+SCORING_GEOMETRY_TEST_INFERRED: Final[str] = "geometry_inferred_distance"
+SCORING_GEOMETRY_TEST_FALLBACK: Final[str] = "geometry_unknown_fallback"
+SCORING_GEOMETRY_TEST_SCORE: Final[str] = "geometry_score_integration"
+
+SCORING_FAMILY_TEST_CONTACT: Final[str] = "family_contact"
+SCORING_FAMILY_TEST_HBOND: Final[str] = "family_hydrogen_bond"
+SCORING_FAMILY_TEST_HYDROPHOBIC: Final[str] = "family_hydrophobic"
+SCORING_FAMILY_TEST_PI: Final[str] = "family_pi"
+SCORING_FAMILY_TEST_SALT_BRIDGE: Final[str] = "family_salt_bridge"
+SCORING_FAMILY_TEST_CLASH: Final[str] = "family_clash"
+SCORING_FAMILY_TEST_SCORE: Final[str] = "family_score_integration"
+
+SCORING_ADJUSTMENT_TEST_ARITHMETIC: Final[str] = "adjustment_arithmetic"
+SCORING_ADJUSTMENT_TEST_LIMITS: Final[str] = "adjustment_limits"
+SCORING_ADJUSTMENT_TEST_ORDER: Final[str] = "adjustment_order"
+SCORING_ADJUSTMENT_TEST_TOTALS: Final[str] = "adjustment_totals"
+SCORING_ADJUSTMENT_TEST_CLASH: Final[str] = "default_clash_penalty"
+SCORING_ADJUSTMENT_TEST_UNKNOWN: Final[str] = "unknown_data_penalties"
+SCORING_ADJUSTMENT_TEST_SCORE: Final[str] = "adjustment_score_integration"
+
+SCORING_INDIVIDUAL_TEST_EXTRACTED: Final[str] = "individual_extracted_input"
+SCORING_INDIVIDUAL_TEST_OBJECT: Final[str] = "individual_object_input"
+SCORING_INDIVIDUAL_TEST_MAPPING: Final[str] = "individual_mapping_input"
+SCORING_INDIVIDUAL_TEST_CONVENIENCE: Final[str] = "individual_convenience_api"
+SCORING_INDIVIDUAL_TEST_TRY_FAILURE: Final[str] = "individual_try_failure"
+SCORING_INDIVIDUAL_TEST_REJECTION: Final[str] = "individual_policy_rejection"
+SCORING_INDIVIDUAL_TEST_RESCORING: Final[str] = "individual_rescoring"
+SCORING_INDIVIDUAL_TEST_DECOMPOSITION: Final[str] = (
+    "individual_decomposition"
+)
+SCORING_INDIVIDUAL_TEST_TRACE: Final[str] = "individual_trace"
+SCORING_INDIVIDUAL_TEST_VALIDATION: Final[str] = "individual_validation"
+SCORING_INDIVIDUAL_TEST_EXPLANATION: Final[str] = "individual_explanation"
+SCORING_INDIVIDUAL_TEST_SERIALIZATION: Final[str] = (
+    "individual_serialization"
+)
+SCORING_INDIVIDUAL_TEST_DETERMINISM: Final[str] = "individual_determinism"
+
+SCORING_SECTION_30_3_TEST_NAMES: Final[Tuple[str, ...]] = (
+    SCORING_BASE_WEIGHT_TEST_TYPE,
+    SCORING_BASE_WEIGHT_TEST_FAMILY,
+    SCORING_BASE_WEIGHT_TEST_OVERRIDE,
+    SCORING_BASE_WEIGHT_TEST_UNKNOWN,
+    SCORING_BASE_WEIGHT_TEST_STRICT,
+    SCORING_BASE_WEIGHT_TEST_SCORE,
+    SCORING_MULTIPLIER_TEST_STRENGTH,
+    SCORING_MULTIPLIER_TEST_CLASSIFICATION,
+    SCORING_MULTIPLIER_TEST_COMBINED,
+    SCORING_MULTIPLIER_TEST_OVERRIDE,
+    SCORING_MULTIPLIER_TEST_APPLICATION,
+    SCORING_GEOMETRY_TEST_LOWER,
+    SCORING_GEOMETRY_TEST_HIGHER,
+    SCORING_GEOMETRY_TEST_TARGET,
+    SCORING_GEOMETRY_TEST_EXPLICIT,
+    SCORING_GEOMETRY_TEST_INFERRED,
+    SCORING_GEOMETRY_TEST_FALLBACK,
+    SCORING_GEOMETRY_TEST_SCORE,
+    SCORING_FAMILY_TEST_CONTACT,
+    SCORING_FAMILY_TEST_HBOND,
+    SCORING_FAMILY_TEST_HYDROPHOBIC,
+    SCORING_FAMILY_TEST_PI,
+    SCORING_FAMILY_TEST_SALT_BRIDGE,
+    SCORING_FAMILY_TEST_CLASH,
+    SCORING_FAMILY_TEST_SCORE,
+    SCORING_ADJUSTMENT_TEST_ARITHMETIC,
+    SCORING_ADJUSTMENT_TEST_LIMITS,
+    SCORING_ADJUSTMENT_TEST_ORDER,
+    SCORING_ADJUSTMENT_TEST_TOTALS,
+    SCORING_ADJUSTMENT_TEST_CLASH,
+    SCORING_ADJUSTMENT_TEST_UNKNOWN,
+    SCORING_ADJUSTMENT_TEST_SCORE,
+    SCORING_INDIVIDUAL_TEST_EXTRACTED,
+    SCORING_INDIVIDUAL_TEST_OBJECT,
+    SCORING_INDIVIDUAL_TEST_MAPPING,
+    SCORING_INDIVIDUAL_TEST_CONVENIENCE,
+    SCORING_INDIVIDUAL_TEST_TRY_FAILURE,
+    SCORING_INDIVIDUAL_TEST_REJECTION,
+    SCORING_INDIVIDUAL_TEST_RESCORING,
+    SCORING_INDIVIDUAL_TEST_DECOMPOSITION,
+    SCORING_INDIVIDUAL_TEST_TRACE,
+    SCORING_INDIVIDUAL_TEST_VALIDATION,
+    SCORING_INDIVIDUAL_TEST_EXPLANATION,
+    SCORING_INDIVIDUAL_TEST_SERIALIZATION,
+    SCORING_INDIVIDUAL_TEST_DETERMINISM,
+)
+
+SCORING_SECTION_30_3_EXPECTED_TEST_COUNT: Final[int] = len(
+    SCORING_SECTION_30_3_TEST_NAMES
+)
+
+
+# -----------------------------------------------------------------------------
+# 30.3.2. Exceptions and focused result structure
+# -----------------------------------------------------------------------------
+
+
+class ScoringIndividualSelfTestError(ScoringSelfTestError):
+    """Base exception for Section 30.3 self-test failures."""
+
+
+class ScoringIndividualFixtureError(ScoringIndividualSelfTestError):
+    """Raised when an individual-scoring fixture cannot be constructed."""
+
+
+class ScoringIndividualValidationError(ScoringIndividualSelfTestError):
+    """Raised when Section 30.3 registration or results are inconsistent."""
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringIndividualSelfTestSummary:
+    """Compact summary of the Section 30.3 test execution."""
+
+    section: str
+    status: str
+    total: int
+    passed: int
+    failed: int
+    skipped: int
+    errors: int
+    duration_seconds: float
+    test_names: Tuple[str, ...] = ()
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        normalized_section = normalize_scoring_self_test_section(self.section)
+        normalized_status = normalize_scoring_self_test_status(self.status)
+        counts = {
+            "total": self.total,
+            "passed": self.passed,
+            "failed": self.failed,
+            "skipped": self.skipped,
+            "errors": self.errors,
+        }
+        normalized_counts: Dict[str, int] = {}
+        for name, value in counts.items():
+            if isinstance(value, bool):
+                raise ScoringIndividualValidationError(
+                    f"{name} must be an integer."
+                )
+            try:
+                number = int(value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ScoringIndividualValidationError(
+                    f"{name} must be an integer."
+                ) from exc
+            if number < 0:
+                raise ScoringIndividualValidationError(
+                    f"{name} cannot be negative."
+                )
+            normalized_counts[name] = number
+        duration = scoring_self_test_float(
+            self.duration_seconds,
+            name="Section 30.3 duration",
+        )
+        if duration < 0.0:
+            raise ScoringIndividualValidationError(
+                "duration_seconds cannot be negative."
+            )
+        names = tuple(str(name).strip() for name in self.test_names)
+        if any(not name for name in names):
+            raise ScoringIndividualValidationError(
+                "test_names cannot contain empty names."
+            )
+        if len(set(names)) != len(names):
+            raise ScoringIndividualValidationError(
+                "test_names must be unique."
+            )
+        if normalized_counts["total"] != (
+            normalized_counts["passed"]
+            + normalized_counts["failed"]
+            + normalized_counts["skipped"]
+            + normalized_counts["errors"]
+        ):
+            raise ScoringIndividualValidationError(
+                "Section 30.3 summary counts are inconsistent."
+            )
+        object.__setattr__(self, "section", normalized_section)
+        object.__setattr__(self, "status", normalized_status)
+        for name, value in normalized_counts.items():
+            object.__setattr__(self, name, value)
+        object.__setattr__(self, "duration_seconds", duration)
+        object.__setattr__(self, "test_names", names)
+        object.__setattr__(
+            self,
+            "metadata",
+            scoring_self_test_freeze_mapping(self.metadata),
+        )
+
+    @property
+    def success(self) -> bool:
+        """Return whether every executed Section 30.3 test passed."""
+
+        return self.failed == 0 and self.errors == 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a mutable dictionary representation."""
+
+        return {
+            "schema": SCORING_INDIVIDUAL_TEST_SCHEMA,
+            "version": SCORING_INDIVIDUAL_TEST_VERSION,
+            "section": self.section,
+            "status": self.status,
+            "success": self.success,
+            "total": self.total,
+            "passed": self.passed,
+            "failed": self.failed,
+            "skipped": self.skipped,
+            "errors": self.errors,
+            "duration_seconds": self.duration_seconds,
+            "test_names": list(self.test_names),
+            "metadata": dict(self.metadata),
+        }
+
+
+# -----------------------------------------------------------------------------
+# 30.3.3. Global resolution and deterministic profile helpers
+# -----------------------------------------------------------------------------
+
+
+def _section_30_3_require(name: str) -> Any:
+    """Resolve a required symbol from the combined scoring module."""
+
+    try:
+        return scoring_self_test_resolve_global(name)
+    except Exception as exc:
+        raise ScoringIndividualFixtureError(
+            f"Section 30.3 requires scoring symbol {name!r}."
+        ) from exc
+
+
+def _section_30_3_optional(name: str, default: Any = None) -> Any:
+    """Resolve an optional symbol without failing module import."""
+
+    try:
+        value = scoring_self_test_optional_global(name)
+    except Exception:
+        return default
+    return default if value is None else value
+
+
+def _section_30_3_call(name: str, *args: Any, **kwargs: Any) -> Any:
+    """Call a required scoring function by name."""
+
+    function = _section_30_3_require(name)
+    if not callable(function):
+        raise ScoringIndividualFixtureError(
+            f"Scoring symbol {name!r} is not callable."
+        )
+    return function(*args, **kwargs)
+
+
+def _section_30_3_family(interaction_type: str) -> str:
+    """Return the canonical family for an interaction type."""
+
+    return str(
+        _section_30_3_call(
+            "canonical_interaction_family",
+            interaction_type,
+        )
+    )
+
+
+def _section_30_3_all_families() -> Tuple[str, ...]:
+    """Return all canonical families represented by the standard fixture."""
+
+    values = tuple(
+        _section_30_3_family(name)
+        for name in SCORING_SELF_TEST_FAMILIES
+    )
+    return tuple(dict.fromkeys(values))
+
+
+def build_scoring_individual_base_weight_profile(
+    *,
+    hydrogen_bond_weight: float = 2.0,
+    unknown_weight: float = 0.0,
+    strict: bool = False,
+) -> Any:
+    """Build the deterministic base-weight profile used by Section 30.3."""
+
+    profile_type = _section_30_3_require("BaseWeightProfile")
+    family_weights = {
+        family: 1.0 for family in _section_30_3_all_families()
+    }
+    family_weights[_section_30_3_family("clash")] = -1.0
+    return profile_type(
+        interaction_weights={
+            "contact": 0.5,
+            "hydrogen_bond": float(hydrogen_bond_weight),
+            "hydrophobic": 1.0,
+            "pi_stacking": 1.5,
+            "salt_bridge": 2.5,
+            "clash": -2.0,
+            "clash_severe": -3.0,
+        },
+        family_weights=family_weights,
+        unknown_weight=float(unknown_weight),
+        strict=bool(strict),
+    )
+
+
+def build_scoring_individual_multiplier_profile() -> Any:
+    """Build deterministic strength and classification multipliers."""
+
+    profile_type = _section_30_3_require("InteractionMultiplierProfile")
+    return profile_type(
+        strength_multipliers={
+            "strong": 1.25,
+            "moderate": 1.0,
+            "weak": 0.75,
+            "unknown": 1.0,
+        },
+        classification_multipliers={
+            "conventional": 1.0,
+            "charge_assisted": 1.20,
+            "nonconventional": 0.85,
+            "unknown": 1.0,
+        },
+        unknown_strength_multiplier=1.0,
+        unknown_classification_multiplier=1.0,
+    )
+
+
+def build_scoring_individual_geometry_profile(
+    *,
+    with_rules: bool = True,
+) -> Any:
+    """Build a deterministic geometry profile with optional metric rules."""
+
+    profile_type = _section_30_3_require("GeometryQualityProfile")
+    rule_type = _section_30_3_require("GeometryMetricRule")
+    rules_by_type: Dict[str, Tuple[Any, ...]] = {}
+    if with_rules:
+        rules_by_type["hydrogen_bond"] = (
+            rule_type(
+                metric="distance",
+                direction="lower_is_better",
+                ideal_value=2.8,
+                limit_value=4.0,
+                required=True,
+            ),
+            rule_type(
+                metric="angle",
+                direction="higher_is_better",
+                ideal_value=165.0,
+                limit_value=120.0,
+                required=False,
+                weight=0.5,
+            ),
+        )
+        rules_by_type["contact"] = (
+            rule_type(
+                metric="distance",
+                direction="lower_is_better",
+                ideal_value=3.5,
+                limit_value=5.0,
+            ),
+        )
+    return profile_type(
+        multipliers={
+            "ideal": 1.20,
+            "good": 1.00,
+            "acceptable": 0.85,
+            "poor": 0.60,
+            "rejected": 0.0,
+            "unknown": 1.00,
+        },
+        rules_by_type=rules_by_type,
+        trust_explicit_quality=True,
+        strict=False,
+    )
+
+
+def build_scoring_individual_family_profile(
+    *,
+    selected_family: Optional[str] = None,
+    multiplier: float = 1.0,
+    adjustment: float = 0.0,
+) -> Any:
+    """Build a family profile with deterministic neutral defaults."""
+
+    profile_type = _section_30_3_require("FamilyScoringProfile")
+    families = _section_30_3_all_families()
+    multipliers = {family: 1.0 for family in families}
+    adjustments = {family: 0.0 for family in families}
+    if selected_family is not None:
+        canonical = _section_30_3_family(selected_family)
+        multipliers[canonical] = float(multiplier)
+        adjustments[canonical] = float(adjustment)
+    return profile_type(
+        family_multipliers=multipliers,
+        family_adjustments=adjustments,
+        rules=(),
+        unknown_multiplier=1.0,
+        unknown_adjustment=0.0,
+        strict=False,
+    )
+
+
+def build_scoring_individual_adjustment_profile(
+    *,
+    use_default_rules: bool = False,
+    maximum_absolute_score: Optional[float] = None,
+) -> Any:
+    """Build an adjustment profile with no rules or the canonical rules."""
+
+    profile_type = _section_30_3_require("ScoreAdjustmentProfile")
+    rules = (
+        tuple(_section_30_3_require("DEFAULT_SCORE_ADJUSTMENT_RULES"))
+        if use_default_rules
+        else ()
+    )
+    return profile_type(
+        rules=rules,
+        poor_geometry_penalty=0.25,
+        unknown_geometry_penalty=0.15,
+        unknown_strength_penalty=0.10,
+        unknown_classification_penalty=0.10,
+        incomplete_geometry_penalty=0.20,
+        severe_clash_penalty=2.0,
+        moderate_clash_penalty=1.0,
+        duplicate_score_retention=0.5,
+        maximum_absolute_score=maximum_absolute_score,
+        strict=False,
+    )
+
+
+def build_scoring_individual_profile(
+    *,
+    recognize_interaction: bool = False,
+    apply_family_scoring: bool = True,
+    apply_adjustments: bool = True,
+    allow_unknown_type: bool = True,
+    allow_unknown_family: bool = True,
+    preserve_references: bool = True,
+) -> Any:
+    """Build the complete deterministic profile for individual tests."""
+
+    options_type = _section_30_3_require("IndividualScoringOptions")
+    profile_type = _section_30_3_require("IndividualScoringProfile")
+    options = options_type(
+        strict=False,
+        preserve_references=preserve_references,
+        preserve_components=True,
+        validate_result=True,
+        recognize_interaction=recognize_interaction,
+        apply_family_scoring=apply_family_scoring,
+        apply_adjustments=apply_adjustments,
+        allow_unknown_type=allow_unknown_type,
+        allow_unknown_family=allow_unknown_family,
+        allow_neutral_score=True,
+    )
+    return profile_type(
+        base_weight_profile=build_scoring_individual_base_weight_profile(),
+        multiplier_profile=build_scoring_individual_multiplier_profile(),
+        geometry_profile=build_scoring_individual_geometry_profile(),
+        family_profile=build_scoring_individual_family_profile(),
+        adjustment_profile=build_scoring_individual_adjustment_profile(),
+        options=options,
+    )
+
+
+def build_scoring_individual_extracted_data(
+    *,
+    interaction_id: str = "individual:hbond:1",
+    interaction_type: str = "hydrogen_bond",
+    strength: str = "strong",
+    classification: str = "charge_assisted",
+    geometry_quality: str = "ideal",
+    distance: Optional[float] = 2.7,
+    angle: Optional[float] = 170.0,
+    accepted: bool = True,
+    interaction: Any = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> Any:
+    """Build canonical extracted data for one deterministic interaction."""
+
+    data_type = _section_30_3_require("ExtractedInteractionData")
+    canonical_type = _section_30_3_call(
+        "normalize_interaction_type",
+        interaction_type,
+        preserve_unknown=True,
+    )
+    family = _section_30_3_family(canonical_type)
+    return data_type(
+        interaction_id=interaction_id,
+        interaction_type=canonical_type,
+        interaction_family=family,
+        strength=strength,
+        classification=classification,
+        geometry_quality=geometry_quality,
+        polarity=(
+            "penalty" if "clash" in str(interaction_type) else "favorable"
+        ),
+        accepted=accepted,
+        atom_pair=("A:10:N", "L:1:O"),
+        residue_pair=("A:10:LYS", "L:1:LIG"),
+        pose_id="pose_1",
+        model_id="1",
+        ligand_id="LIG",
+        distance=distance,
+        angle=angle,
+        source="self_test",
+        interaction=interaction,
+        metadata=dict(metadata or {}),
+    )
+
+
+def build_scoring_individual_mapping() -> Dict[str, Any]:
+    """Build a mapping accepted by the individual-scoring adapter."""
+
+    return {
+        "interaction_id": "individual:mapping:1",
+        "interaction_type": "hydrogen_bond",
+        "interaction_family": _section_30_3_family("hydrogen_bond"),
+        "strength": "strong",
+        "classification": "charge_assisted",
+        "geometry_quality": "ideal",
+        "polarity": "favorable",
+        "atom_pair": ("A:10:N", "L:1:O"),
+        "residue_pair": ("A:10:LYS", "L:1:LIG"),
+        "pose_id": "pose_1",
+        "model_id": "1",
+        "ligand_id": "LIG",
+        "distance": 2.7,
+        "angle": 170.0,
+        "metadata": {"fixture": "section_30_3"},
+    }
+
+
+def build_scoring_individual_object() -> Any:
+    """Build one detector-like object for full extraction and recognition."""
+
+    fixture = build_scoring_self_test_fixture(pose_count=1)
+    interaction = scoring_self_test_copy(
+        fixture.interaction_by_family(SCORING_SELF_TEST_FAMILY_HBOND)
+    )
+    interaction.interaction_type = "hydrogen_bond"
+    interaction.strength = "strong"
+    interaction.classification = "charge_assisted"
+    interaction.geometry_quality = "ideal"
+    interaction.distance = 2.7
+    interaction.metadata = dict(interaction.metadata)
+    interaction.metadata["geometry_quality"] = "ideal"
+    return interaction
+
+
+def _section_30_3_expected_individual_score() -> float:
+    """Return the deterministic score expected from the neutral pipeline."""
+
+    return 2.0 * 1.25 * 1.20 * 1.20
+
+
+def _section_30_3_result_score(result: Any) -> Any:
+    """Return and validate the score stored in an individual result."""
+
+    result_type = _section_30_3_require("IndividualScoringResult")
+    score_type = _section_30_3_require("InteractionScore")
+    assert_scoring_test_instance(result, result_type)
+    score = scoring_self_test_get(result, "score")
+    assert_scoring_test_instance(score, score_type)
+    return score
+
+
+def _section_30_3_assert_score_consistency(score: Any) -> None:
+    """Assert the core numerical invariants of an InteractionScore."""
+
+    assert_scoring_test_finite(score.base_weight)
+    assert_scoring_test_finite(score.raw_score)
+    assert_scoring_test_finite(score.final_score)
+    assert_scoring_test_true(score.strength_multiplier >= 0.0)
+    assert_scoring_test_true(score.classification_multiplier >= 0.0)
+    assert_scoring_test_true(score.geometry_multiplier >= 0.0)
+    assert_scoring_test_true(score.penalty_score >= 0.0)
+    assert_scoring_test_true(score.bonus_score >= 0.0)
+    _section_30_3_call(
+        "validate_interaction_score",
+        score,
+        validate_consistency=False,
+    )
+
+
+def _section_30_3_summary_from_report(
+    report: ScoringSelfTestReport,
+) -> ScoringIndividualSelfTestSummary:
+    """Convert a general report into a focused Section 30.3 summary."""
+
+    validate_scoring_self_test_report(report)
+    status = (
+        SCORING_SELF_TEST_STATUS_PASSED
+        if report.success
+        else SCORING_SELF_TEST_STATUS_FAILED
+    )
+    return ScoringIndividualSelfTestSummary(
+        section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+        status=status,
+        total=report.total,
+        passed=report.passed,
+        failed=report.status_counts[SCORING_SELF_TEST_STATUS_FAILED],
+        skipped=report.skipped,
+        errors=report.status_counts[SCORING_SELF_TEST_STATUS_ERROR],
+        duration_seconds=report.duration_seconds,
+        test_names=tuple(result.case_name for result in report.results),
+        metadata={
+            "seed": report.seed,
+            "selected_tags": sorted(report.selected_tags),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 30.3.4. Base-weight tests
+# -----------------------------------------------------------------------------
+
+
+@register_scoring_self_test(
+    name=SCORING_BASE_WEIGHT_TEST_TYPE,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_BASE_WEIGHT,),
+)
+def test_individual_base_weight_type_resolution() -> None:
+    """Resolve a type-specific hydrogen-bond base weight."""
+
+    profile = build_scoring_individual_base_weight_profile()
+    result = _section_30_3_call(
+        "resolve_base_weight",
+        "hbond",
+        profile=profile,
+    )
+    assert_scoring_test_almost_equal(result.weight, 2.0)
+    assert_scoring_test_equal(
+        result.interaction_type,
+        _section_30_3_call(
+            "normalize_interaction_type",
+            "hydrogen_bond",
+            preserve_unknown=True,
+        ),
+    )
+    assert_scoring_test_equal(result.status, "resolved")
+    _section_30_3_call("validate_base_weight_resolution", result)
+
+
+@register_scoring_self_test(
+    name=SCORING_BASE_WEIGHT_TEST_FAMILY,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_BASE_WEIGHT,),
+)
+def test_individual_base_weight_family_fallback() -> None:
+    """Use a family-level value when a subtype has no direct weight."""
+
+    profile_type = _section_30_3_require("BaseWeightProfile")
+    pi_family = _section_30_3_family("cation_pi")
+    profile = profile_type(
+        interaction_weights={},
+        family_weights={pi_family: 1.75},
+        unknown_weight=0.0,
+        policy="type_then_family",
+    )
+    result = _section_30_3_call(
+        "resolve_base_weight",
+        "cation_pi",
+        profile=profile,
+    )
+    assert_scoring_test_almost_equal(result.weight, 1.75)
+    assert_scoring_test_equal(result.interaction_family, pi_family)
+    assert_scoring_test_true(result.used_fallback)
+
+
+@register_scoring_self_test(
+    name=SCORING_BASE_WEIGHT_TEST_OVERRIDE,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_BASE_WEIGHT,),
+)
+def test_individual_base_weight_override() -> None:
+    """Give explicit overrides precedence over profile weights."""
+
+    result = _section_30_3_call(
+        "resolve_base_weight",
+        "hydrogen_bond",
+        profile=build_scoring_individual_base_weight_profile(),
+        overrides={"hbond": 4.5},
+    )
+    assert_scoring_test_almost_equal(result.weight, 4.5)
+    assert_scoring_test_equal(result.source, "override")
+
+
+@register_scoring_self_test(
+    name=SCORING_BASE_WEIGHT_TEST_UNKNOWN,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_BASE_WEIGHT,),
+)
+def test_individual_base_weight_unknown_fallback() -> None:
+    """Return the configured fallback for an unknown interaction type."""
+
+    profile = build_scoring_individual_base_weight_profile(
+        unknown_weight=0.25
+    )
+    result = _section_30_3_call(
+        "resolve_base_weight",
+        "not_a_known_interaction",
+        profile=profile,
+        strict=False,
+    )
+    assert_scoring_test_almost_equal(result.weight, 0.25)
+    assert_scoring_test_true(result.used_fallback)
+
+
+@register_scoring_self_test(
+    name=SCORING_BASE_WEIGHT_TEST_STRICT,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(
+        SCORING_SELF_TEST_TAG_BASE_WEIGHT,
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_ERRORS,
+    ),
+)
+def test_individual_base_weight_strict_unknown() -> None:
+    """Raise the documented exception for a strict unknown weight."""
+
+    error_type = _section_30_3_require("UnknownInteractionWeightError")
+    with assert_scoring_test_raises(error_type):
+        _section_30_3_call(
+            "resolve_base_weight",
+            "not_a_known_interaction",
+            profile=build_scoring_individual_base_weight_profile(
+                strict=True
+            ),
+            strict=True,
+        )
+
+
+@register_scoring_self_test(
+    name=SCORING_BASE_WEIGHT_TEST_SCORE,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_BASE_WEIGHT,),
+)
+def test_individual_base_weight_score_integration() -> None:
+    """Create an InteractionScore containing only its base weight."""
+
+    data = build_scoring_individual_extracted_data()
+    score = _section_30_3_call(
+        "interaction_score_with_base_weight",
+        data,
+        profile=build_scoring_individual_base_weight_profile(),
+    )
+    assert_scoring_test_almost_equal(score.base_weight, 2.0)
+    assert_scoring_test_almost_equal(score.raw_score, 2.0)
+    assert_scoring_test_almost_equal(score.final_score, 2.0)
+    assert_scoring_test_almost_equal(score.strength_multiplier, 1.0)
+    assert_scoring_test_almost_equal(score.geometry_multiplier, 1.0)
+    _section_30_3_assert_score_consistency(score)
+
+
+# -----------------------------------------------------------------------------
+# 30.3.5. Strength and classification multiplier tests
+# -----------------------------------------------------------------------------
+
+
+@register_scoring_self_test(
+    name=SCORING_MULTIPLIER_TEST_STRENGTH,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_MULTIPLIERS,),
+)
+def test_individual_strength_multiplier() -> None:
+    """Resolve strong and weak strength multipliers."""
+
+    profile = build_scoring_individual_multiplier_profile()
+    strong = _section_30_3_call(
+        "resolve_strength_multiplier",
+        "strong",
+        profile=profile,
+    )
+    weak = _section_30_3_call(
+        "resolve_strength_multiplier",
+        "weak",
+        profile=profile,
+    )
+    assert_scoring_test_almost_equal(strong.multiplier, 1.25)
+    assert_scoring_test_almost_equal(weak.multiplier, 0.75)
+    _section_30_3_call("validate_multiplier_resolution", strong)
+
+
+@register_scoring_self_test(
+    name=SCORING_MULTIPLIER_TEST_CLASSIFICATION,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_MULTIPLIERS,),
+)
+def test_individual_classification_multiplier() -> None:
+    """Resolve a charge-assisted classification multiplier."""
+
+    resolution = _section_30_3_call(
+        "resolve_classification_multiplier",
+        "charge_assisted",
+        profile=build_scoring_individual_multiplier_profile(),
+    )
+    assert_scoring_test_almost_equal(resolution.multiplier, 1.20)
+    assert_scoring_test_equal(resolution.kind, "classification")
+
+
+@register_scoring_self_test(
+    name=SCORING_MULTIPLIER_TEST_COMBINED,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_MULTIPLIERS,),
+)
+def test_individual_combined_multipliers() -> None:
+    """Multiply independent strength and classification contributions."""
+
+    data = build_scoring_individual_extracted_data()
+    resolution = _section_30_3_call(
+        "resolve_interaction_multipliers",
+        data,
+        profile=build_scoring_individual_multiplier_profile(),
+    )
+    assert_scoring_test_almost_equal(
+        resolution.combined_multiplier,
+        1.25 * 1.20,
+    )
+    _section_30_3_call(
+        "validate_interaction_multiplier_resolution",
+        resolution,
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_MULTIPLIER_TEST_OVERRIDE,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_MULTIPLIERS,),
+)
+def test_individual_multiplier_overrides() -> None:
+    """Apply explicit strength and classification overrides."""
+
+    data = build_scoring_individual_extracted_data()
+    resolution = _section_30_3_call(
+        "resolve_interaction_multipliers",
+        data,
+        profile=build_scoring_individual_multiplier_profile(),
+        strength_overrides={"strong": 1.5},
+        classification_overrides={"charge_assisted": 1.4},
+    )
+    assert_scoring_test_almost_equal(
+        resolution.combined_multiplier,
+        1.5 * 1.4,
+    )
+    assert_scoring_test_equal(resolution.strength.source, "override")
+    assert_scoring_test_equal(resolution.classification.source, "override")
+
+
+@register_scoring_self_test(
+    name=SCORING_MULTIPLIER_TEST_APPLICATION,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_MULTIPLIERS,),
+)
+def test_individual_multiplier_application() -> None:
+    """Apply resolved multipliers to a numeric score."""
+
+    data = build_scoring_individual_extracted_data()
+    resolution = _section_30_3_call(
+        "resolve_interaction_multipliers",
+        data,
+        profile=build_scoring_individual_multiplier_profile(),
+    )
+    value = _section_30_3_call(
+        "apply_interaction_multipliers",
+        2.0,
+        resolution,
+    )
+    assert_scoring_test_almost_equal(value, 3.0)
+
+
+# -----------------------------------------------------------------------------
+# 30.3.6. Geometry-quality tests
+# -----------------------------------------------------------------------------
+
+
+@register_scoring_self_test(
+    name=SCORING_GEOMETRY_TEST_LOWER,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_GEOMETRY,),
+)
+def test_individual_geometry_lower_is_better() -> None:
+    """Evaluate lower-is-better interpolation at ideal, middle, and limit."""
+
+    rule_type = _section_30_3_require("GeometryMetricRule")
+    rule = rule_type(
+        metric="distance",
+        direction="lower_is_better",
+        ideal_value=3.0,
+        limit_value=4.0,
+    )
+    assert_scoring_test_almost_equal(rule.evaluate(2.8), 1.0)
+    assert_scoring_test_almost_equal(rule.evaluate(3.5), 0.5)
+    assert_scoring_test_almost_equal(rule.evaluate(4.0), 0.0)
+    _section_30_3_call("validate_geometry_metric_rule", rule)
+
+
+@register_scoring_self_test(
+    name=SCORING_GEOMETRY_TEST_HIGHER,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_GEOMETRY,),
+)
+def test_individual_geometry_higher_is_better() -> None:
+    """Evaluate higher-is-better angular geometry."""
+
+    rule_type = _section_30_3_require("GeometryMetricRule")
+    rule = rule_type(
+        metric="angle",
+        direction="higher_is_better",
+        ideal_value=160.0,
+        limit_value=120.0,
+    )
+    assert_scoring_test_almost_equal(rule.evaluate(170.0), 1.0)
+    assert_scoring_test_almost_equal(rule.evaluate(140.0), 0.5)
+    assert_scoring_test_almost_equal(rule.evaluate(120.0), 0.0)
+
+
+@register_scoring_self_test(
+    name=SCORING_GEOMETRY_TEST_TARGET,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_GEOMETRY,),
+)
+def test_individual_geometry_target_range() -> None:
+    """Evaluate target-range geometry on both sides of the ideal interval."""
+
+    rule_type = _section_30_3_require("GeometryMetricRule")
+    rule = rule_type(
+        metric="angle",
+        direction="target",
+        ideal_min=80.0,
+        ideal_max=100.0,
+        limit_min=60.0,
+        limit_max=120.0,
+    )
+    assert_scoring_test_almost_equal(rule.evaluate(90.0), 1.0)
+    assert_scoring_test_almost_equal(rule.evaluate(70.0), 0.5)
+    assert_scoring_test_almost_equal(rule.evaluate(110.0), 0.5)
+    assert_scoring_test_almost_equal(rule.evaluate(60.0), 0.0)
+
+
+@register_scoring_self_test(
+    name=SCORING_GEOMETRY_TEST_EXPLICIT,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_GEOMETRY,),
+)
+def test_individual_geometry_explicit_quality() -> None:
+    """Trust an explicit ideal geometry-quality label."""
+
+    data = build_scoring_individual_extracted_data(
+        geometry_quality="ideal"
+    )
+    result = _section_30_3_call(
+        "resolve_geometry_quality",
+        data,
+        profile=build_scoring_individual_geometry_profile(),
+    )
+    assert_scoring_test_almost_equal(result.multiplier, 1.20)
+    assert_scoring_test_equal(result.quality, "ideal")
+    _section_30_3_call("validate_geometry_quality_resolution", result)
+
+
+@register_scoring_self_test(
+    name=SCORING_GEOMETRY_TEST_INFERRED,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_GEOMETRY,),
+)
+def test_individual_geometry_inferred_distance() -> None:
+    """Infer ideal geometry from distance and angle metrics."""
+
+    data = build_scoring_individual_extracted_data(
+        geometry_quality="unknown",
+        distance=2.8,
+        angle=170.0,
+    )
+    result = _section_30_3_call(
+        "resolve_geometry_quality",
+        data,
+        profile=build_scoring_individual_geometry_profile(),
+    )
+    assert_scoring_test_almost_equal(result.score, 1.0)
+    assert_scoring_test_almost_equal(result.multiplier, 1.20)
+    assert_scoring_test_true(len(result.evaluations) >= 1)
+
+
+@register_scoring_self_test(
+    name=SCORING_GEOMETRY_TEST_FALLBACK,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_GEOMETRY,),
+)
+def test_individual_geometry_unknown_fallback() -> None:
+    """Use the unknown multiplier when no geometry evidence is available."""
+
+    data = build_scoring_individual_extracted_data(
+        geometry_quality="unknown",
+        distance=None,
+        angle=None,
+    )
+    result = _section_30_3_call(
+        "resolve_geometry_quality",
+        data,
+        profile=build_scoring_individual_geometry_profile(with_rules=False),
+        strict=False,
+    )
+    assert_scoring_test_almost_equal(result.multiplier, 1.0)
+    assert_scoring_test_finite(result.multiplier)
+
+
+@register_scoring_self_test(
+    name=SCORING_GEOMETRY_TEST_SCORE,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_GEOMETRY,),
+)
+def test_individual_geometry_score_integration() -> None:
+    """Combine base weight, interaction multipliers, and geometry."""
+
+    score = _section_30_3_call(
+        "interaction_score_with_geometry",
+        build_scoring_individual_extracted_data(),
+        base_weight_profile=build_scoring_individual_base_weight_profile(),
+        multiplier_profile=build_scoring_individual_multiplier_profile(),
+        geometry_profile=build_scoring_individual_geometry_profile(),
+    )
+    assert_scoring_test_almost_equal(
+        score.raw_score,
+        _section_30_3_expected_individual_score(),
+    )
+    assert_scoring_test_almost_equal(score.penalty_score, 0.0)
+    assert_scoring_test_almost_equal(score.bonus_score, 0.0)
+    _section_30_3_assert_score_consistency(score)
+
+
+# -----------------------------------------------------------------------------
+# 30.3.7. Family-specific scoring tests
+# -----------------------------------------------------------------------------
+
+
+def _section_30_3_test_family_contribution(
+    interaction_type: str,
+    *,
+    base_weight: float,
+    multiplier: float,
+    adjustment: float,
+) -> None:
+    """Exercise a deterministic family contribution for one interaction."""
+
+    family = _section_30_3_family(interaction_type)
+    base_profile_type = _section_30_3_require("BaseWeightProfile")
+    data = build_scoring_individual_extracted_data(
+        interaction_id=f"family:{interaction_type}",
+        interaction_type=interaction_type,
+        strength="unknown",
+        classification="unknown",
+        geometry_quality="unknown",
+        distance=None,
+        angle=None,
+    )
+    score = _section_30_3_call(
+        "interaction_score_with_geometry",
+        data,
+        base_weight_profile=base_profile_type(
+            interaction_weights={interaction_type: base_weight},
+            family_weights={family: base_weight},
+            unknown_weight=0.0,
+        ),
+        multiplier_profile=build_scoring_individual_multiplier_profile(),
+        geometry_profile=build_scoring_individual_geometry_profile(
+            with_rules=False
+        ),
+    )
+    profile = build_scoring_individual_family_profile(
+        selected_family=family,
+        multiplier=multiplier,
+        adjustment=adjustment,
+    )
+    contribution = _section_30_3_call(
+        "resolve_family_scoring",
+        score,
+        profile=profile,
+    )
+    assert_scoring_test_equal(contribution.interaction_family, family)
+    assert_scoring_test_almost_equal(contribution.multiplier, multiplier)
+    assert_scoring_test_almost_equal(contribution.adjustment, adjustment)
+    _section_30_3_call(
+        "validate_family_score_contribution",
+        contribution,
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_FAMILY_TEST_CONTACT,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_FAMILY_SCORING,),
+)
+def test_individual_family_contact() -> None:
+    """Resolve a neutral contact-family contribution."""
+
+    _section_30_3_test_family_contribution(
+        "contact",
+        base_weight=0.5,
+        multiplier=1.0,
+        adjustment=0.0,
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_FAMILY_TEST_HBOND,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_FAMILY_SCORING,),
+)
+def test_individual_family_hydrogen_bond() -> None:
+    """Resolve a hydrogen-bond family multiplier and adjustment."""
+
+    _section_30_3_test_family_contribution(
+        "hydrogen_bond",
+        base_weight=2.0,
+        multiplier=1.10,
+        adjustment=0.20,
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_FAMILY_TEST_HYDROPHOBIC,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_FAMILY_SCORING,),
+)
+def test_individual_family_hydrophobic() -> None:
+    """Resolve a hydrophobic-family contribution."""
+
+    _section_30_3_test_family_contribution(
+        "hydrophobic",
+        base_weight=1.0,
+        multiplier=1.05,
+        adjustment=0.10,
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_FAMILY_TEST_PI,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_FAMILY_SCORING,),
+)
+def test_individual_family_pi() -> None:
+    """Resolve a pi-family contribution."""
+
+    _section_30_3_test_family_contribution(
+        "pi_stacking",
+        base_weight=1.5,
+        multiplier=1.15,
+        adjustment=0.15,
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_FAMILY_TEST_SALT_BRIDGE,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_FAMILY_SCORING,),
+)
+def test_individual_family_salt_bridge() -> None:
+    """Resolve an ionic/salt-bridge family contribution."""
+
+    _section_30_3_test_family_contribution(
+        "salt_bridge",
+        base_weight=2.5,
+        multiplier=1.20,
+        adjustment=0.25,
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_FAMILY_TEST_CLASH,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_FAMILY_SCORING,),
+)
+def test_individual_family_clash() -> None:
+    """Resolve a steric/clash family contribution for a negative score."""
+
+    _section_30_3_test_family_contribution(
+        "clash",
+        base_weight=-2.0,
+        multiplier=1.25,
+        adjustment=-0.20,
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_FAMILY_TEST_SCORE,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_FAMILY_SCORING,),
+)
+def test_individual_family_score_integration() -> None:
+    """Apply a deterministic family multiplier to an InteractionScore."""
+
+    data = build_scoring_individual_extracted_data()
+    pre_family = _section_30_3_call(
+        "interaction_score_with_geometry",
+        data,
+        base_weight_profile=build_scoring_individual_base_weight_profile(),
+        multiplier_profile=build_scoring_individual_multiplier_profile(),
+        geometry_profile=build_scoring_individual_geometry_profile(),
+    )
+    profile = build_scoring_individual_family_profile(
+        selected_family="hydrogen_bond",
+        multiplier=1.10,
+        adjustment=0.20,
+    )
+    scored = _section_30_3_call(
+        "apply_family_scoring_to_score",
+        pre_family,
+        profile=profile,
+    )
+    expected = pre_family.raw_score * 1.10 + 0.20
+    assert_scoring_test_almost_equal(scored.raw_score, expected)
+    assert_scoring_test_almost_equal(scored.final_score, expected)
+    assert_scoring_test_mapping_contains(scored.metadata, "family_scoring")
+
+
+# -----------------------------------------------------------------------------
+# 30.3.8. Penalty and correction tests
+# -----------------------------------------------------------------------------
+
+
+def _section_30_3_adjustment(
+    adjustment_id: str,
+    kind: str,
+    category: str,
+    operation: str,
+    value: float,
+    *,
+    stage: str = "final",
+) -> Any:
+    """Build one explicit ScoreAdjustment."""
+
+    adjustment_type = _section_30_3_require("ScoreAdjustment")
+    return adjustment_type(
+        adjustment_id=adjustment_id,
+        kind=kind,
+        category=category,
+        operation=operation,
+        value=value,
+        source="profile",
+        stage=stage,
+        reason="Section 30.3 deterministic adjustment.",
+        rule_name="section_30_3",
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_ADJUSTMENT_TEST_ARITHMETIC,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_ADJUSTMENTS,),
+)
+def test_individual_adjustment_arithmetic() -> None:
+    """Apply subtractive, additive, and multiplicative adjustments."""
+
+    adjustments = (
+        _section_30_3_adjustment(
+            "penalty",
+            "penalty",
+            "custom",
+            "subtract",
+            1.0,
+        ),
+        _section_30_3_adjustment(
+            "bonus",
+            "bonus",
+            "custom",
+            "add",
+            2.0,
+        ),
+        _section_30_3_adjustment(
+            "scale",
+            "correction",
+            "custom",
+            "multiply",
+            0.5,
+        ),
+    )
+    value = _section_30_3_call(
+        "apply_score_adjustments",
+        5.0,
+        adjustments,
+    )
+    assert_scoring_test_almost_equal(value, 3.0)
+
+
+@register_scoring_self_test(
+    name=SCORING_ADJUSTMENT_TEST_LIMITS,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_ADJUSTMENTS,),
+)
+def test_individual_adjustment_limits() -> None:
+    """Apply minimum-based caps and maximum-based floors."""
+
+    cap = _section_30_3_adjustment(
+        "cap",
+        "cap",
+        "score_cap",
+        "minimum",
+        4.0,
+    )
+    floor = _section_30_3_adjustment(
+        "floor",
+        "floor",
+        "score_floor",
+        "maximum",
+        -2.0,
+    )
+    assert_scoring_test_almost_equal(cap.apply(7.0), 4.0)
+    assert_scoring_test_almost_equal(floor.apply(-5.0), -2.0)
+
+
+@register_scoring_self_test(
+    name=SCORING_ADJUSTMENT_TEST_ORDER,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_ADJUSTMENTS,),
+)
+def test_individual_adjustment_order() -> None:
+    """Preserve deterministic adjustment application order."""
+
+    add_then_scale = (
+        _section_30_3_adjustment(
+            "add",
+            "bonus",
+            "custom",
+            "add",
+            2.0,
+        ),
+        _section_30_3_adjustment(
+            "scale",
+            "correction",
+            "custom",
+            "multiply",
+            3.0,
+        ),
+    )
+    scale_then_add = tuple(reversed(add_then_scale))
+    first = _section_30_3_call(
+        "apply_score_adjustments",
+        1.0,
+        add_then_scale,
+    )
+    second = _section_30_3_call(
+        "apply_score_adjustments",
+        1.0,
+        scale_then_add,
+    )
+    assert_scoring_test_almost_equal(first, 9.0)
+    assert_scoring_test_almost_equal(second, 5.0)
+    assert_scoring_test_not_equal(first, second)
+
+
+@register_scoring_self_test(
+    name=SCORING_ADJUSTMENT_TEST_TOTALS,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_ADJUSTMENTS,),
+)
+def test_individual_adjustment_totals() -> None:
+    """Report penalty, bonus, correction, and total deltas."""
+
+    adjustments = (
+        _section_30_3_adjustment(
+            "penalty",
+            "penalty",
+            "custom",
+            "subtract",
+            1.0,
+        ),
+        _section_30_3_adjustment(
+            "bonus",
+            "bonus",
+            "custom",
+            "add",
+            0.5,
+        ),
+    )
+    totals = _section_30_3_call(
+        "calculate_adjustment_totals",
+        adjustments,
+        input_score=5.0,
+    )
+    assert_scoring_test_almost_equal(totals["penalty_total"], 1.0)
+    assert_scoring_test_almost_equal(totals["bonus_total"], 0.5)
+    assert_scoring_test_almost_equal(totals["output_score"], 4.5)
+    assert_scoring_test_almost_equal(totals["total_delta"], -0.5)
+
+
+@register_scoring_self_test(
+    name=SCORING_ADJUSTMENT_TEST_CLASH,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_ADJUSTMENTS,),
+)
+def test_individual_default_clash_penalty() -> None:
+    """Apply the configured severe-clash penalty to a steric score."""
+
+    data = build_scoring_individual_extracted_data(
+        interaction_id="individual:clash:severe",
+        interaction_type="clash_severe",
+        strength="strong",
+        classification="conventional",
+        geometry_quality="poor",
+        distance=1.3,
+        angle=None,
+    )
+    score = _section_30_3_call(
+        "interaction_score_with_family_scoring",
+        data,
+        base_weight_profile=build_scoring_individual_base_weight_profile(),
+        multiplier_profile=build_scoring_individual_multiplier_profile(),
+        geometry_profile=build_scoring_individual_geometry_profile(
+            with_rules=False
+        ),
+        family_profile=build_scoring_individual_family_profile(),
+    )
+    adjusted = _section_30_3_call(
+        "apply_adjustments_to_interaction_score",
+        score,
+        profile=build_scoring_individual_adjustment_profile(
+            use_default_rules=True
+        ),
+    )
+    assert_scoring_test_true(adjusted.final_score < score.final_score)
+    assert_scoring_test_true(adjusted.penalty_score > score.penalty_score)
+
+
+@register_scoring_self_test(
+    name=SCORING_ADJUSTMENT_TEST_UNKNOWN,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_ADJUSTMENTS,),
+)
+def test_individual_unknown_data_penalties() -> None:
+    """Apply uncertainty penalties to unknown scoring labels."""
+
+    data = build_scoring_individual_extracted_data(
+        interaction_id="individual:unknown:labels",
+        strength="unknown",
+        classification="unknown",
+        geometry_quality="unknown",
+        distance=None,
+        angle=None,
+    )
+    score = _section_30_3_call(
+        "interaction_score_with_family_scoring",
+        data,
+        base_weight_profile=build_scoring_individual_base_weight_profile(),
+        multiplier_profile=build_scoring_individual_multiplier_profile(),
+        geometry_profile=build_scoring_individual_geometry_profile(
+            with_rules=False
+        ),
+        family_profile=build_scoring_individual_family_profile(),
+    )
+    adjusted = _section_30_3_call(
+        "apply_adjustments_to_interaction_score",
+        score,
+        profile=build_scoring_individual_adjustment_profile(
+            use_default_rules=True
+        ),
+    )
+    assert_scoring_test_true(adjusted.final_score <= score.final_score)
+    assert_scoring_test_true(adjusted.penalty_score >= score.penalty_score)
+
+
+@register_scoring_self_test(
+    name=SCORING_ADJUSTMENT_TEST_SCORE,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_ADJUSTMENTS,),
+)
+def test_individual_adjustment_score_integration() -> None:
+    """Store resolved adjustment metadata on the final score."""
+
+    data = build_scoring_individual_extracted_data(
+        strength="unknown",
+        classification="unknown",
+        geometry_quality="unknown",
+        distance=None,
+        angle=None,
+    )
+    score = _section_30_3_call(
+        "interaction_score_with_adjustments",
+        data,
+        base_weight_profile=build_scoring_individual_base_weight_profile(),
+        multiplier_profile=build_scoring_individual_multiplier_profile(),
+        geometry_profile=build_scoring_individual_geometry_profile(
+            with_rules=False
+        ),
+        family_profile=build_scoring_individual_family_profile(),
+        adjustment_profile=build_scoring_individual_adjustment_profile(
+            use_default_rules=True
+        ),
+    )
+    assert_scoring_test_mapping_contains(score.metadata, "score_adjustments")
+    _section_30_3_assert_score_consistency(score)
+
+
+# -----------------------------------------------------------------------------
+# 30.3.9. Complete individual-scoring pipeline tests
+# -----------------------------------------------------------------------------
+
+
+@register_scoring_self_test(
+    name=SCORING_INDIVIDUAL_TEST_EXTRACTED,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_SCORING,
+        SCORING_SELF_TEST_TAG_PIPELINE,
+    ),
+)
+def test_individual_scoring_extracted_input() -> None:
+    """Score already canonical ExtractedInteractionData."""
+
+    profile = build_scoring_individual_profile()
+    result = _section_30_3_call(
+        "score_individual_interaction",
+        build_scoring_individual_extracted_data(),
+        profile=profile,
+        raise_errors=True,
+    )
+    score = _section_30_3_result_score(result)
+    assert_scoring_test_true(result.successful)
+    assert_scoring_test_equal(result.source, "extracted")
+    assert_scoring_test_almost_equal(
+        score.final_score,
+        _section_30_3_expected_individual_score(),
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_INDIVIDUAL_TEST_OBJECT,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_SCORING,
+        SCORING_SELF_TEST_TAG_OBJECT_INPUT,
+    ),
+)
+def test_individual_scoring_object_input() -> None:
+    """Extract, recognize, and score a detector-like interaction object."""
+
+    profile = build_scoring_individual_profile(recognize_interaction=True)
+    result = _section_30_3_call(
+        "score_individual_interaction",
+        build_scoring_individual_object(),
+        profile=profile,
+        pose_id="pose_1",
+        model_id="1",
+        ligand_id="LIG",
+        raise_errors=True,
+    )
+    score = _section_30_3_result_score(result)
+    assert_scoring_test_true(result.successful)
+    assert_scoring_test_equal(result.source, "object")
+    assert_scoring_test_equal(score.pose_id, "pose_1")
+    assert_scoring_test_equal(
+        score.interaction_family,
+        _section_30_3_family("hydrogen_bond"),
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_INDIVIDUAL_TEST_MAPPING,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_SCORING,
+        SCORING_SELF_TEST_TAG_MAPPING_INPUT,
+    ),
+)
+def test_individual_scoring_mapping_input() -> None:
+    """Score a serialized mapping through the mapping convenience API."""
+
+    result = _section_30_3_call(
+        "score_individual_mapping",
+        build_scoring_individual_mapping(),
+        profile=build_scoring_individual_profile(),
+    )
+    score = _section_30_3_result_score(result)
+    assert_scoring_test_equal(result.source, "mapping")
+    assert_scoring_test_equal(score.interaction_id, "individual:mapping:1")
+    assert_scoring_test_almost_equal(
+        score.final_score,
+        _section_30_3_expected_individual_score(),
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_INDIVIDUAL_TEST_CONVENIENCE,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(SCORING_SELF_TEST_TAG_INDIVIDUAL_SCORING,),
+)
+def test_individual_scoring_convenience_api() -> None:
+    """Return InteractionScore directly from the strict convenience wrapper."""
+
+    score = _section_30_3_call(
+        "individual_interaction_score",
+        build_scoring_individual_extracted_data(),
+        profile=build_scoring_individual_profile(),
+    )
+    assert_scoring_test_instance(
+        score,
+        _section_30_3_require("InteractionScore"),
+    )
+    assert_scoring_test_almost_equal(
+        score.final_score,
+        _section_30_3_expected_individual_score(),
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_INDIVIDUAL_TEST_TRY_FAILURE,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_SCORING,
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_ERRORS,
+    ),
+)
+def test_individual_scoring_try_failure() -> None:
+    """Return None instead of raising for an invalid convenience input."""
+
+    score = _section_30_3_call(
+        "try_score_individual_interaction",
+        None,
+        profile=build_scoring_individual_profile(),
+    )
+    assert_scoring_test_none(score)
+
+
+@register_scoring_self_test(
+    name=SCORING_INDIVIDUAL_TEST_REJECTION,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_SCORING,
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_ERRORS,
+    ),
+)
+def test_individual_scoring_policy_rejection() -> None:
+    """Reject unknown interaction types when the policy disables them."""
+
+    data = build_scoring_individual_extracted_data(
+        interaction_id="individual:unknown:rejected",
+        interaction_type="unknown",
+        strength="unknown",
+        classification="unknown",
+        geometry_quality="unknown",
+        distance=None,
+        angle=None,
+    )
+    result = _section_30_3_call(
+        "score_individual_interaction",
+        data,
+        profile=build_scoring_individual_profile(
+            allow_unknown_type=False,
+            allow_unknown_family=False,
+        ),
+        raise_errors=False,
+    )
+    assert_scoring_test_equal(result.status, "rejected")
+    assert_scoring_test_none(result.score)
+    assert_scoring_test_false(result.successful)
+
+
+@register_scoring_self_test(
+    name=SCORING_INDIVIDUAL_TEST_RESCORING,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_SCORING,
+        SCORING_SELF_TEST_TAG_RESCORING,
+    ),
+)
+def test_individual_scoring_rescoring() -> None:
+    """Rescore an existing InteractionScore without changing neutral terms."""
+
+    profile = build_scoring_individual_profile()
+    original = _section_30_3_call(
+        "score_extracted_interaction",
+        build_scoring_individual_extracted_data(),
+        profile=profile,
+    )
+    rescored = _section_30_3_call(
+        "rescore_individual_interaction",
+        original,
+        profile=profile,
+    )
+    assert_scoring_test_almost_equal(
+        rescored.final_score,
+        original.final_score,
+    )
+    assert_scoring_test_equal(
+        rescored.interaction_id,
+        original.interaction_id,
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_INDIVIDUAL_TEST_DECOMPOSITION,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_SCORING,
+        SCORING_SELF_TEST_TAG_DECOMPOSITION,
+    ),
+)
+def test_individual_scoring_decomposition() -> None:
+    """Expose each multiplicative and additive scoring term."""
+
+    score = _section_30_3_call(
+        "score_extracted_interaction",
+        build_scoring_individual_extracted_data(),
+        profile=build_scoring_individual_profile(),
+    )
+    decomposition = _section_30_3_call(
+        "individual_score_decomposition",
+        score,
+    )
+    required = (
+        "base_weight",
+        "strength_multiplier",
+        "classification_multiplier",
+        "geometry_multiplier",
+        "multiplicative_score",
+        "family_multiplier",
+        "family_adjustment",
+        "stored_raw_score",
+        "penalty_score",
+        "bonus_score",
+        "final_score",
+    )
+    assert_scoring_test_mapping_contains(decomposition, *required)
+    assert_scoring_test_almost_equal(
+        decomposition["multiplicative_score"],
+        _section_30_3_expected_individual_score(),
+    )
+    assert_scoring_test_almost_equal(
+        decomposition["final_score"],
+        score.final_score,
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_INDIVIDUAL_TEST_TRACE,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_SCORING,
+        SCORING_SELF_TEST_TAG_PIPELINE,
+    ),
+)
+def test_individual_scoring_trace() -> None:
+    """Record every completed individual-scoring stage."""
+
+    result = _section_30_3_call(
+        "score_individual_interaction",
+        build_scoring_individual_extracted_data(),
+        profile=build_scoring_individual_profile(),
+        raise_errors=True,
+    )
+    assert_scoring_test_true(result.trace.complete)
+    assert_scoring_test_none(result.trace.failed_stage)
+    assert_scoring_test_contains(
+        result.trace.completed_stages,
+        "complete",
+    )
+    _section_30_3_call(
+        "validate_individual_scoring_trace",
+        result.trace,
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_INDIVIDUAL_TEST_VALIDATION,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_SCORING,
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_VALIDATION,
+    ),
+)
+def test_individual_scoring_validation() -> None:
+    """Validate options, profile, score, trace, and final result."""
+
+    profile = build_scoring_individual_profile()
+    result = _section_30_3_call(
+        "score_individual_interaction",
+        build_scoring_individual_extracted_data(),
+        profile=profile,
+        raise_errors=True,
+    )
+    score = _section_30_3_result_score(result)
+    _section_30_3_call("validate_individual_scoring_options", profile.options)
+    _section_30_3_call("validate_individual_scoring_profile", profile)
+    _section_30_3_call(
+        "validate_individual_interaction_score",
+        score,
+        options=profile.options,
+    )
+    _section_30_3_call(
+        "validate_individual_scoring_trace",
+        result.trace,
+    )
+    _section_30_3_call("validate_individual_scoring_result", result)
+
+
+@register_scoring_self_test(
+    name=SCORING_INDIVIDUAL_TEST_EXPLANATION,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_SCORING,
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_EXPLAINABILITY,
+    ),
+)
+def test_individual_scoring_explanation() -> None:
+    """Generate a hierarchical explanation of the individual score."""
+
+    result = _section_30_3_call(
+        "score_individual_interaction",
+        build_scoring_individual_extracted_data(),
+        profile=build_scoring_individual_profile(),
+        raise_errors=True,
+    )
+    explanation = _section_30_3_call(
+        "explain_individual_scoring_result",
+        result,
+    )
+    assert_scoring_test_equal(explanation.scope, "interaction")
+    assert_scoring_test_almost_equal(
+        explanation.value,
+        result.score.final_score,
+    )
+    assert_scoring_test_true(len(explanation.children) >= 3)
+    assert_scoring_test_equal(
+        explanation.entity_id,
+        result.score.interaction_id,
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_INDIVIDUAL_TEST_SERIALIZATION,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_SCORING,
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_SERIALIZATION,
+    ),
+)
+def test_individual_scoring_serialization() -> None:
+    """Serialize an individual result without losing its identity or score."""
+
+    result = _section_30_3_call(
+        "score_individual_interaction",
+        build_scoring_individual_extracted_data(),
+        profile=build_scoring_individual_profile(),
+        raise_errors=True,
+    )
+    payload = _section_30_3_call(
+        "individual_scoring_result_to_dict",
+        result,
+    )
+    assert_scoring_test_equal(
+        payload["interaction_id"],
+        "individual:hbond:1",
+    )
+    assert_scoring_test_almost_equal(
+        payload["final_score"],
+        _section_30_3_expected_individual_score(),
+    )
+    serialized = _section_30_3_call(
+        "serialize_individual_scoring_result",
+        result,
+    )
+    assert_scoring_test_true(isinstance(serialized, str))
+    assert_scoring_test_contains(serialized, "individual:hbond:1")
+    decoded = json.loads(serialized)
+    assert_scoring_test_equal(
+        decoded["interaction_id"],
+        "individual:hbond:1",
+    )
+
+
+@register_scoring_self_test(
+    name=SCORING_INDIVIDUAL_TEST_DETERMINISM,
+    section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+    tags=(
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_SCORING,
+        SCORING_SELF_TEST_TAG_INDIVIDUAL_DETERMINISM,
+    ),
+)
+def test_individual_scoring_determinism() -> None:
+    """Produce identical score mappings from identical canonical input."""
+
+    profile = build_scoring_individual_profile()
+    mappings: List[Dict[str, Any]] = []
+    for _ in range(3):
+        result = _section_30_3_call(
+            "score_individual_interaction",
+            build_scoring_individual_extracted_data(),
+            profile=profile,
+            raise_errors=True,
+        )
+        mappings.append(
+            _section_30_3_call(
+                "individual_scoring_result_to_dict",
+                result,
+            )
+        )
+    baseline = mappings[0]
+    for payload in mappings[1:]:
+        assert_scoring_test_equal(payload, baseline)
+
+
+# -----------------------------------------------------------------------------
+# 30.3.10. Focused execution, reporting, and validation
+# -----------------------------------------------------------------------------
+
+
+def get_section_30_3_self_tests(
+    *,
+    tags: Iterable[str] = (),
+    enabled_only: bool = True,
+) -> Tuple[ScoringSelfTestCase, ...]:
+    """Return registered Section 30.3 cases."""
+
+    return get_registered_scoring_self_tests(
+        section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+        tags=tags,
+        enabled_only=enabled_only,
+    )
+
+
+def run_section_30_3_self_tests(
+    *,
+    tags: Iterable[str] = (),
+    seed: int = SCORING_SELF_TEST_DEFAULT_SEED,
+    capture_output: bool = True,
+    raise_on_failure: bool = False,
+    context: Optional[ScoringSelfTestContext] = None,
+) -> ScoringSelfTestReport:
+    """Execute only the individual-scoring self-tests."""
+
+    report = run_registered_scoring_self_tests(
+        section=SCORING_SELF_TEST_SECTION_INDIVIDUAL,
+        tags=tags,
+        seed=seed,
+        capture_output=capture_output,
+        raise_on_failure=raise_on_failure,
+        context=context,
+    )
+    validate_section_30_3_report(report)
+    return report
+
+
+def summarize_section_30_3_self_tests(
+    report: ScoringSelfTestReport,
+) -> ScoringIndividualSelfTestSummary:
+    """Return a compact validated Section 30.3 summary."""
+
+    validate_section_30_3_report(report)
+    summary = _section_30_3_summary_from_report(report)
+    validate_scoring_individual_self_test_summary(summary)
+    return summary
+
+
+def scoring_individual_self_test_summary_to_dict(
+    summary: ScoringIndividualSelfTestSummary,
+) -> Dict[str, Any]:
+    """Convert the focused Section 30.3 summary to a dictionary."""
+
+    validate_scoring_individual_self_test_summary(summary)
+    return summary.to_dict()
+
+
+def format_section_30_3_self_test_summary(
+    summary: ScoringIndividualSelfTestSummary,
+) -> str:
+    """Format a concise human-readable Section 30.3 summary."""
+
+    validate_scoring_individual_self_test_summary(summary)
+    outcome = "PASS" if summary.success else "FAIL"
+    return (
+        "DockAnalyzer scoring self-tests — Section 30.3\n"
+        f"Status: {outcome}\n"
+        f"Total: {summary.total}\n"
+        f"Passed: {summary.passed}\n"
+        f"Failed: {summary.failed}\n"
+        f"Errors: {summary.errors}\n"
+        f"Skipped: {summary.skipped}\n"
+        f"Duration: {summary.duration_seconds:.6f} s"
+    )
+
+
+def validate_scoring_individual_self_test_summary(summary: Any) -> None:
+    """Validate a focused Section 30.3 summary."""
+
+    if not isinstance(summary, ScoringIndividualSelfTestSummary):
+        raise ScoringIndividualValidationError(
+            "Expected ScoringIndividualSelfTestSummary."
+        )
+    if summary.section != SCORING_SELF_TEST_SECTION_INDIVIDUAL:
+        raise ScoringIndividualValidationError(
+            "Section 30.3 summary has an incorrect section identifier."
+        )
+    if summary.total != len(summary.test_names):
+        raise ScoringIndividualValidationError(
+            "Section 30.3 summary test_names do not match total."
+        )
+
+
+def validate_section_30_3_registration() -> None:
+    """Validate that every expected Section 30.3 test is registered once."""
+
+    cases = get_section_30_3_self_tests(enabled_only=False)
+    names = tuple(case.name for case in cases)
+    assert_scoring_test_unique(names)
+    missing = tuple(
+        name for name in SCORING_SECTION_30_3_TEST_NAMES if name not in names
+    )
+    unexpected = tuple(
+        name for name in names if name not in SCORING_SECTION_30_3_TEST_NAMES
+    )
+    if missing:
+        raise ScoringIndividualValidationError(
+            "Missing Section 30.3 tests: " + ", ".join(missing)
+        )
+    if unexpected:
+        raise ScoringIndividualValidationError(
+            "Unexpected Section 30.3 tests: " + ", ".join(unexpected)
+        )
+    if len(cases) != SCORING_SECTION_30_3_EXPECTED_TEST_COUNT:
+        raise ScoringIndividualValidationError(
+            "Section 30.3 registered test count is inconsistent."
+        )
+    for case in cases:
+        validate_scoring_self_test_case(case)
+        if case.section != SCORING_SELF_TEST_SECTION_INDIVIDUAL:
+            raise ScoringIndividualValidationError(
+                f"Case {case.name!r} has an incorrect section."
+            )
+
+
+def validate_section_30_3_report(report: Any) -> None:
+    """Validate a report produced by the focused Section 30.3 runner."""
+
+    validate_scoring_self_test_report(report)
+    if report.selected_section != SCORING_SELF_TEST_SECTION_INDIVIDUAL:
+        raise ScoringIndividualValidationError(
+            "The report was not generated for Section 30.3."
+        )
+    expected_names = {
+        case.name
+        for case in get_section_30_3_self_tests(tags=report.selected_tags)
+    }
+    observed_names = {result.case_name for result in report.results}
+    if expected_names != observed_names:
+        missing = sorted(expected_names - observed_names)
+        unexpected = sorted(observed_names - expected_names)
+        details: List[str] = []
+        if missing:
+            details.append("missing=" + ",".join(missing))
+        if unexpected:
+            details.append("unexpected=" + ",".join(unexpected))
+        raise ScoringIndividualValidationError(
+            "Section 30.3 report cases are inconsistent: "
+            + "; ".join(details)
+        )
+
+
+def run_section_30_3_self_check(
+    *,
+    raise_on_failure: bool = True,
+) -> Mapping[str, Any]:
+    """Run and summarize all Section 30.3 individual-scoring tests."""
+
+    validate_section_30_3_registration()
+    report = run_section_30_3_self_tests(
+        capture_output=True,
+        raise_on_failure=raise_on_failure,
+    )
+    summary = summarize_section_30_3_self_tests(report)
+    if not summary.success and raise_on_failure:
+        failed = tuple(
+            result.case_name for result in report.results if result.failed
+        )
+        raise ScoringIndividualSelfTestError(
+            "Section 30.3 self-check failed: " + ", ".join(failed)
+        )
+    return MappingProxyType(
+        {
+            "status": summary.status,
+            "section": summary.section,
+            "success": summary.success,
+            "total": summary.total,
+            "passed": summary.passed,
+            "failed": summary.failed,
+            "skipped": summary.skipped,
+            "errors": summary.errors,
+            "duration_seconds": summary.duration_seconds,
+            "summary": MappingProxyType(summary.to_dict()),
+        }
+    )
+
+
+# -----------------------------------------------------------------------------
+# 30.3.11. Public interface
+# -----------------------------------------------------------------------------
+
+
+_SECTION_30_3_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    "SCORING_INDIVIDUAL_TEST_VERSION",
+    "SCORING_INDIVIDUAL_TEST_SCHEMA",
+    "SCORING_SELF_TEST_TAG_BASE_WEIGHT",
+    "SCORING_SELF_TEST_TAG_MULTIPLIERS",
+    "SCORING_SELF_TEST_TAG_GEOMETRY",
+    "SCORING_SELF_TEST_TAG_FAMILY_SCORING",
+    "SCORING_SELF_TEST_TAG_ADJUSTMENTS",
+    "SCORING_SELF_TEST_TAG_INDIVIDUAL_SCORING",
+    "SCORING_SELF_TEST_TAG_PIPELINE",
+    "SCORING_SELF_TEST_TAG_MAPPING_INPUT",
+    "SCORING_SELF_TEST_TAG_OBJECT_INPUT",
+    "SCORING_SELF_TEST_TAG_RESCORING",
+    "SCORING_SELF_TEST_TAG_DECOMPOSITION",
+    "SCORING_SELF_TEST_TAG_INDIVIDUAL_VALIDATION",
+    "SCORING_SELF_TEST_TAG_INDIVIDUAL_ERRORS",
+    "SCORING_SELF_TEST_TAG_INDIVIDUAL_EXPLAINABILITY",
+    "SCORING_SELF_TEST_TAG_INDIVIDUAL_SERIALIZATION",
+    "SCORING_SELF_TEST_TAG_INDIVIDUAL_DETERMINISM",
+    "SCORING_INDIVIDUAL_TEST_TAGS",
+    "SCORING_SECTION_30_3_TEST_NAMES",
+    "SCORING_SECTION_30_3_EXPECTED_TEST_COUNT",
+    "ScoringIndividualSelfTestError",
+    "ScoringIndividualFixtureError",
+    "ScoringIndividualValidationError",
+    "ScoringIndividualSelfTestSummary",
+    "build_scoring_individual_base_weight_profile",
+    "build_scoring_individual_multiplier_profile",
+    "build_scoring_individual_geometry_profile",
+    "build_scoring_individual_family_profile",
+    "build_scoring_individual_adjustment_profile",
+    "build_scoring_individual_profile",
+    "build_scoring_individual_extracted_data",
+    "build_scoring_individual_mapping",
+    "build_scoring_individual_object",
+    "test_individual_base_weight_type_resolution",
+    "test_individual_base_weight_family_fallback",
+    "test_individual_base_weight_override",
+    "test_individual_base_weight_unknown_fallback",
+    "test_individual_base_weight_strict_unknown",
+    "test_individual_base_weight_score_integration",
+    "test_individual_strength_multiplier",
+    "test_individual_classification_multiplier",
+    "test_individual_combined_multipliers",
+    "test_individual_multiplier_overrides",
+    "test_individual_multiplier_application",
+    "test_individual_geometry_lower_is_better",
+    "test_individual_geometry_higher_is_better",
+    "test_individual_geometry_target_range",
+    "test_individual_geometry_explicit_quality",
+    "test_individual_geometry_inferred_distance",
+    "test_individual_geometry_unknown_fallback",
+    "test_individual_geometry_score_integration",
+    "test_individual_family_contact",
+    "test_individual_family_hydrogen_bond",
+    "test_individual_family_hydrophobic",
+    "test_individual_family_pi",
+    "test_individual_family_salt_bridge",
+    "test_individual_family_clash",
+    "test_individual_family_score_integration",
+    "test_individual_adjustment_arithmetic",
+    "test_individual_adjustment_limits",
+    "test_individual_adjustment_order",
+    "test_individual_adjustment_totals",
+    "test_individual_default_clash_penalty",
+    "test_individual_unknown_data_penalties",
+    "test_individual_adjustment_score_integration",
+    "test_individual_scoring_extracted_input",
+    "test_individual_scoring_object_input",
+    "test_individual_scoring_mapping_input",
+    "test_individual_scoring_convenience_api",
+    "test_individual_scoring_try_failure",
+    "test_individual_scoring_policy_rejection",
+    "test_individual_scoring_rescoring",
+    "test_individual_scoring_decomposition",
+    "test_individual_scoring_trace",
+    "test_individual_scoring_validation",
+    "test_individual_scoring_explanation",
+    "test_individual_scoring_serialization",
+    "test_individual_scoring_determinism",
+    "get_section_30_3_self_tests",
+    "run_section_30_3_self_tests",
+    "summarize_section_30_3_self_tests",
+    "scoring_individual_self_test_summary_to_dict",
+    "format_section_30_3_self_test_summary",
+    "validate_scoring_individual_self_test_summary",
+    "validate_section_30_3_registration",
+    "validate_section_30_3_report",
+    "run_section_30_3_self_check",
+)
+
+for public_name in _SECTION_30_3_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+def section_30_3_public_names() -> Tuple[str, ...]:
+    """Return the immutable Section 30.3 public interface."""
+
+    return _SECTION_30_3_PUBLIC_NAMES
+
+
+def validate_section_30_3_public_interface() -> None:
+    """Validate all Section 30.3 public names and exports."""
+
+    missing_names = tuple(
+        name for name in _SECTION_30_3_PUBLIC_NAMES if name not in globals()
+    )
+    if missing_names:
+        raise ScoringIndividualValidationError(
+            "Missing Section 30.3 public names: " + ", ".join(missing_names)
+        )
+    missing_exports = tuple(
+        name for name in _SECTION_30_3_PUBLIC_NAMES if name not in __all__
+    )
+    if missing_exports:
+        raise ScoringIndividualValidationError(
+            "Section 30.3 names missing from __all__: "
+            + ", ".join(missing_exports)
+        )
+    assert_scoring_test_unique(_SECTION_30_3_PUBLIC_NAMES)
+    validate_section_30_3_registration()
+
+
+if "section_30_3_public_names" not in __all__:
+    __all__.append("section_30_3_public_names")
+if "validate_section_30_3_public_interface" not in __all__:
+    __all__.append("validate_section_30_3_public_interface")
+
+validate_section_30_3_public_interface()
+
+# =============================================================================
+# End of Section 30.3
+# =============================================================================
+
+
+# =============================================================================
+# DockAnalyzer — Interaction scoring
+# Section 30.4 — Aggregation and integration self-tests
+# =============================================================================
+
+"""
+Self-tests for aggregation and cross-section scoring integration.
+
+Section 30.4 validates the pipeline implemented by Sections 14–29. The tests
+start with collections of individually recognized interactions and follow the
+results through residue aggregation, total pose scoring, normalization,
+diversity and complementarity, descriptive statistics, multipose ranking,
+consensus and persistence, DockModel integration, external scores,
+explainability, serialization, report integration, validation, performance,
+and optional ChimeraX compatibility.
+
+The tests use the deterministic molecular fixtures and registry introduced in
+Section 30.1 and the scoring helpers introduced in Section 30.3. They do not
+require pytest, unittest, ChimeraX, pandas, or any other optional dependency.
+ChimeraX integration is exercised through the offline command-generation path
+and the minimal mock session supplied by Section 30.1.
+
+This block is designed to be concatenated directly after Section 30.3. It does
+not repeat ``from __future__ import annotations`` and does not run the complete
+module test suite at import time. Section 30.5 remains responsible for the
+final combined runner.
+"""
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from types import MappingProxyType
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Final,
+    FrozenSet,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
+import inspect
+import json
+import math
+
+if "__all__" not in globals():
+    __all__: List[str] = []
+
+
+# -----------------------------------------------------------------------------
+# 30.4.1. Constants, tags, and canonical test names
+# -----------------------------------------------------------------------------
+
+SCORING_AGGREGATION_TEST_VERSION: Final[str] = "30.4"
+SCORING_AGGREGATION_TEST_SCHEMA: Final[str] = (
+    "dockanalyzer.scoring.self_test.aggregation_integration"
+)
+
+SCORING_SELF_TEST_TAG_AGGREGATION_COLLECTION: Final[str] = (
+    "aggregation_collection"
+)
+SCORING_SELF_TEST_TAG_AGGREGATION_RESIDUE: Final[str] = (
+    "aggregation_residue"
+)
+SCORING_SELF_TEST_TAG_AGGREGATION_POSE: Final[str] = "aggregation_pose"
+SCORING_SELF_TEST_TAG_AGGREGATION_NORMALIZATION: Final[str] = (
+    "aggregation_normalization"
+)
+SCORING_SELF_TEST_TAG_AGGREGATION_DIVERSITY: Final[str] = (
+    "aggregation_diversity"
+)
+SCORING_SELF_TEST_TAG_AGGREGATION_STATISTICS: Final[str] = (
+    "aggregation_statistics"
+)
+SCORING_SELF_TEST_TAG_AGGREGATION_RANKING: Final[str] = (
+    "aggregation_ranking"
+)
+SCORING_SELF_TEST_TAG_AGGREGATION_CONSENSUS: Final[str] = (
+    "aggregation_consensus"
+)
+SCORING_SELF_TEST_TAG_AGGREGATION_DOCK_MODEL: Final[str] = (
+    "aggregation_dock_model"
+)
+SCORING_SELF_TEST_TAG_AGGREGATION_EXTERNAL: Final[str] = (
+    "aggregation_external"
+)
+SCORING_SELF_TEST_TAG_AGGREGATION_EXPLAINABILITY: Final[str] = (
+    "aggregation_explainability"
+)
+SCORING_SELF_TEST_TAG_AGGREGATION_SERIALIZATION: Final[str] = (
+    "aggregation_serialization"
+)
+SCORING_SELF_TEST_TAG_AGGREGATION_REPORT: Final[str] = "aggregation_report"
+SCORING_SELF_TEST_TAG_AGGREGATION_VALIDATION: Final[str] = (
+    "aggregation_validation"
+)
+SCORING_SELF_TEST_TAG_AGGREGATION_PERFORMANCE: Final[str] = (
+    "aggregation_performance"
+)
+SCORING_SELF_TEST_TAG_AGGREGATION_CHIMERAX: Final[str] = (
+    "aggregation_chimerax"
+)
+SCORING_SELF_TEST_TAG_AGGREGATION_PIPELINE: Final[str] = (
+    "aggregation_pipeline"
+)
+
+SCORING_AGGREGATION_TEST_TAGS: Final[FrozenSet[str]] = frozenset(
+    {
+        SCORING_SELF_TEST_TAG_AGGREGATION_COLLECTION,
+        SCORING_SELF_TEST_TAG_AGGREGATION_RESIDUE,
+        SCORING_SELF_TEST_TAG_AGGREGATION_POSE,
+        SCORING_SELF_TEST_TAG_AGGREGATION_NORMALIZATION,
+        SCORING_SELF_TEST_TAG_AGGREGATION_DIVERSITY,
+        SCORING_SELF_TEST_TAG_AGGREGATION_STATISTICS,
+        SCORING_SELF_TEST_TAG_AGGREGATION_RANKING,
+        SCORING_SELF_TEST_TAG_AGGREGATION_CONSENSUS,
+        SCORING_SELF_TEST_TAG_AGGREGATION_DOCK_MODEL,
+        SCORING_SELF_TEST_TAG_AGGREGATION_EXTERNAL,
+        SCORING_SELF_TEST_TAG_AGGREGATION_EXPLAINABILITY,
+        SCORING_SELF_TEST_TAG_AGGREGATION_SERIALIZATION,
+        SCORING_SELF_TEST_TAG_AGGREGATION_REPORT,
+        SCORING_SELF_TEST_TAG_AGGREGATION_VALIDATION,
+        SCORING_SELF_TEST_TAG_AGGREGATION_PERFORMANCE,
+        SCORING_SELF_TEST_TAG_AGGREGATION_CHIMERAX,
+        SCORING_SELF_TEST_TAG_AGGREGATION_PIPELINE,
+    }
+)
+
+SCORING_SECTION_30_4_TEST_NAMES: Final[Tuple[str, ...]] = (
+    "collection_materialization",
+    "collection_scoring",
+    "collection_aggregation",
+    "collection_grouping",
+    "collection_deduplication",
+    "collection_empty_input",
+    "collection_outputs",
+    "residue_aggregation",
+    "residue_totals",
+    "residue_ranking_hotspots",
+    "residue_lookup",
+    "residue_outputs",
+    "pose_scoring",
+    "pose_summary_consistency",
+    "pose_family_components",
+    "pose_type_components",
+    "pose_strongest_interactions",
+    "pose_empty_input",
+    "pose_outputs",
+    "normalization_minmax",
+    "normalization_ranks",
+    "normalization_lookup",
+    "normalization_groups",
+    "normalization_outputs",
+    "diversity_fingerprints",
+    "diversity_pair_symmetry",
+    "diversity_result",
+    "coverage_profiles",
+    "coverage_universe",
+    "pose_set_selection",
+    "complementarity_outputs",
+    "statistics_report",
+    "statistics_rows",
+    "ranking_single_metric",
+    "ranking_multicriteria",
+    "ranking_comparison",
+    "consensus_persistence",
+    "consensus_levels",
+    "consensus_outputs",
+    "dock_model_extraction",
+    "dock_model_attachment",
+    "dock_model_multipose",
+    "dock_model_clear_restore",
+    "external_score_integration",
+    "external_score_attachment",
+    "external_score_ranking",
+    "explainability_pose",
+    "explainability_integrated",
+    "serialization_envelope",
+    "serialization_bundle",
+    "serialization_files",
+    "report_document",
+    "report_integration",
+    "validation_artifacts",
+    "error_boundary",
+    "performance_benchmark",
+    "performance_cache",
+    "performance_batch_index",
+    "chimerax_offline_commands",
+    "chimerax_files",
+    "chimerax_execution",
+)
+
+SCORING_SECTION_30_4_EXPECTED_TEST_COUNT: Final[int] = len(
+    SCORING_SECTION_30_4_TEST_NAMES
+)
+
+
+# -----------------------------------------------------------------------------
+# 30.4.2. Exceptions and focused result structures
+# -----------------------------------------------------------------------------
+
+
+class ScoringAggregationSelfTestError(ScoringSelfTestError):
+    """Base exception for Section 30.4 self-test failures."""
+
+
+class ScoringAggregationFixtureError(ScoringAggregationSelfTestError):
+    """Raised when an aggregation fixture cannot be constructed."""
+
+
+class ScoringAggregationValidationError(ScoringAggregationSelfTestError):
+    """Raised when Section 30.4 registration or results are inconsistent."""
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringAggregationSelfTestSummary:
+    """Compact summary of the Section 30.4 test execution."""
+
+    section: str
+    status: str
+    total: int
+    passed: int
+    failed: int
+    skipped: int
+    errors: int
+    duration_seconds: float
+    test_names: Tuple[str, ...] = ()
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        section = normalize_scoring_self_test_section(self.section)
+        status = normalize_scoring_self_test_status(self.status)
+        counts = {
+            "total": self.total,
+            "passed": self.passed,
+            "failed": self.failed,
+            "skipped": self.skipped,
+            "errors": self.errors,
+        }
+        normalized: Dict[str, int] = {}
+        for name, value in counts.items():
+            if isinstance(value, bool):
+                raise ScoringAggregationValidationError(
+                    f"{name} must be an integer."
+                )
+            try:
+                number = int(value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ScoringAggregationValidationError(
+                    f"{name} must be an integer."
+                ) from exc
+            if number < 0:
+                raise ScoringAggregationValidationError(
+                    f"{name} cannot be negative."
+                )
+            normalized[name] = number
+        duration = scoring_self_test_float(
+            self.duration_seconds,
+            name="Section 30.4 duration",
+        )
+        if duration < 0.0:
+            raise ScoringAggregationValidationError(
+                "duration_seconds cannot be negative."
+            )
+        names = tuple(str(name).strip() for name in self.test_names)
+        if any(not name for name in names):
+            raise ScoringAggregationValidationError(
+                "test_names cannot contain empty names."
+            )
+        if len(set(names)) != len(names):
+            raise ScoringAggregationValidationError(
+                "test_names must be unique."
+            )
+        if normalized["total"] != (
+            normalized["passed"]
+            + normalized["failed"]
+            + normalized["skipped"]
+            + normalized["errors"]
+        ):
+            raise ScoringAggregationValidationError(
+                "Section 30.4 summary counts are inconsistent."
+            )
+        object.__setattr__(self, "section", section)
+        object.__setattr__(self, "status", status)
+        for name, value in normalized.items():
+            object.__setattr__(self, name, value)
+        object.__setattr__(self, "duration_seconds", duration)
+        object.__setattr__(self, "test_names", names)
+        object.__setattr__(
+            self,
+            "metadata",
+            scoring_self_test_freeze_mapping(self.metadata),
+        )
+
+    @property
+    def success(self) -> bool:
+        """Return whether every executed Section 30.4 test passed."""
+
+        return self.failed == 0 and self.errors == 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a mutable dictionary representation."""
+
+        return {
+            "schema": SCORING_AGGREGATION_TEST_SCHEMA,
+            "version": SCORING_AGGREGATION_TEST_VERSION,
+            "section": self.section,
+            "status": self.status,
+            "success": self.success,
+            "total": self.total,
+            "passed": self.passed,
+            "failed": self.failed,
+            "skipped": self.skipped,
+            "errors": self.errors,
+            "duration_seconds": self.duration_seconds,
+            "test_names": list(self.test_names),
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringAggregationIntegrationFixture:
+    """Reusable outputs from the complete aggregation pipeline."""
+
+    molecular_fixture: Any
+    pose_results: Tuple[Any, ...]
+    normalization_result: Any
+    diversity_result: Any
+    coverage_profiles: Tuple[Any, ...]
+    selection_result: Any
+    statistics_report: Any
+    ranking_result: Any
+    consensus_result: Any
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "pose_results", tuple(self.pose_results))
+        object.__setattr__(
+            self,
+            "coverage_profiles",
+            tuple(self.coverage_profiles),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            scoring_self_test_freeze_mapping(self.metadata),
+        )
+        if not self.pose_results:
+            raise ScoringAggregationFixtureError(
+                "The integration fixture requires at least one pose result."
+            )
+
+
+# -----------------------------------------------------------------------------
+# 30.4.3. Dynamic resolution and pipeline builders
+# -----------------------------------------------------------------------------
+
+
+def _section_30_4_require(name: str) -> Any:
+    """Resolve a required symbol from the combined scoring module."""
+
+    try:
+        return scoring_self_test_resolve_global(name)
+    except Exception as exc:
+        raise ScoringAggregationFixtureError(
+            f"Section 30.4 requires scoring symbol {name!r}."
+        ) from exc
+
+
+def _section_30_4_optional(name: str, default: Any = None) -> Any:
+    """Resolve an optional symbol without failing module import."""
+
+    try:
+        value = scoring_self_test_optional_global(name)
+    except Exception:
+        return default
+    return default if value is None else value
+
+
+def _section_30_4_call(name: str, *args: Any, **kwargs: Any) -> Any:
+    """Call one required scoring function by name."""
+
+    function = _section_30_4_require(name)
+    if not callable(function):
+        raise ScoringAggregationFixtureError(
+            f"Scoring symbol {name!r} is not callable."
+        )
+    return function(*args, **kwargs)
+
+
+def _section_30_4_call_supported(
+    name: str,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Call a function after filtering unsupported keyword arguments."""
+
+    function = _section_30_4_require(name)
+    if not callable(function):
+        raise ScoringAggregationFixtureError(
+            f"Scoring symbol {name!r} is not callable."
+        )
+    try:
+        parameters = inspect.signature(function).parameters
+    except (TypeError, ValueError):
+        return function(*args, **kwargs)
+    accepts_var_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    filtered = (
+        dict(kwargs)
+        if accepts_var_kwargs
+        else {
+            key: value
+            for key, value in kwargs.items()
+            if key in parameters
+        }
+    )
+    return function(*args, **filtered)
+
+
+def _section_30_4_attr(
+    value: Any,
+    *names: str,
+    default: Any = None,
+) -> Any:
+    """Return the first available attribute or mapping value."""
+
+    for name in names:
+        resolved = scoring_self_test_get(value, name, default=None)
+        if resolved is not None:
+            return resolved
+    return default
+
+
+def _section_30_4_sequence(value: Any) -> Tuple[Any, ...]:
+    """Materialize one sequence-like output conservatively."""
+
+    if value is None:
+        return ()
+    if isinstance(value, Mapping):
+        return tuple(value.values())
+    if isinstance(value, (str, bytes, bytearray)):
+        return (value,)
+    try:
+        return tuple(value)
+    except TypeError:
+        return (value,)
+
+
+def _section_30_4_assert_finite_values(values: Iterable[Any]) -> None:
+    """Assert that every supplied numerical value is finite."""
+
+    for value in values:
+        assert_scoring_test_finite(value)
+
+
+def build_scoring_collection_test_result(
+    *,
+    pose_index: int = 0,
+) -> Any:
+    """Score one deterministic interaction collection."""
+
+    fixture = build_scoring_self_test_fixture(
+        pose_count=max(1, pose_index + 1)
+    )
+    pose = fixture.poses[pose_index]
+    return _section_30_4_call(
+        "score_interaction_collection",
+        pose.interactions,
+        pose_id=pose.pose_id,
+        model_id=pose.model_id,
+        ligand_id=pose.ligand_name,
+        container_name="section_30_4",
+    )
+
+
+def build_scoring_pose_test_results(
+    *,
+    pose_count: int = 4,
+) -> Tuple[Any, ...]:
+    """Score every pose in a fresh deterministic fixture."""
+
+    fixture = build_scoring_self_test_fixture(pose_count=pose_count)
+    results: List[Any] = []
+    for pose in fixture.poses:
+        result = _section_30_4_call(
+            "score_pose",
+            pose.interactions,
+            pose_id=pose.pose_id,
+            model_id=pose.model_id,
+            ligand_id=pose.ligand_name,
+            container_name="section_30_4",
+        )
+        results.append(result)
+    return tuple(results)
+
+
+def build_scoring_external_test_result(
+    pose_results: Optional[Sequence[Any]] = None,
+) -> Any:
+    """Build one deterministic multipose external-score result."""
+
+    results = tuple(pose_results or build_scoring_pose_test_results())
+    observations = tuple(
+        {
+            "pose_id": result.pose_id,
+            "model_id": result.model_id,
+            "ligand_id": result.ligand_id,
+            "name": "vina_affinity",
+            "source": "vina",
+            "kind": "affinity",
+            "value": -8.4 + index * 0.45,
+            "unit": "kcal/mol",
+            "direction": "lower",
+            "replicate_id": f"replicate_{index + 1}",
+        }
+        for index, result in enumerate(results)
+    )
+    return _section_30_4_call(
+        "integrate_external_scores",
+        results,
+        observations,
+    )
+
+
+def build_scoring_aggregation_integration_fixture(
+    *,
+    pose_count: int = 4,
+) -> ScoringAggregationIntegrationFixture:
+    """Build the complete deterministic aggregation pipeline."""
+
+    molecular_fixture = build_scoring_self_test_fixture(
+        pose_count=pose_count
+    )
+    pose_results = tuple(
+        _section_30_4_call(
+            "score_pose",
+            pose.interactions,
+            pose_id=pose.pose_id,
+            model_id=pose.model_id,
+            ligand_id=pose.ligand_name,
+            container_name="section_30_4_pipeline",
+        )
+        for pose in molecular_fixture.poses
+    )
+    normalization_result = _section_30_4_call(
+        "normalize_pose_scores",
+        pose_results,
+    )
+    diversity_result = _section_30_4_call(
+        "compute_pose_diversity",
+        pose_results,
+    )
+    coverage_profiles = tuple(
+        _section_30_4_call(
+            "build_pose_coverage_profiles",
+            diversity_result,
+        )
+    )
+    selection_result = _section_30_4_call(
+        "select_optimal_pose_set",
+        coverage_profiles,
+        diversity_result=diversity_result,
+    )
+    statistics_report = _section_30_4_call(
+        "build_scoring_statistics_report",
+        pose_results,
+        pose_source=pose_results,
+        diversity_source=(diversity_result, selection_result),
+    )
+    ranking_result = _section_30_4_call(
+        "rank_multiple_poses",
+        pose_results,
+        normalized_scores=normalization_result,
+        diversity_result=diversity_result,
+        coverage_result=selection_result,
+    )
+    consensus_result = _section_30_4_call(
+        "build_consensus_persistence",
+        pose_results,
+        ranking=ranking_result,
+    )
+    return ScoringAggregationIntegrationFixture(
+        molecular_fixture=molecular_fixture,
+        pose_results=pose_results,
+        normalization_result=normalization_result,
+        diversity_result=diversity_result,
+        coverage_profiles=coverage_profiles,
+        selection_result=selection_result,
+        statistics_report=statistics_report,
+        ranking_result=ranking_result,
+        consensus_result=consensus_result,
+        metadata={"pose_count": pose_count},
+    )
+
+
+def _section_30_4_summary_from_report(
+    report: ScoringSelfTestReport,
+) -> ScoringAggregationSelfTestSummary:
+    """Convert a general report into a focused Section 30.4 summary."""
+
+    validate_scoring_self_test_report(report)
+    status = (
+        SCORING_SELF_TEST_STATUS_PASSED
+        if report.success
+        else SCORING_SELF_TEST_STATUS_FAILED
+    )
+    return ScoringAggregationSelfTestSummary(
+        section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+        status=status,
+        total=report.total,
+        passed=report.passed,
+        failed=report.status_counts[SCORING_SELF_TEST_STATUS_FAILED],
+        skipped=report.skipped,
+        errors=report.status_counts[SCORING_SELF_TEST_STATUS_ERROR],
+        duration_seconds=report.duration_seconds,
+        test_names=tuple(result.case_name for result in report.results),
+        metadata={
+            "seed": report.seed,
+            "selected_tags": sorted(report.selected_tags),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 30.4.4. Collection-scoring tests
+# -----------------------------------------------------------------------------
+
+
+@register_scoring_self_test(
+    name="collection_materialization",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_COLLECTION,),
+)
+def test_aggregation_collection_materialization() -> None:
+    """Materialize a DockModel interaction container without duplication."""
+
+    fixture = build_scoring_self_test_fixture(pose_count=1)
+    pose = fixture.poses[0]
+    values = _section_30_4_call(
+        "materialize_interaction_collection",
+        pose,
+    )
+    assert_scoring_test_equal(len(values), len(pose.interactions))
+    assert_scoring_test_unique(tuple(id(value) for value in values))
+
+
+@register_scoring_self_test(
+    name="collection_scoring",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_COLLECTION,),
+)
+def test_aggregation_collection_scoring() -> None:
+    """Score all interactions in one deterministic pose."""
+
+    result = build_scoring_collection_test_result()
+    result_type = _section_30_4_require("CollectionScoringResult")
+    assert_scoring_test_instance(result, result_type)
+    assert_scoring_test_true(len(result.scores) > 0)
+    assert_scoring_test_equal(
+        len(result.scores),
+        result.summary.scored_count,
+    )
+    _section_30_4_call("validate_collection_scoring_result", result)
+
+
+@register_scoring_self_test(
+    name="collection_aggregation",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_COLLECTION,),
+)
+def test_aggregation_collection_reducer() -> None:
+    """Aggregate final scores by the canonical sum reducer."""
+
+    result = build_scoring_collection_test_result()
+    observed = _section_30_4_call(
+        "aggregate_collection_score",
+        result.scores,
+        mode="sum",
+    )
+    expected = sum(score.final_score for score in result.scores)
+    assert_scoring_test_almost_equal(observed, expected)
+
+
+@register_scoring_self_test(
+    name="collection_grouping",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_COLLECTION,),
+)
+def test_aggregation_collection_grouping() -> None:
+    """Group collection scores by canonical family and type."""
+
+    result = build_scoring_collection_test_result()
+    by_family = _section_30_4_call(
+        "group_collection_scores_by_family",
+        result.scores,
+    )
+    by_type = _section_30_4_call(
+        "group_collection_scores_by_type",
+        result.scores,
+    )
+    assert_scoring_test_true(bool(by_family))
+    assert_scoring_test_true(bool(by_type))
+    assert_scoring_test_equal(
+        sum(len(values) for values in by_family.values()),
+        len(result.scores),
+    )
+
+
+@register_scoring_self_test(
+    name="collection_deduplication",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_COLLECTION,),
+)
+def test_aggregation_collection_deduplication() -> None:
+    """Collapse repeated score identities while preserving one score."""
+
+    result = build_scoring_collection_test_result()
+    score = result.scores[0]
+    deduplicated, groups = _section_30_4_call(
+        "deduplicate_collection_scores",
+        (score, score),
+        mode="keep_first",
+    )
+    assert_scoring_test_equal(len(deduplicated), 1)
+    assert_scoring_test_true(bool(groups))
+
+
+@register_scoring_self_test(
+    name="collection_empty_input",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_COLLECTION,),
+)
+def test_aggregation_collection_empty_input() -> None:
+    """Return a valid empty collection result."""
+
+    result = _section_30_4_call("score_interaction_collection", ())
+    assert_scoring_test_equal(len(result.scores), 0)
+    assert_scoring_test_equal(result.status, "empty")
+    _section_30_4_call("validate_collection_scoring_result", result)
+
+
+@register_scoring_self_test(
+    name="collection_outputs",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(
+        SCORING_SELF_TEST_TAG_AGGREGATION_COLLECTION,
+        SCORING_SELF_TEST_TAG_AGGREGATION_EXPLAINABILITY,
+        SCORING_SELF_TEST_TAG_AGGREGATION_SERIALIZATION,
+    ),
+)
+def test_aggregation_collection_outputs() -> None:
+    """Generate collection explanation and serialization outputs."""
+
+    result = build_scoring_collection_test_result()
+    explanation = _section_30_4_call(
+        "explain_collection_scoring_result",
+        result,
+    )
+    payload = _section_30_4_call(
+        "collection_scoring_result_to_dict",
+        result,
+    )
+    text = _section_30_4_call(
+        "serialize_collection_scoring_result",
+        result,
+    )
+    assert_scoring_test_not_none(explanation)
+    assert_scoring_test_instance(payload, Mapping)
+    assert_scoring_test_true(isinstance(text, str) and bool(text))
+
+
+# -----------------------------------------------------------------------------
+# 30.4.5. Residue-aggregation tests
+# -----------------------------------------------------------------------------
+
+
+@register_scoring_self_test(
+    name="residue_aggregation",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_RESIDUE,),
+)
+def test_aggregation_residue_aggregation() -> None:
+    """Aggregate scored interactions into receptor and ligand residues."""
+
+    collection = build_scoring_collection_test_result()
+    result = _section_30_4_call(
+        "aggregate_scores_by_residue",
+        collection.scores,
+    )
+    assert_scoring_test_true(len(result.residues) > 0)
+    assert_scoring_test_true(result.summary.interaction_count > 0)
+    _section_30_4_call("validate_residue_aggregation_result", result)
+
+
+@register_scoring_self_test(
+    name="residue_totals",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_RESIDUE,),
+)
+def test_aggregation_residue_totals() -> None:
+    """Keep residue-level summary totals internally consistent."""
+
+    collection = build_scoring_collection_test_result()
+    result = _section_30_4_call(
+        "aggregate_scores_by_residue",
+        collection.scores,
+    )
+    expected = sum(item.final_score for item in result.residues)
+    assert_scoring_test_almost_equal(
+        result.summary.total_final_score,
+        expected,
+    )
+    totals = _section_30_4_call("residue_score_totals", result)
+    assert_scoring_test_true(bool(totals))
+
+
+@register_scoring_self_test(
+    name="residue_ranking_hotspots",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_RESIDUE,),
+)
+def test_aggregation_residue_ranking_hotspots() -> None:
+    """Rank residues and mark the configured hotspot subset."""
+
+    collection = build_scoring_collection_test_result()
+    result = _section_30_4_call(
+        "aggregate_scores_by_residue",
+        collection.scores,
+    )
+    ranked = _section_30_4_call(
+        "rank_residue_scores",
+        result.residues,
+        hotspot_limit=3,
+    )
+    hotspots = _section_30_4_call("residue_hotspots", result)
+    assert_scoring_test_equal(len(ranked), len(result.residues))
+    assert_scoring_test_true(len(hotspots) <= 3)
+    if hotspots:
+        assert_scoring_test_true(all(item.hotspot for item in hotspots))
+
+
+@register_scoring_self_test(
+    name="residue_lookup",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_RESIDUE,),
+)
+def test_aggregation_residue_lookup() -> None:
+    """Retrieve a residue score through its canonical identifier."""
+
+    collection = build_scoring_collection_test_result()
+    result = _section_30_4_call(
+        "aggregate_scores_by_residue",
+        collection.scores,
+    )
+    residue = result.residues[0]
+    found = _section_30_4_call(
+        "get_residue_score",
+        result,
+        residue.residue_id,
+    )
+    assert_scoring_test_is(found, residue)
+
+
+@register_scoring_self_test(
+    name="residue_outputs",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(
+        SCORING_SELF_TEST_TAG_AGGREGATION_RESIDUE,
+        SCORING_SELF_TEST_TAG_AGGREGATION_EXPLAINABILITY,
+        SCORING_SELF_TEST_TAG_AGGREGATION_SERIALIZATION,
+    ),
+)
+def test_aggregation_residue_outputs() -> None:
+    """Generate residue explanation and serialization outputs."""
+
+    collection = build_scoring_collection_test_result()
+    result = _section_30_4_call(
+        "aggregate_scores_by_residue",
+        collection.scores,
+    )
+    explanation = _section_30_4_call(
+        "explain_residue_aggregation_result",
+        result,
+    )
+    payload = _section_30_4_call(
+        "residue_aggregation_result_to_dict",
+        result,
+    )
+    text = _section_30_4_call(
+        "serialize_residue_aggregation_result",
+        result,
+    )
+    assert_scoring_test_not_none(explanation)
+    assert_scoring_test_instance(payload, Mapping)
+    assert_scoring_test_true(isinstance(text, str) and bool(text))
+
+
+# -----------------------------------------------------------------------------
+# 30.4.6. Pose-scoring tests
+# -----------------------------------------------------------------------------
+
+
+@register_scoring_self_test(
+    name="pose_scoring",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(
+        SCORING_SELF_TEST_TAG_AGGREGATION_POSE,
+        SCORING_SELF_TEST_TAG_AGGREGATION_PIPELINE,
+    ),
+)
+def test_aggregation_pose_scoring() -> None:
+    """Calculate one complete total pose score."""
+
+    result = build_scoring_pose_test_results(pose_count=1)[0]
+    assert_scoring_test_instance(
+        result,
+        _section_30_4_require("PoseScoringResult"),
+    )
+    assert_scoring_test_true(len(result.scores) > 0)
+    assert_scoring_test_finite(result.final_score)
+    _section_30_4_call("validate_pose_scoring_result", result)
+
+
+@register_scoring_self_test(
+    name="pose_summary_consistency",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_POSE,),
+)
+def test_aggregation_pose_summary_consistency() -> None:
+    """Keep pose summary counts and score components consistent."""
+
+    result = build_scoring_pose_test_results(pose_count=1)[0]
+    assert_scoring_test_equal(
+        result.summary.interaction_count,
+        len(result.scores),
+    )
+    assert_scoring_test_equal(
+        result.summary.residue_count,
+        len(result.residue_result.residues),
+    )
+    summary = _section_30_4_call("summarize_pose_scoring_result", result)
+    assert_scoring_test_instance(summary, Mapping)
+
+
+@register_scoring_self_test(
+    name="pose_family_components",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_POSE,),
+)
+def test_aggregation_pose_family_components() -> None:
+    """Build and retrieve family-level pose components."""
+
+    result = build_scoring_pose_test_results(pose_count=1)[0]
+    assert_scoring_test_true(bool(result.family_components))
+    family = next(iter(result.family_components))
+    component = _section_30_4_call(
+        "get_pose_family_component",
+        result,
+        family,
+    )
+    assert_scoring_test_not_none(component)
+    assert_scoring_test_finite(component.final_score)
+
+
+@register_scoring_self_test(
+    name="pose_type_components",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_POSE,),
+)
+def test_aggregation_pose_type_components() -> None:
+    """Build and retrieve interaction-type pose components."""
+
+    result = build_scoring_pose_test_results(pose_count=1)[0]
+    assert_scoring_test_true(bool(result.type_components))
+    interaction_type = next(iter(result.type_components))
+    component = _section_30_4_call(
+        "get_pose_type_component",
+        result,
+        interaction_type,
+    )
+    assert_scoring_test_not_none(component)
+    assert_scoring_test_finite(component.final_score)
+
+
+@register_scoring_self_test(
+    name="pose_strongest_interactions",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_POSE,),
+)
+def test_aggregation_pose_strongest_interactions() -> None:
+    """Return the strongest interactions in deterministic order."""
+
+    result = build_scoring_pose_test_results(pose_count=1)[0]
+    strongest = _section_30_4_call(
+        "strongest_pose_interactions",
+        result,
+        limit=3,
+    )
+    assert_scoring_test_true(0 < len(strongest) <= 3)
+    absolute = tuple(abs(item.final_score) for item in strongest)
+    assert_scoring_test_sorted(absolute, reverse=True)
+
+
+@register_scoring_self_test(
+    name="pose_empty_input",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_POSE,),
+)
+def test_aggregation_pose_empty_input() -> None:
+    """Return a safe empty or failed result for an empty pose."""
+
+    result = _section_30_4_call("try_score_pose", ())
+    if result is not None:
+        assert_scoring_test_equal(len(result.scores), 0)
+        assert_scoring_test_contains(
+            {"empty", "failed", "partial", "scored"},
+            result.status,
+        )
+
+
+@register_scoring_self_test(
+    name="pose_outputs",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(
+        SCORING_SELF_TEST_TAG_AGGREGATION_POSE,
+        SCORING_SELF_TEST_TAG_AGGREGATION_EXPLAINABILITY,
+        SCORING_SELF_TEST_TAG_AGGREGATION_SERIALIZATION,
+    ),
+)
+def test_aggregation_pose_outputs() -> None:
+    """Generate pose explanation and serialization outputs."""
+
+    result = build_scoring_pose_test_results(pose_count=1)[0]
+    explanation = _section_30_4_call(
+        "explain_pose_scoring_result",
+        result,
+    )
+    payload = _section_30_4_call(
+        "pose_scoring_result_to_dict",
+        result,
+    )
+    text = _section_30_4_call("serialize_pose_scoring_result", result)
+    assert_scoring_test_not_none(explanation)
+    assert_scoring_test_instance(payload, Mapping)
+    assert_scoring_test_true(isinstance(text, str) and bool(text))
+
+
+# -----------------------------------------------------------------------------
+# 30.4.7. Multipose normalization tests
+# -----------------------------------------------------------------------------
+
+
+@register_scoring_self_test(
+    name="normalization_minmax",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_NORMALIZATION,),
+)
+def test_aggregation_normalization_minmax() -> None:
+    """Normalize multiple pose scores to a finite comparable scale."""
+
+    poses = build_scoring_pose_test_results()
+    result = _section_30_4_call("normalize_pose_scores", poses)
+    assert_scoring_test_equal(len(result.scores), len(poses))
+    _section_30_4_assert_finite_values(
+        item.normalized_score for item in result.scores
+    )
+    _section_30_4_call("validate_score_normalization_result", result)
+
+
+@register_scoring_self_test(
+    name="normalization_ranks",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_NORMALIZATION,),
+)
+def test_aggregation_normalization_ranks() -> None:
+    """Assign deterministic ranks and best/worst flags."""
+
+    result = _section_30_4_call(
+        "normalize_pose_scores",
+        build_scoring_pose_test_results(),
+    )
+    ranks = tuple(item.rank for item in result.scores)
+    assert_scoring_test_true(all(rank is not None for rank in ranks))
+    assert_scoring_test_true(any(item.best for item in result.scores))
+    assert_scoring_test_true(any(item.worst for item in result.scores))
+
+
+@register_scoring_self_test(
+    name="normalization_lookup",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_NORMALIZATION,),
+)
+def test_aggregation_normalization_lookup() -> None:
+    """Retrieve normalized scores and rank mappings by pose ID."""
+
+    result = _section_30_4_call(
+        "normalize_pose_scores",
+        build_scoring_pose_test_results(),
+    )
+    pose_id = result.scores[0].pose_id
+    found = _section_30_4_call(
+        "get_normalized_pose_score",
+        result,
+        pose_id,
+    )
+    score_mapping = _section_30_4_call(
+        "normalized_pose_score_mapping",
+        result,
+    )
+    rank_mapping = _section_30_4_call(
+        "normalized_pose_rank_mapping",
+        result,
+    )
+    assert_scoring_test_not_none(found)
+    assert_scoring_test_contains(score_mapping, pose_id)
+    assert_scoring_test_contains(rank_mapping, pose_id)
+
+
+@register_scoring_self_test(
+    name="normalization_groups",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_NORMALIZATION,),
+)
+def test_aggregation_normalization_groups() -> None:
+    """Normalize pose results independently by ligand and model groups."""
+
+    poses = build_scoring_pose_test_results()
+    by_ligand = _section_30_4_call(
+        "normalize_pose_scores_by_ligand",
+        poses,
+    )
+    by_model = _section_30_4_call(
+        "normalize_pose_scores_by_model",
+        poses,
+    )
+    assert_scoring_test_true(bool(by_ligand))
+    assert_scoring_test_true(bool(by_model))
+
+
+@register_scoring_self_test(
+    name="normalization_outputs",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(
+        SCORING_SELF_TEST_TAG_AGGREGATION_NORMALIZATION,
+        SCORING_SELF_TEST_TAG_AGGREGATION_SERIALIZATION,
+    ),
+)
+def test_aggregation_normalization_outputs() -> None:
+    """Generate normalization summary, explanation, and serialization."""
+
+    result = _section_30_4_call(
+        "normalize_pose_scores",
+        build_scoring_pose_test_results(),
+    )
+    summary = _section_30_4_call(
+        "summarize_score_normalization_result",
+        result,
+    )
+    explanation = _section_30_4_call(
+        "explain_score_normalization_result",
+        result,
+    )
+    payload = _section_30_4_call(
+        "score_normalization_result_to_dict",
+        result,
+    )
+    assert_scoring_test_instance(summary, Mapping)
+    assert_scoring_test_not_none(explanation)
+    assert_scoring_test_instance(payload, Mapping)
+
+
+# -----------------------------------------------------------------------------
+# 30.4.8. Diversity and complementarity tests
+# -----------------------------------------------------------------------------
+
+
+@register_scoring_self_test(
+    name="diversity_fingerprints",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_DIVERSITY,),
+)
+def test_aggregation_diversity_fingerprints() -> None:
+    """Build one sparse fingerprint for every scored pose."""
+
+    poses = build_scoring_pose_test_results()
+    fingerprints = _section_30_4_call(
+        "build_pose_fingerprints",
+        poses,
+    )
+    assert_scoring_test_equal(len(fingerprints), len(poses))
+    assert_scoring_test_true(
+        all(item.pose_id for item in fingerprints)
+    )
+    for fingerprint in fingerprints:
+        _section_30_4_call("validate_pose_fingerprint", fingerprint)
+
+
+@register_scoring_self_test(
+    name="diversity_pair_symmetry",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_DIVERSITY,),
+)
+def test_aggregation_diversity_pair_symmetry() -> None:
+    """Keep pairwise similarity symmetric and bounded."""
+
+    poses = build_scoring_pose_test_results(pose_count=2)
+    fingerprints = _section_30_4_call(
+        "build_pose_fingerprints",
+        poses,
+    )
+    left = _section_30_4_call(
+        "jaccard_similarity",
+        fingerprints[0],
+        fingerprints[1],
+    )
+    right = _section_30_4_call(
+        "jaccard_similarity",
+        fingerprints[1],
+        fingerprints[0],
+    )
+    assert_scoring_test_almost_equal(left, right)
+    assert_scoring_test_between(left, 0.0, 1.0)
+
+
+@register_scoring_self_test(
+    name="diversity_result",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_DIVERSITY,),
+)
+def test_aggregation_diversity_result() -> None:
+    """Compute matrices, pair records, and representative poses."""
+
+    poses = build_scoring_pose_test_results()
+    result = _section_30_4_call("compute_pose_diversity", poses)
+    assert_scoring_test_equal(len(result.fingerprints), len(poses))
+    assert_scoring_test_equal(
+        len(result.similarity_matrix),
+        len(poses),
+    )
+    assert_scoring_test_equal(result.summary.pose_count, len(poses))
+    _section_30_4_call("validate_pose_diversity_result", result)
+
+
+@register_scoring_self_test(
+    name="coverage_profiles",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_DIVERSITY,),
+)
+def test_aggregation_coverage_profiles() -> None:
+    """Extract residue, family, type, and hotspot coverage profiles."""
+
+    diversity = _section_30_4_call(
+        "compute_pose_diversity",
+        build_scoring_pose_test_results(),
+    )
+    profiles = _section_30_4_call(
+        "build_pose_coverage_profiles",
+        diversity,
+    )
+    assert_scoring_test_equal(len(profiles), len(diversity.fingerprints))
+    for profile in profiles:
+        _section_30_4_call("validate_pose_coverage_profile", profile)
+
+
+@register_scoring_self_test(
+    name="coverage_universe",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_DIVERSITY,),
+)
+def test_aggregation_coverage_universe() -> None:
+    """Build a nonempty observed coverage universe."""
+
+    diversity = _section_30_4_call(
+        "compute_pose_diversity",
+        build_scoring_pose_test_results(),
+    )
+    profiles = tuple(
+        _section_30_4_call(
+            "build_pose_coverage_profiles",
+            diversity,
+        )
+    )
+    universe = _section_30_4_call(
+        "build_coverage_universe",
+        profiles,
+    )
+    total = sum(
+        len(_section_30_4_sequence(value))
+        for value in (
+            universe.residues,
+            universe.families,
+            universe.interaction_types,
+            universe.hotspots,
+        )
+    )
+    assert_scoring_test_true(total > 0)
+    _section_30_4_call("validate_coverage_universe", universe)
+
+
+@register_scoring_self_test(
+    name="pose_set_selection",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(
+        SCORING_SELF_TEST_TAG_AGGREGATION_DIVERSITY,
+        SCORING_SELF_TEST_TAG_AGGREGATION_PIPELINE,
+    ),
+)
+def test_aggregation_pose_set_selection() -> None:
+    """Select a complementary subset from the available poses."""
+
+    poses = build_scoring_pose_test_results()
+    diversity = _section_30_4_call("compute_pose_diversity", poses)
+    profiles = tuple(
+        _section_30_4_call(
+            "build_pose_coverage_profiles",
+            diversity,
+        )
+    )
+    result = _section_30_4_call(
+        "select_optimal_pose_set",
+        profiles,
+        diversity_result=diversity,
+    )
+    assert_scoring_test_true(len(result.selected_pose_ids) > 0)
+    assert_scoring_test_true(
+        set(result.selected_pose_ids).issubset(
+            {profile.pose_id for profile in profiles}
+        )
+    )
+    _section_30_4_call("validate_pose_set_selection_result", result)
+
+
+@register_scoring_self_test(
+    name="complementarity_outputs",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(
+        SCORING_SELF_TEST_TAG_AGGREGATION_DIVERSITY,
+        SCORING_SELF_TEST_TAG_AGGREGATION_EXPLAINABILITY,
+        SCORING_SELF_TEST_TAG_AGGREGATION_SERIALIZATION,
+    ),
+)
+def test_aggregation_complementarity_outputs() -> None:
+    """Explain and serialize a complete pose-set selection result."""
+
+    pipeline = build_scoring_aggregation_integration_fixture()
+    explanation = _section_30_4_call(
+        "explain_pose_set_selection",
+        pipeline.selection_result,
+    )
+    payload = _section_30_4_call(
+        "pose_set_selection_result_to_dict",
+        pipeline.selection_result,
+    )
+    assert_scoring_test_not_none(explanation)
+    assert_scoring_test_instance(payload, Mapping)
+    assert_scoring_test_true(bool(explanation.text))
+
+
+# -----------------------------------------------------------------------------
+# 30.4.9. Statistics, ranking, and consensus tests
+# -----------------------------------------------------------------------------
+
+
+@register_scoring_self_test(
+    name="statistics_report",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_STATISTICS,),
+)
+def test_aggregation_statistics_report() -> None:
+    """Build an integrated descriptive statistics report."""
+
+    pipeline = build_scoring_aggregation_integration_fixture()
+    report = pipeline.statistics_report
+    assert_scoring_test_instance(
+        report,
+        _section_30_4_require("ScoringStatisticsReport"),
+    )
+    assert_scoring_test_not_none(report.pose_statistics)
+    _section_30_4_call("validate_scoring_statistics_report", report)
+
+
+@register_scoring_self_test(
+    name="statistics_rows",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_STATISTICS,),
+)
+def test_aggregation_statistics_rows() -> None:
+    """Flatten statistics and render a human-readable summary."""
+
+    report = build_scoring_aggregation_integration_fixture().statistics_report
+    rows = _section_30_4_call(
+        "scoring_statistics_report_to_rows",
+        report,
+    )
+    text = _section_30_4_call(
+        "format_scoring_statistics_summary",
+        report,
+    )
+    assert_scoring_test_true(len(rows) > 0)
+    assert_scoring_test_true(isinstance(text, str) and bool(text))
+
+
+@register_scoring_self_test(
+    name="ranking_single_metric",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_RANKING,),
+)
+def test_aggregation_ranking_single_metric() -> None:
+    """Rank poses by their final DockAnalyzer score."""
+
+    poses = build_scoring_pose_test_results()
+    result = _section_30_4_call(
+        "rank_poses_by_metric",
+        poses,
+        metric="final_score",
+    )
+    ranked = tuple(
+        pose
+        for group in result.groups
+        for pose in group.entries
+    )
+    assert_scoring_test_equal(len(ranked), len(poses))
+    assert_scoring_test_true(all(item.rank >= 1 for item in ranked))
+    _section_30_4_call("validate_multipose_ranking_result", result)
+
+
+@register_scoring_self_test(
+    name="ranking_multicriteria",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_RANKING,),
+)
+def test_aggregation_ranking_multicriteria() -> None:
+    """Combine score, interaction count, and diversity criteria."""
+
+    pipeline = build_scoring_aggregation_integration_fixture()
+    result = pipeline.ranking_result
+    assert_scoring_test_true(len(result.groups) > 0)
+    assert_scoring_test_equal(
+        sum(len(group.entries) for group in result.groups),
+        len(pipeline.pose_results),
+    )
+    _section_30_4_call("validate_multipose_ranking_result", result)
+
+
+@register_scoring_self_test(
+    name="ranking_comparison",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_RANKING,),
+)
+def test_aggregation_ranking_comparison() -> None:
+    """Report perfect agreement for a ranking compared with itself."""
+
+    ranking = build_scoring_aggregation_integration_fixture().ranking_result
+    comparison = _section_30_4_call(
+        "compare_multipose_rankings",
+        ranking,
+        ranking,
+    )
+    spearman = _section_30_4_attr(
+        comparison,
+        "spearman_correlation",
+        "spearman",
+        default=1.0,
+    )
+    assert_scoring_test_almost_equal(spearman, 1.0)
+
+
+@register_scoring_self_test(
+    name="consensus_persistence",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_CONSENSUS,),
+)
+def test_aggregation_consensus_persistence() -> None:
+    """Calculate pose-level persistence without duplicate inflation."""
+
+    pipeline = build_scoring_aggregation_integration_fixture()
+    result = pipeline.consensus_result
+    assert_scoring_test_true(len(result.groups) > 0)
+    included_pose_ids = {
+        pose_id
+        for group in result.groups
+        for pose_id in group.included_pose_ids
+    }
+    assert_scoring_test_equal(
+        len(included_pose_ids),
+        len(pipeline.pose_results),
+    )
+    _section_30_4_call("validate_consensus_persistence_result", result)
+
+
+@register_scoring_self_test(
+    name="consensus_levels",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_CONSENSUS,),
+)
+def test_aggregation_consensus_levels() -> None:
+    """Keep every reported persistence fraction in the unit interval."""
+
+    result = build_scoring_aggregation_integration_fixture().consensus_result
+    features: List[Any] = []
+    for group in result.groups:
+        for level in group.level_results:
+            features.extend(level.records)
+    assert_scoring_test_true(bool(features))
+    for feature in features:
+        assert_scoring_test_between(
+            feature.persistence_fraction,
+            0.0,
+            1.0,
+        )
+
+
+@register_scoring_self_test(
+    name="consensus_outputs",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(
+        SCORING_SELF_TEST_TAG_AGGREGATION_CONSENSUS,
+        SCORING_SELF_TEST_TAG_AGGREGATION_SERIALIZATION,
+    ),
+)
+def test_aggregation_consensus_outputs() -> None:
+    """Generate consensus rows, summary, and formatted text."""
+
+    result = build_scoring_aggregation_integration_fixture().consensus_result
+    rows = _section_30_4_call("consensus_persistence_to_rows", result)
+    summary = _section_30_4_call("summarize_consensus_persistence", result)
+    text = _section_30_4_call(
+        "format_consensus_persistence_summary",
+        result,
+    )
+    assert_scoring_test_true(len(rows) > 0)
+    assert_scoring_test_instance(summary, Mapping)
+    assert_scoring_test_true(isinstance(text, str) and bool(text))
+
+
+# -----------------------------------------------------------------------------
+# 30.4.10. DockModel and external-score integration tests
+# -----------------------------------------------------------------------------
+
+
+@register_scoring_self_test(
+    name="dock_model_extraction",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_DOCK_MODEL,),
+)
+def test_aggregation_dock_model_extraction() -> None:
+    """Extract every interaction family from a DockModel-like object."""
+
+    pose = build_scoring_self_test_fixture(pose_count=1).poses[0]
+    bundle = _section_30_4_call(
+        "extract_dock_model_interactions",
+        pose,
+    )
+    interactions = _section_30_4_attr(
+        bundle,
+        "interactions",
+        "all_interactions",
+        default=(),
+    )
+    assert_scoring_test_equal(
+        len(_section_30_4_sequence(interactions)),
+        len(pose.interactions),
+    )
+    _section_30_4_call("validate_dock_model_interaction_bundle", bundle)
+
+
+@register_scoring_self_test(
+    name="dock_model_attachment",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(
+        SCORING_SELF_TEST_TAG_AGGREGATION_DOCK_MODEL,
+        SCORING_SELF_TEST_TAG_AGGREGATION_PIPELINE,
+    ),
+)
+def test_aggregation_dock_model_attachment() -> None:
+    """Score and attach the result to a mutable DockModel-like object."""
+
+    pose = build_scoring_self_test_fixture(pose_count=1).poses[0]
+    integration = _section_30_4_call(
+        "integrate_dock_model_scoring",
+        pose,
+        attach=True,
+        raise_errors=True,
+    )
+    attached = _section_30_4_call("get_dock_model_scoring_result", pose)
+    assert_scoring_test_not_none(attached)
+    assert_scoring_test_finite(pose.score)
+    _section_30_4_call(
+        "validate_dock_model_scoring_integration_result",
+        integration,
+    )
+
+
+@register_scoring_self_test(
+    name="dock_model_multipose",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(
+        SCORING_SELF_TEST_TAG_AGGREGATION_DOCK_MODEL,
+        SCORING_SELF_TEST_TAG_AGGREGATION_RANKING,
+        SCORING_SELF_TEST_TAG_AGGREGATION_CONSENSUS,
+    ),
+)
+def test_aggregation_dock_model_multipose() -> None:
+    """Score, rank, and attach consensus to multiple DockModels."""
+
+    poses = build_scoring_self_test_fixture(pose_count=4).poses
+    result = _section_30_4_call(
+        "score_multiple_dock_models",
+        poses,
+        attach=True,
+        build_ranking=True,
+        build_consensus=True,
+    )
+    assert_scoring_test_equal(len(result.integrations), len(poses))
+    assert_scoring_test_not_none(result.ranking_result)
+    assert_scoring_test_not_none(result.consensus_result)
+    _section_30_4_call(
+        "validate_dock_model_multipose_scoring_result",
+        result,
+    )
+
+
+@register_scoring_self_test(
+    name="dock_model_clear_restore",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_DOCK_MODEL,),
+)
+def test_aggregation_dock_model_clear_restore() -> None:
+    """Capture, clear, and restore scoring state transactionally."""
+
+    pose = build_scoring_self_test_fixture(pose_count=1).poses[0]
+    _section_30_4_call("score_dock_model", pose, attach=True)
+    snapshot = _section_30_4_call(
+        "capture_dock_model_scoring_snapshot",
+        pose,
+    )
+    _section_30_4_call("clear_dock_model_scoring", pose)
+    assert_scoring_test_none(
+        _section_30_4_call("get_dock_model_scoring_result", pose)
+    )
+    _section_30_4_call(
+        "restore_dock_model_scoring_snapshot",
+        pose,
+        snapshot,
+    )
+    assert_scoring_test_not_none(
+        _section_30_4_call("get_dock_model_scoring_result", pose)
+    )
+
+
+@register_scoring_self_test(
+    name="external_score_integration",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_EXTERNAL,),
+)
+def test_aggregation_external_score_integration() -> None:
+    """Normalize and fuse docking affinity with internal pose scores."""
+
+    poses = build_scoring_pose_test_results()
+    result = build_scoring_external_test_result(poses)
+    assert_scoring_test_equal(len(result.pose_results), len(poses))
+    for item in result.pose_results:
+        assert_scoring_test_finite(item.fused_score)
+    _section_30_4_call(
+        "validate_multi_pose_external_score_result",
+        result,
+    )
+
+
+@register_scoring_self_test(
+    name="external_score_attachment",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(
+        SCORING_SELF_TEST_TAG_AGGREGATION_EXTERNAL,
+        SCORING_SELF_TEST_TAG_AGGREGATION_DOCK_MODEL,
+    ),
+)
+def test_aggregation_external_score_attachment() -> None:
+    """Attach external and fused scores without replacing internal scores."""
+
+    fixture = build_scoring_self_test_fixture(pose_count=4)
+    pose_results = build_scoring_pose_test_results()
+    result = build_scoring_external_test_result(pose_results)
+    for model, pose_result in zip(fixture.poses, pose_results):
+        model.score = pose_result.final_score
+    internal = tuple(model.score for model in fixture.poses)
+    attachments = _section_30_4_call(
+        "attach_external_scores_to_dock_models",
+        fixture.poses,
+        result,
+        preserve_internal_score=True,
+    )
+    assert_scoring_test_equal(len(attachments), len(fixture.poses))
+    assert_scoring_test_equal(
+        tuple(model.score for model in fixture.poses),
+        internal,
+    )
+    assert_scoring_test_true(
+        all(model.fused_score is not None for model in fixture.poses)
+    )
+
+
+@register_scoring_self_test(
+    name="external_score_ranking",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(
+        SCORING_SELF_TEST_TAG_AGGREGATION_EXTERNAL,
+        SCORING_SELF_TEST_TAG_AGGREGATION_RANKING,
+    ),
+)
+def test_aggregation_external_score_ranking() -> None:
+    """Rank poses using fused internal and external metrics."""
+
+    poses = build_scoring_pose_test_results()
+    external = build_scoring_external_test_result(poses)
+    ranking = _section_30_4_call(
+        "rank_poses_with_external_scores",
+        poses,
+        external,
+    )
+    assert_scoring_test_equal(
+        sum(len(group.entries) for group in ranking.groups),
+        len(poses),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 30.4.11. Explainability, serialization, and report tests
+# -----------------------------------------------------------------------------
+
+
+@register_scoring_self_test(
+    name="explainability_pose",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_EXPLAINABILITY,),
+)
+def test_aggregation_explainability_pose() -> None:
+    """Explain one pose with attributable factors and trace steps."""
+
+    pose = build_scoring_pose_test_results(pose_count=1)[0]
+    explanation = _section_30_4_call(
+        "explain_pose_scoring_result",
+        pose,
+    )
+    assert_scoring_test_not_none(explanation)
+    factors = _section_30_4_attr(explanation, "factors", default=())
+    assert_scoring_test_true(len(_section_30_4_sequence(factors)) > 0)
+
+
+@register_scoring_self_test(
+    name="explainability_integrated",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_EXPLAINABILITY,),
+)
+def test_aggregation_explainability_integrated() -> None:
+    """Build a unified explanation from ranking and consensus artifacts."""
+
+    pipeline = build_scoring_aggregation_integration_fixture()
+    result = _section_30_4_call(
+        "build_scoring_explainability",
+        (
+            pipeline.pose_results,
+            pipeline.ranking_result,
+            pipeline.consensus_result,
+        ),
+    )
+    rows = _section_30_4_call("scoring_explainability_to_rows", result)
+    text = _section_30_4_call(
+        "format_scoring_explainability_summary",
+        result,
+    )
+    assert_scoring_test_true(len(rows) > 0)
+    assert_scoring_test_true(isinstance(text, str) and bool(text))
+    _section_30_4_call("validate_scoring_explainability_result", result)
+
+
+@register_scoring_self_test(
+    name="serialization_envelope",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_SERIALIZATION,),
+)
+def test_aggregation_serialization_envelope() -> None:
+    """Serialize one pose in a versioned checksum-protected envelope."""
+
+    pose = build_scoring_pose_test_results(pose_count=1)[0]
+    envelope = _section_30_4_call(
+        "build_scoring_serialization_envelope",
+        pose,
+        artifact_id=pose.pose_id,
+    )
+    payload = _section_30_4_call(
+        "scoring_serialization_envelope_to_dict",
+        envelope,
+    )
+    restored = _section_30_4_call(
+        "scoring_serialization_envelope_from_mapping",
+        payload,
+    )
+    assert_scoring_test_equal(restored.checksum, envelope.checksum)
+    _section_30_4_call(
+        "validate_scoring_serialization_envelope",
+        restored,
+    )
+
+
+@register_scoring_self_test(
+    name="serialization_bundle",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_SERIALIZATION,),
+)
+def test_aggregation_serialization_bundle() -> None:
+    """Bundle multiple scoring artifacts with a validated manifest."""
+
+    pipeline = build_scoring_aggregation_integration_fixture()
+    bundle = _section_30_4_call(
+        "build_scoring_serialization_bundle",
+        (
+            pipeline.pose_results[0],
+            pipeline.ranking_result,
+            pipeline.consensus_result,
+        ),
+        bundle_id="section_30_4_bundle",
+    )
+    assert_scoring_test_equal(len(bundle.artifacts), 3)
+    text = _section_30_4_call(
+        "scoring_serialization_bundle_to_json",
+        bundle,
+    )
+    assert_scoring_test_true(isinstance(text, str) and bool(text))
+    _section_30_4_call("validate_scoring_serialization_bundle", bundle)
+
+
+@register_scoring_self_test(
+    name="serialization_files",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_SERIALIZATION,),
+)
+def test_aggregation_serialization_files() -> None:
+    """Write and read JSON, JSON Lines, and CSV scoring outputs."""
+
+    poses = build_scoring_pose_test_results(pose_count=2)
+    with scoring_self_test_temporary_directory() as directory:
+        json_path = directory / "pose.json"
+        jsonl_path = directory / "poses.jsonl"
+        csv_path = directory / "poses.csv"
+        _section_30_4_call("write_scoring_json", poses[0], json_path)
+        _section_30_4_call(
+            "write_scoring_json_lines",
+            poses,
+            jsonl_path,
+        )
+        _section_30_4_call("write_scoring_csv", poses, csv_path)
+        assert_scoring_test_true(json_path.is_file())
+        assert_scoring_test_true(jsonl_path.is_file())
+        assert_scoring_test_true(csv_path.is_file())
+        assert_scoring_test_true(json_path.stat().st_size > 0)
+        assert_scoring_test_true(jsonl_path.stat().st_size > 0)
+        assert_scoring_test_true(csv_path.stat().st_size > 0)
+
+
+@register_scoring_self_test(
+    name="report_document",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_REPORT,),
+)
+def test_aggregation_report_document() -> None:
+    """Build and render a complete scoring report document."""
+
+    pipeline = build_scoring_aggregation_integration_fixture()
+    report = _section_30_4_call(
+        "build_scoring_report_document",
+        pipeline.pose_results,
+        pipeline.statistics_report,
+        pipeline.ranking_result,
+        pipeline.consensus_result,
+        pipeline.diversity_result,
+        pipeline.selection_result,
+    )
+    markdown = _section_30_4_call(
+        "render_scoring_report_markdown",
+        report,
+    )
+    html = _section_30_4_call("render_scoring_report_html", report)
+    assert_scoring_test_true(len(report.sections) > 0)
+    assert_scoring_test_true(bool(markdown))
+    assert_scoring_test_true(bool(html))
+    _section_30_4_call("validate_scoring_report_document", report)
+
+
+@register_scoring_self_test(
+    name="report_integration",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(
+        SCORING_SELF_TEST_TAG_AGGREGATION_REPORT,
+        SCORING_SELF_TEST_TAG_AGGREGATION_DOCK_MODEL,
+    ),
+)
+def test_aggregation_report_integration() -> None:
+    """Attach a report to a DockModel and a generic mapping target."""
+
+    pipeline = build_scoring_aggregation_integration_fixture()
+    report = _section_30_4_call(
+        "build_scoring_report_document",
+        pipeline.pose_results,
+        pipeline.ranking_result,
+    )
+    model = pipeline.molecular_fixture.poses[0]
+    attached = _section_30_4_call(
+        "attach_scoring_report_to_dock_model",
+        model,
+        report,
+    )
+    target: Dict[str, Any] = {}
+    integrated = _section_30_4_call(
+        "integrate_scoring_report",
+        target,
+        report,
+    )
+    assert_scoring_test_not_none(attached)
+    assert_scoring_test_not_none(integrated)
+    assert_scoring_test_true(bool(target))
+
+
+# -----------------------------------------------------------------------------
+# 30.4.12. Validation, performance, and ChimeraX tests
+# -----------------------------------------------------------------------------
+
+
+@register_scoring_self_test(
+    name="validation_artifacts",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_VALIDATION,),
+)
+def test_aggregation_validation_artifacts() -> None:
+    """Validate pose, ranking, consensus, and serialization artifacts."""
+
+    pipeline = build_scoring_aggregation_integration_fixture()
+    artifacts = (
+        pipeline.pose_results[0],
+        pipeline.ranking_result,
+        pipeline.consensus_result,
+        pipeline.statistics_report,
+    )
+    batch = _section_30_4_call("validate_scoring_artifacts", artifacts)
+    reports = _section_30_4_sequence(
+        _section_30_4_attr(batch, "reports", "results", default=batch)
+    )
+    assert_scoring_test_true(len(reports) > 0)
+    for report in reports:
+        assert_scoring_test_false(
+            bool(_section_30_4_attr(report, "has_errors", default=False))
+        )
+
+
+@register_scoring_self_test(
+    name="error_boundary",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_VALIDATION,),
+)
+def test_aggregation_error_boundary() -> None:
+    """Return a configured fallback for a recoverable operation failure."""
+
+    def fail() -> None:
+        raise ValueError("expected Section 30.4 failure")
+
+    value = _section_30_4_call(
+        "safe_scoring_call",
+        fail,
+        default="fallback",
+    )
+    if hasattr(value, "value"):
+        value = value.value
+    assert_scoring_test_equal(value, "fallback")
+
+
+@register_scoring_self_test(
+    name="performance_benchmark",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_PERFORMANCE,),
+)
+def test_aggregation_performance_benchmark() -> None:
+    """Benchmark a deterministic aggregation callable."""
+
+    statistics = _section_30_4_call(
+        "benchmark_scoring_callable",
+        lambda values: sum(values),
+        (1.0, 2.0, 3.0),
+        operation="section_30_4_sum",
+    )
+    sample_count = _section_30_4_attr(
+        statistics,
+        "sample_count",
+        "count",
+        default=1,
+    )
+    assert_scoring_test_true(sample_count >= 1)
+    _section_30_4_assert_finite_values(
+        (
+            _section_30_4_attr(
+                statistics,
+                "mean_wall_seconds",
+                "mean_seconds",
+                "mean",
+                default=0.0,
+            ),
+        )
+    )
+
+
+@register_scoring_self_test(
+    name="performance_cache",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_PERFORMANCE,),
+)
+def test_aggregation_performance_cache() -> None:
+    """Reuse a cached aggregation result and record a cache hit."""
+
+    cache_type = _section_30_4_require("ScoringLRUCache")
+    cache = cache_type(max_entries=8)
+    calls = {"count": 0}
+
+    def total(values: Tuple[int, ...]) -> int:
+        calls["count"] += 1
+        return sum(values)
+
+    first, first_status, first_key = _section_30_4_call(
+        "cached_scoring_call",
+        total,
+        (1, 2, 3),
+        cache=cache,
+        namespace="section_30_4",
+    )
+    second, second_status, second_key = _section_30_4_call(
+        "cached_scoring_call",
+        total,
+        (1, 2, 3),
+        cache=cache,
+        namespace="section_30_4",
+    )
+    assert_scoring_test_equal(first, second)
+    assert_scoring_test_equal(first_key, second_key)
+    assert_scoring_test_true(first_status != second_status)
+    assert_scoring_test_equal(calls["count"], 1)
+
+
+@register_scoring_self_test(
+    name="performance_batch_index",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_PERFORMANCE,),
+)
+def test_aggregation_performance_batch_index() -> None:
+    """Execute a batch and build reusable interaction indexes."""
+
+    result = _section_30_4_call(
+        "execute_scoring_batch",
+        lambda value: value * value,
+        range(8),
+        operation="section_30_4_square",
+    )
+    outputs = _section_30_4_attr(
+        result,
+        "results",
+        "values",
+        default=(),
+    )
+    assert_scoring_test_equal(len(_section_30_4_sequence(outputs)), 8)
+    fixture = build_scoring_self_test_fixture(pose_count=1)
+    index = _section_30_4_call(
+        "build_scoring_interaction_index",
+        fixture.interactions,
+    )
+    assert_scoring_test_equal(index.item_count, len(fixture.interactions))
+
+
+@register_scoring_self_test(
+    name="chimerax_offline_commands",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_CHIMERAX,),
+)
+def test_aggregation_chimerax_offline_commands() -> None:
+    """Generate an offline ChimeraX command set from scoring results."""
+
+    pipeline = build_scoring_aggregation_integration_fixture()
+    command_set = _section_30_4_call(
+        "build_scoring_chimerax_command_set",
+        pipeline.pose_results[0],
+        ranking=pipeline.ranking_result,
+        consensus=pipeline.consensus_result,
+    )
+    assert_scoring_test_true(len(command_set.commands) > 0)
+    script = _section_30_4_call(
+        "scoring_chimerax_script_text",
+        command_set,
+    )
+    assert_scoring_test_true(isinstance(script, str) and bool(script))
+    _section_30_4_call(
+        "validate_scoring_chimerax_command_set",
+        command_set,
+    )
+
+
+@register_scoring_self_test(
+    name="chimerax_files",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_CHIMERAX,),
+)
+def test_aggregation_chimerax_files() -> None:
+    """Write ChimeraX command and residue-attribute files."""
+
+    pipeline = build_scoring_aggregation_integration_fixture()
+    command_set = _section_30_4_call(
+        "build_scoring_chimerax_command_set",
+        pipeline.pose_results[0],
+        ranking=pipeline.ranking_result,
+        consensus=pipeline.consensus_result,
+    )
+    attribute_file = _section_30_4_call(
+        "build_scoring_chimerax_residue_score_attribute",
+        pipeline.pose_results[0],
+    )
+    with scoring_self_test_temporary_directory() as directory:
+        script_path = directory / "scoring.cxc"
+        attribute_path = directory / "scoring.defattr"
+        _section_30_4_call(
+            "write_scoring_chimerax_script",
+            command_set,
+            script_path,
+        )
+        _section_30_4_call(
+            "write_scoring_chimerax_attribute_file",
+            attribute_file,
+            attribute_path,
+        )
+        assert_scoring_test_true(script_path.is_file())
+        assert_scoring_test_true(attribute_path.is_file())
+        assert_scoring_test_true(script_path.stat().st_size > 0)
+        assert_scoring_test_true(attribute_path.stat().st_size > 0)
+
+
+@register_scoring_self_test(
+    name="chimerax_execution",
+    section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+    tags=(SCORING_SELF_TEST_TAG_AGGREGATION_CHIMERAX,),
+)
+def test_aggregation_chimerax_execution() -> None:
+    """Execute generated commands through the mock ChimeraX session."""
+
+    pipeline = build_scoring_aggregation_integration_fixture()
+    session = pipeline.molecular_fixture.session
+    command_set = _section_30_4_call(
+        "build_scoring_chimerax_command_set",
+        pipeline.pose_results[0],
+        ranking=pipeline.ranking_result,
+        consensus=pipeline.consensus_result,
+    )
+    result = _section_30_4_call(
+        "execute_scoring_chimerax_command_set",
+        session,
+        command_set,
+        continue_on_error=True,
+    )
+    records = _section_30_4_attr(result, "records", default=result)
+    assert_scoring_test_true(len(_section_30_4_sequence(records)) > 0)
+    assert_scoring_test_true(len(session.command_history) > 0)
+
+
+# -----------------------------------------------------------------------------
+# 30.4.13. Focused execution, reporting, and validation
+# -----------------------------------------------------------------------------
+
+
+def get_section_30_4_self_tests(
+    *,
+    tags: Iterable[str] = (),
+    enabled_only: bool = True,
+) -> Tuple[ScoringSelfTestCase, ...]:
+    """Return registered Section 30.4 cases."""
+
+    return get_registered_scoring_self_tests(
+        section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+        tags=tags,
+        enabled_only=enabled_only,
+    )
+
+
+def run_section_30_4_self_tests(
+    *,
+    tags: Iterable[str] = (),
+    seed: int = SCORING_SELF_TEST_DEFAULT_SEED,
+    capture_output: bool = True,
+    raise_on_failure: bool = False,
+    context: Optional[ScoringSelfTestContext] = None,
+) -> ScoringSelfTestReport:
+    """Execute only the aggregation and integration self-tests."""
+
+    report = run_registered_scoring_self_tests(
+        section=SCORING_SELF_TEST_SECTION_AGGREGATION,
+        tags=tags,
+        seed=seed,
+        capture_output=capture_output,
+        raise_on_failure=raise_on_failure,
+        context=context,
+    )
+    validate_section_30_4_report(report)
+    return report
+
+
+def summarize_section_30_4_self_tests(
+    report: ScoringSelfTestReport,
+) -> ScoringAggregationSelfTestSummary:
+    """Return a compact validated Section 30.4 summary."""
+
+    validate_section_30_4_report(report)
+    summary = _section_30_4_summary_from_report(report)
+    validate_scoring_aggregation_self_test_summary(summary)
+    return summary
+
+
+def scoring_aggregation_self_test_summary_to_dict(
+    summary: ScoringAggregationSelfTestSummary,
+) -> Dict[str, Any]:
+    """Convert the focused Section 30.4 summary to a dictionary."""
+
+    validate_scoring_aggregation_self_test_summary(summary)
+    return summary.to_dict()
+
+
+def format_section_30_4_self_test_summary(
+    summary: ScoringAggregationSelfTestSummary,
+) -> str:
+    """Format a concise human-readable Section 30.4 summary."""
+
+    validate_scoring_aggregation_self_test_summary(summary)
+    outcome = "PASS" if summary.success else "FAIL"
+    return (
+        "DockAnalyzer scoring self-tests — Section 30.4\n"
+        f"Status: {outcome}\n"
+        f"Total: {summary.total}\n"
+        f"Passed: {summary.passed}\n"
+        f"Failed: {summary.failed}\n"
+        f"Errors: {summary.errors}\n"
+        f"Skipped: {summary.skipped}\n"
+        f"Duration: {summary.duration_seconds:.6f} s"
+    )
+
+
+def validate_scoring_aggregation_self_test_summary(summary: Any) -> None:
+    """Validate a focused Section 30.4 summary."""
+
+    if not isinstance(summary, ScoringAggregationSelfTestSummary):
+        raise ScoringAggregationValidationError(
+            "Expected ScoringAggregationSelfTestSummary."
+        )
+    if summary.section != SCORING_SELF_TEST_SECTION_AGGREGATION:
+        raise ScoringAggregationValidationError(
+            "Section 30.4 summary has an incorrect section identifier."
+        )
+    if summary.total != len(summary.test_names):
+        raise ScoringAggregationValidationError(
+            "Section 30.4 summary test_names do not match total."
+        )
+
+
+def validate_scoring_aggregation_integration_fixture(value: Any) -> None:
+    """Validate the reusable integration fixture."""
+
+    if not isinstance(value, ScoringAggregationIntegrationFixture):
+        raise ScoringAggregationValidationError(
+            "Expected ScoringAggregationIntegrationFixture."
+        )
+    if not value.pose_results:
+        raise ScoringAggregationValidationError(
+            "Integration fixture pose_results cannot be empty."
+        )
+    if len(value.pose_results) != len(value.coverage_profiles):
+        raise ScoringAggregationValidationError(
+            "Pose and coverage-profile counts are inconsistent."
+        )
+
+
+def validate_section_30_4_registration() -> None:
+    """Validate that every expected Section 30.4 test is registered once."""
+
+    cases = get_section_30_4_self_tests(enabled_only=False)
+    names = tuple(case.name for case in cases)
+    assert_scoring_test_unique(names)
+    missing = tuple(
+        name for name in SCORING_SECTION_30_4_TEST_NAMES if name not in names
+    )
+    unexpected = tuple(
+        name for name in names if name not in SCORING_SECTION_30_4_TEST_NAMES
+    )
+    if missing:
+        raise ScoringAggregationValidationError(
+            "Missing Section 30.4 tests: " + ", ".join(missing)
+        )
+    if unexpected:
+        raise ScoringAggregationValidationError(
+            "Unexpected Section 30.4 tests: " + ", ".join(unexpected)
+        )
+    if len(cases) != SCORING_SECTION_30_4_EXPECTED_TEST_COUNT:
+        raise ScoringAggregationValidationError(
+            "Section 30.4 registered test count is inconsistent."
+        )
+    for case in cases:
+        validate_scoring_self_test_case(case)
+        if case.section != SCORING_SELF_TEST_SECTION_AGGREGATION:
+            raise ScoringAggregationValidationError(
+                f"Case {case.name!r} has an incorrect section."
+            )
+
+
+def validate_section_30_4_report(report: Any) -> None:
+    """Validate a report produced by the focused Section 30.4 runner."""
+
+    validate_scoring_self_test_report(report)
+    if report.selected_section != SCORING_SELF_TEST_SECTION_AGGREGATION:
+        raise ScoringAggregationValidationError(
+            "The report was not generated for Section 30.4."
+        )
+    expected_names = {
+        case.name
+        for case in get_section_30_4_self_tests(tags=report.selected_tags)
+    }
+    observed_names = {result.case_name for result in report.results}
+    if expected_names != observed_names:
+        missing = sorted(expected_names - observed_names)
+        unexpected = sorted(observed_names - expected_names)
+        details: List[str] = []
+        if missing:
+            details.append("missing=" + ",".join(missing))
+        if unexpected:
+            details.append("unexpected=" + ",".join(unexpected))
+        raise ScoringAggregationValidationError(
+            "Section 30.4 report cases are inconsistent: "
+            + "; ".join(details)
+        )
+
+
+def run_section_30_4_self_check(
+    *,
+    raise_on_failure: bool = True,
+) -> Mapping[str, Any]:
+    """Run and summarize all Section 30.4 aggregation tests."""
+
+    validate_section_30_4_registration()
+    report = run_section_30_4_self_tests(
+        capture_output=True,
+        raise_on_failure=raise_on_failure,
+    )
+    summary = summarize_section_30_4_self_tests(report)
+    if not summary.success and raise_on_failure:
+        failed = tuple(
+            result.case_name for result in report.results if result.failed
+        )
+        raise ScoringAggregationSelfTestError(
+            "Section 30.4 self-check failed: " + ", ".join(failed)
+        )
+    return MappingProxyType(
+        {
+            "status": summary.status,
+            "section": summary.section,
+            "success": summary.success,
+            "total": summary.total,
+            "passed": summary.passed,
+            "failed": summary.failed,
+            "skipped": summary.skipped,
+            "errors": summary.errors,
+            "duration_seconds": summary.duration_seconds,
+            "summary": MappingProxyType(summary.to_dict()),
+        }
+    )
+
+
+# -----------------------------------------------------------------------------
+# 30.4.14. Public interface
+# -----------------------------------------------------------------------------
+
+
+_SECTION_30_4_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    "SCORING_AGGREGATION_TEST_VERSION",
+    "SCORING_AGGREGATION_TEST_SCHEMA",
+    "SCORING_SELF_TEST_TAG_AGGREGATION_COLLECTION",
+    "SCORING_SELF_TEST_TAG_AGGREGATION_RESIDUE",
+    "SCORING_SELF_TEST_TAG_AGGREGATION_POSE",
+    "SCORING_SELF_TEST_TAG_AGGREGATION_NORMALIZATION",
+    "SCORING_SELF_TEST_TAG_AGGREGATION_DIVERSITY",
+    "SCORING_SELF_TEST_TAG_AGGREGATION_STATISTICS",
+    "SCORING_SELF_TEST_TAG_AGGREGATION_RANKING",
+    "SCORING_SELF_TEST_TAG_AGGREGATION_CONSENSUS",
+    "SCORING_SELF_TEST_TAG_AGGREGATION_DOCK_MODEL",
+    "SCORING_SELF_TEST_TAG_AGGREGATION_EXTERNAL",
+    "SCORING_SELF_TEST_TAG_AGGREGATION_EXPLAINABILITY",
+    "SCORING_SELF_TEST_TAG_AGGREGATION_SERIALIZATION",
+    "SCORING_SELF_TEST_TAG_AGGREGATION_REPORT",
+    "SCORING_SELF_TEST_TAG_AGGREGATION_VALIDATION",
+    "SCORING_SELF_TEST_TAG_AGGREGATION_PERFORMANCE",
+    "SCORING_SELF_TEST_TAG_AGGREGATION_CHIMERAX",
+    "SCORING_SELF_TEST_TAG_AGGREGATION_PIPELINE",
+    "SCORING_AGGREGATION_TEST_TAGS",
+    "SCORING_SECTION_30_4_TEST_NAMES",
+    "SCORING_SECTION_30_4_EXPECTED_TEST_COUNT",
+    "ScoringAggregationSelfTestError",
+    "ScoringAggregationFixtureError",
+    "ScoringAggregationValidationError",
+    "ScoringAggregationSelfTestSummary",
+    "ScoringAggregationIntegrationFixture",
+    "build_scoring_collection_test_result",
+    "build_scoring_pose_test_results",
+    "build_scoring_external_test_result",
+    "build_scoring_aggregation_integration_fixture",
+    "test_aggregation_collection_materialization",
+    "test_aggregation_collection_scoring",
+    "test_aggregation_collection_reducer",
+    "test_aggregation_collection_grouping",
+    "test_aggregation_collection_deduplication",
+    "test_aggregation_collection_empty_input",
+    "test_aggregation_collection_outputs",
+    "test_aggregation_residue_aggregation",
+    "test_aggregation_residue_totals",
+    "test_aggregation_residue_ranking_hotspots",
+    "test_aggregation_residue_lookup",
+    "test_aggregation_residue_outputs",
+    "test_aggregation_pose_scoring",
+    "test_aggregation_pose_summary_consistency",
+    "test_aggregation_pose_family_components",
+    "test_aggregation_pose_type_components",
+    "test_aggregation_pose_strongest_interactions",
+    "test_aggregation_pose_empty_input",
+    "test_aggregation_pose_outputs",
+    "test_aggregation_normalization_minmax",
+    "test_aggregation_normalization_ranks",
+    "test_aggregation_normalization_lookup",
+    "test_aggregation_normalization_groups",
+    "test_aggregation_normalization_outputs",
+    "test_aggregation_diversity_fingerprints",
+    "test_aggregation_diversity_pair_symmetry",
+    "test_aggregation_diversity_result",
+    "test_aggregation_coverage_profiles",
+    "test_aggregation_coverage_universe",
+    "test_aggregation_pose_set_selection",
+    "test_aggregation_complementarity_outputs",
+    "test_aggregation_statistics_report",
+    "test_aggregation_statistics_rows",
+    "test_aggregation_ranking_single_metric",
+    "test_aggregation_ranking_multicriteria",
+    "test_aggregation_ranking_comparison",
+    "test_aggregation_consensus_persistence",
+    "test_aggregation_consensus_levels",
+    "test_aggregation_consensus_outputs",
+    "test_aggregation_dock_model_extraction",
+    "test_aggregation_dock_model_attachment",
+    "test_aggregation_dock_model_multipose",
+    "test_aggregation_dock_model_clear_restore",
+    "test_aggregation_external_score_integration",
+    "test_aggregation_external_score_attachment",
+    "test_aggregation_external_score_ranking",
+    "test_aggregation_explainability_pose",
+    "test_aggregation_explainability_integrated",
+    "test_aggregation_serialization_envelope",
+    "test_aggregation_serialization_bundle",
+    "test_aggregation_serialization_files",
+    "test_aggregation_report_document",
+    "test_aggregation_report_integration",
+    "test_aggregation_validation_artifacts",
+    "test_aggregation_error_boundary",
+    "test_aggregation_performance_benchmark",
+    "test_aggregation_performance_cache",
+    "test_aggregation_performance_batch_index",
+    "test_aggregation_chimerax_offline_commands",
+    "test_aggregation_chimerax_files",
+    "test_aggregation_chimerax_execution",
+    "get_section_30_4_self_tests",
+    "run_section_30_4_self_tests",
+    "summarize_section_30_4_self_tests",
+    "scoring_aggregation_self_test_summary_to_dict",
+    "format_section_30_4_self_test_summary",
+    "validate_scoring_aggregation_self_test_summary",
+    "validate_scoring_aggregation_integration_fixture",
+    "validate_section_30_4_registration",
+    "validate_section_30_4_report",
+    "run_section_30_4_self_check",
+)
+
+for public_name in _SECTION_30_4_PUBLIC_NAMES:
+    if public_name not in __all__:
+        __all__.append(public_name)
+
+
+def section_30_4_public_names() -> Tuple[str, ...]:
+    """Return the immutable Section 30.4 public interface."""
+
+    return _SECTION_30_4_PUBLIC_NAMES
+
+
+def validate_section_30_4_public_interface() -> None:
+    """Validate all Section 30.4 public names and exports."""
+
+    missing_names = tuple(
+        name for name in _SECTION_30_4_PUBLIC_NAMES if name not in globals()
+    )
+    if missing_names:
+        raise ScoringAggregationValidationError(
+            "Missing Section 30.4 public names: " + ", ".join(missing_names)
+        )
+    missing_exports = tuple(
+        name for name in _SECTION_30_4_PUBLIC_NAMES if name not in __all__
+    )
+    if missing_exports:
+        raise ScoringAggregationValidationError(
+            "Section 30.4 names missing from __all__: "
+            + ", ".join(missing_exports)
+        )
+    assert_scoring_test_unique(_SECTION_30_4_PUBLIC_NAMES)
+    validate_section_30_4_registration()
+
+
+if "section_30_4_public_names" not in __all__:
+    __all__.append("section_30_4_public_names")
+if "validate_section_30_4_public_interface" not in __all__:
+    __all__.append("validate_section_30_4_public_interface")
+
+validate_section_30_4_public_interface()
+
+# =============================================================================
+# End of Section 30.4
+# =============================================================================
 
