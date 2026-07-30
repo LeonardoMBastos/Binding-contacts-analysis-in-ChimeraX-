@@ -1,6 +1,6 @@
 """
 ===============================================================================
-DockAnalyzer Configuration File
+DockAnalyzer Configuration File 
 -------------------------------------------------------------------------------
 Author : Leonardo Bastos & ChatGPT
 Project: DockAnalyzer
