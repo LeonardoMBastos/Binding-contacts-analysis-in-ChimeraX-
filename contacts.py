@@ -29,28 +29,11 @@ from __future__ import annotations
 # Standard library imports
 # =============================================================================
 
-import math
 from collections import defaultdict
-from dataclasses import (
-    dataclass,
-    field,
-)
+from dataclasses import dataclass, field, replace
 from typing import (
-    Any,
-    Callable,
-    DefaultDict,
-    Dict,
-    Iterable,
-    Iterator,
-    List,
-    Mapping,
-    MutableMapping,
-    NamedTuple,
-    Optional,
-    Sequence,
-    Set,
-    Tuple,
-    Union,
+    Any, Callable, DefaultDict, Dict, Iterable, Iterator, List, Mapping,
+    MutableMapping, Optional, Sequence, Set, Tuple, Union,
 )
 
 # =============================================================================
@@ -63,20 +46,32 @@ import numpy as np
 # DockAnalyzer imports
 # =============================================================================
 
-import config
-import geometry
-import utils
+if __package__:
+    from . import config
+    from . import geometry
+    from . import utils
+    from .geometry import (
+        ContactGeometry,
+    )
 
-from geometry import (
-    ContactGeometry,
-)
+    from .utils import (
+        DockLogger,
+        DockModel,
+    )
 
-from utils import (
-    DockLogger,
-    DockModel,
-)
+else:
+    import config
+    import geometry
+    import utils
+    from geometry import (
+        ContactGeometry,
+    )
 
-from dataclasses import dataclass, field, replace
+    from utils import (
+        DockLogger,
+        DockModel,
+    )
+
 
 # =============================================================================
 # Module metadata
@@ -92,6 +87,16 @@ __version__ = "1.0.0"
 
 __all__: List[str] = []
 
+
+def _register_public_names(names: Iterable[str]) -> None:
+    """Append unique public names while preserving declaration order."""
+
+    known = set(__all__)
+    for name in names:
+        if name not in known:
+            __all__.append(name)
+            known.add(name)
+
 # =============================================================================
 # Type aliases
 # =============================================================================
@@ -100,65 +105,54 @@ __all__: List[str] = []
 # Numeric types
 # -------------------------------------------------------------------------
 
-Number = Union[
-    int,
-    float,
-    np.integer,
-    np.floating,
-]
-
-# -------------------------------------------------------------------------
-# Coordinate types
-# -------------------------------------------------------------------------
-
+Number = Union[int, float, np.integer, np.floating]
 Coordinate = np.ndarray
-
 CoordinateCollection = np.ndarray
-
 Vector3D = np.ndarray
-
 FloatArray = np.ndarray
 
-# -------------------------------------------------------------------------
-# ChimeraX-related generic types
-# -------------------------------------------------------------------------
-
+# ChimeraX-compatible generic types.
 AtomLike = Any
-
 ResidueLike = Any
-
 StructureLike = Any
-
 ModelLike = Any
-
 LigandLike = Any
-
 ReceptorLike = Any
 
-# -------------------------------------------------------------------------
-# Collections
-# -------------------------------------------------------------------------
-
 AtomCollection = Sequence[AtomLike]
-
 ResidueCollection = Sequence[ResidueLike]
-
 ContactCollection = Sequence[ContactGeometry]
-
-# -------------------------------------------------------------------------
-# Dictionaries
-# -------------------------------------------------------------------------
-
 Metadata = Dict[str, Any]
-
 Statistics = Dict[str, Any]
-
 ContactDictionary = Dict[str, ContactGeometry]
+ResidueContactDictionary = Dict[ResidueLike, List[ContactGeometry]]
 
-ResidueContactDictionary = Dict[
-    ResidueLike,
-    List[ContactGeometry],
+# -------------------------------------------------------------------------
+# Section 1 public interface
+# -------------------------------------------------------------------------
+
+_SECTION_1_PUBLIC_NAMES = [
+    "Number",
+    "Coordinate",
+    "CoordinateCollection",
+    "Vector3D",
+    "FloatArray",
+    "AtomLike",
+    "ResidueLike",
+    "StructureLike",
+    "ModelLike",
+    "LigandLike",
+    "ReceptorLike",
+    "AtomCollection",
+    "ResidueCollection",
+    "ContactCollection",
+    "Metadata",
+    "Statistics",
+    "ContactDictionary",
+    "ResidueContactDictionary",
 ]
+
+_register_public_names(_SECTION_1_PUBLIC_NAMES)
 
 # =============================================================================
 # Internal constants
@@ -276,9 +270,7 @@ _SECTION_2_PUBLIC_NAMES = [
     "ContactClassification",
 ]
 
-for public_name in _SECTION_2_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(public_name)
+_register_public_names(_SECTION_2_PUBLIC_NAMES)
 
 # =============================================================================
 # End of Section 2
@@ -1600,11 +1592,7 @@ _SECTION_3_PUBLIC_NAMES = [
     "ContactAnalysisResult",
 ]
 
-for public_name in _SECTION_3_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_register_public_names(_SECTION_3_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -1628,30 +1616,7 @@ def _get_object_value(
     default: Any = None,
     call_if_callable: bool = False,
 ) -> Any:
-    """
-    Retrieve the first available value from an object or mapping.
-
-    Parameters
-    ----------
-    object_ : Any
-        Object or mapping to inspect.
-    names : sequence of str
-        Candidate attribute or key names, evaluated in order.
-    default : Any, optional
-        Value returned when no candidate is available.
-    call_if_callable : bool, optional
-        Whether callable values should be invoked without arguments.
-
-    Returns
-    -------
-    Any
-        Retrieved value or ``default``.
-
-    Notes
-    -----
-    This helper supports both ChimeraX objects and synthetic dictionary-like
-    objects used by the module self-tests.
-    """
+    """Retrieve the first available value from an object or mapping."""
 
     if object_ is None:
         return default
@@ -1713,23 +1678,7 @@ def _normalize_text_value(
     default: str = "",
     uppercase: bool = False,
 ) -> str:
-    """
-    Normalize a value as stripped text.
-
-    Parameters
-    ----------
-    value : Any
-        Value to normalize.
-    default : str, optional
-        Fallback text.
-    uppercase : bool, optional
-        Whether the normalized text should be uppercase.
-
-    Returns
-    -------
-    str
-        Normalized text.
-    """
+    """Normalize a value as stripped text."""
 
     if value is None:
         text = str(
@@ -1824,21 +1773,7 @@ def _extract_element_symbol(
     *,
     default: str = "",
 ) -> str:
-    """
-    Extract a chemical element symbol from an element-like value.
-
-    Parameters
-    ----------
-    element : Any
-        Element object, string, integer atomic number or mapping.
-    default : str, optional
-        Fallback element symbol.
-
-    Returns
-    -------
-    str
-        Normalized uppercase element symbol.
-    """
+    """Extract a chemical element symbol from an element-like value."""
 
     if element is None:
         return _normalize_text_value(
@@ -2818,61 +2753,32 @@ def validate_atom_collection(
     )
 
 
-def atom_coordinates(
-    atoms: Iterable[AtomLike],
+def _coordinates_from_validated_atoms(
+    atoms: Sequence[AtomLike],
     *,
-    scene: bool = False,
-    allow_empty: bool = False,
-    ignore_none: bool = False,
-    require_finite: bool = True,
+    scene: bool,
+    allow_empty: bool,
+    require_finite: bool,
 ) -> FloatArray:
-    """
-    Extract coordinates from an atom collection.
+    """Extract coordinates from an already normalized atom sequence."""
 
-    Parameters
-    ----------
-    atoms : iterable of AtomLike
-        Atom collection.
-    scene : bool, optional
-        Whether scene coordinates should be preferred.
-    allow_empty : bool, optional
-        Whether an empty coordinate matrix is accepted.
-    ignore_none : bool, optional
-        Whether ``None`` atoms should be skipped.
-    require_finite : bool, optional
-        Whether non-finite coordinate values should be rejected.
-
-    Returns
-    -------
-    numpy.ndarray
-        Coordinate matrix with shape ``(N, 3)``.
-    """
-
-    validated_atoms = validate_atom_collection(
-        atoms,
-        allow_empty=allow_empty,
-        ignore_none=ignore_none,
-        require_coordinate=False,
-    )
-
-    coordinates = [
-        get_atom_coordinate(
-            atom,
-            scene=scene,
-            copy=False,
-            require_finite=require_finite,
-        )
-        for atom in validated_atoms
-    ]
+    coordinates: List[FloatArray] = []
+    for index, atom in enumerate(atoms):
+        try:
+            coordinate = get_atom_coordinate(
+                atom,
+                scene=scene,
+                copy=False,
+                require_finite=require_finite,
+            )
+        except (AttributeError, TypeError, ValueError) as error:
+            raise type(error)(
+                f"Invalid atom at collection index {index}: {error}"
+            ) from error
+        coordinates.append(coordinate)
 
     if not coordinates:
-        return np.empty(
-            (
-                0,
-                3,
-            ),
-            dtype=np.float64,
-        )
+        return np.empty((0, 3), dtype=np.float64)
 
     return geometry.as_coordinate_matrix(
         coordinates,
@@ -2882,6 +2788,51 @@ def atom_coordinates(
         name="Atom coordinates",
     )
 
+
+def atom_coordinates(
+    atoms: Iterable[AtomLike],
+    *,
+    scene: bool = False,
+    allow_empty: bool = False,
+    ignore_none: bool = False,
+    require_finite: bool = True,
+) -> FloatArray:
+    """
+    
+        Extract coordinates from an atom collection.
+    
+        Parameters
+        ----------
+        atoms : iterable of AtomLike
+            Atom collection.
+        scene : bool, optional
+            Whether scene coordinates should be preferred.
+        allow_empty : bool, optional
+            Whether an empty coordinate matrix is accepted.
+        ignore_none : bool, optional
+            Whether ``None`` atoms should be skipped.
+        require_finite : bool, optional
+            Whether non-finite coordinate values should be rejected.
+    
+        Returns
+        -------
+        numpy.ndarray
+            Coordinate matrix with shape ``(N, 3)``.
+        
+    """
+
+    validated_atoms = validate_atom_collection(
+        atoms,
+        allow_empty=allow_empty,
+        ignore_none=ignore_none,
+        require_coordinate=False,
+    )
+    return _coordinates_from_validated_atoms(
+        validated_atoms,
+        scene=scene,
+        allow_empty=allow_empty,
+        require_finite=require_finite,
+    )
 
 def is_hydrogen_atom(
     atom: AtomLike,
@@ -2961,11 +2912,7 @@ _SECTION_4_PUBLIC_NAMES = [
     "is_heavy_atom",
 ]
 
-for public_name in _SECTION_4_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_register_public_names(_SECTION_4_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -2987,21 +2934,7 @@ def _get_residue_name(
     *,
     default: str = "",
 ) -> str:
-    """
-    Retrieve a normalized residue name.
-
-    Parameters
-    ----------
-    residue : ResidueLike or None
-        Residue-like object or mapping.
-    default : str, optional
-        Fallback residue name.
-
-    Returns
-    -------
-    str
-        Uppercase residue name.
-    """
+    """Retrieve a normalized residue name."""
 
     if residue is None:
         return _normalize_text_value(
@@ -3032,21 +2965,7 @@ def _get_residue_number(
     *,
     default: Optional[int] = None,
 ) -> Optional[int]:
-    """
-    Retrieve a residue number safely.
-
-    Parameters
-    ----------
-    residue : ResidueLike or None
-        Residue-like object or mapping.
-    default : int or None, optional
-        Fallback residue number.
-
-    Returns
-    -------
-    int or None
-        Residue number.
-    """
+    """Retrieve a residue number safely."""
 
     if residue is None:
         return default
@@ -3087,21 +3006,7 @@ def _get_residue_chain_id(
     *,
     default: str = "",
 ) -> str:
-    """
-    Retrieve a residue chain identifier safely.
-
-    Parameters
-    ----------
-    residue : ResidueLike or None
-        Residue-like object or mapping.
-    default : str, optional
-        Fallback chain identifier.
-
-    Returns
-    -------
-    str
-        Chain identifier.
-    """
+    """Retrieve a residue chain identifier safely."""
 
     if residue is None:
         return _normalize_text_value(
@@ -3348,21 +3253,7 @@ def _get_configured_name_set(
     candidate_names: Sequence[str],
     fallback: Iterable[str],
 ) -> frozenset[str]:
-    """
-    Retrieve a normalized name set from ``config``.
-
-    Parameters
-    ----------
-    candidate_names : sequence of str
-        Candidate configuration attribute names.
-    fallback : iterable of str
-        Fallback values.
-
-    Returns
-    -------
-    frozenset of str
-        Normalized uppercase names.
-    """
+    """Retrieve a normalized name set from ``config``."""
 
     configured_value: Any = None
 
@@ -4234,11 +4125,7 @@ _SECTION_5_PUBLIC_NAMES = [
     "select_contact_collections",
 ]
 
-for public_name in _SECTION_5_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_register_public_names(_SECTION_5_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -4255,37 +4142,34 @@ for public_name in _SECTION_5_PUBLIC_NAMES:
 # Internal validation helpers
 # -----------------------------------------------------------------------------
 
+def _validate_scene_flag(
+    scene: bool,
+) -> bool:
+    """Validate whether scene-transformed coordinates should be used."""
+
+    if not isinstance(
+        scene,
+        (
+            bool,
+            np.bool_,
+        ),
+    ):
+        raise TypeError(
+            "scene must be a boolean value."
+        )
+
+    return bool(
+        scene
+    )
+
+
 def _validate_contact_cutoff(
     cutoff: Number,
     *,
     name: str = "cutoff",
     allow_zero: bool = False,
 ) -> np.float64:
-    """
-    Validate a contact-distance cutoff.
-
-    Parameters
-    ----------
-    cutoff : Number
-        Distance cutoff in angstroms.
-    name : str, optional
-        Parameter name used in error messages.
-    allow_zero : bool, optional
-        Whether zero is accepted.
-
-    Returns
-    -------
-    numpy.float64
-        Validated cutoff.
-
-    Raises
-    ------
-    TypeError
-        If ``cutoff`` is not numeric.
-    ValueError
-        If ``cutoff`` is non-finite, negative or zero when zero is not
-        allowed.
-    """
+    """Validate a contact-distance cutoff."""
 
     if isinstance(
         cutoff,
@@ -4340,27 +4224,7 @@ def _validate_contact_cutoff(
 def _validate_block_size(
     block_size: Optional[int],
 ) -> Optional[int]:
-    """
-    Validate a distance-matrix block size.
-
-    Parameters
-    ----------
-    block_size : int or None
-        Number of atoms processed per block. ``None`` enables automatic
-        strategy selection.
-
-    Returns
-    -------
-    int or None
-        Validated block size.
-
-    Raises
-    ------
-    TypeError
-        If ``block_size`` is not an integer or ``None``.
-    ValueError
-        If ``block_size`` is not positive.
-    """
+    """Validate a distance-matrix block size."""
 
     if block_size is None:
         return None
@@ -4394,20 +4258,7 @@ def _validate_block_size(
 def _validate_maximum_matrix_elements(
     maximum_matrix_elements: int,
 ) -> int:
-    """
-    Validate the maximum number of distance-matrix elements.
-
-    Parameters
-    ----------
-    maximum_matrix_elements : int
-        Maximum number of matrix entries allowed before block processing
-        is selected.
-
-    Returns
-    -------
-    int
-        Validated matrix-element limit.
-    """
+    """Validate the maximum number of distance-matrix elements."""
 
     if isinstance(
         maximum_matrix_elements,
@@ -4436,19 +4287,7 @@ def _validate_maximum_matrix_elements(
 
 
 def _get_default_contact_cutoff() -> np.float64:
-    """
-    Retrieve the default contact cutoff from ``config``.
-
-    Returns
-    -------
-    numpy.float64
-        Default contact cutoff.
-
-    Notes
-    -----
-    Multiple configuration names are supported to keep this module tolerant
-    of small naming changes while ``config.py`` is still evolving.
-    """
+    """Retrieve the default contact cutoff from ``config``."""
 
     candidate_names = (
         "DEFAULT_CONTACT_DISTANCE",
@@ -4482,14 +4321,7 @@ def _get_default_contact_cutoff() -> np.float64:
 
 
 def _get_default_maximum_matrix_elements() -> int:
-    """
-    Retrieve the default distance-matrix size limit.
-
-    Returns
-    -------
-    int
-        Maximum number of matrix elements.
-    """
+    """Retrieve the default distance-matrix size limit."""
 
     candidate_names = (
         "MAXIMUM_CONTACT_MATRIX_ELEMENTS",
@@ -4520,19 +4352,7 @@ def _get_default_maximum_matrix_elements() -> int:
 def _resolve_contact_cutoff(
     cutoff: Optional[Number],
 ) -> np.float64:
-    """
-    Resolve an explicit or configured contact cutoff.
-
-    Parameters
-    ----------
-    cutoff : Number or None
-        Explicit cutoff. The configured default is used when omitted.
-
-    Returns
-    -------
-    numpy.float64
-        Resolved cutoff.
-    """
+    """Resolve an explicit or configured contact cutoff."""
 
     if cutoff is None:
         return _get_default_contact_cutoff()
@@ -4542,81 +4362,46 @@ def _resolve_contact_cutoff(
     )
 
 
+def _resolve_matrix_element_limit(value: Optional[int]) -> int:
+    """Resolve an explicit or configured distance-matrix element limit."""
+
+    if value is None:
+        return _get_default_maximum_matrix_elements()
+    return _validate_maximum_matrix_elements(value)
+
+
+def _validate_optional_limit(
+    value: Optional[int],
+    *,
+    name: str,
+    allow_zero: bool = True,
+) -> Optional[int]:
+    """Validate an optional non-negative or positive integer limit."""
+
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+        raise TypeError(f"{name} must be an integer or None.")
+    normalized = int(value)
+    minimum = 0 if allow_zero else 1
+    if normalized < minimum:
+        if allow_zero:
+            raise ValueError(f"{name} cannot be negative.")
+        raise ValueError(f"{name} must be greater than zero.")
+    return normalized
+
+
 # -----------------------------------------------------------------------------
 # Distance strategy helpers
 # -----------------------------------------------------------------------------
 
-def _calculate_distance_block(
-    coordinates_1: FloatArray,
-    coordinates_2: FloatArray,
-) -> FloatArray:
-    """
-    Calculate a pairwise Euclidean-distance block.
-
-    Parameters
-    ----------
-    coordinates_1 : numpy.ndarray
-        Coordinate matrix with shape ``(N, 3)``.
-    coordinates_2 : numpy.ndarray
-        Coordinate matrix with shape ``(M, 3)``.
-
-    Returns
-    -------
-    numpy.ndarray
-        Distance matrix with shape ``(N, M)``.
-    """
-
-    displacement = (
-        coordinates_1[
-            :,
-            np.newaxis,
-            :,
-        ]
-        - coordinates_2[
-            np.newaxis,
-            :,
-            :,
-        ]
-    )
-
-    squared_distances = np.einsum(
-        "ijk,ijk->ij",
-        displacement,
-        displacement,
-        dtype=np.float64,
-    )
-
-    np.maximum(
-        squared_distances,
-        np.float64(0.0),
-        out=squared_distances,
-    )
-
-    return np.sqrt(
-        squared_distances,
-        dtype=np.float64,
-    )
 
 
 def _calculate_squared_distance_block(
     coordinates_1: FloatArray,
     coordinates_2: FloatArray,
 ) -> FloatArray:
-    """
-    Calculate a block of squared pairwise distances.
-
-    Parameters
-    ----------
-    coordinates_1 : numpy.ndarray
-        First coordinate matrix.
-    coordinates_2 : numpy.ndarray
-        Second coordinate matrix.
-
-    Returns
-    -------
-    numpy.ndarray
-        Squared-distance matrix.
-    """
+    """Calculate a block of squared pairwise distances."""
 
     displacement = (
         coordinates_1[
@@ -4654,25 +4439,7 @@ def _resolve_contact_block_size(
     block_size: Optional[int],
     maximum_matrix_elements: int,
 ) -> Optional[int]:
-    """
-    Determine whether full-matrix or blocked processing should be used.
-
-    Parameters
-    ----------
-    atom_count_1 : int
-        Number of atoms in the first collection.
-    atom_count_2 : int
-        Number of atoms in the second collection.
-    block_size : int or None
-        Explicit block size.
-    maximum_matrix_elements : int
-        Maximum number of full-matrix elements.
-
-    Returns
-    -------
-    int or None
-        Block size, or ``None`` when the full matrix may be used.
-    """
+    """Determine whether full-matrix or blocked processing should be used."""
 
     validated_block_size = (
         _validate_block_size(
@@ -4724,21 +4491,7 @@ def _iter_coordinate_blocks(
         FloatArray,
     ]
 ]:
-    """
-    Yield coordinate blocks and their index limits.
-
-    Parameters
-    ----------
-    coordinates : numpy.ndarray
-        Coordinate matrix.
-    block_size : int
-        Number of rows per block.
-
-    Yields
-    ------
-    tuple
-        ``(start, stop, coordinate_block)``.
-    """
+    """Yield coordinate blocks and their index limits."""
 
     point_count = int(
         coordinates.shape[
@@ -4777,82 +4530,41 @@ def _build_atom_contact(
     cutoff: Number,
     atom_1_index: Optional[int] = None,
     atom_2_index: Optional[int] = None,
-    classification: ContactClassification = (
-        CONTACT_TYPE_CONTACT
-    ),
-    metadata: Optional[
-        Mapping[
-            str,
-            Any,
-        ]
-    ] = None,
+    classification: ContactClassification = CONTACT_TYPE_CONTACT,
+    metadata: Optional[Mapping[str, Any]] = None,
+    scene: bool = True,
+    coordinate_1: Optional[FloatArray] = None,
+    coordinate_2: Optional[FloatArray] = None,
 ) -> AtomContact:
-    """
-    Construct an :class:`AtomContact` from a detected pair.
+    """Build an atom contact, reusing validated coordinates when supplied."""
 
-    Parameters
-    ----------
-    atom_1 : AtomLike
-        First atom.
-    atom_2 : AtomLike
-        Second atom.
-    distance : Number
-        Interatomic distance.
-    cutoff : Number
-        Contact cutoff.
-    atom_1_index : int or None, optional
-        Index in the first source collection.
-    atom_2_index : int or None, optional
-        Index in the second source collection.
-    classification : str, optional
-        Initial general classification.
-    metadata : mapping or None, optional
-        Additional contact metadata.
+    scene_value = _validate_scene_flag(scene)
+    if coordinate_1 is None:
+        coordinate_1 = get_atom_coordinate(atom_1, scene=scene_value, copy=True)
+    else:
+        coordinate_1 = np.array(coordinate_1, dtype=np.float64, copy=True)
+    if coordinate_2 is None:
+        coordinate_2 = get_atom_coordinate(atom_2, scene=scene_value, copy=True)
+    else:
+        coordinate_2 = np.array(coordinate_2, dtype=np.float64, copy=True)
 
-    Returns
-    -------
-    AtomContact
-        Structured contact result.
-    """
-
-    coordinate_1 = get_atom_coordinate(
-        atom_1,
-        copy=True,
-    )
-
-    coordinate_2 = get_atom_coordinate(
-        atom_2,
-        copy=True,
-    )
-
+    distance_value = np.float64(distance)
+    cutoff_value = np.float64(cutoff)
     geometry_result = ContactGeometry(
         atom_1=atom_1,
         atom_2=atom_2,
         coordinate_1=coordinate_1,
         coordinate_2=coordinate_2,
-        distance=np.float64(
-            distance
-        ),
-        cutoff=np.float64(
-            cutoff
-        ),
-        contact_compatible=bool(
-            np.float64(
-                distance
-            )
-            <= np.float64(
-                cutoff
-            )
-        ),
+        distance=distance_value,
+        cutoff=cutoff_value,
+        contact_compatible=bool(distance_value <= cutoff_value),
         index_1=atom_1_index,
         index_2=atom_2_index,
         metadata={
-            "source": (
-                "contacts.find_atom_contacts"
-            ),
+            "source": "contacts.find_atom_contacts",
+            "scene_coordinates": scene_value,
         },
     )
-
     return AtomContact(
         atom_1=atom_1,
         atom_2=atom_2,
@@ -4860,21 +4572,10 @@ def _build_atom_contact(
         classification=classification,
         atom_1_index=atom_1_index,
         atom_2_index=atom_2_index,
-        residue_1=get_atom_residue(
-            atom_1
-        ),
-        residue_2=get_atom_residue(
-            atom_2
-        ),
-        metadata=(
-            {}
-            if metadata is None
-            else dict(
-                metadata
-            )
-        ),
+        residue_1=get_atom_residue(atom_1),
+        residue_2=get_atom_residue(atom_2),
+        metadata={} if metadata is None else dict(metadata),
     )
-
 
 def _contact_sort_key(
     contact: AtomContact,
@@ -4883,19 +4584,7 @@ def _contact_sort_key(
     int,
     int,
 ]:
-    """
-    Build a deterministic sorting key for contacts.
-
-    Parameters
-    ----------
-    contact : AtomContact
-        Contact to sort.
-
-    Returns
-    -------
-    tuple
-        Distance followed by source indices.
-    """
+    """Build a deterministic sorting key for contacts."""
 
     index_1 = (
         contact.atom_1_index
@@ -4933,244 +4622,127 @@ def find_atom_contacts(
     maximum_matrix_elements: Optional[int] = None,
     sort_by_distance: bool = True,
     maximum_contacts: Optional[int] = None,
-    classification: ContactClassification = (
-        CONTACT_TYPE_CONTACT
-    ),
-    metadata: Optional[
-        Mapping[
-            str,
-            Any,
-        ]
-    ] = None,
-) -> Tuple[
-    AtomContact,
-    ...,
-]:
+    classification: ContactClassification = CONTACT_TYPE_CONTACT,
+    metadata: Optional[Mapping[str, Any]] = None,
+    scene: bool = True,
+) -> Tuple[AtomContact, ...]:
     """
-    Find contacts between two atom collections.
-
-    Parameters
-    ----------
-    atoms_1 : iterable of AtomLike
-        First atom collection, normally ligand atoms.
-    atoms_2 : iterable of AtomLike
-        Second atom collection, normally receptor atoms.
-    cutoff : Number or None, optional
-        Maximum contact distance in angstroms. The configured default is
-        used when omitted.
-    exclude_same_residue : bool, optional
-        Whether atom pairs belonging to the same residue should be ignored.
-    exclude_identical_atoms : bool, optional
-        Whether pairs containing the exact same atom object should be
-        ignored.
-    block_size : int or None, optional
-        Number of atoms from ``atoms_1`` processed per block. When omitted,
-        full-matrix or blocked processing is selected automatically.
-    maximum_matrix_elements : int or None, optional
-        Maximum number of entries allowed in a full distance matrix.
-    sort_by_distance : bool, optional
-        Whether returned contacts should be ordered by increasing distance.
-    maximum_contacts : int or None, optional
-        Maximum number of contacts returned after optional sorting.
-    classification : str, optional
-        Initial classification assigned to every detected contact.
-    metadata : mapping or None, optional
-        Metadata copied to every contact.
-
-    Returns
-    -------
-    tuple of AtomContact
-        Detected atom-level contacts.
-
-    Raises
-    ------
-    TypeError
-        If collection or control parameters are invalid.
-    ValueError
-        If either atom collection is empty or parameter values are invalid.
-
-    Notes
-    -----
-    The cutoff comparison is performed using squared distances. Square roots
-    are calculated only for pairs that satisfy the cutoff, reducing work for
-    sparse contact searches.
+    
+        Find contacts between two atom collections.
+    
+        Parameters
+        ----------
+        atoms_1 : iterable of AtomLike
+            First atom collection, normally ligand atoms.
+        atoms_2 : iterable of AtomLike
+            Second atom collection, normally receptor atoms.
+        cutoff : Number or None, optional
+            Maximum contact distance in angstroms. The configured default is
+            used when omitted.
+        exclude_same_residue : bool, optional
+            Whether atom pairs belonging to the same residue should be ignored.
+        exclude_identical_atoms : bool, optional
+            Whether pairs containing the exact same atom object should be
+            ignored.
+        block_size : int or None, optional
+            Number of atoms from ``atoms_1`` processed per block. When omitted,
+            full-matrix or blocked processing is selected automatically.
+        maximum_matrix_elements : int or None, optional
+            Maximum number of entries allowed in a full distance matrix.
+        sort_by_distance : bool, optional
+            Whether returned contacts should be ordered by increasing distance.
+        maximum_contacts : int or None, optional
+            Maximum number of contacts returned after optional sorting.
+        classification : str, optional
+            Initial classification assigned to every detected contact.
+        metadata : mapping or None, optional
+            Metadata copied to every contact.
+        scene : bool, optional
+            Whether ChimeraX scene coordinates should be preferred.
+    
+        Returns
+        -------
+        tuple of AtomContact
+            Detected atom-level contacts.
+    
+        Raises
+        ------
+        TypeError
+            If collection or control parameters are invalid.
+        ValueError
+            If either atom collection is empty or parameter values are invalid.
+    
+        Notes
+        -----
+        The cutoff comparison is performed using squared distances. Square roots
+        are calculated only for pairs that satisfy the cutoff, reducing work for
+        sparse contact searches.
+        
     """
 
-    normalized_atoms_1 = (
-        validate_atom_collection(
-            atoms_1,
-            allow_empty=False,
-            require_coordinate=True,
-        )
+    normalized_atoms_1 = validate_atom_collection(
+        atoms_1, allow_empty=False, require_coordinate=False
     )
-
-    normalized_atoms_2 = (
-        validate_atom_collection(
-            atoms_2,
-            allow_empty=False,
-            require_coordinate=True,
-        )
+    normalized_atoms_2 = validate_atom_collection(
+        atoms_2, allow_empty=False, require_coordinate=False
     )
-
-    cutoff_value = (
-        _resolve_contact_cutoff(
-            cutoff
-        )
+    scene_value = _validate_scene_flag(scene)
+    cutoff_value = _resolve_contact_cutoff(cutoff)
+    cutoff_squared = np.float64(cutoff_value * cutoff_value)
+    matrix_element_limit = _resolve_matrix_element_limit(maximum_matrix_elements)
+    maximum_contacts = _validate_optional_limit(
+        maximum_contacts, name="maximum_contacts", allow_zero=True
     )
+    if maximum_contacts == 0:
+        return ()
 
-    cutoff_squared = np.float64(
-        cutoff_value
-        * cutoff_value
-    )
-
-    if maximum_matrix_elements is None:
-        matrix_element_limit = (
-            _get_default_maximum_matrix_elements()
-        )
-
-    else:
-        matrix_element_limit = (
-            _validate_maximum_matrix_elements(
-                maximum_matrix_elements
-            )
-        )
-
-    if maximum_contacts is not None:
-        if isinstance(
-            maximum_contacts,
-            bool,
-        ) or not isinstance(
-            maximum_contacts,
-            (
-                int,
-                np.integer,
-            ),
-        ):
-            raise TypeError(
-                "maximum_contacts must be an integer or None."
-            )
-
-        maximum_contacts = int(
-            maximum_contacts
-        )
-
-        if maximum_contacts < 0:
-            raise ValueError(
-                "maximum_contacts cannot be negative."
-            )
-
-        if maximum_contacts == 0:
-            return ()
-
-    coordinates_1 = atom_coordinates(
+    coordinates_1 = _coordinates_from_validated_atoms(
         normalized_atoms_1,
+        scene=scene_value,
         allow_empty=False,
+        require_finite=True,
     )
-
-    coordinates_2 = atom_coordinates(
+    coordinates_2 = _coordinates_from_validated_atoms(
         normalized_atoms_2,
+        scene=scene_value,
         allow_empty=False,
+        require_finite=True,
+    )
+    resolved_block_size = _resolve_contact_block_size(
+        len(normalized_atoms_1),
+        len(normalized_atoms_2),
+        block_size=block_size,
+        maximum_matrix_elements=matrix_element_limit,
     )
 
-    resolved_block_size = (
-        _resolve_contact_block_size(
-            len(
-                normalized_atoms_1
-            ),
-            len(
-                normalized_atoms_2
-            ),
-            block_size=block_size,
-            maximum_matrix_elements=(
-                matrix_element_limit
-            ),
-        )
-    )
-
-    contacts: List[
-        AtomContact
-    ] = []
-
-    contact_metadata = (
-        {}
-        if metadata is None
-        else dict(
-            metadata
-        )
-    )
-
+    contact_metadata = {} if metadata is None else dict(metadata)
+    contact_metadata.setdefault("cutoff", float(cutoff_value))
+    contact_metadata.setdefault("scene_coordinates", scene_value)
     contact_metadata.setdefault(
-        "cutoff",
-        float(
-            cutoff_value
-        ),
+        "search_strategy", "full_matrix" if resolved_block_size is None else "blocked"
     )
-
-    contact_metadata.setdefault(
-        "search_strategy",
-        (
-            "full_matrix"
-            if resolved_block_size is None
-            else "blocked"
-        ),
-    )
+    contacts: List[AtomContact] = []
 
     def process_distance_block(
         squared_distances: FloatArray,
         *,
         index_offset_1: int,
     ) -> None:
-        compatible_indices = np.argwhere(
-            squared_distances
-            <= cutoff_squared
-        )
-
-        for local_index_1, index_2 in (
-            compatible_indices
+        for local_index_1_raw, index_2_raw in np.argwhere(
+            squared_distances <= cutoff_squared
         ):
-            index_1 = (
-                index_offset_1
-                + int(
-                    local_index_1
-                )
-            )
-
-            index_2 = int(
-                index_2
-            )
-
-            atom_1 = normalized_atoms_1[
-                index_1
-            ]
-
-            atom_2 = normalized_atoms_2[
-                index_2
-            ]
-
-            if (
-                exclude_identical_atoms
-                and atom_1 is atom_2
-            ):
+            local_index_1 = int(local_index_1_raw)
+            index_1 = index_offset_1 + local_index_1
+            index_2 = int(index_2_raw)
+            atom_1 = normalized_atoms_1[index_1]
+            atom_2 = normalized_atoms_2[index_2]
+            if exclude_identical_atoms and atom_1 is atom_2:
                 continue
-
-            if (
-                exclude_same_residue
-                and atoms_share_residue(
-                    atom_1,
-                    atom_2,
-                )
-            ):
+            if exclude_same_residue and atoms_share_residue(atom_1, atom_2):
                 continue
-
             distance_value = np.float64(
-                np.sqrt(
-                    squared_distances[
-                        local_index_1,
-                        index_2,
-                    ]
-                )
+                np.sqrt(squared_distances[local_index_1, index_2])
             )
-
             contacts.append(
                 _build_atom_contact(
                     atom_1,
@@ -5181,63 +4753,69 @@ def find_atom_contacts(
                     atom_2_index=index_2,
                     classification=classification,
                     metadata=contact_metadata,
+                    scene=scene_value,
+                    coordinate_1=coordinates_1[index_1],
+                    coordinate_2=coordinates_2[index_2],
                 )
             )
 
     if resolved_block_size is None:
-        squared_distances = (
-            _calculate_squared_distance_block(
-                coordinates_1,
-                coordinates_2,
-            )
-        )
-
         process_distance_block(
-            squared_distances,
+            _calculate_squared_distance_block(coordinates_1, coordinates_2),
             index_offset_1=0,
         )
-
     else:
-        for (
-            block_start,
-            _,
-            coordinate_block,
-        ) in _iter_coordinate_blocks(
-            coordinates_1,
-            resolved_block_size,
+        for block_start, _, coordinate_block in _iter_coordinate_blocks(
+            coordinates_1, resolved_block_size
         ):
-            squared_distances = (
-                _calculate_squared_distance_block(
-                    coordinate_block,
-                    coordinates_2,
-                )
-            )
-
             process_distance_block(
-                squared_distances,
-                index_offset_1=(
-                    block_start
-                ),
+                _calculate_squared_distance_block(coordinate_block, coordinates_2),
+                index_offset_1=block_start,
             )
 
     if sort_by_distance:
-        contacts.sort(
-            key=_contact_sort_key
-        )
-
+        contacts.sort(key=_contact_sort_key)
     if maximum_contacts is not None:
-        contacts = contacts[
-            :maximum_contacts
-        ]
-
-    return tuple(
-        contacts
-    )
-
+        del contacts[maximum_contacts:]
+    return tuple(contacts)
 
 # -----------------------------------------------------------------------------
 # Closest-contact search
 # -----------------------------------------------------------------------------
+
+def _closest_valid_pair_in_block(
+    squared_distances: FloatArray,
+    atoms_1: Sequence[AtomLike],
+    atoms_2: Sequence[AtomLike],
+    *,
+    index_offset_1: int,
+    exclude_same_residue: bool,
+    exclude_identical_atoms: bool,
+) -> Optional[Tuple[np.float64, int, int]]:
+    """Return the closest eligible pair in one distance block."""
+
+    candidates = squared_distances
+    while candidates.size:
+        flat_index = int(np.argmin(candidates))
+        distance_squared = np.float64(candidates.flat[flat_index])
+        if not np.isfinite(distance_squared):
+            return None
+        local_index_1, index_2 = np.unravel_index(flat_index, candidates.shape)
+        index_1 = index_offset_1 + int(local_index_1)
+        index_2 = int(index_2)
+        atom_1 = atoms_1[index_1]
+        atom_2 = atoms_2[index_2]
+        invalid = (
+            (exclude_identical_atoms and atom_1 is atom_2)
+            or (exclude_same_residue and atoms_share_residue(atom_1, atom_2))
+        )
+        if not invalid:
+            return distance_squared, index_1, index_2
+        if candidates is squared_distances:
+            candidates = squared_distances.copy()
+        candidates[local_index_1, index_2] = np.inf
+    return None
+
 
 def closest_contact(
     atoms_1: Iterable[AtomLike],
@@ -5249,303 +4827,145 @@ def closest_contact(
     block_size: Optional[int] = None,
     maximum_matrix_elements: Optional[int] = None,
     require_within_cutoff: bool = False,
-    metadata: Optional[
-        Mapping[
-            str,
-            Any,
-        ]
-    ] = None,
-) -> Optional[
-    AtomContact
-]:
+    metadata: Optional[Mapping[str, Any]] = None,
+    scene: bool = True,
+) -> Optional[AtomContact]:
     """
-    Find the closest valid atom pair between two collections.
-
-    Parameters
-    ----------
-    atoms_1 : iterable of AtomLike
-        First atom collection.
-    atoms_2 : iterable of AtomLike
-        Second atom collection.
-    cutoff : Number or None, optional
-        Contact cutoff stored in the result.
-    exclude_same_residue : bool, optional
-        Whether same-residue pairs should be ignored.
-    exclude_identical_atoms : bool, optional
-        Whether pairs containing the same object should be ignored.
-    block_size : int or None, optional
-        Block size used for distance processing.
-    maximum_matrix_elements : int or None, optional
-        Full-matrix element limit.
-    require_within_cutoff : bool, optional
-        Whether ``None`` should be returned when the closest pair lies
-        outside the cutoff.
-    metadata : mapping or None, optional
-        Additional result metadata.
-
-    Returns
-    -------
-    AtomContact or None
-        Closest valid contact, or ``None`` when no eligible pair exists.
-
-    Notes
-    -----
-    Unlike :func:`find_atom_contacts`, this function can return the closest
-    pair even when it lies outside the contact cutoff. In that case,
-    ``result.is_contact`` is ``False``.
+    
+        Find the closest valid atom pair between two collections.
+    
+        Parameters
+        ----------
+        atoms_1 : iterable of AtomLike
+            First atom collection.
+        atoms_2 : iterable of AtomLike
+            Second atom collection.
+        cutoff : Number or None, optional
+            Contact cutoff stored in the result.
+        exclude_same_residue : bool, optional
+            Whether same-residue pairs should be ignored.
+        exclude_identical_atoms : bool, optional
+            Whether pairs containing the same object should be ignored.
+        block_size : int or None, optional
+            Block size used for distance processing.
+        maximum_matrix_elements : int or None, optional
+            Full-matrix element limit.
+        require_within_cutoff : bool, optional
+            Whether ``None`` should be returned when the closest pair lies
+            outside the cutoff.
+        metadata : mapping or None, optional
+            Additional result metadata.
+        scene : bool, optional
+            Whether ChimeraX scene coordinates should be preferred.
+    
+        Returns
+        -------
+        AtomContact or None
+            Closest valid contact, or ``None`` when no eligible pair exists.
+    
+        Notes
+        -----
+        Unlike :func:`find_atom_contacts`, this function can return the closest
+        pair even when it lies outside the contact cutoff. In that case,
+        ``result.is_contact`` is ``False``.
+        
     """
 
-    normalized_atoms_1 = (
-        validate_atom_collection(
-            atoms_1,
-            allow_empty=False,
-            require_coordinate=True,
-        )
+    normalized_atoms_1 = validate_atom_collection(
+        atoms_1, allow_empty=False, require_coordinate=False
     )
-
-    normalized_atoms_2 = (
-        validate_atom_collection(
-            atoms_2,
-            allow_empty=False,
-            require_coordinate=True,
-        )
+    normalized_atoms_2 = validate_atom_collection(
+        atoms_2, allow_empty=False, require_coordinate=False
     )
-
-    cutoff_value = (
-        _resolve_contact_cutoff(
-            cutoff
-        )
-    )
-
-    if maximum_matrix_elements is None:
-        matrix_element_limit = (
-            _get_default_maximum_matrix_elements()
-        )
-
-    else:
-        matrix_element_limit = (
-            _validate_maximum_matrix_elements(
-                maximum_matrix_elements
-            )
-        )
-
-    coordinates_1 = atom_coordinates(
+    scene_value = _validate_scene_flag(scene)
+    cutoff_value = _resolve_contact_cutoff(cutoff)
+    matrix_element_limit = _resolve_matrix_element_limit(maximum_matrix_elements)
+    coordinates_1 = _coordinates_from_validated_atoms(
         normalized_atoms_1,
+        scene=scene_value,
         allow_empty=False,
+        require_finite=True,
     )
-
-    coordinates_2 = atom_coordinates(
+    coordinates_2 = _coordinates_from_validated_atoms(
         normalized_atoms_2,
+        scene=scene_value,
         allow_empty=False,
+        require_finite=True,
+    )
+    resolved_block_size = _resolve_contact_block_size(
+        len(normalized_atoms_1),
+        len(normalized_atoms_2),
+        block_size=block_size,
+        maximum_matrix_elements=matrix_element_limit,
     )
 
-    resolved_block_size = (
-        _resolve_contact_block_size(
-            len(
-                normalized_atoms_1
-            ),
-            len(
-                normalized_atoms_2
-            ),
-            block_size=block_size,
-            maximum_matrix_elements=(
-                matrix_element_limit
-            ),
+    best: Optional[Tuple[np.float64, int, int]] = None
+
+    def inspect(squared_distances: FloatArray, *, index_offset_1: int) -> None:
+        nonlocal best
+        candidate = _closest_valid_pair_in_block(
+            squared_distances,
+            normalized_atoms_1,
+            normalized_atoms_2,
+            index_offset_1=index_offset_1,
+            exclude_same_residue=exclude_same_residue,
+            exclude_identical_atoms=exclude_identical_atoms,
         )
-    )
-
-    best_distance_squared = np.float64(
-        np.inf
-    )
-
-    best_index_1: Optional[int] = None
-    best_index_2: Optional[int] = None
-
-    def inspect_distance_block(
-        squared_distances: FloatArray,
-        *,
-        index_offset_1: int,
-    ) -> None:
-        nonlocal best_distance_squared
-        nonlocal best_index_1
-        nonlocal best_index_2
-
-        row_count, column_count = (
-            squared_distances.shape
-        )
-
-        for local_index_1 in range(
-            row_count
-        ):
-            index_1 = (
-                index_offset_1
-                + local_index_1
-            )
-
-            atom_1 = normalized_atoms_1[
-                index_1
-            ]
-
-            for index_2 in range(
-                column_count
-            ):
-                candidate_distance_squared = (
-                    squared_distances[
-                        local_index_1,
-                        index_2,
-                    ]
-                )
-
-                if (
-                    candidate_distance_squared
-                    >= best_distance_squared
-                ):
-                    continue
-
-                atom_2 = normalized_atoms_2[
-                    index_2
-                ]
-
-                if (
-                    exclude_identical_atoms
-                    and atom_1 is atom_2
-                ):
-                    continue
-
-                if (
-                    exclude_same_residue
-                    and atoms_share_residue(
-                        atom_1,
-                        atom_2,
-                    )
-                ):
-                    continue
-
-                best_distance_squared = (
-                    np.float64(
-                        candidate_distance_squared
-                    )
-                )
-
-                best_index_1 = int(
-                    index_1
-                )
-
-                best_index_2 = int(
-                    index_2
-                )
+        if candidate is not None and (best is None or candidate[0] < best[0]):
+            best = candidate
 
     if resolved_block_size is None:
-        squared_distances = (
-            _calculate_squared_distance_block(
-                coordinates_1,
-                coordinates_2,
-            )
-        )
-
-        inspect_distance_block(
-            squared_distances,
+        inspect(
+            _calculate_squared_distance_block(coordinates_1, coordinates_2),
             index_offset_1=0,
         )
-
     else:
-        for (
-            block_start,
-            _,
-            coordinate_block,
-        ) in _iter_coordinate_blocks(
-            coordinates_1,
-            resolved_block_size,
+        for block_start, _, coordinate_block in _iter_coordinate_blocks(
+            coordinates_1, resolved_block_size
         ):
-            squared_distances = (
-                _calculate_squared_distance_block(
-                    coordinate_block,
-                    coordinates_2,
-                )
+            inspect(
+                _calculate_squared_distance_block(coordinate_block, coordinates_2),
+                index_offset_1=block_start,
             )
 
-            inspect_distance_block(
-                squared_distances,
-                index_offset_1=(
-                    block_start
-                ),
-            )
-
-    if (
-        best_index_1 is None
-        or best_index_2 is None
-    ):
+    if best is None:
+        return None
+    best_distance_squared, best_index_1, best_index_2 = best
+    distance_value = np.float64(np.sqrt(best_distance_squared))
+    if require_within_cutoff and distance_value > cutoff_value:
         return None
 
-    distance_value = np.float64(
-        np.sqrt(
-            best_distance_squared
-        )
-    )
-
-    if (
-        require_within_cutoff
-        and distance_value
-        > cutoff_value
-    ):
-        return None
-
-    result_metadata = (
-        {}
-        if metadata is None
-        else dict(
-            metadata
-        )
-    )
-
+    result_metadata = {} if metadata is None else dict(metadata)
     result_metadata.setdefault(
-        "search_strategy",
-        (
-            "full_matrix"
-            if resolved_block_size is None
-            else "blocked"
-        ),
+        "search_strategy", "full_matrix" if resolved_block_size is None else "blocked"
     )
-
-    result_metadata.setdefault(
-        "closest_pair",
-        True,
-    )
-
+    result_metadata.setdefault("closest_pair", True)
+    result_metadata.setdefault("scene_coordinates", scene_value)
     return _build_atom_contact(
-        normalized_atoms_1[
-            best_index_1
-        ],
-        normalized_atoms_2[
-            best_index_2
-        ],
+        normalized_atoms_1[best_index_1],
+        normalized_atoms_2[best_index_2],
         distance=distance_value,
         cutoff=cutoff_value,
         atom_1_index=best_index_1,
         atom_2_index=best_index_2,
         classification=(
             CONTACT_TYPE_CONTACT
-            if distance_value
-            <= cutoff_value
+            if distance_value <= cutoff_value
             else CONTACT_TYPE_UNKNOWN
         ),
         metadata=result_metadata,
+        scene=scene_value,
+        coordinate_1=coordinates_1[best_index_1],
+        coordinate_2=coordinates_2[best_index_2],
     )
-
 
 # -----------------------------------------------------------------------------
 # High-level receptor-ligand contact search
 # -----------------------------------------------------------------------------
 
 def find_contacts(
-    ligand: Union[
-        LigandLike,
-        Iterable[AtomLike],
-    ],
-    receptor: Union[
-        ReceptorLike,
-        Iterable[AtomLike],
-    ],
+    ligand: Union[LigandLike, Iterable[AtomLike]],
+    receptor: Union[ReceptorLike, Iterable[AtomLike]],
     *,
     cutoff: Optional[Number] = None,
     heavy_only: bool = True,
@@ -5556,127 +4976,77 @@ def find_contacts(
     maximum_matrix_elements: Optional[int] = None,
     sort_by_distance: bool = True,
     maximum_contacts: Optional[int] = None,
-    metadata: Optional[
-        Mapping[
-            str,
-            Any,
-        ]
-    ] = None,
-) -> Tuple[
-    AtomContact,
-    ...,
-]:
+    metadata: Optional[Mapping[str, Any]] = None,
+    scene: bool = True,
+) -> Tuple[AtomContact, ...]:
     """
-    Find contacts between a ligand and receptor.
-
-    Parameters
-    ----------
-    ligand : LigandLike or iterable of AtomLike
-        Ligand structure, residue or atom collection.
-    receptor : ReceptorLike or iterable of AtomLike
-        Receptor structure or atom collection.
-    cutoff : Number or None, optional
-        Maximum contact distance.
-    heavy_only : bool, optional
-        Whether only heavy atoms should be analyzed.
-    exclude_solvent : bool, optional
-        Whether solvent atoms should be removed.
-    exclude_ions : bool, optional
-        Whether free receptor ions should be removed.
-    exclude_same_residue : bool, optional
-        Whether pairs assigned to the same residue should be ignored.
-    block_size : int or None, optional
-        Explicit processing block size.
-    maximum_matrix_elements : int or None, optional
-        Maximum full-matrix element count.
-    sort_by_distance : bool, optional
-        Whether contacts should be sorted by distance.
-    maximum_contacts : int or None, optional
-        Maximum number of returned contacts.
-    metadata : mapping or None, optional
-        Metadata copied to each contact.
-
-    Returns
-    -------
-    tuple of AtomContact
-        Detected receptor-ligand contacts.
+    
+        Find contacts between a ligand and receptor.
+    
+        Parameters
+        ----------
+        ligand : LigandLike or iterable of AtomLike
+            Ligand structure, residue or atom collection.
+        receptor : ReceptorLike or iterable of AtomLike
+            Receptor structure or atom collection.
+        cutoff : Number or None, optional
+            Maximum contact distance.
+        heavy_only : bool, optional
+            Whether only heavy atoms should be analyzed.
+        exclude_solvent : bool, optional
+            Whether solvent atoms should be removed.
+        exclude_ions : bool, optional
+            Whether free receptor ions should be removed.
+        exclude_same_residue : bool, optional
+            Whether pairs assigned to the same residue should be ignored.
+        block_size : int or None, optional
+            Explicit processing block size.
+        maximum_matrix_elements : int or None, optional
+            Maximum full-matrix element count.
+        sort_by_distance : bool, optional
+            Whether contacts should be sorted by distance.
+        maximum_contacts : int or None, optional
+            Maximum number of returned contacts.
+        metadata : mapping or None, optional
+            Metadata copied to each contact.
+        scene : bool, optional
+            Whether ChimeraX scene coordinates should be preferred.
+    
+        Returns
+        -------
+        tuple of AtomContact
+            Detected receptor-ligand contacts.
+        
     """
 
-    (
-        ligand_atoms,
-        receptor_atoms,
-    ) = select_contact_collections(
+    ligand_atoms, receptor_atoms = select_contact_collections(
         ligand,
         receptor,
         heavy_only=heavy_only,
         exclude_solvent=exclude_solvent,
         exclude_ions=exclude_ions,
-        require_coordinate=True,
+        require_coordinate=False,
     )
-
-    search_metadata = (
-        {}
-        if metadata is None
-        else dict(
-            metadata
-        )
-    )
-
-    search_metadata.setdefault(
-        "collection_1_role",
-        "ligand",
-    )
-
-    search_metadata.setdefault(
-        "collection_2_role",
-        "receptor",
-    )
-
-    search_metadata.setdefault(
-        "heavy_only",
-        bool(
-            heavy_only
-        ),
-    )
-
-    search_metadata.setdefault(
-        "exclude_solvent",
-        bool(
-            exclude_solvent
-        ),
-    )
-
-    search_metadata.setdefault(
-        "exclude_ions",
-        bool(
-            exclude_ions
-        ),
-    )
-
+    search_metadata = {} if metadata is None else dict(metadata)
+    search_metadata.setdefault("collection_1_role", "ligand")
+    search_metadata.setdefault("collection_2_role", "receptor")
+    search_metadata.setdefault("heavy_only", bool(heavy_only))
+    search_metadata.setdefault("exclude_solvent", bool(exclude_solvent))
+    search_metadata.setdefault("exclude_ions", bool(exclude_ions))
     return find_atom_contacts(
         ligand_atoms,
         receptor_atoms,
         cutoff=cutoff,
-        exclude_same_residue=(
-            exclude_same_residue
-        ),
+        exclude_same_residue=exclude_same_residue,
         exclude_identical_atoms=True,
         block_size=block_size,
-        maximum_matrix_elements=(
-            maximum_matrix_elements
-        ),
-        sort_by_distance=(
-            sort_by_distance
-        ),
-        maximum_contacts=(
-            maximum_contacts
-        ),
-        classification=(
-            CONTACT_TYPE_CONTACT
-        ),
+        maximum_matrix_elements=maximum_matrix_elements,
+        sort_by_distance=sort_by_distance,
+        maximum_contacts=maximum_contacts,
+        classification=CONTACT_TYPE_CONTACT,
         metadata=search_metadata,
+        scene=scene,
     )
-
 
 # -----------------------------------------------------------------------------
 # Public interface
@@ -5688,11 +5058,7 @@ _SECTION_6_PUBLIC_NAMES = [
     "closest_contact",
 ]
 
-for public_name in _SECTION_6_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_register_public_names(_SECTION_6_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -5712,27 +5078,7 @@ for public_name in _SECTION_6_PUBLIC_NAMES:
 def _validate_contact_side(
     side: str,
 ) -> str:
-    """
-    Validate and normalize a contact side.
-
-    Parameters
-    ----------
-    side : str
-        Contact side. Accepted values are ``"atom_1"``, ``"atom_2"``,
-        ``"ligand"``, ``"receptor"`` and ``"both"``.
-
-    Returns
-    -------
-    str
-        Normalized side: ``"atom_1"``, ``"atom_2"`` or ``"both"``.
-
-    Raises
-    ------
-    TypeError
-        If ``side`` is not a string.
-    ValueError
-        If ``side`` is not recognized.
-    """
+    """Validate and normalize a contact side."""
 
     if not isinstance(
         side,
@@ -5780,28 +5126,7 @@ def _validate_atom_contacts(
     *,
     allow_empty: bool = True,
 ) -> Tuple[AtomContact, ...]:
-    """
-    Validate and normalize an atom-contact collection.
-
-    Parameters
-    ----------
-    contacts : iterable of AtomContact
-        Atom-contact collection.
-    allow_empty : bool, optional
-        Whether an empty collection is accepted.
-
-    Returns
-    -------
-    tuple of AtomContact
-        Validated immutable contact collection.
-
-    Raises
-    ------
-    TypeError
-        If the input is not iterable or contains invalid objects.
-    ValueError
-        If the collection is empty when ``allow_empty=False``.
-    """
+    """Validate and normalize an atom-contact collection."""
 
     if contacts is None:
         raise TypeError(
@@ -5868,23 +5193,7 @@ def _contact_residue_entries(
     ],
     ...,
 ]:
-    """
-    Return residue entries represented by a contact.
-
-    Parameters
-    ----------
-    contact : AtomContact
-        Atom-level contact.
-    side : str
-        Normalized side: ``"atom_1"``, ``"atom_2"`` or ``"both"``.
-    include_missing : bool, optional
-        Whether entries without an associated residue should be included.
-
-    Returns
-    -------
-    tuple
-        Tuples containing ``(residue, atom, side)``.
-    """
+    """Return residue entries represented by a contact."""
 
     entries: List[
         Tuple[
@@ -5955,24 +5264,7 @@ def _residue_group_key(
     *,
     include_structure: bool,
 ) -> Tuple[Any, ...]:
-    """
-    Build an internal grouping key for a residue.
-
-    Parameters
-    ----------
-    residue : ResidueLike or None
-        Residue associated with the atom.
-    atom : AtomLike
-        Atom used to recover structure information.
-    include_structure : bool
-        Whether structure identity should differentiate otherwise identical
-        residue keys.
-
-    Returns
-    -------
-    tuple
-        Internal immutable grouping key.
-    """
+    """Build an internal grouping key for a residue."""
 
     residue_key = (
         get_residue_contact_key(
@@ -6008,19 +5300,7 @@ def _residue_contact_sort_key(
     int,
     str,
 ]:
-    """
-    Build a deterministic sorting key for residue-level results.
-
-    Parameters
-    ----------
-    result : ResidueContact
-        Residue-level contact result.
-
-    Returns
-    -------
-    tuple
-        Chain identifier, residue number and residue name.
-    """
+    """Build a deterministic sorting key for residue-level results."""
 
     residue_name, residue_number, chain_id = (
         result.key
@@ -6807,11 +6087,7 @@ _SECTION_7_PUBLIC_NAMES = [
     "summarize_residue_contacts",
 ]
 
-for public_name in _SECTION_7_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_register_public_names(_SECTION_7_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -6867,18 +6143,7 @@ def _get_configured_vdw_radii(
     str,
     np.float64,
 ]:
-    """
-    Return configured van der Waals radii.
-
-    Returns
-    -------
-    mapping
-        Mapping from uppercase element symbols to radii in angstroms.
-
-    Notes
-    -----
-    Values defined in ``config.py`` override the internal fallback table.
-    """
+    """Return configured van der Waals radii."""
 
     candidate_names = (
         "VDW_RADII",
@@ -7113,23 +6378,7 @@ def _get_configured_float(
     *,
     minimum: Optional[Number] = None,
 ) -> np.float64:
-    """
-    Retrieve a numeric configuration value.
-
-    Parameters
-    ----------
-    candidate_names : sequence of str
-        Candidate configuration names.
-    fallback : Number
-        Fallback value.
-    minimum : Number or None, optional
-        Inclusive minimum accepted value.
-
-    Returns
-    -------
-    numpy.float64
-        Validated numeric value.
-    """
+    """Retrieve a numeric configuration value."""
 
     value: Any = fallback
 
@@ -7727,11 +6976,7 @@ _SECTION_8_PUBLIC_NAMES = [
     "contact_classification_counts",
 ]
 
-for public_name in _SECTION_8_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_register_public_names(_SECTION_8_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -7805,68 +7050,12 @@ def contact_distances(
 # Generic numeric helpers
 # -----------------------------------------------------------------------------
 
-def _optional_float(
-    value: Any,
-) -> Optional[float]:
-    """
-    Convert a numeric value into a serializable float.
-
-    Parameters
-    ----------
-    value : Any
-        Numeric value.
-
-    Returns
-    -------
-    float or None
-        Finite Python float, or ``None`` for invalid values.
-    """
-
-    try:
-        normalized_value = np.float64(
-            value
-        )
-
-    except (
-        TypeError,
-        ValueError,
-        OverflowError,
-    ):
-        return None
-
-    if not np.isfinite(
-        normalized_value
-    ):
-        return None
-
-    return float(
-        normalized_value
-    )
 
 
 def _validate_percentiles(
     percentiles: Iterable[Number],
 ) -> Tuple[np.float64, ...]:
-    """
-    Validate percentile values.
-
-    Parameters
-    ----------
-    percentiles : iterable of Number
-        Percentiles expressed from 0 to 100.
-
-    Returns
-    -------
-    tuple of numpy.float64
-        Validated percentile values.
-
-    Raises
-    ------
-    TypeError
-        If the input is not iterable or contains non-numeric values.
-    ValueError
-        If a percentile lies outside the interval from 0 to 100.
-    """
+    """Validate percentile values."""
 
     if percentiles is None:
         raise TypeError(
@@ -7945,19 +7134,7 @@ def _validate_percentiles(
 def _percentile_label(
     percentile: Number,
 ) -> str:
-    """
-    Build a stable percentile dictionary key.
-
-    Parameters
-    ----------
-    percentile : Number
-        Percentile value.
-
-    Returns
-    -------
-    str
-        Label such as ``"p25"``, ``"p50"`` or ``"p97_5"``.
-    """
+    """Build a stable percentile dictionary key."""
 
     percentile_value = np.float64(
         percentile
@@ -7990,21 +7167,7 @@ def _distance_descriptive_statistics(
         75.0,
     ),
 ) -> Statistics:
-    """
-    Calculate descriptive statistics for a distance array.
-
-    Parameters
-    ----------
-    distances : numpy.ndarray
-        One-dimensional distance array.
-    percentiles : iterable of Number, optional
-        Percentiles to calculate.
-
-    Returns
-    -------
-    Statistics
-        Serializable descriptive statistics.
-    """
+    """Calculate descriptive statistics for a distance array."""
 
     distance_values = np.asarray(
         distances,
@@ -8147,19 +7310,7 @@ def _validate_histogram_bins(
     FloatArray,
     str,
 ]:
-    """
-    Validate a histogram-bin specification.
-
-    Parameters
-    ----------
-    bins : int, sequence of Number or str
-        Histogram-bin specification accepted by ``numpy.histogram``.
-
-    Returns
-    -------
-    int, numpy.ndarray or str
-        Validated bin specification.
-    """
+    """Validate a histogram-bin specification."""
 
     if isinstance(
         bins,
@@ -8578,21 +7729,7 @@ def _residue_statistics(
     *,
     side: str = "receptor",
 ) -> Statistics:
-    """
-    Calculate residue-level contact statistics.
-
-    Parameters
-    ----------
-    contacts : iterable of AtomContact
-        Atom-level contacts.
-    side : str, optional
-        Side used for residue grouping.
-
-    Returns
-    -------
-    Statistics
-        Residue-level statistics.
-    """
+    """Calculate residue-level contact statistics."""
 
     grouped_results = residue_contacts(
         contacts,
@@ -9293,11 +8430,7 @@ _SECTION_9_PUBLIC_NAMES = [
     "format_contact_summary",
 ]
 
-for public_name in _SECTION_9_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_register_public_names(_SECTION_9_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -9321,25 +8454,7 @@ def _get_dock_model_value(
     default: Any = None,
     call_if_callable: bool = False,
 ) -> Any:
-    """
-    Retrieve a value from a DockModel-like object.
-
-    Parameters
-    ----------
-    dock_model : DockModel
-        Dock model or compatible mapping.
-    candidate_names : sequence of str
-        Candidate attribute or mapping names.
-    default : Any, optional
-        Value returned when no candidate is found.
-    call_if_callable : bool, optional
-        Whether zero-argument callables should be invoked.
-
-    Returns
-    -------
-    Any
-        Retrieved value or ``default``.
-    """
+    """Retrieve a value from a DockModel-like object."""
 
     if dock_model is None:
         return default
@@ -9429,6 +8544,26 @@ def get_dock_model_receptor(
             "target",
             "target_model",
             "macromolecule",
+        ),
+        default=default,
+        call_if_callable=True,
+    )
+
+
+def get_dock_model_ligand(
+    dock_model: DockModel,
+    *,
+    default: Any = None,
+) -> Any:
+    """Retrieve the ligand source associated with a dock model."""
+
+    return _get_dock_model_value(
+        dock_model,
+        (
+            "ligand",
+            "ligand_model",
+            "ligand_residue",
+            "ligand_atoms",
         ),
         default=default,
         call_if_callable=True,
@@ -9728,23 +8863,7 @@ def _set_object_value(
     name: str,
     value: Any,
 ) -> bool:
-    """
-    Attempt to assign a value to an object or mutable mapping.
-
-    Parameters
-    ----------
-    target : Any
-        Target object.
-    name : str
-        Attribute or mapping key.
-    value : Any
-        Value to assign.
-
-    Returns
-    -------
-    bool
-        ``True`` when assignment succeeds.
-    """
+    """Attempt to assign a value to an object or mutable mapping."""
 
     if target is None:
         return False
@@ -9790,21 +8909,7 @@ def _get_or_create_analysis_mapping(
         Any,
     ]
 ]:
-    """
-    Retrieve or create an analysis-result mapping.
-
-    Parameters
-    ----------
-    target : Any
-        Object or mutable mapping.
-    attribute_name : str
-        Attribute or key used for storing analyses.
-
-    Returns
-    -------
-    mutable mapping or None
-        Analysis mapping, or ``None`` if it cannot be created.
-    """
+    """Retrieve or create an analysis-result mapping."""
 
     existing_value = _get_object_value(
         target,
@@ -9846,32 +8951,7 @@ def attach_contact_analysis(
     attach_to_pose: bool = True,
     overwrite: bool = True,
 ) -> bool:
-    """
-    Attach a contact-analysis result to a dock model or pose.
-
-    Parameters
-    ----------
-    dock_model : DockModel
-        Dock model receiving the analysis.
-    result : ContactAnalysisResult
-        Contact-analysis result.
-    pose : Any, optional
-        Pose receiving a direct analysis reference.
-    pose_identifier : str or None, optional
-        Mapping key used for this pose.
-    attribute_name : str, optional
-        Dock-model attribute containing pose analyses.
-    attach_to_pose : bool, optional
-        Whether the result should also be attached directly to the pose.
-    overwrite : bool, optional
-        Whether an existing result with the same pose identifier may be
-        replaced.
-
-    Returns
-    -------
-    bool
-        ``True`` if the result was attached to at least one target.
-    """
+    """Attach contact results to DockModel-compatible storage."""
 
     if not isinstance(
         result,
@@ -9903,17 +8983,90 @@ def attach_contact_analysis(
         attribute_name=normalized_attribute_name,
     )
 
-    if analyses is not None:
-        if (
-            overwrite
-            or normalized_pose_identifier
-            not in analyses
-        ):
-            analyses[
-                normalized_pose_identifier
-            ] = result
+    if analyses is not None and (
+        overwrite
+        or normalized_pose_identifier not in analyses
+    ):
+        analyses[
+            normalized_pose_identifier
+        ] = result
+        attached = True
 
-            attached = True
+    existing_contacts = _get_object_value(
+        dock_model,
+        (
+            "contacts",
+        ),
+        default=None,
+        call_if_callable=False,
+    )
+
+    try:
+        existing_contact_count = (
+            0
+            if existing_contacts is None
+            else len(
+                existing_contacts
+            )
+        )
+    except TypeError:
+        existing_contact_count = 1
+
+    dock_contacts_attached = False
+
+    if overwrite or existing_contact_count == 0:
+        dock_contacts_attached = _set_object_value(
+            dock_model,
+            "contacts",
+            list(
+                result.contacts
+            ),
+        )
+        attached = (
+            attached
+            or dock_contacts_attached
+        )
+
+    if dock_contacts_attached:
+        update_statistics = getattr(
+            dock_model,
+            "update_statistics",
+            None,
+        )
+
+        if callable(
+            update_statistics
+        ):
+            try:
+                update_statistics(
+                    dict(
+                        result.statistics
+                    )
+                )
+            except TypeError:
+                update_statistics()
+        else:
+            statistics = _get_object_value(
+                dock_model,
+                (
+                    "statistics",
+                ),
+                default=None,
+                call_if_callable=False,
+            )
+
+            if isinstance(
+                statistics,
+                MutableMapping,
+            ):
+                statistics.update(
+                    dict(
+                        result.statistics
+                    )
+                )
+                statistics[
+                    "contacts"
+                ] = result.contact_count
 
     if attach_to_pose and pose is not None:
         existing_pose_result = _get_object_value(
@@ -9925,18 +9078,17 @@ def attach_contact_analysis(
             call_if_callable=False,
         )
 
-        if (
-            overwrite
-            or existing_pose_result is None
-        ):
-            if _set_object_value(
-                pose,
-                "contact_analysis",
-                result,
-            ):
-                attached = True
+        if overwrite or existing_pose_result is None:
+            attached = (
+                _set_object_value(
+                    pose,
+                    "contact_analysis",
+                    result,
+                )
+                or attached
+            )
 
-        existing_contacts = _get_object_value(
+        existing_pose_contacts = _get_object_value(
             pose,
             (
                 "contacts",
@@ -9945,18 +9097,18 @@ def attach_contact_analysis(
             call_if_callable=False,
         )
 
-        if (
-            overwrite
-            or existing_contacts is None
-        ):
-            if _set_object_value(
-                pose,
-                "contacts",
-                result.contacts,
-            ):
-                attached = True
+        if overwrite or existing_pose_contacts is None:
+            attached = (
+                _set_object_value(
+                    pose,
+                    "contacts",
+                    result.contacts,
+                )
+                or attached
+            )
 
     return attached
+
 
 
 def get_attached_contact_analysis(
@@ -10020,12 +9172,8 @@ def get_attached_contact_analysis(
 def analyze_contacts(
     dock_model: DockModel,
     *,
-    receptor: Optional[
-        ReceptorLike
-    ] = None,
-    pose: Optional[
-        LigandLike
-    ] = None,
+    receptor: Optional[ReceptorLike] = None,
+    pose: Optional[LigandLike] = None,
     pose_index: Optional[int] = None,
     cutoff: Optional[Number] = None,
     heavy_only: bool = True,
@@ -10045,84 +9193,10 @@ def analyze_contacts(
     attach_to_pose: bool = True,
     overwrite: bool = True,
     analysis_attribute: str = "contact_analyses",
-    metadata: Optional[
-        Mapping[
-            str,
-            Any,
-        ]
-    ] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+    scene: bool = True,
 ) -> ContactAnalysisResult:
-    """
-    Analyze contacts for a pose associated with a dock model.
-
-    Parameters
-    ----------
-    dock_model : DockModel
-        Dock model containing or referencing the receptor and pose.
-    receptor : ReceptorLike or None, optional
-        Explicit receptor. When omitted, it is discovered from
-        ``dock_model``.
-    pose : LigandLike or None, optional
-        Explicit pose. When omitted, it is discovered from ``dock_model``.
-    pose_index : int or None, optional
-        Pose index used when the dock model contains multiple poses.
-    cutoff : Number or None, optional
-        Contact-distance cutoff.
-    heavy_only : bool, optional
-        Whether only heavy atoms should be analyzed.
-    exclude_solvent : bool, optional
-        Whether solvent atoms should be excluded.
-    exclude_ions : bool, optional
-        Whether free receptor ions should be excluded.
-    exclude_same_residue : bool, optional
-        Whether atom pairs assigned to the same residue should be excluded.
-    classify : bool, optional
-        Whether general geometric contact classification should be applied.
-    clash_overlap : Number or None, optional
-        Steric-clash overlap threshold.
-    close_tolerance : Number or None, optional
-        Close-contact tolerance.
-    vdw_tolerance : Number or None, optional
-        van der Waals contact tolerance.
-    default_vdw_radius : Number or None, optional
-        Fallback radius for unknown elements.
-    block_size : int or None, optional
-        Explicit distance-processing block size.
-    maximum_matrix_elements : int or None, optional
-        Maximum number of elements allowed in a full distance matrix.
-    maximum_contacts : int or None, optional
-        Maximum number of atom contacts retained.
-    residue_side : str, optional
-        Side used for residue-level grouping.
-    attach : bool, optional
-        Whether the result should be associated with ``dock_model``.
-    attach_to_pose : bool, optional
-        Whether the result should also be attached directly to the pose.
-    overwrite : bool, optional
-        Whether existing attached results may be replaced.
-    analysis_attribute : str, optional
-        Dock-model attribute used for storing analyses by pose identifier.
-    metadata : mapping or None, optional
-        Additional analysis metadata.
-
-    Returns
-    -------
-    ContactAnalysisResult
-        Complete immutable contact-analysis result.
-
-    Raises
-    ------
-    TypeError
-        If ``dock_model`` is invalid.
-    ValueError
-        If receptor or pose cannot be resolved.
-
-    Notes
-    -----
-    The function always returns the result. Attachment is an optional side
-    effect and failure to attach does not invalidate a successfully completed
-    contact analysis.
-    """
+    """Analyze contacts for one DockModel-compatible pose."""
 
     if dock_model is None:
         raise TypeError(
@@ -10131,6 +9205,9 @@ def analyze_contacts(
 
     normalized_side = _validate_contact_side(
         residue_side
+    )
+    scene_value = _validate_scene_flag(
+        scene
     )
 
     resolved_receptor = (
@@ -10158,137 +9235,126 @@ def analyze_contacts(
         )
     )
 
+    resolved_ligand = (
+        pose
+        if pose is not None
+        else get_dock_model_ligand(
+            dock_model,
+            default=resolved_pose,
+        )
+    )
+
     if resolved_pose is None:
+        resolved_pose = resolved_ligand
+
+    if resolved_ligand is None:
         raise ValueError(
-            "Could not resolve a pose from dock_model. "
+            "Could not resolve a ligand or pose from dock_model. "
             "Provide pose explicitly or use a valid pose_index."
         )
 
     resolved_cutoff = _resolve_contact_cutoff(
         cutoff
     )
-
     dock_identifier = get_dock_model_identifier(
         dock_model
     )
-
     pose_identifier = get_pose_identifier(
         resolved_pose,
         pose_index=pose_index,
     )
 
-    analysis_metadata: Dict[
-        str,
-        Any,
-    ] = (
+    analysis_metadata: Dict[str, Any] = (
         {}
         if metadata is None
         else dict(
             metadata
         )
     )
-
     analysis_metadata.setdefault(
         "dock_model_identifier",
         dock_identifier,
     )
-
     analysis_metadata.setdefault(
         "pose_identifier",
         pose_identifier,
     )
-
     analysis_metadata.setdefault(
         "pose_index",
         pose_index,
     )
-
     analysis_metadata.setdefault(
         "cutoff",
         float(
             resolved_cutoff
         ),
     )
-
     analysis_metadata.setdefault(
         "heavy_only",
         bool(
             heavy_only
         ),
     )
-
     analysis_metadata.setdefault(
         "exclude_solvent",
         bool(
             exclude_solvent
         ),
     )
-
     analysis_metadata.setdefault(
         "exclude_ions",
         bool(
             exclude_ions
         ),
     )
-
     analysis_metadata.setdefault(
         "exclude_same_residue",
         bool(
             exclude_same_residue
         ),
     )
-
     analysis_metadata.setdefault(
         "general_classification_applied",
         bool(
             classify
         ),
     )
+    analysis_metadata.setdefault(
+        "scene_coordinates",
+        scene_value,
+    )
 
-    ligand_atoms, receptor_atoms = (
-        select_contact_collections(
-            resolved_pose,
-            resolved_receptor,
-            heavy_only=heavy_only,
-            exclude_solvent=exclude_solvent,
-            exclude_ions=exclude_ions,
-            require_coordinate=True,
-        )
+    ligand_atoms, receptor_atoms = select_contact_collections(
+        resolved_ligand,
+        resolved_receptor,
+        heavy_only=heavy_only,
+        exclude_solvent=exclude_solvent,
+        exclude_ions=exclude_ions,
+        require_coordinate=True,
     )
 
     atom_contacts = find_atom_contacts(
         ligand_atoms,
         receptor_atoms,
         cutoff=resolved_cutoff,
-        exclude_same_residue=(
-            exclude_same_residue
-        ),
+        exclude_same_residue=exclude_same_residue,
         exclude_identical_atoms=True,
         block_size=block_size,
-        maximum_matrix_elements=(
-            maximum_matrix_elements
-        ),
+        maximum_matrix_elements=maximum_matrix_elements,
         sort_by_distance=True,
         maximum_contacts=maximum_contacts,
-        classification=(
-            CONTACT_TYPE_CONTACT
-        ),
+        classification=CONTACT_TYPE_CONTACT,
         metadata=analysis_metadata,
+        scene=scene_value,
     )
 
     if classify:
         atom_contacts = classify_contacts(
             atom_contacts,
             clash_overlap=clash_overlap,
-            close_tolerance=(
-                close_tolerance
-            ),
-            vdw_tolerance=(
-                vdw_tolerance
-            ),
-            default_radius=(
-                default_vdw_radius
-            ),
+            close_tolerance=close_tolerance,
+            vdw_tolerance=vdw_tolerance,
+            default_radius=default_vdw_radius,
             sort_by_distance=True,
         )
 
@@ -10300,12 +9366,8 @@ def analyze_contacts(
         sort_contacts=True,
         sort_residues=True,
         metadata={
-            "dock_model_identifier": (
-                dock_identifier
-            ),
-            "pose_identifier": (
-                pose_identifier
-            ),
+            "dock_model_identifier": dock_identifier,
+            "pose_identifier": pose_identifier,
         },
     )
 
@@ -10315,32 +9377,29 @@ def analyze_contacts(
         include_residue_statistics=True,
         include_classification_statistics=True,
     )
-
     statistics[
         "ligand_atom_count"
     ] = len(
         ligand_atoms
     )
-
     statistics[
         "receptor_atom_count"
     ] = len(
         receptor_atoms
     )
-
     statistics[
         "pose_identifier"
     ] = pose_identifier
-
     statistics[
         "dock_model_identifier"
     ] = dock_identifier
+    statistics[
+        "scene_coordinates"
+    ] = scene_value
 
     result = ContactAnalysisResult(
         contacts=atom_contacts,
-        residue_contacts=(
-            grouped_residue_contacts
-        ),
+        residue_contacts=grouped_residue_contacts,
         ligand_atoms=ligand_atoms,
         receptor_atoms=receptor_atoms,
         cutoff=resolved_cutoff,
@@ -10351,40 +9410,27 @@ def analyze_contacts(
     attachment_successful = False
 
     if attach:
-        attachment_successful = (
-            attach_contact_analysis(
-                dock_model,
-                result,
-                pose=resolved_pose,
-                pose_identifier=(
-                    pose_identifier
-                ),
-                attribute_name=(
-                    analysis_attribute
-                ),
-                attach_to_pose=(
-                    attach_to_pose
-                ),
-                overwrite=overwrite,
-            )
+        attachment_successful = attach_contact_analysis(
+            dock_model,
+            result,
+            pose=resolved_pose,
+            pose_identifier=pose_identifier,
+            attribute_name=analysis_attribute,
+            attach_to_pose=attach_to_pose,
+            overwrite=overwrite,
         )
 
-    # The result dataclass is frozen, so attachment status is recorded only
-    # when it can be added without mutating the completed result.
-    if (
-        attach
-        and not attachment_successful
-    ):
+    if attach and not attachment_successful:
         try:
             _LOGGER.warning(
                 "Contact analysis completed, but the result "
                 "could not be attached to DockModel or pose."
             )
-
         except Exception:
             pass
 
     return result
+
 
 
 # -----------------------------------------------------------------------------
@@ -10394,14 +9440,8 @@ def analyze_contacts(
 def analyze_all_pose_contacts(
     dock_model: DockModel,
     *,
-    receptor: Optional[
-        ReceptorLike
-    ] = None,
-    poses: Optional[
-        Iterable[
-            LigandLike
-        ]
-    ] = None,
+    receptor: Optional[ReceptorLike] = None,
+    poses: Optional[Iterable[LigandLike]] = None,
     cutoff: Optional[Number] = None,
     heavy_only: bool = True,
     exclude_solvent: bool = True,
@@ -10413,49 +9453,13 @@ def analyze_all_pose_contacts(
     attach: bool = True,
     overwrite: bool = True,
     analysis_attribute: str = "contact_analyses",
-) -> Tuple[
-    ContactAnalysisResult,
-    ...,
-]:
-    """
-    Analyze contacts for every pose associated with a dock model.
+    scene: bool = True,
+) -> Tuple[ContactAnalysisResult, ...]:
+    """Analyze all poses exposed by a DockModel-compatible object."""
 
-    Parameters
-    ----------
-    dock_model : DockModel
-        Dock model.
-    receptor : ReceptorLike or None, optional
-        Explicit receptor.
-    poses : iterable of LigandLike or None, optional
-        Explicit poses. Dock-model poses are used when omitted.
-    cutoff : Number or None, optional
-        Contact cutoff.
-    heavy_only : bool, optional
-        Whether only heavy atoms should be analyzed.
-    exclude_solvent : bool, optional
-        Whether solvent atoms should be excluded.
-    exclude_ions : bool, optional
-        Whether free receptor ions should be excluded.
-    exclude_same_residue : bool, optional
-        Whether same-residue pairs should be excluded.
-    classify : bool, optional
-        Whether general classification should be applied.
-    block_size : int or None, optional
-        Processing block size.
-    maximum_matrix_elements : int or None, optional
-        Full distance-matrix element limit.
-    attach : bool, optional
-        Whether results should be attached to the dock model.
-    overwrite : bool, optional
-        Whether existing results may be replaced.
-    analysis_attribute : str, optional
-        Attribute used for storing results.
-
-    Returns
-    -------
-    tuple of ContactAnalysisResult
-        One result per pose.
-    """
+    scene_value = _validate_scene_flag(
+        scene
+    )
 
     if poses is None:
         resolved_poses = _get_dock_model_value(
@@ -10471,45 +9475,60 @@ def analyze_all_pose_contacts(
         )
 
         if resolved_poses is None:
-            single_pose = get_dock_model_pose(
-                dock_model,
-                default=None,
+            return (
+                analyze_contacts(
+                    dock_model,
+                    receptor=receptor,
+                    pose=None,
+                    pose_index=0,
+                    cutoff=cutoff,
+                    heavy_only=heavy_only,
+                    exclude_solvent=exclude_solvent,
+                    exclude_ions=exclude_ions,
+                    exclude_same_residue=exclude_same_residue,
+                    classify=classify,
+                    block_size=block_size,
+                    maximum_matrix_elements=maximum_matrix_elements,
+                    attach=attach,
+                    attach_to_pose=True,
+                    overwrite=overwrite,
+                    analysis_attribute=analysis_attribute,
+                    scene=scene_value,
+                ),
             )
 
-            if single_pose is None:
-                raise ValueError(
-                    "No poses could be resolved from dock_model."
-                )
-
-            normalized_poses = (
-                single_pose,
-            )
-
-        elif isinstance(
+        if isinstance(
             resolved_poses,
             Mapping,
         ):
             normalized_poses = tuple(
                 resolved_poses.values()
             )
-
         else:
             try:
                 normalized_poses = tuple(
                     resolved_poses
                 )
-
             except TypeError:
                 normalized_poses = (
                     resolved_poses,
                 )
-
     else:
+        if isinstance(
+            poses,
+            (
+                str,
+                bytes,
+                Mapping,
+            ),
+        ):
+            raise TypeError(
+                "poses must be an iterable of pose-like objects."
+            )
         try:
             normalized_poses = tuple(
                 poses
             )
-
         except TypeError as error:
             raise TypeError(
                 "poses must be iterable."
@@ -10518,45 +9537,37 @@ def analyze_all_pose_contacts(
     if not normalized_poses:
         return ()
 
-    results: List[
-        ContactAnalysisResult
-    ] = []
+    results: List[ContactAnalysisResult] = []
 
     for pose_index, pose in enumerate(
         normalized_poses
     ):
-        result = analyze_contacts(
-            dock_model,
-            receptor=receptor,
-            pose=pose,
-            pose_index=pose_index,
-            cutoff=cutoff,
-            heavy_only=heavy_only,
-            exclude_solvent=exclude_solvent,
-            exclude_ions=exclude_ions,
-            exclude_same_residue=(
-                exclude_same_residue
-            ),
-            classify=classify,
-            block_size=block_size,
-            maximum_matrix_elements=(
-                maximum_matrix_elements
-            ),
-            attach=attach,
-            attach_to_pose=True,
-            overwrite=overwrite,
-            analysis_attribute=(
-                analysis_attribute
-            ),
-        )
-
         results.append(
-            result
+            analyze_contacts(
+                dock_model,
+                receptor=receptor,
+                pose=pose,
+                pose_index=pose_index,
+                cutoff=cutoff,
+                heavy_only=heavy_only,
+                exclude_solvent=exclude_solvent,
+                exclude_ions=exclude_ions,
+                exclude_same_residue=exclude_same_residue,
+                classify=classify,
+                block_size=block_size,
+                maximum_matrix_elements=maximum_matrix_elements,
+                attach=attach,
+                attach_to_pose=True,
+                overwrite=overwrite,
+                analysis_attribute=analysis_attribute,
+                scene=scene_value,
+            )
         )
 
     return tuple(
         results
     )
+
 
 
 # -----------------------------------------------------------------------------
@@ -10565,6 +9576,7 @@ def analyze_all_pose_contacts(
 
 _SECTION_10_PUBLIC_NAMES = [
     "get_dock_model_receptor",
+    "get_dock_model_ligand",
     "get_dock_model_pose",
     "get_dock_model_identifier",
     "get_pose_identifier",
@@ -10574,11 +9586,7 @@ _SECTION_10_PUBLIC_NAMES = [
     "analyze_all_pose_contacts",
 ]
 
-for public_name in _SECTION_10_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_register_public_names(_SECTION_10_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -10597,16 +9605,7 @@ for public_name in _SECTION_10_PUBLIC_NAMES:
 
 @dataclass
 class _TestElement:
-    """
-    Minimal synthetic chemical element used by self-tests.
-
-    Parameters
-    ----------
-    name : str
-        Chemical element symbol.
-    number : int
-        Atomic number.
-    """
+    """Minimal synthetic chemical element used by self-tests."""
 
     name: str
     number: int
@@ -10614,18 +9613,7 @@ class _TestElement:
 
 @dataclass
 class _TestResidue:
-    """
-    Minimal synthetic residue used by self-tests.
-
-    Parameters
-    ----------
-    name : str
-        Residue name.
-    number : int
-        Residue number.
-    chain_id : str, optional
-        Chain identifier.
-    """
+    """Minimal synthetic residue used by self-tests."""
 
     name: str
     number: int
@@ -10634,42 +9622,19 @@ class _TestResidue:
 
 @dataclass
 class _TestAtom:
-    """
-    Minimal synthetic atom used by self-tests.
-
-    Parameters
-    ----------
-    name : str
-        Atom name.
-    element : _TestElement
-        Chemical element.
-    coord : numpy.ndarray
-        Cartesian coordinate.
-    residue : _TestResidue
-        Parent residue.
-    structure : Any, optional
-        Parent structure.
-    """
+    """Minimal synthetic atom used by self-tests."""
 
     name: str
     element: _TestElement
     coord: FloatArray
     residue: _TestResidue
     structure: Any = None
+    scene_coord: Optional[FloatArray] = None
 
 
 @dataclass
 class _TestStructure:
-    """
-    Minimal synthetic molecular structure used by self-tests.
-
-    Parameters
-    ----------
-    name : str
-        Structure name.
-    atoms : sequence of _TestAtom
-        Structure atoms.
-    """
+    """Minimal synthetic molecular structure used by self-tests."""
 
     name: str
     atoms: Sequence[_TestAtom] = field(
@@ -10691,20 +9656,7 @@ class _TestStructure:
 
 @dataclass
 class _TestDockModel:
-    """
-    Minimal synthetic dock model used by self-tests.
-
-    Parameters
-    ----------
-    receptor : _TestStructure
-        Receptor structure.
-    poses : sequence of _TestStructure
-        Docked ligand poses.
-    name : str, optional
-        Dock-model identifier.
-    contact_analyses : dict, optional
-        Attached contact-analysis results.
-    """
+    """Minimal synthetic dock model used by self-tests."""
 
     receptor: _TestStructure
     poses: Sequence[_TestStructure]
@@ -10713,6 +9665,12 @@ class _TestDockModel:
         str,
         Any,
     ] = field(
+        default_factory=dict
+    )
+    contacts: List[Any] = field(
+        default_factory=list
+    )
+    statistics: Dict[str, Any] = field(
         default_factory=dict
     )
 
@@ -10725,6 +9683,93 @@ class _TestDockModel:
             self.poses
         )
 
+    def update_statistics(
+        self,
+        additional_statistics: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Update DockModel-compatible contact statistics."""
+
+        self.statistics[
+            "contacts"
+        ] = len(
+            self.contacts
+        )
+
+        if additional_statistics:
+            self.statistics.update(
+                additional_statistics
+            )
+
+        return self.statistics
+
+
+@dataclass
+class _TestSinglePoseDockModel:
+    """Repository-style DockModel fixture for integration tests."""
+
+    name: str
+    receptor: _TestStructure
+    pose: _TestStructure
+    ligand: Any
+    contacts: List[Any] = field(
+        default_factory=list
+    )
+    statistics: Dict[str, Any] = field(
+        default_factory=dict
+    )
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+    contact_analyses: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    def update_statistics(
+        self,
+        additional_statistics: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        self.statistics[
+            "contacts"
+        ] = len(
+            self.contacts
+        )
+        self.statistics[
+            "total_interactions"
+        ] = len(
+            self.contacts
+        )
+
+        if additional_statistics:
+            self.statistics.update(
+                additional_statistics
+            )
+
+        return self.statistics
+
+    def to_dict(
+        self,
+    ) -> Dict[str, Any]:
+        self.update_statistics()
+
+        return {
+            "name": self.name,
+            "contacts": [
+                contact.to_dict()
+                if hasattr(
+                    contact,
+                    "to_dict",
+                )
+                else contact
+                for contact in self.contacts
+            ],
+            "statistics": dict(
+                self.statistics
+            ),
+            "metadata": dict(
+                self.metadata
+            ),
+        }
+
 
 # -----------------------------------------------------------------------------
 # Synthetic system construction
@@ -10736,28 +9781,9 @@ def _make_test_atom(
     atomic_number: int,
     coordinate: Sequence[Number],
     residue: _TestResidue,
+    scene_coordinate: Optional[Sequence[Number]] = None,
 ) -> _TestAtom:
-    """
-    Construct a synthetic atom.
-
-    Parameters
-    ----------
-    name : str
-        Atom name.
-    element_symbol : str
-        Chemical element symbol.
-    atomic_number : int
-        Atomic number.
-    coordinate : sequence of Number
-        Cartesian coordinate.
-    residue : _TestResidue
-        Parent residue.
-
-    Returns
-    -------
-    _TestAtom
-        Synthetic atom.
-    """
+    """Construct a synthetic atom."""
 
     return _TestAtom(
         name=name,
@@ -10770,6 +9796,12 @@ def _make_test_atom(
             dtype=np.float64,
         ),
         residue=residue,
+        scene_coord=np.asarray(
+            coordinate
+            if scene_coordinate is None
+            else scene_coordinate,
+            dtype=np.float64,
+        ),
     )
 
 
@@ -10779,28 +9811,7 @@ def _build_synthetic_contact_system(
     _TestStructure,
     _TestDockModel,
 ]:
-    """
-    Build a deterministic receptor-ligand test system.
-
-    Returns
-    -------
-    tuple
-        Ligand structure, receptor structure and dock model.
-
-    Notes
-    -----
-    The geometry is designed to produce four contacts:
-
-    - one steric clash;
-    - two close contacts;
-    - one van der Waals contact.
-
-    The receptor contacts are distributed across three residues:
-
-    - TYR58: two contacts;
-    - PHE77: one contact;
-    - SER205: one contact.
-    """
+    """Build a deterministic receptor-ligand test system."""
 
     ligand_residue = _TestResidue(
         name="LIG",
@@ -10941,25 +9952,7 @@ def _assert_close(
     tolerance: Number = 1.0e-8,
     message: str = "",
 ) -> None:
-    """
-    Assert that two numeric values are approximately equal.
-
-    Parameters
-    ----------
-    observed : Number
-        Observed value.
-    expected : Number
-        Expected value.
-    tolerance : Number, optional
-        Absolute tolerance.
-    message : str, optional
-        Custom assertion message.
-
-    Raises
-    ------
-    AssertionError
-        If the values differ by more than ``tolerance``.
-    """
+    """Assert that two numeric values are approximately equal."""
 
     observed_value = np.float64(
         observed
@@ -11000,19 +9993,7 @@ def _contact_signature(
     ],
     ...,
 ]:
-    """
-    Build a deterministic contact signature.
-
-    Parameters
-    ----------
-    contacts : iterable of AtomContact
-        Contact collection.
-
-    Returns
-    -------
-    tuple
-        Contact indices and rounded distances.
-    """
+    """Build a deterministic contact signature."""
 
     normalized_contacts = _validate_atom_contacts(
         contacts,
@@ -11042,9 +10023,108 @@ def _contact_signature(
     )
 
 
+def _require(
+    condition: Any,
+    message: str,
+) -> None:
+    """Raise ``AssertionError`` when a self-test condition is false."""
+
+    if not bool(
+        condition
+    ):
+        raise AssertionError(
+            message
+        )
+
+
 # -----------------------------------------------------------------------------
 # Individual self-tests
 # -----------------------------------------------------------------------------
+
+def _test_public_api(
+) -> None:
+    """Validate exported names and downstream import contracts."""
+
+    _require(
+        all(
+            isinstance(
+                name,
+                str,
+            )
+            and bool(
+                name
+            )
+            for name in __all__
+        ),
+        "__all__ must contain only non-empty strings.",
+    )
+
+    _require(
+        len(
+            __all__
+        ) == len(
+            set(
+                __all__
+            )
+        ),
+        "__all__ contains duplicate names.",
+    )
+
+    module_globals = globals()
+
+    missing_exports = tuple(
+        name
+        for name in __all__
+        if name not in module_globals
+    )
+
+    _require(
+        not missing_exports,
+        "__all__ contains undefined names: "
+        f"{missing_exports!r}.",
+    )
+
+    downstream_names = (
+        "AtomContact",
+        "ContactAnalysisResult",
+        "ResidueContact",
+        "ResidueContactKey",
+        "atom_coordinates",
+        "filter_atoms",
+        "get_atom_atomic_number",
+        "get_atom_coordinate",
+        "get_atom_element",
+        "get_atom_identifier",
+        "get_atom_index",
+        "get_atom_name",
+        "get_atom_residue",
+        "get_atom_structure",
+        "get_dock_model_identifier",
+        "get_dock_model_pose",
+        "get_dock_model_receptor",
+        "get_pose_identifier",
+        "get_residue_contact_key",
+        "is_atom_like",
+        "is_heavy_atom",
+        "is_hydrogen_atom",
+        "select_contact_collections",
+        "validate_atom",
+        "validate_atom_collection",
+    )
+
+    missing_downstream_names = tuple(
+        name
+        for name in downstream_names
+        if name not in __all__
+        or name not in module_globals
+    )
+
+    _require(
+        not missing_downstream_names,
+        "Required downstream API names are unavailable: "
+        f"{missing_downstream_names!r}.",
+    )
+
 
 def _test_atom_helpers(
 ) -> None:
@@ -11058,8 +10138,11 @@ def _test_atom_helpers(
         0
     ]
 
-    assert is_atom_like(
-        atom
+    _require(
+        is_atom_like(
+            atom
+        ),
+        "Self-test assertion failed at source line 11061.",
     )
 
     validate_atom(
@@ -11067,42 +10150,69 @@ def _test_atom_helpers(
         require_coordinate=True,
     )
 
-    assert get_atom_name(
-        atom
-    ) == "C1"
+    _require(
+        get_atom_name(
+            atom
+        ) == "C1",
+        "Self-test assertion failed at source line 11070.",
+    )
 
-    assert get_atom_element(
-        atom
-    ) == "C"
+    _require(
+        get_atom_element(
+            atom
+        ) == "C",
+        "Self-test assertion failed at source line 11074.",
+    )
 
-    assert get_atom_atomic_number(
-        atom
-    ) == 6
+    _require(
+        get_atom_atomic_number(
+            atom
+        ) == 6,
+        "Self-test assertion failed at source line 11078.",
+    )
 
-    assert get_atom_residue(
-        atom
-    ) is atom.residue
+    _require(
+        get_atom_residue(
+            atom
+        ) is atom.residue,
+        "Self-test assertion failed at source line 11082.",
+    )
 
-    assert get_atom_structure(
-        atom
-    ) is ligand
+    _require(
+        get_atom_structure(
+            atom
+        ) is ligand,
+        "Self-test assertion failed at source line 11086.",
+    )
 
     coordinate = get_atom_coordinate(
         atom
     )
 
-    assert coordinate.shape == (
-        3,
+    _require(
+        coordinate.shape == (
+            3,
+        ),
+        "Self-test assertion failed at source line 11094.",
     )
 
-    assert coordinate.dtype == np.float64
-
-    assert is_heavy_atom(
-        atom
+    _require(
+        coordinate.dtype == np.float64,
+        "Self-test assertion failed at source line 11098.",
     )
 
-    assert not is_hydrogen_atom(
-        atom
+    _require(
+        is_heavy_atom(
+            atom
+        ),
+        "Self-test assertion failed at source line 11100.",
+    )
+
+    _require(
+        not is_hydrogen_atom(
+            atom
+        ),
+        "Self-test assertion failed at source line 11104.",
     )
 
 
@@ -11125,26 +10235,38 @@ def _test_collection_selection(
         )
     )
 
-    assert len(
-        ligand_atoms
-    ) == 2
-
-    assert len(
-        receptor_atoms
-    ) == 4
-
-    assert all(
-        is_heavy_atom(
-            atom
-        )
-        for atom in ligand_atoms
+    _require(
+        len(
+            ligand_atoms
+        ) == 2,
+        "Self-test assertion failed at source line 11128.",
     )
 
-    assert all(
-        is_heavy_atom(
-            atom
-        )
-        for atom in receptor_atoms
+    _require(
+        len(
+            receptor_atoms
+        ) == 4,
+        "Self-test assertion failed at source line 11132.",
+    )
+
+    _require(
+        all(
+            is_heavy_atom(
+                atom
+            )
+            for atom in ligand_atoms
+        ),
+        "Self-test assertion failed at source line 11136.",
+    )
+
+    _require(
+        all(
+            is_heavy_atom(
+                atom
+            )
+            for atom in receptor_atoms
+        ),
+        "Self-test assertion failed at source line 11143.",
     )
 
 
@@ -11174,21 +10296,28 @@ def _test_contact_search(
         maximum_matrix_elements=1,
     )
 
-    assert len(
-        full_matrix_contacts
-    ) == 4
-
-    assert len(
-        blocked_contacts
-    ) == 4
-
-    assert (
-        _contact_signature(
+    _require(
+        len(
             full_matrix_contacts
-        )
-        == _contact_signature(
+        ) == 4,
+        "Self-test assertion failed at source line 11177.",
+    )
+
+    _require(
+        len(
             blocked_contacts
-        )
+        ) == 4,
+        "Self-test assertion failed at source line 11181.",
+    )
+
+    _require(
+        _contact_signature(
+                full_matrix_contacts
+            )
+            == _contact_signature(
+                blocked_contacts
+            ),
+        "Self-test assertion failed at source line 11185.",
     )
 
     expected_distances = (
@@ -11217,6 +10346,30 @@ def _test_contact_search(
         )
 
 
+def _test_coordinate_extraction_efficiency() -> None:
+    """Ensure contact search reads each coordinate only once."""
+
+    class CountingAtom:
+        def __init__(self, coordinate: Sequence[Number], name: str) -> None:
+            self.name = name
+            self.element = _TestElement("C", 6)
+            self.residue = _TestResidue("LIG", 1, "A")
+            self._coordinate = np.asarray(coordinate, dtype=np.float64)
+            self.coordinate_reads = 0
+
+        @property
+        def coord(self) -> FloatArray:
+            self.coordinate_reads += 1
+            return self._coordinate
+
+    atom_1 = CountingAtom((0.0, 0.0, 0.0), "C1")
+    atom_2 = CountingAtom((3.0, 0.0, 0.0), "C2")
+    result = find_atom_contacts((atom_1,), (atom_2,), cutoff=4.0, scene=False)
+    _require(len(result) == 1, "Expected one counting-atom contact.")
+    _require(atom_1.coordinate_reads == 1, "First coordinate was read repeatedly.")
+    _require(atom_2.coordinate_reads == 1, "Second coordinate was read repeatedly.")
+
+
 def _test_closest_contact(
 ) -> None:
     """Test closest-contact detection."""
@@ -11232,22 +10385,34 @@ def _test_closest_contact(
         block_size=1,
     )
 
-    assert result is not None
+    _require(
+        result is not None,
+        "Self-test assertion failed at source line 11235.",
+    )
 
     _assert_close(
         result.distance,
         2.80,
     )
 
-    assert result.atom_1 is ligand.atoms[
-        0
-    ]
+    _require(
+        result.atom_1 is ligand.atoms[
+            0
+        ],
+        "Self-test assertion failed at source line 11242.",
+    )
 
-    assert result.atom_2 is receptor.atoms[
-        1
-    ]
+    _require(
+        result.atom_2 is receptor.atoms[
+            1
+        ],
+        "Self-test assertion failed at source line 11246.",
+    )
 
-    assert result.is_contact
+    _require(
+        result.is_contact,
+        "Self-test assertion failed at source line 11250.",
+    )
 
 
 def _test_residue_grouping(
@@ -11269,61 +10434,79 @@ def _test_residue_grouping(
         side="receptor",
     )
 
-    assert len(
-        groups
-    ) == 3
+    _require(
+        len(
+            groups
+        ) == 3,
+        "Self-test assertion failed at source line 11272.",
+    )
 
-    assert len(
-        groups[
-            (
-                "TYR",
-                58,
-                "A",
-            )
-        ]
-    ) == 2
+    _require(
+        len(
+            groups[
+                (
+                    "TYR",
+                    58,
+                    "A",
+                )
+            ]
+        ) == 2,
+        "Self-test assertion failed at source line 11276.",
+    )
 
-    assert len(
-        groups[
-            (
-                "PHE",
-                77,
-                "A",
-            )
-        ]
-    ) == 1
+    _require(
+        len(
+            groups[
+                (
+                    "PHE",
+                    77,
+                    "A",
+                )
+            ]
+        ) == 1,
+        "Self-test assertion failed at source line 11286.",
+    )
 
-    assert len(
-        groups[
-            (
-                "SER",
-                205,
-                "A",
-            )
-        ]
-    ) == 1
+    _require(
+        len(
+            groups[
+                (
+                    "SER",
+                    205,
+                    "A",
+                )
+            ]
+        ) == 1,
+        "Self-test assertion failed at source line 11296.",
+    )
 
     results = residue_contacts(
         contacts,
         side="receptor",
     )
 
-    assert len(
-        results
-    ) == 3
+    _require(
+        len(
+            results
+        ) == 3,
+        "Self-test assertion failed at source line 11311.",
+    )
 
     counts = residue_contact_counts(
         contacts,
         side="receptor",
     )
 
-    assert counts[
-        (
-            "TYR",
-            58,
-            "A",
-        )
-    ] == 2
+    _require(
+        counts[
+            (
+                "TYR",
+                58,
+                "A",
+            )
+        ] == 2,
+        "Self-test assertion failed at source line 11320.",
+    )
 
     residue_keys = contacting_residues(
         contacts,
@@ -11331,22 +10514,25 @@ def _test_residue_grouping(
         return_keys=True,
     )
 
-    assert residue_keys == (
-        (
-            "TYR",
-            58,
-            "A",
+    _require(
+        residue_keys == (
+            (
+                "TYR",
+                58,
+                "A",
+            ),
+            (
+                "PHE",
+                77,
+                "A",
+            ),
+            (
+                "SER",
+                205,
+                "A",
+            ),
         ),
-        (
-            "PHE",
-            77,
-            "A",
-        ),
-        (
-            "SER",
-            205,
-            "A",
-        ),
+        "Self-test assertion failed at source line 11334.",
     )
 
     summary = summarize_residue_contacts(
@@ -11355,11 +10541,14 @@ def _test_residue_grouping(
         include_chain=False,
     )
 
-    assert summary[
-        0
-    ] == (
-        "TYR58",
-        2,
+    _require(
+        summary[
+            0
+        ] == (
+            "TYR58",
+            2,
+        ),
+        "Self-test assertion failed at source line 11358.",
     )
 
 
@@ -11385,30 +10574,45 @@ def _test_contact_classification(
         classified
     )
 
-    assert counts[
-        CONTACT_TYPE_CLASH
-    ] == 1
+    _require(
+        counts[
+            CONTACT_TYPE_CLASH
+        ] == 1,
+        "Self-test assertion failed at source line 11388.",
+    )
 
-    assert counts[
-        CONTACT_TYPE_CLOSE_CONTACT
-    ] == 2
+    _require(
+        counts[
+            CONTACT_TYPE_CLOSE_CONTACT
+        ] == 2,
+        "Self-test assertion failed at source line 11392.",
+    )
 
-    assert counts[
-        CONTACT_TYPE_VDW
-    ] == 1
+    _require(
+        counts[
+            CONTACT_TYPE_VDW
+        ] == 1,
+        "Self-test assertion failed at source line 11396.",
+    )
 
-    assert counts[
-        CONTACT_TYPE_UNKNOWN
-    ] == 0
+    _require(
+        counts[
+            CONTACT_TYPE_UNKNOWN
+        ] == 0,
+        "Self-test assertion failed at source line 11400.",
+    )
 
     clashes = contacts_by_classification(
         classified,
         CONTACT_TYPE_CLASH,
     )
 
-    assert len(
-        clashes
-    ) == 1
+    _require(
+        len(
+            clashes
+        ) == 1,
+        "Self-test assertion failed at source line 11409.",
+    )
 
     _assert_close(
         clashes[
@@ -11439,23 +10643,35 @@ def _test_contact_statistics(
         residue_side="receptor",
     )
 
-    assert statistics[
-        "contact_count"
-    ] == 4
+    _require(
+        statistics[
+            "contact_count"
+        ] == 4,
+        "Self-test assertion failed at source line 11442.",
+    )
 
-    assert statistics[
-        "unique_atom_1_count"
-    ] == 2
+    _require(
+        statistics[
+            "unique_atom_1_count"
+        ] == 2,
+        "Self-test assertion failed at source line 11446.",
+    )
 
-    assert statistics[
-        "unique_atom_2_count"
-    ] == 4
+    _require(
+        statistics[
+            "unique_atom_2_count"
+        ] == 4,
+        "Self-test assertion failed at source line 11450.",
+    )
 
-    assert statistics[
-        "residues"
-    ][
-        "residue_count"
-    ] == 3
+    _require(
+        statistics[
+            "residues"
+        ][
+            "residue_count"
+        ] == 3,
+        "Self-test assertion failed at source line 11454.",
+    )
 
     _assert_close(
         statistics[
@@ -11495,25 +10711,37 @@ def _test_contact_statistics(
         )
     )
 
-    assert distribution[
-        "sample_count"
-    ] == 4
-
-    assert distribution[
-        "bin_count"
-    ] == 2
-
-    assert sum(
+    _require(
         distribution[
-            "counts"
-        ]
-    ) == 4
+            "sample_count"
+        ] == 4,
+        "Self-test assertion failed at source line 11498.",
+    )
 
-    assert distribution[
-        "cumulative_counts"
-    ][
-        -1
-    ] == 4
+    _require(
+        distribution[
+            "bin_count"
+        ] == 2,
+        "Self-test assertion failed at source line 11502.",
+    )
+
+    _require(
+        sum(
+            distribution[
+                "counts"
+            ]
+        ) == 4,
+        "Self-test assertion failed at source line 11506.",
+    )
+
+    _require(
+        distribution[
+            "cumulative_counts"
+        ][
+            -1
+        ] == 4,
+        "Self-test assertion failed at source line 11512.",
+    )
 
     summary = summarize_contacts(
         contacts,
@@ -11521,29 +10749,44 @@ def _test_contact_statistics(
         include_chain=False,
     )
 
-    assert summary[
-        "contact_count"
-    ] == 4
+    _require(
+        summary[
+            "contact_count"
+        ] == 4,
+        "Self-test assertion failed at source line 11524.",
+    )
 
-    assert summary[
-        "contacting_residue_count"
-    ] == 3
+    _require(
+        summary[
+            "contacting_residue_count"
+        ] == 3,
+        "Self-test assertion failed at source line 11528.",
+    )
 
-    assert summary[
-        "residue_contacts"
-    ][
-        0
-    ][
-        "residue"
-    ] == "TYR58"
+    _require(
+        summary[
+            "residue_contacts"
+        ][
+            0
+        ][
+            "residue"
+        ] == "TYR58",
+        "Self-test assertion failed at source line 11532.",
+    )
 
     text_summary = format_contact_summary(
         contacts,
         include_chain=False,
     )
 
-    assert "Contacts: 4" in text_summary
-    assert "TYR58" in text_summary
+    _require(
+        "Contacts: 4" in text_summary,
+        "Self-test assertion failed at source line 11545.",
+    )
+    _require(
+        "TYR58" in text_summary,
+        "Self-test assertion failed at source line 11546.",
+    )
 
 
 def _test_empty_contact_statistics(
@@ -11554,19 +10797,28 @@ def _test_empty_contact_statistics(
         ()
     )
 
-    assert statistics[
-        "contact_count"
-    ] == 0
+    _require(
+        statistics[
+            "contact_count"
+        ] == 0,
+        "Self-test assertion failed at source line 11557.",
+    )
 
-    assert not statistics[
-        "has_contacts"
-    ]
+    _require(
+        not statistics[
+            "has_contacts"
+        ],
+        "Self-test assertion failed at source line 11561.",
+    )
 
-    assert statistics[
-        "distance"
-    ][
-        "minimum"
-    ] is None
+    _require(
+        statistics[
+            "distance"
+        ][
+            "minimum"
+        ] is None,
+        "Self-test assertion failed at source line 11565.",
+    )
 
     distribution = (
         contact_distance_distribution(
@@ -11579,13 +10831,19 @@ def _test_empty_contact_statistics(
         )
     )
 
-    assert distribution[
-        "sample_count"
-    ] == 0
+    _require(
+        distribution[
+            "sample_count"
+        ] == 0,
+        "Self-test assertion failed at source line 11582.",
+    )
 
-    assert distribution[
-        "bin_count"
-    ] == 4
+    _require(
+        distribution[
+            "bin_count"
+        ] == 4,
+        "Self-test assertion failed at source line 11586.",
+    )
 
 
 def _test_dock_model_integration(
@@ -11605,44 +10863,75 @@ def _test_dock_model_integration(
         attach_to_pose=True,
     )
 
-    assert isinstance(
-        result,
-        ContactAnalysisResult,
+    _require(
+        isinstance(
+            result,
+            ContactAnalysisResult,
+        ),
+        "Self-test assertion failed at source line 11608.",
     )
 
-    assert result.contact_count == 4
-    assert result.residue_count == 3
-    assert result.ligand_atom_count == 2
-    assert result.receptor_atom_count == 4
-    assert result.has_contacts
-    assert result.has_clashes
-
-    assert "pose_0" in (
-        dock_model.contact_analyses
+    _require(
+        result.contact_count == 4,
+        "Self-test assertion failed at source line 11613.",
+    )
+    _require(
+        result.residue_count == 3,
+        "Self-test assertion failed at source line 11614.",
+    )
+    _require(
+        result.ligand_atom_count == 2,
+        "Self-test assertion failed at source line 11615.",
+    )
+    _require(
+        result.receptor_atom_count == 4,
+        "Self-test assertion failed at source line 11616.",
+    )
+    _require(
+        result.has_contacts,
+        "Self-test assertion failed at source line 11617.",
+    )
+    _require(
+        result.has_clashes,
+        "Self-test assertion failed at source line 11618.",
     )
 
-    assert (
+    _require(
+        "pose_0" in (
+            dock_model.contact_analyses
+        ),
+        "Self-test assertion failed at source line 11620.",
+    )
+
+    _require(
         dock_model.contact_analyses[
-            "pose_0"
-        ]
-        is result
+                "pose_0"
+            ]
+            is result,
+        "Self-test assertion failed at source line 11624.",
     )
 
     pose = dock_model.poses[
         0
     ]
 
-    assert getattr(
-        pose,
-        "contact_analysis",
-        None,
-    ) is result
+    _require(
+        getattr(
+            pose,
+            "contact_analysis",
+            None,
+        ) is result,
+        "Self-test assertion failed at source line 11635.",
+    )
 
-    assert getattr(
-        pose,
-        "contacts",
-        None,
-    ) == result.contacts
+    _require(
+        getattr(
+            pose,
+            "contacts",
+            None,
+        ) == result.contacts,
+        "Self-test assertion failed at source line 11641.",
+    )
 
     attached_result = (
         get_attached_contact_analysis(
@@ -11651,7 +10940,10 @@ def _test_dock_model_integration(
         )
     )
 
-    assert attached_result is result
+    _require(
+        attached_result is result,
+        "Self-test assertion failed at source line 11654.",
+    )
 
 
 def _test_all_pose_integration(
@@ -11705,30 +10997,295 @@ def _test_all_pose_integration(
         attach=True,
     )
 
-    assert len(
-        results
-    ) == 2
-
-    assert results[
-        0
-    ].contact_count == 4
-
-    assert results[
-        1
-    ].contact_count == 0
-
-    assert "pose_0" in (
-        dock_model.contact_analyses
+    _require(
+        len(
+            results
+        ) == 2,
+        "Self-test assertion failed at source line 11708.",
     )
 
-    assert "pose_1" in (
-        dock_model.contact_analyses
+    _require(
+        results[
+            0
+        ].contact_count == 4,
+        "Self-test assertion failed at source line 11712.",
     )
+
+    _require(
+        results[
+            1
+        ].contact_count == 0,
+        "Self-test assertion failed at source line 11716.",
+    )
+
+    _require(
+        "pose_0" in (
+            dock_model.contact_analyses
+        ),
+        "Self-test assertion failed at source line 11720.",
+    )
+
+    _require(
+        "pose_1" in (
+            dock_model.contact_analyses
+        ),
+        "Self-test assertion failed at source line 11724.",
+    )
+
+
+def _test_scene_coordinate_integration(
+) -> None:
+    """Test local versus ChimeraX scene-coordinate contact searches."""
+
+    ligand_residue = _TestResidue(
+        "LIG",
+        1,
+        "L",
+    )
+    receptor_residue = _TestResidue(
+        "TYR",
+        58,
+        "A",
+    )
+
+    ligand_atom = _make_test_atom(
+        "C1",
+        "C",
+        6,
+        (
+            100.0,
+            0.0,
+            0.0,
+        ),
+        ligand_residue,
+        scene_coordinate=(
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+    receptor_atom = _make_test_atom(
+        "CZ",
+        "C",
+        6,
+        (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        receptor_residue,
+        scene_coordinate=(
+            3.4,
+            0.0,
+            0.0,
+        ),
+    )
+
+    scene_contacts = find_atom_contacts(
+        (
+            ligand_atom,
+        ),
+        (
+            receptor_atom,
+        ),
+        cutoff=4.0,
+    )
+    local_contacts = find_atom_contacts(
+        (
+            ligand_atom,
+        ),
+        (
+            receptor_atom,
+        ),
+        cutoff=4.0,
+        scene=False,
+    )
+
+    _require(
+        len(
+            scene_contacts
+        ) == 1,
+        "Scene-coordinate contact detection failed.",
+    )
+    _require(
+        len(
+            local_contacts
+        ) == 0,
+        "Local-coordinate search ignored scene=False.",
+    )
+    _assert_close(
+        scene_contacts[
+            0
+        ].distance,
+        3.4,
+    )
+
+
+def _test_repository_dock_model_integration(
+) -> None:
+    """Test attachment and serialization with the repository DockModel shape."""
+
+    ligand, receptor, _ = _build_synthetic_contact_system()
+    dock_model = _TestSinglePoseDockModel(
+        name="pose_0",
+        receptor=receptor,
+        pose=ligand,
+        ligand=ligand,
+    )
+
+    result = analyze_contacts(
+        dock_model,
+        cutoff=4.0,
+        attach=True,
+    )
+
+    _require(
+        result.contact_count == 4,
+        "Repository-style DockModel analysis returned the wrong count.",
+    )
+    _require(
+        len(
+            dock_model.contacts
+        ) == 4,
+        "DockModel.contacts was not populated.",
+    )
+    _require(
+        dock_model.statistics.get(
+            "contacts"
+        ) == 4,
+        "DockModel contact statistics were not synchronized.",
+    )
+    _require(
+        dock_model.contact_analyses.get(
+            "pose_0"
+        ) is result,
+        "The detailed contact analysis was not attached.",
+    )
+
+    import json
+
+    json.dumps(
+        result.to_dict()
+    )
+    json.dumps(
+        dock_model.to_dict()
+    )
+
+
+def _test_invalid_integration_inputs(
+) -> None:
+    """Test empty, invalid and malformed integration inputs."""
+
+    ligand, receptor, _ = _build_synthetic_contact_system()
+
+    invalid_cases = (
+        (
+            ValueError,
+            lambda: find_atom_contacts(
+                (),
+                receptor.atoms,
+                cutoff=4.0,
+            ),
+        ),
+        (
+            ValueError,
+            lambda: find_atom_contacts(
+                ligand.atoms,
+                receptor.atoms,
+                cutoff=np.nan,
+            ),
+        ),
+        (
+            TypeError,
+            lambda: find_atom_contacts(
+                ligand.atoms,
+                receptor.atoms,
+                cutoff=4.0,
+                scene="yes",
+            ),
+        ),
+        (
+            TypeError,
+            lambda: analyze_contacts(
+                None,
+            ),
+        ),
+        (
+            ValueError,
+            lambda: analyze_contacts(
+                {},
+            ),
+        ),
+    )
+
+    for expected_error, operation in invalid_cases:
+        try:
+            operation()
+        except expected_error:
+            continue
+        except Exception as error:
+            raise AssertionError(
+                "An invalid input raised the wrong exception type."
+            ) from error
+        raise AssertionError(
+            "An invalid integration input was accepted."
+        )
 
 
 # -----------------------------------------------------------------------------
 # Self-test runner
 # -----------------------------------------------------------------------------
+
+_SELF_TEST_CODE_FAILURE = "code failure"
+_SELF_TEST_TEST_FAILURE = "test failure"
+_SELF_TEST_ENVIRONMENTAL_LIMITATION = "environmental limitation"
+
+
+def _classify_self_test_failure(
+    error: BaseException,
+) -> str:
+    """Classify a self-test failure by its most likely source."""
+
+    if isinstance(
+        error,
+        (
+            ImportError,
+            ModuleNotFoundError,
+        ),
+    ):
+        return (
+            _SELF_TEST_ENVIRONMENTAL_LIMITATION
+        )
+
+    traceback_object = error.__traceback__
+
+    while (
+        traceback_object is not None
+        and traceback_object.tb_next is not None
+    ):
+        traceback_object = (
+            traceback_object.tb_next
+        )
+
+    source_function = (
+        ""
+        if traceback_object is None
+        else traceback_object.tb_frame.f_code.co_name
+    )
+
+    if (
+        isinstance(
+            error,
+            AssertionError,
+        )
+        or not source_function.startswith(
+            "_test_"
+        )
+    ):
+        return _SELF_TEST_CODE_FAILURE
+
+    return _SELF_TEST_TEST_FAILURE
+
 
 def run_self_tests(
     *,
@@ -11743,8 +11300,7 @@ def run_self_tests(
     verbose : bool, optional
         Whether individual test results should be printed.
     raise_on_failure : bool, optional
-        Whether the first completed suite with failures should raise an
-        ``AssertionError``.
+        Whether the completed suite should raise when failures exist.
 
     Returns
     -------
@@ -11754,12 +11310,13 @@ def run_self_tests(
     Raises
     ------
     AssertionError
-        If one or more tests fail and ``raise_on_failure=True``.
+        If failures exist and ``raise_on_failure=True``.
 
     Notes
     -----
-    These tests use only synthetic Python objects and NumPy arrays. ChimeraX
-    is not required.
+    Tests use synthetic Python objects and NumPy arrays. ChimeraX is not
+    required. Failures are classified as code failures, test failures or
+    environmental limitations.
     """
 
     import traceback
@@ -11775,6 +11332,10 @@ def run_self_tests(
         ...,
     ] = (
         (
+            "public API",
+            _test_public_api,
+        ),
+        (
             "atom helpers",
             _test_atom_helpers,
         ),
@@ -11785,6 +11346,10 @@ def run_self_tests(
         (
             "contact search",
             _test_contact_search,
+        ),
+        (
+            "coordinate extraction efficiency",
+            _test_coordinate_extraction_efficiency,
         ),
         (
             "closest contact",
@@ -11814,6 +11379,18 @@ def run_self_tests(
             "all-pose integration",
             _test_all_pose_integration,
         ),
+        (
+            "scene-coordinate integration",
+            _test_scene_coordinate_integration,
+        ),
+        (
+            "repository DockModel integration",
+            _test_repository_dock_model_integration,
+        ),
+        (
+            "invalid integration inputs",
+            _test_invalid_integration_inputs,
+        ),
     )
 
     passed = 0
@@ -11821,10 +11398,17 @@ def run_self_tests(
     failures: List[
         Tuple[
             str,
+            str,
             BaseException,
             str,
         ]
     ] = []
+
+    category_counts = {
+        _SELF_TEST_CODE_FAILURE: 0,
+        _SELF_TEST_TEST_FAILURE: 0,
+        _SELF_TEST_ENVIRONMENTAL_LIMITATION: 0,
+    }
 
     if verbose:
         print(
@@ -11842,6 +11426,16 @@ def run_self_tests(
             test_function()
 
         except Exception as error:
+            failure_category = (
+                _classify_self_test_failure(
+                    error
+                )
+            )
+
+            category_counts[
+                failure_category
+            ] += 1
+
             failure_traceback = (
                 traceback.format_exc()
             )
@@ -11849,6 +11443,7 @@ def run_self_tests(
             failures.append(
                 (
                     test_name,
+                    failure_category,
                     error,
                     failure_traceback,
                 )
@@ -11856,8 +11451,9 @@ def run_self_tests(
 
             if verbose:
                 print(
-                    f"[FAIL] {test_name}: "
-                    f"{type(error).__name__}: {error}"
+                    f"[FAIL] [{failure_category.upper()}] "
+                    f"{test_name}: {type(error).__name__}: "
+                    f"{error}"
                 )
 
         else:
@@ -11886,6 +11482,16 @@ def run_self_tests(
         print(
             f"Failed: {failed}/{total}"
         )
+
+        if failures:
+            print(
+                "Failure categories: "
+                f"code={category_counts[_SELF_TEST_CODE_FAILURE]}, "
+                f"tests={category_counts[_SELF_TEST_TEST_FAILURE]}, "
+                "environment="
+                f"{category_counts[_SELF_TEST_ENVIRONMENTAL_LIMITATION]}"
+            )
+
         print(
             "=" * 72
         )
@@ -11894,10 +11500,12 @@ def run_self_tests(
         failure_details = "\n\n".join(
             (
                 f"Test: {test_name}\n"
+                f"Category: {failure_category}\n"
                 f"{failure_traceback}"
             )
             for (
                 test_name,
+                failure_category,
                 _,
                 failure_traceback,
             ) in failures
@@ -11919,11 +11527,7 @@ _SECTION_11_PUBLIC_NAMES = [
     "run_self_tests",
 ]
 
-for public_name in _SECTION_11_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_register_public_names(_SECTION_11_PUBLIC_NAMES)
 
 
 # -----------------------------------------------------------------------------
