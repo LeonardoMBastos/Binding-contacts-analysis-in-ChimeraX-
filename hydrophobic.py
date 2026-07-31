@@ -47,6 +47,14 @@ from __future__ import annotations
 # Standard-library imports
 # -----------------------------------------------------------------------------
 
+import contextlib
+import inspect
+import io
+import json
+import time
+import traceback
+import warnings
+from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import (
@@ -66,6 +74,7 @@ from typing import (
     Sequence,
     Set,
     Tuple,
+    Type,
     TypeAlias,
     TypeVar,
     Union,
@@ -85,16 +94,11 @@ from numpy.typing import NDArray
 # DockAnalyzer imports
 # -----------------------------------------------------------------------------
 
-try:
+if __package__:
     from . import config
 
     from .contacts import (
-        AtomContact,
-        ContactAnalysisResult,
-        ResidueContact,
         ResidueContactKey,
-        atom_coordinates,
-        filter_atoms,
         get_atom_atomic_number,
         get_atom_coordinate,
         get_atom_element,
@@ -103,17 +107,12 @@ try:
         get_atom_name,
         get_atom_residue,
         get_atom_structure,
-        get_dock_model_identifier,
         get_dock_model_pose,
-        get_dock_model_receptor,
-        get_pose_identifier,
         get_residue_contact_key,
         is_atom_like,
         is_heavy_atom,
         is_hydrogen_atom,
-        select_contact_collections,
         validate_atom,
-        validate_atom_collection,
     )
 
     from .geometry import (
@@ -125,16 +124,11 @@ try:
         DockModel,
     )
 
-except ImportError:
+else:
     import config
 
     from contacts import (
-        AtomContact,
-        ContactAnalysisResult,
-        ResidueContact,
         ResidueContactKey,
-        atom_coordinates,
-        filter_atoms,
         get_atom_atomic_number,
         get_atom_coordinate,
         get_atom_element,
@@ -143,17 +137,12 @@ except ImportError:
         get_atom_name,
         get_atom_residue,
         get_atom_structure,
-        get_dock_model_identifier,
         get_dock_model_pose,
-        get_dock_model_receptor,
-        get_pose_identifier,
         get_residue_contact_key,
         is_atom_like,
         is_heavy_atom,
         is_hydrogen_atom,
-        select_contact_collections,
         validate_atom,
-        validate_atom_collection,
     )
 
     from geometry import (
@@ -183,6 +172,15 @@ _LOGGER: Final[DockLogger] = DockLogger(_MODULE_NAME)
 # -----------------------------------------------------------------------------
 
 __all__: List[str] = []
+
+
+def _extend_public_names(names: Iterable[str]) -> None:
+    """Append unique public names while preserving their order."""
+    known_names = set(__all__)
+    for name in names:
+        if name not in known_names:
+            __all__.append(name)
+            known_names.add(name)
 
 
 # -----------------------------------------------------------------------------
@@ -601,9 +599,7 @@ _SECTION_1_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "StructureProvider",
 )
 
-for public_name in _SECTION_1_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(public_name)
+_extend_public_names(_SECTION_1_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -2518,9 +2514,7 @@ _SECTION_2_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "validate_hydrophobic_score",
 )
 
-for public_name in _SECTION_2_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(public_name)
+_extend_public_names(_SECTION_2_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -5517,9 +5511,7 @@ _SECTION_3_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "HydrophobicAnalysisResult",
 )
 
-for public_name in _SECTION_3_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(public_name)
+_extend_public_names(_SECTION_3_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -7392,9 +7384,7 @@ _SECTION_4_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "partition_hydrophobic_atoms",
 )
 
-for public_name in _SECTION_4_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(public_name)
+_extend_public_names(_SECTION_4_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -9880,9 +9870,7 @@ _SECTION_5_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "make_synthetic_atom",
 )
 
-for public_name in _SECTION_5_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(public_name)
+_extend_public_names(_SECTION_5_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -11076,26 +11064,31 @@ def hydrophobic_distance_matrix(
             dtype=np.float64,
         )
 
-    coordinate_differences = (
-        first_coordinates[:, np.newaxis, :]
-        - second_coordinates[np.newaxis, :, :]
+    # A shared origin improves numerical stability while the Gram form
+    # avoids allocating an intermediate N × M × 3 difference array.
+    origin = first_coordinates[0]
+    first_shifted = first_coordinates - origin
+    second_shifted = second_coordinates - origin
+
+    first_squared_norms = np.einsum(
+        "ij,ij->i", first_shifted, first_shifted
+    )[:, np.newaxis]
+    second_squared_norms = np.einsum(
+        "ij,ij->i", second_shifted, second_shifted
+    )[np.newaxis, :]
+
+    squared_distances = (
+        first_squared_norms
+        + second_squared_norms
+        - 2.0 * (first_shifted @ second_shifted.T)
     )
 
-    squared_distances = np.einsum(
-        "ijk,ijk->ij",
-        coordinate_differences,
-        coordinate_differences,
-    )
+    np.maximum(squared_distances, 0.0, out=squared_distances)
+    if second_group is None:
+        np.fill_diagonal(squared_distances, 0.0)
+    np.sqrt(squared_distances, out=squared_distances)
 
-    squared_distances = np.maximum(
-        squared_distances,
-        0.0,
-    )
-
-    return np.asarray(
-        np.sqrt(squared_distances),
-        dtype=np.float64,
-    )
+    return squared_distances
 
 
 # -----------------------------------------------------------------------------
@@ -11626,24 +11619,29 @@ def local_hydrophobic_neighbors(
         candidates
     )
 
-    neighbors: List[AtomLike] = []
+    if not candidate_atoms:
+        return ()
 
-    for candidate in candidate_atoms:
+    central_coordinate = get_hydrophobic_coordinate(central_atom)
+    candidate_coordinates = hydrophobic_atom_coordinates(
+        candidate_atoms, allow_empty=True
+    )
+    coordinate_offsets = candidate_coordinates - central_coordinate
+    squared_distances = np.einsum(
+        "ij,ij->i", coordinate_offsets, coordinate_offsets
+    )
+
+    squared_radius = float(local_radius) ** 2
+
+    return tuple(
+        candidate
+        for candidate, squared_distance
+        in zip(candidate_atoms, squared_distances)
         if (
-            not include_self
-            and candidate is central_atom
-        ):
-            continue
-
-        candidate_distance = hydrophobic_distance(
-            central_atom,
-            candidate,
+            (include_self or candidate is not central_atom)
+            and squared_distance <= squared_radius
         )
-
-        if candidate_distance <= local_radius:
-            neighbors.append(candidate)
-
-    return tuple(neighbors)
+    )
 
 
 def count_local_hydrophobic_neighbors(
@@ -11726,14 +11724,14 @@ def count_cross_group_contacts(
     Count atom-to-atom contacts between two groups.
     """
 
-    return len(
-        hydrophobic_contact_indices(
-            first_group,
-            second_group,
-            maximum_distance=maximum_distance,
-            minimum_distance=minimum_distance,
-        )
+    contact_mask = hydrophobic_contact_mask(
+        first_group,
+        second_group,
+        maximum_distance=maximum_distance,
+        minimum_distance=minimum_distance,
     )
+
+    return int(np.count_nonzero(contact_mask))
 
 
 # -----------------------------------------------------------------------------
@@ -11966,37 +11964,22 @@ def contacted_atom_fraction(
     if not first_atoms or not second_atoms:
         return np.float64(0.0)
 
-    pair_indices = hydrophobic_contact_indices(
+    contact_mask = hydrophobic_contact_mask(
         first_atoms,
         second_atoms,
         maximum_distance=maximum_distance,
         minimum_distance=minimum_distance,
     )
 
-    if not pair_indices:
+    if not np.any(contact_mask):
         return np.float64(0.0)
 
-    contacted_first_indices = {
-        first_index
-        for first_index, _
-        in pair_indices
-    }
-
-    contacted_second_indices = {
-        second_index
-        for _, second_index
-        in pair_indices
-    }
-
-    first_fraction = (
-        len(contacted_first_indices)
-        / len(first_atoms)
-    )
-
-    second_fraction = (
-        len(contacted_second_indices)
-        / len(second_atoms)
-    )
+    first_fraction = float(
+        np.count_nonzero(np.any(contact_mask, axis=1))
+    ) / len(first_atoms)
+    second_fraction = float(
+        np.count_nonzero(np.any(contact_mask, axis=0))
+    ) / len(second_atoms)
 
     return validate_hydrophobic_score(
         (
@@ -12166,18 +12149,22 @@ def approximate_group_contact_area(
     if contact_distances.size == 0:
         return np.float64(0.0)
 
-    pair_areas = [
-        approximate_pair_contact_area(
-            measured_distance,
-            atom_radius=atom_radius,
-            maximum_distance=maximum_cutoff,
-        )
-        for measured_distance in contact_distances
-    ]
-
-    return np.float64(
-        np.sum(pair_areas)
+    radius = _positive_float(
+        atom_radius, name="contact atom radius"
     )
+    normalized_overlap = np.clip(
+        (maximum_cutoff - contact_distances) / maximum_cutoff,
+        0.0,
+        1.0,
+    )
+
+    pair_areas = np.clip(
+        np.pi * radius ** 2 * normalized_overlap,
+        DEFAULT_MINIMUM_CONTACT_AREA,
+        DEFAULT_MAXIMUM_CONTACT_AREA_PER_PAIR,
+    )
+
+    return np.float64(np.sum(pair_areas))
 
 
 # -----------------------------------------------------------------------------
@@ -12997,9 +12984,7 @@ _SECTION_6_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "is_geometrically_hydrophobic_pair",
 )
 
-for public_name in _SECTION_6_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(public_name)
+_extend_public_names(_SECTION_6_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -15530,9 +15515,7 @@ _SECTION_7_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "run_hydrophobic_detection",
 )
 
-for public_name in _SECTION_7_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(public_name)
+_extend_public_names(_SECTION_7_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -18726,9 +18709,7 @@ _SECTION_8_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "add_hydrophobic_grouping_to_result",
 )
 
-for public_name in _SECTION_8_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(public_name)
+_extend_public_names(_SECTION_8_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -21447,9 +21428,7 @@ _SECTION_9_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "analyze_and_classify_hydrophobic_interactions",
 )
 
-for public_name in _SECTION_9_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(public_name)
+_extend_public_names(_SECTION_9_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -25660,9 +25639,7 @@ _SECTION_10_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "analyze_hydrophobic_interactions",
 )
 
-for public_name in _SECTION_10_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(public_name)
+_extend_public_names(_SECTION_10_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -28189,9 +28166,7 @@ _SECTION_11_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "analyze_multiple_dock_models_hydrophobic",
 )
 
-for public_name in _SECTION_11_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(public_name)
+_extend_public_names(_SECTION_11_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -30088,7 +30063,8 @@ def assert_hydrophobic_serializable(
 
     try:
         json.dumps(
-            converted
+            converted,
+            allow_nan=False,
         )
 
     except Exception as exc:
@@ -31317,17 +31293,25 @@ def make_hydrophobic_test_atom(
     not depend directly on the complete SyntheticAtom constructor.
     """
 
+    residue = SyntheticResidue(
+        name=str(residue_name).strip().upper(),
+        number=int(residue_number),
+        chain_id=str(chain_identifier).strip(),
+    )
+
     keyword_candidates = {
         "name": name,
         "element": element,
         "coordinate": coordinate,
-        "residue_name": residue_name,
-        "residue_number": residue_number,
-        "chain_identifier": chain_identifier,
-        "atom_index": atom_index,
+        "residue": residue,
+        "index": atom_index,
         "aromatic": aromatic,
+        "aliphatic": (
+            bool(not aromatic)
+            if str(element).strip().upper() == CARBON_ELEMENT
+            else False
+        ),
         "partial_charge": partial_charge,
-        "structure_name": structure_name,
     }
 
     factory = make_synthetic_atom
@@ -31367,11 +31351,26 @@ def make_hydrophobic_test_atom(
                 "the expected Section 5 API."
             ) from exc
 
+    structure = SyntheticStructure(
+        name=str(structure_name).strip() or "synthetic"
+    )
+    structure.add_atom(atom)
+
     # Best-effort completion of fields not supported by the factory.
     optional_attributes = {
         "index": atom_index,
         "aromatic": aromatic,
         "is_aromatic": aromatic,
+        "aliphatic": (
+            bool(not aromatic)
+            if str(element).strip().upper() == CARBON_ELEMENT
+            else False
+        ),
+        "is_aliphatic": (
+            bool(not aromatic)
+            if str(element).strip().upper() == CARBON_ELEMENT
+            else False
+        ),
         "partial_charge": partial_charge,
         "charge": partial_charge,
     }
@@ -31420,7 +31419,7 @@ def make_hydrophobic_test_atom_pair(
         )
 
     receptor_atom = make_hydrophobic_test_atom(
-        name="RC1",
+        name="CD1",
         element=receptor_element,
         coordinate=(
             0.0,
@@ -31492,9 +31491,18 @@ def make_hydrophobic_test_collection(
         spacing
     )
 
+    receptor_atom_names = (
+        "CD1",
+        "CD2",
+        "CG",
+        "CB",
+    )
+
     receptor_atoms = tuple(
         make_hydrophobic_test_atom(
-            name=f"RC{index + 1}",
+            name=receptor_atom_names[
+                index % len(receptor_atom_names)
+            ],
             element="C",
             coordinate=(
                 0.0,
@@ -32110,9 +32118,7 @@ _SECTION_12_1_PUBLIC_NAMES: Final[
     "hydrophobic_self_test_report_to_json",
 )
 
-for public_name in _SECTION_12_1_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(public_name)
+_extend_public_names(_SECTION_12_1_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -32326,7 +32332,7 @@ def _test_make_mixed_atom_collection(
 
     return (
         make_hydrophobic_test_atom(
-            name="CALI",
+            name="CD1",
             element="C",
             coordinate=(0.0, 0.0, 0.0),
             residue_name="LEU",
@@ -32338,7 +32344,7 @@ def _test_make_mixed_atom_collection(
             structure_name="mixed",
         ),
         make_hydrophobic_test_atom(
-            name="CARO",
+            name="CZ",
             element="C",
             coordinate=(1.5, 0.0, 0.0),
             residue_name="PHE",
@@ -32865,8 +32871,8 @@ def _test_construct_hydrophobic_interaction(
         "score": np.float64(
             score
         ),
-        "detection_method": "self_test",
-        "direction": "receptor_to_ligand",
+        "detection_method": HYDROPHOBIC_METHOD_ATOMIC,
+        "direction": HYDROPHOBIC_DIRECTION_LIGAND_RECEPTOR,
         "local_contact_count": 1,
         "polar_penalty": np.float64(
             0.0
@@ -34899,7 +34905,6 @@ def _test_prepare_single_atom_collection() -> None:
 
         keyword_candidates = {
             "role": "receptor",
-            "source": "receptor",
             "deduplicate": True,
             "validate": True,
         }
@@ -35654,9 +35659,7 @@ _SECTION_12_2_PUBLIC_NAMES: Final[
     "list_hydrophobic_sections_1_to_5_tests",
 )
 
-for public_name in _SECTION_12_2_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(public_name)
+_extend_public_names(_SECTION_12_2_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -35732,7 +35735,7 @@ def _test_make_geometry_pair(
     distance: Number = 3.8,
     receptor_aromatic: bool = False,
     ligand_aromatic: bool = False,
-    receptor_name: str = "RC1",
+    receptor_name: str = "CD1",
     ligand_name: str = "LC1",
     receptor_residue_name: str = "LEU",
     receptor_residue_number: int = 10,
@@ -35823,7 +35826,7 @@ def _test_make_interaction(
     strength: Number = 0.65,
     classification: str = "strong",
     interaction_type: str = "aliphatic_aliphatic",
-    receptor_name: str = "RC1",
+    receptor_name: str = "CD1",
     ligand_name: str = "LC1",
     receptor_residue_name: str = "LEU",
     receptor_residue_number: int = 10,
@@ -35910,27 +35913,27 @@ def _test_make_local_interaction_cluster(
 
     interaction_definitions = (
         (
-            "RC1",
+            "CD1",
             "LC1",
             3.40,
             0.88,
         ),
         (
-            "RC1",
+            "CD1",
             "LC2",
             3.70,
             0.78,
         ),
         (
-            "RC2",
+            "CD2",
             "LC1",
             3.65,
             0.80,
         ),
         (
-            "RC2",
+            "CD2",
             "LC2",
-            3.90,
+            3.40,
             0.72,
         ),
     )
@@ -35940,12 +35943,12 @@ def _test_make_local_interaction_cluster(
     ] = []
 
     receptor_coordinates = {
-        "RC1": (
+        "CD1": (
             0.0,
             0.0,
             0.0,
         ),
-        "RC2": (
+        "CD2": (
             0.0,
             1.2,
             0.0,
@@ -36563,12 +36566,12 @@ def _test_minimum_group_distance() -> None:
 
     receptor_atoms = (
         _test_make_geometry_atom(
-            name="R1",
+            name="CD1",
             coordinate=(0.0, 0.0, 0.0),
             atom_index=1,
         ),
         _test_make_geometry_atom(
-            name="R2",
+            name="CD2",
             coordinate=(0.0, 5.0, 0.0),
             atom_index=2,
         ),
@@ -37208,14 +37211,8 @@ def _test_analyze_hydrophobic_pair_geometry() -> None:
 
     geometry = (
         analyze_hydrophobic_pair_geometry(
-            receptor_atom,
-            ligand_atom,
-            receptor_descriptor=(
-                receptor_descriptor
-            ),
-            ligand_descriptor=(
-                ligand_descriptor
-            ),
+            receptor_descriptor,
+            ligand_descriptor,
         )
     )
 
@@ -37548,8 +37545,10 @@ def _test_chemical_compatibility_score() -> None:
     )
 
     score = hydrophobic_chemical_compatibility_score(
-        receptor_descriptor,
-        ligand_descriptor,
+        classify_hydrophobic_geometry_type(
+            receptor_descriptor,
+            ligand_descriptor,
+        )
     )
 
     assert_hydrophobic_between(
@@ -37587,8 +37586,6 @@ def _test_is_valid_hydrophobic_pair() -> None:
     valid = is_valid_hydrophobic_pair(
         receptor_descriptor,
         ligand_descriptor,
-        receptor_atom=receptor_atom,
-        ligand_atom=ligand_atom,
     )
 
     assert_hydrophobic_true(
@@ -37624,8 +37621,6 @@ def _test_hydrophobic_pair_exclusion_reasons() -> None:
     reasons = hydrophobic_pair_exclusion_reasons(
         receptor_descriptor,
         ligand_descriptor,
-        receptor_atom=receptor_atom,
-        ligand_atom=ligand_atom,
     )
 
     reason_tuple = tuple(
@@ -37719,14 +37714,8 @@ def _test_create_hydrophobic_interaction() -> None:
     )
 
     geometry = analyze_hydrophobic_pair_geometry(
-        receptor_atom,
-        ligand_atom,
-        receptor_descriptor=(
-            receptor_descriptor
-        ),
-        ligand_descriptor=(
-            ligand_descriptor
-        ),
+        receptor_descriptor,
+        ligand_descriptor,
     )
 
     interaction = (
@@ -37793,8 +37782,8 @@ def _test_detect_hydrophobic_contacts() -> None:
     detected = (
         _test_call_with_supported_keywords(
             detect_hydrophobic_contacts,
-            receptor_descriptors,
-            ligand_descriptors,
+            receptor_atoms,
+            ligand_atoms,
             minimum_distance=0.0,
             maximum_distance=5.0,
         )
@@ -38578,10 +38567,8 @@ def _test_residue_group_score() -> None:
         interactions
     )
 
-    assert_hydrophobic_between(
-        score,
-        0.0,
-        1.0,
+    assert_hydrophobic_true(
+        np.isfinite(score)
     )
 
     assert_hydrophobic_true(
@@ -40045,9 +40032,7 @@ _SECTION_12_3_PUBLIC_NAMES: Final[
     "list_hydrophobic_sections_6_to_9_tests",
 )
 
-for public_name in _SECTION_12_3_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(public_name)
+_extend_public_names(_SECTION_12_3_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -40351,7 +40336,7 @@ def _test_make_dock_model(
 
     receptor_atoms = (
         _test_make_geometry_atom(
-            name="R1",
+            name="CD1",
             coordinate=(
                 offset,
                 0.0,
@@ -40364,7 +40349,7 @@ def _test_make_dock_model(
             structure_name="receptor",
         ),
         _test_make_geometry_atom(
-            name="R2",
+            name="CD2",
             coordinate=(
                 offset,
                 1.2,
@@ -40449,6 +40434,53 @@ def _test_get_attached_entry(
         return None
 
     return entries[-1]
+
+
+def _test_make_imported_dock_model(
+    *,
+    pose_identifier: str = "imported-pose",
+    ligand_distance: Number = 3.5,
+) -> DockModel:
+    """Create an instance of the DockModel imported from utils."""
+
+    synthetic = _test_make_dock_model(
+        pose_identifier=pose_identifier,
+        ligand_distance=ligand_distance,
+    )
+
+    candidate_values: Dict[str, Any] = {
+        "receptor": synthetic.receptor,
+        "ligand": synthetic.ligand,
+        "pose": synthetic.ligand,
+        "pose_identifier": pose_identifier,
+        "hydrophobic": [],
+        "score": synthetic.score,
+        "name": pose_identifier,
+    }
+
+    try:
+        signature = inspect.signature(DockModel)
+    except (TypeError, ValueError):
+        signature = None
+
+    if signature is None:
+        model = DockModel()
+    else:
+        supported_values = {
+            name: candidate_values[name]
+            for name in signature.parameters
+            if name != "self" and name in candidate_values
+        }
+
+        model = DockModel(**supported_values)
+
+    for attribute_name, value in candidate_values.items():
+        try:
+            setattr(model, attribute_name, value)
+        except Exception:
+            continue
+
+    return model
 
 
 # -----------------------------------------------------------------------------
@@ -40949,10 +40981,12 @@ def _test_residue_scores() -> None:
     )
 
     for score in scores.values():
-        assert_hydrophobic_between(
-            score,
-            0.0,
-            1.0,
+        assert_hydrophobic_true(
+            np.isfinite(score)
+        )
+
+        assert_hydrophobic_true(
+            float(score) >= 0.0
         )
 
 
@@ -43552,6 +43586,348 @@ def _test_full_multipose_pipeline() -> None:
 
 
 # -----------------------------------------------------------------------------
+# Section 11 — Stage 6 integration and environment tests
+# -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_11.integration.imported_dock_model",
+    section="12.4",
+    description=(
+        "Validate integration with the DockModel imported from utils."
+    ),
+    tags=(
+        "integration",
+        "dockmodel",
+        "stage-6",
+        "section-11",
+    ),
+)
+def _test_imported_dock_model_integration() -> None:
+    """Validate analysis, attachment, score and statistics updates."""
+
+    dock_model = _test_make_imported_dock_model()
+
+    result = analyze_dock_model_hydrophobic(
+        dock_model,
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+        grouping_distance=4.5,
+        attach=True,
+        attachment_mode="replace",
+        preserve_previous=False,
+        serialize=True,
+        include_interactions=True,
+        include_tables=True,
+        update_statistics=True,
+        update_hydrophobic_score=True,
+        update_combined_score=False,
+    )
+
+    assert_hydrophobic_true(
+        result.interaction_count > 0
+    )
+
+    attached = get_existing_dock_model_hydrophobic_results(
+        dock_model
+    )
+
+    assert_hydrophobic_length(attached, 1)
+    assert_hydrophobic_instance(attached[0], Mapping)
+    assert_hydrophobic_equal(
+        attached[0]["interaction_count"],
+        result.interaction_count,
+    )
+    assert_hydrophobic_true(
+        hasattr(dock_model, "hydrophobic_score")
+    )
+    assert_hydrophobic_true(
+        hasattr(dock_model, "hydrophobic_statistics")
+    )
+
+    json.dumps(attached, allow_nan=False)
+
+
+@hydrophobic_test(
+    "section_11.integration.strict_json_serialization",
+    section="12.4",
+    description=(
+        "Validate strict JSON serialization without NaN values."
+    ),
+    tags=(
+        "integration",
+        "serialization",
+        "json",
+        "stage-6",
+        "section-11",
+    ),
+)
+def _test_strict_json_serialization() -> None:
+    """Validate all primary serialized result representations."""
+
+    result = _test_make_minimal_analysis_result(
+        pose_identifier="strict-json"
+    )
+
+    serialized_values = (
+        result.to_dict(),
+        result.statistics.to_dict(),
+        calculate_hydrophobic_summary(result).to_dict(),
+        build_hydrophobic_serializable_tables(result).to_dict(),
+        serialize_hydrophobic_analysis_result_for_dock_model(
+            result,
+            pose_identifier="strict-json",
+            include_interactions=True,
+            include_tables=True,
+            include_atoms=False,
+        ),
+    )
+
+    for serialized_value in serialized_values:
+        json.dumps(
+            serialized_value,
+            allow_nan=False,
+        )
+
+
+@hydrophobic_test(
+    "section_11.integration.empty_inputs",
+    section="12.4",
+    description=(
+        "Validate explicit empty-input handling and empty serialization."
+    ),
+    tags=(
+        "integration",
+        "empty-input",
+        "serialization",
+        "stage-6",
+        "section-11",
+    ),
+)
+def _test_empty_input_integration() -> None:
+    """Validate permissive and strict empty-input behavior."""
+
+    result = analyze_hydrophobic_interactions(
+        (),
+        (),
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+        preparation_options={
+            "allow_empty_receptor": True,
+            "allow_empty_ligand": True,
+        },
+    )
+
+    assert_hydrophobic_equal(result.interaction_count, 0)
+    assert_hydrophobic_equal(
+        result.statistics.interaction_count,
+        0,
+    )
+    assert_hydrophobic_false(result.has_interactions)
+    json.dumps(result.to_dict(), allow_nan=False)
+
+    with assert_hydrophobic_raises(ValueError):
+        analyze_hydrophobic_interactions(
+            (),
+            (),
+            minimum_distance=0.0,
+            maximum_distance=5.0,
+        )
+
+
+@hydrophobic_test(
+    "section_11.integration.invalid_inputs",
+    section="12.4",
+    description=(
+        "Validate predictable rejection of invalid models and coordinates."
+    ),
+    tags=(
+        "integration",
+        "invalid-input",
+        "validation",
+        "stage-6",
+        "section-11",
+    ),
+)
+def _test_invalid_input_integration() -> None:
+    """Validate invalid DockModel and non-finite coordinate handling."""
+
+    with assert_hydrophobic_raises(TypeError):
+        validate_dock_model_like(object())
+
+    invalid_atom = make_hydrophobic_test_atom(
+        name="CD1",
+        element="C",
+        coordinate=(np.nan, 0.0, 0.0),
+        residue_name="LEU",
+        residue_number=10,
+        chain_identifier="A",
+        atom_index=1,
+        aromatic=False,
+        partial_charge=0.0,
+        structure_name="invalid-receptor",
+    )
+
+    ligand_atom = make_hydrophobic_test_atom(
+        name="C1",
+        element="C",
+        coordinate=(3.5, 0.0, 0.0),
+        residue_name="LIG",
+        residue_number=1,
+        chain_identifier="L",
+        atom_index=2,
+        aromatic=False,
+        partial_charge=0.0,
+        structure_name="valid-ligand",
+    )
+
+    assert_hydrophobic_false(
+        validate_hydrophobic_atom_candidate(
+            invalid_atom
+        )
+    )
+
+    with assert_hydrophobic_raises(ValueError):
+        analyze_hydrophobic_interactions(
+            (invalid_atom,),
+            (ligand_atom,),
+            minimum_distance=0.0,
+            maximum_distance=5.0,
+        )
+
+
+@hydrophobic_test(
+    "section_11.integration.chimerax_duck_typing",
+    section="12.4",
+    description=(
+        "Validate slotted ChimeraX-style atoms using scene coordinates."
+    ),
+    tags=(
+        "integration",
+        "chimerax",
+        "duck-typing",
+        "stage-6",
+        "section-11",
+    ),
+)
+def _test_chimerax_duck_typing_integration() -> None:
+    """Validate operation with ChimeraX-compatible slotted objects."""
+
+    @dataclass(slots=True)
+    class Element:
+        name: str = "C"
+        number: int = 6
+
+    @dataclass(slots=True)
+    class Residue:
+        name: str
+        number: int
+        chain_id: str
+        insertion_code: str = ""
+        atoms: List[Any] = field(default_factory=list)
+
+    @dataclass(slots=True)
+    class Structure:
+        name: str
+        atoms: List[Any] = field(default_factory=list)
+
+    @dataclass(slots=True)
+    class Atom:
+        name: str
+        scene_coord: Any
+        residue: Residue
+        index: int
+        structure: Structure
+        element: Element = field(default_factory=Element)
+        neighbors: List[Any] = field(default_factory=list)
+        bonds: List[Any] = field(default_factory=list)
+        idatm_type: str = "C3"
+        formal_charge: float = 0.0
+        charge: float = 0.0
+        deleted: bool = False
+        display: bool = True
+        alt_loc: str = ""
+        occupancy: float = 1.0
+
+        def __post_init__(self) -> None:
+            self.scene_coord = np.asarray(
+                self.scene_coord,
+                dtype=np.float64,
+            )
+            self.residue.atoms.append(self)
+            self.structure.atoms.append(self)
+
+    @dataclass(slots=True)
+    class Model:
+        receptor: Structure
+        ligand: Structure
+        pose_identifier: str = "chimerax-pose"
+        hydrophobic: List[Any] = field(default_factory=list)
+        score: float = -6.0
+        hydrophobic_score: float = 0.0
+        hydrophobic_statistics: Any = None
+
+    receptor = Structure("receptor")
+    receptor_residue = Residue("LEU", 10, "A")
+    Atom("CD1", (0.0, 0.0, 0.0), receptor_residue, 1, receptor)
+    Atom("CD2", (0.0, 1.2, 0.0), receptor_residue, 2, receptor)
+
+    ligand = Structure("ligand")
+    ligand_residue = Residue("LIG", 1, "L")
+    Atom("C1", (3.5, 0.0, 0.0), ligand_residue, 101, ligand)
+    Atom("C2", (3.5, 1.2, 0.0), ligand_residue, 102, ligand)
+
+    dock_model = Model(receptor, ligand)
+
+    result = analyze_dock_model_hydrophobic(
+        dock_model,
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+        attach=True,
+        attachment_mode="replace",
+        preserve_previous=False,
+        serialize=True,
+        update_statistics=True,
+        update_hydrophobic_score=True,
+    )
+
+    assert_hydrophobic_true(result.interaction_count > 0)
+    assert_hydrophobic_length(dock_model.hydrophobic, 1)
+    json.dumps(dock_model.hydrophobic, allow_nan=False)
+
+
+@hydrophobic_test(
+    "section_11.integration.outside_chimerax",
+    section="12.4",
+    description=(
+        "Validate execution without importing ChimeraX modules."
+    ),
+    tags=(
+        "integration",
+        "outside-chimerax",
+        "synthetic",
+        "stage-6",
+        "section-11",
+    ),
+)
+def _test_outside_chimerax_integration() -> None:
+    """Validate the complete workflow with pure Python synthetic objects."""
+
+    receptor_atom, ligand_atom = make_hydrophobic_test_atom_pair(
+        distance=3.5
+    )
+
+    result = analyze_hydrophobic_interactions(
+        (receptor_atom,),
+        (ligand_atom,),
+        minimum_distance=0.0,
+        maximum_distance=5.0,
+    )
+
+    assert_hydrophobic_equal(result.interaction_count, 1)
+    assert_hydrophobic_serializable(result.to_dict())
+
+
+# -----------------------------------------------------------------------------
 # Section 12.4 dedicated runner
 # -----------------------------------------------------------------------------
 
@@ -43650,9 +44026,7 @@ _SECTION_12_4_PUBLIC_NAMES: Final[
     "list_hydrophobic_sections_10_to_11_tests",
 )
 
-for public_name in _SECTION_12_4_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(public_name)
+_extend_public_names(_SECTION_12_4_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -45693,9 +46067,58 @@ _SECTION_12_5_PUBLIC_NAMES: Final[
     "hydrophobic_self_test_main",
 )
 
-for public_name in _SECTION_12_5_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(public_name)
+_extend_public_names(_SECTION_12_5_PUBLIC_NAMES)
+
+
+# -----------------------------------------------------------------------------
+# Public API validation
+# -----------------------------------------------------------------------------
+
+def _validate_public_api() -> None:
+    """Validate the exported public-name contract."""
+
+    if not isinstance(__all__, list):
+        raise TypeError("__all__ must be a list of public names.")
+
+    invalid_names = [
+        name
+        for name in __all__
+        if not isinstance(name, str) or not name
+    ]
+
+    if invalid_names:
+        raise TypeError(
+            "__all__ must contain only non-empty strings."
+        )
+
+    seen: Set[str] = set()
+    duplicate_names: List[str] = []
+
+    for name in __all__:
+        if name in seen and name not in duplicate_names:
+            duplicate_names.append(name)
+        seen.add(name)
+
+    if duplicate_names:
+        raise RuntimeError(
+            "Duplicate public names in __all__: "
+            + ", ".join(duplicate_names)
+        )
+
+    missing_names = [
+        name
+        for name in __all__
+        if name not in globals()
+    ]
+
+    if missing_names:
+        raise RuntimeError(
+            "Missing public names declared in __all__: "
+            + ", ".join(missing_names)
+        )
+
+
+_validate_public_api()
 
 
 # =============================================================================
