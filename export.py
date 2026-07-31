@@ -42,7 +42,6 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from types import MappingProxyType
 from typing import (
-    IO,
     Any,
     BinaryIO,
     Callable,
@@ -50,11 +49,9 @@ from typing import (
     Dict,
     Final,
     FrozenSet,
-    Generic,
     Hashable,
     List,
     Literal,
-    NamedTuple,
     Optional,
     Protocol,
     Set,
@@ -66,16 +63,13 @@ from typing import (
     runtime_checkable,
 )
 import csv
-import gzip
 import json
-import logging
 import math
 import os
 import platform
 import re
 import shutil
 import sys
-import warnings
 
 # -----------------------------------------------------------------------------
 # 1.2. Optional NumPy support
@@ -146,10 +140,10 @@ except ImportError:  # pragma: no cover - expected outside ChimeraX
 # 1.6. Internal DockAnalyzer imports
 # -----------------------------------------------------------------------------
 
-try:
+if __package__:
     from . import config
     from .utils import DockLogger, DockModel
-except ImportError:
+else:
     import config
     from utils import DockLogger, DockModel
 
@@ -219,7 +213,6 @@ ColumnName: TypeAlias = str
 SheetName: TypeAlias = str
 TableName: TypeAlias = str
 FormatName: TypeAlias = str
-SchemaVersion: TypeAlias = str
 
 # -----------------------------------------------------------------------------
 # 1.11. Molecular and DockAnalyzer aliases
@@ -310,7 +303,13 @@ __all__.extend(
         "RecordSequence",
         "RecordList",
         "TableMapping",
+        "MutableTableMapping",
         "Metadata",
+        "MutableMetadata",
+        "ColumnName",
+        "SheetName",
+        "TableName",
+        "FormatName",
         "AtomLike",
         "ResidueLike",
         "StructureLike",
@@ -318,9 +317,15 @@ __all__.extend(
         "AnalysisResultLike",
         "ScoringResultLike",
         "DockModelLike",
+        "AtomCollection",
+        "ResidueCollection",
+        "InteractionCollection",
+        "DockModelCollection",
         "Serializer",
         "ObjectSerializer",
         "RecordBuilder",
+        "PathResolver",
+        "ErrorHandler",
         "SupportsToDict",
         "SupportsAsDict",
         "SupportsJSON",
@@ -331,7 +336,6 @@ __all__.extend(
 
 # =============================================================================
 # End of Section 1
-# =============================================================================
 # =============================================================================
 # Section 2 — Constants, formats and export conventions
 # =============================================================================
@@ -642,29 +646,29 @@ INTERACTION_FAMILIES: Final[FrozenSet[str]] = frozenset(
     }
 )
 
-INTERACTION_FAMILY_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
-    {
-        "contact": INTERACTION_CONTACT,
-        "contacts": INTERACTION_CONTACT,
-        "hbond": INTERACTION_HBOND,
-        "hbonds": INTERACTION_HBOND,
-        "hydrogen_bond": INTERACTION_HBOND,
-        "hydrogen_bonds": INTERACTION_HBOND,
-        "hydrophobic": INTERACTION_HYDROPHOBIC,
-        "hydrophobics": INTERACTION_HYDROPHOBIC,
-        "pi": INTERACTION_PI,
-        "pi_interaction": INTERACTION_PI,
-        "pi_interactions": INTERACTION_PI,
-        "stacking": INTERACTION_PI,
-        "saltbridge": INTERACTION_SALT_BRIDGE,
-        "saltbridges": INTERACTION_SALT_BRIDGE,
-        "salt_bridge": INTERACTION_SALT_BRIDGE,
-        "salt_bridges": INTERACTION_SALT_BRIDGE,
-        "ionic": INTERACTION_SALT_BRIDGE,
-        "clash": INTERACTION_CLASH,
-        "clashes": INTERACTION_CLASH,
-    }
-)
+INTERACTION_FAMILY_ALIASES: Final[Mapping[str, str]] = MappingProxyType({
+    "contact": "contact",
+    "contacts": "contact",
+    "generic_contact": "contact",
+    "vdw": "contact",
+    "van_der_waals": "contact",
+    "hbond": "hbond",
+    "hbonds": "hbond",
+    "hydrogen_bond": "hbond",
+    "hydrogen-bond": "hbond",
+    "hydrophobic": "hydrophobic",
+    "hydrophobe": "hydrophobic",
+    "pi": "pi",
+    "pi_interaction": "pi",
+    "pi-pi": "pi",
+    "cation-pi": "pi",
+    "anion-pi": "pi",
+    "amide-pi": "pi",
+    "saltbridge": "saltbridge",
+    "salt_bridge": "saltbridge",
+    "salt-bridge": "saltbridge",
+    "ionic": "saltbridge",
+})
 
 # -----------------------------------------------------------------------------
 # 2.9. File naming
@@ -876,7 +880,6 @@ __all__.extend(
 
 # =============================================================================
 # End of Section 2
-# =============================================================================
 # =============================================================================
 # Section 3 — Export exceptions and warnings
 # =============================================================================
@@ -1198,7 +1201,6 @@ __all__.extend(
 # =============================================================================
 # End of Section 3
 # =============================================================================
-# =============================================================================
 # Section 4 — Configuration and result dataclasses
 # =============================================================================
 
@@ -1267,6 +1269,29 @@ def _warning_record(item: Any) -> Dict[str, Any]:
             "message": str(item),
         }
     return {"type": "warning", "message": str(item)}
+
+
+def _plain_field_get(
+    value: Any,
+    names: Sequence[str],
+    default: Any = None,
+) -> Any:
+    """Read the first mapping key or non-None attribute."""
+    if value is None:
+        return default
+    if isinstance(value, Mapping):
+        for name in names:
+            if name in value:
+                return value[name]
+        return default
+    for name in names:
+        try:
+            candidate = getattr(value, name)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if candidate is not None:
+            return candidate
+    return default
 
 
 # -----------------------------------------------------------------------------
@@ -2030,7 +2055,6 @@ __all__.extend(
 # =============================================================================
 # End of Section 4
 # =============================================================================
-# =============================================================================
 # Section 5 — Paths and file names
 # =============================================================================
 
@@ -2050,7 +2074,7 @@ def normalize_export_format(value: Any, *, strict: bool = True) -> str:
         if strict:
             raise ExportFormatError(
                 f"Unsupported export format: {value!r}.",
-                details={"supported": sorted(SUPPORTED_EXPORT_FORMATS)},
+                context={"supported": sorted(SUPPORTED_EXPORT_FORMATS)},
             )
         return normalized
     return normalized
@@ -2066,7 +2090,7 @@ def normalize_compression(value: Any, *, strict: bool = True) -> str:
     if text not in SUPPORTED_COMPRESSION_FORMATS and strict:
         raise ExportFormatError(
             f"Unsupported compression format: {value!r}.",
-            details={"supported": sorted(SUPPORTED_COMPRESSION_FORMATS)},
+            context={"supported": sorted(SUPPORTED_COMPRESSION_FORMATS)},
         )
     return text
 
@@ -2096,7 +2120,7 @@ def detect_export_format(path: PathLike, *, strict: bool = True) -> str:
     if format_name is None and strict:
         raise ExportFormatError(
             f"Cannot infer export format from: {path!s}.",
-            path=path,
+            context={"path": str(path)},
         )
     return format_name or ""
 
@@ -2157,28 +2181,6 @@ def sanitize_stem(value: Any, *, fallback: str = DEFAULT_EXPORT_BASENAME) -> str
     return sanitize_filename(value, fallback=fallback, preserve_extension=False)
 
 
-def sanitize_sheet_name(
-    value: Any,
-    *,
-    fallback: str = "Sheet",
-    used: Optional[Iterable[str]] = None,
-) -> str:
-    """Return a valid and optionally unique Excel sheet name."""
-    name = INVALID_SHEET_NAME_PATTERN.sub("_", str(value or "").strip())
-    name = WHITESPACE_PATTERN.sub(" ", name).strip(" '") or fallback
-    name = name[:MAX_EXCEL_SHEET_NAME]
-    occupied = {str(item).casefold() for item in (used or ())}
-    if name.casefold() not in occupied:
-        return name
-    index = 2
-    while True:
-        suffix = f" ({index})"
-        candidate = f"{name[:MAX_EXCEL_SHEET_NAME - len(suffix)]}{suffix}"
-        if candidate.casefold() not in occupied:
-            return candidate
-        index += 1
-
-
 def join_filename_parts(
     *parts: Any,
     separator: str = "_",
@@ -2230,11 +2232,9 @@ def absolute_path(path: PathLike, *, base_dir: Optional[PathLike] = None) -> Pat
 
 
 def _read_config_value(names: Iterable[str], default: Any = None) -> Any:
-    if dock_config is None:
-        return default
     for name in names:
-        if hasattr(dock_config, name):
-            value = getattr(dock_config, name)
+        if hasattr(config, name):
+            value = getattr(config, name)
             if value is not None:
                 return value
     return default
@@ -2480,7 +2480,6 @@ __all__.extend(
 
 # =============================================================================
 # End of Section 5
-# =============================================================================
 # =============================================================================
 # Section 6 — Generic conversion to serializable types
 # =============================================================================
@@ -2889,7 +2888,7 @@ def serialize_unknown_object(
     if mode == UnknownObjectMode.ERROR.value:
         raise ExportSerializationError(
             f"Unsupported object type: {qualified_type_name(value)}.",
-            details={"path": path},
+            context={"path": path},
         )
     if mode == UnknownObjectMode.NONE.value:
         return None
@@ -3137,7 +3136,6 @@ __all__.extend(
 # =============================================================================
 # End of Section 6
 # =============================================================================
-# =============================================================================
 # Section 7 — Molecular objects
 # =============================================================================
 
@@ -3246,11 +3244,16 @@ class MolecularRecordContext:
         self.warnings.append(message)
 
 
-def _molecular_get(value: Any, names: Sequence[str], default: Any = None) -> Any:
+def _molecular_get(
+    value: Any,
+    names: Union[str, Sequence[str]],
+    default: Any = None,
+) -> Any:
     """Read the first available mapping key or attribute."""
     if value is None:
         return default
-    for name in names:
+    candidates = (names,) if isinstance(names, str) else names
+    for name in candidates:
         if isinstance(value, Mapping):
             if name in value:
                 item = value[name]
@@ -3802,6 +3805,49 @@ def structure_reference(structure: Any) -> Dict[str, Any]:
     )
 
 
+def molecular_identifier(value: Any) -> Optional[str]:
+    """Return a stable identifier for a molecular object."""
+    kind = molecular_object_kind(value)
+    if kind == "atom":
+        return atom_identifier(value)
+    if kind == "residue":
+        return residue_identifier(value)
+    if kind == "structure":
+        return structure_identifier(value)
+    return _safe_text(_molecular_get(value, ("identifier", "id_string", "id", "name")))
+
+
+def molecular_reference(
+    value: Any,
+    *,
+    options: Optional[MolecularExportOptions] = None,
+    context: Optional[MolecularRecordContext] = None,
+) -> Dict[str, Any]:
+    """Return a compact reference for a molecular object."""
+    kind = molecular_object_kind(value)
+    if kind == "atom":
+        return atom_reference(value)
+    if kind == "residue":
+        return residue_reference(value)
+    if kind == "structure":
+        return structure_reference(value)
+    active = context or MolecularRecordContext(options or MolecularExportOptions())
+    if options is not None:
+        active.options = options
+    record = molecular_object_to_record(value, options=active.options, context=active)
+    identifier = molecular_identifier(value)
+    result: Dict[str, Any] = {
+        "id": identifier,
+        "object_type": record.get("object_type", "molecular_object"),
+    }
+    label = record.get("name") or record.get("label")
+    if label is not None:
+        result["name"] = label
+    if identifier is None:
+        result["value"] = record
+    return _clean_molecular_record(result, omit_none=active.options.omit_none)
+
+
 __all__.extend(
     [
         "MOLECULAR_SCHEMA_VERSION",
@@ -3815,6 +3861,8 @@ __all__.extend(
         "atom_identifier",
         "residue_identifier",
         "structure_identifier",
+        "molecular_identifier",
+        "molecular_reference",
         "is_atom_like",
         "is_residue_like",
         "is_structure_like",
@@ -3835,7 +3883,6 @@ __all__.extend(
 
 # =============================================================================
 # End of Section 7
-# =============================================================================
 # =============================================================================
 # Section 8 — Serializer registry
 # =============================================================================
@@ -4353,7 +4400,6 @@ class SerializerRegistry:
             self.unregister(entry.name, missing_ok=True, allow_builtin=True)
 
 
-
 def _normalize_serializer_name(value: str) -> str:
     """Normalize a serializer name."""
     text = str(value).strip().lower().replace("-", "_").replace(" ", "_")
@@ -4365,7 +4411,6 @@ def _normalize_serializer_name(value: str) -> str:
     return text
 
 
-
 def _serializer_sort_key(entry: SerializerEntry) -> Tuple[int, int, int]:
     """Return deterministic serializer resolution order."""
     mode_rank = {
@@ -4375,7 +4420,6 @@ def _serializer_sort_key(entry: SerializerEntry) -> Tuple[int, int, int]:
         SerializerMatchMode.FALLBACK: 3,
     }[entry.match_mode]
     return (-entry.priority, mode_rank, entry.registration_order)
-
 
 
 def _invoke_serializer(
@@ -4397,9 +4441,11 @@ def _invoke_serializer(
             return attempt()
         except TypeError as exc:
             last_error = exc
-    assert last_error is not None
+    if last_error is None:
+        raise ExportSerializationError(
+            "Serializer invocation failed without a captured TypeError."
+        )
     raise last_error
-
 
 
 def serializer(
@@ -4448,7 +4494,6 @@ def serializer(
     return decorator
 
 
-
 def _serialize_atom_default(
     value: Any,
     *,
@@ -4458,7 +4503,6 @@ def _serialize_atom_default(
     """Serialize an atom-like object."""
     options = context.molecular_options if context else None
     return atom_to_record(value, options=options)
-
 
 
 def _serialize_residue_default(
@@ -4472,7 +4516,6 @@ def _serialize_residue_default(
     return residue_to_record(value, options=options)
 
 
-
 def _serialize_structure_default(
     value: Any,
     *,
@@ -4482,7 +4525,6 @@ def _serialize_structure_default(
     """Serialize a structure-like object."""
     options = context.molecular_options if context else None
     return structure_to_record(value, options=options)
-
 
 
 def _serialize_dataclass_default(
@@ -4496,7 +4538,6 @@ def _serialize_dataclass_default(
     return to_serializable(value, options=options)
 
 
-
 def _serialize_mapping_default(
     value: Mapping[Any, Any],
     *,
@@ -4506,7 +4547,6 @@ def _serialize_mapping_default(
     """Serialize a mapping."""
     options = context.serialization_options if context else None
     return to_serializable(value, options=options)
-
 
 
 def _serialize_sequence_default(
@@ -4520,7 +4560,6 @@ def _serialize_sequence_default(
     return to_serializable(value, options=options)
 
 
-
 def _serialize_generic_default(
     value: Any,
     *,
@@ -4530,7 +4569,6 @@ def _serialize_generic_default(
     """Serialize an unsupported object generically."""
     options = context.serialization_options if context else None
     return to_serializable(value, options=options)
-
 
 
 def create_default_serializer_registry(
@@ -4644,11 +4682,9 @@ def create_default_serializer_registry(
 DEFAULT_SERIALIZER_REGISTRY: Final[SerializerRegistry] = create_default_serializer_registry()
 
 
-
 def get_serializer_registry(*, clone: bool = False) -> SerializerRegistry:
     """Return the module-level serializer registry."""
     return DEFAULT_SERIALIZER_REGISTRY.clone() if clone else DEFAULT_SERIALIZER_REGISTRY
-
 
 
 def register_serializer(
@@ -4658,7 +4694,6 @@ def register_serializer(
 ) -> SerializerEntry:
     """Register a serializer in the module registry."""
     return DEFAULT_SERIALIZER_REGISTRY.register(name, serializer_function, **kwargs)
-
 
 
 def unregister_serializer(
@@ -4675,7 +4710,6 @@ def unregister_serializer(
     )
 
 
-
 def resolve_serializer(
     value: Any,
     *,
@@ -4685,7 +4719,6 @@ def resolve_serializer(
     """Resolve a serializer from a registry."""
     active = registry or DEFAULT_SERIALIZER_REGISTRY
     return active.resolve(value, allow_fallback=allow_fallback)
-
 
 
 def serialize_registered(
@@ -4734,7 +4767,6 @@ __all__.extend(
 # =============================================================================
 # End of Section 8
 # =============================================================================
-# =============================================================================
 # Section 9 — Molecular interactions
 # =============================================================================
 
@@ -4742,30 +4774,6 @@ INTERACTION_SCHEMA_VERSION: Final[str] = "1.0"
 DEFAULT_INTERACTION_DISTANCE_PRECISION: Final[int] = 4
 DEFAULT_INTERACTION_ANGLE_PRECISION: Final[int] = 3
 DEFAULT_INTERACTION_SCORE_PRECISION: Final[int] = 6
-
-INTERACTION_FAMILY_ALIASES: Final[Mapping[str, str]] = MappingProxyType({
-    "contact": "contact",
-    "contacts": "contact",
-    "generic_contact": "contact",
-    "vdw": "contact",
-    "van_der_waals": "contact",
-    "hbond": "hbond",
-    "hbonds": "hbond",
-    "hydrogen_bond": "hbond",
-    "hydrogen-bond": "hbond",
-    "hydrophobic": "hydrophobic",
-    "hydrophobe": "hydrophobic",
-    "pi": "pi",
-    "pi_interaction": "pi",
-    "pi-pi": "pi",
-    "cation-pi": "pi",
-    "anion-pi": "pi",
-    "amide-pi": "pi",
-    "saltbridge": "saltbridge",
-    "salt_bridge": "saltbridge",
-    "salt-bridge": "saltbridge",
-    "ionic": "saltbridge",
-})
 
 _INTERACTION_FAMILY_FIELDS: Final[Tuple[str, ...]] = (
     "family", "interaction_family", "category", "module", "source_module",
@@ -4811,6 +4819,47 @@ _INTERACTION_RESIDUES_FIELDS: Final[Tuple[str, ...]] = (
 )
 _INTERACTION_METADATA_FIELDS: Final[Tuple[str, ...]] = (
     "metadata", "details", "extra", "properties", "annotations",
+)
+
+_INTERACTION_CLASSIFICATION_KEYS: Final[FrozenSet[str]] = frozenset(
+    _INTERACTION_FAMILY_FIELDS + _INTERACTION_TYPE_FIELDS
+)
+_INTERACTION_PARTICIPANT_KEYS: Final[FrozenSet[str]] = frozenset(
+    _INTERACTION_ATOM1_FIELDS
+    + _INTERACTION_ATOM2_FIELDS
+    + _INTERACTION_RESIDUE1_FIELDS
+    + _INTERACTION_RESIDUE2_FIELDS
+    + _INTERACTION_ATOMS_FIELDS
+    + _INTERACTION_RESIDUES_FIELDS
+)
+_INTERACTION_GEOMETRY_KEYS: Final[FrozenSet[str]] = frozenset(
+    _INTERACTION_DISTANCE_FIELDS + _INTERACTION_ANGLE_FIELDS
+)
+_INTERACTION_KNOWN_FIELDS: Final[FrozenSet[str]] = frozenset(
+    _INTERACTION_FAMILY_FIELDS
+    + _INTERACTION_TYPE_FIELDS
+    + _INTERACTION_ID_FIELDS
+    + _INTERACTION_DISTANCE_FIELDS
+    + _INTERACTION_ANGLE_FIELDS
+    + _INTERACTION_SCORE_FIELDS
+    + _INTERACTION_STRENGTH_FIELDS
+    + _INTERACTION_POSE_FIELDS
+    + _INTERACTION_ATOM1_FIELDS
+    + _INTERACTION_ATOM2_FIELDS
+    + _INTERACTION_RESIDUE1_FIELDS
+    + _INTERACTION_RESIDUE2_FIELDS
+    + _INTERACTION_ATOMS_FIELDS
+    + _INTERACTION_RESIDUES_FIELDS
+    + _INTERACTION_METADATA_FIELDS
+)
+_INTERACTION_ROLE_PAIRS: Final[Mapping[str, Tuple[str, str]]] = MappingProxyType(
+    {
+        "hbond": ("donor", "acceptor"),
+        "saltbridge": ("positive", "negative"),
+        "pi": ("source", "target"),
+        "hydrophobic": ("ligand", "receptor"),
+        "contact": ("source", "target"),
+    }
 )
 
 
@@ -4901,6 +4950,26 @@ class InteractionRecordContext:
     active_ids: Set[int] = field(default_factory=set)
     seen_ids: Set[str] = field(default_factory=set)
     warnings: List[str] = field(default_factory=list)
+    _atom_cache: Dict[Tuple[str, int], Dict[str, Any]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _residue_cache: Dict[int, Dict[str, Any]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _structure_cache: Dict[int, Dict[str, Any]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _label_cache: Dict[Tuple[str, int], str] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self.molecular_context.options = self.options.molecular_options
@@ -5059,38 +5128,47 @@ def is_interaction_like(value: Any) -> bool:
     """Return whether a value resembles one interaction."""
     if value is None or isinstance(value, (str, bytes, bytearray, int, float, bool)):
         return False
-    mapping = _interaction_mapping(value)
-    keys = set(mapping)
-    if keys & set(_INTERACTION_FAMILY_FIELDS + _INTERACTION_TYPE_FIELDS):
+    keys = set(_interaction_mapping(value))
+    if keys & _INTERACTION_CLASSIFICATION_KEYS:
         return True
-    participant_keys = set(
-        _INTERACTION_ATOM1_FIELDS
-        + _INTERACTION_ATOM2_FIELDS
-        + _INTERACTION_RESIDUE1_FIELDS
-        + _INTERACTION_RESIDUE2_FIELDS
-        + _INTERACTION_ATOMS_FIELDS
-        + _INTERACTION_RESIDUES_FIELDS
-    )
-    geometry_keys = set(_INTERACTION_DISTANCE_FIELDS + _INTERACTION_ANGLE_FIELDS)
-    if keys & participant_keys and keys & geometry_keys:
+    if keys & _INTERACTION_PARTICIPANT_KEYS and keys & _INTERACTION_GEOMETRY_KEYS:
         return True
     name = type(value).__name__.lower()
-    return any(token in name for token in ("interaction", "contact", "hbond", "hydrophobic", "saltbridge"))
+    return any(
+        token in name
+        for token in ("interaction", "contact", "hbond", "hydrophobic", "saltbridge")
+    )
+
+
+def _interaction_identifier_from_parts(
+    value: Any,
+    family: str,
+    interaction_type: str,
+    participant_labels: Sequence[str],
+) -> str:
+    """Build an identifier from precomputed interaction parts."""
+    explicit = _interaction_get(value, _INTERACTION_ID_FIELDS)
+    if explicit is not None:
+        return str(explicit)
+    labels = sorted(filter(None, participant_labels))
+    distance = _interaction_get(value, _INTERACTION_DISTANCE_FIELDS)
+    payload = "|".join((family, interaction_type, *labels, str(distance or "")))
+    digest = sha256(payload.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return f"{family}:{digest}"
 
 
 def interaction_identifier(value: Any, *, family: Optional[str] = None) -> str:
     """Return a stable interaction identifier."""
-    explicit = _interaction_get(value, _INTERACTION_ID_FIELDS)
-    if explicit is not None:
-        return str(explicit)
-    family = family or infer_interaction_family(value)
-    interaction_type = infer_interaction_type(value, family)
-    participants = extract_interaction_participants(value)
-    labels = [participant_label(item) for item in participants]
-    distance = _interaction_get(value, _INTERACTION_DISTANCE_FIELDS)
-    payload = "|".join([family, interaction_type, *sorted(filter(None, labels)), str(distance or "")])
-    digest = sha256(payload.encode("utf-8", errors="replace")).hexdigest()[:16]
-    return f"{family}:{digest}"
+    resolved_family = family or infer_interaction_family(value)
+    interaction_type = infer_interaction_type(value, resolved_family)
+    participants = _extract_interaction_participants(value, resolved_family)
+    labels = tuple(participant_label(item) for item in participants)
+    return _interaction_identifier_from_parts(
+        value,
+        resolved_family,
+        interaction_type,
+        labels,
+    )
 
 
 def participant_label(participant: InteractionParticipant) -> str:
@@ -5150,48 +5228,137 @@ def _sequence_without_text(value: Any) -> List[Any]:
         return []
 
 
-def extract_interaction_participants(value: Any) -> List[InteractionParticipant]:
-    """Extract ordered interaction participants."""
-    explicit = _interaction_get(value, ("participants",))
-    items = _sequence_without_text(explicit)
+def _extract_interaction_participants(
+    value: Any,
+    family: str,
+) -> List[InteractionParticipant]:
+    """Extract participants using a precomputed family."""
+    items = _sequence_without_text(_interaction_get(value, ("participants",)))
     if items:
-        return [_participant_from_value(item, f"participant_{index + 1}") for index, item in enumerate(items)]
+        return [
+            _participant_from_value(item, f"participant_{index + 1}")
+            for index, item in enumerate(items)
+        ]
 
-    family = infer_interaction_family(value)
-    role_pairs: Dict[str, Tuple[str, str]] = {
-        "hbond": ("donor", "acceptor"),
-        "saltbridge": ("positive", "negative"),
-        "pi": ("source", "target"),
-        "hydrophobic": ("ligand", "receptor"),
-        "contact": ("source", "target"),
-    }
-    role1, role2 = role_pairs.get(family, ("source", "target"))
-    result: List[InteractionParticipant] = []
-
+    role1, role2 = _INTERACTION_ROLE_PAIRS.get(family, ("source", "target"))
     atom1 = _interaction_get(value, _INTERACTION_ATOM1_FIELDS)
     atom2 = _interaction_get(value, _INTERACTION_ATOM2_FIELDS)
     residue1 = _interaction_get(value, _INTERACTION_RESIDUE1_FIELDS)
     residue2 = _interaction_get(value, _INTERACTION_RESIDUE2_FIELDS)
-
+    result: List[InteractionParticipant] = []
     if atom1 is not None or residue1 is not None:
         result.append(InteractionParticipant(role=role1, atom=atom1, residue=residue1))
     if atom2 is not None or residue2 is not None:
         result.append(InteractionParticipant(role=role2, atom=atom2, residue=residue2))
-
     if result:
         return result
 
     atoms = _sequence_without_text(_interaction_get(value, _INTERACTION_ATOMS_FIELDS))
     residues = _sequence_without_text(_interaction_get(value, _INTERACTION_RESIDUES_FIELDS))
-    count = max(len(atoms), len(residues))
-    for index in range(count):
+    for index in range(max(len(atoms), len(residues))):
         role = role1 if index == 0 else role2 if index == 1 else f"participant_{index + 1}"
-        result.append(InteractionParticipant(
-            role=role,
-            atom=atoms[index] if index < len(atoms) else None,
-            residue=residues[index] if index < len(residues) else None,
-        ))
+        result.append(
+            InteractionParticipant(
+                role=role,
+                atom=atoms[index] if index < len(atoms) else None,
+                residue=residues[index] if index < len(residues) else None,
+            )
+        )
     return result
+
+
+def extract_interaction_participants(value: Any) -> List[InteractionParticipant]:
+    """Extract ordered interaction participants."""
+    return _extract_interaction_participants(value, infer_interaction_family(value))
+
+
+def _clone_cached_record(record: Mapping[str, Any]) -> Dict[str, Any]:
+    """Clone flat molecular records stored in operation-local caches."""
+    return {
+        key: list(value)
+        if isinstance(value, list)
+        else dict(value)
+        if isinstance(value, Mapping)
+        else value
+        for key, value in record.items()
+    }
+
+
+def _cached_molecular_record(
+    cache: Dict[Any, Dict[str, Any]],
+    key: Any,
+    builder: Callable[[], Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Return a cloned operation-local molecular record."""
+    cached = cache.get(key)
+    if cached is None:
+        cached = builder()
+        cache[key] = cached
+    return _clone_cached_record(cached)
+
+
+def _cached_participant_label(
+    participant: InteractionParticipant,
+    context: InteractionRecordContext,
+) -> str:
+    """Return a participant label cached by molecular object identity."""
+    if participant.label:
+        return participant.label
+    if participant.atom is not None:
+        key = ("atom", id(participant.atom))
+    elif participant.residue is not None:
+        key = ("residue", id(participant.residue))
+    elif participant.group is not None:
+        key = ("group", id(participant.group))
+    else:
+        return participant.role
+    label = context._label_cache.get(key)
+    if label is None:
+        label = participant_label(participant)
+        context._label_cache[key] = label
+    return label
+
+
+def _interaction_participant_to_record(
+    participant: InteractionParticipant,
+    label: str,
+    options: InteractionExportOptions,
+    context: InteractionRecordContext,
+) -> Dict[str, Any]:
+    """Convert a participant using its precomputed label."""
+    molecular = context.molecular_context
+    record: Dict[str, Any] = {"label": label}
+    if options.include_participant_roles:
+        record["role"] = participant.role
+    if options.include_atoms and participant.atom is not None:
+        atom_key = (options.granularity.value, id(participant.atom))
+        record["atom"] = _cached_molecular_record(
+            context._atom_cache,
+            atom_key,
+            lambda: molecular_reference(participant.atom, context=molecular)
+            if options.granularity is InteractionGranularity.COMPACT
+            else atom_to_record(participant.atom, context=molecular),
+        )
+    if options.include_residues and participant.residue is not None:
+        if options.granularity is InteractionGranularity.FULL:
+            record["residue"] = residue_to_record(participant.residue, context=molecular)
+        else:
+            record["residue"] = _cached_molecular_record(
+                context._residue_cache,
+                id(participant.residue),
+                lambda: molecular_reference(participant.residue, context=molecular),
+            )
+    if options.granularity is InteractionGranularity.FULL and participant.structure is not None:
+        record["structure"] = _cached_molecular_record(
+            context._structure_cache,
+            id(participant.structure),
+            lambda: molecular_reference(participant.structure, context=molecular),
+        )
+    if participant.group is not None:
+        record["group"] = to_serializable(participant.group)
+    if options.include_metadata and participant.metadata:
+        record["metadata"] = to_serializable(participant.metadata)
+    return _clean_interaction_record(record, omit_none=options.omit_none)
 
 
 def interaction_participant_to_record(
@@ -5201,31 +5368,14 @@ def interaction_participant_to_record(
     context: Optional[InteractionRecordContext] = None,
 ) -> Dict[str, Any]:
     """Convert one interaction participant."""
-    options = options or InteractionExportOptions()
-    context = context or InteractionRecordContext(options=options)
-    molecular = context.molecular_context
-    record: Dict[str, Any] = {}
-    if options.include_participant_roles:
-        record["role"] = participant.role
-    record["label"] = participant_label(participant)
-
-    if options.include_atoms and participant.atom is not None:
-        if options.granularity is InteractionGranularity.COMPACT:
-            record["atom"] = molecular_reference(participant.atom, context=molecular)
-        else:
-            record["atom"] = atom_to_record(participant.atom, context=molecular)
-    if options.include_residues and participant.residue is not None:
-        if options.granularity is InteractionGranularity.FULL:
-            record["residue"] = residue_to_record(participant.residue, context=molecular)
-        else:
-            record["residue"] = molecular_reference(participant.residue, context=molecular)
-    if options.granularity is InteractionGranularity.FULL and participant.structure is not None:
-        record["structure"] = molecular_reference(participant.structure, context=molecular)
-    if participant.group is not None:
-        record["group"] = to_serializable(participant.group)
-    if options.include_metadata and participant.metadata:
-        record["metadata"] = to_serializable(participant.metadata)
-    return _clean_interaction_record(record, omit_none=options.omit_none)
+    resolved_options = options or InteractionExportOptions()
+    resolved_context = context or InteractionRecordContext(options=resolved_options)
+    return _interaction_participant_to_record(
+        participant,
+        _cached_participant_label(participant, resolved_context),
+        resolved_options,
+        resolved_context,
+    )
 
 
 def extract_interaction_geometry(
@@ -5276,7 +5426,7 @@ def extract_interaction_geometry(
     for key, names in vectors.items():
         vector = _interaction_get(value, names)
         if vector is not None:
-            geometry[key] = coordinate_to_record(vector, precision=options.distance_precision)
+            geometry[key] = coordinate_to_list(vector, precision=options.distance_precision)
 
     return _clean_interaction_record(geometry, omit_none=options.omit_none)
 
@@ -5309,8 +5459,16 @@ def interaction_to_record(
     try:
         family = infer_interaction_family(value)
         interaction_type = infer_interaction_type(value, family)
-        identifier = interaction_identifier(value, family=family)
-        participants = extract_interaction_participants(value)
+        participants = _extract_interaction_participants(value, family)
+        labels = tuple(
+            _cached_participant_label(item, context) for item in participants
+        )
+        identifier = _interaction_identifier_from_parts(
+            value,
+            family,
+            interaction_type,
+            labels,
+        )
         record: Dict[str, Any] = {}
 
         if options.include_schema:
@@ -5327,8 +5485,8 @@ def interaction_to_record(
             record["pose"] = to_serializable(pose) if pose is not None else None
         if participants:
             record["participants"] = [
-                interaction_participant_to_record(item, options=options, context=context)
-                for item in participants
+                _interaction_participant_to_record(item, label, options, context)
+                for item, label in zip(participants, labels)
             ]
         if options.include_geometry:
             geometry = extract_interaction_geometry(value, options=options)
@@ -5343,24 +5501,11 @@ def interaction_to_record(
             metadata = extract_interaction_metadata(value)
             record["metadata"] = to_serializable(metadata) if metadata else None
         if options.include_raw_fields:
-            known = set(
-                _INTERACTION_FAMILY_FIELDS
-                + _INTERACTION_TYPE_FIELDS
-                + _INTERACTION_ID_FIELDS
-                + _INTERACTION_DISTANCE_FIELDS
-                + _INTERACTION_ANGLE_FIELDS
-                + _INTERACTION_SCORE_FIELDS
-                + _INTERACTION_STRENGTH_FIELDS
-                + _INTERACTION_POSE_FIELDS
-                + _INTERACTION_ATOM1_FIELDS
-                + _INTERACTION_ATOM2_FIELDS
-                + _INTERACTION_RESIDUE1_FIELDS
-                + _INTERACTION_RESIDUE2_FIELDS
-                + _INTERACTION_ATOMS_FIELDS
-                + _INTERACTION_RESIDUES_FIELDS
-                + _INTERACTION_METADATA_FIELDS
-            )
-            raw = {key: item for key, item in _interaction_mapping(value).items() if key not in known}
+            raw = {
+                key: item
+                for key, item in _interaction_mapping(value).items()
+                if key not in _INTERACTION_KNOWN_FIELDS
+            }
             record["raw"] = to_serializable(raw) if raw else None
 
         context.seen_ids.add(identifier)
@@ -5388,10 +5533,18 @@ def interaction_to_record(
 def interaction_reference(value: Any) -> Dict[str, Any]:
     """Return a compact interaction reference."""
     family = infer_interaction_family(value)
+    interaction_type = infer_interaction_type(value, family)
+    participants = _extract_interaction_participants(value, family)
+    labels = tuple(participant_label(item) for item in participants)
     return {
-        "interaction_id": interaction_identifier(value, family=family),
+        "interaction_id": _interaction_identifier_from_parts(
+            value,
+            family,
+            interaction_type,
+            labels,
+        ),
         "family": family,
-        "interaction_type": infer_interaction_type(value, family),
+        "interaction_type": interaction_type,
     }
 
 
@@ -5404,7 +5557,15 @@ def interaction_deduplication_key(
     """Return a deterministic interaction key."""
     family = infer_interaction_family(value)
     interaction_type = infer_interaction_type(value, family)
-    participants = tuple(filter(None, (participant_label(item) for item in extract_interaction_participants(value))))
+    participants = tuple(
+        filter(
+            None,
+            (
+                participant_label(item)
+                for item in _extract_interaction_participants(value, family)
+            ),
+        )
+    )
     if directed is None:
         directed = family in {"hbond", "saltbridge"}
     ordered = participants if directed else tuple(sorted(participants))
@@ -5592,7 +5753,6 @@ register_interaction_serializer()
 
 __all__.extend([
     "INTERACTION_SCHEMA_VERSION",
-    "INTERACTION_FAMILY_ALIASES",
     "InteractionOrientation",
     "InteractionGranularity",
     "InteractionExportOptions",
@@ -5795,16 +5955,7 @@ class AnalysisBundle:
 
 def _analysis_get(value: Any, names: Sequence[str], default: Any = None) -> Any:
     """Read the first available field."""
-    for name in names:
-        if isinstance(value, Mapping) and name in value:
-            return value[name]
-        try:
-            candidate = getattr(value, name)
-        except (AttributeError, TypeError, ValueError):
-            continue
-        if candidate is not None:
-            return candidate
-    return default
+    return _plain_field_get(value, names, default)
 
 
 def _analysis_mapping(value: Any) -> Dict[str, Any]:
@@ -6462,19 +6613,7 @@ class ScoringCollectionSummary:
 
 def _score_get(value: Any, names: Sequence[str], default: Any = None) -> Any:
     """Return the first available score field."""
-    if isinstance(value, Mapping):
-        for name in names:
-            if name in value:
-                return value[name]
-        return default
-    for name in names:
-        try:
-            candidate = getattr(value, name)
-        except (AttributeError, TypeError, ValueError):
-            continue
-        if candidate is not None:
-            return candidate
-    return default
+    return _plain_field_get(value, names, default)
 
 
 def _score_float(value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -6770,13 +6909,13 @@ def rank_scoring_records(
     if resolved is ScoreDirection.UNKNOWN and items:
         resolved = normalize_score_direction(items[0].get("direction"))
     reverse = resolved is ScoreDirection.HIGHER_IS_BETTER
-    items.sort(
-        key=lambda item: (
-            _score_float(item.get("total_score")) is None,
-            _score_float(item.get("total_score"), 0.0),
-        ),
-        reverse=reverse,
-    )
+    def ranking_key(item: Mapping[str, Any]) -> Tuple[int, float]:
+        score = _score_float(item.get("total_score"))
+        if score is None or not math.isfinite(score):
+            return (1, 0.0)
+        return (0, -score if reverse else score)
+
+    items.sort(key=ranking_key)
     for rank, item in enumerate(items, start=1):
         item["rank"] = rank
     return items
@@ -6892,8 +7031,18 @@ _DOCK_MODEL_SCORE_FIELDS: Final[Tuple[str, ...]] = (
     "total_score", "score", "normalized_score", "docking_score", "affinity",
 )
 _DOCK_MODEL_INTERACTION_FIELDS: Final[Tuple[str, ...]] = (
-    "contacts", "hbonds", "hydrogen_bonds", "hydrophobic", "pi",
-    "pi_interactions", "saltbridge", "salt_bridges", "interactions",
+    "contacts",
+    "hbonds",
+    "hydrogen_bonds",
+    "hydrophobic",
+    "pi",
+    "pi_interactions",
+    "saltbridge",
+    "saltbridges",
+    "salt_bridges",
+    "clash",
+    "clashes",
+    "interactions",
 )
 
 
@@ -6985,21 +7134,7 @@ class DockModelCollectionSummary:
 
 def _dock_model_get(value: Any, names: Sequence[str], default: Any = None) -> Any:
     """Read the first available DockModel field."""
-    if value is None:
-        return default
-    if isinstance(value, Mapping):
-        for name in names:
-            if name in value:
-                return value[name]
-        return default
-    for name in names:
-        try:
-            candidate = getattr(value, name)
-        except (AttributeError, TypeError, ValueError):
-            continue
-        if candidate is not None:
-            return candidate
-    return default
+    return _plain_field_get(value, names, default)
 
 
 def _dock_model_iter_fields(value: Any) -> Iterable[Tuple[str, Any]]:
@@ -7126,24 +7261,49 @@ def _normalize_interaction_source(value: Any) -> List[Any]:
 
 
 def extract_dock_model_interactions(value: Any) -> Dict[str, List[Any]]:
-    """Extract interaction collections by family."""
+    """Extract unique DockModel interactions grouped by canonical family."""
     output: Dict[str, List[Any]] = {}
-    aliases = {
-        "contacts": "contact",
-        "hbonds": "hbond",
-        "hydrogen_bonds": "hbond",
-        "hydrophobic": "hydrophobic",
-        "pi": "pi",
-        "pi_interactions": "pi",
-        "saltbridge": "salt_bridge",
-        "salt_bridges": "salt_bridge",
-        "interactions": "interaction",
-    }
-    for field_name, family in aliases.items():
-        source = _dock_model_get(value, (field_name,))
-        items = _normalize_interaction_source(source)
-        if items:
-            output.setdefault(family, []).extend(items)
+    seen_objects: Set[int] = set()
+    seen_identifiers: Set[str] = set()
+
+    def add(item: Any, family_hint: Optional[str] = None) -> None:
+        object_marker = id(item)
+        explicit = _interaction_get(item, _INTERACTION_ID_FIELDS)
+        identifier_marker = str(explicit) if explicit not in (None, "") else ""
+        if object_marker in seen_objects or (identifier_marker and identifier_marker in seen_identifiers):
+            return
+        family = normalize_interaction_family(
+            family_hint or infer_interaction_family(item)
+        )
+        output.setdefault(family, []).append(item)
+        seen_objects.add(object_marker)
+        if identifier_marker:
+            seen_identifiers.add(identifier_marker)
+
+    aliases = (
+        ("contacts", "contact"),
+        ("hbonds", "hbond"),
+        ("hydrogen_bonds", "hbond"),
+        ("hydrophobic", "hydrophobic"),
+        ("pi", "pi"),
+        ("pi_interactions", "pi"),
+        ("saltbridge", "saltbridge"),
+        ("saltbridges", "saltbridge"),
+        ("salt_bridges", "saltbridge"),
+        ("clash", "clash"),
+        ("clashes", "clash"),
+    )
+    for field_name, family in aliases:
+        for item in _normalize_interaction_source(
+            _dock_model_get(value, (field_name,))
+        ):
+            add(item, family)
+
+    for item in _normalize_interaction_source(
+        _dock_model_get(value, ("interactions",))
+    ):
+        add(item)
+
     return output
 
 
@@ -7384,16 +7544,46 @@ def rank_dock_model_records(
     items = [dict(item) for item in records]
     resolved = normalize_score_direction(direction)
     reverse = resolved is ScoreDirection.HIGHER_IS_BETTER
-    items.sort(
-        key=lambda item: (
-            _score_float(item.get("total_score")) is None,
-            _score_float(item.get("total_score"), 0.0),
-        ),
-        reverse=reverse,
-    )
+    def ranking_key(item: Mapping[str, Any]) -> Tuple[int, float]:
+        score = _score_float(item.get("total_score"))
+        if score is None or not math.isfinite(score):
+            return (1, 0.0)
+        return (0, -score if reverse else score)
+
+    items.sort(key=ranking_key)
     for rank, item in enumerate(items, start=1):
         item["rank"] = rank
     return items
+
+
+def rank_dock_models(
+    values: Iterable[Any],
+    *,
+    direction: Union[ScoreDirection, str] = ScoreDirection.UNKNOWN,
+) -> List[Any]:
+    """Return DockModel-like objects ordered by their preferred score."""
+    items = list(values)
+    resolved = normalize_score_direction(direction)
+    if resolved is ScoreDirection.UNKNOWN:
+        for item in items:
+            scoring = _dock_model_get(item, _DOCK_MODEL_SCORING_FIELDS)
+            inferred = infer_score_direction(scoring if scoring is not None else item)
+            if inferred is not ScoreDirection.UNKNOWN:
+                resolved = inferred
+                break
+    scored: List[Tuple[float, int, Any]] = []
+    missing: List[Tuple[int, Any]] = []
+    for index, item in enumerate(items):
+        score = _dock_model_total_score(item)
+        if score is None or not math.isfinite(score):
+            missing.append((index, item))
+        else:
+            scored.append((score, index, item))
+    scored.sort(
+        key=lambda entry: (entry[0], entry[1]),
+        reverse=resolved is ScoreDirection.HIGHER_IS_BETTER,
+    )
+    return [item for _, _, item in scored] + [item for _, item in missing]
 
 
 def _set_dock_model_field(target: Any, name: str, value: Any) -> None:
@@ -7511,6 +7701,7 @@ __all__.extend([
     "dock_models_to_records",
     "summarize_dock_model_records",
     "rank_dock_model_records",
+    "rank_dock_models",
     "attach_dock_model_result",
     "attach_dock_model_results",
     "dock_model_serializer",
@@ -8278,7 +8469,9 @@ def _json_payload(
     registry: Optional[SerializerRegistry] = None,
     serialization_options: Optional[SerializationOptions] = None,
 ) -> Any:
-    """Convert a value into a JSON-safe payload."""
+    """Convert a value into a JSON-safe payload without reclassifying records."""
+    if isinstance(value, (Mapping, list, tuple, set, frozenset)):
+        return make_json_safe(value, options=serialization_options)
     registry = registry or DEFAULT_SERIALIZER_REGISTRY
     try:
         converted = serialize_registered(value, registry=registry)
@@ -8640,15 +8833,11 @@ __all__.extend([
 # =============================================================================
 
 EXCEL_SCHEMA_VERSION: Final[str] = "1.0"
-INVALID_SHEET_CHARS: Final[re.Pattern[str]] = re.compile(r"[\\/*?:\[\]]")
-MAX_EXCEL_SHEET_NAME: Final[int] = 31
-MAX_EXCEL_ROWS: Final[int] = 1_048_576
-MAX_EXCEL_COLUMNS: Final[int] = 16_384
 
 
 def sanitize_sheet_name(name: Any, *, fallback: str = "Sheet") -> str:
     """Return an Excel-safe sheet name."""
-    value = INVALID_SHEET_CHARS.sub("_", str(name).strip()).strip("'")
+    value = INVALID_SHEET_NAME_PATTERN.sub("_", str(name).strip()).strip("'")
     return (value or fallback)[:MAX_EXCEL_SHEET_NAME]
 
 
@@ -8856,7 +9045,6 @@ __all__.extend([
     "MAX_EXCEL_SHEET_NAME",
     "MAX_EXCEL_ROWS",
     "MAX_EXCEL_COLUMNS",
-    "sanitize_sheet_name",
     "unique_sheet_name",
     "build_excel_workbook",
     "write_excel",
@@ -9065,7 +9253,6 @@ __all__.extend([
 
 MANIFEST_SCHEMA_VERSION: Final[str] = "1.0"
 DEFAULT_MANIFEST_NAME: Final[str] = "manifest"
-DEFAULT_HASH_ALGORITHM: Final[str] = "sha256"
 
 
 @dataclass(slots=True)
@@ -9694,6 +9881,8 @@ def prepare_single_pose_export(
     metadata: Optional[Mapping[str, Any]] = None,
 ) -> SinglePoseExportContext:
     """Prepare one pose for export."""
+    if pose is None:
+        raise ExportInputError("Export source cannot be None.")
     opts = options or ExportOptions()
     if output_dir is not None:
         opts = opts.copy(output_dir=output_dir)
@@ -9832,13 +10021,25 @@ def export_single_pose(
             result.add_error(exc)
             if context.options.error_mode == ErrorMode.RAISE.value:
                 raise
-    if context.options.update_model_files and hasattr(pose, "files"):
-        existing = list(getattr(pose, "files", []) or []) if context.options.preserve_previous_files else []
-        existing.extend(str(item.path) for item in result.files)
+    if context.options.update_model_files and (
+        hasattr(pose, "files")
+        or (isinstance(pose, Mapping) and "files" in pose)
+    ):
         try:
-            setattr(pose, "files", existing)
-        except Exception:
-            result.add_warning("Unable to update DockModel.files")
+            update_dock_model_files_from_result(
+                pose,
+                result,
+                options=ModelFilesUpdateOptions(
+                    preserve_existing=context.options.preserve_previous_files,
+                ),
+            )
+        except Exception as exc:
+            result.add_warning(
+                {
+                    "type": exc.__class__.__name__,
+                    "message": "Unable to update DockModel.files",
+                }
+            )
     return result.finish()
 
 
@@ -9893,6 +10094,8 @@ def prepare_multipose_export(
     basename: Optional[str] = None,
 ) -> MultiposeExportContext:
     """Prepare multiple poses for export."""
+    if poses is None:
+        raise ExportInputError("Pose collection cannot be None.")
     opts = options or MultiposeExportOptions()
     export_opts = opts.export
     if output_dir is not None:
@@ -9940,7 +10143,11 @@ def prepare_multipose_export(
                 "pose_index": index,
                 "pose_id": record.get("id") or record.get("pose_id") or record.get("name"),
                 "rank": record.get("rank"),
-                "total_score": record.get("total_score") or record.get("score"),
+                "total_score": (
+                    record.get("total_score")
+                    if record.get("total_score") is not None
+                    else record.get("score")
+                ),
             })
         tables.add(build_table(ranking_rows, name="ranking"))
     return MultiposeExportContext(values, records, tables, name, directory, opts)
@@ -10018,6 +10225,28 @@ def export_multiple_poses(
             result.add_file(write_manifest(result.manifest, output_dir=context.output_dir, basename=f"{context.name}_manifest", overwrite=export_opts.overwrite, json_options=export_opts.json))
         except Exception as exc:
             result.add_error(exc)
+    if export_opts.update_model_files:
+        for pose in context.poses:
+            if not (
+                hasattr(pose, "files")
+                or (isinstance(pose, Mapping) and "files" in pose)
+            ):
+                continue
+            try:
+                update_dock_model_files_from_result(
+                    pose,
+                    result,
+                    options=ModelFilesUpdateOptions(
+                        preserve_existing=export_opts.preserve_previous_files,
+                    ),
+                )
+            except Exception as exc:
+                result.add_warning(
+                    {
+                        "type": exc.__class__.__name__,
+                        "message": "Unable to update DockModel.files",
+                    }
+                )
     return result.finish()
 
 
@@ -10052,6 +10281,8 @@ def prepare_batch_items(
     options: Optional[BatchExportOptions] = None,
 ) -> List[BatchExportItem]:
     """Prepare normalized batch items."""
+    if sources is None:
+        raise ExportInputError("Batch source collection cannot be None.")
     opts = options or BatchExportOptions()
     items = [
         BatchExportItem(
@@ -10704,12 +10935,13 @@ def validate_export_result(
         report.merge(validate_manifest(result.manifest, validation=opts))
     if opts.check_serializable:
         problems = find_non_serializable(result.to_dict(include_payload=True))
-        for path, value in problems:
+        for problem in problems:
             report.add(
                 "result.not_serializable",
                 "Export result contains a non-serializable value",
-                path=path,
-                value=repr(value),
+                path=problem.get("path"),
+                value=problem.get("type"),
+                context={"reason": problem.get("reason")},
             )
             if _validation_full(report, opts):
                 break
@@ -10742,12 +10974,13 @@ def validate_dock_model_for_export(
     if opts.check_serializable:
         try:
             record = dock_model_to_record(model)
-            for path, value in find_non_serializable(record):
+            for problem in find_non_serializable(record):
                 report.add(
                     "dock_model.not_serializable",
                     "DockModel record contains a non-serializable value",
-                    path=path,
-                    value=repr(value),
+                    path=problem.get("path"),
+                    value=problem.get("type"),
+                    context={"reason": problem.get("reason")},
                 )
         except Exception as exc:
             report.add("dock_model.serialization_error", str(exc))
@@ -10771,8 +11004,14 @@ def validate_export_request(
     elif opts.check_serializable:
         try:
             problems = find_non_serializable(to_serializable(source))
-            for path, value in problems:
-                report.add("source.not_serializable", "Source contains a non-serializable value", path=path, value=repr(value))
+            for problem in problems:
+                report.add(
+                    "source.not_serializable",
+                    "Source contains a non-serializable value",
+                    path=problem.get("path"),
+                    value=problem.get("type"),
+                    context={"reason": problem.get("reason")},
+                )
         except Exception as exc:
             report.add("source.serialization_error", str(exc))
     return report
@@ -11080,11 +11319,11 @@ def export_multipose_permissive(
     multi_options = replace(multi_options, export=export_options)
     recovered: List[ExportErrorContext] = []
     try:
-        result = export_multipose(poses, options=multi_options, output_dir=output_dir)
+        result = export_multiple_poses(poses, options=multi_options, output_dir=output_dir)
     except Exception as exc:
         if not policy.enabled or not is_recoverable_export_error(exc):
             raise
-        context = ExportErrorContext.from_exception(exc, operation="export_multipose")
+        context = ExportErrorContext.from_exception(exc, operation="export_multiple_poses")
         recovered.append(context)
         result = ExportResult(status=ExportStatus.FAILED.value, output_dir=output_dir)
         result.add_error(context.to_dict())
@@ -11388,11 +11627,20 @@ def chimerax_model_spec(value: Any) -> Optional[str]:
 def run_chimerax_command(session: Any, command: str) -> Any:
     """Run a command without making ChimeraX mandatory."""
     if not is_chimerax_session(session):
-        raise ExportDependencyError("A valid ChimeraX session is required")
+        raise ExportDependencyError(
+            "chimerax",
+            feature="command execution",
+            message="A valid ChimeraX session is required.",
+        )
     try:
         from chimerax.core.commands import run  # type: ignore
     except ImportError as exc:
-        raise ExportDependencyError("ChimeraX command API is unavailable") from exc
+        raise ExportDependencyError(
+            "chimerax.core.commands",
+            feature="command execution",
+            message="ChimeraX command API is unavailable.",
+            cause=exc,
+        ) from exc
     return run(session, command)
 
 
@@ -11415,7 +11663,11 @@ def notify_chimerax_export(
     """Report an export to a ChimeraX session."""
     opts = options or ChimeraXExportOptions()
     if not is_chimerax_session(session):
-        raise ExportDependencyError("A valid ChimeraX session is required")
+        raise ExportDependencyError(
+            "chimerax",
+            feature="export notification",
+            message="A valid ChimeraX session is required.",
+        )
     if opts.log_results:
         count = len(getattr(result, "files", []))
         status = getattr(result, "status", "unknown")
@@ -11906,7 +12158,17 @@ __all__.extend([
 
 import time as _self_test_time
 
-SELF_TEST_SCHEMA_VERSION: Final[str] = "1.0.0"
+SELF_TEST_SCHEMA_VERSION: Final[str] = "1.1.0"
+SELF_TEST_CODE_FAILURE: Final[str] = "code_failure"
+SELF_TEST_TEST_FAILURE: Final[str] = "test_failure"
+SELF_TEST_ENVIRONMENTAL_LIMITATION: Final[str] = "environmental_limitation"
+SELF_TEST_FAILURE_CATEGORIES: Final[FrozenSet[str]] = frozenset(
+    {
+        SELF_TEST_CODE_FAILURE,
+        SELF_TEST_TEST_FAILURE,
+        SELF_TEST_ENVIRONMENTAL_LIMITATION,
+    }
+)
 
 
 class SelfTestFailure(AssertionError):
@@ -11923,6 +12185,16 @@ class SelfTestCaseResult:
     message: str = ""
     exception_type: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    failure_category: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.failure_category is not None:
+            category = str(self.failure_category).strip().lower()
+            if category not in SELF_TEST_FAILURE_CATEGORIES:
+                raise ValueError(f"Unknown self-test failure category: {category!r}")
+            self.failure_category = category
+        if self.passed:
+            self.failure_category = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a serializable test result."""
@@ -11955,6 +12227,15 @@ class SelfTestReport:
         """Return whether all cases passed."""
         return bool(self.cases) and self.failed == 0
 
+    @property
+    def failure_counts(self) -> Dict[str, int]:
+        """Return failure totals grouped by category."""
+        counts = {category: 0 for category in sorted(SELF_TEST_FAILURE_CATEGORIES)}
+        for case in self.cases:
+            if not case.passed and case.failure_category in counts:
+                counts[case.failure_category] += 1
+        return counts
+
     def add(self, result: SelfTestCaseResult) -> SelfTestCaseResult:
         """Append one case result."""
         self.cases.append(result)
@@ -11979,6 +12260,7 @@ class SelfTestReport:
             "success": self.success,
             "passed": self.passed,
             "failed": self.failed,
+            "failure_counts": self.failure_counts,
             "started_at": self.started_at.isoformat(),
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "cases": [case.to_dict() for case in self.cases],
@@ -12016,6 +12298,36 @@ def self_test_raises(
     raise SelfTestFailure(f"Expected {exception_type.__name__} to be raised")
 
 
+def _classify_self_test_failure(exc: BaseException) -> str:
+    """Classify an uncaught self-test exception."""
+    chain: List[BaseException] = []
+    current: Optional[BaseException] = exc
+    seen: Set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+
+    environmental_types = (
+        ImportError,
+        ModuleNotFoundError,
+        ExportDependencyError,
+    )
+    if any(isinstance(item, environmental_types) for item in chain):
+        return SELF_TEST_ENVIRONMENTAL_LIMITATION
+    if isinstance(exc, SelfTestFailure):
+        return SELF_TEST_CODE_FAILURE
+
+    traceback = exc.__traceback__
+    deepest_name = ""
+    while traceback is not None:
+        deepest_name = traceback.tb_frame.f_code.co_name
+        traceback = traceback.tb_next
+    if deepest_name.startswith(("_test_", "self_test_", "run_self_test_")):
+        return SELF_TEST_TEST_FAILURE
+    return SELF_TEST_CODE_FAILURE
+
+
 def run_self_test_case(
     name: str,
     function: Callable[[], Any],
@@ -12023,7 +12335,7 @@ def run_self_test_case(
     raise_on_error: bool = False,
     metadata: Optional[Mapping[str, Any]] = None,
 ) -> SelfTestCaseResult:
-    """Execute one self-test case."""
+    """Execute one self-test case and classify failures."""
     start = _self_test_time.perf_counter()
     try:
         function()
@@ -12034,6 +12346,7 @@ def run_self_test_case(
             duration_seconds=_self_test_time.perf_counter() - start,
             message=str(exc),
             exception_type=type(exc).__name__,
+            failure_category=_classify_self_test_failure(exc),
             metadata=dict(metadata or {}),
         )
         if raise_on_error:
@@ -12089,6 +12402,10 @@ def self_test_payload() -> Dict[str, Any]:
 
 __all__.extend([
     "SELF_TEST_SCHEMA_VERSION",
+    "SELF_TEST_CODE_FAILURE",
+    "SELF_TEST_TEST_FAILURE",
+    "SELF_TEST_ENVIRONMENTAL_LIMITATION",
+    "SELF_TEST_FAILURE_CATEGORIES",
     "SelfTestFailure",
     "SelfTestCaseResult",
     "SelfTestReport",
@@ -12151,8 +12468,7 @@ def _test_json_roundtrip() -> None:
     with self_test_workspace() as workspace:
         exported = write_json(payload, output_dir=workspace, basename="payload")
         restored = read_json(exported.path)
-        expected = json.loads(json_dumps(payload))
-        self_test_equal(restored, expected)
+        self_test_equal(restored, payload)
         self_test_assert(exported.path.exists(), "JSON file was not created")
 
 
@@ -12161,8 +12477,7 @@ def _test_json_lines_roundtrip() -> None:
     with self_test_workspace() as workspace:
         exported = write_json_lines(records, output_dir=workspace, basename="records")
         restored = read_json_lines(exported.path)
-        expected = [json.loads(json_dumps(record)) for record in records]
-        self_test_equal(restored, expected)
+        self_test_equal(restored, records)
 
 
 def _test_generic_serialization() -> None:
@@ -12171,6 +12486,18 @@ def _test_generic_serialization() -> None:
     self_test_assert(isinstance(serialized, Mapping), "Dataclass was not serialized")
     self_test_equal(serialized["identifier"], value.identifier)
     self_test_equal(serialized["score"], value.score)
+
+
+def _test_json_mapping_preservation() -> None:
+    payload = {
+        "record_type": "dock_model",
+        "dock_model_id": "pose_1",
+        "total_score": -7.5,
+        "scoring": {"total_score": -7.5},
+        "interactions": {"hbond": []},
+    }
+    restored = json.loads(json_dumps(payload))
+    self_test_equal(restored, payload)
 
 
 def _test_registry_resolution() -> None:
@@ -12204,6 +12531,7 @@ def path_serialization_self_test_cases() -> Dict[str, Callable[[], None]]:
         "json_roundtrip": _test_json_roundtrip,
         "json_lines_roundtrip": _test_json_lines_roundtrip,
         "generic_serialization": _test_generic_serialization,
+        "json_mapping_preservation": _test_json_mapping_preservation,
         "registry_resolution": _test_registry_resolution,
         "table_conversion": _test_table_conversion,
         "schema_detection": _test_schema_detection,
@@ -12348,6 +12676,32 @@ def _test_interaction_table() -> None:
     self_test_assert("family" in table.columns, "Interaction family column is missing")
 
 
+def _test_interaction_cache_isolation() -> None:
+    shared_atom = _self_test_atom()
+    interactions = [
+        {
+            "family": "contact",
+            "interaction_type": "contact",
+            "atom1": shared_atom,
+            "atom2": {"name": f"C{index}", "element": "C", "serial": index + 2},
+            "distance": 3.5,
+        }
+        for index in range(2)
+    ]
+    records = interactions_to_records(interactions)
+    first_atom = records[0]["participants"][0]["atom"]
+    second_atom = records[1]["participants"][0]["atom"]
+    self_test_equal(first_atom, second_atom)
+    self_test_assert(first_atom is not second_atom, "Cached atom records were shared")
+    first_coordinates = first_atom.get("coordinates")
+    second_coordinates = second_atom.get("coordinates")
+    if isinstance(first_coordinates, list) and isinstance(second_coordinates, list):
+        self_test_assert(
+            first_coordinates is not second_coordinates,
+            "Cached coordinate lists were shared",
+        )
+
+
 def object_interaction_self_test_cases() -> Dict[str, Callable[[], None]]:
     """Return Section 30.3 self-test cases."""
     return {
@@ -12359,6 +12713,7 @@ def object_interaction_self_test_cases() -> Dict[str, Callable[[], None]]:
         "interaction_deduplication": _test_interaction_deduplication,
         "interaction_grouping": _test_interaction_grouping,
         "interaction_table": _test_interaction_table,
+        "interaction_cache_isolation": _test_interaction_cache_isolation,
     }
 
 
@@ -12448,7 +12803,7 @@ def _test_manifest_integrity() -> None:
 def _test_load_export_dispatch() -> None:
     with self_test_workspace() as workspace:
         json_file = write_json(self_test_payload(), output_dir=workspace, basename="payload")
-        self_test_equal(load_export(json_file.path)["total_score"], -7.5)
+        self_test_equal(load_export(json_file.path), self_test_payload())
 
 
 def file_format_self_test_cases() -> Dict[str, Callable[[], None]]:
@@ -12591,6 +12946,122 @@ def _test_multipose_export() -> None:
         self_test_assert(".csv" in suffixes, "Multipose CSV files are missing")
 
 
+def _test_batch_dynamic_fields() -> None:
+    @dataclass
+    class BatchSource:
+        name: str
+        group: str
+        order: int
+
+    items = prepare_batch_items(
+        [BatchSource("pose_b", "group_1", 2), BatchSource("pose_a", "group_2", 1)],
+        options=BatchExportOptions(group_key="group", sort_key="order"),
+    )
+    self_test_equal([item.name for item in items], ["pose_a", "pose_b"])
+    self_test_equal([item.group for item in items], ["group_2", "group_1"])
+
+
+def _test_extended_dock_model_interactions() -> None:
+    contact = {"interaction_id": "contact_1", "family": "contact", "distance": 3.2}
+    hbond = {"interaction_id": "hbond_1", "family": "hbond", "distance": 2.8}
+    salt = {"interaction_id": "salt_1", "family": "saltbridge", "distance": 3.4}
+    clash = {"interaction_id": "clash_1", "family": "clash", "distance": 1.8}
+
+    @dataclass
+    class ExtendedDockModel:
+        name: str = "pose_extended"
+        contacts: List[Any] = field(default_factory=lambda: [contact])
+        hbonds: List[Any] = field(default_factory=lambda: [hbond])
+        hydrophobic: List[Any] = field(default_factory=list)
+        pi: List[Any] = field(default_factory=list)
+        saltbridges: List[Any] = field(default_factory=lambda: [salt])
+        clashes: List[Any] = field(default_factory=lambda: [clash])
+
+        @property
+        def interactions(self) -> Tuple[Any, ...]:
+            return tuple(self.contacts + self.hbonds + self.saltbridges + self.clashes)
+
+    grouped = extract_dock_model_interactions(ExtendedDockModel())
+    self_test_equal(set(grouped), {"contact", "hbond", "saltbridge", "clash"})
+    identifiers = [
+        str(_interaction_get(item, _INTERACTION_ID_FIELDS))
+        for values in grouped.values()
+        for item in values
+    ]
+    self_test_equal(len(identifiers), len(set(identifiers)))
+
+
+def _test_mapping_model_files_update() -> None:
+    model = MockDockModel(files={"existing_json": "existing.json"})
+    with self_test_workspace() as workspace:
+        options = ExportOptions(
+            output_dir=workspace,
+            basename="mapping_files",
+            formats=(EXPORT_FORMAT_JSON,),
+            include_manifest=False,
+            include_provenance=False,
+            update_model_files=True,
+            preserve_previous_files=True,
+            overwrite=OverwriteMode.OVERWRITE.value,
+        )
+        result = export_single_pose(model, options=options)
+        self_test_assert(result.succeeded, "Mapping-layout export failed")
+        self_test_assert(isinstance(model.files, Mapping), "DockModel.files layout changed")
+        self_test_assert("existing_json" in model.files, "Existing file entry was removed")
+        self_test_assert(len(model.files) >= 2, "Generated file was not registered")
+
+
+def _test_multipose_model_files_update() -> None:
+    models = _self_test_dock_models()
+    with self_test_workspace() as workspace:
+        options = MultiposeExportOptions(
+            export=ExportOptions(
+                output_dir=workspace,
+                basename="multipose_files",
+                formats=(EXPORT_FORMAT_JSON,),
+                include_manifest=False,
+                include_provenance=False,
+                update_model_files=True,
+                overwrite=OverwriteMode.OVERWRITE.value,
+            )
+        )
+        result = export_multiple_poses(models, options=options)
+        self_test_assert(result.succeeded, "Multipose files export failed")
+        for model in models:
+            self_test_assert(bool(model.files), "Multipose files were not attached")
+
+
+def _test_ranking_missing_scores_last() -> None:
+    records = [
+        {"name": "missing", "total_score": None},
+        {"name": "low", "total_score": 1.0},
+        {"name": "high", "total_score": 3.0},
+    ]
+    higher = rank_dock_model_records(
+        records,
+        direction=ScoreDirection.HIGHER_IS_BETTER,
+    )
+    lower = rank_dock_model_records(
+        records,
+        direction=ScoreDirection.LOWER_IS_BETTER,
+    )
+    self_test_equal([item["name"] for item in higher], ["high", "low", "missing"])
+    self_test_equal([item["name"] for item in lower], ["low", "high", "missing"])
+
+
+def _test_empty_and_invalid_pose_inputs() -> None:
+    context = prepare_multipose_export(
+        [],
+        options=MultiposeExportOptions(
+            export=ExportOptions(include_manifest=False, update_model_files=False)
+        ),
+    )
+    self_test_equal(context.records, [])
+    self_test_raises(ExportInputError, prepare_single_pose_export, None)
+    self_test_raises(ExportInputError, prepare_multipose_export, None)
+    self_test_raises(ExportInputError, prepare_batch_items, None)
+
+
 def dock_model_multipose_self_test_cases() -> Dict[str, Callable[[], None]]:
     """Return Section 30.5 self-test cases."""
     return {
@@ -12602,6 +13073,12 @@ def dock_model_multipose_self_test_cases() -> Dict[str, Callable[[], None]]:
         "single_pose_export": _test_single_pose_export,
         "multipose_preparation": _test_multipose_preparation,
         "multipose_export": _test_multipose_export,
+        "batch_dynamic_fields": _test_batch_dynamic_fields,
+        "extended_dock_model_interactions": _test_extended_dock_model_interactions,
+        "mapping_model_files_update": _test_mapping_model_files_update,
+        "multipose_model_files_update": _test_multipose_model_files_update,
+        "ranking_missing_scores_last": _test_ranking_missing_scores_last,
+        "empty_and_invalid_pose_inputs": _test_empty_and_invalid_pose_inputs,
     }
 
 
@@ -12733,6 +13210,79 @@ def _test_validation_raise_for_errors() -> None:
     self_test_raises(ExportValidationError, report.raise_for_errors)
 
 
+def _test_public_api_contract() -> None:
+    required = (
+        "available_export_formats",
+        "normalize_export_format",
+        "export_data",
+        "write_json",
+        "write_json_lines",
+        "write_csv",
+        "write_tsv",
+        "write_excel",
+        "write_text",
+        "build_table",
+        "TableCollection",
+        "ExportedFile",
+        "ExportResult",
+    )
+    self_test_equal(len(__all__), len(set(__all__)))
+    invalid = [name for name in __all__ if not isinstance(name, str) or not name]
+    missing = [name for name in __all__ if isinstance(name, str) and name not in globals()]
+    missing_required = [name for name in required if name not in globals() or name not in __all__]
+    self_test_assert(not invalid, f"Invalid __all__ entries: {invalid!r}")
+    self_test_assert(not missing, f"Missing public names: {missing!r}")
+    self_test_assert(
+        not missing_required,
+        f"Report integration API is incomplete: {missing_required!r}",
+    )
+
+
+def _test_self_test_failure_classification() -> None:
+    def _test_broken_fixture() -> None:
+        raise NameError("missing self-test fixture")
+
+    code_result = run_self_test_case(
+        "deliberate_code_failure",
+        lambda: self_test_assert(False, "deliberate mismatch"),
+    )
+    test_result = run_self_test_case(
+        "deliberate_test_failure",
+        _test_broken_fixture,
+    )
+    environment_result = run_self_test_case(
+        "deliberate_environmental_limitation",
+        lambda: (_ for _ in ()).throw(ModuleNotFoundError("optional dependency")),
+    )
+    self_test_equal(code_result.failure_category, SELF_TEST_CODE_FAILURE)
+    self_test_equal(test_result.failure_category, SELF_TEST_TEST_FAILURE)
+    self_test_equal(
+        environment_result.failure_category,
+        SELF_TEST_ENVIRONMENTAL_LIMITATION,
+    )
+
+
+def _test_non_serializable_validation() -> None:
+    result = ExportResult(
+        status=ExportStatus.SUCCESS.value,
+        source_name="non_serializable",
+        payload=object(),
+    ).finish()
+    report = validate_export_result(
+        result,
+        validation=ExportValidationOptions(
+            check_existing_files=False,
+            require_files_for_success=False,
+            check_serializable=True,
+        ),
+    )
+    self_test_assert(not report.valid, "Non-serializable payload was accepted")
+    self_test_assert(
+        any(issue.code == "result.not_serializable" for issue in report.issues),
+        "Non-serializable payload was not reported",
+    )
+
+
 def manifest_validation_self_test_cases() -> Dict[str, Callable[[], None]]:
     """Return Section 30.6 self-test cases."""
     return {
@@ -12744,6 +13294,9 @@ def manifest_validation_self_test_cases() -> Dict[str, Callable[[], None]]:
         "exported_file_validation": _test_exported_file_validation,
         "dock_model_validation": _test_dock_model_validation,
         "validation_raise_for_errors": _test_validation_raise_for_errors,
+        "public_api_contract": _test_public_api_contract,
+        "failure_classification": _test_self_test_failure_classification,
+        "non_serializable_validation": _test_non_serializable_validation,
     }
 
 
@@ -12932,6 +13485,14 @@ class ExportSelfTestSuiteReport:
     def success(self) -> bool:
         return self.failed == 0 and bool(self.reports)
 
+    @property
+    def failure_counts(self) -> Dict[str, int]:
+        counts = {category: 0 for category in sorted(SELF_TEST_FAILURE_CATEGORIES)}
+        for report in self.reports:
+            for category, count in report.failure_counts.items():
+                counts[category] += count
+        return counts
+
     def finish(self) -> "ExportSelfTestSuiteReport":
         self.finished_at = datetime.now(timezone.utc)
         return self
@@ -12950,6 +13511,7 @@ class ExportSelfTestSuiteReport:
             "success": self.success,
             "passed": self.passed,
             "failed": self.failed,
+            "failure_counts": self.failure_counts,
             "started_at": self.started_at.isoformat(),
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "reports": [report.to_dict() for report in self.reports],
@@ -12961,6 +13523,13 @@ class ExportSelfTestSuiteReport:
             f"{self.name}: {'PASS' if self.success else 'FAIL'}",
             f"Passed: {self.passed}",
             f"Failed: {self.failed}",
+            (
+                "Failure categories: "
+                f"code={self.failure_counts[SELF_TEST_CODE_FAILURE]}, "
+                f"test={self.failure_counts[SELF_TEST_TEST_FAILURE]}, "
+                "environment="
+                f"{self.failure_counts[SELF_TEST_ENVIRONMENTAL_LIMITATION]}"
+            ),
         ]
         for report in self.reports:
             lines.append(
