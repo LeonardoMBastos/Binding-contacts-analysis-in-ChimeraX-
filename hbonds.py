@@ -37,6 +37,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
+import sys
+import time
 from typing import (
     Any,
     Callable,
@@ -49,7 +51,6 @@ from typing import (
     Literal,
     Mapping,
     MutableMapping,
-    NamedTuple,
     Optional,
     Protocol,
     Sequence,
@@ -64,32 +65,20 @@ from typing import (
 import numpy as np
 from numpy.typing import NDArray
 
-try:
+if __package__:
     from . import config
 
     from .contacts import (
-        AtomContact,
-        ContactAnalysisResult,
         ResidueContactKey,
-        atom_coordinates,
-        filter_atoms,
-        get_atom_atomic_number,
         get_atom_coordinate,
         get_atom_element,
         get_atom_identifier,
-        get_atom_index,
         get_atom_name,
         get_atom_residue,
-        get_atom_structure,
-        get_dock_model_identifier,
-        get_dock_model_pose,
-        get_dock_model_receptor,
-        get_pose_identifier,
         get_residue_contact_key,
         is_atom_like,
         is_heavy_atom,
         is_hydrogen_atom,
-        select_contact_collections,
         validate_atom,
         validate_atom_collection,
     )
@@ -104,32 +93,20 @@ try:
         DockModel,
     )
 
-except ImportError:
+else:
     import config
 
     from contacts import (
-        AtomContact,
-        ContactAnalysisResult,
         ResidueContactKey,
-        atom_coordinates,
-        filter_atoms,
-        get_atom_atomic_number,
         get_atom_coordinate,
         get_atom_element,
         get_atom_identifier,
-        get_atom_index,
         get_atom_name,
         get_atom_residue,
-        get_atom_structure,
-        get_dock_model_identifier,
-        get_dock_model_pose,
-        get_dock_model_receptor,
-        get_pose_identifier,
         get_residue_contact_key,
         is_atom_like,
         is_heavy_atom,
         is_hydrogen_atom,
-        select_contact_collections,
         validate_atom,
         validate_atom_collection,
     )
@@ -623,8 +600,16 @@ HBOND_TYPE_STRONG: Final[
     HydrogenBondClassification
 ] = "strong"
 
+HBOND_TYPE_GEOMETRIC_ONLY: Final[
+    HydrogenBondClassification
+] = "geometric_only"
 
-_VALID_HBOND_CLASSIFICATIONS: Final[
+HBOND_TYPE_REJECTED: Final[
+    HydrogenBondClassification
+] = "rejected"
+
+
+VALID_HYDROGEN_BOND_CLASSIFICATIONS: Final[
     FrozenSet[
         str
     ]
@@ -634,8 +619,16 @@ _VALID_HBOND_CLASSIFICATIONS: Final[
         HBOND_TYPE_WEAK,
         HBOND_TYPE_MODERATE,
         HBOND_TYPE_STRONG,
+        HBOND_TYPE_GEOMETRIC_ONLY,
+        HBOND_TYPE_REJECTED,
     }
 )
+
+_VALID_HBOND_CLASSIFICATIONS: Final[
+    FrozenSet[
+        str
+    ]
+] = VALID_HYDROGEN_BOND_CLASSIFICATIONS
 
 
 # -----------------------------------------------------------------------------
@@ -727,6 +720,14 @@ DEFAULT_HYDROGEN_ACCEPTOR_DISTANCE: Final[
     2.50
 )
 
+DEFAULT_MAXIMUM_DONOR_ACCEPTOR_DISTANCE: Final[
+    np.float64
+] = DEFAULT_DONOR_ACCEPTOR_DISTANCE
+
+DEFAULT_MAXIMUM_HYDROGEN_ACCEPTOR_DISTANCE: Final[
+    np.float64
+] = DEFAULT_HYDROGEN_ACCEPTOR_DISTANCE
+
 DEFAULT_MINIMUM_DHA_ANGLE: Final[
     np.float64
 ] = np.float64(
@@ -748,12 +749,14 @@ DEFAULT_STRONG_DHA_ANGLE: Final[
 DEFAULT_MODERATE_DHA_ANGLE: Final[
     np.float64
 ] = np.float64(
-    135.0
+    130.0
 )
 
 DEFAULT_WEAK_DHA_ANGLE: Final[
     np.float64
-] = DEFAULT_MINIMUM_DHA_ANGLE
+] = np.float64(
+    110.0
+)
 
 DEFAULT_DISTANCE_TOLERANCE: Final[
     np.float64
@@ -816,11 +819,13 @@ HBOND_STRONG_MIN_DHA_ANGLE: Final[
 
 HBOND_MODERATE_MIN_DHA_ANGLE: Final[
     np.float64
-] = DEFAULT_MODERATE_DHA_ANGLE
+] = np.float64(
+    135.0
+)
 
 HBOND_WEAK_MIN_DHA_ANGLE: Final[
     np.float64
-] = DEFAULT_WEAK_DHA_ANGLE
+] = DEFAULT_MINIMUM_DHA_ANGLE
 
 
 # -----------------------------------------------------------------------------
@@ -1998,8 +2003,12 @@ _SECTION_2_PUBLIC_NAMES: Final[
     "FULL_ROTATION_DEGREES",
     "STRAIGHT_ANGLE_DEGREES",
     "RIGHT_ANGLE_DEGREES",
+    "MINIMUM_VALID_ANGLE_DEGREES",
+    "MAXIMUM_VALID_ANGLE_DEGREES",
     "DEFAULT_DONOR_ACCEPTOR_DISTANCE",
     "DEFAULT_HYDROGEN_ACCEPTOR_DISTANCE",
+    "DEFAULT_MAXIMUM_DONOR_ACCEPTOR_DISTANCE",
+    "DEFAULT_MAXIMUM_HYDROGEN_ACCEPTOR_DISTANCE",
     "DEFAULT_MINIMUM_DHA_ANGLE",
     "DEFAULT_MINIMUM_INFERRED_ANGLE",
     "DEFAULT_STRONG_DHA_ANGLE",
@@ -2773,8 +2782,10 @@ class HydrogenBondGeometry:
                     self.linearity_deviation
                 )
             ),
-            "metadata": dict(
-                self.metadata
+            "metadata": (
+                _serialize_hbond_statistics_value(
+                    self.metadata
+                )
             ),
         }
 
@@ -3395,6 +3406,15 @@ class HydrogenBond:
             Any,
         ] = {
             "identifier": self.identifier,
+            "donor": _safe_atom_identifier(
+                self.donor
+            ),
+            "hydrogen": _safe_atom_identifier(
+                self.hydrogen
+            ),
+            "acceptor": _safe_atom_identifier(
+                self.acceptor
+            ),
             "donor_identifier": (
                 _safe_atom_identifier(
                     self.donor
@@ -3431,8 +3451,10 @@ class HydrogenBond:
             "geometry": (
                 self.geometry.to_dict()
             ),
-            "metadata": dict(
-                self.metadata
+            "metadata": (
+                _serialize_hbond_statistics_value(
+                    self.metadata
+                )
             ),
         }
 
@@ -3581,6 +3603,16 @@ class ResidueHydrogenBond:
             _freeze_metadata(
                 self.metadata
             ),
+        )
+
+    @property
+    def count(
+        self,
+    ) -> int:
+        """Return the number of hydrogen bonds in the residue group."""
+
+        return len(
+            self.hydrogen_bonds
         )
 
     @property
@@ -3771,6 +3803,39 @@ class ResidueHydrogenBond:
         )
 
     @property
+    def moderate_count(
+        self,
+    ) -> int:
+        """Return the number of moderate hydrogen bonds."""
+
+        return sum(
+            hydrogen_bond.classification == HBOND_TYPE_MODERATE
+            for hydrogen_bond in self.hydrogen_bonds
+        )
+
+    @property
+    def weak_count(
+        self,
+    ) -> int:
+        """Return the number of weak hydrogen bonds."""
+
+        return sum(
+            hydrogen_bond.classification == HBOND_TYPE_WEAK
+            for hydrogen_bond in self.hydrogen_bonds
+        )
+
+    @property
+    def unknown_count(
+        self,
+    ) -> int:
+        """Return the number of unclassified hydrogen bonds."""
+
+        return sum(
+            hydrogen_bond.classification == HBOND_TYPE_UNKNOWN
+            for hydrogen_bond in self.hydrogen_bonds
+        )
+
+    @property
     def strong_count(
         self,
     ) -> int:
@@ -3868,6 +3933,11 @@ class ResidueHydrogenBond:
             str,
             Any,
         ] = {
+            "residue": (
+                self.residue
+                if include_atoms
+                else self.key
+            ),
             "key": self.key,
             "side": self.side,
             "hydrogen_bond_count": (
@@ -3909,8 +3979,10 @@ class ResidueHydrogenBond:
             "directions": sorted(
                 self.directions
             ),
-            "metadata": dict(
-                self.metadata
+            "metadata": (
+                _serialize_hbond_statistics_value(
+                    self.metadata
+                )
             ),
         }
 
@@ -3924,11 +3996,6 @@ class ResidueHydrogenBond:
                 for hydrogen_bond
                 in self.hydrogen_bonds
             ]
-
-        if include_atoms:
-            result[
-                "residue"
-            ] = self.residue
 
         return result
 
@@ -4330,6 +4397,39 @@ class HydrogenBondAnalysisResult:
         )
 
     @property
+    def moderate_count(
+        self,
+    ) -> int:
+        """Return the number of moderate hydrogen bonds."""
+
+        return sum(
+            hydrogen_bond.classification == HBOND_TYPE_MODERATE
+            for hydrogen_bond in self.hydrogen_bonds
+        )
+
+    @property
+    def weak_count(
+        self,
+    ) -> int:
+        """Return the number of weak hydrogen bonds."""
+
+        return sum(
+            hydrogen_bond.classification == HBOND_TYPE_WEAK
+            for hydrogen_bond in self.hydrogen_bonds
+        )
+
+    @property
+    def unknown_count(
+        self,
+    ) -> int:
+        """Return the number of unclassified hydrogen bonds."""
+
+        return sum(
+            hydrogen_bond.classification == HBOND_TYPE_UNKNOWN
+            for hydrogen_bond in self.hydrogen_bonds
+        )
+
+    @property
     def strong_count(
         self,
     ) -> int:
@@ -4447,6 +4547,36 @@ class HydrogenBondAnalysisResult:
         """
 
         return self.strong_count > 0
+
+    def by_classification(
+        self,
+        classification: str,
+    ) -> Tuple[HydrogenBond, ...]:
+        """Return hydrogen bonds with one classification."""
+
+        return self.bonds_by_classification(
+            classification
+        )
+
+    def by_mode(
+        self,
+        mode: str,
+    ) -> Tuple[HydrogenBond, ...]:
+        """Return hydrogen bonds detected in one mode."""
+
+        return self.bonds_by_mode(
+            mode
+        )
+
+    def by_direction(
+        self,
+        direction: str,
+    ) -> Tuple[HydrogenBond, ...]:
+        """Return hydrogen bonds with one donor direction."""
+
+        return self.bonds_by_direction(
+            direction
+        )
 
     def bonds_by_classification(
         self,
@@ -4590,6 +4720,55 @@ class HydrogenBondAnalysisResult:
 
         return None
 
+    def __getitem__(
+        self,
+        key: str,
+    ) -> Any:
+        """Return one attached statistics value."""
+
+        return self.statistics[
+            key
+        ]
+
+    def get(
+        self,
+        key: str,
+        default: Any = None,
+    ) -> Any:
+        """Return one attached statistics value when present."""
+
+        return self.statistics.get(
+            key,
+            default,
+        )
+
+    def keys(
+        self,
+    ) -> Any:
+        """Return attached statistics keys."""
+
+        return self.statistics.keys()
+
+    def items(
+        self,
+    ) -> Any:
+        """Return attached statistics items."""
+
+        return self.statistics.items()
+
+    def values(
+        self,
+    ) -> Any:
+        """Return attached statistics values."""
+
+        return self.statistics.values()
+
+    def __contains__(
+        self,
+        key: object,
+    ) -> bool:
+        return key in self.statistics
+
     def to_dict(
         self,
         *,
@@ -4649,6 +4828,40 @@ class HydrogenBondAnalysisResult:
             "receptor_donor_count": (
                 self.receptor_donor_count
             ),
+            "ligand_atoms": tuple(
+                _safe_atom_identifier(atom)
+                for atom in self.ligand_atoms
+            ),
+            "receptor_atoms": tuple(
+                _safe_atom_identifier(atom)
+                for atom in self.receptor_atoms
+            ),
+            "cutoffs": {
+                "donor_acceptor": float(
+                    self.donor_acceptor_cutoff
+                ),
+                "hydrogen_acceptor": (
+                    None
+                    if self.hydrogen_acceptor_cutoff is None
+                    else float(
+                        self.hydrogen_acceptor_cutoff
+                    )
+                ),
+                "minimum_dha_angle": (
+                    None
+                    if self.minimum_dha_angle is None
+                    else float(
+                        self.minimum_dha_angle
+                    )
+                ),
+                "minimum_inferred_angle": (
+                    None
+                    if self.minimum_inferred_angle is None
+                    else float(
+                        self.minimum_inferred_angle
+                    )
+                ),
+            },
             "minimum_distance": (
                 None
                 if self.minimum_distance is None
@@ -4702,11 +4915,15 @@ class HydrogenBondAnalysisResult:
             "has_strong_bonds": (
                 self.has_strong_bonds
             ),
-            "statistics": dict(
-                self.statistics
+            "statistics": (
+                serialize_hydrogen_bond_statistics(
+                    self.statistics
+                )
             ),
-            "metadata": dict(
-                self.metadata
+            "metadata": (
+                _serialize_hbond_statistics_value(
+                    self.metadata
+                )
             ),
         }
 
@@ -5969,7 +6186,9 @@ def atom_has_explicit_hydrogen(
 
 def get_bond_order(
     atom_1: AtomLike,
-    atom_2: AtomLike,
+    atom_2: Optional[
+        AtomLike
+    ] = None,
 ) -> Optional[
     np.float64
 ]:
@@ -5992,6 +6211,54 @@ def get_bond_order(
     -----
     Aromatic bonds represented by text are returned as ``1.5``.
     """
+
+    if atom_2 is None:
+        raw_order = _get_chemical_object_value(
+            atom_1,
+            (
+                "order",
+                "bond_order",
+                "bondOrder",
+                "type",
+            ),
+            default=None,
+        )
+
+        if raw_order is None:
+            return None
+
+        normalized_text = _normalize_chemical_text(
+            raw_order
+        )
+
+        if normalized_text in {
+            "AR",
+            "AROMATIC",
+            "1.5",
+        }:
+            return np.float64(
+                1.5
+            )
+
+        try:
+            numeric_order = np.float64(
+                raw_order
+            )
+
+        except (
+            TypeError,
+            ValueError,
+            OverflowError,
+        ):
+            return None
+
+        return (
+            numeric_order
+            if np.isfinite(
+                numeric_order
+            )
+            else None
+        )
 
     raw_bonds = _get_chemical_object_value(
         atom_1,
@@ -6458,9 +6725,25 @@ def _generic_atom_can_donate(
             )
         )
 
-        # Hydroxyl-like oxygen generally has one heavy neighbor. Water oxygen
-        # has zero heavy neighbors.
-        return heavy_neighbor_count <= 1
+        if (
+            formal_charge is not None
+            and formal_charge < 0.0
+        ):
+            return False
+
+        hydroxyl_or_water_types = {
+            "O.3",
+            "O3",
+            "OH",
+            "OH1",
+            "WATER_O",
+            "OW",
+        }
+
+        return (
+            atom_type in hydroxyl_or_water_types
+            and heavy_neighbor_count <= 1
+        )
 
     if element == SULFUR_ELEMENT:
         heavy_neighbor_count = len(
@@ -6480,6 +6763,9 @@ def is_hbond_donor(
     atom: AtomLike,
     *,
     require_explicit_hydrogen: bool = False,
+    require_hydrogen: Optional[
+        bool
+    ] = None,
     use_protein_templates: bool = True,
     bond_resolver: Optional[
         BondResolver
@@ -6510,6 +6796,11 @@ def is_hbond_donor(
     bool
         Donor status.
     """
+
+    if require_hydrogen is not None:
+        require_explicit_hydrogen = bool(
+            require_hydrogen
+        )
 
     try:
         validate_atom(
@@ -7804,8 +8095,10 @@ class DonorHydrogenAssignment:
                 )
                 for atom in self.alternative_donors
             ],
-            "metadata": dict(
-                self.metadata
+            "metadata": (
+                _serialize_hbond_statistics_value(
+                    self.metadata
+                )
             ),
         }
 
@@ -8008,18 +8301,43 @@ def is_valid_donor_hydrogen_distance(
     ):
         return False
 
-    if not is_hydrogen_atom(
-        hydrogen
-    ):
-        return False
-
     try:
-        donor_hydrogen_distance = (
-            _calculate_atom_distance(
-                donor,
-                hydrogen,
+        if isinstance(
+            hydrogen,
+            (
+                int,
+                float,
+                np.integer,
+                np.floating,
+            ),
+        ) and not isinstance(
+            hydrogen,
+            (
+                bool,
+                np.bool_,
+            ),
+        ):
+            donor_hydrogen_distance = np.float64(
+                hydrogen
             )
-        )
+
+        else:
+            if not is_hydrogen_atom(
+                hydrogen
+            ):
+                return False
+
+            donor_hydrogen_distance = (
+                _calculate_atom_distance(
+                    donor,
+                    hydrogen,
+                )
+            )
+
+        if not np.isfinite(
+            donor_hydrogen_distance
+        ):
+            return False
 
         minimum_distance, maximum_distance = (
             get_donor_hydrogen_distance_bounds(
@@ -8478,6 +8796,11 @@ def identify_donor_hydrogen_assignments(
     atoms: Iterable[
         AtomLike
     ],
+    hydrogens: Optional[
+        Iterable[
+            AtomLike
+        ]
+    ] = None,
     *,
     donors: Optional[
         Iterable[
@@ -8490,6 +8813,9 @@ def identify_donor_hydrogen_assignments(
     allow_distance_assignment: bool = (
         DEFAULT_ALLOW_DISTANCE_BASED_HYDROGEN_ASSIGNMENT
     ),
+    allow_distance_based: Optional[
+        bool
+    ] = None,
     validate_topology_distance: bool = True,
     distance_tolerance: Number = (
         DEFAULT_HYDROGEN_ASSIGNMENT_TOLERANCE
@@ -8531,6 +8857,25 @@ def identify_donor_hydrogen_assignments(
     -----
     Explicit topology always takes priority over distance inference.
     """
+
+    if allow_distance_based is not None:
+        allow_distance_assignment = bool(
+            allow_distance_based
+        )
+
+    if hydrogens is not None:
+        legacy_donors = tuple(
+            atoms
+        )
+        legacy_hydrogens = tuple(
+            hydrogens
+        )
+        atoms = (
+            *legacy_donors,
+            *legacy_hydrogens,
+        )
+        if donors is None:
+            donors = legacy_donors
 
     validated_atoms = validate_atom_collection(
         atoms,
@@ -9027,9 +9372,11 @@ def hydrogen_assignment_statistics(
     atoms: Iterable[
         AtomLike
     ],
-    assignments: Iterable[
-        DonorHydrogenAssignment
-    ],
+    assignments: Optional[
+        Iterable[
+            DonorHydrogenAssignment
+        ]
+    ] = None,
 ) -> Dict[
     str,
     Any,
@@ -9050,15 +9397,53 @@ def hydrogen_assignment_statistics(
         Assignment statistics.
     """
 
-    validated_atoms = validate_atom_collection(
-        atoms,
-        allow_empty=True,
-        require_coordinate=False,
-    )
+    if assignments is None:
+        normalized_assignments = tuple(
+            atoms
+        )
+        atom_candidates: List[
+            AtomLike
+        ] = []
+        seen_atom_ids: Set[
+            int
+        ] = set()
 
-    normalized_assignments = tuple(
-        assignments
-    )
+        for assignment in normalized_assignments:
+            if not isinstance(
+                assignment,
+                DonorHydrogenAssignment,
+            ):
+                continue
+
+            for atom in (
+                assignment.donor,
+                assignment.hydrogen,
+            ):
+                atom_id = id(
+                    atom
+                )
+                if atom_id not in seen_atom_ids:
+                    seen_atom_ids.add(
+                        atom_id
+                    )
+                    atom_candidates.append(
+                        atom
+                    )
+
+        validated_atoms = tuple(
+            atom_candidates
+        )
+
+    else:
+        validated_atoms = validate_atom_collection(
+            atoms,
+            allow_empty=True,
+            require_coordinate=False,
+        )
+
+        normalized_assignments = tuple(
+            assignments
+        )
 
     for index, assignment in enumerate(
         normalized_assignments
@@ -9127,6 +9512,12 @@ def hydrogen_assignment_statistics(
         ),
         "donor_with_hydrogen_count": len(
             donor_ids
+        ),
+        "unique_donor_count": len(
+            donor_ids
+        ),
+        "unique_hydrogen_count": len(
+            assigned_hydrogen_ids
         ),
         "topology_assignment_count": sum(
             assignment.is_topology_based
@@ -9310,9 +9701,9 @@ class HydrogenBondGeometryEvaluation:
     """
 
     geometry: HydrogenBondGeometry
-    mode: HydrogenBondMode
+    mode: HydrogenBondMode = HBOND_MODE_EXPLICIT
 
-    donor_acceptor_valid: bool
+    donor_acceptor_valid: bool = True
 
     hydrogen_acceptor_valid: Optional[
         bool
@@ -9331,6 +9722,12 @@ class HydrogenBondGeometryEvaluation:
     ] = None
 
     is_valid: bool = False
+
+    passed_criteria: Sequence[
+        str
+    ] = field(
+        default_factory=tuple
+    )
 
     failed_criteria: Sequence[
         str
@@ -9396,6 +9793,22 @@ class HydrogenBondGeometryEvaluation:
                     value
                 ),
             )
+
+        normalized_passed_criteria = tuple(
+            str(
+                criterion
+            ).strip()
+            for criterion in self.passed_criteria
+            if str(
+                criterion
+            ).strip()
+        )
+
+        object.__setattr__(
+            self,
+            "passed_criteria",
+            normalized_passed_criteria,
+        )
 
         normalized_failed_criteria = tuple(
             str(
@@ -9470,11 +9883,16 @@ class HydrogenBondGeometryEvaluation:
                 self.acceptor_angle_valid
             ),
             "is_valid": self.is_valid,
+            "passed_criteria": list(
+                self.passed_criteria
+            ),
             "failed_criteria": list(
                 self.failed_criteria
             ),
-            "metadata": dict(
-                self.metadata
+            "metadata": (
+                _serialize_hbond_statistics_value(
+                    self.metadata
+                )
             ),
         }
 
@@ -10103,6 +10521,11 @@ def infer_open_valence_vector(
     excluded_atoms: Sequence[
         AtomLike
     ] = (),
+    bonded_neighbors: Optional[
+        Iterable[
+            AtomLike
+        ]
+    ] = None,
     method: str = DEFAULT_INFERRED_DONOR_VECTOR_METHOD,
     bond_resolver: Optional[
         BondResolver
@@ -10156,13 +10579,49 @@ def infer_open_valence_vector(
         )
     )
 
-    neighbor_coordinates = (
-        _get_valid_heavy_neighbor_coordinates(
-            central_atom,
-            excluded_atoms=excluded_atoms,
-            bond_resolver=bond_resolver,
+    if bonded_neighbors is None:
+        neighbor_coordinates = (
+            _get_valid_heavy_neighbor_coordinates(
+                central_atom,
+                excluded_atoms=excluded_atoms,
+                bond_resolver=bond_resolver,
+            )
         )
-    )
+
+    else:
+        excluded_ids = {
+            id(
+                atom
+            )
+            for atom in excluded_atoms
+            if atom is not None
+        }
+        collected_coordinates: List[
+            FloatArray
+        ] = []
+
+        for neighbor in bonded_neighbors:
+            if (
+                neighbor is None
+                or id(
+                    neighbor
+                ) in excluded_ids
+            ):
+                continue
+
+            try:
+                collected_coordinates.append(
+                    _get_hbond_atom_coordinate(
+                        neighbor,
+                        name="bonded neighbor",
+                    )
+                )
+            except Exception:
+                continue
+
+        neighbor_coordinates = tuple(
+            collected_coordinates
+        )
 
     if not neighbor_coordinates:
         return None
@@ -11814,9 +12273,16 @@ def calculate_inferred_geometries_for_acceptors(
 # -----------------------------------------------------------------------------
 
 def explicit_hbond_geometry_is_valid(
-    donor: AtomLike,
-    hydrogen: AtomLike,
-    acceptor: AtomLike,
+    donor: Union[
+        AtomLike,
+        HydrogenBondGeometry,
+    ],
+    hydrogen: Optional[
+        AtomLike
+    ] = None,
+    acceptor: Optional[
+        AtomLike
+    ] = None,
     *,
     donor_acceptor_cutoff: Number = (
         DEFAULT_DONOR_ACCEPTOR_DISTANCE
@@ -11868,13 +12334,22 @@ def explicit_hbond_geometry_is_valid(
     """
 
     try:
-        geometry = calculate_explicit_hbond_geometry(
+        if isinstance(
             donor,
-            hydrogen,
-            acceptor,
-            calculate_acceptor_angle=False,
-            bond_resolver=bond_resolver,
-        )
+            HydrogenBondGeometry,
+        ):
+            geometry = donor
+        else:
+            if hydrogen is None or acceptor is None:
+                return False
+
+            geometry = calculate_explicit_hbond_geometry(
+                donor,
+                hydrogen,
+                acceptor,
+                calculate_acceptor_angle=False,
+                bond_resolver=bond_resolver,
+            )
 
         evaluation = evaluate_explicit_hbond_geometry(
             geometry,
@@ -11902,8 +12377,13 @@ def explicit_hbond_geometry_is_valid(
 
 
 def inferred_hbond_geometry_is_valid(
-    donor: AtomLike,
-    acceptor: AtomLike,
+    donor: Union[
+        AtomLike,
+        HydrogenBondGeometry,
+    ],
+    acceptor: Optional[
+        AtomLike
+    ] = None,
     *,
     donor_acceptor_cutoff: Number = (
         DEFAULT_DONOR_ACCEPTOR_DISTANCE
@@ -11946,15 +12426,24 @@ def inferred_hbond_geometry_is_valid(
     """
 
     try:
-        geometry = calculate_inferred_hbond_geometry(
+        if isinstance(
             donor,
-            acceptor,
-            donor_vector_method=(
-                donor_vector_method
-            ),
-            calculate_acceptor_angle=False,
-            bond_resolver=bond_resolver,
-        )
+            HydrogenBondGeometry,
+        ):
+            geometry = donor
+        else:
+            if acceptor is None:
+                return False
+
+            geometry = calculate_inferred_hbond_geometry(
+                donor,
+                acceptor,
+                donor_vector_method=(
+                    donor_vector_method
+                ),
+                calculate_acceptor_angle=False,
+                bond_resolver=bond_resolver,
+            )
 
         evaluation = evaluate_inferred_hbond_geometry(
             geometry,
@@ -12716,9 +13205,11 @@ def detect_explicit_hydrogen_bonds(
     acceptors: Iterable[
         AtomLike
     ],
-    assignments: Iterable[
-        DonorHydrogenAssignment
-    ],
+    assignments: Optional[
+        Iterable[
+            DonorHydrogenAssignment
+        ]
+    ] = None,
     *,
     direction: HydrogenBondDirection = (
         HBOND_DIRECTION_UNKNOWN
@@ -12763,6 +13254,9 @@ def detect_explicit_hydrogen_bonds(
     ),
     stop_after_first_valid_hydrogen: bool = (
         DEFAULT_STOP_AFTER_FIRST_VALID_HYDROGEN
+    ),
+    include_ambiguous_assignments: bool = (
+        DEFAULT_INCLUDE_AMBIGUOUS_HYDROGEN_ASSIGNMENTS
     ),
     maximum_hydrogen_bonds: Optional[
         int
@@ -12825,6 +13319,25 @@ def detect_explicit_hydrogen_bonds(
         )
     )
 
+    if assignments is None:
+        donor_items = tuple(
+            donors
+        )
+        if all(
+            isinstance(
+                item,
+                DonorHydrogenAssignment,
+            )
+            for item in donor_items
+        ):
+            donors = tuple(
+                dict.fromkeys(
+                    assignment.donor
+                    for assignment in donor_items
+                )
+            )
+            assignments = donor_items
+
     normalized_donors = (
         _normalize_hbond_atom_collection(
             donors,
@@ -12842,7 +13355,18 @@ def detect_explicit_hydrogen_bonds(
     )
 
     normalized_assignments = tuple(
-        assignments
+        assignment
+        for assignment in (
+            assignments or ()
+        )
+        if (
+            include_ambiguous_assignments
+            or not getattr(
+                assignment,
+                "is_ambiguous",
+                False,
+            )
+        )
     )
 
     for index, assignment in enumerate(
@@ -14752,6 +15276,8 @@ _SECTION_7_PUBLIC_NAMES: Final[
     "DEFAULT_DEDUPLICATE_HYDROGEN_BONDS",
     "DEFAULT_STOP_AFTER_FIRST_VALID_HYDROGEN",
     "DEFAULT_INCLUDE_UNKNOWN_DIRECTION",
+    "HydrogenBondPairKey",
+    "HydrogenBondDetectionRecord",
     "find_hbond_candidate_pairs",
     "detect_explicit_hydrogen_bonds",
     "detect_inferred_hydrogen_bonds",
@@ -15691,6 +16217,9 @@ def group_hydrogen_bonds_by_residue(
     deduplicate_bonds: bool = (
         DEFAULT_DEDUPLICATE_WITHIN_RESIDUE
     ),
+    deduplicate: Optional[
+        bool
+    ] = None,
 ) -> Tuple[
     ResidueHydrogenBond,
     ...,
@@ -15720,6 +16249,11 @@ def group_hydrogen_bonds_by_residue(
     tuple of ResidueHydrogenBond
         Residue-level hydrogen-bond groups.
     """
+
+    if deduplicate is not None:
+        deduplicate_bonds = bool(
+            deduplicate
+        )
 
     normalized_side = validate_residue_group_side(
         side
@@ -16657,6 +17191,61 @@ def analyze_and_group_hydrogen_bonds(
 
 
 # -----------------------------------------------------------------------------
+# Compatibility helpers
+# -----------------------------------------------------------------------------
+
+def group_analysis_result_by_residue(
+    result: HydrogenBondAnalysisResult,
+    **kwargs: Any,
+) -> HydrogenBondAnalysisResult:
+    """Compatibility wrapper for grouping an analysis result by residue."""
+
+    return group_analysis_hydrogen_bonds_by_residue(
+        result,
+        **kwargs,
+    )
+
+
+def group_and_analyze_hydrogen_bonds(
+    ligand_atoms: Iterable[AtomLike],
+    receptor_atoms: Iterable[AtomLike],
+    *,
+    side: str = DEFAULT_RESIDUE_GROUP_SIDE,
+    **analysis_kwargs: Any,
+) -> HydrogenBondAnalysisResult:
+    """Compatibility wrapper for detection followed by residue grouping."""
+
+    return analyze_and_group_hydrogen_bonds(
+        ligand_atoms,
+        receptor_atoms,
+        residue_side=side,
+        **analysis_kwargs,
+    )
+
+
+def filter_hbond_residue_groups(
+    residue_groups: Iterable[ResidueHydrogenBond],
+    **kwargs: Any,
+) -> Tuple[ResidueHydrogenBond, ...]:
+    """Compatibility wrapper for residue-group filtering."""
+
+    if (
+        "minimum_count" in kwargs
+        and "minimum_bond_count" not in kwargs
+    ):
+        kwargs[
+            "minimum_bond_count"
+        ] = kwargs.pop(
+            "minimum_count"
+        )
+
+    return filter_residue_hydrogen_bond_groups(
+        residue_groups,
+        **kwargs,
+    )
+
+
+# -----------------------------------------------------------------------------
 # Public interface
 # -----------------------------------------------------------------------------
 
@@ -16695,6 +17284,9 @@ _SECTION_8_PUBLIC_NAMES: Final[
     "attach_residue_hydrogen_bond_groups",
     "group_analysis_hydrogen_bonds_by_residue",
     "analyze_and_group_hydrogen_bonds",
+    "group_analysis_result_by_residue",
+    "group_and_analyze_hydrogen_bonds",
+    "filter_hbond_residue_groups",
 )
 
 for public_name in _SECTION_8_PUBLIC_NAMES:
@@ -16715,48 +17307,8 @@ for public_name in _SECTION_8_PUBLIC_NAMES:
 
 
 # -----------------------------------------------------------------------------
-# Classification labels
+# Classification labels are defined in Section 2
 # -----------------------------------------------------------------------------
-
-HBOND_TYPE_STRONG: Final[
-    HydrogenBondClassification
-] = "strong"
-
-HBOND_TYPE_MODERATE: Final[
-    HydrogenBondClassification
-] = "moderate"
-
-HBOND_TYPE_WEAK: Final[
-    HydrogenBondClassification
-] = "weak"
-
-HBOND_TYPE_GEOMETRIC_ONLY: Final[
-    HydrogenBondClassification
-] = "geometric_only"
-
-HBOND_TYPE_REJECTED: Final[
-    HydrogenBondClassification
-] = "rejected"
-
-HBOND_TYPE_UNKNOWN: Final[
-    HydrogenBondClassification
-] = "unknown"
-
-
-VALID_HYDROGEN_BOND_CLASSIFICATIONS: Final[
-    FrozenSet[
-        HydrogenBondClassification
-    ]
-] = frozenset(
-    {
-        HBOND_TYPE_STRONG,
-        HBOND_TYPE_MODERATE,
-        HBOND_TYPE_WEAK,
-        HBOND_TYPE_GEOMETRIC_ONLY,
-        HBOND_TYPE_REJECTED,
-        HBOND_TYPE_UNKNOWN,
-    }
-)
 
 
 # -----------------------------------------------------------------------------
@@ -16815,25 +17367,6 @@ DEFAULT_WEAK_HYDROGEN_ACCEPTOR_DISTANCE: Final[
     np.float64
 ] = np.float64(
     2.80
-)
-
-
-DEFAULT_STRONG_DHA_ANGLE: Final[
-    np.float64
-] = np.float64(
-    150.0
-)
-
-DEFAULT_MODERATE_DHA_ANGLE: Final[
-    np.float64
-] = np.float64(
-    130.0
-)
-
-DEFAULT_WEAK_DHA_ANGLE: Final[
-    np.float64
-] = np.float64(
-    110.0
 )
 
 
@@ -17436,8 +17969,10 @@ class HydrogenBondClassificationConfig:
                 ),
             )
         } | {
-            "metadata": dict(
-                self.metadata
+            "metadata": (
+                _serialize_hbond_statistics_value(
+                    self.metadata
+                )
             )
         }
 
@@ -17445,6 +17980,22 @@ class HydrogenBondClassificationConfig:
 DEFAULT_HBOND_CLASSIFICATION_CONFIG: Final[
     HydrogenBondClassificationConfig
 ] = HydrogenBondClassificationConfig()
+
+
+def validate_hydrogen_bond_classification_config(
+    config: HydrogenBondClassificationConfig,
+) -> HydrogenBondClassificationConfig:
+    """Validate and return a hydrogen-bond classification configuration."""
+
+    if not isinstance(
+        config,
+        HydrogenBondClassificationConfig,
+    ):
+        raise TypeError(
+            "config must be a HydrogenBondClassificationConfig instance."
+        )
+
+    return config
 
 
 # -----------------------------------------------------------------------------
@@ -17721,6 +18272,83 @@ class HydrogenBondStrength:
             HBOND_TYPE_GEOMETRIC_ONLY,
         }
 
+    def __float__(
+        self,
+    ) -> float:
+        """Return the normalized geometric score."""
+
+        return float(
+            self.score
+        )
+
+    def _compare_score(
+        self,
+        other: Any,
+        operator: Callable[[float, float], bool],
+    ) -> Any:
+        try:
+            other_score = (
+                float(
+                    other.score
+                )
+                if isinstance(
+                    other,
+                    HydrogenBondStrength,
+                )
+                else float(
+                    other
+                )
+            )
+        except (
+            TypeError,
+            ValueError,
+            OverflowError,
+        ):
+            return NotImplemented
+
+        return operator(
+            float(
+                self.score
+            ),
+            other_score,
+        )
+
+    def __lt__(
+        self,
+        other: Any,
+    ) -> Any:
+        return self._compare_score(
+            other,
+            lambda left, right: left < right,
+        )
+
+    def __le__(
+        self,
+        other: Any,
+    ) -> Any:
+        return self._compare_score(
+            other,
+            lambda left, right: left <= right,
+        )
+
+    def __gt__(
+        self,
+        other: Any,
+    ) -> Any:
+        return self._compare_score(
+            other,
+            lambda left, right: left > right,
+        )
+
+    def __ge__(
+        self,
+        other: Any,
+    ) -> Any:
+        return self._compare_score(
+            other,
+            lambda left, right: left >= right,
+        )
+
     def to_dict(
         self,
     ) -> Dict[
@@ -17779,63 +18407,14 @@ class HydrogenBondStrength:
             "failed_criteria": list(
                 self.failed_criteria
             ),
-            "metadata": dict(
-                self.metadata
+            "metadata": (
+                _serialize_hbond_statistics_value(
+                    self.metadata
+                )
             ),
         }
 
 
-# -----------------------------------------------------------------------------
-# Classification validation
-# -----------------------------------------------------------------------------
-
-def validate_hydrogen_bond_classification(
-    classification: str,
-) -> HydrogenBondClassification:
-    """
-    Validate a hydrogen-bond classification label.
-
-    Parameters
-    ----------
-    classification : str
-        Classification label.
-
-    Returns
-    -------
-    HydrogenBondClassification
-        Normalized classification.
-
-    Raises
-    ------
-    TypeError
-        If the label is not a string.
-    ValueError
-        If the label is unsupported.
-    """
-
-    if not isinstance(
-        classification,
-        str,
-    ):
-        raise TypeError(
-            "Hydrogen-bond classification must be a string."
-        )
-
-    normalized_classification = (
-        classification.strip().lower()
-    )
-
-    if (
-        normalized_classification
-        not in VALID_HYDROGEN_BOND_CLASSIFICATIONS
-    ):
-        raise ValueError(
-            "Unsupported hydrogen-bond classification "
-            f"{classification!r}. Expected one of: "
-            f"{', '.join(sorted(VALID_HYDROGEN_BOND_CLASSIFICATIONS))}."
-        )
-
-    return normalized_classification
 
 
 # -----------------------------------------------------------------------------
@@ -18040,11 +18619,18 @@ def _linear_larger_is_better_score(
 
 
 def calculate_distance_geometry_score(
-    geometry: HydrogenBondGeometry,
+    geometry: Union[
+        HydrogenBondGeometry,
+        Number,
+    ],
     *,
     config: HydrogenBondClassificationConfig = (
         DEFAULT_HBOND_CLASSIFICATION_CONFIG
     ),
+    ideal_distance: Number = 2.60,
+    maximum_distance: Optional[
+        Number
+    ] = None,
 ) -> np.float64:
     """
     Calculate the distance component of geometric strength.
@@ -18068,14 +18654,6 @@ def calculate_distance_geometry_score(
     """
 
     if not isinstance(
-        geometry,
-        HydrogenBondGeometry,
-    ):
-        raise TypeError(
-            "geometry must be a HydrogenBondGeometry instance."
-        )
-
-    if not isinstance(
         config,
         HydrogenBondClassificationConfig,
     ):
@@ -18083,14 +18661,28 @@ def calculate_distance_geometry_score(
             "config must be a HydrogenBondClassificationConfig."
         )
 
+    if not isinstance(
+        geometry,
+        HydrogenBondGeometry,
+    ):
+        return _linear_smaller_is_better_score(
+            geometry,
+            ideal=ideal_distance,
+            maximum=(
+                config.weak_donor_acceptor_distance
+                if maximum_distance is None
+                else maximum_distance
+            ),
+        )
+
     donor_acceptor_score = (
         _linear_smaller_is_better_score(
             geometry.donor_acceptor_distance,
-            ideal=np.float64(
-                2.60
-            ),
+            ideal=ideal_distance,
             maximum=(
                 config.weak_donor_acceptor_distance
+                if maximum_distance is None
+                else maximum_distance
             ),
         )
     )
@@ -18122,11 +18714,17 @@ def calculate_distance_geometry_score(
 
 
 def calculate_donor_angle_geometry_score(
-    geometry: HydrogenBondGeometry,
+    geometry: Union[
+        HydrogenBondGeometry,
+        Number,
+    ],
     *,
     config: HydrogenBondClassificationConfig = (
         DEFAULT_HBOND_CLASSIFICATION_CONFIG
     ),
+    mode: Optional[
+        HydrogenBondMode
+    ] = None,
 ) -> Optional[
     np.float64
 ]:
@@ -18152,6 +18750,35 @@ def calculate_donor_angle_geometry_score(
     better.
     """
 
+    if not isinstance(
+        geometry,
+        HydrogenBondGeometry,
+    ):
+        normalized_mode = (
+            HBOND_MODE_EXPLICIT
+            if mode is None
+            else validate_hydrogen_bond_mode(
+                mode
+            )
+        )
+
+        if normalized_mode == HBOND_MODE_EXPLICIT:
+            return _linear_larger_is_better_score(
+                geometry,
+                minimum=config.weak_dha_angle,
+                ideal=STRAIGHT_ANGLE_DEGREES,
+            )
+
+        return _linear_smaller_is_better_score(
+            geometry,
+            ideal=np.float64(
+                0.0
+            ),
+            maximum=(
+                config.weak_inferred_deviation
+            ),
+        )
+
     if geometry.dha_angle is not None:
         return _linear_larger_is_better_score(
             geometry.dha_angle,
@@ -18174,7 +18801,10 @@ def calculate_donor_angle_geometry_score(
 
 
 def calculate_acceptor_angle_geometry_score(
-    geometry: HydrogenBondGeometry,
+    geometry: Union[
+        HydrogenBondGeometry,
+        Number,
+    ],
     *,
     config: HydrogenBondClassificationConfig = (
         DEFAULT_HBOND_CLASSIFICATION_CONFIG
@@ -18202,6 +18832,18 @@ def calculate_acceptor_angle_geometry_score(
     Acceptor angles are stored as deviation angles, with zero representing
     optimal alignment.
     """
+
+    if not isinstance(
+        geometry,
+        HydrogenBondGeometry,
+    ):
+        return _linear_smaller_is_better_score(
+            geometry,
+            ideal=np.float64(
+                0.0
+            ),
+            maximum=config.weak_inferred_deviation,
+        )
 
     if geometry.acceptor_angle is None:
         return None
@@ -18842,6 +19484,48 @@ def _merge_hbond_classifications(
 # HydrogenBond reconstruction
 # -----------------------------------------------------------------------------
 
+
+class _ClassifiedHydrogenBond(
+    HydrogenBond
+):
+    """Hydrogen bond exposing its strength for legacy tuple unpacking."""
+
+    __slots__ = ()
+
+    @property
+    def strength(
+        self,
+    ) -> HydrogenBondStrength:
+        """Return the geometric-strength assessment."""
+
+        return calculate_hydrogen_bond_geometric_score(
+            self
+        )
+
+    def __iter__(
+        self,
+    ) -> Iterator[Any]:
+        yield self
+        yield self.strength
+
+    def __len__(
+        self,
+    ) -> int:
+        return 2
+
+    def __getitem__(
+        self,
+        index: int,
+    ) -> Any:
+        if index in (0, -2):
+            return self
+        if index in (1, -1):
+            return self.strength
+        raise IndexError(
+            "Classified hydrogen-bond index is out of range."
+        )
+
+
 def classify_hydrogen_bond(
     hydrogen_bond: HydrogenBond,
     *,
@@ -18849,10 +19533,7 @@ def classify_hydrogen_bond(
         DEFAULT_HBOND_CLASSIFICATION_CONFIG
     ),
     require_inferred_acceptor_angle: bool = False,
-) -> Tuple[
-    HydrogenBond,
-    HydrogenBondStrength,
-]:
+) -> HydrogenBond:
     """
     Classify one hydrogen bond and return an updated immutable object.
 
@@ -18981,7 +19662,7 @@ def classify_hydrogen_bond(
         }
     )
 
-    updated_hydrogen_bond = HydrogenBond(
+    updated_hydrogen_bond = _ClassifiedHydrogenBond(
         donor=hydrogen_bond.donor,
         acceptor=hydrogen_bond.acceptor,
         hydrogen=hydrogen_bond.hydrogen,
@@ -19011,10 +19692,7 @@ def classify_hydrogen_bond(
         metadata=updated_metadata,
     )
 
-    return (
-        updated_hydrogen_bond,
-        strength,
-    )
+    return updated_hydrogen_bond
 
 
 def classify_hydrogen_bonds(
@@ -19175,7 +19853,6 @@ def filter_hydrogen_bonds_by_classification(
     hydrogen_bonds: Iterable[
         HydrogenBond
     ],
-    *,
     classifications: Iterable[
         HydrogenBondClassification
     ],
@@ -19458,6 +20135,9 @@ def hydrogen_bond_strength_statistics(
         "hydrogen_bond_count": len(
             strengths
         ),
+        "count": len(
+            strengths
+        ),
         "classification_counts": (
             classification_counts
         ),
@@ -19490,6 +20170,11 @@ def hydrogen_bond_strength_statistics(
         "strength_score_standard_deviation": (
             standard_deviation
         ),
+        "minimum": minimum_score,
+        "maximum": maximum_score,
+        "mean": mean_score,
+        "median": median_score,
+        "standard_deviation": standard_deviation,
         "explicit_count": sum(
             hydrogen_bond.mode
             == HBOND_MODE_EXPLICIT
@@ -19873,12 +20558,8 @@ _SECTION_9_PUBLIC_NAMES: Final[
         ...,
     ]
 ] = (
-    "HBOND_TYPE_STRONG",
-    "HBOND_TYPE_MODERATE",
-    "HBOND_TYPE_WEAK",
     "HBOND_TYPE_GEOMETRIC_ONLY",
     "HBOND_TYPE_REJECTED",
-    "HBOND_TYPE_UNKNOWN",
     "VALID_HYDROGEN_BOND_CLASSIFICATIONS",
     "DEFAULT_STRONG_DONOR_ACCEPTOR_DISTANCE",
     "DEFAULT_MODERATE_DONOR_ACCEPTOR_DISTANCE",
@@ -19886,9 +20567,6 @@ _SECTION_9_PUBLIC_NAMES: Final[
     "DEFAULT_STRONG_HYDROGEN_ACCEPTOR_DISTANCE",
     "DEFAULT_MODERATE_HYDROGEN_ACCEPTOR_DISTANCE",
     "DEFAULT_WEAK_HYDROGEN_ACCEPTOR_DISTANCE",
-    "DEFAULT_STRONG_DHA_ANGLE",
-    "DEFAULT_MODERATE_DHA_ANGLE",
-    "DEFAULT_WEAK_DHA_ANGLE",
     "DEFAULT_STRONG_INFERRED_DEVIATION",
     "DEFAULT_MODERATE_INFERRED_DEVIATION",
     "DEFAULT_WEAK_INFERRED_DEVIATION",
@@ -19905,7 +20583,7 @@ _SECTION_9_PUBLIC_NAMES: Final[
     "HydrogenBondClassificationConfig",
     "DEFAULT_HBOND_CLASSIFICATION_CONFIG",
     "HydrogenBondStrength",
-    "validate_hydrogen_bond_classification",
+    "validate_hydrogen_bond_classification_config",
     "calculate_distance_geometry_score",
     "calculate_donor_angle_geometry_score",
     "calculate_acceptor_angle_geometry_score",
@@ -20073,19 +20751,40 @@ def _finite_float_array(
         ]
     ],
 ) -> FloatArray:
-    """
-    Convert values to a finite one-dimensional float array.
+    """Return finite values as a one-dimensional ``float64`` array."""
 
-    Parameters
-    ----------
-    values : iterable of Number or None
-        Numeric values.
+    if isinstance(
+        values,
+        np.ndarray,
+    ):
+        try:
+            numeric_values = np.asarray(
+                values,
+                dtype=np.float64,
+            ).ravel()
 
-    Returns
-    -------
-    numpy.ndarray
-        Finite ``float64`` values.
-    """
+        except (
+            TypeError,
+            ValueError,
+            OverflowError,
+        ):
+            pass
+
+        else:
+            finite_mask = np.isfinite(
+                numeric_values
+            )
+
+            if bool(
+                np.all(
+                    finite_mask
+                )
+            ):
+                return numeric_values
+
+            return numeric_values[
+                finite_mask
+            ]
 
     normalized_values: List[
         np.float64
@@ -20117,6 +20816,102 @@ def _finite_float_array(
     return np.asarray(
         normalized_values,
         dtype=np.float64,
+    )
+
+
+def _small_linear_quartiles(
+    values: FloatArray,
+) -> Tuple[
+    np.float64,
+    np.float64,
+    np.float64,
+]:
+    """Return NumPy-compatible linear quartiles for a small array."""
+
+    sorted_values = np.sort(
+        values
+    )
+
+    positions = (
+        np.float64(
+            sorted_values.size
+            - 1
+        )
+        * np.asarray(
+            (
+                0.25,
+                0.50,
+                0.75,
+            ),
+            dtype=np.float64,
+        )
+    )
+
+    lower_indices = np.floor(
+        positions
+    ).astype(
+        np.intp
+    )
+
+    upper_indices = np.ceil(
+        positions
+    ).astype(
+        np.intp
+    )
+
+    fractions = positions - lower_indices
+
+    lower_values = sorted_values[
+        lower_indices
+    ]
+
+    upper_values = sorted_values[
+        upper_indices
+    ]
+
+    differences = upper_values - lower_values
+
+    quartiles = lower_values + differences * fractions
+
+    upper_weight_mask = fractions >= np.float64(
+        0.5
+    )
+
+    quartiles[
+        upper_weight_mask
+    ] = (
+        upper_values[
+            upper_weight_mask
+        ]
+        - differences[
+            upper_weight_mask
+        ]
+        * (
+            np.float64(
+                1.0
+            )
+            - fractions[
+                upper_weight_mask
+            ]
+        )
+    )
+
+    return (
+        np.float64(
+            quartiles[
+                0
+            ]
+        ),
+        np.float64(
+            quartiles[
+                1
+            ]
+        ),
+        np.float64(
+            quartiles[
+                2
+            ]
+        ),
     )
 
 
@@ -20194,16 +20989,28 @@ def summarize_numeric_values(
 
         return result
 
-    first_quartile, median, third_quartile = (
-        np.percentile(
+    if count <= 64:
+        (
+            first_quartile,
+            median,
+            third_quartile,
+        ) = _small_linear_quartiles(
+            numeric_values
+        )
+
+    else:
+        (
+            first_quartile,
+            median,
+            third_quartile,
+        ) = np.percentile(
             numeric_values,
-            [
+            (
                 25.0,
                 50.0,
                 75.0,
-            ],
+            ),
         )
-    )
 
     if count > normalized_ddof:
         variance = np.float64(
@@ -20640,6 +21447,16 @@ def hydrogen_bond_role_counts(
         "unknown_direction_count": (
             unknown_count
         ),
+        HBOND_ROLE_DONOR: (
+            ligand_donor_count
+            + receptor_donor_count
+            + unknown_count
+        ),
+        HBOND_ROLE_ACCEPTOR: (
+            ligand_donor_count
+            + receptor_donor_count
+            + unknown_count
+        ),
     }
 
 
@@ -20703,6 +21520,9 @@ def count_unique_hbond_atoms(
             acceptor_ids
         ),
         "unique_explicit_hydrogen_count": len(
+            hydrogen_ids
+        ),
+        "unique_hydrogen_count": len(
             hydrogen_ids
         ),
         "unique_heavy_atom_count": len(
@@ -20794,25 +21614,28 @@ def collect_hydrogen_bond_angles(
         )
     )
 
+    donor_deviations = _finite_float_array(
+        hydrogen_bond.geometry.donor_angle
+        for hydrogen_bond in normalized_bonds
+    )
+
+    acceptor_deviations = _finite_float_array(
+        hydrogen_bond.geometry.acceptor_angle
+        for hydrogen_bond in normalized_bonds
+    )
+
     return {
         "dha": _finite_float_array(
             hydrogen_bond.dha_angle
-            for hydrogen_bond
-            in normalized_bonds
+            for hydrogen_bond in normalized_bonds
         ),
-        "donor_deviation": _finite_float_array(
-            hydrogen_bond
-            .geometry
-            .donor_angle
-            for hydrogen_bond
-            in normalized_bonds
+        "donor_deviation": donor_deviations,
+        "acceptor_deviation": (
+            acceptor_deviations
         ),
-        "acceptor_deviation": _finite_float_array(
-            hydrogen_bond
-            .geometry
-            .acceptor_angle
-            for hydrogen_bond
-            in normalized_bonds
+        "donor": donor_deviations.copy(),
+        "acceptor": (
+            acceptor_deviations.copy()
         ),
     }
 
@@ -21480,7 +22303,9 @@ def _serialize_residue_key(
 
 def format_residue_key(
     key: Optional[
-        ResidueContactKey
+        Sequence[
+            Any
+        ]
     ],
 ) -> str:
     """
@@ -21500,9 +22325,36 @@ def format_residue_key(
     if key is None:
         return "unresolved"
 
-    normalized_key = _normalize_residue_key(
-        key
-    )
+    insertion_code = ""
+
+    if (
+        isinstance(
+            key,
+            (
+                tuple,
+                list,
+            ),
+        )
+        and len(
+            key
+        ) == 4
+    ):
+        insertion_code = str(
+            key[
+                3
+            ]
+            or ""
+        ).strip()
+        normalized_key = _normalize_residue_key(
+            key[
+                :3
+            ]
+        )
+
+    else:
+        normalized_key = _normalize_residue_key(
+            key  # type: ignore[arg-type]
+        )
 
     if normalized_key is None:
         return "unresolved"
@@ -21512,7 +22364,7 @@ def format_residue_key(
     )
 
     residue_label = (
-        f"{residue_name}{residue_number}"
+        f"{residue_name}{residue_number}{insertion_code}"
     )
 
     if chain_id:
@@ -21610,6 +22462,9 @@ def hydrogen_bond_to_summary_record(
             hydrogen_bond.classification
         ),
         "strength_score": float(
+            score
+        ),
+        "geometric_score": float(
             score
         ),
         "donor_acceptor_distance": float(
@@ -21912,6 +22767,7 @@ def residue_hydrogen_bond_summary(
         str,
         Any,
     ] = {
+        "residue": residue_group.residue,
         "residue_key": residue_group.key,
         "residue_label": format_residue_key(
             residue_group.key
@@ -22161,9 +23017,36 @@ def residue_hydrogen_bond_global_statistics(
         in normalized_groups
     )
 
+    hydrogen_bond_count = sum(
+        bond_counts
+    )
+
+    residue_count = len(
+        normalized_groups
+    )
+
     return {
-        "residue_group_count": len(
-            normalized_groups
+        "residue_group_count": residue_count,
+        "residue_count": residue_count,
+        "hydrogen_bond_count": hydrogen_bond_count,
+        "mean_hydrogen_bonds_per_residue": (
+            0.0
+            if residue_count == 0
+            else float(
+                np.mean(
+                    np.asarray(
+                        bond_counts,
+                        dtype=np.float64,
+                    )
+                )
+            )
+        ),
+        "maximum_hydrogen_bonds_per_residue": (
+            0
+            if not bond_counts
+            else max(
+                bond_counts
+            )
         ),
         "strong_residue_count": (
             strong_residue_count
@@ -22399,6 +23282,10 @@ def calculate_hydrogen_bond_statistics(
         ordered_residue_groups = ()
         residue_statistics = {
             "residue_group_count": 0,
+            "residue_count": 0,
+            "hydrogen_bond_count": 0,
+            "mean_hydrogen_bonds_per_residue": 0.0,
+            "maximum_hydrogen_bonds_per_residue": 0,
             "strong_residue_count": 0,
             "explicit_residue_count": 0,
             "hydrogen_bonds_per_residue": (
@@ -22513,61 +23400,43 @@ def calculate_hydrogen_bond_statistics(
 
 def _serialize_hbond_statistics_value(
     value: Any,
-) -> Any:
-    """
-    Recursively serialize statistical values.
-
-    Parameters
-    ----------
-    value : Any
-        Value to serialize.
-
-    Returns
-    -------
-    Any
-        JSON-compatible representation when possible.
-    """
-
-    if isinstance(
-        value,
-        Mapping,
-    ):
-        return {
-            str(
-                key
-            ): _serialize_hbond_statistics_value(
-                nested_value
-            )
-            for key, nested_value
-            in value.items()
-        }
-
-    if isinstance(
-        value,
-        np.ndarray,
-    ):
-        return [
-            _serialize_hbond_statistics_value(
-                item
-            )
-            for item in value.tolist()
+    *,
+    _seen: Optional[
+        Set[
+            int
         ]
+    ] = None,
+) -> Any:
+    """Recursively convert a value to a strict JSON-compatible form."""
+
+    if value is None or isinstance(
+        value,
+        (
+            str,
+            bool,
+            int,
+        ),
+    ):
+        return value
 
     if isinstance(
         value,
         (
-            tuple,
-            list,
-            set,
-            frozenset,
+            float,
+            np.floating,
         ),
     ):
-        return [
-            _serialize_hbond_statistics_value(
-                item
+        numeric_value = float(
+            value
+        )
+
+        return (
+            numeric_value
+            if np.isfinite(
+                numeric_value
             )
-            for item in value
-        ]
+            else None
+        )
 
     if isinstance(
         value,
@@ -22579,21 +23448,152 @@ def _serialize_hbond_statistics_value(
 
     if isinstance(
         value,
-        np.floating,
-    ):
-        return float(
-            value
-        )
-
-    if isinstance(
-        value,
         np.bool_,
     ):
         return bool(
             value
         )
 
-    return value
+    if _seen is None:
+        _seen = set()
+
+    value_identity = id(
+        value
+    )
+
+    if value_identity in _seen:
+        return "<recursive>"
+
+    if isinstance(
+        value,
+        Mapping,
+    ):
+        _seen.add(
+            value_identity
+        )
+
+        try:
+            return {
+                str(
+                    key
+                ): _serialize_hbond_statistics_value(
+                    nested_value,
+                    _seen=_seen,
+                )
+                for key, nested_value
+                in value.items()
+            }
+
+        finally:
+            _seen.discard(
+                value_identity
+            )
+
+    if isinstance(
+        value,
+        np.ndarray,
+    ):
+        return _serialize_hbond_statistics_value(
+            value.tolist(),
+            _seen=_seen,
+        )
+
+    if isinstance(
+        value,
+        (
+            tuple,
+            list,
+            set,
+            frozenset,
+        ),
+    ):
+        _seen.add(
+            value_identity
+        )
+
+        try:
+            return [
+                _serialize_hbond_statistics_value(
+                    item,
+                    _seen=_seen,
+                )
+                for item in value
+            ]
+
+        finally:
+            _seen.discard(
+                value_identity
+            )
+
+    to_dict = getattr(
+        value,
+        "to_dict",
+        None,
+    )
+
+    if callable(
+        to_dict
+    ):
+        _seen.add(
+            value_identity
+        )
+
+        try:
+            return _serialize_hbond_statistics_value(
+                to_dict(),
+                _seen=_seen,
+            )
+
+        except Exception:
+            pass
+
+        finally:
+            _seen.discard(
+                value_identity
+            )
+
+    residue_number = _get_chemical_object_value(
+        value,
+        (
+            "number",
+            "residue_number",
+            "position",
+        ),
+        default=None,
+    )
+
+    if residue_number is not None:
+        try:
+            return _serialize_residue_key(
+                get_residue_contact_key(
+                    value
+                )
+            )
+
+        except Exception:
+            pass
+
+    try:
+        if is_atom_like(
+            value,
+            require_coordinate=False,
+        ):
+            return _safe_atom_identifier(
+                value
+            )
+
+    except Exception:
+        pass
+
+    try:
+        return str(
+            value
+        )
+
+    except Exception:
+        return repr(
+            value
+        )
 
 
 def serialize_hydrogen_bond_statistics(
@@ -22688,10 +23688,7 @@ def _format_optional_number(
     ):
         return "n/a"
 
-    return (
-        f"{float(normalized_value):."
-        f"{decimal_places}f}{suffix}"
-    )
+    return f"{float(normalized_value):.{decimal_places}f}{suffix}"
 
 
 def format_hydrogen_bond_summary(
@@ -22932,10 +23929,12 @@ def summarize_hydrogen_bond_analysis_result(
 
 def attach_hydrogen_bond_statistics(
     result: HydrogenBondAnalysisResult,
-    statistics: Mapping[
-        str,
-        Any,
-    ],
+    statistics: Optional[
+        Mapping[
+            str,
+            Any,
+        ]
+    ] = None,
     *,
     replace: bool = True,
     metadata: Optional[
@@ -22971,6 +23970,14 @@ def attach_hydrogen_bond_statistics(
     ):
         raise TypeError(
             "result must be a HydrogenBondAnalysisResult instance."
+        )
+
+    if statistics is None:
+        statistics = calculate_hydrogen_bond_statistics(
+            result.hydrogen_bonds,
+            residue_groups=(
+                result.residue_hydrogen_bonds
+            ),
         )
 
     if not isinstance(
@@ -23768,8 +24775,10 @@ class DockModelHydrogenBondResults:
                     self.mean_hydrogen_bond_count
                 )
             ),
-            "metadata": dict(
-                self.metadata
+            "metadata": (
+                _serialize_hbond_statistics_value(
+                    self.metadata
+                )
             ),
         }
 
@@ -23804,15 +24813,32 @@ def _get_first_available_attribute(
         First resolved attribute value or ``default``.
     """
 
-    for attribute_name in attribute_names:
-        try:
-            value = getattr(
-                obj,
-                attribute_name,
-            )
+    normalized_attribute_names = (
+        (attribute_names,)
+        if isinstance(attribute_names, str)
+        else attribute_names
+    )
 
-        except Exception:
-            continue
+    for attribute_name in normalized_attribute_names:
+        if isinstance(obj, Mapping):
+            try:
+                value = obj.get(
+                    attribute_name,
+                    None,
+                )
+
+            except Exception:
+                continue
+
+        else:
+            try:
+                value = getattr(
+                    obj,
+                    attribute_name,
+                )
+
+            except Exception:
+                continue
 
         if value is not None:
             return value
@@ -23842,6 +24868,17 @@ def _set_attribute_defensively(
     bool
         Whether the attribute was successfully assigned.
     """
+
+    if isinstance(obj, MutableMapping):
+        try:
+            obj[
+                attribute_name
+            ] = value
+
+        except Exception:
+            return False
+
+        return True
 
     try:
         setattr(
@@ -23873,14 +24910,24 @@ def _dockmodel_has_mapping_storage(
         Mapping-storage availability.
     """
 
-    try:
-        metadata = getattr(
-            dock_model,
-            "metadata",
-        )
+    if isinstance(dock_model, Mapping):
+        try:
+            metadata = dock_model.get(
+                "metadata"
+            )
 
-    except Exception:
-        return False
+        except Exception:
+            return False
+
+    else:
+        try:
+            metadata = getattr(
+                dock_model,
+                "metadata",
+            )
+
+        except Exception:
+            return False
 
     return isinstance(
         metadata,
@@ -23917,7 +24964,18 @@ def _store_dockmodel_metadata_value(
         return False
 
     try:
-        dock_model.metadata[
+        metadata = (
+            dock_model[
+                "metadata"
+            ]
+            if isinstance(
+                dock_model,
+                Mapping,
+            )
+            else dock_model.metadata
+        )
+
+        metadata[
             key
         ] = value
 
@@ -24778,19 +25836,9 @@ def store_dockmodel_hydrogen_bond_result(
     """
     Store a hydrogen-bond result on a DockModel.
 
-    Parameters
-    ----------
-    dock_model : DockModel
-        DockModel instance.
-    result : HydrogenBondAnalysisResult
-        Analysis result.
-    pose_key : str or None, optional
-        Pose key. When omitted, the result is stored as the active result.
-
-    Returns
-    -------
-    bool
-        Whether at least one storage strategy succeeded.
+    Existing pose results are preserved when a new pose result is added.
+    Both attribute-based and mutable-mapping DockModel implementations are
+    supported.
     """
 
     if not isinstance(
@@ -24827,63 +25875,92 @@ def store_dockmodel_hydrogen_bond_result(
             "pose_key cannot be empty."
         )
 
-    existing_results = getattr(
+    existing_results = _get_first_available_attribute(
         dock_model,
-        DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE,
-        None,
+        (
+            DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE,
+        ),
+        default=None,
     )
+
+    failed_poses: Mapping[
+        str,
+        str,
+    ] = {}
+
+    container_metadata: Mapping[
+        str,
+        Any,
+    ] = {}
+
+    pose_order: List[
+        str
+    ] = []
 
     if isinstance(
         existing_results,
-        MutableMapping,
+        DockModelHydrogenBondResults,
     ):
-        try:
-            existing_results[
-                normalized_pose_key
-            ] = result
-
-            storage_succeeded = True
-
-        except Exception:
-            pass
-
-    else:
-        results_mapping = {
-            normalized_pose_key: result
-        }
-
-        storage_succeeded |= _set_attribute_defensively(
-            dock_model,
-            DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE,
-            results_mapping,
+        results_mapping = dict(
+            existing_results.results
+        )
+        pose_order.extend(
+            existing_results.pose_order
+        )
+        failed_poses = dict(
+            existing_results.failed_poses
+        )
+        container_metadata = dict(
+            existing_results.metadata
         )
 
-    if _dockmodel_has_mapping_storage(
-        dock_model
+    elif isinstance(
+        existing_results,
+        Mapping,
     ):
-        try:
-            metadata_results = dock_model.metadata.get(
-                DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE
+        results_mapping = {
+            str(key): value
+            for key, value
+            in existing_results.items()
+            if isinstance(
+                value,
+                HydrogenBondAnalysisResult,
             )
+        }
+        pose_order.extend(
+            results_mapping
+        )
 
-            if not isinstance(
-                metadata_results,
-                MutableMapping,
-            ):
-                metadata_results = {}
+    else:
+        results_mapping = {}
 
-                dock_model.metadata[
-                    DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE
-                ] = metadata_results
+    results_mapping[
+        normalized_pose_key
+    ] = result
 
-            metadata_results[
-                normalized_pose_key
-            ] = result
+    if normalized_pose_key not in pose_order:
+        pose_order.append(
+            normalized_pose_key
+        )
 
-            storage_succeeded = True
+    updated_results = DockModelHydrogenBondResults(
+        results=results_mapping,
+        pose_order=pose_order,
+        failed_poses=failed_poses,
+        metadata=container_metadata,
+    )
 
-        except Exception:
-            pass
+    storage_succeeded |= _set_attribute_defensively(
+        dock_model,
+        DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE,
+        updated_results,
+    )
+
+    storage_succeeded |= _store_dockmodel_metadata_value(
+        dock_model,
+        DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE,
+        updated_results,
+    )
 
     return storage_succeeded
 
@@ -24958,10 +26035,12 @@ def get_stored_dockmodel_hydrogen_bond_result(
     """
 
     if pose_key is None:
-        direct_result = getattr(
+        direct_result = _get_first_available_attribute(
             dock_model,
-            DEFAULT_DOCKMODEL_HBOND_RESULT_ATTRIBUTE,
-            None,
+            (
+                DEFAULT_DOCKMODEL_HBOND_RESULT_ATTRIBUTE,
+            ),
+            default=None,
         )
 
         if isinstance(
@@ -24973,7 +26052,18 @@ def get_stored_dockmodel_hydrogen_bond_result(
         if _dockmodel_has_mapping_storage(
             dock_model
         ):
-            metadata_result = dock_model.metadata.get(
+            metadata = (
+                dock_model[
+                    "metadata"
+                ]
+                if isinstance(
+                    dock_model,
+                    Mapping,
+                )
+                else dock_model.metadata
+            )
+
+            metadata_result = metadata.get(
                 DEFAULT_DOCKMODEL_HBOND_RESULT_ATTRIBUTE
             )
 
@@ -24989,10 +26079,12 @@ def get_stored_dockmodel_hydrogen_bond_result(
         pose_key
     ).strip()
 
-    stored_results = getattr(
+    stored_results = _get_first_available_attribute(
         dock_model,
-        DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE,
-        None,
+        (
+            DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE,
+        ),
+        default=None,
     )
 
     if isinstance(
@@ -25016,7 +26108,18 @@ def get_stored_dockmodel_hydrogen_bond_result(
     if _dockmodel_has_mapping_storage(
         dock_model
     ):
-        metadata_results = dock_model.metadata.get(
+        metadata = (
+            dock_model[
+                "metadata"
+            ]
+            if isinstance(
+                dock_model,
+                Mapping,
+            )
+            else dock_model.metadata
+        )
+
+        metadata_results = metadata.get(
             DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE
         )
 
@@ -25185,6 +26288,11 @@ def analyze_dockmodel_hydrogen_bonds(
                 metadata=result_metadata,
                 **analysis_kwargs,
             )
+        )
+
+        result = replace(
+            result,
+            statistics=_EMPTY_METADATA,
         )
 
     if store_result:
@@ -25769,40 +26877,91 @@ def rank_dockmodel_poses_by_hydrogen_bonds(
             value
         )
 
-    ranked_entries = sorted(
-        (
+    sortable_entries: List[
+        Tuple[
+            str,
+            HydrogenBondAnalysisResult,
+            Optional[
+                float
+            ],
+        ]
+    ] = []
+
+    for pose_key in results.pose_order:
+        result = results.results[
+            pose_key
+        ]
+
+        try:
+            raw_metric_value = float(
+                metric_value(
+                    result
+                )
+            )
+
+        except (
+            TypeError,
+            ValueError,
+            OverflowError,
+        ):
+            normalized_value = None
+
+        else:
+            normalized_value = (
+                raw_metric_value
+                if np.isfinite(
+                    raw_metric_value
+                )
+                else None
+            )
+
+        sortable_entries.append(
             (
                 pose_key,
-                results.results[
-                    pose_key
-                ],
+                result,
+                normalized_value,
             )
-            for pose_key
-            in results.pose_order
-        ),
+        )
+
+    sortable_entries.sort(
         key=lambda entry: (
-            -float(
-                metric_value(
-                    entry[
-                        1
+            entry[
+                2
+            ]
+            is None,
+            (
+                -entry[
+                    2
+                ]
+                if (
+                    strongest_first
+                    and entry[
+                        2
                     ]
+                    is not None
                 )
+                else entry[
+                    2
+                ]
+                if entry[
+                    2
+                ]
+                is not None
+                else 0.0
             ),
             entry[
                 0
             ],
-        ),
+        )
     )
 
-    if strongest_first:
-        return tuple(
-            ranked_entries
-        )
-
     return tuple(
-        reversed(
-            ranked_entries
+        (
+            pose_key,
+            result,
         )
+        for pose_key, result, _
+        in sortable_entries
     )
 
 
@@ -25868,8 +27027,7 @@ def summarize_dockmodel_hydrogen_bond_results(
                 "n/a."
                 if results.mean_hydrogen_bond_count is None
                 else (
-                    f"{float(results.mean_hydrogen_bond_count):."
-                    f"{normalized_decimal_places}f}."
+                    f"{float(results.mean_hydrogen_bond_count):.{normalized_decimal_places}f}."
                 )
             )
         ),
@@ -25916,8 +27074,7 @@ def summarize_dockmodel_hydrogen_bond_results(
                 "n/a"
                 if strength_mean is None
                 else (
-                    f"{float(strength_mean):."
-                    f"{normalized_decimal_places}f}"
+                    f"{float(strength_mean):.{normalized_decimal_places}f}"
                 )
             )
 
@@ -26429,6 +27586,30 @@ SELF_TEST_FAILURE_STATUS: Final[
 SELF_TEST_SKIP_STATUS: Final[
     str
 ] = "skipped"
+
+SELF_TEST_CODE_FAILURE: Final[
+    str
+] = "code_failure"
+
+SELF_TEST_TEST_FAILURE: Final[
+    str
+] = "test_failure"
+
+SELF_TEST_ENVIRONMENTAL_LIMITATION: Final[
+    str
+] = "environmental_limitation"
+
+VALID_SELF_TEST_FAILURE_CATEGORIES: Final[
+    FrozenSet[
+        str
+    ]
+] = frozenset(
+    {
+        SELF_TEST_CODE_FAILURE,
+        SELF_TEST_TEST_FAILURE,
+        SELF_TEST_ENVIRONMENTAL_LIMITATION,
+    }
+)
 
 
 # -----------------------------------------------------------------------------
@@ -27893,6 +29074,10 @@ class SelfTestCaseResult:
         compare=False,
     )
 
+    failure_category: Optional[
+        str
+    ] = None
+
     def __post_init__(
         self,
     ) -> None:
@@ -27974,6 +29159,38 @@ class SelfTestCaseResult:
             ),
         )
 
+        normalized_failure_category = (
+            None
+            if self.failure_category is None
+            else str(
+                self.failure_category
+            ).strip().lower()
+        )
+
+        if (
+            normalized_failure_category is not None
+            and normalized_failure_category
+            not in VALID_SELF_TEST_FAILURE_CATEGORIES
+        ):
+            raise ValueError(
+                "Unsupported self-test failure category "
+                f"{self.failure_category!r}."
+            )
+
+        if (
+            normalized_status != SELF_TEST_FAILURE_STATUS
+            and normalized_failure_category is not None
+        ):
+            raise ValueError(
+                "Only failed self-tests may have a failure category."
+            )
+
+        object.__setattr__(
+            self,
+            "failure_category",
+            normalized_failure_category,
+        )
+
         object.__setattr__(
             self,
             "metadata",
@@ -28031,8 +29248,13 @@ class SelfTestCaseResult:
             "exception_type": (
                 self.exception_type
             ),
-            "metadata": dict(
-                self.metadata
+            "failure_category": (
+                self.failure_category
+            ),
+            "metadata": (
+                _serialize_hbond_statistics_value(
+                    self.metadata
+                )
             ),
         }
 
@@ -28216,6 +29438,32 @@ class SelfTestReport:
             if result.failed
         )
 
+    @property
+    def failure_counts(
+        self,
+    ) -> Dict[
+        str,
+        int,
+    ]:
+        """Return failed-test counts by category."""
+
+        counts = {
+            category: 0
+            for category
+            in VALID_SELF_TEST_FAILURE_CATEGORIES
+        }
+
+        for result in self.results:
+            if (
+                result.failed
+                and result.failure_category is not None
+            ):
+                counts[
+                    result.failure_category
+                ] += 1
+
+        return counts
+
     def to_dict(
         self,
     ) -> Dict[
@@ -28237,6 +29485,9 @@ class SelfTestReport:
             "passed_count": self.passed_count,
             "failed_count": self.failed_count,
             "skipped_count": self.skipped_count,
+            "failure_counts": dict(
+                self.failure_counts
+            ),
             "passed": self.passed,
             "total_duration_seconds": float(
                 self.total_duration_seconds
@@ -28245,8 +29496,10 @@ class SelfTestReport:
                 result.to_dict()
                 for result in self.results
             ],
-            "metadata": dict(
-                self.metadata
+            "metadata": (
+                _serialize_hbond_statistics_value(
+                    self.metadata
+                )
             ),
         }
 
@@ -28882,6 +30135,60 @@ def self_test_raises(
 # Test execution helpers
 # -----------------------------------------------------------------------------
 
+def classify_self_test_failure(
+    error: BaseException,
+    *,
+    metadata: Optional[
+        Mapping[
+            str,
+            Any,
+        ]
+    ] = None,
+) -> str:
+    """Classify a self-test failure by its most likely source."""
+
+    if not isinstance(
+        error,
+        BaseException,
+    ):
+        raise TypeError(
+            "error must be an exception instance."
+        )
+
+    if metadata is not None:
+        requested_category = metadata.get(
+            "failure_category"
+        )
+
+        if requested_category is not None:
+            normalized_category = str(
+                requested_category
+            ).strip().lower()
+
+            if (
+                normalized_category
+                not in VALID_SELF_TEST_FAILURE_CATEGORIES
+            ):
+                raise ValueError(
+                    "Unsupported self-test failure category "
+                    f"{requested_category!r}."
+                )
+
+            return normalized_category
+
+    if isinstance(
+        error,
+        (
+            ImportError,
+            ModuleNotFoundError,
+            OSError,
+        ),
+    ):
+        return SELF_TEST_ENVIRONMENTAL_LIMITATION
+
+    return SELF_TEST_CODE_FAILURE
+
+
 def run_self_test_case(
     name: str,
     test_function: Callable[
@@ -28946,6 +30253,12 @@ def run_self_test_case(
                 type(
                     error
                 ).__name__
+            ),
+            failure_category=(
+                classify_self_test_failure(
+                    error,
+                    metadata=metadata,
+                )
             ),
             metadata=(
                 {}
@@ -29366,8 +30679,38 @@ def make_explicit_linear_hbond_system(
         ),
     )
 
-    donor = make_fake_atom(
+    donor_atom_name = {
+        "LYS": "NZ",
+        "SER": "OG",
+        "THR": "OG1",
+        "TYR": "OH",
+        "CYS": "SG",
+        "ASN": "ND2",
+        "GLN": "NE2",
+    }.get(
+        str(
+            donor_residue_name
+        ).strip().upper(),
         "D",
+    )
+
+    acceptor_atom_name = {
+        "ASP": "OD1",
+        "GLU": "OE1",
+        "ASN": "OD1",
+        "GLN": "OE1",
+        "SER": "OG",
+        "THR": "OG1",
+        "TYR": "OH",
+    }.get(
+        str(
+            acceptor_residue_name
+        ).strip().upper(),
+        "A",
+    )
+
+    donor = make_fake_atom(
+        donor_atom_name,
         donor_element,
         (
             0.0,
@@ -29394,7 +30737,7 @@ def make_explicit_linear_hbond_system(
     )
 
     acceptor = make_fake_atom(
-        "A",
+        acceptor_atom_name,
         acceptor_element,
         (
             normalized_da_distance,
@@ -29540,13 +30883,12 @@ def make_explicit_bent_hbond_system(
         ),
     )
 
+    desired_angle = np.float64(
+        dha_angle
+    )
+
     angle_radians = np.deg2rad(
-        np.float64(
-            180.0
-        )
-        - np.float64(
-            dha_angle
-        )
+        desired_angle
     )
 
     donor_coordinate = np.asarray(
@@ -29563,23 +30905,55 @@ def make_explicit_bent_hbond_system(
         dtype=np.float64,
     )
 
-    donor_acceptor_distance_value = (
-        np.float64(
-            donor_acceptor_distance
+    donor_acceptor_distance_value = np.float64(
+        donor_acceptor_distance
+    )
+
+    donor_hydrogen_distance_value = np.float64(
+        donor_hydrogen_distance
+    )
+
+    discriminant = (
+        donor_acceptor_distance_value ** 2
+        - donor_hydrogen_distance_value ** 2
+        * np.sin(
+            angle_radians
+        ) ** 2
+    )
+
+    if discriminant < 0.0:
+        raise ValueError(
+            "The requested bent geometry is not physically constructible."
         )
+
+    hydrogen_acceptor_length = (
+        donor_hydrogen_distance_value
+        * np.cos(
+            angle_radians
+        )
+        + np.sqrt(
+            discriminant
+        )
+    )
+
+    acceptor_direction_angle = (
+        np.pi
+        - angle_radians
     )
 
     acceptor_coordinate = np.asarray(
         (
-            donor_acceptor_distance_value
+            hydrogen_coordinate[0]
+            + hydrogen_acceptor_length
             * np.cos(
-                angle_radians
+                acceptor_direction_angle
             ),
-            donor_acceptor_distance_value
+            hydrogen_coordinate[1]
+            + hydrogen_acceptor_length
             * np.sin(
-                angle_radians
+                acceptor_direction_angle
             ),
-            0.0,
+            hydrogen_coordinate[2],
         ),
         dtype=np.float64,
     )
@@ -30752,6 +32126,134 @@ def _self_test_infrastructure_report(
     )
 
 
+
+def _self_test_failure_classification(
+) -> None:
+    """Test code, test and environment failure classification."""
+
+    code_result = run_self_test_case(
+        "classification.code",
+        lambda: self_test_assert(
+            False
+        ),
+    )
+
+    self_test_assert_equal(
+        code_result.failure_category,
+        SELF_TEST_CODE_FAILURE,
+    )
+
+    test_result = run_self_test_case(
+        "classification.test",
+        lambda: (_ for _ in ()).throw(
+            ValueError(
+                "deliberate malformed test"
+            )
+        ),
+        metadata={
+            "failure_category": (
+                SELF_TEST_TEST_FAILURE
+            ),
+        },
+    )
+
+    self_test_assert_equal(
+        test_result.failure_category,
+        SELF_TEST_TEST_FAILURE,
+    )
+
+    environment_result = run_self_test_case(
+        "classification.environment",
+        lambda: (_ for _ in ()).throw(
+            ModuleNotFoundError(
+                "deliberate missing dependency"
+            )
+        ),
+    )
+
+    self_test_assert_equal(
+        environment_result.failure_category,
+        SELF_TEST_ENVIRONMENTAL_LIMITATION,
+    )
+
+    report = SelfTestReport(
+        results=[
+            code_result,
+            test_result,
+            environment_result,
+        ]
+    )
+
+    self_test_assert_equal(
+        report.failure_counts[
+            SELF_TEST_CODE_FAILURE
+        ],
+        1,
+    )
+
+    self_test_assert_equal(
+        report.failure_counts[
+            SELF_TEST_TEST_FAILURE
+        ],
+        1,
+    )
+
+    self_test_assert_equal(
+        report.failure_counts[
+            SELF_TEST_ENVIRONMENTAL_LIMITATION
+        ],
+        1,
+    )
+
+
+def _self_test_public_api_contract(
+) -> None:
+    """Validate exported names and compatibility entry points."""
+
+    self_test_assert_equal(
+        len(
+            __all__
+        ),
+        len(
+            set(
+                __all__
+            )
+        ),
+    )
+
+    missing_names = tuple(
+        name
+        for name in __all__
+        if name not in globals()
+    )
+
+    self_test_assert_equal(
+        missing_names,
+        (),
+    )
+
+    required_names = (
+        "HydrogenBond",
+        "HydrogenBondAnalysisResult",
+        "detect_hydrogen_bonds",
+        "analyze_hydrogen_bonds",
+        "analyze_dockmodel_hydrogen_bonds",
+        "group_analysis_result_by_residue",
+        "group_and_analyze_hydrogen_bonds",
+        "filter_hbond_residue_groups",
+        "validate_hydrogen_bond_classification_config",
+    )
+
+    self_test_assert_equal(
+        tuple(
+            name
+            for name in required_names
+            if name not in __all__
+        ),
+        (),
+    )
+
+
 def run_self_test_infrastructure_tests(
     *,
     raise_on_failure: bool = False,
@@ -30791,6 +32293,14 @@ def run_self_test_infrastructure_tests(
             "infrastructure.report",
             _self_test_infrastructure_report,
         ),
+        (
+            "infrastructure.failure_classification",
+            _self_test_failure_classification,
+        ),
+        (
+            "infrastructure.public_api",
+            _self_test_public_api_contract,
+        ),
     )
 
     return run_self_test_group(
@@ -30827,6 +32337,10 @@ _SECTION_12_1_PUBLIC_NAMES: Final[
     "SELF_TEST_SUCCESS_STATUS",
     "SELF_TEST_FAILURE_STATUS",
     "SELF_TEST_SKIP_STATUS",
+    "SELF_TEST_CODE_FAILURE",
+    "SELF_TEST_TEST_FAILURE",
+    "SELF_TEST_ENVIRONMENTAL_LIMITATION",
+    "VALID_SELF_TEST_FAILURE_CATEGORIES",
     "FakeElement",
     "FakeResidue",
     "FakeAtom",
@@ -30863,6 +32377,7 @@ _SECTION_12_1_PUBLIC_NAMES: Final[
     "self_test_assert_between",
     "self_test_assert_mapping_contains",
     "self_test_raises",
+    "classify_self_test_failure",
     "run_self_test_case",
     "make_skipped_self_test_result",
     "run_self_test_group",
@@ -30994,7 +32509,7 @@ def _self_test_make_donor_with_hydrogens(
     donor_atom_type: Optional[
         str
     ] = "N3",
-    donor_residue_name: str = "LYS",
+    donor_residue_name: str = "LIG",
     hydrogen_distance: Number = 1.0,
 ) -> Dict[
     str,
@@ -32932,6 +34447,12 @@ def _self_test_get_hbond_atom_roles_donor_only(
         donor_atom_type="N3",
     )
 
+    system[
+        "donor"
+    ].formal_charge = np.float64(
+        1.0
+    )
+
     roles = get_hbond_atom_roles(
         system[
             "donor"
@@ -33021,10 +34542,12 @@ def _self_test_get_hbond_atom_roles_none(
     )
 
     self_test_assert_equal(
-        tuple(
-            roles
+        roles,
+        frozenset(
+            {
+                HBOND_ROLE_NONE,
+            }
         ),
-        (),
     )
 
 
@@ -33116,6 +34639,12 @@ def _self_test_hbond_role_counts(
     )
 
     acceptor_system = _self_test_make_generic_acceptor()
+
+    donor_system[
+        "donor"
+    ].formal_charge = np.float64(
+        1.0
+    )
 
     counts = hbond_role_counts(
         (
@@ -41666,6 +43195,362 @@ def _self_test_dockmodel_bound_summary_missing(
 
 
 # -----------------------------------------------------------------------------
+# Deep integration regression tests
+# -----------------------------------------------------------------------------
+
+def _self_test_serialization_strict_json_result(
+) -> None:
+    """Test strict JSON serialization of a complete analysis result."""
+
+    import json
+
+    system = make_fake_dockmodel_system(
+        pose_count=2
+    )
+
+    result = analyze_dockmodel_hydrogen_bonds(
+        system[
+            "dock_model"
+        ]
+    )
+
+    serialized = result.to_dict()
+
+    encoded = json.dumps(
+        serialized,
+        allow_nan=False,
+    )
+
+    self_test_assert(
+        bool(
+            encoded
+        )
+    )
+
+
+def _self_test_serialization_strict_json_multipose(
+) -> None:
+    """Test strict JSON serialization of full multi-pose results."""
+
+    import json
+
+    system = make_fake_dockmodel_system(
+        pose_count=2
+    )
+
+    results = analyze_all_dockmodel_pose_hydrogen_bonds(
+        system[
+            "dock_model"
+        ]
+    )
+
+    serialized = results.to_dict(
+        include_full_results=True
+    )
+
+    encoded = json.dumps(
+        serialized,
+        allow_nan=False,
+    )
+
+    self_test_assert(
+        bool(
+            encoded
+        )
+    )
+
+
+def _self_test_serialization_recursive_metadata(
+) -> None:
+    """Test cycle-safe metadata serialization."""
+
+    recursive_metadata: Dict[
+        str,
+        Any,
+    ] = {}
+
+    recursive_metadata[
+        "self"
+    ] = recursive_metadata
+
+    result = HydrogenBondAnalysisResult(
+        metadata=recursive_metadata
+    )
+
+    serialized = result.to_dict()
+
+    self_test_assert_equal(
+        serialized[
+            "metadata"
+        ][
+            "self"
+        ][
+            "self"
+        ],
+        "<recursive>",
+    )
+
+
+def _self_test_dockmodel_mapping_backed_integration(
+) -> None:
+    """Test analysis and storage on a mapping-backed DockModel."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=2
+    )
+
+    dock_model: Dict[
+        str,
+        Any,
+    ] = {
+        "receptor": system[
+            "receptor"
+        ],
+        "poses": system[
+            "poses"
+        ],
+        "active_pose": "pose_1",
+        "metadata": {},
+    }
+
+    result = analyze_dockmodel_hydrogen_bonds(
+        dock_model  # type: ignore[arg-type]
+    )
+
+    self_test_assert_isinstance(
+        result,
+        HydrogenBondAnalysisResult,
+    )
+
+    self_test_assert_isinstance(
+        dock_model[
+            DEFAULT_DOCKMODEL_HBOND_RESULT_ATTRIBUTE
+        ],
+        HydrogenBondAnalysisResult,
+    )
+
+    results = analyze_all_dockmodel_pose_hydrogen_bonds(
+        dock_model  # type: ignore[arg-type]
+    )
+
+    self_test_assert_isinstance(
+        results,
+        DockModelHydrogenBondResults,
+    )
+
+    self_test_assert_isinstance(
+        dock_model[
+            DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE
+        ],
+        DockModelHydrogenBondResults,
+    )
+
+
+def _self_test_dockmodel_pose_storage_preserves_multipose(
+) -> None:
+    """Test that adding one pose preserves existing multi-pose results."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=2
+    )
+
+    dock_model = system[
+        "dock_model"
+    ]
+
+    existing_results = analyze_all_dockmodel_pose_hydrogen_bonds(
+        dock_model
+    )
+
+    added_result = next(
+        iter(
+            existing_results.results.values()
+        )
+    )
+
+    storage_succeeded = store_dockmodel_hydrogen_bond_result(
+        dock_model,
+        added_result,
+        pose_key="extra_pose",
+    )
+
+    self_test_assert(
+        storage_succeeded
+    )
+
+    stored_results = _get_first_available_attribute(
+        dock_model,
+        (
+            DEFAULT_DOCKMODEL_HBOND_RESULTS_ATTRIBUTE,
+        ),
+        default=None,
+    )
+
+    self_test_assert_isinstance(
+        stored_results,
+        DockModelHydrogenBondResults,
+    )
+
+    self_test_assert_equal(
+        set(
+            stored_results.results
+        ),
+        set(
+            existing_results.results
+        )
+        | {
+            "extra_pose"
+        },
+    )
+
+
+def _self_test_multipose_missing_metric_last(
+) -> None:
+    """Test that missing metrics remain last in both ranking directions."""
+
+    system = make_fake_dockmodel_system(
+        pose_count=1
+    )
+
+    valid_result = analyze_dockmodel_hydrogen_bonds(
+        system[
+            "dock_model"
+        ]
+    )
+
+    missing_result = HydrogenBondAnalysisResult()
+
+    results = DockModelHydrogenBondResults(
+        results={
+            "valid": valid_result,
+            "missing": missing_result,
+        },
+        pose_order=(
+            "valid",
+            "missing",
+        ),
+    )
+
+    for strongest_first in (
+        True,
+        False,
+    ):
+        ranking = rank_dockmodel_poses_by_hydrogen_bonds(
+            results,
+            metric="mean_strength",
+            strongest_first=strongest_first,
+        )
+
+        self_test_assert_equal(
+            ranking[
+                -1
+            ][
+                0
+            ],
+            "missing",
+        )
+
+
+def _self_test_chimerax_atomic_structure_compatibility(
+) -> None:
+    """Test analysis with ChimeraX-named atomic structure classes."""
+
+    import sys
+    import types
+
+    previous_chimerax = sys.modules.get(
+        "chimerax"
+    )
+
+    previous_atomic = sys.modules.get(
+        "chimerax.atomic"
+    )
+
+    chimerax_module = types.ModuleType(
+        "chimerax"
+    )
+
+    atomic_module = types.ModuleType(
+        "chimerax.atomic"
+    )
+
+    class AtomicStructure:
+        __module__ = "chimerax.atomic"
+
+        def __init__(
+            self,
+            atoms: Iterable[
+                AtomLike
+            ],
+        ) -> None:
+            self.atoms = tuple(
+                atoms
+            )
+
+    atomic_module.AtomicStructure = AtomicStructure
+    chimerax_module.atomic = atomic_module
+
+    sys.modules[
+        "chimerax"
+    ] = chimerax_module
+
+    sys.modules[
+        "chimerax.atomic"
+    ] = atomic_module
+
+    try:
+        system = make_explicit_linear_hbond_system()
+
+        ligand = AtomicStructure(
+            system[
+                "ligand_atoms"
+            ]
+        )
+
+        receptor = AtomicStructure(
+            system[
+                "receptor_atoms"
+            ]
+        )
+
+        result = analyze_dockmodel_hydrogen_bonds(
+            {
+                "receptor": receptor,
+                "ligand": ligand,
+                "metadata": {},
+            }  # type: ignore[arg-type]
+        )
+
+        self_test_assert_isinstance(
+            result,
+            HydrogenBondAnalysisResult,
+        )
+
+    finally:
+        if previous_chimerax is None:
+            sys.modules.pop(
+                "chimerax",
+                None,
+            )
+
+        else:
+            sys.modules[
+                "chimerax"
+            ] = previous_chimerax
+
+        if previous_atomic is None:
+            sys.modules.pop(
+                "chimerax.atomic",
+                None,
+            )
+
+        else:
+            sys.modules[
+                "chimerax.atomic"
+            ] = previous_atomic
+
+
+# -----------------------------------------------------------------------------
 # Grouped Section 12.4 runners
 # -----------------------------------------------------------------------------
 
@@ -41890,6 +43775,18 @@ def run_hbond_serialization_self_tests(
             "serialization.multipose.full",
             _self_test_multipose_dataclass_serialization_full,
         ),
+        (
+            "serialization.strict_json.result",
+            _self_test_serialization_strict_json_result,
+        ),
+        (
+            "serialization.strict_json.multipose",
+            _self_test_serialization_strict_json_multipose,
+        ),
+        (
+            "serialization.metadata.recursive",
+            _self_test_serialization_recursive_metadata,
+        ),
     )
 
     return run_self_test_group(
@@ -41983,6 +43880,18 @@ def run_hbond_dockmodel_integration_self_tests(
         (
             "dockmodel.storage.multipose",
             _self_test_dockmodel_store_multipose_results,
+        ),
+        (
+            "dockmodel.storage.preserve_multipose",
+            _self_test_dockmodel_pose_storage_preserves_multipose,
+        ),
+        (
+            "dockmodel.mapping_backed",
+            _self_test_dockmodel_mapping_backed_integration,
+        ),
+        (
+            "dockmodel.chimerax.atomic_structure",
+            _self_test_chimerax_atomic_structure_compatibility,
         ),
         (
             "dockmodel.analysis.active",
@@ -42153,6 +44062,10 @@ def run_hbond_multipose_self_tests(
         (
             "multipose.ranking.invalid_metric",
             _self_test_multipose_ranking_invalid_metric,
+        ),
+        (
+            "multipose.ranking.missing_metric_last",
+            _self_test_multipose_missing_metric_last,
         ),
         (
             "multipose.summary.text",
@@ -43043,8 +44956,13 @@ def get_self_test_failure_messages(
     ] = []
 
     for result in report.failures():
+        category = (
+            result.failure_category
+            or SELF_TEST_CODE_FAILURE
+        )
+
         message = (
-            f"{result.name}: "
+            f"{result.name} [{category}]: "
             f"{result.exception_type or 'Error'}"
         )
 
@@ -43161,6 +45079,19 @@ def format_self_test_report(
             f"{float(report.total_duration_seconds):.6f} s"
         ),
     ]
+
+    if report.failed_count > 0:
+        failure_counts = report.failure_counts
+
+        lines.append(
+            (
+                "Failure categories: "
+                f"code={failure_counts[SELF_TEST_CODE_FAILURE]} | "
+                f"test={failure_counts[SELF_TEST_TEST_FAILURE]} | "
+                "environment="
+                f"{failure_counts[SELF_TEST_ENVIRONMENTAL_LIMITATION]}"
+            )
+        )
 
     selected_groups = report.metadata.get(
         "selected_groups"
@@ -43281,9 +45212,15 @@ def format_self_test_report(
                 result.status.upper()
             )
 
+            category_suffix = (
+                ""
+                if result.failure_category is None
+                else f" [{result.failure_category}]"
+            )
+
             line = (
                 f"[{result_status}] "
-                f"{result.name} "
+                f"{result.name}{category_suffix} "
                 f"({float(result.duration_seconds):.6f} s)"
             )
 
@@ -44039,11 +45976,23 @@ _SECTION_12_5_PUBLIC_NAMES: Final[
     "SELF_TEST_GROUP_MULTIPOSE",
     "VALID_SELF_TEST_GROUPS",
     "VALID_SELF_TEST_SECTIONS",
+    "SELF_TEST_SECTION_12_1",
+    "SELF_TEST_SECTION_12_2",
+    "SELF_TEST_SECTION_12_3",
+    "SELF_TEST_SECTION_12_4",
+    "SELF_TEST_SECTION_ALL",
     "SELF_TEST_SECTION_GROUPS",
+    "SELF_TEST_DEFAULT_INCLUDE_PASSED",
+    "SELF_TEST_DEFAULT_INCLUDE_SKIPPED",
+    "SELF_TEST_DEFAULT_PRINT_REPORT",
+    "SELF_TEST_DEFAULT_RAISE_ON_FAILURE",
+    "SELF_TEST_DEFAULT_STOP_ON_FAILURE",
+    "SELF_TEST_DEFAULT_VERBOSITY",
     "SELF_TEST_EXIT_SUCCESS",
     "SELF_TEST_EXIT_FAILURE",
     "SELF_TEST_EXIT_INTERNAL_ERROR",
     "HydrogenBondSelfTestError",
+    "SelfTestRunner",
     "validate_self_test_group",
     "validate_self_test_section",
     "merge_self_test_reports",
