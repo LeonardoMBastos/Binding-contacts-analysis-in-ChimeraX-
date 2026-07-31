@@ -28,10 +28,8 @@
 from __future__ import annotations
 
 import math
-import warnings
 
 from collections.abc import (
-    Iterable,
     Mapping,
     Sequence,
 )
@@ -39,19 +37,22 @@ from collections.abc import (
 from dataclasses import (
     dataclass,
     field,
+    fields,
+    is_dataclass,
 )
 
 from typing import (
     Any,
+    Callable,
     Dict,
     List,
     Literal,
-    NamedTuple,
     Optional,
+    Protocol,
     Tuple,
     TypeAlias,
     Union,
-    overload,
+    runtime_checkable,
 )
 
 
@@ -71,7 +72,7 @@ from numpy.typing import (
 # DockAnalyzer imports
 # -----------------------------------------------------------------------------
 
-try:
+if __package__:
     from .utils import (
         angle,
         centroid,
@@ -79,12 +80,8 @@ try:
         normalize,
     )
 
-except ImportError:
-    # Allows direct execution:
-    #
-    #     python geometry.py
-    #
-    # while preserving package-relative imports during normal use.
+else:
+    # Support direct execution without masking dependency import failures.
     from utils import (
         angle,
         centroid,
@@ -161,8 +158,18 @@ __all__ = [
     "AlignmentMethod",
 ]
 
+
+def _extend_public_names(
+    names: Sequence[str],
+) -> None:
+    """Append unique public names while preserving declaration order."""
+
+    for name in names:
+        if name not in __all__:
+            __all__.append(name)
+
 # -----------------------------------------------------------------------------
-# End section 1
+# End of Section 1
 # -----------------------------------------------------------------------------
 
 
@@ -237,11 +244,7 @@ _SECTION_2_PUBLIC_NAMES = [
     "RADIANS_PER_DEGREE",
 ]
 
-for public_name in _SECTION_2_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_extend_public_names(_SECTION_2_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -1464,11 +1467,7 @@ _SECTION_3_PUBLIC_NAMES = [
     "get_coordinates",
 ]
 
-for public_name in _SECTION_3_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_extend_public_names(_SECTION_3_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -2385,11 +2384,7 @@ _SECTION_4_PUBLIC_NAMES = [
     "project_point_on_line",
 ]
 
-for public_name in _SECTION_4_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_extend_public_names(_SECTION_4_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -2607,12 +2602,9 @@ def distance_matrix(
 
     Notes
     -----
-    The implementation uses NumPy broadcasting:
-
-    ``difference[i, j] = points_1[i] - points_2[j]``
-
-    This avoids explicit Python loops and is suitable for typical docking
-    analysis datasets.
+    Squared distances use the Gram-matrix identity after translating both
+    collections to a shared origin. This avoids an intermediate ``N × M × 3``
+    displacement array while retaining numerical stability for molecular data.
 
     Examples
     --------
@@ -2648,22 +2640,45 @@ def distance_matrix(
             copy=False,
         )
 
-    differences = (
-        first_coordinates[:, np.newaxis, :]
-        - second_coordinates[np.newaxis, :, :]
-    )
+    if first_coordinates.size and second_coordinates.size:
+        origin = (
+            first_coordinates[0]
+            + second_coordinates[0]
+        ) / 2.0
+        first_centered = first_coordinates - origin
+        second_centered = second_coordinates - origin
+    else:
+        first_centered = first_coordinates
+        second_centered = second_coordinates
 
-    squared_distances = np.einsum(
-        "ijk,ijk->ij",
-        differences,
-        differences,
+    first_squared_norms = np.einsum(
+        "ij,ij->i",
+        first_centered,
+        first_centered,
         optimize=True,
+    )[:, np.newaxis]
+
+    second_squared_norms = np.einsum(
+        "ij,ij->i",
+        second_centered,
+        second_centered,
+        optimize=True,
+    )[np.newaxis, :]
+
+    squared_distances = (
+        first_squared_norms
+        + second_squared_norms
+        - 2.0
+        * (
+            first_centered
+            @ second_centered.T
+        )
     ).astype(
         np.float64,
         copy=False,
     )
 
-    # Eliminate possible negative zero or negligible negative roundoff.
+    # Remove negligible negative roundoff before square-root conversion.
     np.maximum(
         squared_distances,
         0.0,
@@ -3215,11 +3230,7 @@ _SECTION_5_PUBLIC_NAMES = [
     "point_line_distance",
 ]
 
-for public_name in _SECTION_5_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_extend_public_names(_SECTION_5_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -3424,8 +3435,7 @@ def _wrap_signed_angle(
         angle + half_period
     ) % period - half_period
 
-    # Preserve positive 180° or π instead of converting it to the negative
-    # boundary when the original angle was positive.
+    # Preserve the positive half-turn boundary.
     if (
         math.isclose(
             wrapped,
@@ -3880,8 +3890,7 @@ def dihedral_angle(
         copy=False,
     )
 
-    # Remove the components parallel to the central bond. The remaining
-    # vectors lie in the plane perpendicular to the rotation axis.
+    # Project the outer bonds onto the plane normal to the rotation axis.
     first_projected = reject_vector(
         first_bond,
         central_unit,
@@ -3951,8 +3960,7 @@ def dihedral_angle(
         scene=False,
     )
 
-    # Protect against tiny numerical drift outside the expected dot-product
-    # range. atan2 itself is stable, but clipping keeps the input interpretable.
+    # Clip negligible dot-product drift before atan2.
     x_component = float(
         np.clip(
             x_component,
@@ -4112,11 +4120,7 @@ _SECTION_6_PUBLIC_NAMES = [
     "torsion_angle",
 ]
 
-for public_name in _SECTION_6_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_extend_public_names(_SECTION_6_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -4817,9 +4821,7 @@ def _orient_plane_normal(
 
         return oriented_normal
 
-    # A fitted plane has two equivalent normal directions. Without an explicit
-    # reference, use a deterministic convention based on the first component
-    # whose absolute value is larger than the numerical tolerance.
+    # Use a deterministic sign when no reference normal is supplied.
     for component in oriented_normal:
         if abs(
             float(component)
@@ -5577,11 +5579,7 @@ _SECTION_7_PUBLIC_NAMES = [
     "angle_between_planes",
 ]
 
-for public_name in _SECTION_7_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_extend_public_names(_SECTION_7_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -5829,25 +5827,28 @@ def _ring_radial_distances(
                 name="Ring plane",
             )
 
-        projected_center = project_point_on_plane(
-            center_coordinate,
-            plane_object,
+        normal = plane_object.normal
+        plane_point = plane_object.point
+
+        center_deviation = dot_product(
+            center_coordinate - plane_point,
+            normal,
             scene=False,
-            copy=False,
+        )
+        projected_center = (
+            center_coordinate
+            - center_deviation * normal
         )
 
-        projected_coordinates = np.vstack(
-            [
-                project_point_on_plane(
-                    coordinate,
-                    plane_object,
-                    scene=False,
-                    copy=False,
-                )
-                for coordinate in coordinate_matrix
-            ]
+        coordinate_deviations = (
+            (coordinate_matrix - plane_point)
+            @ normal
         )
-
+        projected_coordinates = (
+            coordinate_matrix
+            - coordinate_deviations[:, np.newaxis]
+            * normal
+        )
         displacements = (
             projected_coordinates
             - projected_center
@@ -7032,11 +7033,7 @@ _SECTION_8_PUBLIC_NAMES = [
     "ring_planarity",
 ]
 
-for public_name in _SECTION_8_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_extend_public_names(_SECTION_8_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -8193,11 +8190,7 @@ _SECTION_9_PUBLIC_NAMES = [
     "cation_pi_geometry",
 ]
 
-for public_name in _SECTION_9_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_extend_public_names(_SECTION_9_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -9209,11 +9202,7 @@ _SECTION_10_PUBLIC_NAMES = [
     "donor_hydrogen_acceptor_angle",
 ]
 
-for public_name in _SECTION_10_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_extend_public_names(_SECTION_10_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -9681,6 +9670,8 @@ class ContactGeometry:
             Serialized contact geometry.
         """
 
+        direction = self.direction
+
         result: Dict[str, Any] = {
             "distance": self.distance,
             "squared_distance": (
@@ -9698,8 +9689,8 @@ class ContactGeometry:
             "midpoint": self.midpoint.tolist(),
             "direction": (
                 None
-                if self.direction is None
-                else self.direction.tolist()
+                if direction is None
+                else direction.tolist()
             ),
             "metadata": dict(
                 self.metadata
@@ -10270,18 +10261,18 @@ def closest_atoms(
         copy=False,
     )
 
-    pairwise_distances = distance_matrix(
+    pairwise_squared_distances = distance_matrix(
         first_coordinates,
         second_coordinates,
         scene=False,
-        squared=False,
+        squared=True,
         minimum_rows=1,
         allow_empty=False,
         copy=False,
     )
 
     valid_pairs = np.ones(
-        pairwise_distances.shape,
+        pairwise_squared_distances.shape,
         dtype=bool,
     )
 
@@ -10305,13 +10296,27 @@ def closest_atoms(
         ] = False
 
     if exclude_identical_objects:
+        second_indices_by_identity: Dict[
+            int,
+            List[int],
+        ] = {}
+
+        for second_index, second_atom in enumerate(
+            second_items
+        ):
+            second_indices_by_identity.setdefault(
+                id(second_atom),
+                [],
+            ).append(second_index)
+
         for first_index, first_atom in enumerate(
             first_items
         ):
-            for second_index, second_atom in enumerate(
-                second_items
+            for second_index in second_indices_by_identity.get(
+                id(first_atom),
+                (),
             ):
-                if first_atom is second_atom:
+                if first_atom is second_items[second_index]:
                     valid_pairs[
                         first_index,
                         second_index,
@@ -10325,22 +10330,22 @@ def closest_atoms(
             "the exclusion criteria."
         )
 
-    searchable_distances = np.where(
+    searchable_squared_distances = np.where(
         valid_pairs,
-        pairwise_distances,
+        pairwise_squared_distances,
         np.inf,
     )
 
     flat_index = int(
         np.argmin(
-            searchable_distances
+            searchable_squared_distances
         )
     )
 
     first_index, second_index = (
         np.unravel_index(
             flat_index,
-            searchable_distances.shape,
+            searchable_squared_distances.shape,
         )
     )
 
@@ -10352,19 +10357,25 @@ def closest_atoms(
         second_index
     )
 
-    minimum_distance_value = float(
-        searchable_distances[
+    minimum_squared_distance = float(
+        searchable_squared_distances[
             first_index,
             second_index,
         ]
     )
 
     if not math.isfinite(
-        minimum_distance_value
+        minimum_squared_distance
     ):
         raise ValueError(
             "No finite atom pair distance could be found."
         )
+
+    minimum_distance_value = float(
+        math.sqrt(
+            minimum_squared_distance
+        )
+    )
 
     if cutoff_value is None:
         contact_compatible = None
@@ -10418,7 +10429,9 @@ def closest_atoms(
     if return_distance_matrix:
         return (
             result,
-            pairwise_distances,
+            np.sqrt(
+                pairwise_squared_distances
+            ),
         )
 
     return result
@@ -10434,11 +10447,7 @@ _SECTION_11_PUBLIC_NAMES = [
     "closest_atoms",
 ]
 
-for public_name in _SECTION_11_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_extend_public_names(_SECTION_11_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -12451,11 +12460,7 @@ _SECTION_12_PUBLIC_NAMES = [
     "aligned_rmsd",
 ]
 
-for public_name in _SECTION_12_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_extend_public_names(_SECTION_12_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -14022,11 +14027,7 @@ _SECTION_13_PUBLIC_NAMES = [
     "radius_of_gyration",
 ]
 
-for public_name in _SECTION_13_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_extend_public_names(_SECTION_13_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -14037,12 +14038,6 @@ for public_name in _SECTION_13_PUBLIC_NAMES:
 # =============================================================================
 # Section 14 — Structured Results
 # =============================================================================
-
-from typing import (
-    Protocol,
-    runtime_checkable,
-)
-
 
 # -----------------------------------------------------------------------------
 # Structured-result protocol
@@ -15029,11 +15024,7 @@ _SECTION_14_PUBLIC_NAMES = [
     "validate_structural_result",
 ]
 
-for public_name in _SECTION_14_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
-        )
+_extend_public_names(_SECTION_14_PUBLIC_NAMES)
 
 
 # =============================================================================
@@ -15863,14 +15854,14 @@ def _test_distances_and_angles() -> None:
             1.0,
         ],
         signed=False,
-        positive=True,
+        positive=False,
     )
 
     _assert_close(
         torsion,
         90.0,
         message="torsion_angle() returned "
-        "an incorrect positive angle.",
+        "an incorrect unsigned angle.",
     )
 
 
@@ -17289,6 +17280,600 @@ def _test_structured_results() -> None:
 
 
 # -----------------------------------------------------------------------------
+# Integration and compatibility tests
+# -----------------------------------------------------------------------------
+
+class _SyntheticChimeraXAtom:
+    """Minimal ChimeraX-like atom used by integration tests."""
+
+    def __init__(
+        self,
+        coordinate: Coordinate,
+        *,
+        scene_offset: Coordinate = (
+            10.0,
+            0.0,
+            0.0,
+        ),
+        name: str = "C",
+    ) -> None:
+        self.coord = as_coordinate(
+            coordinate,
+            scene=False,
+            copy=True,
+        )
+        self.scene_coord = (
+            self.coord
+            + as_coordinate(
+                scene_offset,
+                scene=False,
+                copy=False,
+            )
+        )
+        self.name = str(name)
+        self.atomspec = f"@{self.name}"
+
+
+class _SyntheticChimeraXAtoms:
+    """Minimal ChimeraX-like atom collection used by integration tests."""
+
+    def __init__(
+        self,
+        atoms: Sequence[
+            _SyntheticChimeraXAtom
+        ],
+    ) -> None:
+        self._atoms = list(
+            atoms
+        )
+
+    @property
+    def coords(
+        self,
+    ) -> FloatArray:
+        return np.vstack(
+            [
+                atom.coord
+                for atom in self._atoms
+            ]
+        )
+
+    @property
+    def scene_coords(
+        self,
+    ) -> FloatArray:
+        return np.vstack(
+            [
+                atom.scene_coord
+                for atom in self._atoms
+            ]
+        )
+
+    def __iter__(
+        self,
+    ) -> Any:
+        return iter(
+            self._atoms
+        )
+
+
+@dataclass
+class _SyntheticDockModel:
+    """Minimal DockModel contract used by integration tests."""
+
+    name: str
+    pose: Any = None
+    receptor: Any = None
+    ligand: Any = None
+    contacts: List[Any] = field(
+        default_factory=list
+    )
+    hbonds: List[Any] = field(
+        default_factory=list
+    )
+    hydrophobic: List[Any] = field(
+        default_factory=list
+    )
+    pi: Dict[str, List[Any]] = field(
+        default_factory=lambda: {
+            "stacking": [],
+            "cation": [],
+        }
+    )
+    score: Optional[float] = None
+    statistics: Dict[str, Any] = field(
+        default_factory=dict
+    )
+    files: Dict[str, Any] = field(
+        default_factory=dict
+    )
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    @staticmethod
+    def _serialize_value(
+        value: Any,
+    ) -> Any:
+        if value is None or isinstance(
+            value,
+            (
+                str,
+                int,
+                float,
+                bool,
+            ),
+        ):
+            return value
+
+        if isinstance(
+            value,
+            np.generic,
+        ):
+            return value.item()
+
+        if isinstance(
+            value,
+            np.ndarray,
+        ):
+            return value.tolist()
+
+        if isinstance(
+            value,
+            Mapping,
+        ):
+            return {
+                str(key): (
+                    _SyntheticDockModel
+                    ._serialize_value(
+                        item
+                    )
+                )
+                for key, item in value.items()
+            }
+
+        if isinstance(
+            value,
+            (
+                list,
+                tuple,
+                set,
+                frozenset,
+            ),
+        ):
+            return [
+                _SyntheticDockModel
+                ._serialize_value(
+                    item
+                )
+                for item in value
+            ]
+
+        to_dict_method = getattr(
+            value,
+            "to_dict",
+            None,
+        )
+
+        if callable(
+            to_dict_method
+        ):
+            return (
+                _SyntheticDockModel
+                ._serialize_value(
+                    to_dict_method()
+                )
+            )
+
+        if hasattr(
+            value,
+            "__dict__",
+        ):
+            return {
+                str(key): (
+                    _SyntheticDockModel
+                    ._serialize_value(
+                        item
+                    )
+                )
+                for key, item in vars(
+                    value
+                ).items()
+                if not str(key).startswith(
+                    "_"
+                )
+            }
+
+        return str(
+            value
+        )
+
+    def to_dict(
+        self,
+    ) -> Dict[str, Any]:
+        fields_to_serialize = (
+            "name",
+            "contacts",
+            "hbonds",
+            "hydrophobic",
+            "pi",
+            "score",
+            "statistics",
+            "files",
+            "metadata",
+        )
+
+        return {
+            field_name: self._serialize_value(
+                getattr(
+                    self,
+                    field_name,
+                )
+            )
+            for field_name in fields_to_serialize
+        }
+
+
+def _test_integration_and_compatibility() -> None:
+    """Test DockModel, serialization and ChimeraX-like integration."""
+
+    import json
+
+    atoms = _SyntheticChimeraXAtoms(
+        [
+            _SyntheticChimeraXAtom(
+                [
+                    0.0,
+                    0.0,
+                    0.0,
+                ]
+            ),
+            _SyntheticChimeraXAtom(
+                [
+                    1.0,
+                    0.0,
+                    0.0,
+                ]
+            ),
+            _SyntheticChimeraXAtom(
+                [
+                    0.0,
+                    1.0,
+                    0.0,
+                ]
+            ),
+        ]
+    )
+
+    _assert_close(
+        get_coordinates(
+            atoms,
+            scene=False,
+        ),
+        [
+            [
+                0.0,
+                0.0,
+                0.0,
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+            ],
+            [
+                0.0,
+                1.0,
+                0.0,
+            ],
+        ],
+        message=(
+            "ChimeraX-like local coordinates "
+            "were not extracted correctly."
+        ),
+    )
+
+    _assert_close(
+        get_coordinates(
+            atoms,
+            scene=True,
+        ),
+        [
+            [
+                10.0,
+                0.0,
+                0.0,
+            ],
+            [
+                11.0,
+                0.0,
+                0.0,
+            ],
+            [
+                10.0,
+                1.0,
+                0.0,
+            ],
+        ],
+        message=(
+            "ChimeraX-like scene coordinates "
+            "were not preferred correctly."
+        ),
+    )
+
+    contact = contact_geometry(
+        [
+            0.0,
+            0.0,
+            0.0,
+        ],
+        [
+            0.0,
+            0.0,
+            3.0,
+        ],
+        cutoff=4.0,
+    )
+
+    hydrogen_bond = (
+        hydrogen_bond_geometry(
+            [
+                0.0,
+                0.0,
+                0.0,
+            ],
+            [
+                2.8,
+                0.0,
+                0.0,
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+            ],
+        )
+    )
+
+    first_ring = RingGeometry(
+        _synthetic_hexagonal_ring(
+            center=[
+                0.0,
+                0.0,
+                0.0,
+            ]
+        )
+    )
+
+    second_ring = RingGeometry(
+        _synthetic_hexagonal_ring(
+            center=[
+                0.0,
+                0.0,
+                3.5,
+            ]
+        )
+    )
+
+    stacking = pi_stack_geometry(
+        first_ring,
+        second_ring,
+    )
+
+    cation = cation_pi_geometry(
+        first_ring,
+        [
+            0.0,
+            0.0,
+            2.0,
+        ],
+    )
+
+    bounding_box = create_bounding_box(
+        [
+            [
+                0.0,
+                0.0,
+                0.0,
+            ],
+            [
+                1.0,
+                2.0,
+                3.0,
+            ],
+        ]
+    )
+
+    structured_results = (
+        contact,
+        hydrogen_bond,
+        first_ring,
+        stacking,
+        bounding_box,
+    )
+
+    for structured_result in (
+        structured_results
+    ):
+        serialized_result = (
+            structural_result_to_dict(
+                structured_result
+            )
+        )
+
+        json.dumps(
+            serialized_result,
+            allow_nan=False,
+        )
+
+    dock_model = _SyntheticDockModel(
+        name="synthetic_pose"
+    )
+
+    dock_model.contacts.append(
+        contact
+    )
+
+    dock_model.hbonds.append(
+        hydrogen_bond
+    )
+
+    dock_model.pi[
+        "stacking"
+    ].append(
+        stacking
+    )
+
+    dock_model.pi[
+        "cation"
+    ].append(
+        cation
+    )
+
+    dock_model.metadata[
+        "bounding_box"
+    ] = bounding_box
+
+    serialized_model = (
+        dock_model.to_dict()
+    )
+
+    json.dumps(
+        serialized_model,
+        allow_nan=False,
+    )
+
+    _assert_true(
+        serialized_model[
+            "contacts"
+        ][0][
+            "contact_compatible"
+        ],
+        "DockModel contact serialization failed.",
+    )
+
+    _assert_true(
+        serialized_model[
+            "hbonds"
+        ][0][
+            "geometry_compatible"
+        ],
+        "DockModel hydrogen-bond serialization failed.",
+    )
+
+    _assert_true(
+        serialized_model[
+            "pi"
+        ][
+            "stacking"
+        ][0][
+            "classification"
+        ] == "parallel",
+        "DockModel pi-stacking serialization failed.",
+    )
+
+    empty_coordinates = get_coordinates(
+        None,
+        allow_empty=True,
+    )
+
+    _assert_true(
+        empty_coordinates.shape
+        == (
+            0,
+            3,
+        ),
+        "Empty coordinate integration returned "
+        "an invalid shape.",
+    )
+
+    empty_distances = distance_matrix(
+        empty_coordinates,
+        allow_empty=True,
+    )
+
+    _assert_true(
+        empty_distances.shape
+        == (
+            0,
+            0,
+        ),
+        "Empty distance matrix returned an "
+        "invalid shape.",
+    )
+
+    _assert_raises(
+        ValueError,
+        validate_coordinate,
+        [
+            1.0,
+            2.0,
+        ],
+        message=(
+            "Invalid coordinate shape must be "
+            "rejected during integration."
+        ),
+    )
+
+    _assert_raises(
+        ValueError,
+        validate_coordinate,
+        [
+            1.0,
+            np.nan,
+            3.0,
+        ],
+        message=(
+            "Non-finite coordinates must be "
+            "rejected during integration."
+        ),
+    )
+
+    _assert_raises(
+        ValueError,
+        fit_plane,
+        [
+            [
+                0.0,
+                0.0,
+                0.0,
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+            ],
+            [
+                2.0,
+                0.0,
+                0.0,
+            ],
+        ],
+        message=(
+            "Degenerate synthetic planes must "
+            "be rejected."
+        ),
+    )
+
+    _assert_raises(
+        ValueError,
+        closest_atoms,
+        [],
+        [
+            [
+                0.0,
+                0.0,
+                0.0,
+            ]
+        ],
+        message=(
+            "Empty atom collections must be "
+            "rejected by closest_atoms()."
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
 # Public self-test runner
 # -----------------------------------------------------------------------------
 
@@ -17374,6 +17959,10 @@ def run_self_tests(
         (
             "Structured results",
             _test_structured_results,
+        ),
+        (
+            "Integration and compatibility",
+            _test_integration_and_compatibility,
         ),
     ]
 
@@ -17505,11 +18094,58 @@ _SECTION_15_PUBLIC_NAMES = [
     "run_self_tests",
 ]
 
-for public_name in _SECTION_15_PUBLIC_NAMES:
-    if public_name not in __all__:
-        __all__.append(
-            public_name
+_extend_public_names(_SECTION_15_PUBLIC_NAMES)
+
+
+# -----------------------------------------------------------------------------
+# Public API validation
+# -----------------------------------------------------------------------------
+
+def _validate_public_api() -> None:
+    """Validate the exported public-name contract."""
+
+    if not isinstance(__all__, list):
+        raise TypeError("__all__ must be a list of public names.")
+
+    invalid_names = [
+        name
+        for name in __all__
+        if not isinstance(name, str) or not name
+    ]
+
+    if invalid_names:
+        raise TypeError(
+            "__all__ must contain only non-empty strings."
         )
+
+    seen: set[str] = set()
+    duplicate_names: List[str] = []
+
+    for name in __all__:
+        if name in seen and name not in duplicate_names:
+            duplicate_names.append(name)
+        seen.add(name)
+
+    if duplicate_names:
+        raise RuntimeError(
+            "Duplicate public names in __all__: "
+            + ", ".join(duplicate_names)
+        )
+
+    missing_names = [
+        name
+        for name in __all__
+        if name not in globals()
+    ]
+
+    if missing_names:
+        raise RuntimeError(
+            "Missing public names declared in __all__: "
+            + ", ".join(missing_names)
+        )
+
+
+_validate_public_api()
 
 
 # -----------------------------------------------------------------------------
