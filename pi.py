@@ -1,5 +1,5 @@
 # =============================================================================
-# 1. IMPORTS, CONSTANTES E CONFIGURAÇÃO
+# 1. IMPORTS, CONSTANTS, AND CONFIGURATION
 # =============================================================================
 """
 Detection and characterization of pi-related molecular interactions.
@@ -30,32 +30,33 @@ from __future__ import annotations
 # -----------------------------------------------------------------------------
 
 from collections import Counter, defaultdict
-from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from collections.abc import (
+    Mapping as _RuntimeMapping,
+    MutableMapping as _RuntimeMutableMapping,
+)
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum
 from itertools import combinations
-from math import acos, degrees, isfinite, sqrt
-from statistics import fmean
+from math import acos, cos, degrees, isfinite, pi, sin, sqrt
 from typing import (
     Any,
     Callable,
-    ClassVar,
     Collection,
-    DefaultDict,
     Dict,
     Final,
     FrozenSet,
+    Hashable,
     Iterable,
     Iterator,
     List,
-    Literal,
     Mapping,
     MutableMapping,
-    NamedTuple,
     Optional,
     Protocol,
     Sequence,
     Set,
     Tuple,
+    Type,
     TypeAlias,
     TypeVar,
     Union,
@@ -66,9 +67,11 @@ import json
 import warnings
 import contextlib
 import io
+import inspect
 import math
 import time
 import traceback
+import uuid
 
 # -----------------------------------------------------------------------------
 # 1.2. Optional NumPy support
@@ -80,7 +83,10 @@ try:
 
     NUMPY_AVAILABLE: Final[bool] = True
 
-except ImportError:  # pragma: no cover - depends on the execution environment
+except ModuleNotFoundError as exc:  # pragma: no cover - environment dependent
+    if exc.name not in {"numpy", "numpy.typing"}:
+        raise
+
     np = None  # type: ignore[assignment]
     NDArray = Any  # type: ignore[misc,assignment]
 
@@ -98,7 +104,10 @@ try:
 
     CHIMERAX_AVAILABLE: Final[bool] = True
 
-except ImportError:  # pragma: no cover - expected outside ChimeraX
+except ModuleNotFoundError as exc:  # pragma: no cover - expected outside ChimeraX
+    if exc.name not in {"chimerax", "chimerax.atomic"}:
+        raise
+
     ChimeraXAtom = Any  # type: ignore[misc,assignment]
     ChimeraXAtomicStructure = Any  # type: ignore[misc,assignment]
     ChimeraXResidue = Any  # type: ignore[misc,assignment]
@@ -187,6 +196,8 @@ EPSILON: Final[float] = 1.0e-12
 ANGLE_EPSILON_DEGREES: Final[float] = 1.0e-6
 
 MINIMUM_VECTOR_NORM: Final[float] = 1.0e-8
+
+DEFAULT_VECTOR_TOLERANCE: Final[float] = MINIMUM_VECTOR_NORM
 
 DEFAULT_FLOAT_PRECISION: Final[int] = 4
 
@@ -1377,7 +1388,7 @@ def _validate_module_constants() -> None:
     Validate the internal consistency of module-level constants.
 
     This function only checks developer-defined constants. User-provided
-    configuration values will be validated later by PiAnalysisConfig.
+    configuration values will be validated later by PiCoreAnalysisConfig.
     """
 
     scoring_mappings = {
@@ -1478,11 +1489,11 @@ def _validate_module_constants() -> None:
 
 
 # =============================================================================
-# 2. DATACLASSES E MODELOS DE DADOS
+# 2. DATACLASSES AND DATA MODELS
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 2.1. Funções auxiliares internas para dataclasses
+# 2.1. Internal helper functions for dataclasses
 # -----------------------------------------------------------------------------
 
 def _coerce_coordinate3d(
@@ -1761,6 +1772,26 @@ def _validate_interaction_type(
 
     normalized = str(interaction_type).strip().lower()
 
+    aliases = {
+        "pi-pi": PI_PI,
+        "pi–pi": PI_PI,
+        "π-pi": PI_PI,
+        "π–π": PI_PI,
+        "cation-pi": CATION_PI,
+        "cation–pi": CATION_PI,
+        "cation–π": CATION_PI,
+        "anion-pi": ANION_PI,
+        "anion–pi": ANION_PI,
+        "anion–π": ANION_PI,
+        "amide-pi": AMIDE_PI,
+        "amide–pi": AMIDE_PI,
+        "amide–π": AMIDE_PI,
+        "sulfur-pi": SULFUR_PI,
+        "sulfur–pi": SULFUR_PI,
+        "sulfur–π": SULFUR_PI,
+    }
+    normalized = aliases.get(normalized, normalized)
+
     if normalized not in SUPPORTED_PI_INTERACTION_TYPES:
         raise ValueError(
             f"Unsupported pi interaction type: {interaction_type!r}. "
@@ -1823,7 +1854,7 @@ def _validate_pi_pi_geometry(
 
 
 # -----------------------------------------------------------------------------
-# 2.2. Identificação padronizada de átomos
+# 2.2. Standardized atom identification
 # -----------------------------------------------------------------------------
 
 @dataclass(frozen=True, slots=True)
@@ -2025,7 +2056,7 @@ class PiAtomReference:
 
 
 # -----------------------------------------------------------------------------
-# 2.3. Representação de anel aromático
+# 2.3. Aromatic-ring representation
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -2312,14 +2343,12 @@ class PiRing:
 
 
 # -----------------------------------------------------------------------------
-# 2.4. Grupo carregado
+# 2.4. Charged group
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
 class PiChargedGroup:
-    """
-    Positively or negatively charged group involved in a pi interaction.
-    """
+    """Positively or negatively charged group involved in a pi interaction."""
 
     atoms: Tuple[Any, ...]
     charge_sign: int
@@ -2347,151 +2376,144 @@ class PiChargedGroup:
 
     valid: bool = True
     validation_messages: Tuple[str, ...] = ()
-
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    charge_atoms: Tuple[Any, ...] = ()
+    support_atoms: Tuple[Any, ...] = ()
+    direction: Optional[Vector3D] = None
+    plane_normal: Optional[Vector3D] = None
+    group_index: Optional[int] = None
+    effective_charge: Optional[float] = None
 
     def __post_init__(self) -> None:
         self.atoms = _coerce_atom_tuple(
-            self.atoms,
-            field_name="PiChargedGroup.atoms",
+            self.atoms, field_name="PiChargedGroup.atoms", allow_empty=False
+        )
+        self.charge_atoms = _coerce_atom_tuple(
+            self.charge_atoms or self.atoms,
+            field_name="PiChargedGroup.charge_atoms",
             allow_empty=False,
         )
+        self.support_atoms = _coerce_atom_tuple(
+            self.support_atoms,
+            field_name="PiChargedGroup.support_atoms",
+            allow_empty=True,
+        )
 
-        if self.charge_sign not in (-1, 1):
+        if self.charge_sign in (1, "positive"):
+            self.charge_sign = "positive"
+        elif self.charge_sign in (-1, "negative"):
+            self.charge_sign = "negative"
+        else:
             raise ValueError(
-                "PiChargedGroup.charge_sign must be -1 or 1."
+                "PiChargedGroup.charge_sign must identify a positive or negative group."
             )
 
         if self.atom_references:
             self.atom_references = tuple(self.atom_references)
-
             if len(self.atom_references) != len(self.atoms):
                 raise ValueError(
-                    "PiChargedGroup.atom_references must have the same "
-                    "length as PiChargedGroup.atoms."
+                    "PiChargedGroup.atom_references must have the same length as PiChargedGroup.atoms."
                 )
 
-        self.center = _coerce_coordinate3d(
-            self.center,
-            field_name="PiChargedGroup.center",
-            allow_none=True,
-        )
+        for field_name in ("center", "direction", "plane_normal"):
+            setattr(
+                self,
+                field_name,
+                _coerce_coordinate3d(
+                    getattr(self, field_name),
+                    field_name=f"PiChargedGroup.{field_name}",
+                    allow_none=True,
+                ),
+            )
 
         self.group_id = _normalize_optional_text(self.group_id)
+        self.group_index = (None if self.group_index is None else int(self.group_index))
         self.group_type = str(self.group_type or "unknown").strip().lower()
-
         self.formal_charge = _coerce_optional_float(
-            self.formal_charge,
-            field_name="PiChargedGroup.formal_charge",
+            self.formal_charge, field_name="PiChargedGroup.formal_charge"
         )
-
         self.partial_charge = _coerce_optional_float(
-            self.partial_charge,
-            field_name="PiChargedGroup.partial_charge",
+            self.partial_charge, field_name="PiChargedGroup.partial_charge"
         )
+        self.effective_charge = _coerce_optional_float(
+            self.effective_charge, field_name="PiChargedGroup.effective_charge"
+        )
+        if self.effective_charge is None:
+            self.effective_charge = (
+                self.formal_charge
+                if self.formal_charge is not None
+                else self.partial_charge
+            )
 
         self.residue_name = _normalize_optional_text(self.residue_name)
         self.chain_id = _normalize_optional_text(self.chain_id)
         self.model_id = _normalize_optional_text(self.model_id)
-
         self.participant_type = str(
             self.participant_type or PARTICIPANT_UNKNOWN
         ).strip().lower()
 
-        self.atom_names = _coerce_string_tuple(
-            self.atom_names,
-            field_name="PiChargedGroup.atom_names",
-        )
-
-        self.element_symbols = tuple(
-            symbol.upper()
-            for symbol in _coerce_string_tuple(
-                self.element_symbols,
-                field_name="PiChargedGroup.element_symbols",
+        if not self.atom_names:
+            self.atom_names = tuple(get_atom_name(atom) for atom in self.atoms)
+        else:
+            self.atom_names = _coerce_string_tuple(
+                self.atom_names, field_name="PiChargedGroup.atom_names"
             )
-        )
+        if not self.element_symbols:
+            self.element_symbols = tuple(get_atom_element(atom) for atom in self.atoms)
+        else:
+            self.element_symbols = tuple(
+                symbol.upper()
+                for symbol in _coerce_string_tuple(
+                    self.element_symbols, field_name="PiChargedGroup.element_symbols"
+                )
+            )
 
         self.validation_messages = _coerce_string_tuple(
-            self.validation_messages,
-            field_name="PiChargedGroup.validation_messages",
+            self.validation_messages, field_name="PiChargedGroup.validation_messages"
         )
-
-        self.charge_is_formal = bool(self.charge_is_formal)
+        self.charge_is_formal = bool(
+            self.charge_is_formal or self.formal_charge is not None
+        )
         self.charge_is_inferred = bool(self.charge_is_inferred)
         self.charge_is_delocalized = bool(self.charge_is_delocalized)
         self.valid = bool(self.valid)
-
         self.metadata = _copy_mapping(self.metadata)
 
         if self.group_id is None:
             self.group_id = self.build_group_id()
 
     def build_group_id(self) -> str:
-        """
-        Build a deterministic charged-group identifier.
-        """
-
-        charge_label = "cation" if self.charge_sign > 0 else "anion"
-
+        charge_label = "cation" if self.charge_sign == "positive" else "anion"
+        index = "" if self.group_index is None else f":{self.group_index}"
         return (
-            f"{charge_label}:{self.model_id or '?'}:"
-            f"{self.chain_id or '?'}:"
+            f"{charge_label}:{self.model_id or '?'}:{self.chain_id or '?'}:"
             f"{self.residue_name or 'UNK'}:"
             f"{self.residue_number if self.residue_number is not None else '?'}:"
-            f"{self.group_type}"
+            f"{self.group_type}{index}"
         )
 
     @property
     def is_cation(self) -> bool:
-        """
-        Return True when the group is positively charged.
-        """
-
-        return self.charge_sign > 0
+        return self.charge_sign == "positive"
 
     @property
     def is_anion(self) -> bool:
-        """
-        Return True when the group is negatively charged.
-        """
-
-        return self.charge_sign < 0
-
-    @property
-    def effective_charge(self) -> Optional[float]:
-        """
-        Return the best available charge estimate.
-        """
-
-        if self.formal_charge is not None:
-            return self.formal_charge
-
-        return self.partial_charge
+        return self.charge_sign == "negative"
 
     @property
     def residue_identifier(self) -> str:
-        """
-        Return a stable residue identifier.
-        """
-
         return (
-            f"{self.chain_id or '?'}:"
-            f"{self.residue_name or 'UNK'}:"
+            f"{self.chain_id or '?'}:{self.residue_name or 'UNK'}:"
             f"{self.residue_number if self.residue_number is not None else '?'}"
         )
 
     def to_dict(
-        self,
-        *,
-        include_atoms: bool = True,
-        include_coordinates: bool = True,
+        self, *, include_atoms: bool = True, include_coordinates: bool = True
     ) -> Dict[str, Any]:
-        """
-        Convert the charged group into a serializable dictionary.
-        """
-
         result: Dict[str, Any] = {
             "group_id": self.group_id,
+            "group_index": self.group_index,
             "group_type": self.group_type,
             "charge_sign": self.charge_sign,
             "formal_charge": self.formal_charge,
@@ -2511,32 +2533,30 @@ class PiChargedGroup:
             "validation_messages": list(self.validation_messages),
             "metadata": dict(self.metadata),
         }
-
         if include_coordinates:
-            result["center"] = (
-                list(self.center)
-                if self.center is not None
-                else None
+            result.update(
+                {
+                    "center": list(self.center) if self.center is not None else None,
+                    "direction": list(self.direction) if self.direction is not None else None,
+                    "plane_normal": (
+                        list(self.plane_normal) if self.plane_normal is not None else None
+                    ),
+                }
             )
-
         if include_atoms:
-            result["atoms"] = [
-                atom_reference.to_dict()
-                for atom_reference in self.atom_references
-            ]
-
+            result["atoms"] = [reference.to_dict() for reference in self.atom_references]
+            result["charge_atom_names"] = [get_atom_name(atom) for atom in self.charge_atoms]
+            result["support_atom_names"] = [get_atom_name(atom) for atom in self.support_atoms]
         return result
 
 
 # -----------------------------------------------------------------------------
-# 2.5. Grupo amida
+# 2.5. Amide group
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
 class PiAmideGroup:
-    """
-    Amide group potentially involved in an amide-pi interaction.
-    """
+    """Amide group potentially involved in an amide-pi interaction."""
 
     atoms: Tuple[Any, ...]
 
@@ -2563,145 +2583,143 @@ class PiAmideGroup:
 
     planarity_rmsd: Optional[float] = None
     maximum_plane_deviation: Optional[float] = None
-
     atom_names: Tuple[str, ...] = ()
-
     valid: bool = True
     validation_messages: Tuple[str, ...] = ()
-
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    core_atoms: Tuple[Any, ...] = ()
+    support_atoms: Tuple[Any, ...] = ()
+    direction: Optional[Vector3D] = None
+    carbonyl_direction: Optional[Vector3D] = None
+    cn_direction: Optional[Vector3D] = None
+    group_index: Optional[int] = None
+    carbonyl_bond_order: Optional[float] = None
+    cn_bond_order: Optional[float] = None
+    carbonyl_distance: Optional[float] = None
+    cn_distance: Optional[float] = None
+    is_peptide: bool = False
+    is_cyclic: bool = False
 
     def __post_init__(self) -> None:
         self.atoms = _coerce_atom_tuple(
-            self.atoms,
-            field_name="PiAmideGroup.atoms",
-            allow_empty=False,
+            self.atoms, field_name="PiAmideGroup.atoms", allow_empty=False
         )
-
+        self.core_atoms = _coerce_atom_tuple(
+            self.core_atoms
+            or tuple(
+                atom
+                for atom in (
+                    self.carbonyl_carbon, self.carbonyl_oxygen, self.amide_nitrogen
+                )
+                if atom is not None
+            ),
+            field_name="PiAmideGroup.core_atoms",
+            allow_empty=True,
+        )
+        self.support_atoms = _coerce_atom_tuple(
+            self.support_atoms, field_name="PiAmideGroup.support_atoms", allow_empty=True
+        )
         if self.atom_references:
             self.atom_references = tuple(self.atom_references)
-
             if len(self.atom_references) != len(self.atoms):
                 raise ValueError(
-                    "PiAmideGroup.atom_references must have the same "
-                    "length as PiAmideGroup.atoms."
+                    "PiAmideGroup.atom_references must have the same length as PiAmideGroup.atoms."
                 )
 
-        self.center = _coerce_coordinate3d(
-            self.center,
-            field_name="PiAmideGroup.center",
-            allow_none=True,
-        )
-
-        self.normal = _coerce_coordinate3d(
-            self.normal,
-            field_name="PiAmideGroup.normal",
-            allow_none=True,
-        )
-
-        self.planarity_rmsd = _coerce_optional_float(
-            self.planarity_rmsd,
-            field_name="PiAmideGroup.planarity_rmsd",
-            minimum=0.0,
-        )
-
-        self.maximum_plane_deviation = _coerce_optional_float(
-            self.maximum_plane_deviation,
-            field_name="PiAmideGroup.maximum_plane_deviation",
-            minimum=0.0,
-        )
+        for field_name in ("center", "normal", "direction", "carbonyl_direction", "cn_direction"):
+            setattr(
+                self,
+                field_name,
+                _coerce_coordinate3d(
+                    getattr(self, field_name),
+                    field_name=f"PiAmideGroup.{field_name}",
+                    allow_none=True,
+                ),
+            )
+        for field_name in (
+            "planarity_rmsd", "maximum_plane_deviation", "carbonyl_bond_order",
+            "cn_bond_order", "carbonyl_distance", "cn_distance"
+        ):
+            setattr(
+                self,
+                field_name,
+                _coerce_optional_float(
+                    getattr(self, field_name),
+                    field_name=f"PiAmideGroup.{field_name}",
+                    minimum=0.0,
+                ),
+            )
 
         self.group_id = _normalize_optional_text(self.group_id)
+        self.group_index = (None if self.group_index is None else int(self.group_index))
         self.group_type = str(self.group_type or "amide").strip().lower()
-
         self.residue_name = _normalize_optional_text(self.residue_name)
         self.chain_id = _normalize_optional_text(self.chain_id)
         self.model_id = _normalize_optional_text(self.model_id)
-
         self.participant_type = str(
             self.participant_type or PARTICIPANT_UNKNOWN
         ).strip().lower()
 
-        self.is_side_chain = bool(self.is_side_chain)
-        self.is_backbone = bool(self.is_backbone)
-        self.is_ligand_group = bool(self.is_ligand_group)
+        self.is_peptide = bool(self.is_peptide)
+        self.is_cyclic = bool(self.is_cyclic)
+        self.is_backbone = bool(self.is_backbone or self.is_peptide)
+        self.is_side_chain = bool(
+            self.is_side_chain
+            or (not self.is_backbone and self.residue_name in AMIDE_RESIDUES)
+        )
+        self.is_ligand_group = bool(
+            self.is_ligand_group or self.participant_type == PARTICIPANT_LIGAND
+        )
         self.valid = bool(self.valid)
 
-        self.atom_names = _coerce_string_tuple(
-            self.atom_names,
-            field_name="PiAmideGroup.atom_names",
-        )
-
+        if not self.atom_names:
+            self.atom_names = tuple(get_atom_name(atom) for atom in self.atoms)
+        else:
+            self.atom_names = _coerce_string_tuple(
+                self.atom_names, field_name="PiAmideGroup.atom_names"
+            )
         self.validation_messages = _coerce_string_tuple(
-            self.validation_messages,
-            field_name="PiAmideGroup.validation_messages",
+            self.validation_messages, field_name="PiAmideGroup.validation_messages"
         )
-
         self.metadata = _copy_mapping(self.metadata)
-
         if self.group_id is None:
             self.group_id = self.build_group_id()
 
     def build_group_id(self) -> str:
-        """
-        Build a deterministic amide-group identifier.
-        """
-
         if self.is_backbone:
             location = "backbone"
-
         elif self.is_side_chain:
             location = "sidechain"
-
         elif self.is_ligand_group:
             location = "ligand"
-
         else:
             location = "unknown"
-
+        index = "" if self.group_index is None else f":{self.group_index}"
         return (
-            f"amide:{self.model_id or '?'}:"
-            f"{self.chain_id or '?'}:"
+            f"amide:{self.model_id or '?'}:{self.chain_id or '?'}:"
             f"{self.residue_name or 'UNK'}:"
             f"{self.residue_number if self.residue_number is not None else '?'}:"
-            f"{location}"
+            f"{location}{index}"
         )
 
     @property
     def has_complete_geometry(self) -> bool:
-        """
-        Indicate whether center and normal vector are available.
-        """
-
-        return (
-            self.center is not None
-            and self.normal is not None
-        )
+        return self.center is not None and self.normal is not None
 
     @property
     def residue_identifier(self) -> str:
-        """
-        Return a stable residue identifier.
-        """
-
         return (
-            f"{self.chain_id or '?'}:"
-            f"{self.residue_name or 'UNK'}:"
+            f"{self.chain_id or '?'}:{self.residue_name or 'UNK'}:"
             f"{self.residue_number if self.residue_number is not None else '?'}"
         )
 
     def to_dict(
-        self,
-        *,
-        include_atoms: bool = True,
-        include_coordinates: bool = True,
+        self, *, include_atoms: bool = True, include_coordinates: bool = True
     ) -> Dict[str, Any]:
-        """
-        Convert the amide group into a serializable dictionary.
-        """
-
         result: Dict[str, Any] = {
             "group_id": self.group_id,
+            "group_index": self.group_index,
             "group_type": self.group_type,
             "residue_name": self.residue_name,
             "residue_number": self.residue_number,
@@ -2711,38 +2729,41 @@ class PiAmideGroup:
             "is_side_chain": self.is_side_chain,
             "is_backbone": self.is_backbone,
             "is_ligand_group": self.is_ligand_group,
+            "is_peptide": self.is_peptide,
+            "is_cyclic": self.is_cyclic,
             "planarity_rmsd": self.planarity_rmsd,
             "maximum_plane_deviation": self.maximum_plane_deviation,
+            "carbonyl_bond_order": self.carbonyl_bond_order,
+            "cn_bond_order": self.cn_bond_order,
+            "carbonyl_distance": self.carbonyl_distance,
+            "cn_distance": self.cn_distance,
             "atom_names": list(self.atom_names),
             "valid": self.valid,
             "validation_messages": list(self.validation_messages),
             "metadata": dict(self.metadata),
         }
-
         if include_coordinates:
-            result["center"] = (
-                list(self.center)
-                if self.center is not None
-                else None
+            result.update(
+                {
+                    "center": list(self.center) if self.center is not None else None,
+                    "normal": list(self.normal) if self.normal is not None else None,
+                    "direction": list(self.direction) if self.direction is not None else None,
+                    "carbonyl_direction": (
+                        list(self.carbonyl_direction)
+                        if self.carbonyl_direction is not None else None
+                    ),
+                    "cn_direction": list(self.cn_direction) if self.cn_direction is not None else None,
+                }
             )
-
-            result["normal"] = (
-                list(self.normal)
-                if self.normal is not None
-                else None
-            )
-
         if include_atoms:
-            result["atoms"] = [
-                atom_reference.to_dict()
-                for atom_reference in self.atom_references
-            ]
-
+            result["atoms"] = [reference.to_dict() for reference in self.atom_references]
+            result["core_atom_names"] = [get_atom_name(atom) for atom in self.core_atoms]
+            result["support_atom_names"] = [get_atom_name(atom) for atom in self.support_atoms]
         return result
 
 
 # -----------------------------------------------------------------------------
-# 2.6. Contato atômico associado a uma interação pi
+# 2.6. Atomic contact associated with a pi interaction
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -2851,20 +2872,14 @@ class PiAtomicContact:
 
 
 # -----------------------------------------------------------------------------
-# 2.7. Interação pi consolidada
+# 2.7. Consolidated pi interaction
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
 class PiInteraction:
-    """
-    Consolidated pi-related molecular interaction.
-
-    The class supports pi-pi, cation-pi, anion-pi, amide-pi, and sulfur-pi
-    interactions using a common representation.
-    """
+    """Consolidated representation shared by all pi-interaction detectors."""
 
     interaction_type: str
-
     ring_1: PiRing
     ring_2: Optional[PiRing] = None
     charged_group: Optional[PiChargedGroup] = None
@@ -2903,431 +2918,335 @@ class PiInteraction:
     normalized_score: float = 0.0
 
     atomic_contacts: List[PiAtomicContact] = field(default_factory=list)
-
     receptor_residue: Optional[str] = None
     ligand_residue: Optional[str] = None
-
     pose_id: Optional[str] = None
     model_id: Optional[str] = None
 
     accepted: bool = False
     is_duplicate: bool = False
     duplicate_of: Optional[str] = None
-
     warnings: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    id: Optional[str] = None
+    subtype: Optional[str] = None
+    geometry_subtype: Optional[str] = None
+    geometry_family: Optional[str] = None
+    aromatic_system_1: Optional[Any] = None
+    aromatic_system_2: Optional[Any] = None
+    aromatic_system: Optional[Any] = None
+    ring: Optional[Any] = None
+    cation_group: Optional[Any] = None
+    anion_group: Optional[Any] = None
+    participant_1_type: Optional[str] = None
+    participant_2_type: Optional[str] = None
+    signed_height: Optional[float] = None
+    height: Optional[float] = None
+    absolute_height: Optional[float] = None
+    orientation_angle: Optional[float] = None
+    carbonyl_normal_angle: Optional[float] = None
+    carbonyl_centroid_angle: Optional[float] = None
+    lateral_offset_ring_1: Optional[float] = None
+    lateral_offset_ring_2: Optional[float] = None
+    ring_planarity: Optional[float] = None
+    amide_planarity: Optional[float] = None
+    planarity_quality: Optional[float] = None
+    face: Optional[str] = None
+    effective_charge: Optional[float] = None
+    charge_source: Optional[str] = None
+    geometry_confidence: Optional[float] = None
+    valid: bool = False
+    borderline: bool = False
+    rank: Optional[int] = None
 
     def __post_init__(self) -> None:
         self.interaction_type = _validate_interaction_type(
             self.interaction_type
         )
-
-        if not isinstance(self.ring_1, PiRing):
-            raise TypeError(
-                "PiInteraction.ring_1 must be a PiRing."
-            )
-
-        if self.ring_2 is not None and not isinstance(
-            self.ring_2,
-            PiRing,
-        ):
-            raise TypeError(
-                "PiInteraction.ring_2 must be a PiRing or None."
-            )
-
-        if self.charged_group is not None and not isinstance(
-            self.charged_group,
-            PiChargedGroup,
-        ):
-            raise TypeError(
-                "PiInteraction.charged_group must be "
-                "a PiChargedGroup or None."
-            )
-
-        if self.amide_group is not None and not isinstance(
-            self.amide_group,
-            PiAmideGroup,
-        ):
-            raise TypeError(
-                "PiInteraction.amide_group must be a PiAmideGroup or None."
-            )
-
         self._validate_participant_combination()
 
         self.interaction_id = _normalize_optional_text(
-            self.interaction_id
+            self.interaction_id or self.id
         )
+        self.id = self.interaction_id
 
-        if self.interaction_type == PI_PI:
-            self.geometry_type = _validate_pi_pi_geometry(
-                self.geometry_type
-            )
-
-        else:
-            self.geometry_type = str(
-                self.geometry_type or "unclassified"
-            ).strip().lower()
-
-        self.geometry_class = _validate_geometry_class(
-            self.geometry_class
+        detected_subtype = _normalize_optional_text(
+            self.geometry_subtype or self.subtype
         )
+        if detected_subtype is None and self.geometry_type != PI_PI_UNCLASSIFIED:
+            detected_subtype = str(self.geometry_type).strip().lower()
+        if detected_subtype is None:
+            detected_subtype = str(self.geometry_class or PI_PI_UNCLASSIFIED).strip().lower()
 
-        self.strength = _validate_strength_class(
-            self.strength
+        self.geometry_type = detected_subtype
+        self.subtype = detected_subtype
+        self.geometry_subtype = detected_subtype
+        self.geometry_class = str(self.geometry_class or GEOMETRY_REJECTED).strip().lower()
+        self.geometry_family = _normalize_optional_text(self.geometry_family)
+        try:
+            self.strength = _validate_strength_class(self.strength)
+        except ValueError:
+            self.strength = str(self.strength or STRENGTH_UNCLASSIFIED).strip().lower()
+
+        self.aromatic_system_1 = self.aromatic_system_1 or self.ring_1
+        self.aromatic_system_2 = self.aromatic_system_2 or self.ring_2
+        self.aromatic_system = self.aromatic_system or self.ring_1
+        self.ring = self.ring or self.ring_1
+        normalized_type = _validate_interaction_type(self.interaction_type)
+        if normalized_type == CATION_PI:
+            self.cation_group = self.cation_group or self.charged_group
+        elif normalized_type == ANION_PI:
+            self.anion_group = self.anion_group or self.charged_group
+
+        non_negative_fields = (
+            "centroid_distance", "minimum_atomic_distance", "maximum_atomic_distance",
+            "height", "absolute_height", "lateral_offset", "lateral_offset_ring_1",
+            "lateral_offset_ring_2", "radial_offset", "plane_height",
+            "ring_1_planarity", "ring_2_planarity", "ring_planarity",
+            "group_planarity", "amide_planarity", "planarity_quality",
         )
-
-        distance_fields = (
-            "centroid_distance",
-            "minimum_atomic_distance",
-            "maximum_atomic_distance",
-            "lateral_offset",
-            "radial_offset",
-            "plane_height",
-            "ring_1_planarity",
-            "ring_2_planarity",
-            "group_planarity",
-        )
-
-        for field_name in distance_fields:
+        for field_name in non_negative_fields:
             setattr(
-                self,
-                field_name,
+                self, field_name,
+                _coerce_optional_float(
+                    getattr(self, field_name),
+                    field_name=f"PiInteraction.{field_name}", minimum=0.0
+                )
+            )
+        self.signed_height = _coerce_optional_float(
+            self.signed_height, field_name="PiInteraction.signed_height"
+        )
+        for field_name in (
+            "normal_angle", "plane_angle", "orientation_angle",
+            "carbonyl_normal_angle", "carbonyl_centroid_angle"
+        ):
+            setattr(
+                self, field_name,
                 _coerce_optional_float(
                     getattr(self, field_name),
                     field_name=f"PiInteraction.{field_name}",
-                    minimum=0.0,
-                ),
+                    minimum=0.0, maximum=180.0
+                )
             )
-
-        angle_fields = (
-            "normal_angle",
-            "plane_angle",
+        self.effective_charge = _coerce_optional_float(
+            self.effective_charge, field_name="PiInteraction.effective_charge"
+        )
+        self.charge_source = _normalize_optional_text(self.charge_source)
+        self.face = _normalize_optional_text(self.face)
+        self.geometry_confidence = _coerce_optional_float(
+            self.geometry_confidence,
+            field_name="PiInteraction.geometry_confidence",
+            minimum=0.0, maximum=1.0
         )
 
-        for field_name in angle_fields:
+        for field_name in (
+            "distance_score", "angle_score", "offset_score", "planarity_score",
+            "charge_score", "geometry_score"
+        ):
             setattr(
-                self,
-                field_name,
+                self, field_name,
                 _coerce_optional_float(
                     getattr(self, field_name),
-                    field_name=f"PiInteraction.{field_name}",
-                    minimum=0.0,
-                    maximum=180.0,
-                ),
+                    field_name=f"PiInteraction.{field_name}", minimum=0.0
+                )
             )
-
-        component_score_fields = (
-            "distance_score",
-            "angle_score",
-            "offset_score",
-            "planarity_score",
-            "charge_score",
-            "geometry_score",
-        )
-
-        for field_name in component_score_fields:
-            setattr(
-                self,
-                field_name,
-                _coerce_optional_float(
-                    getattr(self, field_name),
-                    field_name=f"PiInteraction.{field_name}",
-                    minimum=0.0,
-                    maximum=1.0,
-                ),
-            )
-
         self.base_score = _coerce_optional_float(
-            self.base_score,
-            field_name="PiInteraction.base_score",
-            minimum=0.0,
+            self.base_score, field_name="PiInteraction.base_score", minimum=0.0
         )
-
         self.raw_score = _coerce_optional_float(
-            self.raw_score,
-            field_name="PiInteraction.raw_score",
-            minimum=0.0,
+            self.raw_score, field_name="PiInteraction.raw_score", minimum=0.0
         )
-
         self.score = _coerce_non_negative_float(
-            self.score,
-            field_name="PiInteraction.score",
+            self.score, field_name="PiInteraction.score"
         )
-
-        self.normalized_score = _coerce_fraction(
-            self.normalized_score,
-            field_name="PiInteraction.normalized_score",
+        self.normalized_score = _coerce_non_negative_float(
+            self.normalized_score, field_name="PiInteraction.normalized_score"
         )
 
         self.atomic_contacts = list(self.atomic_contacts)
-
-        for contact in self.atomic_contacts:
-            if not isinstance(contact, PiAtomicContact):
-                raise TypeError(
-                    "PiInteraction.atomic_contacts must contain only "
-                    "PiAtomicContact objects."
-                )
-
-        self.receptor_residue = _normalize_optional_text(
-            self.receptor_residue
-        )
-
-        self.ligand_residue = _normalize_optional_text(
-            self.ligand_residue
-        )
-
+        self.receptor_residue = _normalize_optional_text(self.receptor_residue)
+        self.ligand_residue = _normalize_optional_text(self.ligand_residue)
         self.pose_id = _normalize_optional_text(self.pose_id)
         self.model_id = _normalize_optional_text(self.model_id)
-
-        self.accepted = bool(self.accepted)
+        self.accepted = bool(self.accepted or self.valid)
+        self.valid = self.accepted
+        self.borderline = bool(self.borderline)
         self.is_duplicate = bool(self.is_duplicate)
-
-        self.duplicate_of = _normalize_optional_text(
-            self.duplicate_of
-        )
-
+        self.duplicate_of = _normalize_optional_text(self.duplicate_of)
+        self.rank = None if self.rank is None else int(self.rank)
         self.warnings = list(
-            _coerce_string_tuple(
-                self.warnings,
-                field_name="PiInteraction.warnings",
-            )
+            _coerce_string_tuple(self.warnings, field_name="PiInteraction.warnings")
         )
-
         self.metadata = _copy_mapping(self.metadata)
 
         if self.interaction_id is None:
             self.interaction_id = self.build_interaction_id()
+            self.id = self.interaction_id
 
     def _validate_participant_combination(self) -> None:
-        """
-        Validate participant fields according to the interaction type.
-        """
+        interaction_type = _validate_interaction_type(self.interaction_type)
+        if self.ring_1 is None:
+            raise ValueError("A pi interaction requires ring_1.")
+        if interaction_type == PI_PI and self.ring_2 is None:
+            raise ValueError("A pi-pi interaction requires ring_2.")
+        if interaction_type in {CATION_PI, ANION_PI} and self.charged_group is None:
+            raise ValueError(f"A {self.interaction_type} interaction requires charged_group.")
+        if interaction_type == AMIDE_PI and self.amide_group is None:
+            raise ValueError("An amide-pi interaction requires amide_group.")
+        if interaction_type == SULFUR_PI and self.sulfur_group is None and self.charged_group is None:
+            raise ValueError("A sulfur-pi interaction requires sulfur_group or charged_group.")
 
-        if self.interaction_type == PI_PI:
-            if self.ring_2 is None:
-                raise ValueError(
-                    "A pi-pi interaction requires ring_2."
-                )
+    @staticmethod
+    def _participant_identifier(value: Any, fallback: str) -> str:
+        for name in (
+            "ring_id", "group_id", "amide_id", "system_id",
+            "aromatic_system_id", "interaction_id", "id", "identifier"
+        ):
+            candidate = getattr(value, name, None)
+            if candidate:
+                return str(candidate)
+        return fallback
 
-        elif self.interaction_type in {CATION_PI, ANION_PI}:
-            if self.charged_group is None:
-                raise ValueError(
-                    f"A {self.interaction_type} interaction requires "
-                    "charged_group."
-                )
-
-            expected_sign = 1 if self.interaction_type == CATION_PI else -1
-
-            if self.charged_group.charge_sign != expected_sign:
-                raise ValueError(
-                    f"{self.interaction_type} requires a charged group "
-                    f"with sign {expected_sign}."
-                )
-
-        elif self.interaction_type == AMIDE_PI:
-            if self.amide_group is None:
-                raise ValueError(
-                    "An amide-pi interaction requires amide_group."
-                )
-
-        elif self.interaction_type == SULFUR_PI:
-            if (
-                self.sulfur_group is None
-                and self.charged_group is None
-            ):
-                raise ValueError(
-                    "A sulfur-pi interaction requires sulfur_group "
-                    "or charged_group."
-                )
+    @staticmethod
+    def _participant_residue_identifier(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        for name in ("residue_identifier", "residue_id", "residue_key"):
+            candidate = getattr(value, name, None)
+            if candidate:
+                return str(candidate)
+        chain = getattr(value, "chain_id", None)
+        residue_name = getattr(value, "residue_name", None)
+        residue_number = getattr(value, "residue_number", None)
+        if any(item not in (None, "") for item in (chain, residue_name, residue_number)):
+            return f"{chain or '?'}:{residue_name or 'UNK'}:{residue_number if residue_number is not None else '?'}"
+        return None
 
     def build_interaction_id(self) -> str:
-        """
-        Build a deterministic interaction identifier.
-        """
-
-        participant_ids = [self.ring_1.ring_id or "ring1"]
-
-        if self.ring_2 is not None:
-            participant_ids.append(
-                self.ring_2.ring_id or "ring2"
-            )
-
-        elif self.charged_group is not None:
-            participant_ids.append(
-                self.charged_group.group_id or "charged_group"
-            )
-
-        elif self.amide_group is not None:
-            participant_ids.append(
-                self.amide_group.group_id or "amide_group"
-            )
-
-        elif self.sulfur_group is not None:
-            participant_ids.append(
-                self.sulfur_group.group_id or "sulfur_group"
-            )
-
-        ordered_ids = sorted(participant_ids)
-
-        pose_suffix = (
-            f":{self.pose_id}"
-            if self.pose_id
-            else ""
-        )
-
-        return (
-            f"{self.interaction_type}:"
-            f"{'--'.join(ordered_ids)}"
-            f"{pose_suffix}"
-        )
+        participants = [self._participant_identifier(self.ring_1, "ring1")]
+        second = self.ring_2 or self.charged_group or self.amide_group or self.sulfur_group
+        if second is not None:
+            participants.append(self._participant_identifier(second, "participant2"))
+        pose_suffix = f":{self.pose_id}" if self.pose_id else ""
+        return f"{self.interaction_type}:{'--'.join(sorted(participants))}{pose_suffix}"
 
     @property
     def residue_identifiers(self) -> Tuple[str, ...]:
-        """
-        Return unique residue identifiers involved in the interaction.
-        """
-
-        identifiers: List[str] = [
-            self.ring_1.residue_identifier,
+        identifiers = [
+            self._participant_residue_identifier(value)
+            for value in (
+                self.ring_1, self.ring_2, self.charged_group,
+                self.amide_group, self.sulfur_group
+            )
         ]
-
-        if self.ring_2 is not None:
-            identifiers.append(
-                self.ring_2.residue_identifier
-            )
-
-        if self.charged_group is not None:
-            identifiers.append(
-                self.charged_group.residue_identifier
-            )
-
-        if self.amide_group is not None:
-            identifiers.append(
-                self.amide_group.residue_identifier
-            )
-
-        if self.sulfur_group is not None:
-            identifiers.append(
-                self.sulfur_group.residue_identifier
-            )
-
-        return tuple(dict.fromkeys(identifiers))
+        return tuple(dict.fromkeys(value for value in identifiers if value))
 
     @property
     def atom_contact_count(self) -> int:
-        """
-        Return the number of associated atomic contacts.
-        """
-
         return len(self.atomic_contacts)
 
     @property
     def is_valid_interaction(self) -> bool:
-        """
-        Return whether the interaction is accepted and not duplicated.
-        """
+        return self.accepted and not self.is_duplicate and self.geometry_class != GEOMETRY_REJECTED
 
-        return (
-            self.accepted
-            and not self.is_duplicate
-            and self.geometry_class != GEOMETRY_REJECTED
-        )
+    @staticmethod
+    def _serialize_participant(
+        value: Any, *, include_atoms: bool, include_coordinates: bool
+    ) -> Any:
+        if value is None:
+            return None
+        method = getattr(value, "to_dict", None)
+        if callable(method):
+            try:
+                return method(
+                    include_atoms=include_atoms, include_coordinates=include_coordinates
+                )
+            except TypeError:
+                return method()
+        if isinstance(value, Mapping):
+            return dict(value)
+        result: Dict[str, Any] = {}
+        for name in (
+            "ring_id", "group_id", "amide_id", "centroid", "center", "normal",
+            "residue_name", "residue_number", "chain_id", "participant_type",
+            "effective_charge", "group_type", "planarity_rmsd", "planarity"
+        ):
+            candidate = getattr(value, name, None)
+            if candidate is not None:
+                result[name] = list(candidate) if isinstance(candidate, tuple) else candidate
+        return result or repr(value)
 
     def to_dict(
-        self,
-        *,
-        include_atoms: bool = True,
-        include_coordinates: bool = True,
-        include_raw_geometry: bool = True,
+        self, *, include_atoms: bool = True, include_coordinates: bool = True,
+        include_raw_geometry: bool = True
     ) -> Dict[str, Any]:
-        """
-        Convert the interaction into a serializable dictionary.
-        """
-
         result: Dict[str, Any] = {
             "interaction_id": self.interaction_id,
             "interaction_type": self.interaction_type,
             "geometry_type": self.geometry_type,
+            "geometry_subtype": self.geometry_subtype,
             "geometry_class": self.geometry_class,
+            "geometry_family": self.geometry_family,
             "strength": self.strength,
             "score": self.score,
             "normalized_score": self.normalized_score,
             "base_score": self.base_score,
             "raw_score": self.raw_score,
-            "receptor_residue": self.receptor_residue,
-            "ligand_residue": self.ligand_residue,
             "pose_id": self.pose_id,
             "model_id": self.model_id,
             "accepted": self.accepted,
+            "valid": self.valid,
+            "borderline": self.borderline,
             "is_duplicate": self.is_duplicate,
             "duplicate_of": self.duplicate_of,
+            "rank": self.rank,
             "residue_identifiers": list(self.residue_identifiers),
             "atom_contact_count": self.atom_contact_count,
-            "ring_1": self.ring_1.to_dict(
-                include_atoms=include_atoms,
-                include_coordinates=include_coordinates,
+            "ring_1": self._serialize_participant(
+                self.ring_1, include_atoms=include_atoms, include_coordinates=include_coordinates
             ),
-            "ring_2": (
-                self.ring_2.to_dict(
-                    include_atoms=include_atoms,
-                    include_coordinates=include_coordinates,
-                )
-                if self.ring_2 is not None
-                else None
+            "ring_2": self._serialize_participant(
+                self.ring_2, include_atoms=include_atoms, include_coordinates=include_coordinates
             ),
-            "charged_group": (
-                self.charged_group.to_dict(
-                    include_atoms=include_atoms,
-                    include_coordinates=include_coordinates,
-                )
-                if self.charged_group is not None
-                else None
+            "charged_group": self._serialize_participant(
+                self.charged_group, include_atoms=include_atoms, include_coordinates=include_coordinates
             ),
-            "amide_group": (
-                self.amide_group.to_dict(
-                    include_atoms=include_atoms,
-                    include_coordinates=include_coordinates,
-                )
-                if self.amide_group is not None
-                else None
+            "amide_group": self._serialize_participant(
+                self.amide_group, include_atoms=include_atoms, include_coordinates=include_coordinates
             ),
             "atomic_contacts": [
-                contact.to_dict()
+                contact.to_dict() if callable(getattr(contact, "to_dict", None))
+                else repr(contact)
                 for contact in self.atomic_contacts
             ],
             "warnings": list(self.warnings),
             "metadata": dict(self.metadata),
         }
-
         if include_raw_geometry:
             result["geometry"] = {
-                "centroid_distance": self.centroid_distance,
-                "minimum_atomic_distance": self.minimum_atomic_distance,
-                "maximum_atomic_distance": self.maximum_atomic_distance,
-                "normal_angle": self.normal_angle,
-                "plane_angle": self.plane_angle,
-                "lateral_offset": self.lateral_offset,
-                "radial_offset": self.radial_offset,
-                "plane_height": self.plane_height,
-                "ring_1_planarity": self.ring_1_planarity,
-                "ring_2_planarity": self.ring_2_planarity,
-                "group_planarity": self.group_planarity,
+                name: getattr(self, name)
+                for name in (
+                    "centroid_distance", "minimum_atomic_distance",
+                    "maximum_atomic_distance", "normal_angle", "plane_angle",
+                    "orientation_angle", "lateral_offset", "radial_offset",
+                    "signed_height", "absolute_height", "ring_1_planarity",
+                    "ring_2_planarity", "ring_planarity", "group_planarity",
+                    "amide_planarity", "geometry_confidence"
+                )
             }
-
             result["score_components"] = {
-                "distance_score": self.distance_score,
-                "angle_score": self.angle_score,
-                "offset_score": self.offset_score,
-                "planarity_score": self.planarity_score,
-                "charge_score": self.charge_score,
-                "geometry_score": self.geometry_score,
+                name: getattr(self, name)
+                for name in (
+                    "distance_score", "angle_score", "offset_score",
+                    "planarity_score", "charge_score", "geometry_score"
+                )
             }
-
         return result
 
 
 # -----------------------------------------------------------------------------
-# 2.8. Resumo por resíduo
+# 2.8. Summary by residue
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -3495,7 +3414,7 @@ class PiResidueSummary:
 
 
 # -----------------------------------------------------------------------------
-# 2.9. Estatísticas gerais
+# 2.9. General statistics
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -3784,11 +3703,11 @@ class PiStatistics:
 
 
 # -----------------------------------------------------------------------------
-# 2.10. Configuração da análise
+# 2.10. Analysis configuration
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
-class PiAnalysisConfig:
+class PiCoreAnalysisConfig:
     """
     Configuration object controlling pi-interaction analysis.
     """
@@ -4087,6 +4006,8 @@ class PiAnalysisConfig:
 
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    minimum_group_charge_magnitude: float = 0.25
+
     def __post_init__(self) -> None:
         enabled = frozenset(
             _validate_interaction_type(interaction_type)
@@ -4184,6 +4105,7 @@ class PiAnalysisConfig:
             "sulfur_pi_optimal_distance",
             "sulfur_pi_favorable_distance",
             "sulfur_pi_maximum_distance",
+            "minimum_group_charge_magnitude",
             "centroid_deduplication_tolerance",
             "normal_deduplication_angle",
             "interaction_distance_tolerance",
@@ -4197,7 +4119,7 @@ class PiAnalysisConfig:
                 field_name,
                 _coerce_non_negative_float(
                     getattr(self, field_name),
-                    field_name=f"PiAnalysisConfig.{field_name}",
+                    field_name=f"PiCoreAnalysisConfig.{field_name}",
                 ),
             )
 
@@ -4205,7 +4127,7 @@ class PiAnalysisConfig:
             _coerce_optional_float(
                 self.positive_partial_charge_threshold,
                 field_name=(
-                    "PiAnalysisConfig."
+                    "PiCoreAnalysisConfig."
                     "positive_partial_charge_threshold"
                 ),
             )
@@ -4215,7 +4137,7 @@ class PiAnalysisConfig:
             _coerce_optional_float(
                 self.negative_partial_charge_threshold,
                 field_name=(
-                    "PiAnalysisConfig."
+                    "PiCoreAnalysisConfig."
                     "negative_partial_charge_threshold"
                 ),
             )
@@ -4246,23 +4168,23 @@ class PiAnalysisConfig:
         self.multipose_hotspot_frequency = _coerce_fraction(
             self.multipose_hotspot_frequency,
             field_name=(
-                "PiAnalysisConfig.multipose_hotspot_frequency"
+                "PiCoreAnalysisConfig.multipose_hotspot_frequency"
             ),
         )
 
         self.strong_score_threshold = _coerce_fraction(
             self.strong_score_threshold,
-            field_name="PiAnalysisConfig.strong_score_threshold",
+            field_name="PiCoreAnalysisConfig.strong_score_threshold",
         )
 
         self.moderate_score_threshold = _coerce_fraction(
             self.moderate_score_threshold,
-            field_name="PiAnalysisConfig.moderate_score_threshold",
+            field_name="PiCoreAnalysisConfig.moderate_score_threshold",
         )
 
         self.weak_score_threshold = _coerce_fraction(
             self.weak_score_threshold,
-            field_name="PiAnalysisConfig.weak_score_threshold",
+            field_name="PiCoreAnalysisConfig.weak_score_threshold",
         )
 
         if not (
@@ -4411,7 +4333,7 @@ class PiAnalysisConfig:
                 _coerce_non_negative_float(
                     value,
                     field_name=(
-                        "PiAnalysisConfig.interaction_base_scores"
+                        "PiCoreAnalysisConfig.interaction_base_scores"
                     ),
                 )
             )
@@ -4422,7 +4344,7 @@ class PiAnalysisConfig:
             _validate_geometry_class(key): _coerce_fraction(
                 value,
                 field_name=(
-                    "PiAnalysisConfig.geometry_score_multipliers"
+                    "PiCoreAnalysisConfig.geometry_score_multipliers"
                 ),
             )
             for key, value in (
@@ -4434,7 +4356,7 @@ class PiAnalysisConfig:
             _validate_pi_pi_geometry(key): _coerce_fraction(
                 value,
                 field_name=(
-                    "PiAnalysisConfig.pi_pi_geometry_multipliers"
+                    "PiCoreAnalysisConfig.pi_pi_geometry_multipliers"
                 ),
             )
             for key, value in (
@@ -4466,7 +4388,7 @@ class PiAnalysisConfig:
 
             _validate_weight_mapping(
                 copied_mapping,
-                name=f"PiAnalysisConfig.{field_name}",
+                name=f"PiCoreAnalysisConfig.{field_name}",
             )
 
             setattr(
@@ -4511,11 +4433,11 @@ class PiAnalysisConfig:
 
 
 # -----------------------------------------------------------------------------
-# 2.11. Resultado completo da análise
+# 2.11. Complete analysis result
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
-class PiAnalysisResult:
+class PiCoreAnalysisResult:
     """
     Complete output generated by a pi-interaction analysis.
     """
@@ -4535,8 +4457,8 @@ class PiAnalysisResult:
         default_factory=PiStatistics
     )
 
-    configuration: PiAnalysisConfig = field(
-        default_factory=PiAnalysisConfig
+    configuration: PiCoreAnalysisConfig = field(
+        default_factory=PiCoreAnalysisConfig
     )
 
     score: float = 0.0
@@ -4565,7 +4487,7 @@ class PiAnalysisResult:
             for interaction in self.interactions
         ):
             raise TypeError(
-                "PiAnalysisResult.interactions must contain only "
+                "PiCoreAnalysisResult.interactions must contain only "
                 "PiInteraction objects."
             )
 
@@ -4574,7 +4496,7 @@ class PiAnalysisResult:
             for ring in self.rings
         ):
             raise TypeError(
-                "PiAnalysisResult.rings must contain only PiRing objects."
+                "PiCoreAnalysisResult.rings must contain only PiRing objects."
             )
 
         if not all(
@@ -4582,7 +4504,7 @@ class PiAnalysisResult:
             for group in self.charged_groups
         ):
             raise TypeError(
-                "PiAnalysisResult.charged_groups must contain only "
+                "PiCoreAnalysisResult.charged_groups must contain only "
                 "PiChargedGroup objects."
             )
 
@@ -4591,7 +4513,7 @@ class PiAnalysisResult:
             for group in self.amide_groups
         ):
             raise TypeError(
-                "PiAnalysisResult.amide_groups must contain only "
+                "PiCoreAnalysisResult.amide_groups must contain only "
                 "PiAmideGroup objects."
             )
 
@@ -4602,7 +4524,7 @@ class PiAnalysisResult:
             for summary in self.residue_summaries.values()
         ):
             raise TypeError(
-                "PiAnalysisResult.residue_summaries must contain only "
+                "PiCoreAnalysisResult.residue_summaries must contain only "
                 "PiResidueSummary values."
             )
 
@@ -4613,29 +4535,29 @@ class PiAnalysisResult:
             for summary in self.hotspots
         ):
             raise TypeError(
-                "PiAnalysisResult.hotspots must contain only "
+                "PiCoreAnalysisResult.hotspots must contain only "
                 "PiResidueSummary objects."
             )
 
         if not isinstance(self.statistics, PiStatistics):
             raise TypeError(
-                "PiAnalysisResult.statistics must be a PiStatistics."
+                "PiCoreAnalysisResult.statistics must be a PiStatistics."
             )
 
-        if not isinstance(self.configuration, PiAnalysisConfig):
+        if not isinstance(self.configuration, PiCoreAnalysisConfig):
             raise TypeError(
-                "PiAnalysisResult.configuration must be "
-                "a PiAnalysisConfig."
+                "PiCoreAnalysisResult.configuration must be "
+                "a PiCoreAnalysisConfig."
             )
 
         self.score = _coerce_non_negative_float(
             self.score,
-            field_name="PiAnalysisResult.score",
+            field_name="PiCoreAnalysisResult.score",
         )
 
         self.normalized_score = _coerce_fraction(
             self.normalized_score,
-            field_name="PiAnalysisResult.normalized_score",
+            field_name="PiCoreAnalysisResult.normalized_score",
         )
 
         self.pose_id = _normalize_optional_text(self.pose_id)
@@ -4664,14 +4586,14 @@ class PiAnalysisResult:
         self.warnings = list(
             _coerce_string_tuple(
                 self.warnings,
-                field_name="PiAnalysisResult.warnings",
+                field_name="PiCoreAnalysisResult.warnings",
             )
         )
 
         self.errors = list(
             _coerce_string_tuple(
                 self.errors,
-                field_name="PiAnalysisResult.errors",
+                field_name="PiCoreAnalysisResult.errors",
             )
         )
 
@@ -4763,7 +4685,7 @@ class PiAnalysisResult:
         return [
             interaction
             for interaction in source
-            if interaction.interaction_type == normalized_type
+            if _validate_interaction_type(interaction.interaction_type) == normalized_type
         ]
 
     def get_residue_summary(
@@ -4856,7 +4778,7 @@ class PiAnalysisResult:
 
 
 # -----------------------------------------------------------------------------
-# 2.12. Resultado multipose
+# 2.12. Multipose result
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -4865,7 +4787,7 @@ class PiMultiPoseResult:
     Aggregated result generated from multiple poses or DockModel objects.
     """
 
-    pose_results: List[PiAnalysisResult] = field(
+    pose_results: List[PiCoreAnalysisResult] = field(
         default_factory=list
     )
 
@@ -4885,8 +4807,8 @@ class PiMultiPoseResult:
         default_factory=PiStatistics
     )
 
-    configuration: PiAnalysisConfig = field(
-        default_factory=PiAnalysisConfig
+    configuration: PiCoreAnalysisConfig = field(
+        default_factory=PiCoreAnalysisConfig
     )
 
     total_score: float = 0.0
@@ -4906,12 +4828,12 @@ class PiMultiPoseResult:
         self.pose_results = list(self.pose_results)
 
         if not all(
-            isinstance(result, PiAnalysisResult)
+            isinstance(result, PiCoreAnalysisResult)
             for result in self.pose_results
         ):
             raise TypeError(
                 "PiMultiPoseResult.pose_results must contain only "
-                "PiAnalysisResult objects."
+                "PiCoreAnalysisResult objects."
             )
 
         self.consensus_interactions = list(
@@ -4935,10 +4857,10 @@ class PiMultiPoseResult:
                 "PiMultiPoseResult.statistics must be a PiStatistics."
             )
 
-        if not isinstance(self.configuration, PiAnalysisConfig):
+        if not isinstance(self.configuration, PiCoreAnalysisConfig):
             raise TypeError(
                 "PiMultiPoseResult.configuration must be "
-                "a PiAnalysisConfig."
+                "a PiCoreAnalysisConfig."
             )
 
         self.total_score = _coerce_non_negative_float(
@@ -5072,7 +4994,7 @@ class PiMultiPoseResult:
 
 
 # -----------------------------------------------------------------------------
-# 2.13. Aliases públicos
+# 2.13. Public aliases
 # -----------------------------------------------------------------------------
 
 PiInteractionCollection: TypeAlias = Sequence[PiInteraction]
@@ -5090,26 +5012,26 @@ PiResidueSummaryMapping: TypeAlias = Mapping[
 
 
 # -----------------------------------------------------------------------------
-# 2.14. Configuração padrão reutilizável
+# 2.14. Reusable default configuration
 # -----------------------------------------------------------------------------
 
-def create_default_pi_config() -> PiAnalysisConfig:
+def create_default_pi_config() -> PiCoreAnalysisConfig:
     """
-    Create a fresh default PiAnalysisConfig instance.
+    Create a fresh default PiCoreAnalysisConfig instance.
 
     A function is used instead of a shared module-level mutable instance to
     prevent state leakage between analyses.
     """
 
-    return PiAnalysisConfig()
+    return PiCoreAnalysisConfig()
 
 
 # =============================================================================
-# 3. NORMALIZAÇÃO E ACESSO SEGURO AOS ÁTOMOS
+# 3. NORMALIZATION AND SAFE ATOM ACCESS
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 3.1. Exceções específicas da camada de normalização
+# 3.1. Normalization-layer exceptions
 # -----------------------------------------------------------------------------
 
 class PiNormalizationError(ValueError):
@@ -5137,7 +5059,7 @@ class PiResidueAccessError(PiNormalizationError):
 
 
 # -----------------------------------------------------------------------------
-# 3.2. Funções genéricas de acesso a atributos
+# 3.2. Generic attribute-access functions
 # -----------------------------------------------------------------------------
 
 _MISSING: Final[object] = object()
@@ -5403,7 +5325,7 @@ def _as_sequence(
 
 
 # -----------------------------------------------------------------------------
-# 3.3. Normalização de elementos químicos
+# 3.3. Chemical-element normalization
 # -----------------------------------------------------------------------------
 
 _ELEMENT_ALIASES: Final[Mapping[str, str]] = {
@@ -5606,7 +5528,7 @@ def infer_element_from_atom_name(
 
 
 # -----------------------------------------------------------------------------
-# 3.4. Acesso a nomes e identificadores atômicos
+# 3.4. Access to atomic names and identifiers
 # -----------------------------------------------------------------------------
 
 def get_atom_name(
@@ -5751,7 +5673,7 @@ def get_atom_model(
 
 
 # -----------------------------------------------------------------------------
-# 3.5. Normalização de coordenadas
+# 3.5. Coordinate normalization
 # -----------------------------------------------------------------------------
 
 def _coordinate_components_from_object(
@@ -5989,7 +5911,7 @@ def atom_has_valid_coordinate(
 
 
 # -----------------------------------------------------------------------------
-# 3.6. Acesso ao resíduo de um átomo
+# 3.6. Access to an atom residue
 # -----------------------------------------------------------------------------
 
 def get_atom_residue(
@@ -6220,7 +6142,7 @@ def get_residue_identifier(
 
 
 # -----------------------------------------------------------------------------
-# 3.7. Acesso a modelos, resíduos e coleções de átomos
+# 3.7. Access to models, residues, and atom collections
 # -----------------------------------------------------------------------------
 
 def get_model_identifier(
@@ -6403,33 +6325,30 @@ def normalize_atom_collection(
     if value is None:
         return ()
 
-    direct_atom_name = get_atom_name(value)
+    model_atoms = get_model_atoms(
+        value,
+        include_hydrogens=include_hydrogens,
+        valid_coordinates_only=valid_coordinates_only,
+    )
 
-    if direct_atom_name:
-        candidates = (value,)
+    if model_atoms:
+        candidates = model_atoms
 
     else:
-        model_atoms = get_model_atoms(
+        residue_atoms = get_residue_atoms(
             value,
             include_hydrogens=include_hydrogens,
             valid_coordinates_only=valid_coordinates_only,
         )
 
-        if model_atoms:
-            candidates = model_atoms
+        if residue_atoms:
+            candidates = residue_atoms
+
+        elif get_atom_name(value):
+            candidates = (value,)
 
         else:
-            residue_atoms = get_residue_atoms(
-                value,
-                include_hydrogens=include_hydrogens,
-                valid_coordinates_only=valid_coordinates_only,
-            )
-
-            if residue_atoms:
-                candidates = residue_atoms
-
-            else:
-                candidates = _as_sequence(value)
+            candidates = _as_sequence(value)
 
     normalized: List[Any] = []
     seen_ids: Set[int] = set()
@@ -6520,7 +6439,7 @@ def normalize_residue_collection(
 
 
 # -----------------------------------------------------------------------------
-# 3.8. Cargas atômicas
+# 3.8. Atomic charges
 # -----------------------------------------------------------------------------
 
 def get_atom_formal_charge(
@@ -6665,7 +6584,7 @@ def atom_has_negative_charge(
 
 
 # -----------------------------------------------------------------------------
-# 3.9. Aromaticidade e classificação atômica
+# 3.9. Aromaticity and atom classification
 # -----------------------------------------------------------------------------
 
 def is_hydrogen_atom(
@@ -6829,7 +6748,7 @@ def is_aromatic_atom(
 
 
 # -----------------------------------------------------------------------------
-# 3.10. Conectividade e ligações químicas
+# 3.10. Connectivity and chemical bonds
 # -----------------------------------------------------------------------------
 
 def get_atom_bonds(
@@ -7158,7 +7077,7 @@ def is_aromatic_bond(
 
 
 # -----------------------------------------------------------------------------
-# 3.11. Seleção e busca de átomos
+# 3.11. Atom selection and search
 # -----------------------------------------------------------------------------
 
 def find_atom_by_name(
@@ -7335,7 +7254,7 @@ def filter_atoms_with_coordinates(
 
 
 # -----------------------------------------------------------------------------
-# 3.12. Construção de referências atômicas serializáveis
+# 3.12. Construction of serializable atom references
 # -----------------------------------------------------------------------------
 
 def create_pi_atom_reference(
@@ -7449,7 +7368,7 @@ def create_pi_atom_references(
 
 
 # -----------------------------------------------------------------------------
-# 3.13. Identificação de participantes moleculares
+# 3.13. Molecular-participant identification
 # -----------------------------------------------------------------------------
 
 _STANDARD_AMINO_ACIDS: Final[FrozenSet[str]] = frozenset(
@@ -7642,7 +7561,7 @@ def infer_participant_type(
 
 
 # -----------------------------------------------------------------------------
-# 3.14. Identificadores e chaves estáveis
+# 3.14. Stable identifiers and keys
 # -----------------------------------------------------------------------------
 
 def get_atom_identifier(
@@ -7779,7 +7698,7 @@ def deduplicate_residues(
 
 
 # -----------------------------------------------------------------------------
-# 3.15. Validação de coleções moleculares
+# 3.15. Molecular-collection validation
 # -----------------------------------------------------------------------------
 
 def validate_atom(
@@ -7894,7 +7813,7 @@ def require_valid_atom_collection(
 
 
 # -----------------------------------------------------------------------------
-# 3.16. Contexto normalizado de análise
+# 3.16. Normalized analysis context
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -8113,7 +8032,7 @@ def normalize_pi_analysis_input(
 
 
 # -----------------------------------------------------------------------------
-# 3.17. Relatório resumido da normalização
+# 3.17. Normalization summary report
 # -----------------------------------------------------------------------------
 
 def summarize_normalized_input(
@@ -8187,11 +8106,11 @@ def summarize_normalized_input(
 
 
 # =============================================================================
-# 4. RECONHECIMENTO DE ANÉIS AROMÁTICOS
+# 4. AROMATIC-RING RECOGNITION
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 4.1. Tipos auxiliares internos
+# 4.1. Internal helper types
 # -----------------------------------------------------------------------------
 
 RingAtomTuple: TypeAlias = Tuple[Any, ...]
@@ -8202,7 +8121,7 @@ RingGraph: TypeAlias = Dict[int, Set[int]]
 
 
 # -----------------------------------------------------------------------------
-# 4.2. Normalização de ciclos
+# 4.2. Cycle normalization
 # -----------------------------------------------------------------------------
 
 def _rotate_sequence_to_smallest(
@@ -8321,7 +8240,7 @@ def deduplicate_atom_rings(
 
 
 # -----------------------------------------------------------------------------
-# 4.3. Utilitários de conectividade para anéis
+# 4.3. Ring-connectivity utilities
 # -----------------------------------------------------------------------------
 
 def build_atom_adjacency_graph(
@@ -8467,7 +8386,7 @@ def _is_simple_cycle_subgraph(
 
 
 # -----------------------------------------------------------------------------
-# 4.4. Busca de ciclos simples
+# 4.4. Simple-cycle search
 # -----------------------------------------------------------------------------
 
 def _enumerate_simple_cycles_depth_first(
@@ -8591,7 +8510,7 @@ def find_simple_cycles(
 
 
 # -----------------------------------------------------------------------------
-# 4.5. Reconhecimento de anéis aromáticos proteicos conhecidos
+# 4.5. Recognition of known protein aromatic rings
 # -----------------------------------------------------------------------------
 
 def get_standard_residue_ring_definitions(
@@ -8693,7 +8612,7 @@ def find_standard_residue_aromatic_rings(
 
 
 # -----------------------------------------------------------------------------
-# 4.6. Definições aromáticas para ácidos nucleicos
+# 4.6. Aromatic definitions for nucleic acids
 # -----------------------------------------------------------------------------
 
 PURINE_FIVE_MEMBER_RING_ATOMS: Final[Tuple[str, ...]] = (
@@ -8882,7 +8801,7 @@ def find_nucleic_acid_aromatic_rings(
 
 
 # -----------------------------------------------------------------------------
-# 4.7. Avaliação preliminar de aromaticidade de ciclos
+# 4.7. Preliminary cycle-aromaticity assessment
 # -----------------------------------------------------------------------------
 
 def count_aromatic_atoms(
@@ -9153,7 +9072,7 @@ def estimate_ring_aromaticity(
 
 
 # -----------------------------------------------------------------------------
-# 4.8. Filtragem de ciclos aromáticos
+# 4.8. Aromatic-cycle filtering
 # -----------------------------------------------------------------------------
 
 def filter_aromatic_cycles(
@@ -9216,7 +9135,7 @@ def filter_aromatic_cycles(
 
 
 # -----------------------------------------------------------------------------
-# 4.9. Detecção de sistemas fundidos
+# 4.9. Fused-system detection
 # -----------------------------------------------------------------------------
 
 def rings_share_atoms(
@@ -9369,7 +9288,7 @@ def merge_fused_ring_atoms(
 
 
 # -----------------------------------------------------------------------------
-# 4.10. Inferência de resíduos e propriedades do anel
+# 4.10. Inference of residues and ring properties
 # -----------------------------------------------------------------------------
 
 def infer_ring_residue(
@@ -9484,7 +9403,7 @@ def infer_ring_participant_type(
 
 
 # -----------------------------------------------------------------------------
-# 4.11. Construção preliminar de PiRing
+# 4.11. Preliminary PiRing construction
 # -----------------------------------------------------------------------------
 
 def create_preliminary_pi_ring(
@@ -9595,13 +9514,13 @@ def create_preliminary_pi_ring(
 
 
 # -----------------------------------------------------------------------------
-# 4.12. Detecção de anéis aromáticos por resíduo
+# 4.12. Aromatic-ring detection by residue
 # -----------------------------------------------------------------------------
 
 def detect_residue_aromatic_rings(
     residue: Any,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     participant_type: Optional[str] = None,
     use_known_definitions: bool = True,
     use_connectivity_detection: bool = True,
@@ -9622,9 +9541,9 @@ def detect_residue_aromatic_rings(
         else create_default_pi_config()
     )
 
-    if not isinstance(analysis_config, PiAnalysisConfig):
+    if not isinstance(analysis_config, PiCoreAnalysisConfig):
         raise TypeError(
-            "config must be a PiAnalysisConfig or None."
+            "config must be a PiCoreAnalysisConfig or None."
         )
 
     residue_atoms = get_residue_atoms(
@@ -9785,13 +9704,13 @@ def detect_residue_aromatic_rings(
 
 
 # -----------------------------------------------------------------------------
-# 4.13. Detecção de anéis aromáticos em coleções moleculares
+# 4.13. Aromatic-ring detection in molecular collections
 # -----------------------------------------------------------------------------
 
 def detect_aromatic_rings(
     molecular_input: Any,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     participant_type: Optional[str] = None,
     ligand_residue_names: Optional[Collection[str]] = None,
     receptor_residue_names: Optional[Collection[str]] = None,
@@ -9813,9 +9732,9 @@ def detect_aromatic_rings(
         else create_default_pi_config()
     )
 
-    if not isinstance(analysis_config, PiAnalysisConfig):
+    if not isinstance(analysis_config, PiCoreAnalysisConfig):
         raise TypeError(
-            "config must be a PiAnalysisConfig or None."
+            "config must be a PiCoreAnalysisConfig or None."
         )
 
     atoms = normalize_atom_collection(
@@ -9923,7 +9842,7 @@ def detect_aromatic_rings(
 
 
 # -----------------------------------------------------------------------------
-# 4.14. Deduplicação de PiRing
+# 4.14. PiRing deduplication
 # -----------------------------------------------------------------------------
 
 def get_pi_ring_identity_key(
@@ -10031,13 +9950,13 @@ def deduplicate_pi_rings(
 
 
 # -----------------------------------------------------------------------------
-# 4.15. Separação entre anéis do receptor e do ligante
+# 4.15. Separation of receptor and ligand rings
 # -----------------------------------------------------------------------------
 
 def detect_receptor_aromatic_rings(
     receptor: Any,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     receptor_residue_names: Optional[Collection[str]] = None,
 ) -> List[PiRing]:
     """
@@ -10055,7 +9974,7 @@ def detect_receptor_aromatic_rings(
 def detect_ligand_aromatic_rings(
     ligand: Any,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     ligand_residue_names: Optional[Collection[str]] = None,
 ) -> List[PiRing]:
     """
@@ -10073,7 +9992,7 @@ def detect_ligand_aromatic_rings(
 def detect_pi_analysis_rings(
     normalized_input: PiNormalizedInput,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
 ) -> Tuple[List[PiRing], List[PiRing]]:
     """
     Detect receptor and ligand aromatic rings from normalized analysis input.
@@ -10104,13 +10023,13 @@ def detect_pi_analysis_rings(
 
 
 # -----------------------------------------------------------------------------
-# 4.16. Validação preliminar de anéis detectados
+# 4.16. Preliminary validation of detected rings
 # -----------------------------------------------------------------------------
 
 def validate_detected_ring(
     ring: PiRing,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     require_aromaticity: bool = True,
     require_coordinates: bool = True,
 ) -> Tuple[bool, Tuple[str, ...]]:
@@ -10191,7 +10110,7 @@ def validate_detected_ring(
 def validate_detected_rings(
     rings: Iterable[PiRing],
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     remove_invalid: bool = False,
 ) -> List[PiRing]:
     """
@@ -10215,7 +10134,7 @@ def validate_detected_rings(
 
 
 # -----------------------------------------------------------------------------
-# 4.17. Resumo da detecção de anéis
+# 4.17. Ring-detection summary
 # -----------------------------------------------------------------------------
 
 def summarize_detected_rings(
@@ -10297,11 +10216,11 @@ def summarize_detected_rings(
 
 
 # =============================================================================
-# 5. GEOMETRIA DOS ANÉIS AROMÁTICOS
+# 5. AROMATIC-RING GEOMETRY
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 5.1. Exceções específicas de geometria
+# 5.1. Geometry-specific exceptions
 # -----------------------------------------------------------------------------
 
 class PiGeometryError(ValueError):
@@ -10317,7 +10236,7 @@ class PiDegenerateGeometryError(PiGeometryError):
 
 
 # -----------------------------------------------------------------------------
-# 5.2. Tipos auxiliares
+# 5.2. Helper types
 # -----------------------------------------------------------------------------
 
 Matrix3x3: TypeAlias = Tuple[
@@ -10731,7 +10650,7 @@ class PiPointRingGeometry:
 
 
 # -----------------------------------------------------------------------------
-# 5.3. Operações vetoriais básicas
+# 5.3. Basic vector operations
 # -----------------------------------------------------------------------------
 
 def add_vectors(
@@ -10998,7 +10917,7 @@ def midpoint(
 
 
 # -----------------------------------------------------------------------------
-# 5.4. Ângulos vetoriais
+# 5.4. Vector angles
 # -----------------------------------------------------------------------------
 
 def angle_between_vectors(
@@ -11087,7 +11006,7 @@ def angle_between_planes(
 
 
 # -----------------------------------------------------------------------------
-# 5.5. Centroide e dispersão espacial
+# 5.5. Centroid and spatial dispersion
 # -----------------------------------------------------------------------------
 
 def calculate_centroid(
@@ -11218,7 +11137,7 @@ def calculate_radius_from_centroid(
 
 
 # -----------------------------------------------------------------------------
-# 5.6. Matriz de covariância
+# 5.6. Covariance matrix
 # -----------------------------------------------------------------------------
 
 def calculate_coordinate_covariance_matrix(
@@ -11296,7 +11215,7 @@ def calculate_coordinate_covariance_matrix(
 
 
 # -----------------------------------------------------------------------------
-# 5.7. Ajuste de plano com NumPy
+# 5.7. Plane fitting with NumPy
 # -----------------------------------------------------------------------------
 
 def _fit_plane_with_numpy(
@@ -11384,7 +11303,7 @@ def _fit_plane_with_numpy(
 
 
 # -----------------------------------------------------------------------------
-# 5.8. Ajuste de plano sem NumPy
+# 5.8. Plane fitting without NumPy
 # -----------------------------------------------------------------------------
 
 def _select_stable_plane_vectors(
@@ -11500,7 +11419,7 @@ def _fit_plane_without_numpy(
 
 
 # -----------------------------------------------------------------------------
-# 5.9. Ajuste público de plano
+# 5.9. Public plane fitting
 # -----------------------------------------------------------------------------
 
 def fit_plane_to_coordinates(
@@ -11581,7 +11500,7 @@ def fit_plane_to_atoms(
 
 
 # -----------------------------------------------------------------------------
-# 5.10. Orientação determinística de vetores normais
+# 5.10. Deterministic orientation of normal vectors
 # -----------------------------------------------------------------------------
 
 def orient_normal_deterministically(
@@ -11657,7 +11576,7 @@ def align_normal_to_reference(
 
 
 # -----------------------------------------------------------------------------
-# 5.11. Distância de ponto a plano
+# 5.11. Point-to-plane distance
 # -----------------------------------------------------------------------------
 
 def signed_distance_to_plane(
@@ -11758,8 +11677,25 @@ def calculate_radial_offset_from_plane_axis(
 
 
 # -----------------------------------------------------------------------------
-# 5.12. Distâncias atômicas
+# 5.12. Atomic distances
 # -----------------------------------------------------------------------------
+
+def _squared_distance_3d_unchecked(
+    point_1: Coordinate3D,
+    point_2: Coordinate3D,
+) -> float:
+    """Return squared distance for already validated 3D coordinates."""
+
+    delta_x = point_1[0] - point_2[0]
+    delta_y = point_1[1] - point_2[1]
+    delta_z = point_1[2] - point_2[2]
+
+    return (
+        delta_x ** 2
+        + delta_y ** 2
+        + delta_z ** 2
+    )
+
 
 def calculate_pairwise_atomic_distances(
     atoms_1: Iterable[Any],
@@ -11788,9 +11724,11 @@ def calculate_pairwise_atomic_distances(
         return ()
 
     return tuple(
-        distance_between_points(
-            first_coordinate,
-            second_coordinate,
+        sqrt(
+            _squared_distance_3d_unchecked(
+                first_coordinate,
+                second_coordinate,
+            )
         )
         for first_coordinate in first_coordinates
         for second_coordinate in second_coordinates
@@ -11808,17 +11746,30 @@ def calculate_minimum_atomic_distance(
     Return the shortest pairwise atomic distance.
     """
 
-    distances = calculate_pairwise_atomic_distances(
+    first_coordinates = get_atom_coordinates(
         atoms_1,
+        use_scene_coordinates=use_scene_coordinates,
+        skip_invalid=skip_invalid,
+    )
+    second_coordinates = get_atom_coordinates(
         atoms_2,
         use_scene_coordinates=use_scene_coordinates,
         skip_invalid=skip_invalid,
     )
 
-    if not distances:
+    if not first_coordinates or not second_coordinates:
         return None
 
-    return min(distances)
+    minimum_squared_distance = min(
+        _squared_distance_3d_unchecked(
+            first_coordinate,
+            second_coordinate,
+        )
+        for first_coordinate in first_coordinates
+        for second_coordinate in second_coordinates
+    )
+
+    return sqrt(minimum_squared_distance)
 
 
 def calculate_maximum_atomic_distance(
@@ -11832,17 +11783,30 @@ def calculate_maximum_atomic_distance(
     Return the largest pairwise atomic distance.
     """
 
-    distances = calculate_pairwise_atomic_distances(
+    first_coordinates = get_atom_coordinates(
         atoms_1,
+        use_scene_coordinates=use_scene_coordinates,
+        skip_invalid=skip_invalid,
+    )
+    second_coordinates = get_atom_coordinates(
         atoms_2,
         use_scene_coordinates=use_scene_coordinates,
         skip_invalid=skip_invalid,
     )
 
-    if not distances:
+    if not first_coordinates or not second_coordinates:
         return None
 
-    return max(distances)
+    maximum_squared_distance = max(
+        _squared_distance_3d_unchecked(
+            first_coordinate,
+            second_coordinate,
+        )
+        for first_coordinate in first_coordinates
+        for second_coordinate in second_coordinates
+    )
+
+    return sqrt(maximum_squared_distance)
 
 
 def find_closest_atom_pair(
@@ -11856,57 +11820,66 @@ def find_closest_atom_pair(
     Return the closest atom pair and its distance.
     """
 
-    first_atoms = tuple(atoms_1)
-    second_atoms = tuple(atoms_2)
-
-    closest_pair: Optional[Tuple[Any, Any, float]] = None
-
-    for atom_1 in first_atoms:
-        coordinate_1 = get_atom_coordinate(
-            atom_1,
-            use_scene_coordinates=use_scene_coordinates,
-            strict=not skip_invalid,
-        )
-
-        if coordinate_1 is None:
-            continue
-
-        for atom_2 in second_atoms:
-            coordinate_2 = get_atom_coordinate(
-                atom_2,
+    first_atoms_with_coordinates = tuple(
+        (atom, coordinate)
+        for atom in atoms_1
+        if (
+            coordinate := get_atom_coordinate(
+                atom,
                 use_scene_coordinates=use_scene_coordinates,
                 strict=not skip_invalid,
             )
+        ) is not None
+    )
+    second_atoms_with_coordinates = tuple(
+        (atom, coordinate)
+        for atom in atoms_2
+        if (
+            coordinate := get_atom_coordinate(
+                atom,
+                use_scene_coordinates=use_scene_coordinates,
+                strict=not skip_invalid,
+            )
+        ) is not None
+    )
 
-            if coordinate_2 is None:
-                continue
+    if (
+        not first_atoms_with_coordinates
+        or not second_atoms_with_coordinates
+    ):
+        return None
 
-            distance = distance_between_points(
+    closest_atoms: Optional[Tuple[Any, Any]] = None
+    minimum_squared_distance = math.inf
+
+    for atom_1, coordinate_1 in first_atoms_with_coordinates:
+        for atom_2, coordinate_2 in second_atoms_with_coordinates:
+            squared_distance = _squared_distance_3d_unchecked(
                 coordinate_1,
                 coordinate_2,
             )
 
-            if (
-                closest_pair is None
-                or distance < closest_pair[2]
-            ):
-                closest_pair = (
-                    atom_1,
-                    atom_2,
-                    distance,
-                )
+            if squared_distance < minimum_squared_distance:
+                minimum_squared_distance = squared_distance
+                closest_atoms = (atom_1, atom_2)
 
-    return closest_pair
+    assert closest_atoms is not None
+
+    return (
+        closest_atoms[0],
+        closest_atoms[1],
+        sqrt(minimum_squared_distance),
+    )
 
 
 # -----------------------------------------------------------------------------
-# 5.13. Geometria completa de um PiRing
+# 5.13. Complete PiRing geometry
 # -----------------------------------------------------------------------------
 
 def calculate_pi_ring_geometry(
     ring: PiRing,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     use_scene_coordinates: bool = True,
     prefer_numpy: bool = True,
     orient_normal: bool = True,
@@ -12092,7 +12065,7 @@ def calculate_pi_ring_geometry(
 def calculate_pi_ring_geometries(
     rings: Iterable[PiRing],
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     use_scene_coordinates: bool = True,
     prefer_numpy: bool = True,
     remove_invalid: bool = False,
@@ -12126,13 +12099,13 @@ def calculate_pi_ring_geometries(
 
 
 # -----------------------------------------------------------------------------
-# 5.14. Garantia de geometria disponível
+# 5.14. Ensuring available geometry
 # -----------------------------------------------------------------------------
 
 def ensure_pi_ring_geometry(
     ring: PiRing,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     strict: bool = True,
 ) -> PiRing:
     """
@@ -12166,7 +12139,7 @@ def ensure_pi_ring_geometry(
 def ensure_pi_ring_geometries(
     rings: Iterable[PiRing],
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     remove_invalid: bool = True,
     strict: bool = False,
 ) -> List[PiRing]:
@@ -12200,14 +12173,14 @@ def ensure_pi_ring_geometries(
 
 
 # -----------------------------------------------------------------------------
-# 5.15. Geometria relativa entre dois anéis
+# 5.15. Relative geometry between two rings
 # -----------------------------------------------------------------------------
 
 def calculate_pi_ring_pair_geometry(
     ring_1: PiRing,
     ring_2: PiRing,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     calculate_atomic_distances: bool = True,
     strict: bool = False,
 ) -> Optional[PiRingPairGeometry]:
@@ -12365,7 +12338,7 @@ def calculate_pi_ring_pair_geometry(
 
 
 # -----------------------------------------------------------------------------
-# 5.16. Geometria entre um ponto e um anel
+# 5.16. Geometry between a point and a ring
 # -----------------------------------------------------------------------------
 
 def calculate_point_ring_geometry(
@@ -12373,7 +12346,7 @@ def calculate_point_ring_geometry(
     ring: PiRing,
     *,
     direction_vector: Optional[Sequence[Number]] = None,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     strict: bool = False,
 ) -> Optional[PiPointRingGeometry]:
     """
@@ -12483,7 +12456,7 @@ def calculate_point_ring_geometry(
 
 
 # -----------------------------------------------------------------------------
-# 5.17. Geometria entre grupo planar e anel
+# 5.17. Geometry between a planar group and a ring
 # -----------------------------------------------------------------------------
 
 def calculate_planar_group_ring_geometry(
@@ -12491,7 +12464,7 @@ def calculate_planar_group_ring_geometry(
     group_normal: Sequence[Number],
     ring: PiRing,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     strict: bool = False,
 ) -> Optional[Dict[str, float]]:
     """
@@ -12566,7 +12539,7 @@ def calculate_planar_group_ring_geometry(
 
 
 # -----------------------------------------------------------------------------
-# 5.18. Comparação geométrica entre anéis
+# 5.18. Geometric comparison between rings
 # -----------------------------------------------------------------------------
 
 def pi_rings_have_similar_geometry(
@@ -12579,7 +12552,7 @@ def pi_rings_have_similar_geometry(
     normal_angle_tolerance: float = (
         DEFAULT_NORMAL_DEDUPLICATION_ANGLE
     ),
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
 ) -> bool:
     """
     Return whether two rings occupy nearly equivalent geometric positions.
@@ -12628,7 +12601,7 @@ def pi_rings_have_similar_geometry(
 def deduplicate_pi_rings_by_geometry(
     rings: Iterable[PiRing],
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     centroid_tolerance: Optional[float] = None,
     normal_angle_tolerance: Optional[float] = None,
     preserve_fused_distinction: bool = True,
@@ -12699,13 +12672,13 @@ def deduplicate_pi_rings_by_geometry(
 
 
 # -----------------------------------------------------------------------------
-# 5.19. Classificação preliminar da planaridade
+# 5.19. Preliminary planarity classification
 # -----------------------------------------------------------------------------
 
 def classify_ring_planarity(
     ring_or_rmsd: Union[PiRing, Number],
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
 ) -> str:
     """
     Classify ring planar quality as preferred, acceptable or rejected.
@@ -12740,7 +12713,7 @@ def classify_ring_planarity(
 def calculate_ring_planarity_score(
     ring_or_rmsd: Union[PiRing, Number],
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
 ) -> float:
     """
     Convert ring planarity RMSD into a normalized score.
@@ -12783,13 +12756,13 @@ def calculate_ring_planarity_score(
 
 
 # -----------------------------------------------------------------------------
-# 5.20. Validação geométrica de anéis
+# 5.20. Geometric ring validation
 # -----------------------------------------------------------------------------
 
 def validate_pi_ring_geometry(
     ring: PiRing,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     calculate_if_missing: bool = True,
 ) -> Tuple[bool, Tuple[str, ...]]:
     """
@@ -12888,7 +12861,7 @@ def validate_pi_ring_geometry(
 def validate_pi_ring_geometries(
     rings: Iterable[PiRing],
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     remove_invalid: bool = False,
 ) -> List[PiRing]:
     """
@@ -12913,13 +12886,13 @@ def validate_pi_ring_geometries(
 
 
 # -----------------------------------------------------------------------------
-# 5.21. Processamento geométrico integrado
+# 5.21. Integrated geometry processing
 # -----------------------------------------------------------------------------
 
 def prepare_pi_rings_geometry(
     rings: Iterable[PiRing],
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     calculate_geometry: bool = True,
     validate_geometry: bool = True,
     deduplicate_geometry: bool = True,
@@ -12972,7 +12945,7 @@ def prepare_pi_analysis_ring_geometries(
     receptor_rings: Iterable[PiRing],
     ligand_rings: Iterable[PiRing],
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
 ) -> Tuple[List[PiRing], List[PiRing]]:
     """
     Prepare receptor and ligand ring geometries independently.
@@ -13001,7 +12974,7 @@ def prepare_pi_analysis_ring_geometries(
 
 
 # -----------------------------------------------------------------------------
-# 5.22. Atualização de uma PiInteraction com geometria ring-ring
+# 5.22. Updating a PiInteraction with ring-ring geometry
 # -----------------------------------------------------------------------------
 
 def attach_ring_pair_geometry_to_interaction(
@@ -13078,7 +13051,7 @@ def attach_ring_pair_geometry_to_interaction(
 
 
 # -----------------------------------------------------------------------------
-# 5.23. Atualização de PiInteraction com geometria point-ring
+# 5.23. Updating a PiInteraction with point-ring geometry
 # -----------------------------------------------------------------------------
 
 def attach_point_ring_geometry_to_interaction(
@@ -13138,7 +13111,7 @@ def attach_point_ring_geometry_to_interaction(
 
 
 # -----------------------------------------------------------------------------
-# 5.24. Resumo geométrico dos anéis
+# 5.24. Ring-geometry summary
 # -----------------------------------------------------------------------------
 
 def summarize_pi_ring_geometries(
@@ -13241,11 +13214,11 @@ def summarize_pi_ring_geometries(
 
 
 # =============================================================================
-# 6. DETECÇÃO E GEOMETRIA DE GRUPOS CARREGADOS
+# 6. CHARGED-GROUP DETECTION AND GEOMETRY
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 6.1. Tipos e constantes auxiliares
+# 6.1. Helper types and constants
 # -----------------------------------------------------------------------------
 
 ChargedGroupAtomTuple: TypeAlias = Tuple[Any, ...]
@@ -13422,7 +13395,7 @@ DEFAULT_CHARGE_CENTER_WEIGHT_FLOOR: Final[float] = 0.05
 
 
 # -----------------------------------------------------------------------------
-# 6.2. Normalização de sinais de carga
+# 6.2. Charge-sign normalization
 # -----------------------------------------------------------------------------
 
 def normalize_charge_sign(
@@ -13505,7 +13478,7 @@ def charge_sign_from_value(
 
 
 # -----------------------------------------------------------------------------
-# 6.3. Cálculo de cargas agregadas
+# 6.3. Aggregate-charge calculation
 # -----------------------------------------------------------------------------
 
 def calculate_group_formal_charge(
@@ -13630,7 +13603,7 @@ def group_has_negative_charge(
 
 
 # -----------------------------------------------------------------------------
-# 6.4. Centro geométrico e centro ponderado por carga
+# 6.4. Geometric center and charge-weighted center
 # -----------------------------------------------------------------------------
 
 def calculate_charge_weighted_center(
@@ -13781,7 +13754,7 @@ def calculate_charged_group_center(
 
 
 # -----------------------------------------------------------------------------
-# 6.5. Vetor direcional de grupos carregados
+# 6.5. Charged-group direction vector
 # -----------------------------------------------------------------------------
 
 def calculate_group_direction_vector(
@@ -13863,7 +13836,7 @@ def calculate_group_plane_normal(
 
 
 # -----------------------------------------------------------------------------
-# 6.6. Construção de grupos carregados conhecidos
+# 6.6. Construction of known charged groups
 # -----------------------------------------------------------------------------
 
 def _create_known_residue_charged_group(
@@ -14099,7 +14072,7 @@ def detect_known_residue_charged_groups(
 
 
 # -----------------------------------------------------------------------------
-# 6.7. Detecção de grupos fosfato
+# 6.7. Phosphate-group detection
 # -----------------------------------------------------------------------------
 
 def detect_phosphate_groups(
@@ -14244,7 +14217,7 @@ def detect_phosphate_groups(
 
 
 # -----------------------------------------------------------------------------
-# 6.8. Detecção de carboxilatos genéricos
+# 6.8. Generic carboxylate detection
 # -----------------------------------------------------------------------------
 
 def detect_carboxylate_groups(
@@ -14437,7 +14410,7 @@ def detect_carboxylate_groups(
 
 
 # -----------------------------------------------------------------------------
-# 6.9. Detecção de amônio e nitrogênios catiônicos
+# 6.9. Ammonium and cationic-nitrogen detection
 # -----------------------------------------------------------------------------
 
 def _infer_nitrogen_positive_group_type(
@@ -14630,7 +14603,7 @@ def detect_positive_nitrogen_groups(
 
 
 # -----------------------------------------------------------------------------
-# 6.10. Detecção de metais catiônicos
+# 6.10. Cationic-metal detection
 # -----------------------------------------------------------------------------
 
 def detect_metal_cations(
@@ -14748,7 +14721,7 @@ def detect_metal_cations(
 
 
 # -----------------------------------------------------------------------------
-# 6.11. Detecção genérica por cargas atômicas
+# 6.11. Generic detection from atomic charges
 # -----------------------------------------------------------------------------
 
 def _expand_local_charged_environment(
@@ -14959,7 +14932,7 @@ def detect_explicitly_charged_atom_groups(
 
 
 # -----------------------------------------------------------------------------
-# 6.12. Identidade e deduplicação de grupos carregados
+# 6.12. Charged-group identity and deduplication
 # -----------------------------------------------------------------------------
 
 def get_charged_group_identity_key(
@@ -15165,7 +15138,7 @@ def deduplicate_charged_groups(
 
 
 # -----------------------------------------------------------------------------
-# 6.13. Validação de grupos carregados
+# 6.13. Charged-group validation
 # -----------------------------------------------------------------------------
 
 def validate_charged_group(
@@ -15307,13 +15280,13 @@ def validate_charged_groups(
 
 
 # -----------------------------------------------------------------------------
-# 6.14. Detecção integrada de grupos carregados
+# 6.14. Integrated charged-group detection
 # -----------------------------------------------------------------------------
 
 def detect_charged_groups(
     molecular_input: Any,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     participant_type: Optional[str] = None,
     charge_sign: Optional[str] = None,
     include_known_residue_groups: bool = True,
@@ -15337,10 +15310,10 @@ def detect_charged_groups(
 
     if not isinstance(
         analysis_config,
-        PiAnalysisConfig,
+        PiCoreAnalysisConfig,
     ):
         raise TypeError(
-            "config must be a PiAnalysisConfig or None."
+            "config must be a PiCoreAnalysisConfig or None."
         )
 
     requested_sign = normalize_charge_sign(
@@ -15494,13 +15467,13 @@ def detect_charged_groups(
 
 
 # -----------------------------------------------------------------------------
-# 6.15. Funções específicas para cátions e ânions
+# 6.15. Cation- and anion-specific functions
 # -----------------------------------------------------------------------------
 
 def detect_cationic_groups(
     molecular_input: Any,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     participant_type: Optional[str] = None,
     ligand_residue_names: Optional[Collection[str]] = None,
     receptor_residue_names: Optional[Collection[str]] = None,
@@ -15522,7 +15495,7 @@ def detect_cationic_groups(
 def detect_anionic_groups(
     molecular_input: Any,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     participant_type: Optional[str] = None,
     ligand_residue_names: Optional[Collection[str]] = None,
     receptor_residue_names: Optional[Collection[str]] = None,
@@ -15542,13 +15515,13 @@ def detect_anionic_groups(
 
 
 # -----------------------------------------------------------------------------
-# 6.16. Detecção para receptor e ligante
+# 6.16. Receptor and ligand detection
 # -----------------------------------------------------------------------------
 
 def detect_receptor_charged_groups(
     receptor: Any,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     charge_sign: Optional[str] = None,
 ) -> List[PiChargedGroup]:
     """
@@ -15566,7 +15539,7 @@ def detect_receptor_charged_groups(
 def detect_ligand_charged_groups(
     ligand: Any,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     charge_sign: Optional[str] = None,
 ) -> List[PiChargedGroup]:
     """
@@ -15584,7 +15557,7 @@ def detect_ligand_charged_groups(
 def detect_pi_analysis_charged_groups(
     normalized_input: PiNormalizedInput,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
 ) -> Tuple[
     List[PiChargedGroup],
     List[PiChargedGroup],
@@ -15624,7 +15597,7 @@ def detect_pi_analysis_charged_groups(
 
 
 # -----------------------------------------------------------------------------
-# 6.17. Separação por sinal
+# 6.17. Separation by sign
 # -----------------------------------------------------------------------------
 
 def split_charged_groups_by_sign(
@@ -15670,14 +15643,14 @@ def filter_charged_groups_by_participant(
 
 
 # -----------------------------------------------------------------------------
-# 6.18. Geometria entre grupos carregados e anéis
+# 6.18. Geometry between charged groups and rings
 # -----------------------------------------------------------------------------
 
 def calculate_charged_group_ring_geometry(
     group: PiChargedGroup,
     ring: PiRing,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     strict: bool = False,
 ) -> Optional[PiPointRingGeometry]:
     """
@@ -15721,7 +15694,7 @@ def charged_group_is_on_ring_face(
     *,
     maximum_radial_offset: float,
     maximum_plane_distance: float,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
 ) -> bool:
     """
     Return whether a charged group lies above or below a ring face.
@@ -15746,7 +15719,7 @@ def charged_group_is_on_ring_face(
 
 
 # -----------------------------------------------------------------------------
-# 6.19. Criação de contatos atômicos preliminares
+# 6.19. Creation of preliminary atomic contacts
 # -----------------------------------------------------------------------------
 
 def create_charged_group_atomic_contacts(
@@ -15830,7 +15803,7 @@ def create_charged_group_atomic_contacts(
 
 
 # -----------------------------------------------------------------------------
-# 6.20. Resumo de grupos carregados
+# 6.20. Charged-group summary
 # -----------------------------------------------------------------------------
 
 def summarize_charged_groups(
@@ -15960,13 +15933,13 @@ def summarize_charged_groups(
 
 
 # -----------------------------------------------------------------------------
-# 6.21. Preparação integrada
+# 6.21. Integrated preparation
 # -----------------------------------------------------------------------------
 
 def prepare_charged_groups(
     molecular_input: Any,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     participant_type: Optional[str] = None,
     charge_sign: Optional[str] = None,
 ) -> List[PiChargedGroup]:
@@ -16003,7 +15976,7 @@ def prepare_charged_groups(
 def prepare_pi_analysis_charged_groups(
     normalized_input: PiNormalizedInput,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
 ) -> Dict[str, List[PiChargedGroup]]:
     """
     Prepare and separate receptor and ligand cations and anions.
@@ -16038,11 +16011,11 @@ def prepare_pi_analysis_charged_groups(
     }
 
 # =============================================================================
-# 7. DETECÇÃO E GEOMETRIA DE GRUPOS AMIDA
+# 7. AMIDE-GROUP DETECTION AND GEOMETRY
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 7.1. Tipos e constantes auxiliares
+# 7.1. Helper types and constants
 # -----------------------------------------------------------------------------
 
 AmideGroupAtomTuple: TypeAlias = Tuple[Any, ...]
@@ -16143,7 +16116,7 @@ COMMON_AMIDE_ATOM_TYPE_PATTERNS: Final[Tuple[str, ...]] = (
 
 
 # -----------------------------------------------------------------------------
-# 7.2. Normalização do tipo de amida
+# 7.2. Amide-type normalization
 # -----------------------------------------------------------------------------
 
 def normalize_amide_group_type(
@@ -16193,7 +16166,7 @@ def normalize_amide_group_type(
 
 
 # -----------------------------------------------------------------------------
-# 7.3. Reconhecimento de ligações carbonila
+# 7.3. Carbonyl-bond recognition
 # -----------------------------------------------------------------------------
 
 def is_carbonyl_carbon(
@@ -16328,7 +16301,7 @@ def get_carbonyl_oxygens(
 
 
 # -----------------------------------------------------------------------------
-# 7.4. Reconhecimento de nitrogênio amídico
+# 7.4. Amide-nitrogen recognition
 # -----------------------------------------------------------------------------
 
 def nitrogen_has_amide_atom_type(
@@ -16451,7 +16424,7 @@ def get_amide_nitrogens_for_carbonyl(
 
 
 # -----------------------------------------------------------------------------
-# 7.5. Classificação estrutural de grupos amida
+# 7.5. Structural classification of amide groups
 # -----------------------------------------------------------------------------
 
 def count_nitrogen_non_hydrogen_substituents(
@@ -16611,7 +16584,7 @@ def infer_amide_group_type(
 
 
 # -----------------------------------------------------------------------------
-# 7.6. Identificação de ligação peptídica
+# 7.6. Peptide-bond identification
 # -----------------------------------------------------------------------------
 
 def residues_are_sequential(
@@ -16702,7 +16675,7 @@ def is_protein_peptide_amide(
 
 
 # -----------------------------------------------------------------------------
-# 7.7. Detecção de ciclos contendo amida
+# 7.7. Detection of amide-containing cycles
 # -----------------------------------------------------------------------------
 
 def atoms_belong_to_same_cycle(
@@ -16741,7 +16714,7 @@ def atoms_belong_to_same_cycle(
 
 
 # -----------------------------------------------------------------------------
-# 7.8. Seleção de átomos de suporte
+# 7.8. Support-atom selection
 # -----------------------------------------------------------------------------
 
 def get_amide_support_atoms(
@@ -16821,7 +16794,7 @@ def get_complete_amide_geometry_atoms(
 
 
 # -----------------------------------------------------------------------------
-# 7.9. Centro geométrico do grupo amida
+# 7.9. Amide-group geometric center
 # -----------------------------------------------------------------------------
 
 def calculate_amide_group_center(
@@ -16883,7 +16856,7 @@ def calculate_amide_group_center(
 
 
 # -----------------------------------------------------------------------------
-# 7.10. Vetores direcionais do grupo amida
+# 7.10. Amide-group direction vectors
 # -----------------------------------------------------------------------------
 
 def calculate_carbonyl_direction(
@@ -16974,7 +16947,7 @@ def calculate_amide_bisector_direction(
 
 
 # -----------------------------------------------------------------------------
-# 7.11. Ajuste do plano da amida
+# 7.11. Amide-plane fitting
 # -----------------------------------------------------------------------------
 
 def fit_amide_plane(
@@ -17062,7 +17035,7 @@ def orient_amide_normal(
 
 
 # -----------------------------------------------------------------------------
-# 7.12. Planaridade da amida
+# 7.12. Amide planarity
 # -----------------------------------------------------------------------------
 
 def calculate_amide_planarity_score(
@@ -17129,7 +17102,7 @@ def classify_amide_planarity(
 
 
 # -----------------------------------------------------------------------------
-# 7.13. Construção de PiAmideGroup
+# 7.13. PiAmideGroup construction
 # -----------------------------------------------------------------------------
 
 def create_pi_amide_group(
@@ -17441,7 +17414,7 @@ def create_pi_amide_group(
 
 
 # -----------------------------------------------------------------------------
-# 7.14. Detecção por definição conhecida de resíduos
+# 7.14. Detection from known residue definitions
 # -----------------------------------------------------------------------------
 
 def detect_sidechain_amide_groups(
@@ -17554,7 +17527,7 @@ def detect_sidechain_amide_groups(
 
 
 # -----------------------------------------------------------------------------
-# 7.15. Detecção de ligações peptídicas
+# 7.15. Peptide-bond detection
 # -----------------------------------------------------------------------------
 
 def detect_peptide_amide_groups(
@@ -17697,7 +17670,7 @@ def detect_peptide_amide_groups(
 
 
 # -----------------------------------------------------------------------------
-# 7.16. Detecção genérica por conectividade
+# 7.16. Generic connectivity-based detection
 # -----------------------------------------------------------------------------
 
 def detect_generic_amide_groups(
@@ -17817,7 +17790,7 @@ def detect_generic_amide_groups(
 
 
 # -----------------------------------------------------------------------------
-# 7.17. Identidade e deduplicação de grupos amida
+# 7.17. Amide-group identity and deduplication
 # -----------------------------------------------------------------------------
 
 def get_amide_group_identity_key(
@@ -17986,7 +17959,7 @@ def deduplicate_amide_groups(
 
 
 # -----------------------------------------------------------------------------
-# 7.18. Validação estrutural de grupos amida
+# 7.18. Structural validation of amide groups
 # -----------------------------------------------------------------------------
 
 def validate_amide_group(
@@ -18187,13 +18160,13 @@ def validate_amide_groups(
 
 
 # -----------------------------------------------------------------------------
-# 7.19. Detecção integrada
+# 7.19. Integrated detection
 # -----------------------------------------------------------------------------
 
 def detect_amide_groups(
     molecular_input: Any,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     participant_type: Optional[str] = None,
     include_peptide_amides: bool = True,
     include_sidechain_amides: bool = True,
@@ -18215,10 +18188,10 @@ def detect_amide_groups(
 
     if not isinstance(
         analysis_config,
-        PiAnalysisConfig,
+        PiCoreAnalysisConfig,
     ):
         raise TypeError(
-            "config must be a PiAnalysisConfig or None."
+            "config must be a PiCoreAnalysisConfig or None."
         )
 
     atoms = normalize_atom_collection(
@@ -18320,13 +18293,13 @@ def detect_amide_groups(
 
 
 # -----------------------------------------------------------------------------
-# 7.20. Detecção específica para receptor e ligante
+# 7.20. Receptor- and ligand-specific detection
 # -----------------------------------------------------------------------------
 
 def detect_receptor_amide_groups(
     receptor: Any,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     include_peptide_amides: bool = True,
 ) -> List[PiAmideGroup]:
     """
@@ -18346,7 +18319,7 @@ def detect_receptor_amide_groups(
 def detect_ligand_amide_groups(
     ligand: Any,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
 ) -> List[PiAmideGroup]:
     """
     Detect amide groups associated with a ligand.
@@ -18363,7 +18336,7 @@ def detect_ligand_amide_groups(
 def detect_pi_analysis_amide_groups(
     normalized_input: PiNormalizedInput,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
 ) -> Tuple[
     List[PiAmideGroup],
     List[PiAmideGroup],
@@ -18401,14 +18374,14 @@ def detect_pi_analysis_amide_groups(
 
 
 # -----------------------------------------------------------------------------
-# 7.21. Geometria entre grupo amida e anel aromático
+# 7.21. Geometry between an amide group and an aromatic ring
 # -----------------------------------------------------------------------------
 
 def calculate_amide_group_ring_geometry(
     group: PiAmideGroup,
     ring: PiRing,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     strict: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """
@@ -18584,7 +18557,7 @@ def calculate_amide_group_ring_geometry(
 
 
 # -----------------------------------------------------------------------------
-# 7.22. Criação de contatos atômicos amide–π
+# 7.22. Creation of amide–π atomic contacts
 # -----------------------------------------------------------------------------
 
 def create_amide_ring_atomic_contacts(
@@ -18672,7 +18645,7 @@ def create_amide_ring_atomic_contacts(
 
 
 # -----------------------------------------------------------------------------
-# 7.23. Atualização de PiInteraction
+# 7.23. PiInteraction update
 # -----------------------------------------------------------------------------
 
 def attach_amide_ring_geometry_to_interaction(
@@ -18772,7 +18745,7 @@ def attach_amide_ring_geometry_to_interaction(
 
 
 # -----------------------------------------------------------------------------
-# 7.24. Filtragem preliminar por proximidade
+# 7.24. Preliminary proximity filtering
 # -----------------------------------------------------------------------------
 
 def filter_amide_ring_candidates(
@@ -18781,7 +18754,7 @@ def filter_amide_ring_candidates(
     *,
     maximum_centroid_distance: float,
     maximum_minimum_atomic_distance: Optional[float] = None,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
 ) -> List[
     Tuple[
         PiAmideGroup,
@@ -18894,13 +18867,13 @@ def filter_amide_ring_candidates(
 
 
 # -----------------------------------------------------------------------------
-# 7.25. Preparação integrada
+# 7.25. Integrated preparation
 # -----------------------------------------------------------------------------
 
 def prepare_amide_groups(
     molecular_input: Any,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
     participant_type: Optional[str] = None,
     include_peptide_amides: bool = True,
 ) -> List[PiAmideGroup]:
@@ -18954,7 +18927,7 @@ def prepare_amide_groups(
 def prepare_pi_analysis_amide_groups(
     normalized_input: PiNormalizedInput,
     *,
-    config: Optional[PiAnalysisConfig] = None,
+    config: Optional[PiCoreAnalysisConfig] = None,
 ) -> Dict[str, List[PiAmideGroup]]:
     """
     Prepare receptor and ligand amide groups.
@@ -18982,7 +18955,7 @@ def prepare_pi_analysis_amide_groups(
 
 
 # -----------------------------------------------------------------------------
-# 7.26. Resumo de grupos amida
+# 7.26. Amide-group summary
 # -----------------------------------------------------------------------------
 
 def summarize_amide_groups(
@@ -19143,11 +19116,11 @@ _validate_module_constants()
 
 
 # =============================================================================
-# 8. DETECÇÃO DE INTERAÇÕES π–π
+# 8. Π–π interaction detection
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 8.1. Constantes
+# 8.1. Constants
 # -----------------------------------------------------------------------------
 
 PI_PI_INTERACTION_TYPE: Final[str] = "pi-pi"
@@ -19201,7 +19174,7 @@ PI_PI_EPSILON: Final[float] = 1.0e-12
 
 
 # -----------------------------------------------------------------------------
-# 8.2. Exceções
+# 8.2. Exceptions
 # -----------------------------------------------------------------------------
 
 class PiPiDetectionError(RuntimeError):
@@ -19223,7 +19196,7 @@ class PiPiValidationError(PiPiDetectionError):
 
 
 # -----------------------------------------------------------------------------
-# 8.3. Configuração específica
+# 8.3. Specific configuration
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -19409,7 +19382,7 @@ def create_default_pi_pi_detection_config() -> PiPiDetectionConfig:
 
 
 # -----------------------------------------------------------------------------
-# 8.4. Resultado da avaliação geométrica
+# 8.4. Geometry-evaluation result
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -19496,7 +19469,7 @@ class PiPiGeometryEvaluation:
 
 
 # -----------------------------------------------------------------------------
-# 8.5. Acesso seguro aos objetos das seções anteriores
+# 8.5. Safe access to objects from previous sections
 # -----------------------------------------------------------------------------
 
 def _pi_pi_get_first_attribute(
@@ -19771,7 +19744,7 @@ def _pi_pi_get_ring_residue_id(
 
 
 # -----------------------------------------------------------------------------
-# 8.6. Operações vetoriais
+# 8.6. Vector operations
 # -----------------------------------------------------------------------------
 
 def _pi_pi_vector_subtract(
@@ -19951,7 +19924,7 @@ def _pi_pi_lateral_offsets(
 
 
 # -----------------------------------------------------------------------------
-# 8.7. Distâncias atômicas e contatos
+# 8.7. Atomic distances and contacts
 # -----------------------------------------------------------------------------
 
 def calculate_pi_pi_minimum_atomic_distance(
@@ -20122,7 +20095,7 @@ def find_pi_pi_atomic_contacts(
 
 
 # -----------------------------------------------------------------------------
-# 8.8. Qualidade geométrica
+# 8.8. Geometric quality
 # -----------------------------------------------------------------------------
 
 def _pi_pi_inverse_linear_quality(
@@ -20273,7 +20246,7 @@ def calculate_pi_pi_geometry_confidence(
 
 
 # -----------------------------------------------------------------------------
-# 8.9. Avaliação de empilhamento paralelo
+# 8.9. Parallel-stacking evaluation
 # -----------------------------------------------------------------------------
 
 def evaluate_parallel_stacking(
@@ -20472,7 +20445,7 @@ def evaluate_parallel_stacking(
 
 
 # -----------------------------------------------------------------------------
-# 8.10. Avaliação T-shaped e edge-to-face
+# 8.10. T-shaped and edge-to-face evaluation
 # -----------------------------------------------------------------------------
 
 def evaluate_t_shaped_stacking(
@@ -20652,7 +20625,7 @@ def evaluate_t_shaped_stacking(
 
 
 # -----------------------------------------------------------------------------
-# 8.11. Classificação conjunta da geometria
+# 8.11. Combined geometry classification
 # -----------------------------------------------------------------------------
 
 def classify_pi_pi_geometry(
@@ -20731,10 +20704,19 @@ def classify_pi_pi_geometry(
         config=config,
     )
 
+    perpendicular_offset = min(
+        normalized_values["lateral_offset"]
+        if lateral_offset_ring_1 is None
+        else float(lateral_offset_ring_1),
+        normalized_values["lateral_offset"]
+        if lateral_offset_ring_2 is None
+        else float(lateral_offset_ring_2),
+    )
+
     perpendicular_evaluation = evaluate_t_shaped_stacking(
         centroid_distance=normalized_values["centroid_distance"],
         plane_angle=plane_angle,
-        lateral_offset=normalized_values["lateral_offset"],
+        lateral_offset=perpendicular_offset,
         minimum_atomic_distance=normalized_values[
             "minimum_atomic_distance"
         ],
@@ -20820,7 +20802,7 @@ def classify_pi_pi_geometry(
 
 
 # -----------------------------------------------------------------------------
-# 8.12. Avaliação completa de dois sistemas aromáticos
+# 8.12. Complete evaluation of two aromatic systems
 # -----------------------------------------------------------------------------
 
 def evaluate_pi_pi_ring_pair(
@@ -20944,7 +20926,7 @@ def evaluate_pi_pi_ring_pair(
 
 
 # -----------------------------------------------------------------------------
-# 8.13. Construção da interação
+# 8.13. Interaction construction
 # -----------------------------------------------------------------------------
 
 def _pi_pi_construct_interaction(
@@ -21072,7 +21054,7 @@ def _pi_pi_construct_interaction(
 
 
 # -----------------------------------------------------------------------------
-# 8.14. Validação de pares
+# 8.14. Pair validation
 # -----------------------------------------------------------------------------
 
 def _pi_pi_same_aromatic_system(
@@ -21143,7 +21125,7 @@ def _pi_pi_pair_key(
 
 
 # -----------------------------------------------------------------------------
-# 8.15. Detecção principal
+# 8.15. Main detection
 # -----------------------------------------------------------------------------
 
 def detect_pi_pi_interactions(
@@ -21319,7 +21301,7 @@ def detect_pi_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 8.16. API auxiliar para uma única dupla
+# 8.16. Helper API for a single pair
 # -----------------------------------------------------------------------------
 
 def detect_single_pi_pi_interaction(
@@ -21358,7 +21340,7 @@ def detect_single_pi_pi_interaction(
 
 
 # -----------------------------------------------------------------------------
-# 8.17. Filtros e resumos locais
+# 8.17. Local filters and summaries
 # -----------------------------------------------------------------------------
 
 def filter_pi_pi_interactions_by_geometry(
@@ -21526,11 +21508,11 @@ def summarize_pi_pi_detection(
 
 
 # =============================================================================
-# 9. DETECÇÃO DE INTERAÇÕES CÁTION–π
+# 9. Cation–π interaction detection
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 9.1. Constantes
+# 9.1. Constants
 # -----------------------------------------------------------------------------
 
 CATION_PI_INTERACTION_TYPE: Final[str] = "cation-pi"
@@ -21606,7 +21588,7 @@ CATION_PI_EPSILON: Final[float] = 1.0e-12
 
 
 # -----------------------------------------------------------------------------
-# 9.2. Exceções
+# 9.2. Exceptions
 # -----------------------------------------------------------------------------
 
 class CationPiDetectionError(RuntimeError):
@@ -21628,7 +21610,7 @@ class CationPiValidationError(CationPiDetectionError):
 
 
 # -----------------------------------------------------------------------------
-# 9.3. Configuração
+# 9.3. Configuration
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -21879,7 +21861,7 @@ def create_default_cation_pi_detection_config() -> CationPiDetectionConfig:
 
 
 # -----------------------------------------------------------------------------
-# 9.4. Resultado da avaliação
+# 9.4. Evaluation result
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -21988,7 +21970,7 @@ class CationPiGeometryEvaluation:
 
 
 # -----------------------------------------------------------------------------
-# 9.5. Acesso seguro
+# 9.5. Safe access
 # -----------------------------------------------------------------------------
 
 def _cation_pi_get_first_attribute(
@@ -22455,7 +22437,7 @@ def _cation_pi_get_residue_id(
 
 
 # -----------------------------------------------------------------------------
-# 9.6. Determinação da carga positiva
+# 9.6. Positive-charge determination
 # -----------------------------------------------------------------------------
 
 def _cation_pi_numeric_charge(
@@ -22688,7 +22670,7 @@ def is_positive_cation_pi_group(
 
 
 # -----------------------------------------------------------------------------
-# 9.7. Geometria carga–anel
+# 9.7. Charge–ring geometry
 # -----------------------------------------------------------------------------
 
 def calculate_cation_pi_position(
@@ -22872,7 +22854,7 @@ def calculate_cation_pi_minimum_atomic_distance(
 
 
 # -----------------------------------------------------------------------------
-# 9.8. Contatos atômicos auxiliares
+# 9.8. Auxiliary atomic contacts
 # -----------------------------------------------------------------------------
 
 def _cation_pi_construct_atomic_contact(
@@ -23008,7 +22990,7 @@ def find_cation_pi_atomic_contacts(
 
 
 # -----------------------------------------------------------------------------
-# 9.9. Funções de qualidade geométrica
+# 9.9. Geometric-quality functions
 # -----------------------------------------------------------------------------
 
 def _cation_pi_clamp(
@@ -23207,7 +23189,7 @@ def calculate_cation_pi_geometry_confidence(
 
 
 # -----------------------------------------------------------------------------
-# 9.10. Avaliação da geometria cátion–π
+# 9.10. Cation–π geometry evaluation
 # -----------------------------------------------------------------------------
 
 def evaluate_cation_pi_geometry(
@@ -23555,7 +23537,7 @@ def evaluate_cation_pi_geometry(
 
 
 # -----------------------------------------------------------------------------
-# 9.11. Avaliação completa de um par
+# 9.11. Complete pair evaluation
 # -----------------------------------------------------------------------------
 
 def evaluate_cation_pi_pair(
@@ -23647,7 +23629,7 @@ def evaluate_cation_pi_pair(
 
 
 # -----------------------------------------------------------------------------
-# 9.12. Construção de PiInteraction
+# 9.12. PiInteraction construction
 # -----------------------------------------------------------------------------
 
 def _cation_pi_construct_interaction(
@@ -23763,7 +23745,7 @@ def _cation_pi_construct_interaction(
 
 
 # -----------------------------------------------------------------------------
-# 9.13. Validação e deduplicação
+# 9.13. Validation and deduplication
 # -----------------------------------------------------------------------------
 
 def _cation_pi_same_residue(
@@ -23802,7 +23784,7 @@ def _cation_pi_pair_key(
 
 
 # -----------------------------------------------------------------------------
-# 9.14. Detecção principal
+# 9.14. Main detection
 # -----------------------------------------------------------------------------
 
 def detect_cation_pi_interactions(
@@ -23983,7 +23965,7 @@ def detect_cation_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 9.15. Detecção de uma única interação
+# 9.15. Single-interaction detection
 # -----------------------------------------------------------------------------
 
 def detect_single_cation_pi_interaction(
@@ -24035,7 +24017,7 @@ def detect_single_cation_pi_interaction(
 
 
 # -----------------------------------------------------------------------------
-# 9.16. Filtros
+# 9.16. Filters
 # -----------------------------------------------------------------------------
 
 def filter_cation_pi_interactions_by_geometry(
@@ -24118,7 +24100,7 @@ def filter_cation_pi_interactions_by_face(
 
 
 # -----------------------------------------------------------------------------
-# 9.17. Resumo local
+# 9.17. Local summary
 # -----------------------------------------------------------------------------
 
 def summarize_cation_pi_detection(
@@ -24306,11 +24288,11 @@ def summarize_cation_pi_detection(
     }
 
 # =============================================================================
-# 10. DETECÇÃO DE INTERAÇÕES ÂNION–π E AMIDA–π
+# 10. Anion–π and amide–π interaction detection
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 10.1. Constantes gerais
+# 10.1. General constants
 # -----------------------------------------------------------------------------
 
 ANION_PI_INTERACTION_TYPE: Final[str] = "anion-pi"
@@ -24332,7 +24314,7 @@ PI_NONCOVALENT_EPSILON: Final[float] = 1.0e-12
 
 
 # -----------------------------------------------------------------------------
-# 10.2. Constantes ânion–π
+# 10.2. Anion–π constants
 # -----------------------------------------------------------------------------
 
 ANION_PI_GEOMETRY_FACE_CENTERED: Final[str] = "face-centered"
@@ -24392,7 +24374,7 @@ ANION_PI_DEFAULT_BORDERLINE_PLANARITY_RMSD: Final[float] = 0.35
 
 
 # -----------------------------------------------------------------------------
-# 10.3. Constantes amida–π
+# 10.3. Amide–π constants
 # -----------------------------------------------------------------------------
 
 AMIDE_PI_GEOMETRY_PARALLEL_FACE: Final[str] = "parallel-face"
@@ -24441,7 +24423,7 @@ AMIDE_PI_DEFAULT_BORDERLINE_PLANARITY_RMSD: Final[float] = 0.35
 
 
 # -----------------------------------------------------------------------------
-# 10.4. Exceções
+# 10.4. Exceptions
 # -----------------------------------------------------------------------------
 
 class NoncovalentPiDetectionError(RuntimeError):
@@ -24487,7 +24469,7 @@ class AmidePiValidationError(AmidePiDetectionError):
 
 
 # -----------------------------------------------------------------------------
-# 10.5. Configuração ânion–π
+# 10.5. Anion–π configuration
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -24694,7 +24676,7 @@ class AnionPiDetectionConfig:
 
 
 # -----------------------------------------------------------------------------
-# 10.6. Configuração amida–π
+# 10.6. Amide–π configuration
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -24904,7 +24886,7 @@ class AmidePiDetectionConfig:
 
 
 # -----------------------------------------------------------------------------
-# 10.7. Configuração combinada
+# 10.7. Combined configuration
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -24946,7 +24928,7 @@ def create_default_anion_amide_pi_config(
 
 
 # -----------------------------------------------------------------------------
-# 10.8. Resultados geométricos
+# 10.8. Geometry results
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -25147,7 +25129,7 @@ class AmidePiGeometryEvaluation:
 
 
 # -----------------------------------------------------------------------------
-# 10.9. Acesso seguro
+# 10.9. Safe access
 # -----------------------------------------------------------------------------
 
 def _section10_get_first_attribute(
@@ -25602,7 +25584,7 @@ def _section10_get_participant_type(
 
 
 # -----------------------------------------------------------------------------
-# 10.10. Geometria ponto–plano
+# 10.10. Point–plane geometry
 # -----------------------------------------------------------------------------
 
 def _section10_calculate_point_ring_position(
@@ -25742,7 +25724,7 @@ def _section10_minimum_atomic_distance(
 
 
 # -----------------------------------------------------------------------------
-# 10.11. Carga negativa
+# 10.11. Negative charge
 # -----------------------------------------------------------------------------
 
 def _section10_numeric_charge(
@@ -25990,7 +25972,7 @@ def _section10_get_ring_electrophilicity(
 
 
 # -----------------------------------------------------------------------------
-# 10.12. Qualidade geométrica
+# 10.12. Geometric quality
 # -----------------------------------------------------------------------------
 
 def _section10_clamp(
@@ -26066,7 +26048,7 @@ def _section10_window_quality(
 
 
 # -----------------------------------------------------------------------------
-# 10.13. Avaliação ânion–π
+# 10.13. Anion–π evaluation
 # -----------------------------------------------------------------------------
 
 def evaluate_anion_pi_geometry(
@@ -26493,7 +26475,7 @@ def evaluate_anion_pi_pair(
 
 
 # -----------------------------------------------------------------------------
-# 10.14. Geometria da amida
+# 10.14. Amide geometry
 # -----------------------------------------------------------------------------
 
 def _section10_get_amide_plane_normal(
@@ -27135,7 +27117,7 @@ def evaluate_amide_pi_pair(
 
 
 # -----------------------------------------------------------------------------
-# 10.15. Contatos atômicos auxiliares
+# 10.15. Auxiliary atomic contacts
 # -----------------------------------------------------------------------------
 
 def _section10_construct_atomic_contact(
@@ -27259,7 +27241,7 @@ def _section10_find_atomic_contacts(
 
 
 # -----------------------------------------------------------------------------
-# 10.16. Construção das interações
+# 10.16. Interaction construction
 # -----------------------------------------------------------------------------
 
 def _section10_construct_anion_pi_interaction(
@@ -27465,7 +27447,7 @@ def _section10_construct_amide_pi_interaction(
 
 
 # -----------------------------------------------------------------------------
-# 10.17. Detecção ânion–π
+# 10.17. Anion–π detection
 # -----------------------------------------------------------------------------
 
 def detect_anion_pi_interactions(
@@ -27613,7 +27595,7 @@ def detect_anion_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 10.18. Detecção amida–π
+# 10.18. Amide–π detection
 # -----------------------------------------------------------------------------
 
 def detect_amide_pi_interactions(
@@ -27749,7 +27731,7 @@ def detect_amide_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 10.19. API combinada da seção
+# 10.19. Combined section API
 # -----------------------------------------------------------------------------
 
 def detect_anion_and_amide_pi_interactions(
@@ -27806,7 +27788,7 @@ def detect_anion_and_amide_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 10.20. Detecção de pares individuais
+# 10.20. Individual-pair detection
 # -----------------------------------------------------------------------------
 
 def detect_single_anion_pi_interaction(
@@ -27878,7 +27860,7 @@ def detect_single_amide_pi_interaction(
 
 
 # -----------------------------------------------------------------------------
-# 10.21. Filtros
+# 10.21. Filters
 # -----------------------------------------------------------------------------
 
 def filter_anion_pi_interactions_by_geometry(
@@ -27956,7 +27938,7 @@ def filter_amide_pi_interactions_by_geometry(
 
 
 # -----------------------------------------------------------------------------
-# 10.22. Resumo local
+# 10.22. Local summary
 # -----------------------------------------------------------------------------
 
 def summarize_anion_amide_pi_detection(
@@ -28126,11 +28108,11 @@ def summarize_anion_amide_pi_detection(
     }
 
 # =============================================================================
-# 11. CONSOLIDAÇÃO, CLASSIFICAÇÃO E SCORING
+# 11. CONSOLIDATION, CLASSIFICATION, AND SCORING
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 11.1. Constantes
+# 11.1. Constants
 # -----------------------------------------------------------------------------
 
 PI_GEOMETRY_CLASS_OPTIMAL: Final[str] = "optimal"
@@ -28184,7 +28166,7 @@ PI_SCORE_SCHEMA_VERSION: Final[str] = "1.0"
 
 
 # -----------------------------------------------------------------------------
-# 11.2. Exceções
+# 11.2. Exceptions
 # -----------------------------------------------------------------------------
 
 class PiConsolidationError(RuntimeError):
@@ -28212,7 +28194,7 @@ class PiInteractionDeduplicationError(PiConsolidationError):
 
 
 # -----------------------------------------------------------------------------
-# 11.3. Configuração de pesos
+# 11.3. Weight configuration
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -28350,7 +28332,7 @@ def create_amide_pi_score_weights() -> PiScoreWeights:
 
 
 # -----------------------------------------------------------------------------
-# 11.4. Configuração principal
+# 11.4. Main configuration
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -28521,7 +28503,7 @@ def create_default_pi_scoring_config() -> PiScoringConfig:
 
 
 # -----------------------------------------------------------------------------
-# 11.5. Componentes do score
+# 11.5. Score components
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -28636,7 +28618,7 @@ class PiScoreComponents:
 
 
 # -----------------------------------------------------------------------------
-# 11.6. Resultado da validação
+# 11.6. Validation result
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -28668,7 +28650,7 @@ class PiInteractionValidationResult:
 
 
 # -----------------------------------------------------------------------------
-# 11.7. Resultado consolidado
+# 11.7. Consolidated result
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -28725,7 +28707,7 @@ class PiConsolidationResult:
 
 
 # -----------------------------------------------------------------------------
-# 11.8. Helpers genéricos
+# 11.8. Generic helpers
 # -----------------------------------------------------------------------------
 
 def _pi_score_get(
@@ -29022,7 +29004,7 @@ def _pi_score_update_interaction(
 
 
 # -----------------------------------------------------------------------------
-# 11.9. Validação
+# 11.9. Validation
 # -----------------------------------------------------------------------------
 
 def validate_pi_interaction(
@@ -29355,7 +29337,7 @@ def validate_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 11.10. Identificação dos participantes
+# 11.10. Participant identification
 # -----------------------------------------------------------------------------
 
 def _pi_score_participant_objects(
@@ -29469,7 +29451,7 @@ def generate_pi_interaction_signature(
 
 
 # -----------------------------------------------------------------------------
-# 11.11. Deduplicação
+# 11.11. Deduplication
 # -----------------------------------------------------------------------------
 
 def _pi_score_duplicate_priority(
@@ -29756,7 +29738,7 @@ def deduplicate_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 11.12. Funções matemáticas de scoring
+# 11.12. Mathematical scoring functions
 # -----------------------------------------------------------------------------
 
 def _pi_score_inverse_linear(
@@ -29875,7 +29857,7 @@ def _pi_score_boolean(
 
 
 # -----------------------------------------------------------------------------
-# 11.13. Qualidade da identidade química
+# 11.13. Chemical-identity quality
 # -----------------------------------------------------------------------------
 
 def evaluate_pi_chemical_identity(
@@ -30058,7 +30040,7 @@ def evaluate_pi_chemical_identity(
 
 
 # -----------------------------------------------------------------------------
-# 11.14. Componente de carga
+# 11.14. Charge component
 # -----------------------------------------------------------------------------
 
 def evaluate_pi_charge_component(
@@ -30105,7 +30087,7 @@ def evaluate_pi_charge_component(
 
 
 # -----------------------------------------------------------------------------
-# 11.15. Componente de contato atômico
+# 11.15. Atomic-contact component
 # -----------------------------------------------------------------------------
 
 def evaluate_pi_atomic_contact_component(
@@ -30158,7 +30140,7 @@ def evaluate_pi_atomic_contact_component(
 
 
 # -----------------------------------------------------------------------------
-# 11.16. Componentes específicos de π–π
+# 11.16. Π–π-specific components
 # -----------------------------------------------------------------------------
 
 def _score_pi_pi_components(
@@ -30314,7 +30296,7 @@ def _score_pi_pi_components(
 
 
 # -----------------------------------------------------------------------------
-# 11.17. Componentes cátion–π e ânion–π
+# 11.17. Cation–π and anion–π components
 # -----------------------------------------------------------------------------
 
 def _score_charged_pi_components(
@@ -30405,7 +30387,7 @@ def _score_charged_pi_components(
 
 
 # -----------------------------------------------------------------------------
-# 11.18. Componentes amida–π
+# 11.18. Amide–π components
 # -----------------------------------------------------------------------------
 
 def _score_amide_pi_components(
@@ -30560,7 +30542,7 @@ def _score_amide_pi_components(
 
 
 # -----------------------------------------------------------------------------
-# 11.19. Penalizações
+# 11.19. Penalties
 # -----------------------------------------------------------------------------
 
 def calculate_pi_geometric_penalties(
@@ -30751,7 +30733,7 @@ def calculate_pi_geometric_penalties(
 
 
 # -----------------------------------------------------------------------------
-# 11.20. Seleção de pesos
+# 11.20. Weight selection
 # -----------------------------------------------------------------------------
 
 def get_pi_score_weights(
@@ -30788,7 +30770,7 @@ def get_pi_score_weights(
 
 
 # -----------------------------------------------------------------------------
-# 11.21. Score de uma interação
+# 11.21. Single-interaction score
 # -----------------------------------------------------------------------------
 
 def calculate_pi_interaction_score(
@@ -30960,7 +30942,7 @@ def calculate_pi_interaction_score(
 
 
 # -----------------------------------------------------------------------------
-# 11.22. Classificação geométrica global
+# 11.22. Global geometry classification
 # -----------------------------------------------------------------------------
 
 def classify_pi_geometry_quality(
@@ -31029,7 +31011,7 @@ def classify_pi_geometry_quality(
 
 
 # -----------------------------------------------------------------------------
-# 11.23. Classificação por força
+# 11.23. Strength classification
 # -----------------------------------------------------------------------------
 
 def classify_pi_interaction_strength(
@@ -31067,7 +31049,7 @@ def classify_pi_interaction_strength(
 
 
 # -----------------------------------------------------------------------------
-# 11.24. Classificação por tipo e subtipo
+# 11.24. Classification by type and subtype
 # -----------------------------------------------------------------------------
 
 def classify_pi_interaction_type(
@@ -31108,7 +31090,7 @@ def classify_pi_interaction_subtype(
 
 
 # -----------------------------------------------------------------------------
-# 11.25. Atualização de uma interação
+# 11.25. Interaction update
 # -----------------------------------------------------------------------------
 
 def score_pi_interaction(
@@ -31202,7 +31184,7 @@ def score_pi_interaction(
 
 
 # -----------------------------------------------------------------------------
-# 11.26. Normalização coletiva
+# 11.26. Collection normalization
 # -----------------------------------------------------------------------------
 
 def normalize_pi_interaction_scores(
@@ -31490,7 +31472,7 @@ def score_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 11.28. Consolidação de coleções
+# 11.28. Collection consolidation
 # -----------------------------------------------------------------------------
 
 def consolidate_pi_interaction_collections(
@@ -31550,7 +31532,7 @@ def consolidate_pi_interaction_collections(
 
 
 # -----------------------------------------------------------------------------
-# 11.29. Pipeline completo
+# 11.29. Complete pipeline
 # -----------------------------------------------------------------------------
 
 def consolidate_classify_and_score_pi_interactions(
@@ -31784,7 +31766,7 @@ def consolidate_classify_and_score_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 11.30. API para uma coleção já consolidada
+# 11.30. API for an already consolidated collection
 # -----------------------------------------------------------------------------
 
 def classify_and_score_pi_interactions(
@@ -31882,7 +31864,7 @@ def rank_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 11.32. Filtros
+# 11.32. Filters
 # -----------------------------------------------------------------------------
 
 def filter_pi_interactions_by_type(
@@ -32036,7 +32018,7 @@ def filter_pi_interactions_by_minimum_score(
 
 
 # -----------------------------------------------------------------------------
-# 11.33. Resumo local
+# 11.33. Local summary
 # -----------------------------------------------------------------------------
 
 def summarize_pi_scoring(
@@ -32206,11 +32188,11 @@ def summarize_pi_scoring(
 
 
 # =============================================================================
-# 12. AGRUPAMENTO POR RESÍDUO E SISTEMA AROMÁTICO
+# 12. GROUPING BY RESIDUE AND AROMATIC SYSTEM
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 12.1. Constantes
+# 12.1. Constants
 # -----------------------------------------------------------------------------
 
 PI_GROUP_LEVEL_RESIDUE: Final[str] = "residue"
@@ -32264,7 +32246,7 @@ PI_GROUPING_EPSILON: Final[float] = 1.0e-12
 
 
 # -----------------------------------------------------------------------------
-# 12.2. Exceções
+# 12.2. Exceptions
 # -----------------------------------------------------------------------------
 
 class PiGroupingError(RuntimeError):
@@ -32286,7 +32268,7 @@ class PiInteractionMergeError(PiGroupingError):
 
 
 # -----------------------------------------------------------------------------
-# 12.3. Configuração
+# 12.3. Configuration
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -32483,7 +32465,7 @@ def create_default_pi_grouping_config() -> PiGroupingConfig:
 
 
 # -----------------------------------------------------------------------------
-# 12.4. Modelos de agrupamento
+# 12.4. Grouping models
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -32670,7 +32652,7 @@ class PiGroupingResult:
 
 
 # -----------------------------------------------------------------------------
-# 12.5. Acesso seguro
+# 12.5. Safe access
 # -----------------------------------------------------------------------------
 
 def _pi_group_get(
@@ -32817,7 +32799,7 @@ def _pi_group_update_object(
 
 
 # -----------------------------------------------------------------------------
-# 12.6. Identificação química e estrutural
+# 12.6. Chemical and structural identification
 # -----------------------------------------------------------------------------
 
 def _pi_group_interaction_type(
@@ -33454,7 +33436,7 @@ def _pi_group_chain_ids(
 
 
 # -----------------------------------------------------------------------------
-# 12.7. Assinaturas de equivalência
+# 12.7. Equivalence signatures
 # -----------------------------------------------------------------------------
 
 def generate_equivalent_pi_interaction_signature(
@@ -33644,7 +33626,7 @@ def are_equivalent_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 12.8. Seleção do representante
+# 12.8. Representative selection
 # -----------------------------------------------------------------------------
 
 def _pi_group_interaction_priority(
@@ -33711,7 +33693,7 @@ def _pi_group_select_representative(
 
 
 # -----------------------------------------------------------------------------
-# 12.9. Mesclagem de contatos atômicos
+# 12.9. Atomic-contact merging
 # -----------------------------------------------------------------------------
 
 def _pi_group_contact_signature(
@@ -33822,7 +33804,7 @@ def _pi_group_merge_atomic_contacts(
 
 
 # -----------------------------------------------------------------------------
-# 12.10. Mesclagem de interações equivalentes
+# 12.10. Equivalent-interaction merging
 # -----------------------------------------------------------------------------
 
 def _merge_pi_interaction_cluster(
@@ -34086,7 +34068,7 @@ def merge_equivalent_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 12.11. Construção de grupos
+# 12.11. Group construction
 # -----------------------------------------------------------------------------
 
 def _build_pi_interaction_group(
@@ -34328,7 +34310,7 @@ def _group_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 12.12. Agrupamento por resíduo
+# 12.12. Grouping by residue
 # -----------------------------------------------------------------------------
 
 def group_pi_interactions_by_residue(
@@ -34397,7 +34379,7 @@ def group_pi_interactions_by_residue(
 
 
 # -----------------------------------------------------------------------------
-# 12.13. Agrupamento por cadeia
+# 12.13. Grouping by chain
 # -----------------------------------------------------------------------------
 
 def group_pi_interactions_by_chain(
@@ -34464,7 +34446,7 @@ def group_pi_interactions_by_chain(
 
 
 # -----------------------------------------------------------------------------
-# 12.14. Agrupamento por pose
+# 12.14. Grouping by pose
 # -----------------------------------------------------------------------------
 
 def group_pi_interactions_by_pose(
@@ -34500,7 +34482,7 @@ def group_pi_interactions_by_pose(
 
 
 # -----------------------------------------------------------------------------
-# 12.15. Agrupamento por anel
+# 12.15. Grouping by ring
 # -----------------------------------------------------------------------------
 
 def group_pi_interactions_by_ring(
@@ -34600,7 +34582,7 @@ def group_pi_interactions_by_ligand_ring(
 
 
 # -----------------------------------------------------------------------------
-# 12.16. Agrupamento por tipo
+# 12.16. Grouping by type
 # -----------------------------------------------------------------------------
 
 def group_pi_interactions_by_type(
@@ -34645,7 +34627,7 @@ def group_pi_interactions_by_subtype(
 
 
 # -----------------------------------------------------------------------------
-# 12.17. Critérios de hotspot
+# 12.17. Hotspot criteria
 # -----------------------------------------------------------------------------
 
 def _pi_group_interaction_is_hotspot_eligible(
@@ -34707,7 +34689,7 @@ def _classify_pi_hotspot_level(
 
 
 # -----------------------------------------------------------------------------
-# 12.18. Identificação de hotspots
+# 12.18. Hotspot identification
 # -----------------------------------------------------------------------------
 
 def identify_pi_hotspots(
@@ -34869,7 +34851,7 @@ def identify_pi_hotspots(
 
 
 # -----------------------------------------------------------------------------
-# 12.19. Anotação das interações com grupos e hotspots
+# 12.19. Annotation of interactions with groups and hotspots
 # -----------------------------------------------------------------------------
 
 def annotate_pi_interaction_groups(
@@ -34993,7 +34975,7 @@ def annotate_pi_interaction_groups(
 
 
 # -----------------------------------------------------------------------------
-# 12.20. Pipeline completo
+# 12.20. Complete pipeline
 # -----------------------------------------------------------------------------
 
 def organize_pi_interactions(
@@ -35109,7 +35091,7 @@ def organize_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 12.21. Frequência por pose
+# 12.21. Frequency by pose
 # -----------------------------------------------------------------------------
 
 def calculate_pi_interaction_pose_frequency(
@@ -35249,7 +35231,7 @@ def calculate_pi_interaction_pose_frequency(
 
 
 # -----------------------------------------------------------------------------
-# 12.22. Resumos locais
+# 12.22. Local summaries
 # -----------------------------------------------------------------------------
 
 def summarize_pi_grouping(
@@ -35340,11 +35322,11 @@ def summarize_pi_grouping(
     }
 
 # =============================================================================
-# 13. ESTATÍSTICAS E RESUMOS
+# 13. STATISTICS AND SUMMARIES
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 13.1. Constantes
+# 13.1. Constants
 # -----------------------------------------------------------------------------
 
 PI_STATISTICS_SCHEMA_VERSION: Final[str] = "1.0"
@@ -35365,7 +35347,7 @@ PI_STATISTICS_EPSILON: Final[float] = 1.0e-12
 
 
 # -----------------------------------------------------------------------------
-# 13.2. Exceções
+# 13.2. Exceptions
 # -----------------------------------------------------------------------------
 
 class PiStatisticsError(RuntimeError):
@@ -35381,7 +35363,7 @@ class PiStatisticsValidationError(PiStatisticsError):
 
 
 # -----------------------------------------------------------------------------
-# 13.3. Configuração
+# 13.3. Configuration
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -35508,7 +35490,7 @@ def create_default_pi_statistics_config() -> PiStatisticsConfig:
 
 
 # -----------------------------------------------------------------------------
-# 13.4. Modelos estatísticos
+# 13.4. Statistical models
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -35882,7 +35864,7 @@ class PiStatisticsReport:
 
 
 # -----------------------------------------------------------------------------
-# 13.5. Acesso seguro
+# 13.5. Safe access
 # -----------------------------------------------------------------------------
 
 def _pi_statistics_get(
@@ -36369,7 +36351,7 @@ def _pi_statistics_participant_role(
 
 
 # -----------------------------------------------------------------------------
-# 13.6. Estatísticas numéricas
+# 13.6. Numerical statistics
 # -----------------------------------------------------------------------------
 
 def _pi_statistics_quantile(
@@ -36582,7 +36564,7 @@ def _round_pi_numeric_statistics(
 
 
 # -----------------------------------------------------------------------------
-# 13.7. Filtragem estatística
+# 13.7. Statistical filtering
 # -----------------------------------------------------------------------------
 
 def _pi_statistics_interaction_is_eligible(
@@ -36636,7 +36618,7 @@ def filter_pi_interactions_for_statistics(
 
 
 # -----------------------------------------------------------------------------
-# 13.8. Descritor de interação
+# 13.8. Interaction descriptor
 # -----------------------------------------------------------------------------
 
 def describe_pi_interaction(
@@ -36785,7 +36767,7 @@ def describe_pi_interaction(
 
 
 # -----------------------------------------------------------------------------
-# 13.9. Seleção da melhor interação
+# 13.9. Best-interaction selection
 # -----------------------------------------------------------------------------
 
 def identify_best_pi_interaction(
@@ -36867,7 +36849,7 @@ def identify_best_pi_interaction(
 
 
 # -----------------------------------------------------------------------------
-# 13.10. Interação predominante
+# 13.10. Predominant interaction
 # -----------------------------------------------------------------------------
 
 def identify_predominant_pi_interaction(
@@ -37046,7 +37028,7 @@ def identify_predominant_pi_interaction(
 
 
 # -----------------------------------------------------------------------------
-# 13.11. Estatísticas de um subconjunto
+# 13.11. Subset statistics
 # -----------------------------------------------------------------------------
 
 def summarize_pi_interaction_subset(
@@ -37197,7 +37179,7 @@ def summarize_pi_interaction_subset(
 
 
 # -----------------------------------------------------------------------------
-# 13.12. Estatísticas por grupo
+# 13.12. Statistics by group
 # -----------------------------------------------------------------------------
 
 def _pi_statistics_group_interactions(
@@ -37459,7 +37441,7 @@ def calculate_pi_statistics_by_ring(
 
 
 # -----------------------------------------------------------------------------
-# 13.13. Frequência multipose
+# 13.13. Multipose frequency
 # -----------------------------------------------------------------------------
 
 def calculate_pi_multipose_frequency(
@@ -37776,7 +37758,7 @@ def calculate_pi_multipose_frequency(
 
 
 # -----------------------------------------------------------------------------
-# 13.14. Score total normalizado
+# 13.14. Normalized total score
 # -----------------------------------------------------------------------------
 
 def calculate_normalized_pi_total_score(
@@ -37918,7 +37900,7 @@ def _pi_statistics_resolve_hotspots(
 
 
 # -----------------------------------------------------------------------------
-# 13.16. Produção do relatório completo
+# 13.16. Complete-report generation
 # -----------------------------------------------------------------------------
 
 def generate_pi_statistics_report(
@@ -38611,7 +38593,7 @@ def summarize_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 13.18. Resumo compacto
+# 13.18. Compact summary
 # -----------------------------------------------------------------------------
 
 def create_compact_pi_summary(
@@ -38709,7 +38691,7 @@ def create_compact_pi_summary(
 
 
 # -----------------------------------------------------------------------------
-# 13.19. Resumo textual
+# 13.19. Text summary
 # -----------------------------------------------------------------------------
 
 def format_pi_statistics_summary(
@@ -38801,11 +38783,11 @@ def format_pi_statistics_summary(
 
 
 # =============================================================================
-# 14. API PÚBLICA DE ANÁLISE
+# 14. PUBLIC ANALYSIS API
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 14.1. Constantes
+# 14.1. Constants
 # -----------------------------------------------------------------------------
 
 PI_ANALYSIS_SCHEMA_VERSION: Final[str] = "1.0"
@@ -38841,7 +38823,7 @@ PI_ANALYSIS_EPSILON: Final[float] = 1.0e-12
 
 
 # -----------------------------------------------------------------------------
-# 14.2. Exceções
+# 14.2. Exceptions
 # -----------------------------------------------------------------------------
 
 class PiAnalysisError(RuntimeError):
@@ -38883,7 +38865,7 @@ class PiAnalysisStageError(PiAnalysisError):
 
 
 # -----------------------------------------------------------------------------
-# 14.3. Configuração pública
+# 14.3. Public configuration
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -39022,7 +39004,7 @@ def create_default_pi_analysis_config() -> PiAnalysisConfig:
 
 
 # -----------------------------------------------------------------------------
-# 14.4. Modelos de reconhecimento
+# 14.4. Recognition models
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -39172,7 +39154,7 @@ class PiDetectedInteractions:
 
 
 # -----------------------------------------------------------------------------
-# 14.5. Resultado público
+# 14.5. Public result
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -39654,6 +39636,43 @@ def _pi_api_interaction_type(
     ).strip().lower()
 
 
+_PI_API_SIGNATURE_CACHE: Dict[
+    Callable[..., Any],
+    Tuple[bool, FrozenSet[str]],
+] = {}
+
+
+def _pi_api_supported_arguments(
+    function: Callable[..., Any],
+) -> Optional[Tuple[bool, FrozenSet[str]]]:
+    """Return cached keyword support information for a callable."""
+
+    try:
+        return _PI_API_SIGNATURE_CACHE[function]
+    except (KeyError, TypeError):
+        pass
+
+    try:
+        parameters = inspect.signature(function).parameters
+    except (TypeError, ValueError):
+        return None
+
+    result = (
+        any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        ),
+        frozenset(parameters),
+    )
+
+    try:
+        _PI_API_SIGNATURE_CACHE[function] = result
+    except TypeError:
+        pass
+
+    return result
+
+
 def _pi_api_call_with_supported_arguments(
     function: Callable[..., Any],
     *args: Any,
@@ -39666,27 +39685,17 @@ def _pi_api_call_with_supported_arguments(
     optional keyword sets may differ slightly between module revisions.
     """
 
-    try:
-        signature = inspect.signature(
-            function
-        )
+    supported_arguments = _pi_api_supported_arguments(
+        function
+    )
 
-    except (
-        TypeError,
-        ValueError,
-    ):
+    if supported_arguments is None:
         return function(
             *args,
             **kwargs,
         )
 
-    parameters = signature.parameters
-
-    accepts_var_keyword = any(
-        parameter.kind
-        == inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters.values()
-    )
+    accepts_var_keyword, parameter_names = supported_arguments
 
     if accepts_var_keyword:
         supported_kwargs = kwargs
@@ -39695,7 +39704,7 @@ def _pi_api_call_with_supported_arguments(
         supported_kwargs = {
             name: value
             for name, value in kwargs.items()
-            if name in parameters
+            if name in parameter_names
         }
 
     return function(
@@ -39725,8 +39734,50 @@ def _pi_api_resolve_callable(
 
 
 # -----------------------------------------------------------------------------
-# 14.7. Normalização de entrada
+# 14.7. Input normalization
 # -----------------------------------------------------------------------------
+
+def _pi_api_value_is_empty(
+    value: Any,
+) -> bool:
+    """Return whether a molecular input exposes no usable content."""
+
+    if value is None:
+        return True
+
+    if isinstance(value, (str, bytes, bytearray)):
+        return not bool(value)
+
+    if isinstance(value, Mapping):
+        return not bool(value)
+
+    for attribute_name in (
+        "atoms",
+        "residues",
+        "aromatic_systems",
+        "rings",
+    ):
+        if not hasattr(value, attribute_name):
+            continue
+
+        attribute_value = _pi_api_get(
+            value,
+            (attribute_name,),
+        )
+
+        if attribute_value is None:
+            continue
+
+        try:
+            return len(attribute_value) == 0
+        except TypeError:
+            return False
+
+    try:
+        return len(value) == 0
+    except (TypeError, AttributeError):
+        return False
+
 
 def _pi_api_normalize_structure(
     structure: Any,
@@ -39769,7 +39820,7 @@ def _pi_api_normalize_structure(
 
 
 # -----------------------------------------------------------------------------
-# 14.8. Reconhecimento de sistemas aromáticos
+# 14.8. Aromatic-system recognition
 # -----------------------------------------------------------------------------
 
 def _pi_api_recognize_aromatic_systems(
@@ -39820,7 +39871,7 @@ def _pi_api_recognize_aromatic_systems(
 
 
 # -----------------------------------------------------------------------------
-# 14.9. Reconhecimento de grupos carregados
+# 14.9. Charged-group recognition
 # -----------------------------------------------------------------------------
 
 def _pi_api_recognize_positive_groups(
@@ -39918,7 +39969,7 @@ def _pi_api_recognize_negative_groups(
 
 
 # -----------------------------------------------------------------------------
-# 14.10. Reconhecimento de amidas
+# 14.10. Amide recognition
 # -----------------------------------------------------------------------------
 
 def _pi_api_recognize_amide_groups(
@@ -39967,7 +40018,7 @@ def _pi_api_recognize_amide_groups(
 
 
 # -----------------------------------------------------------------------------
-# 14.11. Reconhecimento conjunto
+# 14.11. Combined recognition
 # -----------------------------------------------------------------------------
 
 def recognize_pi_analysis_features(
@@ -40047,7 +40098,7 @@ def recognize_pi_analysis_features(
 
 
 # -----------------------------------------------------------------------------
-# 14.12. Anotação de pose
+# 14.12. Pose annotation
 # -----------------------------------------------------------------------------
 
 def _pi_api_annotate_interaction_pose(
@@ -40164,7 +40215,7 @@ def _pi_api_annotate_pose_collection(
 
 
 # -----------------------------------------------------------------------------
-# 14.13. Detecção de todas as categorias
+# 14.13. Detection of all categories
 # -----------------------------------------------------------------------------
 
 def detect_all_pi_interactions(
@@ -40284,7 +40335,7 @@ def detect_all_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 14.14. Pipeline comum pós-detecção
+# 14.14. Common post-detection pipeline
 # -----------------------------------------------------------------------------
 
 def _pi_api_finalize_detected_interactions(
@@ -40399,7 +40450,7 @@ def _pi_api_finalize_detected_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 14.15. Função pública principal
+# 14.15. Main public function
 # -----------------------------------------------------------------------------
 
 def analyze_pi_interactions(
@@ -40516,6 +40567,29 @@ def analyze_pi_interactions(
             str(exc),
             original_exception=exc,
         ) from exc
+
+    supplied_feature_values = (
+        aromatic_systems,
+        positive_groups,
+        negative_groups,
+        amide_groups,
+    )
+
+    has_supplied_features = any(
+        not _pi_api_value_is_empty(value)
+        for value in supplied_feature_values
+        if value is not None
+    )
+
+    if (
+        config.strict
+        and _pi_api_value_is_empty(normalized_structure)
+        and not has_supplied_features
+    ):
+        raise PiAnalysisInputError(
+            "Strict π analysis requires a non-empty molecular input "
+            "or explicitly supplied molecular features."
+        )
 
     if config.preserve_intermediate_results:
         intermediate_results[
@@ -40725,7 +40799,7 @@ def analyze_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 14.16. Configuração especializada por categoria
+# 14.16. Category-specific configuration
 # -----------------------------------------------------------------------------
 
 def _pi_api_config_for_mode(
@@ -40785,7 +40859,7 @@ def _pi_api_replace_result_mode(
 
 
 # -----------------------------------------------------------------------------
-# 14.17. API pública π–π
+# 14.17. Public π–π API
 # -----------------------------------------------------------------------------
 
 def analyze_pi_pi_interactions(
@@ -40820,7 +40894,7 @@ def analyze_pi_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 14.18. API pública cátion–π
+# 14.18. Public cation–π API
 # -----------------------------------------------------------------------------
 
 def analyze_cation_pi_interactions(
@@ -40857,7 +40931,7 @@ def analyze_cation_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 14.19. API pública ânion–π
+# 14.19. Public anion–π API
 # -----------------------------------------------------------------------------
 
 def analyze_anion_pi_interactions(
@@ -40894,7 +40968,7 @@ def analyze_anion_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 14.20. API pública amida–π
+# 14.20. Public amide–π API
 # -----------------------------------------------------------------------------
 
 def analyze_amide_pi_interactions(
@@ -40931,7 +41005,7 @@ def analyze_amide_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 14.21. Normalização da entrada multipose
+# 14.21. Multipose-input normalization
 # -----------------------------------------------------------------------------
 
 def _pi_api_normalize_pose_inputs(
@@ -41068,7 +41142,7 @@ def _pi_api_resolve_pose_features(
 
 
 # -----------------------------------------------------------------------------
-# 14.22. Seleção da melhor pose
+# 14.22. Best-pose selection
 # -----------------------------------------------------------------------------
 
 def _pi_api_select_best_pose(
@@ -41094,7 +41168,7 @@ def _pi_api_select_best_pose(
 
 
 # -----------------------------------------------------------------------------
-# 14.23. API pública multipose
+# 14.23. Public multipose API
 # -----------------------------------------------------------------------------
 
 def analyze_multiple_poses_pi(
@@ -41466,7 +41540,7 @@ def analyze_multiple_poses_pi(
 
 
 # -----------------------------------------------------------------------------
-# 14.24. APIs para entradas já reconhecidas
+# 14.24. APIs for already recognized inputs
 # -----------------------------------------------------------------------------
 
 def analyze_recognized_pi_features(
@@ -41543,7 +41617,7 @@ def analyze_recognized_pi_features(
 
 
 # -----------------------------------------------------------------------------
-# 14.25. Resumo público
+# 14.25. Public summary
 # -----------------------------------------------------------------------------
 
 def summarize_pi_analysis_result(
@@ -41639,7 +41713,7 @@ def summarize_pi_analysis_result(
 
 
 # -----------------------------------------------------------------------------
-# 14.26. Formatação textual
+# 14.26. Text formatting
 # -----------------------------------------------------------------------------
 
 def format_pi_analysis_result(
@@ -41752,14 +41826,14 @@ def format_pi_analysis_result(
 
 
 # =============================================================================
-# 15. INTEGRAÇÃO COM DOCKMODEL
+# 15. DOCKMODEL INTEGRATION
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 15.1. Constantes
+# 15.1. Constants
 # -----------------------------------------------------------------------------
 
-DOCK_MODEL_PI_ATTRIBUTE: Final[str] = "pi"
+# DOCK_MODEL_PI_ATTRIBUTE is declared in Section 1.36.
 DOCK_MODEL_PI_EXPLICIT_ATTRIBUTE: Final[str] = "pi_interactions"
 
 DOCK_MODEL_PI_ATTRIBUTE_CANDIDATES: Final[Tuple[str, ...]] = (
@@ -41790,7 +41864,7 @@ DOCK_MODEL_PI_INTEGRATION_SCHEMA_VERSION: Final[str] = "1.0"
 
 
 # -----------------------------------------------------------------------------
-# 15.2. Exceções
+# 15.2. Exceptions
 # -----------------------------------------------------------------------------
 
 class DockModelPiIntegrationError(RuntimeError):
@@ -41818,7 +41892,7 @@ class DockModelPiSerializationError(DockModelPiIntegrationError):
 
 
 # -----------------------------------------------------------------------------
-# 15.3. Configuração
+# 15.3. Configuration
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -41951,7 +42025,7 @@ def create_default_dock_model_pi_config(
 
 
 # -----------------------------------------------------------------------------
-# 15.4. Resultado de integração
+# 15.4. Integration result
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -42092,7 +42166,7 @@ class DockModelPiMultipleIntegrationResult:
 
 
 # -----------------------------------------------------------------------------
-# 15.5. Acesso seguro ao DockModel
+# 15.5. Safe DockModel access
 # -----------------------------------------------------------------------------
 
 def _dock_model_pi_get(
@@ -42217,7 +42291,7 @@ def _dock_model_pi_update(
 
 
 # -----------------------------------------------------------------------------
-# 15.6. Resolução do atributo pi
+# 15.6. Pi-attribute resolution
 # -----------------------------------------------------------------------------
 
 def resolve_dock_model_pi_attribute(
@@ -42301,7 +42375,7 @@ def get_dock_model_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 15.7. Pose e estrutura do DockModel
+# 15.7. DockModel pose and structure
 # -----------------------------------------------------------------------------
 
 def resolve_dock_model_pose_id(
@@ -42358,7 +42432,7 @@ def resolve_dock_model_structure(
 
 
 # -----------------------------------------------------------------------------
-# 15.8. Deduplicação ao anexar
+# 15.8. Deduplication during attachment
 # -----------------------------------------------------------------------------
 
 def _dock_model_pi_interaction_signature(
@@ -42490,7 +42564,7 @@ def _dock_model_pi_merge_interaction_lists(
 
 
 # -----------------------------------------------------------------------------
-# 15.9. Score do resultado
+# 15.9. Result score
 # -----------------------------------------------------------------------------
 
 def resolve_pi_result_score(
@@ -42560,7 +42634,7 @@ def resolve_pi_result_score(
 
 
 # -----------------------------------------------------------------------------
-# 15.10. Atualização das estatísticas globais
+# 15.10. Global-statistics update
 # -----------------------------------------------------------------------------
 
 def _dock_model_pi_resolve_global_statistics_attribute(
@@ -42672,7 +42746,7 @@ def update_dock_model_pi_statistics(
 
 
 # -----------------------------------------------------------------------------
-# 15.11. Atualização do score global
+# 15.11. Global-score update
 # -----------------------------------------------------------------------------
 
 def _dock_model_pi_resolve_score_attribute(
@@ -42805,7 +42879,7 @@ def update_dock_model_pi_score(
 
 
 # -----------------------------------------------------------------------------
-# 15.12. Serialização
+# 15.12. Serialization
 # -----------------------------------------------------------------------------
 
 def serialize_pi_analysis_result(
@@ -42852,11 +42926,13 @@ def _make_pi_value_serializable(
         (
             str,
             int,
-            float,
             bool,
         ),
     ):
         return value
+
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
 
     object_id = id(value)
 
@@ -42951,7 +43027,7 @@ def _make_pi_value_serializable(
 
 
 # -----------------------------------------------------------------------------
-# 15.13. Anexação dos resultados
+# 15.13. Result attachment
 # -----------------------------------------------------------------------------
 
 def attach_pi_results(
@@ -42965,6 +43041,16 @@ def attach_pi_results(
 
     This function does not rerun analysis.
     """
+
+    if dock_model is None:
+        raise DockModelPiAttributeError(
+            "dock_model cannot be None."
+        )
+
+    if not isinstance(analysis_result, PiAnalysisResult):
+        raise TypeError(
+            "analysis_result must be a PiAnalysisResult."
+        )
 
     if config is None:
         config = create_default_dock_model_pi_config()
@@ -43109,6 +43195,36 @@ def attach_pi_results(
         ),
     )
 
+    if not _dock_model_pi_has_attribute(
+        dock_model,
+        pi_attribute,
+    ):
+        raise DockModelPiAttributeError(
+            f"Could not create or update DockModel π attribute "
+            f"{pi_attribute!r}."
+        )
+
+    attached_value = _dock_model_pi_get(
+        dock_model,
+        (pi_attribute,),
+        None,
+    )
+
+    try:
+        observed_attached_count = len(attached_value)
+    except TypeError as exc:
+        raise DockModelPiAttributeError(
+            f"DockModel π attribute {pi_attribute!r} is not a "
+            "collection after attachment."
+        ) from exc
+
+    if observed_attached_count != len(attached_interactions):
+        raise DockModelPiAttributeError(
+            f"DockModel π attribute {pi_attribute!r} contains "
+            f"{observed_attached_count} interactions after attachment; "
+            f"expected {len(attached_interactions)}."
+        )
+
     previous_statistics: Any = None
     updated_statistics: Any = None
 
@@ -43177,7 +43293,7 @@ def attach_pi_results(
 
 
 # -----------------------------------------------------------------------------
-# 15.14. Análise de um DockModel
+# 15.14. Single-DockModel analysis
 # -----------------------------------------------------------------------------
 
 def analyze_dock_model_pi(
@@ -43199,6 +43315,11 @@ def analyze_dock_model_pi(
 
     DockModel's internal docking algorithm is not modified.
     """
+
+    if dock_model is None:
+        raise DockModelPiAttributeError(
+            "dock_model cannot be None."
+        )
 
     if analysis_config is None:
         analysis_config = create_default_pi_analysis_config()
@@ -43244,7 +43365,7 @@ def analyze_dock_model_pi(
 
 
 # -----------------------------------------------------------------------------
-# 15.15. Análise especializada de um DockModel
+# 15.15. Specialized single-DockModel analysis
 # -----------------------------------------------------------------------------
 
 def analyze_dock_model_pi_pi(
@@ -43378,7 +43499,7 @@ def analyze_dock_model_amide_pi(
 
 
 # -----------------------------------------------------------------------------
-# 15.16. Resolução de grupos por DockModel
+# 15.16. Group resolution by DockModel
 # -----------------------------------------------------------------------------
 
 def _dock_model_pi_resolve_feature_source(
@@ -43423,7 +43544,7 @@ def _dock_model_pi_resolve_feature_source(
 
 
 # -----------------------------------------------------------------------------
-# 15.17. Análise de múltiplos DockModels
+# 15.17. Multiple-DockModel analysis
 # -----------------------------------------------------------------------------
 
 def analyze_multiple_dock_models_pi(
@@ -43676,7 +43797,7 @@ def analyze_multiple_dock_models_pi(
 
 
 # -----------------------------------------------------------------------------
-# 15.18. Reanexação sem nova análise
+# 15.18. Reattachment without a new analysis
 # -----------------------------------------------------------------------------
 
 def reattach_existing_pi_analysis(
@@ -43717,7 +43838,7 @@ def reattach_existing_pi_analysis(
 
 
 # -----------------------------------------------------------------------------
-# 15.19. Remoção segura dos resultados ativos
+# 15.19. Safe removal of active results
 # -----------------------------------------------------------------------------
 
 def clear_dock_model_pi_results(
@@ -43779,7 +43900,7 @@ def clear_dock_model_pi_results(
 
 
 # -----------------------------------------------------------------------------
-# 15.20. Resumo da integração
+# 15.20. Integration summary
 # -----------------------------------------------------------------------------
 
 def summarize_dock_model_pi_integration(
@@ -43845,7 +43966,7 @@ def summarize_dock_model_pi_integration(
 
 
 # =============================================================================
-# 16. SERIALIZAÇÃO E EXPORTAÇÃO
+# 16. SERIALIZATION AND EXPORT
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -43853,12 +43974,11 @@ def summarize_dock_model_pi_integration(
 # -----------------------------------------------------------------------------
 
 import csv
-import json
 from pathlib import Path
 
 
 # -----------------------------------------------------------------------------
-# 16.2. Constantes
+# 16.2. Constants
 # -----------------------------------------------------------------------------
 
 PI_SERIALIZATION_SCHEMA_VERSION: Final[str] = "1.0"
@@ -43900,7 +44020,7 @@ PI_SERIALIZATION_UNSUPPORTED_MARKER: Final[str] = "<unsupported-object>"
 
 
 # -----------------------------------------------------------------------------
-# 16.3. Exceções
+# 16.3. Exceptions
 # -----------------------------------------------------------------------------
 
 class PiSerializationError(RuntimeError):
@@ -43922,7 +44042,7 @@ class PiExportError(PiSerializationError):
 
 
 # -----------------------------------------------------------------------------
-# 16.4. Configuração
+# 16.4. Configuration
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -44027,7 +44147,7 @@ def create_default_pi_serialization_config() -> PiSerializationConfig:
 
 
 # -----------------------------------------------------------------------------
-# 16.5. Acesso seguro
+# 16.5. Safe access
 # -----------------------------------------------------------------------------
 
 def _pi_serialization_get(
@@ -44039,7 +44159,7 @@ def _pi_serialization_get(
         return default
 
     for name in names:
-        if isinstance(object_, Mapping):
+        if isinstance(object_, _RuntimeMapping):
             value = object_.get(
                 name
             )
@@ -44142,7 +44262,7 @@ def _pi_serialization_interaction_type(
 
 
 # -----------------------------------------------------------------------------
-# 16.6. Conversão de vetores e valores científicos
+# 16.6. Conversion of vectors and scientific values
 # -----------------------------------------------------------------------------
 
 def _pi_serialization_is_numpy_scalar(
@@ -44172,7 +44292,7 @@ def _pi_serialization_is_array_like(
             str,
             bytes,
             bytearray,
-            Mapping,
+            _RuntimeMapping,
             list,
             tuple,
             set,
@@ -44244,8 +44364,31 @@ def _pi_serialization_round_float(
 
 
 # -----------------------------------------------------------------------------
-# 16.7. Conversão recursiva segura
+# 16.7. Safe recursive conversion
 # -----------------------------------------------------------------------------
+
+_PI_SERIALIZATION_DATACLASS_FIELDS_CACHE: Dict[
+    Type[Any],
+    Tuple[Any, ...],
+] = {}
+
+
+def _pi_serialization_dataclass_fields(
+    value: Any,
+) -> Tuple[Any, ...]:
+    """Return cached dataclass fields for an instance."""
+
+    value_type = type(value)
+
+    try:
+        return _PI_SERIALIZATION_DATACLASS_FIELDS_CACHE[value_type]
+    except KeyError:
+        field_definitions = tuple(fields(value_type))
+        _PI_SERIALIZATION_DATACLASS_FIELDS_CACHE[value_type] = (
+            field_definitions
+        )
+        return field_definitions
+
 
 def make_pi_value_serializable(
     value: Any,
@@ -44394,7 +44537,7 @@ def make_pi_value_serializable(
 
     if isinstance(
         value,
-        Mapping,
+        _RuntimeMapping,
     ):
         _visited.add(
             object_id
@@ -44473,7 +44616,7 @@ def make_pi_value_serializable(
 
         result: Dict[str, Any] = {}
 
-        for field_definition in fields(
+        for field_definition in _pi_serialization_dataclass_fields(
             value
         ):
             field_name = field_definition.name
@@ -44614,7 +44757,7 @@ def make_pi_value_serializable(
 
 
 # -----------------------------------------------------------------------------
-# 16.8. Serialização de átomos e contatos
+# 16.8. Atom and contact serialization
 # -----------------------------------------------------------------------------
 
 def pi_atom_to_dict(
@@ -44793,7 +44936,7 @@ def pi_atomic_contact_to_dict(
 
 
 # -----------------------------------------------------------------------------
-# 16.9. Serialização dos participantes
+# 16.9. Participant serialization
 # -----------------------------------------------------------------------------
 
 def pi_participant_to_dict(
@@ -44956,7 +45099,7 @@ def pi_participant_to_dict(
 
 
 # -----------------------------------------------------------------------------
-# 16.10. Serialização de uma interação
+# 16.10. Single-interaction serialization
 # -----------------------------------------------------------------------------
 
 def pi_interaction_to_dict(
@@ -45257,7 +45400,7 @@ def pi_interaction_to_dict(
 
 
 # -----------------------------------------------------------------------------
-# 16.11. Serialização do resultado completo
+# 16.11. Complete-result serialization
 # -----------------------------------------------------------------------------
 
 def pi_result_to_dict(
@@ -45581,7 +45724,7 @@ def pi_result_to_dict(
 
         if isinstance(
             converted,
-            Mapping,
+            _RuntimeMapping,
         ):
             serialized = dict(
                 converted
@@ -45599,7 +45742,7 @@ def pi_result_to_dict(
 
     if not isinstance(
         final_result,
-        Mapping,
+        _RuntimeMapping,
     ):
         raise PiSerializationError(
             "Serialized π result did not produce a dictionary."
@@ -45611,7 +45754,7 @@ def pi_result_to_dict(
 
 
 # -----------------------------------------------------------------------------
-# 16.12. Serialização para JSON
+# 16.12. JSON serialization
 # -----------------------------------------------------------------------------
 
 def serialize_pi_results(
@@ -45697,7 +45840,7 @@ def save_pi_results_json(
 
 
 # -----------------------------------------------------------------------------
-# 16.13. Extração das interações
+# 16.13. Interaction extraction
 # -----------------------------------------------------------------------------
 
 def extract_pi_interactions(
@@ -45786,7 +45929,7 @@ def extract_pi_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 16.14. Helpers tabulares
+# 16.14. Tabular helpers
 # -----------------------------------------------------------------------------
 
 def _pi_table_join(
@@ -45799,7 +45942,7 @@ def _pi_table_join(
 
     if isinstance(
         value,
-        Mapping,
+        _RuntimeMapping,
     ):
         if not config.table_flatten_nested_values:
             return json.dumps(
@@ -45896,7 +46039,7 @@ def _pi_table_participant_summary(
 
 
 # -----------------------------------------------------------------------------
-# 16.15. Tabela de interações
+# 16.15. Interaction table
 # -----------------------------------------------------------------------------
 
 def pi_interactions_to_table(
@@ -46149,7 +46292,7 @@ def pi_interactions_to_table(
                 )
                 if isinstance(
                     penalties,
-                    Mapping,
+                    _RuntimeMapping,
                 )
                 else None
             ),
@@ -46183,7 +46326,7 @@ def pi_interactions_to_table(
 
 
 # -----------------------------------------------------------------------------
-# 16.16. Resumo por resíduo
+# 16.16. Summary by residue
 # -----------------------------------------------------------------------------
 
 def pi_residue_summary_table(
@@ -46313,7 +46456,7 @@ def pi_residue_summary_table(
                 None
                 if not isinstance(
                     best,
-                    Mapping,
+                    _RuntimeMapping,
                 )
                 else best.get(
                     "interaction_id"
@@ -46323,7 +46466,7 @@ def pi_residue_summary_table(
                 None
                 if not isinstance(
                     best,
-                    Mapping,
+                    _RuntimeMapping,
                 )
                 else best.get(
                     "interaction_type"
@@ -46333,7 +46476,7 @@ def pi_residue_summary_table(
                 None
                 if not isinstance(
                     best,
-                    Mapping,
+                    _RuntimeMapping,
                 )
                 else best.get(
                     "score"
@@ -46349,7 +46492,7 @@ def pi_residue_summary_table(
 
 
 # -----------------------------------------------------------------------------
-# 16.17. Resumo por pose
+# 16.17. Summary by pose
 # -----------------------------------------------------------------------------
 
 def pi_pose_summary_table(
@@ -46469,7 +46612,7 @@ def pi_pose_summary_table(
                 None
                 if not isinstance(
                     best,
-                    Mapping,
+                    _RuntimeMapping,
                 )
                 else best.get(
                     "interaction_id"
@@ -46479,7 +46622,7 @@ def pi_pose_summary_table(
                 None
                 if not isinstance(
                     best,
-                    Mapping,
+                    _RuntimeMapping,
                 )
                 else best.get(
                     "interaction_type"
@@ -46489,7 +46632,7 @@ def pi_pose_summary_table(
                 None
                 if not isinstance(
                     best,
-                    Mapping,
+                    _RuntimeMapping,
                 )
                 else best.get(
                     "score"
@@ -46505,7 +46648,7 @@ def pi_pose_summary_table(
 
 
 # -----------------------------------------------------------------------------
-# 16.18. Resumo por tipo e anel
+# 16.18. Summary by type and ring
 # -----------------------------------------------------------------------------
 
 def pi_type_summary_table(
@@ -46597,7 +46740,7 @@ def pi_ring_summary_table(
 
 
 # -----------------------------------------------------------------------------
-# 16.19. Tabela de hotspots
+# 16.19. Hotspot table
 # -----------------------------------------------------------------------------
 
 def pi_hotspot_summary_table(
@@ -46732,7 +46875,7 @@ def pi_hotspot_summary_table(
 
 
 # -----------------------------------------------------------------------------
-# 16.20. API tabular genérica
+# 16.20. Generic tabular API
 # -----------------------------------------------------------------------------
 
 def pi_results_to_table(
@@ -46796,7 +46939,7 @@ def pi_results_to_table(
 
 
 # -----------------------------------------------------------------------------
-# 16.21. Exportação CSV
+# 16.21. CSV export
 # -----------------------------------------------------------------------------
 
 def save_pi_table_csv(
@@ -46908,7 +47051,7 @@ def export_pi_results_csv(
 
 
 # -----------------------------------------------------------------------------
-# 16.22. Pacote de exportação
+# 16.22. Export bundle
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -47015,7 +47158,7 @@ def create_pi_export_bundle(
 
 
 # -----------------------------------------------------------------------------
-# 16.23. Integração com relatórios gerais
+# 16.23. Integration with general reports
 # -----------------------------------------------------------------------------
 
 def _pi_serialization_resolve_statistics_report(
@@ -47351,7 +47494,7 @@ def attach_pi_to_general_report(
 
         if isinstance(
             previous_sections,
-            MutableMapping,
+            _RuntimeMutableMapping,
         ):
             previous_sections[
                 section_key
@@ -47370,7 +47513,7 @@ def attach_pi_to_general_report(
 
 
 # -----------------------------------------------------------------------------
-# 16.24. Exportação completa para diretório
+# 16.24. Complete directory export
 # -----------------------------------------------------------------------------
 
 def export_pi_results_bundle(
@@ -47440,7 +47583,7 @@ def export_pi_results_bundle(
 
 
 # -----------------------------------------------------------------------------
-# 16.25. Validação de serialização
+# 16.25. Serialization validation
 # -----------------------------------------------------------------------------
 
 def validate_pi_serialization(
@@ -47480,7 +47623,7 @@ def validate_pi_serialization(
 
 
 # =============================================================================
-# 17. COMPATIBILIDADE COM CHIMERAX
+# 17. CHIMERAX COMPATIBILITY
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -47491,7 +47634,7 @@ import re
 
 
 # -----------------------------------------------------------------------------
-# 17.2. Constantes
+# 17.2. Constants
 # -----------------------------------------------------------------------------
 
 CHIMERAX_PI_SCHEMA_VERSION: Final[str] = "1.0"
@@ -47529,7 +47672,7 @@ CHIMERAX_PI_SPEC_UNKNOWN: Final[str] = "<unknown>"
 
 
 # -----------------------------------------------------------------------------
-# 17.3. Exceções
+# 17.3. Exceptions
 # -----------------------------------------------------------------------------
 
 class ChimeraXPiError(RuntimeError):
@@ -47557,7 +47700,7 @@ class ChimeraXPiPseudobondError(ChimeraXPiError):
 
 
 # -----------------------------------------------------------------------------
-# 17.4. Configuração
+# 17.4. Configuration
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -47685,7 +47828,7 @@ def create_default_chimerax_pi_config() -> ChimeraXPiConfig:
 
 
 # -----------------------------------------------------------------------------
-# 17.5. Modelos de saída
+# 17.5. Output models
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -47835,7 +47978,7 @@ class ChimeraXPiVisualizationResult:
 
 
 # -----------------------------------------------------------------------------
-# 17.6. Helpers de acesso
+# 17.6. Access helpers
 # -----------------------------------------------------------------------------
 
 def _chimerax_pi_get(
@@ -47997,7 +48140,7 @@ def _chimerax_pi_extract_interactions(
 
 
 # -----------------------------------------------------------------------------
-# 17.7. Detecção opcional do ambiente ChimeraX
+# 17.7. Optional ChimeraX-environment detection
 # -----------------------------------------------------------------------------
 
 def is_chimerax_available() -> bool:
@@ -48007,7 +48150,10 @@ def is_chimerax_available() -> bool:
 
     try:
         import chimerax  # type: ignore  # noqa: F401
-    except ImportError:
+    except ModuleNotFoundError as exc:
+        if exc.name != "chimerax":
+            raise
+
         return False
 
     return True
@@ -48026,7 +48172,7 @@ def require_chimerax() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 17.8. Sanitização de especificações
+# 17.8. Specification sanitization
 # -----------------------------------------------------------------------------
 
 def _chimerax_pi_clean_token(
@@ -48066,7 +48212,7 @@ def _chimerax_pi_normalize_model_id(
 
 
 # -----------------------------------------------------------------------------
-# 17.9. Especificações atômicas
+# 17.9. Atomic specifications
 # -----------------------------------------------------------------------------
 
 def chimerax_atom_spec(
@@ -48307,7 +48453,7 @@ def chimerax_residue_spec(
 
 
 # -----------------------------------------------------------------------------
-# 17.10. Participantes de uma interação
+# 17.10. Interaction participants
 # -----------------------------------------------------------------------------
 
 def _chimerax_pi_participants(
@@ -48456,7 +48602,7 @@ def _chimerax_pi_participant_role(
 
 
 # -----------------------------------------------------------------------------
-# 17.11. Coordenadas e átomos representativos
+# 17.11. Coordinates and representative atoms
 # -----------------------------------------------------------------------------
 
 def _chimerax_pi_participant_coordinate(
@@ -48587,7 +48733,7 @@ def _chimerax_pi_representative_atom(
 
 
 # -----------------------------------------------------------------------------
-# 17.12. Specs de resíduos envolvidos
+# 17.12. Specifications of involved residues
 # -----------------------------------------------------------------------------
 
 def get_pi_residue_specs(
@@ -48721,7 +48867,7 @@ def get_pi_atom_specs(
 
 
 # -----------------------------------------------------------------------------
-# 17.13. Seleção de resíduos
+# 17.13. Residue selection
 # -----------------------------------------------------------------------------
 
 def create_pi_selection_command(
@@ -48824,7 +48970,7 @@ def select_pi_residues(
 
 
 # -----------------------------------------------------------------------------
-# 17.14. Nomes e cores dos pseudobonds
+# 17.14. Pseudobond names and colors
 # -----------------------------------------------------------------------------
 
 def get_pi_pseudobond_group_name(
@@ -48904,7 +49050,7 @@ def get_pi_interaction_color(
 
 
 # -----------------------------------------------------------------------------
-# 17.15. Especificações de pseudobonds
+# 17.15. Pseudobond specifications
 # -----------------------------------------------------------------------------
 
 def create_pi_pseudobond_specification(
@@ -49098,7 +49244,7 @@ def create_pi_pseudobond_specifications(
 
 
 # -----------------------------------------------------------------------------
-# 17.16. Comandos de visualização
+# 17.16. Visualization commands
 # -----------------------------------------------------------------------------
 
 def create_pi_visualization_commands(
@@ -49303,7 +49449,7 @@ def create_chimerax_pi_commands(
 
 
 # -----------------------------------------------------------------------------
-# 17.17. Execução de comandos
+# 17.17. Command execution
 # -----------------------------------------------------------------------------
 
 def run_chimerax_pi_command(
@@ -49380,7 +49526,7 @@ def run_chimerax_pi_commands(
 
 
 # -----------------------------------------------------------------------------
-# 17.18. Criação real de marcadores e pseudobonds
+# 17.18. Actual marker and pseudobond creation
 # -----------------------------------------------------------------------------
 
 def _create_chimerax_pi_endpoint(
@@ -49643,7 +49789,7 @@ def create_chimerax_pi_pseudobonds(
 
 
 # -----------------------------------------------------------------------------
-# 17.19. Pipeline público de visualização
+# 17.19. Public visualization pipeline
 # -----------------------------------------------------------------------------
 
 def visualize_pi_interactions_chimerax(
@@ -49805,7 +49951,7 @@ def clear_chimerax_pi_visualization(
 
 
 # -----------------------------------------------------------------------------
-# 17.21. Exportação de script ChimeraX
+# 17.21. ChimeraX script export
 # -----------------------------------------------------------------------------
 
 def export_chimerax_pi_script(
@@ -49865,7 +50011,7 @@ def export_chimerax_pi_script(
 
 
 # -----------------------------------------------------------------------------
-# 17.22. Resumo da integração
+# 17.22. Integration summary
 # -----------------------------------------------------------------------------
 
 def summarize_chimerax_pi_compatibility(
@@ -49950,22 +50096,146 @@ def summarize_chimerax_pi_compatibility(
     }
 
 # =============================================================================
+# Public API validation
+# =============================================================================
+
+_PI_PUBLIC_EXCLUDED_NAMES: Final[FrozenSet[str]] = frozenset(
+    {
+        "T",
+    }
+)
+
+
+_PI_PUBLIC_TYPE_ALIASES: Final[Tuple[str, ...]] = (
+    "Number",
+    "Coordinate3D",
+    "Vector3D",
+    "AtomCollection",
+    "ResidueCollection",
+    "ModelCollection",
+    "JSONPrimitive",
+    "JSONValue",
+    "PiInteractionCollection",
+    "PiRingCollection",
+    "PiChargedGroupCollection",
+    "PiAmideGroupCollection",
+    "PiResidueSummaryMapping",
+    "RingAtomTuple",
+    "RingIndexTuple",
+    "RingGraph",
+    "Matrix3x3",
+    "ChargedGroupAtomTuple",
+    "AmideGroupAtomTuple",
+)
+
+
+def _build_public_api() -> List[str]:
+    """
+    Return module-owned public names defined before the self-test layer.
+
+    Public functions and classes are identified by their defining module.
+    Uppercase constants and declared type aliases are retained explicitly.
+    Imported helpers and optional dependency objects are excluded.
+    """
+
+    public_names: List[str] = []
+    alias_names = set(_PI_PUBLIC_TYPE_ALIASES)
+
+    for name, value in globals().items():
+        if (
+            name.startswith("_")
+            or name in _PI_PUBLIC_EXCLUDED_NAMES
+        ):
+            continue
+
+        is_module_object = (
+            getattr(value, "__module__", None)
+            == __name__
+        )
+
+        if (
+            is_module_object
+            or name.isupper()
+            or name in alias_names
+        ):
+            public_names.append(name)
+
+    return public_names
+
+
+def _validate_public_api() -> None:
+    """
+    Validate the exported public interface.
+
+    Raises
+    ------
+    TypeError
+        If ``__all__`` is not a list of non-empty strings.
+    RuntimeError
+        If duplicate or missing public names are detected.
+    """
+
+    if not isinstance(__all__, list):
+        raise TypeError(
+            "__all__ must be a list."
+        )
+
+    invalid_entries = [
+        name
+        for name in __all__
+        if not isinstance(name, str)
+        or not name
+    ]
+
+    if invalid_entries:
+        raise TypeError(
+            "__all__ must contain only non-empty strings."
+        )
+
+    duplicate_names = [
+        name
+        for name, count in Counter(__all__).items()
+        if count > 1
+    ]
+
+    if duplicate_names:
+        raise RuntimeError(
+            "Duplicate public names in __all__: "
+            f"{sorted(duplicate_names)!r}."
+        )
+
+    missing_names = [
+        name
+        for name in __all__
+        if name not in globals()
+    ]
+
+    if missing_names:
+        raise RuntimeError(
+            "Missing public names declared in __all__: "
+            f"{sorted(missing_names)!r}."
+        )
+
+
+__all__: List[str] = _build_public_api()
+_validate_public_api()
+
+
+# =============================================================================
 # 18. SELF-TESTS
 # =============================================================================
-# 18.1. INFRAESTRUTURA DOS TESTES
+# 18.1. TEST INFRASTRUCTURE
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # 18.1.1. Imports adicionais
 # -----------------------------------------------------------------------------
 
-import contextlib
-import io
-import traceback
+# Imports are declared in Section 1.1.
 
 
 # -----------------------------------------------------------------------------
-# 18.1.2. Constantes
+# 18.1.2. Constants
 # -----------------------------------------------------------------------------
 
 PI_SELF_TEST_SCHEMA_VERSION: Final[str] = "1.0"
@@ -49993,7 +50263,7 @@ PI_SELF_TEST_SUPPORTED_STATUSES: Final[FrozenSet[str]] = frozenset(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.3. Exceções
+# 18.1.3. Exceptions
 # -----------------------------------------------------------------------------
 
 class PiSelfTestError(AssertionError):
@@ -50021,7 +50291,7 @@ class PiSelfTestSkipped(PiSelfTestError):
 
 
 # -----------------------------------------------------------------------------
-# 18.1.4. Modelo de átomo simulado
+# 18.1.4. Mock atom model
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -50039,6 +50309,7 @@ class MockPiAtom:
 
     coordinate: Tuple[float, float, float]
 
+    residue: Optional[Any] = field(default=None, repr=False, compare=False)
     residue_name: str = "LIG"
     residue_number: int = 1
     chain_id: str = "L"
@@ -50101,6 +50372,12 @@ class MockPiAtom:
         return self.coordinate
 
     @property
+    def neighbors(self) -> Tuple[Any, ...]:
+        """Return directly connected mock atoms."""
+
+        return tuple(self.bonds)
+
+    @property
     def residue_id(self) -> str:
         return (
             f"{self.chain_id}:"
@@ -50151,7 +50428,7 @@ class MockPiAtom:
 
 
 # -----------------------------------------------------------------------------
-# 18.1.5. Modelo de resíduo simulado
+# 18.1.5. Mock residue model
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -50223,6 +50500,7 @@ class MockPiResidue:
         self,
         atom: MockPiAtom,
     ) -> MockPiAtom:
+        atom.residue = self
         atom.residue_name = self.residue_name
         atom.residue_number = self.residue_number
         atom.chain_id = self.chain_id
@@ -50282,16 +50560,21 @@ class MockPiResidue:
             else list(self.atoms)
         )
 
-        return replace(
+        copied = replace(
             self,
             atoms=copied_atoms,
             metadata=dict(self.metadata),
             **updates,
         )
 
+        for atom in copied.atoms:
+            atom.residue = copied
+
+        return copied
+
 
 # -----------------------------------------------------------------------------
-# 18.1.6. Estrutura molecular simulada
+# 18.1.6. Mock molecular structure
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -50350,6 +50633,7 @@ class MockPiStructure:
             residue.pose_id = self.pose_id
 
         for atom in residue.atoms:
+            atom.residue = residue
             atom.model_id = self.model_id
 
             if atom.pose_id is None:
@@ -50399,7 +50683,7 @@ class MockPiStructure:
 
 
 # -----------------------------------------------------------------------------
-# 18.1.7. Sistema aromático simulado
+# 18.1.7. Mock aromatic system
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -50519,7 +50803,7 @@ class MockPiAromaticSystem:
 
 
 # -----------------------------------------------------------------------------
-# 18.1.8. Grupo carregado simulado
+# 18.1.8. Mock charged group
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -50611,7 +50895,7 @@ class MockPiChargedGroup:
 
 
 # -----------------------------------------------------------------------------
-# 18.1.9. Grupo amida simulado
+# 18.1.9. Mock amide group
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -50729,50 +51013,14 @@ class MockPiAmideGroup:
 
 
 # -----------------------------------------------------------------------------
-# 18.1.10. DockModel simulado
+# 18.1.10. Mock DockModel
 # -----------------------------------------------------------------------------
 
-@dataclass(slots=True)
-class MockPiDockModel:
-    """
-    Minimal DockModel compatible with Section 15 tests.
-    """
-
-    structure: Any
-
-    pose_id: Optional[str] = "pose-1"
-
-    pi: List[Any] = field(
-        default_factory=list
-    )
-
-    hydrophobic: List[Any] = field(
-        default_factory=list
-    )
-
-    hydrogen_bonds: List[Any] = field(
-        default_factory=list
-    )
-
-    salt_bridges: List[Any] = field(
-        default_factory=list
-    )
-
-    statistics: Dict[str, Any] = field(
-        default_factory=dict
-    )
-
-    score: Any = field(
-        default_factory=dict
-    )
-
-    metadata: Dict[str, Any] = field(
-        default_factory=dict
-    )
+# The DockModel fixture used by integration tests is declared in Section 18.4.
 
 
 # -----------------------------------------------------------------------------
-# 18.1.11. Resultado de teste
+# 18.1.11. Test result
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -50909,7 +51157,7 @@ class PiSelfTestReport:
 
 
 # -----------------------------------------------------------------------------
-# 18.1.12. Operações vetoriais básicas
+# 18.1.12. Basic vector operations
 # -----------------------------------------------------------------------------
 
 def _pi_test_vector3(
@@ -51216,7 +51464,7 @@ def _pi_test_centroid(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.13. Bases ortonormais e orientação
+# 18.1.13. Orthonormal bases and orientation
 # -----------------------------------------------------------------------------
 
 def create_pi_test_orthonormal_basis(
@@ -51286,7 +51534,7 @@ def create_pi_test_orthonormal_basis(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.14. Construção de átomos simulados
+# 18.1.14. Mock-atom construction
 # -----------------------------------------------------------------------------
 
 def create_mock_pi_atom(
@@ -51404,7 +51652,7 @@ def create_mock_pi_residue(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.15. Construção de anel ideal
+# 18.1.15. Ideal-ring construction
 # -----------------------------------------------------------------------------
 
 def create_ideal_aromatic_ring_coordinates(
@@ -51599,7 +51847,7 @@ def create_mock_aromatic_ring(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.16. Anéis em geometrias de teste
+# 18.1.16. Rings in test geometries
 # -----------------------------------------------------------------------------
 
 def create_parallel_pi_ring_pair(
@@ -51712,7 +51960,7 @@ def create_t_shaped_pi_ring_pair(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.17. Grupos carregados simulados
+# 18.1.17. Mock charged groups
 # -----------------------------------------------------------------------------
 
 def create_mock_charged_group(
@@ -51916,7 +52164,7 @@ def create_mock_anion_above_ring(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.18. Construção de amida ideal
+# 18.1.18. Ideal-amide construction
 # -----------------------------------------------------------------------------
 
 def create_mock_amide_group(
@@ -52132,7 +52380,7 @@ def create_mock_amide_above_ring(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.19. Matrizes de rotação
+# 18.1.19. Rotation matrices
 # -----------------------------------------------------------------------------
 
 def create_pi_test_rotation_matrix(
@@ -52244,7 +52492,7 @@ def rotate_pi_test_vector(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.20. Transformação rígida
+# 18.1.20. Rigid transformation
 # -----------------------------------------------------------------------------
 
 @dataclass(frozen=True, slots=True)
@@ -52326,7 +52574,7 @@ def create_pi_test_rigid_transform(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.21. Transformações de fixtures
+# 18.1.21. Fixture transformations
 # -----------------------------------------------------------------------------
 
 def transform_mock_pi_atom(
@@ -52496,7 +52744,7 @@ def rotate_mock_aromatic_ring(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.22. Perturbações controladas
+# 18.1.22. Controlled perturbations
 # -----------------------------------------------------------------------------
 
 def perturb_mock_ring_out_of_plane(
@@ -52776,7 +53024,7 @@ def create_mock_pi_pose_series(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.24. Asserções gerais
+# 18.1.24. General assertions
 # -----------------------------------------------------------------------------
 
 def assert_pi_true(
@@ -52925,7 +53173,7 @@ def assert_pi_not_in(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.25. Asserções numéricas
+# 18.1.25. Numerical assertions
 # -----------------------------------------------------------------------------
 
 def assert_pi_close(
@@ -53077,7 +53325,7 @@ def assert_pi_between(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.26. Asserções vetoriais e geométricas
+# 18.1.26. Vector and geometry assertions
 # -----------------------------------------------------------------------------
 
 def assert_pi_vector_close(
@@ -53405,7 +53653,7 @@ def assert_pi_regular_ring(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.27. Asserções de coleções e interações
+# 18.1.27. Collection and interaction assertions
 # -----------------------------------------------------------------------------
 
 def assert_pi_collection_types(
@@ -53577,7 +53825,7 @@ def assert_pi_score_range(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.28. Asserções de exceções
+# 18.1.28. Exception assertions
 # -----------------------------------------------------------------------------
 
 @contextlib.contextmanager
@@ -53668,7 +53916,7 @@ def call_and_assert_pi_raises(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.29. Helpers genéricos
+# 18.1.29. Generic helpers
 # -----------------------------------------------------------------------------
 
 def _pi_test_get_value(
@@ -53732,7 +53980,7 @@ def assert_pi_json_serializable(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.30. Captura de saída
+# 18.1.30. Output capture
 # -----------------------------------------------------------------------------
 
 @contextlib.contextmanager
@@ -53762,7 +54010,7 @@ def capture_pi_test_output(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.31. Executor de caso individual
+# 18.1.31. Individual-case runner
 # -----------------------------------------------------------------------------
 
 def run_pi_self_test_case(
@@ -53874,7 +54122,7 @@ def run_pi_self_test_case(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.32. Registro de testes
+# 18.1.32. Test registration
 # -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
@@ -53990,7 +54238,7 @@ def clear_pi_self_test_registry() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.1.33. Executor de grupos
+# 18.1.33. Group runner
 # -----------------------------------------------------------------------------
 
 def run_registered_pi_self_tests(
@@ -54049,7 +54297,7 @@ def run_registered_pi_self_tests(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.34. Formatação do relatório
+# 18.1.34. Report formatting
 # -----------------------------------------------------------------------------
 
 def format_pi_self_test_report(
@@ -54118,7 +54366,7 @@ def format_pi_self_test_report(
 
 
 # -----------------------------------------------------------------------------
-# 18.1.35. Validação interna da infraestrutura
+# 18.1.35. Internal infrastructure validation
 # -----------------------------------------------------------------------------
 
 def validate_pi_self_test_infrastructure() -> None:
@@ -54213,11 +54461,11 @@ validate_pi_self_test_infrastructure()
 
 
 # =============================================================================
-# 18.2. TESTES DE RECONHECIMENTO E GEOMETRIA
+# 18.2. RECOGNITION AND GEOMETRY TESTS
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 18.2.1. Constantes e helpers locais
+# 18.2.1. Local constants and helpers
 # -----------------------------------------------------------------------------
 
 PI_SELF_TEST_SECTION_RECOGNITION_GEOMETRY: Final[str] = "18.2"
@@ -54558,11 +54806,11 @@ def _pi_test_create_asparagine_residue(
 
 
 # -----------------------------------------------------------------------------
-# 18.2.2. Testes de centroides
+# 18.2.2. Centroid tests
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "centroides_de_coordenadas",
+    "coordinate_centroids",
     section=PI_SELF_TEST_SECTION_RECOGNITION_GEOMETRY,
     metadata={
         "category": "centroid",
@@ -54628,20 +54876,20 @@ def test_pi_centroids() -> None:
         (14.0, 0.0, 8.5),
     )
 
-    assert_pi_raises(
-        PiGeometryError,
+    call_and_assert_pi_raises(
         calculate_centroid,
+        PiGeometryError,
         (),
         message_contains="At least one coordinate",
     )
 
 
 # -----------------------------------------------------------------------------
-# 18.2.3. Testes de vetores normais
+# 18.2.3. Normal-vector tests
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "vetores_normais_de_planos",
+    "plane_normal_vectors",
     section=PI_SELF_TEST_SECTION_RECOGNITION_GEOMETRY,
     metadata={
         "category": "normal_vector",
@@ -54729,9 +54977,9 @@ def test_pi_plane_normal_vectors() -> None:
         geometry_xy.normal,
     )
 
-    assert_pi_raises(
-        PiGeometryError,
+    call_and_assert_pi_raises(
         fit_plane_to_coordinates,
+        PiGeometryError,
         (
             (0.0, 0.0, 0.0),
             (1.0, 0.0, 0.0),
@@ -54742,11 +54990,11 @@ def test_pi_plane_normal_vectors() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.2.4. Testes de planaridade
+# 18.2.4. Planarity tests
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "planaridade_de_aneis",
+    "ring_planarity",
     section=PI_SELF_TEST_SECTION_RECOGNITION_GEOMETRY,
     metadata={
         "category": "planarity",
@@ -54864,11 +55112,11 @@ def test_pi_ring_planarity() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.2.5. Testes de reconhecimento de grupos carregados
+# 18.2.5. Charged-group recognition tests
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "reconhecimento_de_grupos_carregados",
+    "charged_group_recognition",
     section=PI_SELF_TEST_SECTION_RECOGNITION_GEOMETRY,
     metadata={
         "category": "charged_groups",
@@ -55011,11 +55259,11 @@ def test_pi_charged_group_recognition() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.2.6. Testes de reconhecimento de grupos amida
+# 18.2.6. Amide-group recognition tests
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "reconhecimento_de_grupos_amida",
+    "amide_group_recognition",
     section=PI_SELF_TEST_SECTION_RECOGNITION_GEOMETRY,
     metadata={
         "category": "amide_groups",
@@ -55133,11 +55381,11 @@ def test_pi_amide_group_recognition() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.2.7. Testes de reconhecimento de anéis aromáticos
+# 18.2.7. Aromatic-ring recognition tests
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "reconhecimento_de_aneis_aromaticos",
+    "aromatic_ring_recognition",
     section=PI_SELF_TEST_SECTION_RECOGNITION_GEOMETRY,
     metadata={
         "category": "aromatic_rings",
@@ -55292,11 +55540,11 @@ def test_pi_aromatic_ring_recognition() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.2.8. Teste de invariância sob transformação rígida
+# 18.2.8. Rigid-transformation invariance test
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "invariancia_geometrica_por_transformacao_rigida",
+    "geometric_invariance_under_rigid_transformation",
     section=PI_SELF_TEST_SECTION_RECOGNITION_GEOMETRY,
     metadata={
         "category": "geometry_invariance",
@@ -55406,7 +55654,7 @@ def test_pi_geometry_rigid_transform_invariance() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.2.9. Executor específico da seção
+# 18.2.9. Section-specific runner
 # -----------------------------------------------------------------------------
 
 def run_pi_recognition_geometry_self_tests(
@@ -55436,11 +55684,11 @@ def run_pi_recognition_geometry_self_tests(
 
 
 # =============================================================================
-# 18.3. TESTES DE DETECÇÃO
+# 18.3. DETECTION TESTS
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 18.3.1. Constantes e helpers locais
+# 18.3.1. Local constants and helpers
 # -----------------------------------------------------------------------------
 
 PI_SELF_TEST_SECTION_DETECTION: Final[str] = "18.3"
@@ -55451,31 +55699,28 @@ def _pi_test_get_interaction_value(
     attribute_names: Sequence[str],
     default: Any = None,
 ) -> Any:
-    """
-    Return the first available interaction attribute.
-
-    The helper supports both dataclass-based interactions and dictionary-like
-    representations, preserving compatibility with alternative constructors.
-    """
+    """Return the first non-None interaction value, including metadata."""
 
     if interaction is None:
         return default
 
-    if isinstance(interaction, Mapping):
-        for attribute_name in attribute_names:
-            if attribute_name in interaction:
-                return interaction[attribute_name]
-
-    for attribute_name in attribute_names:
-        if hasattr(interaction, attribute_name):
-            return getattr(interaction, attribute_name)
-
     metadata = getattr(interaction, "metadata", None)
 
-    if isinstance(metadata, Mapping):
-        for attribute_name in attribute_names:
-            if attribute_name in metadata:
-                return metadata[attribute_name]
+    for attribute_name in attribute_names:
+        if isinstance(interaction, Mapping) and attribute_name in interaction:
+            value = interaction[attribute_name]
+            if value is not None:
+                return value
+
+        if hasattr(interaction, attribute_name):
+            value = getattr(interaction, attribute_name)
+            if value is not None:
+                return value
+
+        if isinstance(metadata, Mapping) and attribute_name in metadata:
+            value = metadata[attribute_name]
+            if value is not None:
+                return value
 
     return default
 
@@ -55620,11 +55865,11 @@ def _pi_test_assert_no_detection(
 
 
 # -----------------------------------------------------------------------------
-# 18.3.2. Teste de π–π paralelo
+# 18.3.2. Parallel π–π test
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "deteccao_pi_pi_paralelo",
+    "parallel_pi_pi_detection",
     section=PI_SELF_TEST_SECTION_DETECTION,
     metadata={
         "category": "pi_pi",
@@ -55721,11 +55966,11 @@ def test_pi_pi_parallel_detection() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.3.3. Teste de π–π deslocado
+# 18.3.3. Offset π–π test
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "deteccao_pi_pi_deslocado",
+    "offset_pi_pi_detection",
     section=PI_SELF_TEST_SECTION_DETECTION,
     metadata={
         "category": "pi_pi",
@@ -55788,11 +56033,11 @@ def test_pi_pi_displaced_detection() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.3.4. Teste de π–π T-shaped
+# 18.3.4. T-shaped π–π test
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "deteccao_pi_pi_t_shaped",
+    "t_shaped_pi_pi_detection",
     section=PI_SELF_TEST_SECTION_DETECTION,
     metadata={
         "category": "pi_pi",
@@ -55854,11 +56099,11 @@ def test_pi_pi_t_shaped_detection() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.3.5. Teste de cátion–π
+# 18.3.5. Cation–π test
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "deteccao_cation_pi",
+    "cation_pi_detection",
     section=PI_SELF_TEST_SECTION_DETECTION,
     metadata={
         "category": "cation_pi",
@@ -55953,11 +56198,11 @@ def test_cation_pi_detection() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.3.6. Teste de ânion–π
+# 18.3.6. Anion–π test
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "deteccao_anion_pi",
+    "anion_pi_detection",
     section=PI_SELF_TEST_SECTION_DETECTION,
     metadata={
         "category": "anion_pi",
@@ -56052,11 +56297,11 @@ def test_anion_pi_detection() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.3.7. Teste de amida–π
+# 18.3.7. Amide–π test
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "deteccao_amida_pi",
+    "amide_pi_detection",
     section=PI_SELF_TEST_SECTION_DETECTION,
     metadata={
         "category": "amide_pi",
@@ -56151,11 +56396,11 @@ def test_amide_pi_detection() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.3.8. Casos negativos de distância
+# 18.3.8. Negative distance cases
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "rejeicao_por_distancia",
+    "distance_rejection",
     section=PI_SELF_TEST_SECTION_DETECTION,
     metadata={
         "category": "negative_cases",
@@ -56258,11 +56503,11 @@ def test_pi_detection_distance_negative_cases() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.3.9. Casos negativos de carga
+# 18.3.9. Negative charge cases
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "rejeicao_por_sinal_de_carga",
+    "charge_sign_rejection",
     section=PI_SELF_TEST_SECTION_DETECTION,
     metadata={
         "category": "negative_cases",
@@ -56331,11 +56576,11 @@ def test_pi_detection_charge_negative_cases() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.3.10. Casos negativos de deslocamento lateral
+# 18.3.10. Negative lateral-offset cases
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "rejeicao_por_deslocamento_lateral",
+    "lateral_offset_rejection",
     section=PI_SELF_TEST_SECTION_DETECTION,
     metadata={
         "category": "negative_cases",
@@ -56438,7 +56683,7 @@ def test_pi_detection_offset_negative_cases() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.3.11. Avaliações rejeitadas explícitas
+# 18.3.11. Explicitly rejected evaluations
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
@@ -56583,11 +56828,11 @@ def test_pi_explicit_rejected_evaluations() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.3.12. Teste coletivo de detecção
+# 18.3.12. Combined detection test
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "deteccao_coletiva_de_interacoes_pi",
+    "combined_pi_interaction_detection",
     section=PI_SELF_TEST_SECTION_DETECTION,
     metadata={
         "category": "combined_detection",
@@ -56689,16 +56934,7 @@ def test_combined_pi_detection() -> None:
     ]
 
     detected_types = {
-        str(
-            _pi_test_get_interaction_value(
-                interaction,
-                (
-                    "interaction_type",
-                    "type",
-                ),
-                "",
-            )
-        ).strip().lower()
+        _pi_score_interaction_type(interaction)
         for interaction in all_interactions
     }
 
@@ -56727,7 +56963,7 @@ def test_combined_pi_detection() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.3.13. Executor específico da seção
+# 18.3.13. Section-specific runner
 # -----------------------------------------------------------------------------
 
 def run_pi_detection_self_tests(
@@ -56761,11 +56997,11 @@ def run_pi_detection_self_tests(
 
 
 # =============================================================================
-# 18.4. TESTES DE CLASSIFICAÇÃO E INTEGRAÇÃO
+# 18.4. CLASSIFICATION AND INTEGRATION TESTS
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 18.4.1. Constantes e objetos auxiliares
+# 18.4.1. Constants and helper objects
 # -----------------------------------------------------------------------------
 
 PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION: Final[str] = "18.4"
@@ -57157,11 +57393,11 @@ def _pi_test_create_dock_model_features(
 
 
 # -----------------------------------------------------------------------------
-# 18.4.2. Testes de scoring e classificação
+# 18.4.2. Scoring and classification tests
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "classificacao_e_scoring",
+    "classification_and_scoring",
     section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
     metadata={
         "category": "scoring",
@@ -57325,11 +57561,11 @@ def test_pi_scoring_and_classification() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.4.3. Testes de deduplicação
+# 18.4.3. Deduplication tests
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "deduplicacao_de_interacoes",
+    "interaction_deduplication",
     section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
     metadata={
         "category": "deduplication",
@@ -57448,11 +57684,11 @@ def test_pi_interaction_deduplication() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.4.4. Testes de agrupamento
+# 18.4.4. Grouping tests
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "agrupamento_de_interacoes",
+    "interaction_grouping",
     section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
     metadata={
         "category": "grouping",
@@ -57544,10 +57780,10 @@ def test_pi_interaction_grouping() -> None:
     )
 
     expected_types = {
-        PI_PI,
-        CATION_PI,
-        ANION_PI,
-        AMIDE_PI,
+        PI_TYPE_PI_PI,
+        PI_TYPE_CATION_PI,
+        PI_TYPE_ANION_PI,
+        PI_TYPE_AMIDE_PI,
     }
 
     assert_pi_equal(
@@ -57649,11 +57885,11 @@ def test_pi_interaction_grouping() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.4.5. Testes de estatísticas
+# 18.4.5. Statistics tests
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "estatisticas_de_interacoes",
+    "interaction_statistics",
     section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
     metadata={
         "category": "statistics",
@@ -57727,7 +57963,7 @@ def test_pi_interaction_statistics() -> None:
 
     assert_pi_equal(
         report.total_by_type.get(
-            PI_PI,
+            PI_TYPE_PI_PI,
             0,
         ),
         3,
@@ -57735,7 +57971,7 @@ def test_pi_interaction_statistics() -> None:
 
     assert_pi_equal(
         report.total_by_type.get(
-            CATION_PI,
+            PI_TYPE_CATION_PI,
             0,
         ),
         3,
@@ -57743,7 +57979,7 @@ def test_pi_interaction_statistics() -> None:
 
     assert_pi_equal(
         report.total_by_type.get(
-            ANION_PI,
+            PI_TYPE_ANION_PI,
             0,
         ),
         3,
@@ -57751,7 +57987,7 @@ def test_pi_interaction_statistics() -> None:
 
     assert_pi_equal(
         report.total_by_type.get(
-            AMIDE_PI,
+            PI_TYPE_AMIDE_PI,
             0,
         ),
         3,
@@ -57842,11 +58078,11 @@ def test_pi_interaction_statistics() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.4.6. Testes de integração com DockModel
+# 18.4.6. DockModel integration tests
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "integracao_com_dock_model",
+    "dock_model_integration",
     section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
     metadata={
         "category": "dock_model",
@@ -57931,13 +58167,18 @@ def test_pi_dock_model_integration() -> None:
         ),
     )
 
-    assert_pi_true(
-        dock_model.score >= previous_score,
-        (
-            "DockModel score was not updated "
-            "after π integration."
-        ),
-    )
+    if isinstance(dock_model.score, Mapping):
+        assert_pi_in(DOCK_MODEL_PI_SCORE_KEY, dock_model.score)
+        assert_pi_true(
+            float(dock_model.score[DOCK_MODEL_PI_SCORE_KEY]) >= 0.0,
+            "DockModel π score component is invalid.",
+        )
+        assert_pi_equal(dock_model.score.get("base"), previous_score)
+    else:
+        assert_pi_true(
+            float(dock_model.score) >= float(previous_score),
+            "DockModel score was not updated after π integration.",
+        )
 
     _pi_test_require(
         isinstance(
@@ -57977,11 +58218,11 @@ def test_pi_dock_model_integration() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.4.7. Testes multipose
+# 18.4.7. Multipose tests
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "analise_multipose",
+    "multipose_analysis",
     section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
     metadata={
         "category": "multipose",
@@ -58194,11 +58435,11 @@ def test_pi_multipose_analysis() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.4.8. Testes multipose com múltiplos DockModels
+# 18.4.8. Multipose tests with multiple DockModels
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "integracao_de_multiplos_dock_models",
+    "multiple_dock_model_integration",
     section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
     metadata={
         "category": "dock_model_multipose",
@@ -58339,21 +58580,23 @@ def test_multiple_dock_model_pi_integration() -> None:
             ),
         )
 
+        score_value = (
+            dock_model.score.get(DOCK_MODEL_PI_SCORE_KEY, 0.0)
+            if isinstance(dock_model.score, Mapping)
+            else dock_model.score
+        )
         assert_pi_true(
-            dock_model.score >= 0.0,
-            (
-                f"DockModel {dock_model.pose_id!r} "
-                "contains an invalid score."
-            ),
+            float(score_value) >= 0.0,
+            f"DockModel {dock_model.pose_id!r} contains an invalid score.",
         )
 
 
 # -----------------------------------------------------------------------------
-# 18.4.9. Testes de serialização
+# 18.4.9. Serialization tests
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "serializacao_de_resultados",
+    "result_serialization",
     section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
     metadata={
         "category": "serialization",
@@ -58546,11 +58789,11 @@ def test_pi_result_serialization() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.4.10. Testes de serialização multipose
+# 18.4.10. Multipose serialization tests
 # -----------------------------------------------------------------------------
 
 @register_pi_self_test(
-    "serializacao_multipose",
+    "multipose_serialization",
     section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
     metadata={
         "category": "multipose_serialization",
@@ -58697,7 +58940,332 @@ def test_pi_multipose_serialization() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 18.4.11. Executor específico da seção
+# 18.4.11. Slotted DockModel
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "slotted_dock_model_integration",
+    section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
+    metadata={
+        "category": "dock_model_slots",
+        "targets": [
+            "analyze_dock_model_pi",
+            "attach_pi_results",
+        ],
+    },
+)
+def test_pi_slotted_dock_model_integration() -> None:
+    """Validate attachment to a slot-based DockModel-compatible object."""
+
+    @dataclass(slots=True)
+    class SlottedDockModel:
+        pose_id: str
+        structure: Any
+        pi: List[Any] = field(default_factory=list)
+        statistics: Dict[str, Any] = field(default_factory=dict)
+        score: Any = 0.0
+        metadata: Dict[str, Any] = field(default_factory=dict)
+        pi_analysis: Optional[Any] = None
+        pi_grouping: Optional[Any] = None
+        pi_statistics: Optional[Any] = None
+        pi_summary: Dict[str, Any] = field(default_factory=dict)
+
+    (
+        source_model,
+        aromatic_systems,
+        positive_groups,
+        negative_groups,
+        amide_groups,
+    ) = _pi_test_create_dock_model_features(
+        pose_id="slot-pose",
+    )
+
+    dock_model = SlottedDockModel(
+        pose_id="slot-pose",
+        structure=source_model.structure,
+    )
+
+    integration_result = analyze_dock_model_pi(
+        dock_model,
+        aromatic_systems=aromatic_systems,
+        positive_groups=positive_groups,
+        negative_groups=negative_groups,
+        amide_groups=amide_groups,
+    )
+
+    assert_pi_true(integration_result.success)
+    assert_pi_true(bool(dock_model.pi))
+    assert_pi_is_not_none(dock_model.pi_analysis)
+    assert_pi_is_not_none(dock_model.pi_grouping)
+    assert_pi_is_not_none(dock_model.pi_statistics)
+    assert_pi_in("integration", dock_model.pi_summary)
+    assert_pi_equal(
+        dock_model.pi_summary["integration"]["schema"],
+        "dock-model-pi-integration",
+    )
+    assert_pi_in(DOCK_MODEL_PI_SCORE_KEY, dock_model.score)
+
+
+# -----------------------------------------------------------------------------
+# 18.4.12. Strict JSON and non-finite values
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "strict_json_serialization",
+    section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
+    metadata={
+        "category": "strict_json",
+        "targets": [
+            "serialize_pi_analysis_result",
+            "serialize_pi_results",
+        ],
+    },
+)
+def test_pi_strict_json_serialization() -> None:
+    """Validate strict JSON output without NaN or infinity tokens."""
+
+    (
+        dock_model,
+        aromatic_systems,
+        positive_groups,
+        negative_groups,
+        amide_groups,
+    ) = _pi_test_create_dock_model_features(
+        pose_id="json-pose",
+    )
+
+    result = analyze_dock_model_pi(
+        dock_model,
+        aromatic_systems=aromatic_systems,
+        positive_groups=positive_groups,
+        negative_groups=negative_groups,
+        amide_groups=amide_groups,
+    ).analysis_result
+
+    result.metadata["not_a_number"] = float("nan")
+    result.metadata["positive_infinity"] = float("inf")
+
+    legacy_dict = serialize_pi_analysis_result(result)
+    strict_legacy_json = json.dumps(
+        legacy_dict,
+        allow_nan=False,
+    )
+    decoded_legacy = json.loads(strict_legacy_json)
+
+    assert_pi_is_none(
+        decoded_legacy["metadata"]["not_a_number"]
+    )
+    assert_pi_is_none(
+        decoded_legacy["metadata"]["positive_infinity"]
+    )
+
+    serialized = serialize_pi_results(result)
+    decoded = json.loads(serialized)
+    assert_pi_is_none(decoded["metadata"]["not_a_number"])
+    assert_pi_is_none(decoded["metadata"]["positive_infinity"])
+
+
+# -----------------------------------------------------------------------------
+# 18.4.13. Empty inputs
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "permissive_and_strict_empty_inputs",
+    section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
+    metadata={
+        "category": "empty_input",
+        "targets": ["analyze_pi_interactions"],
+    },
+)
+def test_pi_empty_input_modes() -> None:
+    """Validate permissive empty results and strict empty rejection."""
+
+    permissive_result = analyze_pi_interactions(
+        None,
+        config=PiAnalysisConfig(strict=False),
+    )
+
+    assert_pi_true(permissive_result.success)
+    assert_pi_equal(permissive_result.total_interactions, 0)
+    assert_pi_true(bool(permissive_result.warnings))
+
+    with assert_pi_raises(
+        PiAnalysisInputError,
+        message_contains="non-empty molecular input",
+    ):
+        analyze_pi_interactions(
+            None,
+            config=PiAnalysisConfig(strict=True),
+        )
+
+
+# -----------------------------------------------------------------------------
+# 18.4.14. Invalid or non-writable DockModel
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "invalid_dock_model_rejection",
+    section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
+    metadata={
+        "category": "invalid_dock_model",
+        "targets": [
+            "analyze_dock_model_pi",
+            "attach_pi_results",
+        ],
+    },
+)
+def test_pi_invalid_dock_model_rejection() -> None:
+    """Reject None and slot objects that cannot store π results."""
+
+    with assert_pi_raises(
+        DockModelPiAttributeError,
+        message_contains="cannot be None",
+    ):
+        analyze_dock_model_pi(None)
+
+    class ReadOnlyDockModel:
+        __slots__ = (
+            "pose_id",
+            "structure",
+            "statistics",
+            "score",
+            "metadata",
+        )
+
+        def __init__(self) -> None:
+            self.pose_id = "readonly-pose"
+            self.structure = None
+            self.statistics = {}
+            self.score = 0.0
+            self.metadata = {}
+
+    empty_result = analyze_pi_interactions(
+        None,
+        config=PiAnalysisConfig(strict=False),
+    )
+
+    with assert_pi_raises(
+        DockModelPiAttributeError,
+        message_contains="Could not create or update",
+    ):
+        attach_pi_results(
+            ReadOnlyDockModel(),
+            empty_result,
+        )
+
+
+# -----------------------------------------------------------------------------
+# 18.4.15. ChimeraX-like objects
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "scene_coord_compatibility",
+    section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
+    metadata={
+        "category": "chimerax_like",
+        "targets": [
+            "get_atom_coordinate",
+            "calculate_pi_ring_geometry",
+        ],
+    },
+)
+def test_pi_chimerax_like_scene_coordinates() -> None:
+    """Validate transformed scene coordinates without ChimeraX imports."""
+
+    class ScenePoint:
+        __slots__ = ("x", "y", "z")
+
+        def __init__(self, x: float, y: float, z: float) -> None:
+            self.x = x
+            self.y = y
+            self.z = z
+
+    class SceneAtom:
+        __slots__ = (
+            "name",
+            "element",
+            "coord",
+            "scene_coord",
+        )
+
+        def __init__(
+            self,
+            name: str,
+            coordinate: Sequence[float],
+        ) -> None:
+            self.name = name
+            self.element = "C"
+            self.coord = (coordinate[0], coordinate[1], 0.0)
+            self.scene_coord = ScenePoint(
+                coordinate[0],
+                coordinate[1],
+                2.5,
+            )
+
+    coordinates = create_ideal_aromatic_ring_coordinates()
+    atoms = tuple(
+        SceneAtom(f"C{index}", coordinate)
+        for index, coordinate in enumerate(coordinates, start=1)
+    )
+
+    ring = PiRing(atoms=atoms, ring_id="scene-ring")
+    geometry = calculate_pi_ring_geometry(
+        ring,
+        use_scene_coordinates=True,
+        strict=True,
+    )
+
+    assert_pi_is_not_none(geometry)
+    assert_pi_close(ring.centroid[2], 2.5)
+    assert_pi_close(ring.planarity_rmsd, 0.0, absolute_tolerance=1.0e-8)
+
+
+# -----------------------------------------------------------------------------
+# 18.4.16. External execution with Python objects
+# -----------------------------------------------------------------------------
+
+@register_pi_self_test(
+    "external_execution_with_python_objects",
+    section=PI_SELF_TEST_SECTION_CLASSIFICATION_INTEGRATION,
+    metadata={
+        "category": "external_python",
+        "targets": [
+            "analyze_pi_interactions",
+            "serialize_pi_results",
+        ],
+    },
+)
+def test_pi_external_python_execution() -> None:
+    """Validate the public pipeline with plain Python feature objects."""
+
+    (
+        source_model,
+        aromatic_systems,
+        positive_groups,
+        negative_groups,
+        amide_groups,
+    ) = _pi_test_create_dock_model_features(
+        pose_id="external-pose",
+    )
+
+    result = analyze_pi_interactions(
+        source_model.structure,
+        aromatic_systems=aromatic_systems,
+        positive_groups=positive_groups,
+        negative_groups=negative_groups,
+        amide_groups=amide_groups,
+        config=PiAnalysisConfig(strict=True),
+        pose_id="external-pose",
+    )
+
+    assert_pi_true(result.success)
+    assert_pi_true(result.total_interactions >= 1)
+    assert_pi_equal(result.pose_id, "external-pose")
+    assert_pi_is_instance(json.loads(serialize_pi_results(result)), dict)
+
+
+# -----------------------------------------------------------------------------
+# 18.4.17. Section-specific runner
 # -----------------------------------------------------------------------------
 
 def run_pi_classification_integration_self_tests(
@@ -58734,11 +59302,11 @@ def run_pi_classification_integration_self_tests(
 
 
 # =============================================================================
-# 18.5. RUNNER FINAL
+# 18.5. FINAL RUNNER
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 18.5.1. Constantes do runner
+# 18.5.1. Runner constants
 # -----------------------------------------------------------------------------
 
 PI_SELF_TEST_ROOT_SECTION: Final[str] = "18"
@@ -58751,7 +59319,7 @@ PI_SELF_TEST_EXPECTED_SECTIONS: Final[Tuple[str, ...]] = (
 
 
 # -----------------------------------------------------------------------------
-# 18.5.2. Validação do registro final
+# 18.5.2. Final-registry validation
 # -----------------------------------------------------------------------------
 
 def validate_pi_self_test_registry(
@@ -58847,7 +59415,7 @@ def validate_pi_self_test_registry(
 
 
 # -----------------------------------------------------------------------------
-# 18.5.3. Enriquecimento do relatório
+# 18.5.3. Report enrichment
 # -----------------------------------------------------------------------------
 
 def finalize_pi_self_test_report(
@@ -58930,7 +59498,7 @@ def finalize_pi_self_test_report(
 
 
 # -----------------------------------------------------------------------------
-# 18.5.4. Impressão do relatório
+# 18.5.4. Report printing
 # -----------------------------------------------------------------------------
 
 def print_pi_self_test_report(
@@ -58962,7 +59530,7 @@ def print_pi_self_test_report(
 
 
 # -----------------------------------------------------------------------------
-# 18.5.5. Runner público
+# 18.5.5. Public runner
 # -----------------------------------------------------------------------------
 
 def run_self_tests(
@@ -59115,7 +59683,7 @@ def run_self_tests(
 
 
 # -----------------------------------------------------------------------------
-# 18.5.6. Execução direta
+# 18.5.6. Direct execution
 # -----------------------------------------------------------------------------
 
 if __name__ == "__main__":
