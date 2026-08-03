@@ -45,28 +45,38 @@ from __future__ import annotations
 # Standard Library
 # =============================================================================
 
-import csv
+import asyncio
+import contextvars
+import copy
+import functools
+import inspect
+import importlib
 import json
 import logging
 import math
-import os
+import re
 import sys
 import time
 import traceback
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from collections.abc import Iterable
 from pathlib import Path
 from typing import (
     Any,
+    Callable,
+    cast,
     Dict,
-    Iterable,
     Iterator,
     List,
+    Mapping,
     Optional,
     Sequence,
     Set,
     Tuple,
+    Type,
+    TypeVar,
     Union,
 )
 
@@ -74,14 +84,73 @@ from typing import (
 # Third-party Libraries
 # =============================================================================
 
+
+class _LazyModuleProxy:
+    """Load an optional third-party module on first attribute access."""
+
+    __slots__ = (
+        "_module_name",
+        "_global_name",
+        "_module",
+    )
+
+    def __init__(
+        self,
+        module_name: str,
+        global_name: str,
+    ) -> None:
+        self._module_name = module_name
+        self._global_name = global_name
+        self._module = None
+
+    def _load(self) -> Any:
+        module = self._module
+
+        if module is None:
+            module = importlib.import_module(
+                self._module_name
+            )
+            self._module = module
+            globals()[
+                self._global_name
+            ] = module
+
+        return module
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(
+            self._load(),
+            name,
+        )
+
+    def __dir__(self) -> List[str]:
+        return sorted(
+            set(super().__dir__())
+            | set(dir(self._load()))
+        )
+
+    def __repr__(self) -> str:
+        if self._module is None:
+            return (
+                f"<lazy module "
+                f"{self._module_name!r}>"
+            )
+
+        return repr(self._module)
+
+
 import numpy as np
-import pandas as pd
+
+pd = _LazyModuleProxy("pandas", "pd")
 
 # =============================================================================
 # DockAnalyzer Modules
 # =============================================================================
 
-import config
+if __package__:
+    from . import config
+else:
+    import config
 
 # =============================================================================
 # ChimeraX Imports
@@ -121,6 +190,11 @@ ANGSTROM_SYMBOL = "\u212B"
 DEFAULT_FLOAT_PRECISION = 3
 
 DEFAULT_SEPARATOR = "=" * 80
+
+_FILENAME_WHITESPACE_PATTERN = re.compile(r"\s+")
+_FILENAME_UNSAFE_PATTERN = re.compile(r"[^\w\-.]+", re.UNICODE)
+_FILENAME_UNDERSCORE_PATTERN = re.compile(r"_+")
+_NATURAL_SORT_PATTERN = re.compile(r"(\d+)")
 
 # =============================================================================
 # Public Objects
@@ -936,18 +1010,10 @@ class TimerRecord:
     end_time: float
     elapsed: float
    
-    def to_dicts(
+    def to_dict(
         self,
-        ) -> List[Dict[str, Union[str, float]]]:
-   
-        """
-        Convert the timing record into a dictionary.
-
-        Returns
-        -------
-        dict
-            Dictionary containing the step name and timing values.
-        """
+    ) -> Dict[str, Union[str, float]]:
+        """Return the timing record as a dictionary."""
 
         return {
             "name": self.name,
@@ -955,6 +1021,16 @@ class TimerRecord:
             "end_time": self.end_time,
             "elapsed_seconds": self.elapsed,
         }
+
+    def to_dicts(
+        self,
+    ) -> Dict[str, Union[str, float]]:
+        """Return the timing record as a dictionary.
+
+        This compatibility alias preserves the original public method name.
+        """
+
+        return self.to_dict()
 
 
 class AnalysisTimer:
@@ -1347,37 +1423,28 @@ class AnalysisTimer:
     # Data export helpers
     # -------------------------------------------------------------------------
 
-   def to_dict(
+    def to_dicts(
         self,
-        include_pose: bool = False,
-        include_receptor: bool = False,
-        include_ligand: bool = False,
+    ) -> List[Dict[str, Union[str, float]]]:
+        """Return all completed timing records as dictionaries."""
+
+        return [
+            record.to_dict()
+            for record in self.records
+        ]
+
+    def to_dict(
+        self,
     ) -> Dict[str, Any]:
-        """
-        Convert all timing records into dictionaries.
+        """Return the complete timer state as a dictionary."""
 
-        Returns
-        -------
-        list of dict
-            Timing records suitable for JSON, CSV or DataFrame conversion.
-        """
-
-        if include_pose:
-            data["pose"] = self._serialize_value(
-            self.pose
-            )
-
-        if include_receptor:
-            data["receptor"] = self._serialize_value(
-            self.receptor
-            )
-
-        if include_ligand:
-            data["ligand"] = self._serialize_value(
-            self.ligand
-            )
-
-        return data
+        return {
+            "name": self.name,
+            "running": self.running,
+            "elapsed_seconds": self.elapsed,
+            "total_elapsed_seconds": self.total_elapsed,
+            "records": self.to_dicts(),
+        }
 
     def to_dataframe(
         self,
@@ -1576,7 +1643,7 @@ class DockModel:
     >>> data = dock_model.to_dict()
     """
 
-    name: str
+    name: str = "unnamed_pose"
 
     pose: Optional[Any] = None
 
@@ -1630,9 +1697,10 @@ class DockModel:
     # -------------------------------------------------------------------------
 
     def __post_init__(self) -> None:
-        """
-        Validate and normalize the DockModel attributes.
-        """
+        """Validate and normalize the DockModel attributes."""
+
+        if self.name is None:
+            self.name = "unnamed_pose"
 
         self.name = str(self.name).strip()
 
@@ -1644,44 +1712,131 @@ class DockModel:
         if self.score is not None:
             self.score = float(self.score)
 
+        self.contacts = self._normalize_interaction_collection(
+            self.contacts,
+            field_name="contacts",
+        )
+        self.hbonds = self._normalize_interaction_collection(
+            self.hbonds,
+            field_name="hbonds",
+        )
+        self.hydrophobic = self._normalize_interaction_collection(
+            self.hydrophobic,
+            field_name="hydrophobic",
+        )
+        self.statistics = self._normalize_mapping_field(
+            self.statistics,
+            field_name="statistics",
+        )
+        self.metadata = self._normalize_mapping_field(
+            self.metadata,
+            field_name="metadata",
+        )
+
         self._normalize_pi_dictionary()
         self._normalize_file_dictionary()
 
+    @staticmethod
+    def _normalize_interaction_collection(
+        value: Any,
+        *,
+        field_name: str,
+    ) -> List[Any]:
+        """Normalize one interaction collection into an independent list."""
+
+        if value is None:
+            return []
+
+        if isinstance(value, list):
+            return list(value)
+
+        if isinstance(value, Mapping):
+            return [value]
+
+        if isinstance(
+            value,
+            (
+                str,
+                bytes,
+                bytearray,
+            ),
+        ):
+            return [value]
+
+        try:
+            return list(value)
+        except TypeError as error:
+            raise TypeError(
+                f"DockModel.{field_name} must be an iterable "
+                "of interactions or None."
+            ) from error
+
+    @staticmethod
+    def _normalize_mapping_field(
+        value: Any,
+        *,
+        field_name: str,
+    ) -> Dict[str, Any]:
+        """Normalize one mapping field into an independent dictionary."""
+
+        if value is None:
+            return {}
+
+        if not isinstance(value, Mapping):
+            raise TypeError(
+                f"DockModel.{field_name} must be a mapping or None."
+            )
+
+        return dict(value)
+
     def _normalize_pi_dictionary(self) -> None:
-        """
-        Ensure that the pi-interaction dictionary contains standard keys.
-        """
+        """Ensure that pi-interaction groups contain independent lists."""
 
         if self.pi is None:
             self.pi = {}
 
-        if not isinstance(self.pi, dict):
+        if not isinstance(self.pi, Mapping):
             raise TypeError(
-                "DockModel.pi must be a dictionary."
+                "DockModel.pi must be a mapping or None."
             )
 
-        self.pi.setdefault(
+        normalized_pi: Dict[str, List[Any]] = {}
+
+        for interaction_type, interactions in self.pi.items():
+            normalized_pi[str(interaction_type)] = (
+                self._normalize_interaction_collection(
+                    interactions,
+                    field_name=(
+                        f"pi[{interaction_type!r}]"
+                    ),
+                )
+            )
+
+        normalized_pi.setdefault(
             "stacking",
             [],
         )
-
-        self.pi.setdefault(
+        normalized_pi.setdefault(
             "cation",
             [],
         )
 
+        self.pi = normalized_pi
+
     def _normalize_file_dictionary(self) -> None:
-        """
-        Ensure that the output-file dictionary contains standard keys.
-        """
+        """Ensure that output-file entries use normalized Path objects."""
 
         if self.files is None:
             self.files = {}
 
-        if not isinstance(self.files, dict):
+        if not isinstance(self.files, Mapping):
             raise TypeError(
-                "DockModel.files must be a dictionary."
+                "DockModel.files must be a mapping or None."
             )
+
+        normalized_files: Dict[str, Optional[Path]] = dict(
+            self.files
+        )
 
         standard_file_types = (
             "csv",
@@ -1694,18 +1849,28 @@ class DockModel:
         )
 
         for file_type in standard_file_types:
-            self.files.setdefault(
+            normalized_files.setdefault(
                 file_type,
                 None,
             )
 
         for file_type, file_path in list(
-            self.files.items()
+            normalized_files.items()
         ):
-            if file_path is not None:
-                self.files[file_type] = Path(
+            if file_path is None:
+                continue
+
+            try:
+                normalized_files[file_type] = Path(
                     file_path
                 )
+            except TypeError as error:
+                raise TypeError(
+                    f"DockModel.files[{file_type!r}] must be a path-like "
+                    "value or None."
+                ) from error
+
+        self.files = normalized_files
 
     # -------------------------------------------------------------------------
     # Interaction storage
@@ -2034,7 +2199,9 @@ class DockModel:
             "total_interactions": len(
                 self.get_all_interactions()
             ),
-            "score": self.score,
+            "score": self._serialize_value(
+                self.score
+            ),
         }
 
         self.statistics.update(
@@ -2217,89 +2384,15 @@ class DockModel:
     def _serialize_value(
         value: Any,
     ) -> Any:
-        """
-        Convert a value into a JSON-compatible representation.
+        """Convert a value into a strict JSON-compatible representation."""
 
-        Parameters
-        ----------
-        value : Any
-            Value to serialize.
-
-        Returns
-        -------
-        Any
-            JSON-compatible value.
-        """
-
-        if value is None:
-            return None
-
-        if isinstance(
-            value,
-            (
-                str,
-                int,
-                float,
-                bool,
-            ),
-        ):
-            return value
-
-        if isinstance(value, Path):
-            return str(value)
-
-        if isinstance(value, np.ndarray):
-            return value.tolist()
-
-        if isinstance(value, dict):
-            return {
-                str(key): DockModel._serialize_value(
-                    item
-                )
-                for key, item in value.items()
-            }
-
-        if isinstance(
-            value,
-            (
-                list,
-                tuple,
-                set,
-            ),
-        ):
-            return [
-                DockModel._serialize_value(item)
-                for item in value
-            ]
-
-        if hasattr(value, "to_dict") and callable(
-            value.to_dict
-        ):
-            try:
-                return DockModel._serialize_value(
-                    value.to_dict()
-                )
-            except Exception:
-                pass
-
-        if hasattr(value, "__dict__"):
-            try:
-                return {
-                    str(key): DockModel._serialize_value(
-                        item
-                    )
-                    for key, item in vars(value).items()
-                    if not str(key).startswith("_")
-                }
-            except Exception:
-                pass
-
-        return str(value)
+        return _make_serializable(value)
 
     def to_dict(
         self,
         include_pose: bool = False,
         include_ligand: bool = False,
+        include_receptor: bool = False,
     ) -> Dict[str, Any]:
         """
         Convert the DockModel into a dictionary.
@@ -2310,6 +2403,8 @@ class DockModel:
             Whether the pose object should be included.
         include_ligand : bool, optional
             Whether the ligand object should be included.
+        include_receptor : bool, optional
+            Whether the receptor object should be included.
 
         Returns
         -------
@@ -2336,7 +2431,9 @@ class DockModel:
             "pi": self._serialize_value(
                 self.pi
             ),
-            "score": self.score,
+            "score": self._serialize_value(
+                self.score
+            ),
             "statistics": self._serialize_value(
                 self.statistics
             ),
@@ -3029,48 +3126,68 @@ def model_contains_protein(
 # Classification
 # -----------------------------------------------------------------------------
 
-def calculate_receptor_score(
+def _collect_model_composition(
     model: Any,
-    min_receptor_atoms: int = DEFAULT_MIN_RECEPTOR_ATOMS,
-    min_protein_residues: int = DEFAULT_MIN_PROTEIN_RESIDUES,
-) -> float:
-    """
-    Calculate a heuristic receptor-classification score.
-
-    Higher scores indicate a greater probability that the model is a
-    macromolecular receptor.
-
-    Parameters
-    ----------
-    model : Any
-        ChimeraX atomic model.
-    min_receptor_atoms : int, optional
-        Approximate minimum receptor size.
-    min_protein_residues : int, optional
-        Minimum number of protein residues expected in a receptor.
-
-    Returns
-    -------
-    float
-        Receptor-classification score.
-    """
-
-    if not is_atomic_model(model):
-        return float("-inf")
+) -> Tuple[int, int, int, int, int, int]:
+    """Collect model size and residue categories in one pass."""
 
     atom_count = get_atom_count(model)
     residue_count = get_residue_count(model)
-    protein_count = count_protein_residues(
-        model
-    )
-    nucleic_count = count_nucleic_acid_residues(
-        model
-    )
-    polymer_count = (
-        protein_count
-        + nucleic_count
+    residue_names = get_residue_names(model)
+    protein_names = (
+        STANDARD_AMINO_ACIDS
+        | COMMON_AMINO_ACID_VARIANTS
     )
 
+    protein_count = 0
+    nucleic_count = 0
+    solvent_count = 0
+    ion_count = 0
+
+    for residue_name in residue_names:
+        if residue_name in protein_names:
+            protein_count += 1
+
+        if residue_name in STANDARD_NUCLEIC_ACIDS:
+            nucleic_count += 1
+
+        if residue_name in COMMON_SOLVENT_RESIDUES:
+            solvent_count += 1
+
+        if residue_name in COMMON_ION_RESIDUES:
+            ion_count += 1
+
+    return (
+        atom_count,
+        residue_count,
+        protein_count,
+        nucleic_count,
+        solvent_count,
+        ion_count,
+    )
+
+
+def _calculate_receptor_score_from_composition(
+    composition: Tuple[int, int, int, int, int, int],
+    *,
+    min_receptor_atoms: int,
+    min_protein_residues: int,
+) -> float:
+    """Calculate a receptor score from precomputed composition."""
+
+    (
+        atom_count,
+        residue_count,
+        protein_count,
+        nucleic_count,
+        _,
+        _,
+    ) = composition
+
+    if atom_count <= 0:
+        return float("-inf")
+
+    polymer_count = protein_count + nucleic_count
     score = 0.0
 
     if atom_count >= min_receptor_atoms:
@@ -3089,10 +3206,7 @@ def calculate_receptor_score(
         score += 1.0
 
     if residue_count > 0:
-        polymer_fraction = (
-            polymer_count
-            / residue_count
-        )
+        polymer_fraction = polymer_count / residue_count
 
         if polymer_fraction >= 0.50:
             score += 1.0
@@ -3109,51 +3223,30 @@ def calculate_receptor_score(
     return score
 
 
-def calculate_ligand_score(
-    model: Any,
-    min_ligand_atoms: int = DEFAULT_MIN_LIGAND_ATOMS,
-    max_ligand_atoms: int = DEFAULT_MAX_LIGAND_ATOMS,
+def _calculate_ligand_score_from_composition(
+    composition: Tuple[int, int, int, int, int, int],
+    *,
+    min_ligand_atoms: int,
+    max_ligand_atoms: int,
 ) -> float:
-    """
-    Calculate a heuristic ligand or pose classification score.
+    """Calculate a ligand score from precomputed composition."""
 
-    Parameters
-    ----------
-    model : Any
-        ChimeraX atomic model.
-    min_ligand_atoms : int, optional
-        Minimum accepted number of atoms.
-    max_ligand_atoms : int, optional
-        Maximum typical number of atoms in a ligand pose.
+    (
+        atom_count,
+        residue_count,
+        protein_count,
+        nucleic_count,
+        solvent_count,
+        ion_count,
+    ) = composition
 
-    Returns
-    -------
-    float
-        Ligand-classification score.
-    """
-
-    if not is_atomic_model(model):
+    if atom_count <= 0:
         return float("-inf")
 
-    atom_count = get_atom_count(model)
-    residue_count = get_residue_count(model)
-    polymer_count = get_polymer_residue_count(
-        model
-    )
-    solvent_count = count_solvent_residues(
-        model
-    )
-    ion_count = count_ion_residues(
-        model
-    )
-
+    polymer_count = protein_count + nucleic_count
     score = 0.0
 
-    if (
-        min_ligand_atoms
-        <= atom_count
-        <= max_ligand_atoms
-    ):
+    if min_ligand_atoms <= atom_count <= max_ligand_atoms:
         score += 3.0
 
     if atom_count <= 100:
@@ -3161,7 +3254,6 @@ def calculate_ligand_score(
 
     if residue_count == 1:
         score += 2.0
-
     elif 1 < residue_count <= 10:
         score += 1.0
 
@@ -3170,16 +3262,10 @@ def calculate_ligand_score(
     else:
         score -= 3.0
 
-    if (
-        residue_count > 0
-        and solvent_count == residue_count
-    ):
+    if residue_count > 0 and solvent_count == residue_count:
         score -= 5.0
 
-    if (
-        residue_count > 0
-        and ion_count == residue_count
-    ):
+    if residue_count > 0 and ion_count == residue_count:
         score -= 4.0
 
     if atom_count > max_ligand_atoms:
@@ -3188,74 +3274,88 @@ def calculate_ligand_score(
     return score
 
 
+def calculate_receptor_score(
+    model: Any,
+    min_receptor_atoms: int = DEFAULT_MIN_RECEPTOR_ATOMS,
+    min_protein_residues: int = DEFAULT_MIN_PROTEIN_RESIDUES,
+) -> float:
+    """
+    Calculate a heuristic receptor-classification score.
+
+    Higher scores indicate a greater probability that the model is a
+    macromolecular receptor.
+    """
+
+    if model is None or not hasattr(model, "atoms"):
+        return float("-inf")
+
+    return _calculate_receptor_score_from_composition(
+        _collect_model_composition(model),
+        min_receptor_atoms=min_receptor_atoms,
+        min_protein_residues=min_protein_residues,
+    )
+
+
+def calculate_ligand_score(
+    model: Any,
+    min_ligand_atoms: int = DEFAULT_MIN_LIGAND_ATOMS,
+    max_ligand_atoms: int = DEFAULT_MAX_LIGAND_ATOMS,
+) -> float:
+    """Calculate a heuristic ligand or pose classification score."""
+
+    if model is None or not hasattr(model, "atoms"):
+        return float("-inf")
+
+    return _calculate_ligand_score_from_composition(
+        _collect_model_composition(model),
+        min_ligand_atoms=min_ligand_atoms,
+        max_ligand_atoms=max_ligand_atoms,
+    )
+
+
 def classify_model(
     model: Any,
     min_receptor_atoms: int = DEFAULT_MIN_RECEPTOR_ATOMS,
     min_protein_residues: int = DEFAULT_MIN_PROTEIN_RESIDUES,
     max_ligand_atoms: int = DEFAULT_MAX_LIGAND_ATOMS,
 ) -> str:
-    """
-    Classify a ChimeraX model.
+    """Classify a ChimeraX model as receptor, ligand or auxiliary data."""
 
-    Possible classifications are:
-
-    - ``"receptor"``
-    - ``"ligand"``
-    - ``"solvent"``
-    - ``"ion"``
-    - ``"unknown"``
-    - ``"non_atomic"``
-
-    Parameters
-    ----------
-    model : Any
-        ChimeraX model.
-
-    Returns
-    -------
-    str
-        Model classification.
-    """
-
-    if not is_atomic_model(model):
+    if model is None or not hasattr(model, "atoms"):
         return "non_atomic"
 
-    residue_count = get_residue_count(
-        model
-    )
-    solvent_count = count_solvent_residues(
-        model
-    )
-    ion_count = count_ion_residues(
-        model
-    )
+    composition = _collect_model_composition(model)
+    (
+        atom_count,
+        residue_count,
+        _,
+        _,
+        solvent_count,
+        ion_count,
+    ) = composition
 
-    if (
-        residue_count > 0
-        and solvent_count == residue_count
-    ):
+    if atom_count <= 0:
+        return "non_atomic"
+
+    if residue_count > 0 and solvent_count == residue_count:
         return "solvent"
 
-    if (
-        residue_count > 0
-        and ion_count == residue_count
-    ):
+    if residue_count > 0 and ion_count == residue_count:
         return "ion"
 
-    receptor_score = calculate_receptor_score(
-        model=model,
+    receptor_score = _calculate_receptor_score_from_composition(
+        composition,
         min_receptor_atoms=min_receptor_atoms,
         min_protein_residues=min_protein_residues,
     )
-
-    ligand_score = calculate_ligand_score(
-        model=model,
+    ligand_score = _calculate_ligand_score_from_composition(
+        composition,
+        min_ligand_atoms=DEFAULT_MIN_LIGAND_ATOMS,
         max_ligand_atoms=max_ligand_atoms,
     )
 
     if (
-        receptor_score
-        >= DEFAULT_RECEPTOR_SCORE_THRESHOLD
+        receptor_score >= DEFAULT_RECEPTOR_SCORE_THRESHOLD
         and receptor_score > ligand_score
     ):
         return "receptor"
@@ -3269,44 +3369,61 @@ def classify_model(
 def describe_model(
     model: Any,
 ) -> Dict[str, Any]:
-    """
-    Generate a model-classification report.
+    """Generate a model-classification report."""
 
-    Parameters
-    ----------
-    model : Any
-        ChimeraX atomic model.
+    composition = _collect_model_composition(model)
+    (
+        atom_count,
+        residue_count,
+        protein_count,
+        nucleic_count,
+        solvent_count,
+        ion_count,
+    ) = composition
+    polymer_count = protein_count + nucleic_count
 
-    Returns
-    -------
-    dict
-        Model properties and classification scores.
-    """
+    if model is None or not hasattr(model, "atoms") or atom_count <= 0:
+        receptor_score = float("-inf")
+        ligand_score = float("-inf")
+        classification = "non_atomic"
+    else:
+        receptor_score = _calculate_receptor_score_from_composition(
+            composition,
+            min_receptor_atoms=DEFAULT_MIN_RECEPTOR_ATOMS,
+            min_protein_residues=DEFAULT_MIN_PROTEIN_RESIDUES,
+        )
+        ligand_score = _calculate_ligand_score_from_composition(
+            composition,
+            min_ligand_atoms=DEFAULT_MIN_LIGAND_ATOMS,
+            max_ligand_atoms=DEFAULT_MAX_LIGAND_ATOMS,
+        )
+
+        if residue_count > 0 and solvent_count == residue_count:
+            classification = "solvent"
+        elif residue_count > 0 and ion_count == residue_count:
+            classification = "ion"
+        elif (
+            receptor_score >= DEFAULT_RECEPTOR_SCORE_THRESHOLD
+            and receptor_score > ligand_score
+        ):
+            classification = "receptor"
+        elif ligand_score > 0:
+            classification = "ligand"
+        else:
+            classification = "unknown"
 
     return {
         "name": get_model_name(model),
         "model_id": get_model_id(model),
         "atomspec": get_model_atomspec(model),
-        "atom_count": get_atom_count(model),
-        "residue_count": get_residue_count(model),
-        "protein_residue_count": count_protein_residues(
-            model
-        ),
-        "nucleic_acid_residue_count": (
-            count_nucleic_acid_residues(model)
-        ),
-        "polymer_residue_count": (
-            get_polymer_residue_count(model)
-        ),
-        "receptor_score": calculate_receptor_score(
-            model
-        ),
-        "ligand_score": calculate_ligand_score(
-            model
-        ),
-        "classification": classify_model(
-            model
-        ),
+        "atom_count": atom_count,
+        "residue_count": residue_count,
+        "protein_residue_count": protein_count,
+        "nucleic_acid_residue_count": nucleic_count,
+        "polymer_residue_count": polymer_count,
+        "receptor_score": receptor_score,
+        "ligand_score": ligand_score,
+        "classification": classification,
     }
 
 
@@ -3367,7 +3484,19 @@ def get_atomic_models(
                 list_method()
             )
         except TypeError:
-            models = []
+            try:
+                from chimerax.atomic import AtomicStructure
+            except ImportError:
+                models = []
+            else:
+                try:
+                    models = list(
+                        list_method(
+                            type=AtomicStructure,
+                        )
+                    )
+                except TypeError:
+                    models = []
 
     if not models:
         try:
@@ -4024,6 +4153,109 @@ def create_dock_models(
 
 
 # -----------------------------------------------------------------------------
+# Compatibility model-access API
+# -----------------------------------------------------------------------------
+
+def _resolve_atomic_model_source(
+    source: Any,
+) -> List[Any]:
+    """Return atomic models from a session or model iterable."""
+
+    if source is None:
+        raise ValueError(
+            "A ChimeraX session or model collection is required."
+        )
+
+    if getattr(
+        source,
+        "models",
+        None,
+    ) is not None:
+        return get_atomic_models(
+            source
+        )
+
+    try:
+        models = list(
+            source
+        )
+
+    except TypeError as error:
+        raise TypeError(
+            "Model source must be a ChimeraX session or iterable of models."
+        ) from error
+
+    return [
+        model
+        for model in models
+        if is_atomic_model(
+            model
+        )
+    ]
+
+
+def get_receptor(
+    source: Any,
+    receptor: Optional[Any] = None,
+    strict: bool = True,
+) -> Any:
+    """Return the receptor from a session or atomic-model collection.
+
+    This compatibility wrapper delegates to :func:`identify_receptor`.
+    """
+
+    models = _resolve_atomic_model_source(
+        source
+    )
+
+    return identify_receptor(
+        models=models,
+        receptor=receptor,
+        strict=strict,
+    )
+
+
+def get_pose_models(
+    source: Any,
+    receptor: Optional[Any] = None,
+    poses: Optional[Any] = None,
+    include_unknown: bool = False,
+    strict: bool = True,
+) -> List[Any]:
+    """Return docking-pose models from a session or model collection.
+
+    When ``receptor`` is omitted, it is identified automatically.
+    """
+
+    models = _resolve_atomic_model_source(
+        source
+    )
+
+    receptor_model = identify_receptor(
+        models=models,
+        receptor=receptor,
+        strict=strict,
+    )
+
+    return identify_pose_models(
+        models=models,
+        receptor=receptor_model,
+        poses=poses,
+        include_unknown=include_unknown,
+    )
+
+
+def get_ligand(
+    pose_model: Any,
+) -> Any:
+    """Return the ligand representation from a docking-pose model."""
+
+    return get_ligand_from_pose(
+        pose_model
+    )
+
+
+# -----------------------------------------------------------------------------
 # Model discovery report
 # -----------------------------------------------------------------------------
 
@@ -4147,9 +4379,12 @@ _SECTION_5_PUBLIC_NAMES = [
     "get_atom_count",
     "get_residue_count",
     "get_residue_names",
+    "get_residue_name",
     "is_atomic_model",
     "count_protein_residues",
     "count_nucleic_acid_residues",
+    "count_solvent_residues",
+    "count_ion_residues",
     "get_polymer_residue_count",
     "get_protein_fraction",
     "model_contains_protein",
@@ -4164,6 +4399,9 @@ _SECTION_5_PUBLIC_NAMES = [
     "get_ligand_from_pose",
     "generate_dock_model_name",
     "create_dock_models",
+    "get_receptor",
+    "get_pose_models",
+    "get_ligand",
     "model_discovery_summary",
     "print_model_discovery",
 ]
@@ -4899,8 +5137,6 @@ def _sanitize_filename_component(
         Safe file-name component.
     """
 
-    import re
-
     if value is None:
         text = ""
 
@@ -4910,21 +5146,17 @@ def _sanitize_filename_component(
     if lowercase:
         text = text.lower()
 
-    text = re.sub(
-        r"\s+",
+    text = _FILENAME_WHITESPACE_PATTERN.sub(
         "_",
         text,
     )
 
-    text = re.sub(
-        r"[^\w\-.]+",
+    text = _FILENAME_UNSAFE_PATTERN.sub(
         "_",
         text,
-        flags=re.UNICODE,
     )
 
-    text = re.sub(
-        r"_+",
+    text = _FILENAME_UNDERSCORE_PATTERN.sub(
         "_",
         text,
     )
@@ -5138,8 +5370,6 @@ def build_filename(
     '6X3W_contacts_002.csv'
     """
 
-    from datetime import datetime
-
     components: List[str] = []
 
     if prefix is not None:
@@ -5206,108 +5436,244 @@ def build_filename(
 # Generic serialization
 # -----------------------------------------------------------------------------
 
+def _serialize_molecular_reference(
+    value: Any,
+) -> Optional[Dict[str, Any]]:
+    """Return a compact representation of a molecular object when possible."""
+
+    residue_number = first_not_none(
+        getattr(value, "number", None),
+        getattr(value, "residue_number", None),
+        getattr(value, "resnum", None),
+    )
+
+    if (
+        residue_number is not None
+        and hasattr(value, "name")
+        and (
+            hasattr(value, "chain_id")
+            or hasattr(value, "chain")
+            or hasattr(value, "structure")
+        )
+    ):
+        return {
+            "type": type(value).__name__,
+            "name": _get_residue_name(value),
+            "chain_id": _get_residue_chain_id(value),
+            "number": residue_number,
+            "insertion_code": _get_residue_insertion_code(value),
+            "atomspec": getattr(value, "atomspec", None),
+            "structure_id": _get_structure_identifier(
+                _get_residue_structure(value)
+            ),
+        }
+
+    coordinate_value = first_not_none(
+        getattr(value, "scene_coord", None),
+        getattr(value, "coord", None),
+        getattr(value, "coordinates", None),
+    )
+
+    if (
+        coordinate_value is not None
+        and hasattr(value, "name")
+        and hasattr(value, "residue")
+    ):
+        element = getattr(value, "element", None)
+        element_name = first_not_none(
+            getattr(element, "name", None),
+            getattr(value, "element_name", None),
+        )
+
+        return {
+            "type": type(value).__name__,
+            "name": str(getattr(value, "name", "")),
+            "element": (
+                None
+                if element_name is None
+                else str(element_name)
+            ),
+            "atomspec": getattr(value, "atomspec", None),
+            "residue": residue_to_string(
+                getattr(value, "residue", None),
+                include_structure=True,
+            ),
+            "coordinates": np.asarray(
+                coordinate_value,
+                dtype=float,
+            ).tolist(),
+        }
+
+    if hasattr(value, "atoms") and (
+        hasattr(value, "id_string")
+        or hasattr(value, "atomspec")
+        or hasattr(value, "residues")
+    ):
+        return {
+            "type": type(value).__name__,
+            "name": get_model_name(
+                value,
+                default=type(value).__name__,
+            ),
+            "model_id": get_model_id(value),
+            "atomspec": get_model_atomspec(value),
+            "atom_count": get_atom_count(value),
+            "residue_count": get_residue_count(value),
+        }
+
+    return None
+
+
 def _make_serializable(
     value: Any,
+    *,
+    _active_ids: Optional[Set[int]] = None,
 ) -> Any:
-    """
-    Convert a value into a JSON-compatible representation.
-
-    Parameters
-    ----------
-    value : Any
-        Value to serialize.
-
-    Returns
-    -------
-    Any
-        JSON-compatible representation.
-    """
+    """Convert a value into a strict, cycle-safe JSON representation."""
 
     if value is None:
         return None
 
-    if isinstance(
-        value,
-        (
-            str,
-            int,
-            float,
-            bool,
-        ),
-    ):
+    if isinstance(value, bool):
         return value
+
+    if isinstance(value, str):
+        return value
+
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+
+    if isinstance(value, np.generic):
+        return _make_serializable(
+            value.item(),
+            _active_ids=_active_ids,
+        )
 
     if isinstance(value, Path):
         return str(value)
 
-    if isinstance(value, np.generic):
-        return value.item()
+    if isinstance(value, datetime):
+        return value.isoformat()
 
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-
-    if isinstance(value, pd.DataFrame):
-        return value.to_dict(
-            orient="records"
+    if isinstance(value, bytes):
+        return value.decode(
+            "utf-8",
+            errors="replace",
         )
 
-    if isinstance(value, pd.Series):
-        return value.to_dict()
+    if isinstance(value, bytearray):
+        return bytes(value).decode(
+            "utf-8",
+            errors="replace",
+        )
 
-    if isinstance(value, dict):
-        return {
-            str(key): _make_serializable(
-                item
-            )
-            for key, item in value.items()
-        }
+    if _active_ids is None:
+        _active_ids = set()
 
-    if isinstance(
-        value,
-        (
-            list,
-            tuple,
-            set,
-        ),
-    ):
-        return [
-            _make_serializable(item)
-            for item in value
-        ]
+    value_id = id(value)
 
-    to_dict_method = getattr(
-        value,
-        "to_dict",
-        None,
-    )
+    if value_id in _active_ids:
+        return "<recursive>"
 
-    if callable(to_dict_method):
-        try:
+    _active_ids.add(value_id)
+
+    try:
+        if isinstance(value, np.ndarray):
             return _make_serializable(
-                to_dict_method()
+                value.tolist(),
+                _active_ids=_active_ids,
             )
 
-        except TypeError:
-            pass
+        if isinstance(value, pd.DataFrame):
+            return _make_serializable(
+                value.to_dict(
+                    orient="records"
+                ),
+                _active_ids=_active_ids,
+            )
 
-    if hasattr(value, "__dict__"):
-        try:
+        if isinstance(value, pd.Series):
+            return _make_serializable(
+                value.to_dict(),
+                _active_ids=_active_ids,
+            )
+
+        if isinstance(value, Mapping):
             return {
                 str(key): _make_serializable(
-                    item
+                    item,
+                    _active_ids=_active_ids,
                 )
-                for key, item in vars(
-                    value
-                ).items()
-                if not str(key).startswith(
-                    "_"
-                )
+                for key, item in value.items()
             }
 
-        except TypeError:
-            pass
+        if isinstance(
+            value,
+            (
+                list,
+                tuple,
+                set,
+                frozenset,
+            ),
+        ):
+            return [
+                _make_serializable(
+                    item,
+                    _active_ids=_active_ids,
+                )
+                for item in value
+            ]
 
-    return str(value)
+        molecular_reference = _serialize_molecular_reference(
+            value
+        )
+
+        if molecular_reference is not None:
+            return _make_serializable(
+                molecular_reference,
+                _active_ids=_active_ids,
+            )
+
+        to_dict_method = getattr(
+            value,
+            "to_dict",
+            None,
+        )
+
+        if callable(to_dict_method):
+            try:
+                converted_value = to_dict_method()
+            except Exception:
+                converted_value = None
+            else:
+                return _make_serializable(
+                    converted_value,
+                    _active_ids=_active_ids,
+                )
+
+        if hasattr(value, "__dict__"):
+            try:
+                public_attributes = {
+                    str(key): item
+                    for key, item in vars(value).items()
+                    if not str(key).startswith("_")
+                }
+            except TypeError:
+                public_attributes = None
+
+            if public_attributes is not None:
+                return _make_serializable(
+                    public_attributes,
+                    _active_ids=_active_ids,
+                )
+
+        return str(value)
+
+    finally:
+        _active_ids.discard(value_id)
 
 
 def _prepare_output_file(
@@ -5433,6 +5799,7 @@ def save_json(
                 indent=indent,
                 ensure_ascii=ensure_ascii,
                 sort_keys=sort_keys,
+                allow_nan=False,
             )
 
     except OSError as error:
@@ -5644,12 +6011,60 @@ def save_csv(
 
 
 # -----------------------------------------------------------------------------
+# Compatibility file-management API
+# -----------------------------------------------------------------------------
+
+def ensure_output_directories(
+    output_directory: Union[str, Path],
+    subdirectories: Optional[
+        Iterable[str]
+    ] = None,
+    exist_ok: bool = True,
+) -> Dict[str, Path]:
+    """Create and return the DockAnalyzer output directory structure."""
+
+    return create_output(
+        output_directory,
+        subdirectories=subdirectories,
+        exist_ok=exist_ok,
+    )
+
+
+def build_output_filename(
+    name: Any,
+    extension: Optional[str] = None,
+    prefix: Optional[Any] = None,
+    suffix: Optional[Any] = None,
+    index: Optional[int] = None,
+    timestamp: bool = False,
+    lowercase: bool = False,
+) -> str:
+    """Build a standardized output filename.
+
+    This compatibility wrapper accepts the historical positional option order
+    and delegates to :func:`build_filename`.
+    """
+
+    return build_filename(
+        name,
+        extension=extension,
+        prefix=prefix,
+        suffix=suffix,
+        index=index,
+        timestamp=timestamp,
+        lowercase=lowercase,
+    )
+
+
+# -----------------------------------------------------------------------------
 # Public module interface
 # -----------------------------------------------------------------------------
 
 _SECTION_7_PUBLIC_NAMES = [
     "create_output",
+    "ensure_output_directories",
     "build_filename",
+    "build_output_filename",
     "save_json",
     "save_csv",
 ]
@@ -6187,16 +6602,13 @@ def _natural_sort_key(
     ``A2`` is sorted before ``A10``.
     """
 
-    import re
-
     if value is None:
         return ("",)
 
     text = str(value)
 
-    parts = re.split(
-        r"(\d+)",
-        text,
+    parts = _NATURAL_SORT_PATTERN.split(
+        text
     )
 
     return tuple(
@@ -7285,9 +7697,10 @@ def format_table(
 
     if show_header:
         header_line = spacing.join(
-            f"{formatted_headers[index]:"
-            f"{alignment_symbols[index]}"
-            f"{column_widths[index]}}"
+            format(
+                formatted_headers[index],
+                f"{alignment_symbols[index]}{column_widths[index]}",
+            )
             for index in range(
                 number_of_columns
             )
@@ -7309,9 +7722,10 @@ def format_table(
 
     for row in string_rows:
         row_line = spacing.join(
-            f"{row[index]:"
-            f"{alignment_symbols[index]}"
-            f"{column_widths[index]}}"
+            format(
+                row[index],
+                f"{alignment_symbols[index]}{column_widths[index]}",
+            )
             for index in range(
                 number_of_columns
             )
@@ -16550,51 +16964,218 @@ class _SelfTestResidue:
         self.atomspec = atomspec
 
 
+class _SelfTestAtom:
+    """Minimal ChimeraX-like atom used by integration tests."""
+
+    def __init__(
+        self,
+        name: str,
+        residue: Any,
+        coordinates: Sequence[float],
+    ) -> None:
+        self.name = str(name)
+        self.residue = residue
+        self.coord = np.asarray(
+            coordinates,
+            dtype=float,
+        )
+        self.element_name = "C"
+        self.atomspec = (
+            f"{getattr(residue, 'atomspec', '')}@{self.name}"
+        )
+
+
+class _SelfTestAtoms(list):
+    """List-like atom collection exposing unique residues."""
+
+    @property
+    def unique_residues(
+        self,
+    ) -> List[Any]:
+        residues: List[Any] = []
+
+        for atom in self:
+            residue = getattr(
+                atom,
+                "residue",
+                None,
+            )
+
+            if residue not in residues:
+                residues.append(residue)
+
+        return residues
+
+
+class _SelfTestAtomicStructure:
+    """Synthetic atomic structure used for model-discovery tests."""
+
+    def __init__(
+        self,
+        name: str,
+        identifier: str,
+        residue_names: Sequence[str],
+        *,
+        atoms_per_residue: int,
+    ) -> None:
+        self.name = str(name)
+        self.id_string = str(identifier)
+        self.id = tuple(
+            int(part)
+            for part in self.id_string.split(".")
+        )
+        self.residues: List[_SelfTestResidue] = []
+        self.atoms = _SelfTestAtoms()
+
+        for residue_index, residue_name in enumerate(
+            residue_names,
+            start=1,
+        ):
+            residue = _SelfTestResidue(
+                residue_name,
+                "A",
+                residue_index,
+                structure=self,
+                atomspec=(
+                    f"#{self.id_string}/A:{residue_index}"
+                ),
+            )
+            residue.atoms = []
+            self.residues.append(residue)
+
+            for atom_index in range(
+                int(atoms_per_residue)
+            ):
+                atom = _SelfTestAtom(
+                    f"C{atom_index + 1}",
+                    residue,
+                    (
+                        float(atom_index),
+                        float(residue_index),
+                        0.0,
+                    ),
+                )
+                residue.atoms.append(atom)
+                self.atoms.append(atom)
+
+    @property
+    def atomspec(
+        self,
+    ) -> str:
+        return f"#{self.id_string}"
+
+
+class _SelfTestModelManager:
+    """Minimal ChimeraX-like model manager."""
+
+    def __init__(
+        self,
+        models: Iterable[Any],
+    ) -> None:
+        self._models = list(models)
+
+    def list(
+        self,
+    ) -> List[Any]:
+        return list(self._models)
+
+
+class _SelfTestSession:
+    """Minimal ChimeraX-like session containing a model manager."""
+
+    def __init__(
+        self,
+        models: Iterable[Any],
+    ) -> None:
+        self.models = _SelfTestModelManager(
+            models
+        )
+
+
 # -----------------------------------------------------------------------------
 # Self-test result manager
 # -----------------------------------------------------------------------------
+
+_SELF_TEST_CODE_FAILURE = "code_failure"
+_SELF_TEST_TEST_FAILURE = "test_failure"
+_SELF_TEST_ENVIRONMENTAL_LIMITATION = "environmental_limitation"
+
+_SELF_TEST_FAILURE_CATEGORIES = {
+    _SELF_TEST_CODE_FAILURE,
+    _SELF_TEST_TEST_FAILURE,
+    _SELF_TEST_ENVIRONMENTAL_LIMITATION,
+}
+
+
+def _normalize_self_test_failure_category(
+    category: str,
+) -> str:
+    """Return a validated self-test failure category."""
+
+    normalized_category = (
+        str(category)
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+
+    if normalized_category not in _SELF_TEST_FAILURE_CATEGORIES:
+        valid_categories = ", ".join(
+            sorted(_SELF_TEST_FAILURE_CATEGORIES)
+        )
+        raise ValueError(
+            f"Unsupported self-test failure category {category!r}. "
+            f"Expected one of: {valid_categories}."
+        )
+
+    return normalized_category
+
 
 class _SelfTestRunner:
     """
     Small assertion-based test runner for ``utils.py``.
 
-    The runner avoids external testing dependencies and provides a compact
-    terminal report.
+    The runner avoids external testing dependencies, classifies failures as
+    code failures, test failures or environmental limitations, and provides a
+    compact terminal report.
     """
 
     def __init__(
         self,
+        *,
+        emit: bool = True,
     ) -> None:
+        self.emit = bool(emit)
         self.passed = 0
         self.failed = 0
         self.skipped = 0
         self.failures: List[str] = []
+        self.skips: List[str] = []
+        self.failure_counts: Dict[str, int] = {
+            _SELF_TEST_CODE_FAILURE: 0,
+            _SELF_TEST_TEST_FAILURE: 0,
+            _SELF_TEST_ENVIRONMENTAL_LIMITATION: 0,
+        }
+
+    def _print(
+        self,
+        message: str = "",
+    ) -> None:
+        """Print a runner message when output is enabled."""
+
+        if self.emit:
+            print(message)
 
     def check(
         self,
         condition: Any,
         message: str,
     ) -> None:
-        """
-        Register a boolean assertion.
-
-        Parameters
-        ----------
-        condition : Any
-            Assertion condition.
-        message : str
-            Description shown if the assertion fails.
-
-        Raises
-        ------
-        AssertionError
-            If the condition is false.
-        """
+        """Assert a boolean condition."""
 
         if not condition:
-            raise AssertionError(
-                message
-            )
+            raise AssertionError(message)
 
     def equal(
         self,
@@ -16602,9 +17183,7 @@ class _SelfTestRunner:
         expected: Any,
         message: str,
     ) -> None:
-        """
-        Assert equality.
-        """
+        """Assert equality."""
 
         if observed != expected:
             raise AssertionError(
@@ -16621,9 +17200,7 @@ class _SelfTestRunner:
         tolerance: float = 1e-9,
         message: str,
     ) -> None:
-        """
-        Assert numerical proximity.
-        """
+        """Assert numerical proximity."""
 
         if not math.isclose(
             float(observed),
@@ -16644,112 +17221,128 @@ class _SelfTestRunner:
             [],
             Any,
         ],
+        *,
+        failure_category: str = _SELF_TEST_CODE_FAILURE,
     ) -> None:
-        """
-        Execute one test function.
-        """
+        """Execute and classify one test function."""
+
+        normalized_category = _normalize_self_test_failure_category(
+            failure_category
+        )
 
         try:
             test_function()
 
         except Exception as error:
             self.failed += 1
+            self.failure_counts[normalized_category] += 1
 
             failure_message = (
-                f"{name}: "
-                f"{type(error).__name__}: "
-                f"{error}"
+                f"{name} [{normalized_category}]: "
+                f"{type(error).__name__}: {error}"
             )
 
-            self.failures.append(
-                failure_message
-            )
-
-            print(
-                f"[FAIL] {name}"
+            self.failures.append(failure_message)
+            self._print(
+                f"[FAIL] {name} [{normalized_category}]"
             )
 
         else:
             self.passed += 1
-
-            print(
-                f"[PASS] {name}"
-            )
+            self._print(f"[PASS] {name}")
 
     def skip(
         self,
         name: str,
         reason: str,
+        *,
+        category: str = _SELF_TEST_ENVIRONMENTAL_LIMITATION,
     ) -> None:
-        """
-        Register one skipped test.
-        """
+        """Register and classify one skipped test."""
+
+        normalized_category = _normalize_self_test_failure_category(
+            category
+        )
 
         self.skipped += 1
+        self.failure_counts[normalized_category] += 1
 
-        print(
-            f"[SKIP] {name}: {reason}"
+        skip_message = (
+            f"{name} [{normalized_category}]: {reason}"
+        )
+        self.skips.append(skip_message)
+        self._print(
+            f"[SKIP] {name} [{normalized_category}]: {reason}"
         )
 
     @property
     def total(
         self,
     ) -> int:
-        """
-        Return the total number of registered tests.
-        """
+        """Return the total number of registered tests."""
 
-        return (
-            self.passed
-            + self.failed
-            + self.skipped
-        )
+        return self.passed + self.failed + self.skipped
 
     @property
     def successful(
         self,
     ) -> bool:
-        """
-        Return whether every executed test passed.
-        """
+        """Return whether every executed test passed."""
 
         return self.failed == 0
+
+    @property
+    def unjustified_failures(
+        self,
+    ) -> int:
+        """Return failures not classified as environmental limitations."""
+
+        return (
+            self.failure_counts[_SELF_TEST_CODE_FAILURE]
+            + self.failure_counts[_SELF_TEST_TEST_FAILURE]
+        )
 
     def print_summary(
         self,
     ) -> None:
-        """
-        Print the final test summary.
-        """
+        """Print the final test summary and failure classification."""
 
-        print()
+        self._print()
+
+        if not self.emit:
+            return
+
         print_title(
             "UTILS.PY SELF-TEST SUMMARY",
             width=72,
         )
 
         summary_rows = [
+            {"Status": "Passed", "Count": self.passed},
+            {"Status": "Failed", "Count": self.failed},
+            {"Status": "Skipped", "Count": self.skipped},
+            {"Status": "Total", "Count": self.total},
             {
-                "Status": "Passed",
-                "Count": self.passed,
+                "Status": "Code failures",
+                "Count": self.failure_counts[
+                    _SELF_TEST_CODE_FAILURE
+                ],
             },
             {
-                "Status": "Failed",
-                "Count": self.failed,
+                "Status": "Test failures",
+                "Count": self.failure_counts[
+                    _SELF_TEST_TEST_FAILURE
+                ],
             },
             {
-                "Status": "Skipped",
-                "Count": self.skipped,
-            },
-            {
-                "Status": "Total",
-                "Count": self.total,
+                "Status": "Environmental limitations",
+                "Count": self.failure_counts[
+                    _SELF_TEST_ENVIRONMENTAL_LIMITATION
+                ],
             },
         ]
 
-        print_table(
-            summary_rows
-        )
+        print_table(summary_rows)
 
         if self.failures:
             print()
@@ -16759,17 +17352,25 @@ class _SelfTestRunner:
                 character="-",
             )
 
-            for (
-                failure_index,
-                failure_message,
-            ) in enumerate(
+            for failure_index, failure_message in enumerate(
                 self.failures,
                 start=1,
             ):
-                print(
-                    f"{failure_index}. "
-                    f"{failure_message}"
-                )
+                print(f"{failure_index}. {failure_message}")
+
+        if self.skips:
+            print()
+            print_title(
+                "ENVIRONMENTAL LIMITATIONS",
+                width=72,
+                character="-",
+            )
+
+            for skip_index, skip_message in enumerate(
+                self.skips,
+                start=1,
+            ):
+                print(f"{skip_index}. {skip_message}")
 
 
 # -----------------------------------------------------------------------------
@@ -16948,6 +17549,377 @@ def _test_dock_model(
         in serialized_with_pose,
         "Ligand was not included when requested.",
     )
+
+
+# -----------------------------------------------------------------------------
+# Section 4.1 — Deep DockModel integration tests
+# -----------------------------------------------------------------------------
+
+def _test_strict_serialization(
+    runner: _SelfTestRunner,
+) -> None:
+    """Test strict JSON output, recursive values and molecular references."""
+
+    dock_model = DockModel(
+        name="strict_pose",
+        score=float("nan"),
+        contacts=[
+            {
+                "distance": np.float32(
+                    3.2
+                ),
+            }
+        ],
+        metadata={
+            "positive_infinity": float("inf"),
+            "negative_infinity": float("-inf"),
+            "array": np.array(
+                [
+                    1,
+                    2,
+                ]
+            ),
+        },
+    )
+    dock_model.metadata[
+        "recursive"
+    ] = dock_model.metadata
+
+    serialized = dock_model.to_dict()
+    encoded = json.dumps(
+        serialized,
+        allow_nan=False,
+        sort_keys=True,
+    )
+
+    runner.check(
+        bool(encoded),
+        "Strict JSON serialization returned empty output.",
+    )
+    runner.equal(
+        serialized["score"],
+        None,
+        "A non-finite DockModel score was not normalized.",
+    )
+    runner.equal(
+        serialized["metadata"][
+            "positive_infinity"
+        ],
+        None,
+        "Positive infinity was not normalized.",
+    )
+    runner.equal(
+        serialized["metadata"][
+            "recursive"
+        ],
+        "<recursive>",
+        "A recursive metadata reference was not bounded.",
+    )
+
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        output_path = save_json(
+            dock_model,
+            Path(temporary_directory)
+            / "strict.json",
+        )
+
+        with output_path.open(
+            mode="r",
+            encoding="utf-8",
+        ) as input_file:
+            loaded_data = json.load(
+                input_file
+            )
+
+        runner.equal(
+            loaded_data["score"],
+            None,
+            "save_json() did not write strict JSON null values.",
+        )
+        runner.equal(
+            loaded_data["metadata"][
+                "recursive"
+            ],
+            "<recursive>",
+            "save_json() did not preserve recursion protection.",
+        )
+
+
+def _test_dock_model_normalization(
+    runner: _SelfTestRunner,
+) -> None:
+    """Test optional collections, mappings and invalid input handling."""
+
+    dock_model = DockModel(
+        name=None,
+        contacts=None,
+        hbonds=(
+            {
+                "kind": "hydrogen_bond",
+            },
+        ),
+        hydrophobic=None,
+        pi={
+            "stacking": None,
+        },
+        statistics=None,
+        metadata=None,
+        files={
+            "json": "results.json",
+        },
+    )
+
+    runner.equal(
+        dock_model.name,
+        "unnamed_pose",
+        "A None DockModel name was not normalized.",
+    )
+    runner.equal(
+        dock_model.contacts,
+        [],
+        "None contacts were not normalized to an empty list.",
+    )
+    runner.equal(
+        len(dock_model.hbonds),
+        1,
+        "Tuple hydrogen bonds were not normalized to a list.",
+    )
+    runner.equal(
+        dock_model.pi["stacking"],
+        [],
+        "None pi interactions were not normalized.",
+    )
+    runner.check(
+        isinstance(
+            dock_model.files["json"],
+            Path,
+        ),
+        "A path-like DockModel file was not normalized to Path.",
+    )
+
+    invalid_configurations = (
+        {
+            "statistics": [],
+        },
+        {
+            "metadata": [],
+        },
+        {
+            "pi": [],
+        },
+        {
+            "files": {
+                "json": 3,
+            },
+        },
+    )
+
+    for configuration in invalid_configurations:
+        try:
+            DockModel(
+                name="invalid",
+                **configuration,
+            )
+        except TypeError:
+            continue
+
+        raise AssertionError(
+            "DockModel accepted an invalid field configuration: "
+            f"{configuration!r}."
+        )
+
+
+def _test_synthetic_model_discovery(
+    runner: _SelfTestRunner,
+) -> None:
+    """Test receptor and pose discovery with synthetic atomic structures."""
+
+    receptor = _SelfTestAtomicStructure(
+        "receptor",
+        "1",
+        [
+            "ALA",
+        ] * 30,
+        atoms_per_residue=10,
+    )
+    pose = _SelfTestAtomicStructure(
+        "pose",
+        "2",
+        [
+            "LIG",
+        ],
+        atoms_per_residue=20,
+    )
+    session = _SelfTestSession(
+        [
+            receptor,
+            pose,
+        ]
+    )
+
+    dock_models = create_dock_models(
+        session
+    )
+
+    runner.equal(
+        len(dock_models),
+        1,
+        "Synthetic model discovery returned an unexpected pose count.",
+    )
+
+    dock_model = dock_models[0]
+
+    runner.check(
+        dock_model.receptor is receptor,
+        "The synthetic receptor was not attached to DockModel.",
+    )
+    runner.check(
+        dock_model.pose is pose,
+        "The synthetic pose was not attached to DockModel.",
+    )
+    runner.check(
+        isinstance(
+            dock_model.ligand,
+            _SelfTestResidue,
+        ),
+        "The single-residue ligand was not extracted from the pose.",
+    )
+
+    serialized = dock_model.to_dict(
+        include_pose=True,
+        include_receptor=True,
+        include_ligand=True,
+    )
+
+    json.dumps(
+        serialized,
+        allow_nan=False,
+    )
+
+    runner.equal(
+        serialized["pose"]["type"],
+        "_SelfTestAtomicStructure",
+        "The pose was not serialized as a compact model reference.",
+    )
+    runner.equal(
+        serialized["ligand"]["name"],
+        "LIG",
+        "The ligand residue reference was not serialized correctly.",
+    )
+
+
+def _test_chimerax_model_manager_compatibility(
+    runner: _SelfTestRunner,
+) -> None:
+    """Test the ChimeraX list(type=AtomicStructure) access pattern."""
+
+    module_type = type(sys)
+    chimerax_module = module_type(
+        "chimerax"
+    )
+    atomic_module = module_type(
+        "chimerax.atomic"
+    )
+
+    class AtomicStructure(
+        _SelfTestAtomicStructure
+    ):
+        pass
+
+    atomic_module.AtomicStructure = (
+        AtomicStructure
+    )
+    chimerax_module.atomic = atomic_module
+
+    previous_chimerax = sys.modules.get(
+        "chimerax"
+    )
+    previous_atomic = sys.modules.get(
+        "chimerax.atomic"
+    )
+
+    class TypedModelManager:
+        def __init__(
+            self,
+            models: Iterable[Any],
+        ) -> None:
+            self._models = list(models)
+
+        def list(
+            self,
+            *,
+            type: type,
+        ) -> List[Any]:
+            return [
+                model
+                for model in self._models
+                if isinstance(
+                    model,
+                    type,
+                )
+            ]
+
+    try:
+        sys.modules[
+            "chimerax"
+        ] = chimerax_module
+        sys.modules[
+            "chimerax.atomic"
+        ] = atomic_module
+
+        atomic_structure = AtomicStructure(
+            "typed_pose",
+            "3",
+            [
+                "LIG",
+            ],
+            atoms_per_residue=3,
+        )
+        session = type(
+            "TypedSession",
+            (),
+            {
+                "models": TypedModelManager(
+                    [
+                        object(),
+                        atomic_structure,
+                    ]
+                ),
+            },
+        )()
+
+        atomic_models = get_atomic_models(
+            session
+        )
+
+        runner.equal(
+            atomic_models,
+            [
+                atomic_structure,
+            ],
+            "The ChimeraX typed model-manager pattern was not supported.",
+        )
+
+    finally:
+        if previous_chimerax is None:
+            sys.modules.pop(
+                "chimerax",
+                None,
+            )
+        else:
+            sys.modules[
+                "chimerax"
+            ] = previous_chimerax
+
+        if previous_atomic is None:
+            sys.modules.pop(
+                "chimerax.atomic",
+                None,
+            )
+        else:
+            sys.modules[
+                "chimerax.atomic"
+            ] = previous_atomic
 
 
 # -----------------------------------------------------------------------------
@@ -17469,11 +18441,29 @@ def _test_helpers(
             ]
         ),
         [
+            "",
             "pose",
             0,
         ],
-        "compact() returned an "
-        "unexpected result.",
+        "compact() did not preserve empty strings by default.",
+    )
+
+    runner.equal(
+        compact(
+            [
+                None,
+                "",
+                " ",
+                "pose",
+                0,
+            ],
+            remove_empty_strings=True,
+        ),
+        [
+            "pose",
+            0,
+        ],
+        "compact() did not remove empty strings when requested.",
     )
 
 
@@ -18096,58 +19086,262 @@ def _test_async_decorators(
 
 
 # -----------------------------------------------------------------------------
+# Self-test classification tests
+# -----------------------------------------------------------------------------
+
+def _test_self_test_classification(
+    runner: _SelfTestRunner,
+) -> None:
+    """Test permanent self-test failure classification."""
+
+    nested_runner = _SelfTestRunner(
+        emit=False
+    )
+
+    def raise_code_failure() -> None:
+        raise RuntimeError(
+            "deliberate code failure"
+        )
+
+    def raise_test_failure() -> None:
+        raise AssertionError(
+            "deliberate test failure"
+        )
+
+    nested_runner.run(
+        "Deliberate code failure",
+        raise_code_failure,
+        failure_category=_SELF_TEST_CODE_FAILURE,
+    )
+    nested_runner.run(
+        "Deliberate test failure",
+        raise_test_failure,
+        failure_category=_SELF_TEST_TEST_FAILURE,
+    )
+    nested_runner.skip(
+        "Deliberate environmental limitation",
+        "No live ChimeraX session.",
+    )
+
+    runner.equal(
+        nested_runner.failure_counts,
+        {
+            _SELF_TEST_CODE_FAILURE: 1,
+            _SELF_TEST_TEST_FAILURE: 1,
+            _SELF_TEST_ENVIRONMENTAL_LIMITATION: 1,
+        },
+        "Self-test failure categories were not counted correctly.",
+    )
+    runner.equal(
+        nested_runner.unjustified_failures,
+        2,
+        "Unjustified self-test failures were not counted correctly.",
+    )
+
+    try:
+        _normalize_self_test_failure_category(
+            "unsupported"
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(
+            "Invalid self-test failure categories were accepted."
+        )
+
+
+# -----------------------------------------------------------------------------
 # Public-interface tests
 # -----------------------------------------------------------------------------
 
 def _test_public_interface(
     runner: _SelfTestRunner,
 ) -> None:
-    """
-    Test the expected public utility interface.
-    """
+    """Test exported names, aliases and downstream signatures."""
 
-    expected_public_names = {
-        "distance",
-        "centroid",
-        "angle",
-        "normalize",
-        "create_output",
-        "build_filename",
-        "save_json",
-        "save_csv",
-        "unique_residues",
-        "residue_to_string",
-        "sort_residues",
-        "format_title",
-        "format_table",
-        "print_title",
-        "print_table",
-        "ensure_list",
-        "flatten",
-        "chunks",
-        "pairwise",
-        "first_not_none",
-        "compact",
-        "timer",
-        "log_call",
-        "safe_execution",
+    duplicate_names = sorted(
+        {
+            name
+            for name in __all__
+            if __all__.count(
+                name
+            ) > 1
+        }
+    )
+
+    runner.check(
+        not duplicate_names,
+        (
+            "Duplicate names in __all__: "
+            f"{duplicate_names}"
+        ),
+    )
+
+    missing_names = sorted(
+        name
+        for name in __all__
+        if name not in globals()
+    )
+
+    runner.check(
+        not missing_names,
+        (
+            "Exported names are undefined: "
+            f"{missing_names}"
+        ),
+    )
+
+    public_definitions = {
+        name
+        for name, value in globals().items()
+        if (
+            not name.startswith(
+                "_"
+            )
+            and (
+                inspect.isfunction(
+                    value
+                )
+                or inspect.isclass(
+                    value
+                )
+            )
+            and getattr(
+                value,
+                "__module__",
+                None,
+            ) == __name__
+        )
     }
 
-    missing_names = (
-        expected_public_names
+    unexported_definitions = sorted(
+        public_definitions
         - set(
             __all__
         )
     )
 
     runner.check(
-        not missing_names,
+        not unexported_definitions,
         (
-            "The following public names are "
-            "missing from __all__: "
-            f"{sorted(missing_names)}"
+            "Public definitions are missing from __all__: "
+            f"{unexported_definitions}"
         ),
     )
+
+    expected_parameters = {
+        "DockLogger": {
+            "name",
+            "session",
+        },
+        "DockModel": {
+            "name",
+            "pose",
+            "receptor",
+            "ligand",
+        },
+        "get_receptor": {
+            "source",
+            "receptor",
+            "strict",
+        },
+        "get_pose_models": {
+            "source",
+            "receptor",
+            "poses",
+            "include_unknown",
+            "strict",
+        },
+        "get_ligand": {
+            "pose_model",
+        },
+        "ensure_output_directories": {
+            "output_directory",
+            "subdirectories",
+            "exist_ok",
+        },
+        "build_output_filename": {
+            "name",
+            "extension",
+            "prefix",
+            "suffix",
+            "index",
+            "timestamp",
+            "lowercase",
+        },
+    }
+
+    for public_name, parameter_names in (
+        expected_parameters.items()
+    ):
+        signature = inspect.signature(
+            globals()[
+                public_name
+            ]
+        )
+
+        runner.check(
+            parameter_names.issubset(
+                signature.parameters
+            ),
+            (
+                f"{public_name} has an incompatible signature: "
+                f"{signature}"
+            ),
+        )
+
+    dock_model_signature = inspect.signature(
+        DockModel.to_dict
+    )
+
+    runner.check(
+        {
+            "include_pose",
+            "include_ligand",
+            "include_receptor",
+        }.issubset(
+            dock_model_signature.parameters
+        ),
+        (
+            "DockModel.to_dict() does not preserve all public "
+            "serialization options."
+        ),
+    )
+
+    runner.equal(
+        get_ligand(
+            "pose"
+        ),
+        "pose",
+        "get_ligand() did not delegate to get_ligand_from_pose().",
+    )
+
+    runner.equal(
+        build_output_filename(
+            "pose",
+            "json",
+            "dock",
+            None,
+            2,
+        ),
+        "dock_pose_002.json",
+        "build_output_filename() returned an incompatible filename.",
+    )
+
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        paths = ensure_output_directories(
+            temporary_directory,
+            (
+                "json",
+            ),
+        )
+
+        runner.check(
+            paths[
+                "json"
+            ].is_dir(),
+            "ensure_output_directories() did not create the requested path.",
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -18194,6 +19388,34 @@ def _run_module_self_test() -> bool:
     runner.run(
         "DockModel",
         lambda: _test_dock_model(
+            runner
+        ),
+    )
+
+    runner.run(
+        "DockModel strict serialization",
+        lambda: _test_strict_serialization(
+            runner
+        ),
+    )
+
+    runner.run(
+        "DockModel input normalization",
+        lambda: _test_dock_model_normalization(
+            runner
+        ),
+    )
+
+    runner.run(
+        "Synthetic model discovery",
+        lambda: _test_synthetic_model_discovery(
+            runner
+        ),
+    )
+
+    runner.run(
+        "ChimeraX model-manager compatibility",
+        lambda: _test_chimerax_model_manager_compatibility(
             runner
         ),
     )
@@ -18309,6 +19531,13 @@ def _run_module_self_test() -> bool:
     runner.run(
         "Asynchronous decorators",
         lambda: _test_async_decorators(
+            runner
+        ),
+    )
+
+    runner.run(
+        "Self-test failure classification",
+        lambda: _test_self_test_classification(
             runner
         ),
     )
