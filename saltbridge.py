@@ -1,17 +1,12 @@
 # =============================================================================
-# 1. IMPORTS E COMPATIBILIDADE
+# 1. IMPORTS AND COMPATIBILITY
 # =============================================================================
 
 from __future__ import annotations
 
-# =============================================================================
-# Biblioteca padrão
-# =============================================================================
-
-import math
 import json
+import math
 import statistics
-import itertools
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import (
@@ -21,7 +16,6 @@ from typing import (
     Iterator,
     List,
     Mapping,
-    MutableMapping,
     Optional,
     Sequence,
     Set,
@@ -29,401 +23,200 @@ from typing import (
     Union,
 )
 
-# =============================================================================
-# Compatibilidade opcional com NumPy
-# =============================================================================
-
-try:
+try:  # Optional acceleration.
     import numpy as np
-
-    HAS_NUMPY = True
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover - environment dependent
     np = None
     HAS_NUMPY = False
+else:
+    HAS_NUMPY = True
 
-# =============================================================================
-# Compatibilidade opcional com ChimeraX
-# =============================================================================
-
-try:  # pragma: no cover
-
-    from chimerax.atomic import (
-        Atom,
-        Atoms,
-        Residue,
-        Structure,
-    )
-
+try:  # Optional ChimeraX integration.
+    from chimerax.atomic import Atom, Atoms, Residue, Structure
+    from chimerax.core.commands import run as chimerax_run
+except ImportError:  # pragma: no cover - environment dependent
+    Atom = Atoms = Residue = Structure = Any
+    chimerax_run = None
+    HAS_CHIMERAX = False
+else:
     HAS_CHIMERAX = True
 
-except Exception:  # pragma: no cover
+# DockModel may live in utils.py in the current package layout or in the
+# legacy dockmodel.py module. Support package and direct-file imports.
+if __package__:
+    try:  # pragma: no cover - package layout dependent
+        from .utils import DockModel
+    except ImportError:  # pragma: no cover
+        try:
+            from .dockmodel import DockModel
+        except ImportError:
+            DockModel = Any
+else:
+    try:  # pragma: no cover - direct execution layout dependent
+        from utils import DockModel
+    except ImportError:  # pragma: no cover
+        try:
+            from dockmodel import DockModel
+        except ImportError:
+            DockModel = Any
 
-    Atom = Any
-    Atoms = Any
-    Residue = Any
-    Structure = Any
-
-    HAS_CHIMERAX = False
-
-# =============================================================================
-# Imports opcionais do DockAnalyzer
-# =============================================================================
-
-try:  # pragma: no cover
-
-    from .dockmodel import DockModel
-
-except Exception:  # pragma: no cover
-
-    DockModel = Any
-
-# =============================================================================
-# Informações do módulo
-# =============================================================================
-
-__all__ = []
-
+__all__: List[str] = []
 __author__ = "DockAnalyzer Project"
 __version__ = "1.0.0"
 
 
 # =============================================================================
-# 2. CONSTANTES E ALIASES
+# 2. CONSTANTS AND ALIASES
 # =============================================================================
 
-# =============================================================================
-# Tipos de interação
-# =============================================================================
-
+# Interaction types
 SALT_BRIDGE = "salt_bridge"
+SALT_BRIDGE_TYPES = ("cation_anion", "anion_cation")
 
-SALT_BRIDGE_TYPES = (
-    "cation_anion",
-    "anion_cation",
-)
+# Default geometric criteria (angstroms)
+DEFAULT_DISTANCE_CUTOFF = 4.0
+DEFAULT_STRONG_CUTOFF = 3.2
+DEFAULT_WEAK_CUTOFF = 4.0
+DEFAULT_GROUP_RADIUS = 2.0
 
-# =============================================================================
-# Critérios geométricos padrão
-# =============================================================================
-
-DEFAULT_DISTANCE_CUTOFF = 4.0        # Å
-DEFAULT_STRONG_CUTOFF = 3.2          # Å
-DEFAULT_WEAK_CUTOFF = 4.0            # Å
-
-DEFAULT_GROUP_RADIUS = 2.0           # Å
-
-# =============================================================================
-# Pesos utilizados pelo scoring
-# =============================================================================
-
+# Default scoring weights
 DEFAULT_SCORE_STRONG = 1.00
 DEFAULT_SCORE_MODERATE = 0.75
 DEFAULT_SCORE_WEAK = 0.50
 
-# =============================================================================
-# Cargas formais
-# =============================================================================
-
+# Formal charges
 FORMAL_POSITIVE = 1
 FORMAL_NEGATIVE = -1
 FORMAL_NEUTRAL = 0
 
-# =============================================================================
-# Elementos frequentemente encontrados
-# =============================================================================
+# Common charged elements
+POSITIVE_ELEMENTS = frozenset({"N"})
+NEGATIVE_ELEMENTS = frozenset({"O", "S"})
 
-POSITIVE_ELEMENTS = frozenset({
-    "N",
-})
+# Canonical charged residues
+CANONICAL_CATIONIC_RESIDUES = frozenset({"ARG", "LYS", "HIP"})
+CANONICAL_ANIONIC_RESIDUES = frozenset({"ASP", "GLU"})
 
-NEGATIVE_ELEMENTS = frozenset({
-    "O",
-    "S",
-})
-
-# =============================================================================
-# Resíduos canônicos
-# =============================================================================
-
-CANONICAL_CATIONIC_RESIDUES = frozenset({
-    "ARG",
-    "LYS",
-    "HIP",   # Histidina protonada
-})
-
-CANONICAL_ANIONIC_RESIDUES = frozenset({
-    "ASP",
-    "GLU",
-})
-
-# =============================================================================
-# Átomos carregados conhecidos
-# =============================================================================
-
+# Canonical charged atoms
 CANONICAL_POSITIVE_ATOMS = {
     "ARG": frozenset({"NH1", "NH2", "NE"}),
     "LYS": frozenset({"NZ"}),
     "HIP": frozenset({"ND1", "NE2"}),
 }
-
 CANONICAL_NEGATIVE_ATOMS = {
     "ASP": frozenset({"OD1", "OD2"}),
     "GLU": frozenset({"OE1", "OE2"}),
 }
 
-# =============================================================================
-# Classes de força
-# =============================================================================
-
+# Interaction strength and state
 STRENGTH_STRONG = "strong"
 STRENGTH_MODERATE = "moderate"
 STRENGTH_WEAK = "weak"
-
+STRENGTH_REJECTED = "rejected"
 STRENGTH_ORDER = (
     STRENGTH_STRONG,
     STRENGTH_MODERATE,
     STRENGTH_WEAK,
+    STRENGTH_REJECTED,
 )
-
-# =============================================================================
-# Estado da interação
-# =============================================================================
-
 INTERACTION_VALID = "valid"
 INTERACTION_INVALID = "invalid"
 
-# =============================================================================
-# Aliases de tipos
-# =============================================================================
-
+# Type aliases
 Coordinate = Tuple[float, float, float]
-
 AtomLike = Union["Atom", Any]
-
 ResidueLike = Union["Residue", Any]
-
 StructureLike = Union["Structure", Any]
 
 
-
 # =============================================================================
-# 3. EXCEÇÕES
+# 3. EXCEPTIONS
 # =============================================================================
 
 
 class SaltBridgeError(Exception):
-    """
-    Exceção-base para erros específicos do módulo ``saltbridge``.
-
-    Todas as exceções próprias deste módulo devem herdar desta classe,
-    permitindo que o chamador capture falhas relacionadas a pontes salinas
-    sem interceptar exceções genéricas do restante do DockAnalyzer.
-    """
+    """Base exception for salt-bridge analysis errors."""
 
 
 class SaltBridgeConfigurationError(SaltBridgeError, ValueError):
-    """
-    Indica uma configuração inválida para a análise de pontes salinas.
-
-    Exemplos:
-        - cutoff de distância negativo;
-        - limites de classificação em ordem incorreta;
-        - pesos de scoring fora do intervalo permitido;
-        - estratégia de reconhecimento desconhecida.
-    """
+    """Raised when salt-bridge configuration is invalid."""
 
 
 class SaltBridgeRecognitionError(SaltBridgeError):
-    """
-    Indica falha durante o reconhecimento de átomos ou grupos carregados.
-
-    Deve ser utilizada quando a estrutura recebida não puder ser interpretada
-    com segurança, ou quando os dados químicos necessários estiverem
-    inconsistentes.
-    """
+    """Raised when charged atoms or groups cannot be recognized safely."""
 
 
 class ChargedGroupError(SaltBridgeRecognitionError):
-    """
-    Exceção-base para erros relacionados a grupos carregados.
-    """
+    """Base exception for charged-group errors."""
 
 
 class InvalidChargedGroupError(ChargedGroupError, ValueError):
-    """
-    Indica que um grupo carregado não satisfaz os critérios mínimos.
-
-    Exemplos:
-        - grupo sem átomos;
-        - polaridade inválida;
-        - carga incompatível com a polaridade;
-        - coordenadas ausentes;
-        - átomos pertencentes a resíduos incompatíveis.
-    """
+    """Raised when a charged group violates required invariants."""
 
 
 class UnsupportedChargeError(ChargedGroupError):
-    """
-    Indica que uma carga formal ou parcial não pôde ser interpretada.
-
-    Pode ocorrer quando:
-        - a carga possui formato desconhecido;
-        - o valor não é numérico;
-        - a carga é ambígua;
-        - o modelo químico não oferece informação suficiente.
-    """
+    """Raised when a formal or partial charge cannot be interpreted."""
 
 
 class AmbiguousChargeError(ChargedGroupError):
-    """
-    Indica que a polaridade de um átomo ou grupo não pôde ser determinada
-    de forma inequívoca.
-    """
+    """Raised when atom or group polarity is ambiguous."""
 
 
 class SaltBridgeGeometryError(SaltBridgeError):
-    """
-    Indica falha em um cálculo geométrico de ponte salina.
-
-    Exemplos:
-        - coordenadas inválidas;
-        - vetores com dimensão incorreta;
-        - valores não finitos;
-        - centro geométrico impossível de calcular.
-    """
+    """Raised when salt-bridge geometry cannot be evaluated."""
 
 
 class MissingCoordinatesError(SaltBridgeGeometryError):
-    """
-    Indica ausência de coordenadas utilizáveis em um átomo ou grupo.
-    """
+    """Raised when usable coordinates are unavailable."""
 
 
 class DegenerateGeometryError(SaltBridgeGeometryError):
-    """
-    Indica uma geometria degenerada que impede a avaliação da interação.
-
-    Exemplos:
-        - grupo sem átomos válidos;
-        - centro geométrico indefinido;
-        - coordenadas coincidentes em uma operação que exige separação.
-    """
+    """Raised when degenerate geometry prevents evaluation."""
 
 
 class SaltBridgeDetectionError(SaltBridgeError):
-    """
-    Indica falha durante a busca ou detecção central de pontes salinas.
-    """
+    """Raised during central salt-bridge detection."""
 
 
 class InvalidInteractionError(SaltBridgeDetectionError, ValueError):
-    """
-    Indica que um resultado de interação é internamente inconsistente.
-
-    Exemplos:
-        - dois grupos com a mesma polaridade;
-        - distância negativa;
-        - cátion ou ânion ausente;
-        - classificação incompatível com a geometria.
-    """
+    """Raised when an interaction is internally inconsistent."""
 
 
 class SaltBridgeScoringError(SaltBridgeError):
-    """
-    Indica falha durante a classificação ou o cálculo do score.
-    """
+    """Raised during interaction classification or scoring."""
 
 
 class SaltBridgeIntegrationError(SaltBridgeError):
-    """
-    Indica falha de integração com objetos externos ao núcleo geométrico.
-
-    Exemplos:
-        - DockModel incompatível;
-        - atributo de destino ausente;
-        - estrutura molecular não reconhecida;
-        - atualização de resultados impossível.
-    """
+    """Raised when integration with external objects fails."""
 
 
 class DockModelSaltBridgeError(SaltBridgeIntegrationError):
-    """
-    Indica especificamente uma falha ao anexar ou recuperar resultados
-    de pontes salinas em um DockModel.
-    """
+    """Raised for DockModel-specific salt-bridge integration failures."""
 
 
 class SaltBridgeSerializationError(SaltBridgeError):
-    """
-    Indica falha na conversão ou serialização dos resultados.
-
-    Exemplos:
-        - objeto não serializável;
-        - referência circular;
-        - campo obrigatório ausente;
-        - formato de exportação não suportado.
-    """
+    """Raised when salt-bridge data cannot be serialized."""
 
 
 class ChimeraXSaltBridgeError(SaltBridgeIntegrationError):
-    """
-    Exceção-base para erros da camada opcional de compatibilidade com ChimeraX.
-    """
+    """Base exception for optional ChimeraX integration errors."""
 
 
 class ChimeraXUnavailableError(ChimeraXSaltBridgeError, RuntimeError):
-    """
-    Indica que uma função dependente do ChimeraX foi chamada em um ambiente
-    no qual o ChimeraX não está disponível.
-    """
+    """Raised when ChimeraX-dependent functionality is unavailable."""
 
 
 class SaltBridgeSelfTestError(SaltBridgeError, AssertionError):
-    """
-    Indica falha controlada nos self-tests do módulo.
-
-    Essa exceção permite diferenciar uma asserção dos testes internos de
-    outras falhas de execução ocorridas durante a análise.
-    """
+    """Raised for controlled self-test failures."""
 
 
 # =============================================================================
 # 4. FUNDAMENTAL DATACLASSES
 # =============================================================================
 
-
 @dataclass(slots=True)
 class ChargedAtom:
-    """
-    Lightweight representation of an atom involved in a charged group.
-
-    The original atom object is preserved by reference. This avoids duplicating
-    molecular data and allows later integration with ChimeraX, DockModel, or
-    other molecular representations.
-
-    Attributes
-    ----------
-    atom
-        Reference to the original atom object.
-    coordinate
-        Cartesian coordinate in angstroms.
-    element
-        Normalized chemical element symbol.
-    name
-        Atom name as provided by the molecular structure.
-    residue
-        Reference to the parent residue, when available.
-    formal_charge
-        Formal atomic charge, when explicitly available.
-    partial_charge
-        Partial atomic charge, when explicitly available.
-    polarity
-        Charge polarity: ``"positive"``, ``"negative"``, or ``"neutral"``.
-    source
-        Method used to identify the charge.
-    metadata
-        Small optional dictionary containing additional information.
-    """
+    """Compact wrapper for a potentially charged atom."""
 
     atom: AtomLike
     coordinate: Optional[Coordinate] = None
@@ -432,12 +225,13 @@ class ChargedAtom:
     residue: Optional[ResidueLike] = None
     formal_charge: Optional[float] = None
     partial_charge: Optional[float] = None
+    effective_charge: Optional[float] = None
     polarity: str = "neutral"
     source: str = "unknown"
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Normalize and validate the basic charged-atom attributes."""
+        """Normalize and validate atom attributes."""
 
         self.element = str(self.element or "").strip().upper()
         self.name = str(self.name or "").strip()
@@ -482,74 +276,42 @@ class ChargedAtom:
                     "Partial charge must be a finite numeric value."
                 )
 
+        if self.effective_charge is None:
+            self.effective_charge = (
+                self.formal_charge
+                if self.formal_charge is not None
+                else self.partial_charge
+            )
+        else:
+            self.effective_charge = float(self.effective_charge)
+            if not math.isfinite(self.effective_charge):
+                raise UnsupportedChargeError(
+                    "Effective charge must be a finite numeric value."
+                )
+            if self.formal_charge is None and self.partial_charge is None:
+                self.formal_charge = self.effective_charge
+
     @property
     def has_coordinates(self) -> bool:
-        """Return whether the atom has valid Cartesian coordinates."""
+        """Return whether coordinates are available."""
 
         return self.coordinate is not None
 
     @property
-    def effective_charge(self) -> Optional[float]:
-        """
-        Return the best available numeric charge.
-
-        Formal charge is preferred because it directly represents the
-        chemically assigned ionic state. Partial charge is used only when
-        formal charge is unavailable.
-        """
-
-        if self.formal_charge is not None:
-            return self.formal_charge
-
-        return self.partial_charge
-
-    @property
     def is_positive(self) -> bool:
-        """Return whether the atom is classified as positively charged."""
+        """Return whether the atom is positive."""
 
         return self.polarity == "positive"
 
     @property
     def is_negative(self) -> bool:
-        """Return whether the atom is classified as negatively charged."""
+        """Return whether the atom is negative."""
 
         return self.polarity == "negative"
 
-
 @dataclass(slots=True)
 class ChargedGroup:
-    """
-    Representation of a chemically meaningful charged atomic group.
-
-    A charged group may contain a single charged atom, such as the lysine NZ
-    atom, or multiple atoms sharing a delocalized charge, such as the
-    guanidinium group of arginine or the carboxylate group of aspartate.
-
-    Attributes
-    ----------
-    atoms
-        Tuple containing the charged atoms that define the group.
-    polarity
-        Group polarity: ``"positive"`` or ``"negative"``.
-    group_type
-        Chemical classification of the group.
-    center
-        Representative Cartesian center of the charged group.
-    net_charge
-        Estimated or explicit net charge of the group.
-    residue
-        Reference to the parent residue, when available.
-    representative_atom
-        Atom selected as the primary representative of the group.
-    source
-        Recognition strategy that produced the group.
-    confidence
-        Recognition confidence between 0.0 and 1.0.
-    group_id
-        Stable optional identifier used during deduplication and export.
-    metadata
-        Small optional dictionary containing additional information.
-    """
+    """Chemically meaningful group of charged atoms."""
 
     atoms: Tuple[ChargedAtom, ...]
     polarity: str
@@ -564,7 +326,7 @@ class ChargedGroup:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Normalize and validate the charged-group attributes."""
+        """Normalize and validate group attributes."""
 
         self.atoms = tuple(self.atoms)
         self.polarity = str(self.polarity or "").strip().lower()
@@ -630,7 +392,16 @@ class ChargedGroup:
 
         if self.representative_atom is None:
             self.representative_atom = self.atoms[0]
-
+        elif not isinstance(self.representative_atom, ChargedAtom):
+            matching_atom = next(
+                (item for item in self.atoms if item.atom is self.representative_atom),
+                None,
+            )
+            if matching_atom is None:
+                raise InvalidChargedGroupError(
+                    "The representative atom must belong to the charged group."
+                )
+            self.representative_atom = matching_atom
         elif self.representative_atom not in self.atoms:
             raise InvalidChargedGroupError(
                 "The representative atom must belong to the charged group."
@@ -638,37 +409,37 @@ class ChargedGroup:
 
     @property
     def atom_count(self) -> int:
-        """Return the number of atoms defining the charged group."""
+        """Return the number of atoms in the group."""
 
         return len(self.atoms)
 
     @property
     def is_positive(self) -> bool:
-        """Return whether the group is positively charged."""
+        """Return whether the group is positive."""
 
         return self.polarity == "positive"
 
     @property
     def is_negative(self) -> bool:
-        """Return whether the group is negatively charged."""
+        """Return whether the group is negative."""
 
         return self.polarity == "negative"
 
     @property
     def has_center(self) -> bool:
-        """Return whether the group has a representative center."""
+        """Return whether a group center is available."""
 
         return self.center is not None
 
     @property
     def original_atoms(self) -> Tuple[AtomLike, ...]:
-        """Return references to the original molecular atom objects."""
+        """Return references to the original atoms."""
 
         return tuple(charged_atom.atom for charged_atom in self.atoms)
 
     @property
     def coordinates(self) -> Tuple[Coordinate, ...]:
-        """Return all available charged-atom coordinates."""
+        """Return available atom coordinates."""
 
         return tuple(
             charged_atom.coordinate
@@ -676,37 +447,9 @@ class ChargedGroup:
             if charged_atom.coordinate is not None
         )
 
-
 @dataclass(slots=True)
 class SaltBridgeGeometry:
-    """
-    Geometric description of a candidate salt bridge.
-
-    The object stores only the geometric values required for classification,
-    scoring, reporting, and debugging. It does not store the complete
-    atom-by-atom distance matrix.
-
-    Attributes
-    ----------
-    center_distance
-        Distance between the representative centers of the charged groups.
-    minimum_atom_distance
-        Shortest distance between atoms belonging to opposite groups.
-    maximum_atom_distance
-        Largest retained intergroup atomic distance, when calculated.
-    mean_atom_distance
-        Mean retained intergroup atomic distance, when calculated.
-    contact_count
-        Number of atom pairs satisfying the atomic contact cutoff.
-    closest_positive_atom
-        Positive atom involved in the shortest contact.
-    closest_negative_atom
-        Negative atom involved in the shortest contact.
-    valid
-        Whether the geometry satisfies the central detection criteria.
-    rejection_reason
-        Explanation for rejected geometries.
-    """
+    """Geometric measurements for a salt-bridge candidate."""
 
     center_distance: float
     minimum_atom_distance: float
@@ -719,7 +462,7 @@ class SaltBridgeGeometry:
     rejection_reason: Optional[str] = None
 
     def __post_init__(self) -> None:
-        """Validate the geometric measurements."""
+        """Normalize and validate geometric measurements."""
 
         self.center_distance = float(self.center_distance)
         self.minimum_atom_distance = float(self.minimum_atom_distance)
@@ -793,39 +536,9 @@ class SaltBridgeGeometry:
             self.closest_negative_atom,
         )
 
-
 @dataclass(slots=True)
 class SaltBridgeInteraction:
-    """
-    Complete representation of one detected salt bridge.
-
-    The interaction stores references to the participating charged groups and
-    a compact geometric result. Classification and scoring fields may be
-    populated during the detection step or updated later by Section 10.
-
-    Attributes
-    ----------
-    cation
-        Positively charged group.
-    anion
-        Negatively charged group.
-    geometry
-        Geometric measurements associated with the interaction.
-    interaction_type
-        Interaction classification.
-    strength
-        Qualitative strength class.
-    score
-        Numeric interaction score.
-    pose_id
-        Optional docking-pose identifier.
-    model_id
-        Optional molecular-model identifier.
-    interaction_id
-        Optional stable identifier used in deduplication and serialization.
-    metadata
-        Small optional dictionary containing additional information.
-    """
+    """Detected salt bridge with geometry and scoring data."""
 
     cation: ChargedGroup
     anion: ChargedGroup
@@ -839,7 +552,7 @@ class SaltBridgeInteraction:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Validate and normalize the salt-bridge interaction."""
+        """Normalize and validate the interaction."""
 
         self.interaction_type = str(
             self.interaction_type or SALT_BRIDGE
@@ -878,31 +591,25 @@ class SaltBridgeInteraction:
 
     @property
     def distance(self) -> float:
-        """
-        Return the primary interaction distance.
-
-        The minimum atom-to-atom distance is used as the default interaction
-        distance because it directly represents the closest electrostatic
-        contact.
-        """
+        """Return the minimum atom distance."""
 
         return self.geometry.minimum_atom_distance
 
     @property
     def center_distance(self) -> float:
-        """Return the distance between the charged-group centers."""
+        """Return the group-center distance."""
 
         return self.geometry.center_distance
 
     @property
     def is_valid(self) -> bool:
-        """Return whether the interaction passed the geometric criteria."""
+        """Return whether the geometry is valid."""
 
         return self.geometry.valid
 
     @property
     def groups(self) -> Tuple[ChargedGroup, ChargedGroup]:
-        """Return the cation and anion as an ordered pair."""
+        """Return the cation and anion."""
 
         return self.cation, self.anion
 
@@ -910,39 +617,13 @@ class SaltBridgeInteraction:
     def residues(
         self,
     ) -> Tuple[Optional[ResidueLike], Optional[ResidueLike]]:
-        """Return the residues associated with the cation and anion."""
+        """Return the cation and anion residues."""
 
         return self.cation.residue, self.anion.residue
 
-
 @dataclass(slots=True)
 class SaltBridgeResult:
-    """
-    Container holding the complete result of a salt-bridge analysis.
-
-    This object centralizes recognized groups, detected interactions,
-    warnings, statistics, and analysis metadata. The statistics dictionary
-    may remain empty until Section 13 is applied.
-
-    Attributes
-    ----------
-    interactions
-        Detected and retained salt-bridge interactions.
-    cationic_groups
-        Recognized positively charged groups.
-    anionic_groups
-        Recognized negatively charged groups.
-    statistics
-        Calculated summary statistics.
-    warnings
-        Non-fatal messages produced during analysis.
-    pose_id
-        Optional docking-pose identifier.
-    model_id
-        Optional molecular-model identifier.
-    metadata
-        Additional compact analysis information.
-    """
+    """Container for charged groups, interactions, and summaries."""
 
     interactions: List[SaltBridgeInteraction] = field(default_factory=list)
     cationic_groups: List[ChargedGroup] = field(default_factory=list)
@@ -954,7 +635,7 @@ class SaltBridgeResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Validate the polarity of the recognized charged groups."""
+        """Validate charged-group polarities."""
 
         for group in self.cationic_groups:
             if not group.is_positive:
@@ -969,41 +650,41 @@ class SaltBridgeResult:
                 )
 
     def __len__(self) -> int:
-        """Return the number of detected interactions."""
+        """Return the interaction count."""
 
         return len(self.interactions)
 
     def __iter__(self) -> Iterator[SaltBridgeInteraction]:
-        """Iterate over detected salt-bridge interactions."""
+        """Iterate over interactions."""
 
         return iter(self.interactions)
 
     def __bool__(self) -> bool:
-        """Return whether at least one interaction was detected."""
+        """Return whether interactions are present."""
 
         return bool(self.interactions)
 
     @property
     def interaction_count(self) -> int:
-        """Return the number of detected interactions."""
+        """Return the interaction count."""
 
         return len(self.interactions)
 
     @property
     def cation_count(self) -> int:
-        """Return the number of recognized cationic groups."""
+        """Return the cationic-group count."""
 
         return len(self.cationic_groups)
 
     @property
     def anion_count(self) -> int:
-        """Return the number of recognized anionic groups."""
+        """Return the anionic-group count."""
 
         return len(self.anionic_groups)
 
     @property
     def total_score(self) -> float:
-        """Return the sum of all interaction scores."""
+        """Return the summed interaction score."""
 
         return float(
             sum(interaction.score for interaction in self.interactions)
@@ -1011,7 +692,7 @@ class SaltBridgeResult:
 
     @property
     def valid_interactions(self) -> Tuple[SaltBridgeInteraction, ...]:
-        """Return only interactions with valid geometry."""
+        """Return interactions with valid geometry."""
 
         return tuple(
             interaction
@@ -1023,7 +704,7 @@ class SaltBridgeResult:
         self,
         interaction: SaltBridgeInteraction,
     ) -> None:
-        """Append one validated salt-bridge interaction."""
+        """Append a validated interaction."""
 
         if not isinstance(interaction, SaltBridgeInteraction):
             raise InvalidInteractionError(
@@ -1033,7 +714,7 @@ class SaltBridgeResult:
         self.interactions.append(interaction)
 
     def add_warning(self, message: str) -> None:
-        """Add a non-empty warning message without duplicating it."""
+        """Append a unique non-empty warning."""
 
         normalized_message = str(message or "").strip()
 
@@ -1041,115 +722,15 @@ class SaltBridgeResult:
             self.warnings.append(normalized_message)
 
 
-
 # =============================================================================
 # 5. CONFIGURATION
 # =============================================================================
 
-
 @dataclass(slots=True)
 class SaltBridgeConfig:
-    """
-    Configuration object controlling salt-bridge recognition and detection.
+    """Validated configuration for recognition, geometry, scoring, and integration."""
 
-    The configuration separates chemical-recognition parameters from geometric,
-    scoring, deduplication, integration, and serialization options. All values
-    are validated during initialization so that later sections can assume a
-    consistent configuration state.
-
-    Attributes
-    ----------
-    distance_cutoff
-        Maximum atom-to-atom distance, in angstroms, for accepting a salt
-        bridge.
-    center_distance_cutoff
-        Maximum allowed distance between charged-group centers.
-    strong_distance_cutoff
-        Maximum minimum atom distance classified as a strong interaction.
-    moderate_distance_cutoff
-        Maximum minimum atom distance classified as a moderate interaction.
-    minimum_contact_distance
-        Optional lower distance bound used to reject geometrically implausible
-        atomic overlaps.
-    atomic_contact_cutoff
-        Maximum distance used when counting individual atom-to-atom contacts.
-    minimum_contact_count
-        Minimum number of atomic contacts required for an accepted interaction.
-    use_center_distance
-        Whether the group-center distance must satisfy its cutoff.
-    use_minimum_atom_distance
-        Whether the shortest atom-to-atom distance must satisfy its cutoff.
-    calculate_all_contact_distances
-        Whether mean and maximum retained atomic distances should be calculated.
-    include_protein_groups
-        Whether canonical protein charged groups should be recognized.
-    include_ligand_groups
-        Whether charged groups from non-protein residues should be recognized.
-    include_nucleic_acid_groups
-        Whether charged groups from nucleic acids should be recognized.
-    recognize_canonical_residues
-        Whether standard residue-name and atom-name rules should be applied.
-    recognize_formal_charges
-        Whether explicit formal charges should be used.
-    recognize_partial_charges
-        Whether partial charges may be used when formal charges are unavailable.
-    infer_charge_from_chemistry
-        Whether charge may be inferred from atom names, residue identities,
-        and local chemical patterns.
-    partial_charge_positive_threshold
-        Minimum partial charge used to classify an atom as positive.
-    partial_charge_negative_threshold
-        Maximum partial charge used to classify an atom as negative.
-    minimum_group_charge
-        Minimum absolute estimated group charge required for recognition.
-    allow_histidine_cations
-        Whether positively protonated histidine variants should be recognized.
-    allow_terminal_groups
-        Whether charged protein termini should be recognized.
-    allow_ambiguous_groups
-        Whether groups with uncertain charge assignments may be retained.
-    minimum_recognition_confidence
-        Minimum recognition confidence accepted for a charged group.
-    deduplicate_groups
-        Whether duplicate charged groups should be removed.
-    deduplicate_interactions
-        Whether duplicate interactions should be removed.
-    deduplication_distance_tolerance
-        Distance tolerance used when comparing potentially duplicate results.
-    scoring_enabled
-        Whether interaction scores should be calculated.
-    strong_score
-        Base score assigned to strong interactions.
-    moderate_score
-        Base score assigned to moderate interactions.
-    weak_score
-        Base score assigned to weak interactions.
-    contact_count_bonus
-        Additional score added for each contact beyond the minimum requirement.
-    maximum_contact_bonus
-        Maximum total bonus derived from multiple atomic contacts.
-    confidence_weighting
-        Whether recognition confidence should influence the interaction score.
-    charge_weighting
-        Whether estimated group charges should influence the interaction score.
-    preserve_invalid_candidates
-        Whether rejected candidate geometries should be preserved for debugging.
-    compact_results
-        Whether optional heavy metadata should be omitted from results.
-    preserve_existing_results
-        Whether DockModel integration should preserve previous results.
-    update_dockmodel_statistics
-        Whether DockModel statistics should be updated after analysis.
-    update_dockmodel_score
-        Whether the DockModel total score should include salt-bridge scoring.
-    strict
-        Whether uncertain or malformed inputs should raise exceptions instead
-        of producing warnings and skipping invalid entries.
-    """
-
-    # -------------------------------------------------------------------------
     # Geometric criteria
-    # -------------------------------------------------------------------------
 
     distance_cutoff: float = DEFAULT_DISTANCE_CUTOFF
     center_distance_cutoff: float = DEFAULT_DISTANCE_CUTOFF
@@ -1163,9 +744,7 @@ class SaltBridgeConfig:
     use_minimum_atom_distance: bool = True
     calculate_all_contact_distances: bool = False
 
-    # -------------------------------------------------------------------------
     # Recognition options
-    # -------------------------------------------------------------------------
 
     include_protein_groups: bool = True
     include_ligand_groups: bool = True
@@ -1186,17 +765,13 @@ class SaltBridgeConfig:
 
     minimum_recognition_confidence: float = 0.50
 
-    # -------------------------------------------------------------------------
     # Deduplication options
-    # -------------------------------------------------------------------------
 
     deduplicate_groups: bool = True
     deduplicate_interactions: bool = True
     deduplication_distance_tolerance: float = 0.05
 
-    # -------------------------------------------------------------------------
     # Scoring options
-    # -------------------------------------------------------------------------
 
     scoring_enabled: bool = True
 
@@ -1210,9 +785,7 @@ class SaltBridgeConfig:
     confidence_weighting: bool = True
     charge_weighting: bool = False
 
-    # -------------------------------------------------------------------------
     # Result and integration options
-    # -------------------------------------------------------------------------
 
     preserve_invalid_candidates: bool = False
     compact_results: bool = False
@@ -1221,14 +794,12 @@ class SaltBridgeConfig:
     update_dockmodel_statistics: bool = True
     update_dockmodel_score: bool = True
 
-    # -------------------------------------------------------------------------
-    # Error-handling behavior
-    # -------------------------------------------------------------------------
+    # Error handling
 
     strict: bool = False
 
     def __post_init__(self) -> None:
-        """Normalize and validate all configuration parameters."""
+        """Normalize and validate all options."""
 
         self._normalize_numeric_values()
         self._validate_distance_parameters()
@@ -1237,7 +808,7 @@ class SaltBridgeConfig:
         self._validate_deduplication_parameters()
 
     def _normalize_numeric_values(self) -> None:
-        """Convert numeric configuration values to stable built-in types."""
+        """Normalize numeric fields."""
 
         float_fields = (
             "distance_cutoff",
@@ -1271,7 +842,7 @@ class SaltBridgeConfig:
         self.minimum_contact_count = int(self.minimum_contact_count)
 
     def _validate_distance_parameters(self) -> None:
-        """Validate geometric cutoffs and their ordering."""
+        """Validate geometric cutoffs."""
 
         positive_distance_fields = (
             "distance_cutoff",
@@ -1326,7 +897,7 @@ class SaltBridgeConfig:
             )
 
     def _validate_recognition_parameters(self) -> None:
-        """Validate charge-recognition thresholds and related options."""
+        """Validate recognition options."""
 
         if self.partial_charge_positive_threshold <= 0.0:
             raise SaltBridgeConfigurationError(
@@ -1368,7 +939,7 @@ class SaltBridgeConfig:
             )
 
     def _validate_scoring_parameters(self) -> None:
-        """Validate scoring values and their expected ordering."""
+        """Validate scoring options."""
 
         score_fields = (
             "strong_score",
@@ -1400,7 +971,7 @@ class SaltBridgeConfig:
             )
 
     def _validate_deduplication_parameters(self) -> None:
-        """Validate group and interaction deduplication settings."""
+        """Validate deduplication options."""
 
         if self.deduplication_distance_tolerance < 0.0:
             raise SaltBridgeConfigurationError(
@@ -1408,60 +979,26 @@ class SaltBridgeConfig:
             )
 
     def copy_with(self, **changes: Any) -> "SaltBridgeConfig":
-        """
-        Return a validated configuration containing selected field changes.
+        """Return a validated copy with selected changes."""
 
-        This method avoids modifying the current configuration in place and is
-        useful when a temporary analysis requires different cutoffs or scoring
-        behavior.
-
-        Parameters
-        ----------
-        **changes
-            Configuration fields and their replacement values.
-
-        Returns
-        -------
-        SaltBridgeConfig
-            New validated configuration instance.
-        """
-
-        valid_fields = {
-            field_name
-            for field_name in self.__dataclass_fields__
-        }
-
-        unknown_fields = set(changes) - valid_fields
-
+        valid_fields = self.__dataclass_fields__
+        unknown_fields = set(changes).difference(valid_fields)
         if unknown_fields:
             formatted_fields = ", ".join(sorted(unknown_fields))
-
             raise SaltBridgeConfigurationError(
                 f"Unknown configuration field or fields: {formatted_fields}."
             )
-
-        current_values = {
-            field_name: getattr(self, field_name)
-            for field_name in valid_fields
-        }
-
-        current_values.update(changes)
-
-        return type(self)(**current_values)
+        values = self.as_dict()
+        values.update(changes)
+        return type(self)(**values)
 
     def as_dict(self) -> Dict[str, Any]:
-        """
-        Return the configuration as a plain dictionary.
-
-        The returned dictionary contains only built-in scalar values and can
-        therefore be safely reused by later serialization functions.
-        """
+        """Return configuration fields as a dictionary."""
 
         return {
             field_name: getattr(self, field_name)
             for field_name in self.__dataclass_fields__
         }
-
 
 DEFAULT_SALT_BRIDGE_CONFIG = SaltBridgeConfig()
 
@@ -1470,8 +1007,21 @@ DEFAULT_SALT_BRIDGE_CONFIG = SaltBridgeConfig()
 # 6. GENERAL UTILITIES
 # =============================================================================
 
-
 _MISSING = object()
+
+_ATOMIC_NUMBER_TO_ELEMENT = {
+    1: "H", 6: "C", 7: "N", 8: "O", 9: "F", 11: "NA", 12: "MG",
+    15: "P", 16: "S", 17: "CL", 19: "K", 20: "CA", 26: "FE",
+    30: "ZN", 35: "BR", 53: "I",
+}
+_ELEMENT_NAME_ALIASES = {
+    "HYDROGEN": "H", "CARBON": "C", "NITROGEN": "N", "OXYGEN": "O",
+    "PHOSPHORUS": "P", "SULFUR": "S", "SULPHUR": "S", "FLUORINE": "F",
+    "CHLORINE": "CL", "BROMINE": "BR", "IODINE": "I", "SODIUM": "NA",
+    "POTASSIUM": "K", "CALCIUM": "CA", "MAGNESIUM": "MG", "IRON": "FE",
+    "ZINC": "ZN",
+}
+_TWO_LETTER_ELEMENTS = frozenset({"BR", "CA", "CL", "FE", "MG", "NA", "ZN"})
 
 
 def normalize_text(
@@ -1481,30 +1031,7 @@ def normalize_text(
     uppercase: bool = False,
     lowercase: bool = False,
 ) -> str:
-    """
-    Convert a value to a normalized stripped string.
-
-    Parameters
-    ----------
-    value
-        Value to normalize.
-    default
-        Value returned when the input is ``None`` or produces an empty string.
-    uppercase
-        Whether the result should be converted to uppercase.
-    lowercase
-        Whether the result should be converted to lowercase.
-
-    Returns
-    -------
-    str
-        Normalized string.
-
-    Raises
-    ------
-    ValueError
-        If both uppercase and lowercase conversion are requested.
-    """
+    """Convert a value to a normalized stripped string."""
 
     if uppercase and lowercase:
         raise ValueError(
@@ -1534,23 +1061,7 @@ def safe_float(
     default: Optional[float] = None,
     finite_only: bool = True,
 ) -> Optional[float]:
-    """
-    Convert a value to float without propagating ordinary conversion errors.
-
-    Parameters
-    ----------
-    value
-        Value to convert.
-    default
-        Value returned when conversion is not possible.
-    finite_only
-        Whether infinite and NaN values should be rejected.
-
-    Returns
-    -------
-    Optional[float]
-        Converted value or the provided default.
-    """
+    """Convert a value to float without propagating ordinary conversion errors."""
 
     if value is None:
         return default
@@ -1571,21 +1082,7 @@ def safe_int(
     *,
     default: Optional[int] = None,
 ) -> Optional[int]:
-    """
-    Convert a value to int without propagating ordinary conversion errors.
-
-    Parameters
-    ----------
-    value
-        Value to convert.
-    default
-        Value returned when conversion is not possible.
-
-    Returns
-    -------
-    Optional[int]
-        Converted integer or the provided default.
-    """
+    """Convert a value to int without propagating ordinary conversion errors."""
 
     if value is None:
         return default
@@ -1603,30 +1100,7 @@ def safe_getattr(
     default: Any = None,
     call: bool = False,
 ) -> Any:
-    """
-    Return the first accessible attribute from a sequence of candidate names.
-
-    Parameters
-    ----------
-    obj
-        Object from which attributes should be retrieved.
-    names
-        Single attribute name or ordered sequence of candidate names.
-    default
-        Value returned when no candidate attribute can be accessed.
-    call
-        Whether a callable attribute should be invoked without arguments.
-
-    Returns
-    -------
-    Any
-        First successfully retrieved value or the provided default.
-
-    Notes
-    -----
-    Attribute access failures are intentionally ignored because molecular
-    objects from different libraries may expose partially compatible APIs.
-    """
+    """Return the first accessible attribute from a sequence of candidate names."""
 
     if obj is None:
         return default
@@ -1660,23 +1134,7 @@ def safe_mapping_get(
     *,
     default: Any = None,
 ) -> Any:
-    """
-    Return the first available value from a mapping using candidate keys.
-
-    Parameters
-    ----------
-    mapping
-        Mapping-like object.
-    keys
-        Single key or ordered sequence of candidate keys.
-    default
-        Value returned when no key is available.
-
-    Returns
-    -------
-    Any
-        Retrieved value or the provided default.
-    """
+    """Return the first available value from a mapping using candidate keys."""
 
     if mapping is None:
         return default
@@ -1702,31 +1160,11 @@ def safe_mapping_get(
 def get_value(
     obj: Any,
     names: Union[str, Sequence[str]],
-    *,
     default: Any = None,
+    *,
     call: bool = False,
 ) -> Any:
-    """
-    Retrieve a value from either attributes or mapping keys.
-
-    Attribute access is attempted first, followed by mapping lookup.
-
-    Parameters
-    ----------
-    obj
-        Source object or mapping.
-    names
-        Candidate attribute or key names.
-    default
-        Value returned when no candidate is available.
-    call
-        Whether callable attributes should be invoked.
-
-    Returns
-    -------
-    Any
-        Retrieved value or the provided default.
-    """
+    """Retrieve a value from either attributes or mapping keys."""
 
     value = safe_getattr(
         obj,
@@ -1746,44 +1184,13 @@ def get_value(
 
 
 def normalize_element(value: Any) -> str:
-    """
-    Normalize an element representation to an uppercase chemical symbol.
-
-    Parameters
-    ----------
-    value
-        Element name, symbol, atomic object, or atomic number.
-
-    Returns
-    -------
-    str
-        Normalized element symbol or an empty string when unavailable.
-    """
+    """Normalize an element representation to an uppercase chemical symbol."""
 
     if value is None:
         return ""
 
     if isinstance(value, int):
-        atomic_number_map = {
-            1: "H",
-            6: "C",
-            7: "N",
-            8: "O",
-            9: "F",
-            11: "NA",
-            12: "MG",
-            15: "P",
-            16: "S",
-            17: "CL",
-            19: "K",
-            20: "CA",
-            26: "FE",
-            30: "ZN",
-            35: "BR",
-            53: "I",
-        }
-
-        return atomic_number_map.get(value, "")
+        return _ATOMIC_NUMBER_TO_ELEMENT.get(value, "")
 
     nested_name = safe_getattr(
         value,
@@ -1802,28 +1209,8 @@ def normalize_element(value: Any) -> str:
     if text.isdigit():
         return normalize_element(int(text))
 
-    aliases = {
-        "HYDROGEN": "H",
-        "CARBON": "C",
-        "NITROGEN": "N",
-        "OXYGEN": "O",
-        "PHOSPHORUS": "P",
-        "SULFUR": "S",
-        "SULPHUR": "S",
-        "FLUORINE": "F",
-        "CHLORINE": "CL",
-        "BROMINE": "BR",
-        "IODINE": "I",
-        "SODIUM": "NA",
-        "POTASSIUM": "K",
-        "CALCIUM": "CA",
-        "MAGNESIUM": "MG",
-        "IRON": "FE",
-        "ZINC": "ZN",
-    }
-
-    if text in aliases:
-        return aliases[text]
+    if text in _ELEMENT_NAME_ALIASES:
+        return _ELEMENT_NAME_ALIASES[text]
 
     letters = "".join(character for character in text if character.isalpha())
 
@@ -1837,24 +1224,7 @@ def normalize_element(value: Any) -> str:
 
 
 def infer_element_from_atom_name(atom_name: Any) -> str:
-    """
-    Infer an element symbol from a molecular atom name.
-
-    Parameters
-    ----------
-    atom_name
-        Atom name such as ``"NZ"``, ``"OD1"``, or ``"CL1"``.
-
-    Returns
-    -------
-    str
-        Inferred uppercase element symbol.
-
-    Notes
-    -----
-    This function performs only syntactic inference. Chemical validation
-    remains the responsibility of the recognition section.
-    """
+    """Infer an element symbol from a molecular atom name."""
 
     text = normalize_text(atom_name, uppercase=True)
 
@@ -1866,36 +1236,14 @@ def infer_element_from_atom_name(atom_name: Any) -> str:
     if not text:
         return ""
 
-    two_letter_elements = {
-        "BR",
-        "CA",
-        "CL",
-        "FE",
-        "MG",
-        "NA",
-        "ZN",
-    }
-
-    if len(text) >= 2 and text[:2] in two_letter_elements:
+    if len(text) >= 2 and text[:2] in _TWO_LETTER_ELEMENTS:
         return text[:2]
 
     return text[0]
 
 
 def get_atom_name(atom: AtomLike) -> str:
-    """
-    Return a normalized atom name.
-
-    Parameters
-    ----------
-    atom
-        Molecular atom-like object.
-
-    Returns
-    -------
-    str
-        Atom name with surrounding whitespace removed.
-    """
+    """Return a normalized atom name."""
 
     value = get_value(
         atom,
@@ -1907,22 +1255,7 @@ def get_atom_name(atom: AtomLike) -> str:
 
 
 def get_atom_element(atom: AtomLike) -> str:
-    """
-    Return the normalized chemical element of an atom.
-
-    Explicit element information is preferred. When unavailable, the element
-    is inferred from the atom name.
-
-    Parameters
-    ----------
-    atom
-        Molecular atom-like object.
-
-    Returns
-    -------
-    str
-        Uppercase element symbol.
-    """
+    """Return the normalized chemical element of an atom."""
 
     value = get_value(
         atom,
@@ -1944,19 +1277,7 @@ def get_atom_element(atom: AtomLike) -> str:
 
 
 def get_atom_residue(atom: AtomLike) -> Optional[ResidueLike]:
-    """
-    Return the parent residue of an atom when available.
-
-    Parameters
-    ----------
-    atom
-        Molecular atom-like object.
-
-    Returns
-    -------
-    Optional[ResidueLike]
-        Parent residue reference or ``None``.
-    """
+    """Return the parent residue of an atom when available."""
 
     return get_value(
         atom,
@@ -1966,19 +1287,7 @@ def get_atom_residue(atom: AtomLike) -> Optional[ResidueLike]:
 
 
 def get_residue_name(residue: Optional[ResidueLike]) -> str:
-    """
-    Return a normalized uppercase residue name.
-
-    Parameters
-    ----------
-    residue
-        Residue-like object.
-
-    Returns
-    -------
-    str
-        Uppercase residue name.
-    """
+    """Return a normalized uppercase residue name."""
 
     value = get_value(
         residue,
@@ -1992,19 +1301,7 @@ def get_residue_name(residue: Optional[ResidueLike]) -> str:
 def get_residue_number(
     residue: Optional[ResidueLike],
 ) -> Optional[Union[int, str]]:
-    """
-    Return the residue sequence number or identifier.
-
-    Parameters
-    ----------
-    residue
-        Residue-like object.
-
-    Returns
-    -------
-    Optional[Union[int, str]]
-        Residue number, identifier, or ``None``.
-    """
+    """Return the residue sequence number or identifier."""
 
     value = get_value(
         residue,
@@ -2032,19 +1329,7 @@ def get_residue_number(
 
 
 def get_chain_id(residue: Optional[ResidueLike]) -> str:
-    """
-    Return the normalized chain identifier associated with a residue.
-
-    Parameters
-    ----------
-    residue
-        Residue-like object.
-
-    Returns
-    -------
-    str
-        Chain identifier or an empty string.
-    """
+    """Return the normalized chain identifier associated with a residue."""
 
     chain_value = get_value(
         residue,
@@ -2067,19 +1352,7 @@ def get_chain_id(residue: Optional[ResidueLike]) -> str:
 
 
 def get_atom_serial(atom: AtomLike) -> Optional[Union[int, str]]:
-    """
-    Return an atom serial number or identifier.
-
-    Parameters
-    ----------
-    atom
-        Molecular atom-like object.
-
-    Returns
-    -------
-    Optional[Union[int, str]]
-        Atom serial, identifier, or ``None``.
-    """
+    """Return an atom serial number or identifier."""
 
     value = get_value(
         atom,
@@ -2111,26 +1384,7 @@ def normalize_coordinate(
     *,
     strict: bool = False,
 ) -> Optional[Coordinate]:
-    """
-    Convert a coordinate-like object into a three-component float tuple.
-
-    Parameters
-    ----------
-    coordinate
-        Coordinate-like object, sequence, array, or object exposing x, y, z.
-    strict
-        Whether invalid coordinates should raise an exception.
-
-    Returns
-    -------
-    Optional[Coordinate]
-        Normalized coordinate or ``None``.
-
-    Raises
-    ------
-    MissingCoordinatesError
-        If strict mode is enabled and the coordinate cannot be normalized.
-    """
+    """Convert a coordinate-like object into a three-component float tuple."""
 
     if coordinate is None:
         if strict:
@@ -2186,25 +1440,12 @@ def get_atom_coordinate(
     atom: AtomLike,
     *,
     strict: bool = False,
+    required: Optional[bool] = None,
 ) -> Optional[Coordinate]:
-    """
-    Return normalized Cartesian coordinates for an atom.
+    """Return normalized Cartesian coordinates for an atom."""
 
-    Several common molecular APIs are supported, including ``coord``,
-    ``coords``, ``scene_coord``, ``xyz``, and direct x/y/z attributes.
-
-    Parameters
-    ----------
-    atom
-        Molecular atom-like object.
-    strict
-        Whether missing or invalid coordinates should raise an exception.
-
-    Returns
-    -------
-    Optional[Coordinate]
-        Atom coordinate or ``None``.
-    """
+    if required is not None:
+        strict = bool(required)
 
     coordinate = get_value(
         atom,
@@ -2240,19 +1481,7 @@ def get_atom_coordinate(
 
 
 def coordinate_is_finite(coordinate: Any) -> bool:
-    """
-    Return whether a coordinate can be normalized to finite x, y, z values.
-
-    Parameters
-    ----------
-    coordinate
-        Coordinate-like value.
-
-    Returns
-    -------
-    bool
-        ``True`` when the coordinate is valid.
-    """
+    """Return whether a coordinate can be normalized to finite x, y, z values."""
 
     return normalize_coordinate(coordinate) is not None
 
@@ -2261,21 +1490,7 @@ def squared_distance(
     first: Coordinate,
     second: Coordinate,
 ) -> float:
-    """
-    Return the squared Euclidean distance between two coordinates.
-
-    Parameters
-    ----------
-    first
-        First Cartesian coordinate.
-    second
-        Second Cartesian coordinate.
-
-    Returns
-    -------
-    float
-        Squared distance in square angstroms.
-    """
+    """Return the squared Euclidean distance between two coordinates."""
 
     first_coordinate = normalize_coordinate(first, strict=True)
     second_coordinate = normalize_coordinate(second, strict=True)
@@ -2291,21 +1506,7 @@ def distance(
     first: Coordinate,
     second: Coordinate,
 ) -> float:
-    """
-    Return the Euclidean distance between two Cartesian coordinates.
-
-    Parameters
-    ----------
-    first
-        First coordinate.
-    second
-        Second coordinate.
-
-    Returns
-    -------
-    float
-        Distance in angstroms.
-    """
+    """Return the Euclidean distance between two Cartesian coordinates."""
 
     return math.sqrt(squared_distance(first, second))
 
@@ -2315,29 +1516,7 @@ def mean_coordinate(
     *,
     strict: bool = True,
 ) -> Optional[Coordinate]:
-    """
-    Return the arithmetic mean of valid Cartesian coordinates.
-
-    Parameters
-    ----------
-    coordinates
-        Iterable of coordinate-like values.
-    strict
-        Whether invalid entries or an empty collection should raise an
-        exception.
-
-    Returns
-    -------
-    Optional[Coordinate]
-        Mean coordinate or ``None`` when strict mode is disabled.
-
-    Raises
-    ------
-    DegenerateGeometryError
-        If no valid coordinate is available.
-    MissingCoordinatesError
-        If strict mode is enabled and an invalid coordinate is encountered.
-    """
+    """Return the arithmetic mean of valid Cartesian coordinates."""
 
     count = 0
     sum_x = 0.0
@@ -2375,23 +1554,7 @@ def mean_coordinate(
 
 
 def iter_atoms(source: Any) -> Iterator[AtomLike]:
-    """
-    Iterate over atoms from a structure, residue, atom collection, or iterable.
-
-    Parameters
-    ----------
-    source
-        Molecular source object.
-
-    Yields
-    ------
-    AtomLike
-        Atom-like objects.
-
-    Notes
-    -----
-    Strings, bytes, and mappings are not treated as atom iterables.
-    """
+    """Iterate over atoms from a structure, residue, atom collection, or iterable."""
 
     if source is None:
         return
@@ -2431,19 +1594,7 @@ def iter_atoms(source: Any) -> Iterator[AtomLike]:
 
 
 def iter_residues(source: Any) -> Iterator[ResidueLike]:
-    """
-    Iterate over residues from a structure, residue collection, or iterable.
-
-    Parameters
-    ----------
-    source
-        Molecular source object.
-
-    Yields
-    ------
-    ResidueLike
-        Residue-like objects.
-    """
+    """Iterate over residues from a structure, residue collection, or iterable."""
 
     if source is None:
         return
@@ -2483,29 +1634,23 @@ def iter_residues(source: Any) -> Iterator[ResidueLike]:
 
 
 def atom_identity(atom: AtomLike) -> Tuple[Any, ...]:
-    """
-    Return a hashable identity key for an atom.
-
-    Explicit serial identifiers are preferred. When unavailable, the key uses
-    residue and atom descriptors followed by the Python object identity.
-
-    Parameters
-    ----------
-    atom
-        Molecular atom-like object.
-
-    Returns
-    -------
-    Tuple[Any, ...]
-        Hashable atom identity key.
-    """
+    """Return a hashable identity key for an atom."""
 
     serial = get_atom_serial(atom)
+    residue = get_atom_residue(atom)
+
+    if serial is not None and residue is not None:
+        return (
+            "serial",
+            get_chain_id(residue),
+            get_residue_number(residue),
+            get_residue_name(residue),
+            serial,
+            get_atom_name(atom),
+        )
 
     if serial is not None:
-        return ("serial", serial)
-
-    residue = get_atom_residue(atom)
+        return ("serial_object", serial, get_atom_name(atom), id(atom))
 
     return (
         "atom",
@@ -2520,48 +1665,23 @@ def atom_identity(atom: AtomLike) -> Tuple[Any, ...]:
 def residue_identity(
     residue: Optional[ResidueLike],
 ) -> Tuple[Any, ...]:
-    """
-    Return a hashable identity key for a residue.
-
-    Parameters
-    ----------
-    residue
-        Residue-like object.
-
-    Returns
-    -------
-    Tuple[Any, ...]
-        Hashable residue identity key.
-    """
+    """Return a hashable identity key for a residue."""
 
     if residue is None:
         return ("residue", None)
 
-    return (
-        "residue",
-        get_chain_id(residue),
-        get_residue_number(residue),
-        get_residue_name(residue),
-        id(residue),
-    )
+    chain_id = get_chain_id(residue)
+    residue_number = get_residue_number(residue)
+    residue_name = get_residue_name(residue)
+    if chain_id or residue_number is not None or residue_name:
+        return ("residue", chain_id, residue_number, residue_name)
+    return ("residue_object", id(residue))
 
 
 def charged_atom_identity(
     charged_atom: ChargedAtom,
 ) -> Tuple[Any, ...]:
-    """
-    Return a stable identity key for a ChargedAtom instance.
-
-    Parameters
-    ----------
-    charged_atom
-        Charged atom wrapper.
-
-    Returns
-    -------
-    Tuple[Any, ...]
-        Hashable identity key.
-    """
+    """Return a stable identity key for a ChargedAtom instance."""
 
     return atom_identity(charged_atom.atom)
 
@@ -2571,21 +1691,7 @@ def charged_group_identity(
     *,
     include_polarity: bool = True,
 ) -> Tuple[Any, ...]:
-    """
-    Return an order-independent identity key for a charged group.
-
-    Parameters
-    ----------
-    group
-        Charged group.
-    include_polarity
-        Whether group polarity should be included in the key.
-
-    Returns
-    -------
-    Tuple[Any, ...]
-        Hashable charged-group identity key.
-    """
+    """Return an order-independent identity key for a charged group."""
 
     atom_keys = tuple(
         sorted(
@@ -2620,21 +1726,7 @@ def make_residue_label(
     *,
     fallback: str = "unknown_residue",
 ) -> str:
-    """
-    Build a compact human-readable residue label.
-
-    Parameters
-    ----------
-    residue
-        Residue-like object.
-    fallback
-        Label returned when residue information is unavailable.
-
-    Returns
-    -------
-    str
-        Residue label such as ``"A:ASP42"``.
-    """
+    """Build a compact human-readable residue label."""
 
     if residue is None:
         return fallback
@@ -2662,21 +1754,7 @@ def make_atom_label(
     *,
     fallback: str = "unknown_atom",
 ) -> str:
-    """
-    Build a compact human-readable atom label.
-
-    Parameters
-    ----------
-    atom
-        Atom-like object.
-    fallback
-        Label returned when atom information is unavailable.
-
-    Returns
-    -------
-    str
-        Atom label such as ``"A:LYS15:NZ"``.
-    """
+    """Build a compact human-readable atom label."""
 
     if atom is None:
         return fallback
@@ -2695,21 +1773,7 @@ def make_group_label(
     *,
     include_atoms: bool = False,
 ) -> str:
-    """
-    Build a human-readable charged-group label.
-
-    Parameters
-    ----------
-    group
-        Charged group.
-    include_atoms
-        Whether atom names should be appended to the label.
-
-    Returns
-    -------
-    str
-        Compact group label.
-    """
+    """Build a human-readable charged-group label."""
 
     residue_label = make_residue_label(group.residue)
     base_label = (
@@ -2730,24 +1794,7 @@ def make_group_label(
 def resolve_config(
     config: Optional[SaltBridgeConfig] = None,
 ) -> SaltBridgeConfig:
-    """
-    Return a validated configuration instance.
-
-    Parameters
-    ----------
-    config
-        Explicit configuration or ``None``.
-
-    Returns
-    -------
-    SaltBridgeConfig
-        Provided configuration or a fresh copy of the default configuration.
-
-    Raises
-    ------
-    SaltBridgeConfigurationError
-        If the supplied object is not a SaltBridgeConfig instance.
-    """
+    """Return a validated configuration instance."""
 
     if config is None:
         return DEFAULT_SALT_BRIDGE_CONFIG.copy_with()
@@ -2767,25 +1814,7 @@ def handle_error(
     warnings: Optional[List[str]] = None,
     context: Optional[str] = None,
 ) -> None:
-    """
-    Apply the configured strict or permissive error-handling strategy.
-
-    Parameters
-    ----------
-    error
-        Exception that occurred.
-    config
-        Salt-bridge configuration.
-    warnings
-        Optional list receiving non-fatal warning messages.
-    context
-        Optional operation description added to the warning.
-
-    Raises
-    ------
-    Exception
-        Re-raises the original exception when strict mode is enabled.
-    """
+    """Apply the configured strict or permissive error-handling strategy."""
 
     resolved_config = resolve_config(config)
 
@@ -2806,21 +1835,7 @@ def unique_preserve_order(
     *,
     key: Optional[Any] = None,
 ) -> List[Any]:
-    """
-    Return unique values while preserving their original order.
-
-    Parameters
-    ----------
-    values
-        Input iterable.
-    key
-        Optional callable used to produce hashable identity keys.
-
-    Returns
-    -------
-    List[Any]
-        Ordered list without duplicate entries.
-    """
+    """Return unique values while preserving their original order."""
 
     result: List[Any] = []
     seen: Set[Any] = set()
@@ -2847,26 +1862,7 @@ def pairwise_candidates(
     positive_groups: Iterable[ChargedGroup],
     negative_groups: Iterable[ChargedGroup],
 ) -> Iterator[Tuple[ChargedGroup, ChargedGroup]]:
-    """
-    Yield cation-anion candidate pairs without materializing a Cartesian list.
-
-    Parameters
-    ----------
-    positive_groups
-        Iterable containing positively charged groups.
-    negative_groups
-        Iterable containing negatively charged groups.
-
-    Yields
-    ------
-    Tuple[ChargedGroup, ChargedGroup]
-        Ordered cation-anion pair.
-
-    Raises
-    ------
-    InvalidChargedGroupError
-        If a group has an incompatible polarity.
-    """
+    """Yield cation-anion candidate pairs without materializing a Cartesian list."""
 
     negative_group_tuple = tuple(negative_groups)
 
@@ -2884,7 +1880,6 @@ def pairwise_candidates(
 
         for negative_group in negative_group_tuple:
             yield positive_group, negative_group
-
 
 
 # =============================================================================
@@ -3044,27 +2039,25 @@ _STRUCTURE_RESIDUE_ATTRIBUTE_NAMES = (
     "residue_list",
 )
 
+_CHARGE_ALIASES = {
+    "+": 1.0,
+    "++": 2.0,
+    "+++": 3.0,
+    "-": -1.0,
+    "--": -2.0,
+    "---": -3.0,
+    "POSITIVE": 1.0,
+    "NEGATIVE": -1.0,
+    "NEUTRAL": 0.0,
+}
+
 
 def normalize_charge_value(
     value: Any,
     *,
     default: Optional[float] = None,
 ) -> Optional[float]:
-    """
-    Normalize a formal or partial charge value.
-
-    Parameters
-    ----------
-    value
-        Numeric charge, numeric string, or library-specific charge object.
-    default
-        Value returned when the charge cannot be interpreted.
-
-    Returns
-    -------
-    Optional[float]
-        Finite normalized charge or the provided default.
-    """
+    """Normalize charge value."""
 
     if value is None:
         return default
@@ -3072,19 +2065,7 @@ def normalize_charge_value(
     if isinstance(value, str):
         normalized_text = value.strip()
 
-        charge_aliases = {
-            "+": 1.0,
-            "++": 2.0,
-            "+++": 3.0,
-            "-": -1.0,
-            "--": -2.0,
-            "---": -3.0,
-            "POSITIVE": 1.0,
-            "NEGATIVE": -1.0,
-            "NEUTRAL": 0.0,
-        }
-
-        alias_value = charge_aliases.get(normalized_text.upper())
+        alias_value = _CHARGE_ALIASES.get(normalized_text.upper())
 
         if alias_value is not None:
             return alias_value
@@ -3130,19 +2111,7 @@ def normalize_charge_value(
 def get_atom_formal_charge(
     atom: AtomLike,
 ) -> Optional[float]:
-    """
-    Return an explicit formal charge from an atom-like object.
-
-    Parameters
-    ----------
-    atom
-        Molecular atom-like object.
-
-    Returns
-    -------
-    Optional[float]
-        Formal charge or ``None`` when unavailable.
-    """
+    """Get atom formal charge."""
 
     raw_charge = get_value(
         atom,
@@ -3157,19 +2126,7 @@ def get_atom_formal_charge(
 def get_atom_partial_charge(
     atom: AtomLike,
 ) -> Optional[float]:
-    """
-    Return an explicit partial charge from an atom-like object.
-
-    Parameters
-    ----------
-    atom
-        Molecular atom-like object.
-
-    Returns
-    -------
-    Optional[float]
-        Partial charge or ``None`` when unavailable.
-    """
+    """Get atom partial charge."""
 
     raw_charge = get_value(
         atom,
@@ -3187,23 +2144,7 @@ def classify_numeric_charge(
     positive_threshold: float,
     negative_threshold: float,
 ) -> str:
-    """
-    Classify a numeric charge as positive, negative, or neutral.
-
-    Parameters
-    ----------
-    charge
-        Numeric atomic or group charge.
-    positive_threshold
-        Minimum positive value accepted as positively charged.
-    negative_threshold
-        Maximum negative value accepted as negatively charged.
-
-    Returns
-    -------
-    str
-        ``"positive"``, ``"negative"``, or ``"neutral"``.
-    """
+    """Classify numeric charge."""
 
     if charge is None:
         return "neutral"
@@ -3226,23 +2167,7 @@ def get_atom_charge_polarity(
     atom: AtomLike,
     config: Optional[SaltBridgeConfig] = None,
 ) -> Tuple[str, str, Optional[float], Optional[float]]:
-    """
-    Determine atomic charge polarity from explicit charge information.
-
-    Formal charge is evaluated before partial charge.
-
-    Parameters
-    ----------
-    atom
-        Molecular atom-like object.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    Tuple[str, str, Optional[float], Optional[float]]
-        Polarity, recognition source, formal charge, and partial charge.
-    """
+    """Get atom charge polarity."""
 
     resolved_config = resolve_config(config)
 
@@ -3305,27 +2230,7 @@ def make_charged_atom(
     config: Optional[SaltBridgeConfig] = None,
     metadata: Optional[Mapping[str, Any]] = None,
 ) -> ChargedAtom:
-    """
-    Create a ChargedAtom wrapper from an original atom object.
-
-    Parameters
-    ----------
-    atom
-        Original molecular atom.
-    polarity
-        Explicit polarity override.
-    source
-        Explicit recognition-source override.
-    config
-        Salt-bridge configuration.
-    metadata
-        Optional compact metadata mapping.
-
-    Returns
-    -------
-    ChargedAtom
-        Validated charged-atom representation.
-    """
+    """Make charged atom."""
 
     resolved_config = resolve_config(config)
 
@@ -3371,19 +2276,7 @@ def make_charged_atom(
 def get_atom_neighbors(
     atom: AtomLike,
 ) -> Tuple[AtomLike, ...]:
-    """
-    Return atoms directly bonded to an atom.
-
-    Parameters
-    ----------
-    atom
-        Molecular atom-like object.
-
-    Returns
-    -------
-    Tuple[AtomLike, ...]
-        Unique neighboring atoms.
-    """
+    """Get atom neighbors."""
 
     neighbors = get_value(
         atom,
@@ -3468,19 +2361,7 @@ def get_atom_neighbors(
 def get_residue_atoms(
     residue: Optional[ResidueLike],
 ) -> Tuple[AtomLike, ...]:
-    """
-    Return all atoms associated with a residue.
-
-    Parameters
-    ----------
-    residue
-        Residue-like object.
-
-    Returns
-    -------
-    Tuple[AtomLike, ...]
-        Residue atoms.
-    """
+    """Get residue atoms."""
 
     if residue is None:
         return ()
@@ -3506,21 +2387,7 @@ def get_atom_by_name(
     residue: Optional[ResidueLike],
     atom_name: str,
 ) -> Optional[AtomLike]:
-    """
-    Return the first residue atom matching an atom name.
-
-    Parameters
-    ----------
-    residue
-        Residue-like object.
-    atom_name
-        Target atom name.
-
-    Returns
-    -------
-    Optional[AtomLike]
-        Matching atom or ``None``.
-    """
+    """Get atom by name."""
 
     normalized_target = normalize_text(
         atom_name,
@@ -3541,21 +2408,7 @@ def get_atoms_by_names(
     residue: Optional[ResidueLike],
     atom_names: Iterable[str],
 ) -> Tuple[AtomLike, ...]:
-    """
-    Return residue atoms matching any requested atom name.
-
-    Parameters
-    ----------
-    residue
-        Residue-like object.
-    atom_names
-        Accepted atom names.
-
-    Returns
-    -------
-    Tuple[AtomLike, ...]
-        Matching atoms in residue order.
-    """
+    """Get atoms by names."""
 
     normalized_names = {
         normalize_text(name, uppercase=True)
@@ -3575,19 +2428,7 @@ def get_atoms_by_names(
 def classify_residue_category(
     residue: Optional[ResidueLike],
 ) -> str:
-    """
-    Classify a residue as protein, nucleic acid, or ligand-like.
-
-    Parameters
-    ----------
-    residue
-        Residue-like object.
-
-    Returns
-    -------
-    str
-        ``"protein"``, ``"nucleic_acid"``, or ``"ligand"``.
-    """
+    """Classify residue category."""
 
     residue_name = get_residue_name(residue)
 
@@ -3627,21 +2468,7 @@ def residue_category_is_enabled(
     residue: Optional[ResidueLike],
     config: Optional[SaltBridgeConfig] = None,
 ) -> bool:
-    """
-    Return whether a residue category is enabled by the configuration.
-
-    Parameters
-    ----------
-    residue
-        Residue-like object.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    bool
-        Whether the residue should be analyzed.
-    """
+    """Residue category is enabled."""
 
     resolved_config = resolve_config(config)
     category = classify_residue_category(residue)
@@ -3664,21 +2491,7 @@ def recognize_arginine_group(
     residue: ResidueLike,
     config: Optional[SaltBridgeConfig] = None,
 ) -> Optional[ChargedGroup]:
-    """
-    Recognize the positively charged arginine guanidinium group.
-
-    Parameters
-    ----------
-    residue
-        Arginine residue.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    Optional[ChargedGroup]
-        Recognized guanidinium group or ``None``.
-    """
+    """Recognize arginine group."""
 
     resolved_config = resolve_config(config)
 
@@ -3738,21 +2551,7 @@ def recognize_lysine_group(
     residue: ResidueLike,
     config: Optional[SaltBridgeConfig] = None,
 ) -> Optional[ChargedGroup]:
-    """
-    Recognize the positively charged lysine terminal ammonium group.
-
-    Parameters
-    ----------
-    residue
-        Lysine residue.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    Optional[ChargedGroup]
-        Recognized ammonium group or ``None``.
-    """
+    """Recognize lysine group."""
 
     resolved_config = resolve_config(config)
 
@@ -3792,24 +2591,7 @@ def recognize_histidine_group(
     residue: ResidueLike,
     config: Optional[SaltBridgeConfig] = None,
 ) -> Optional[ChargedGroup]:
-    """
-    Recognize a positively protonated histidine imidazolium group.
-
-    Neutral histidine variants are not assigned a positive charge unless
-    explicit atomic charges independently support that assignment.
-
-    Parameters
-    ----------
-    residue
-        Histidine-like residue.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    Optional[ChargedGroup]
-        Recognized imidazolium group or ``None``.
-    """
+    """Recognize histidine group."""
 
     resolved_config = resolve_config(config)
     residue_name = get_residue_name(residue)
@@ -3871,25 +2653,19 @@ def recognize_histidine_group(
     )
 
 
+_CANONICAL_CATIONIC_RECOGNIZERS = {
+    "ARG": recognize_arginine_group,
+    "LYS": recognize_lysine_group,
+    "HIP": recognize_histidine_group,
+    "HSP": recognize_histidine_group,
+}
+
+
 def recognize_canonical_cationic_group(
     residue: ResidueLike,
     config: Optional[SaltBridgeConfig] = None,
 ) -> Optional[ChargedGroup]:
-    """
-    Recognize a canonical cationic protein-residue group.
-
-    Parameters
-    ----------
-    residue
-        Residue-like object.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    Optional[ChargedGroup]
-        Recognized group or ``None``.
-    """
+    """Recognize canonical cationic group."""
 
     resolved_config = resolve_config(config)
 
@@ -3898,14 +2674,7 @@ def recognize_canonical_cationic_group(
 
     residue_name = get_residue_name(residue)
 
-    recognizers = {
-        "ARG": recognize_arginine_group,
-        "LYS": recognize_lysine_group,
-        "HIP": recognize_histidine_group,
-        "HSP": recognize_histidine_group,
-    }
-
-    recognizer = recognizers.get(residue_name)
+    recognizer = _CANONICAL_CATIONIC_RECOGNIZERS.get(residue_name)
 
     if recognizer is None:
         return None
@@ -3922,21 +2691,7 @@ def recognize_aspartate_group(
     residue: ResidueLike,
     config: Optional[SaltBridgeConfig] = None,
 ) -> Optional[ChargedGroup]:
-    """
-    Recognize the negatively charged aspartate carboxylate group.
-
-    Parameters
-    ----------
-    residue
-        Aspartate residue.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    Optional[ChargedGroup]
-        Recognized carboxylate group or ``None``.
-    """
+    """Recognize aspartate group."""
 
     resolved_config = resolve_config(config)
 
@@ -3998,21 +2753,7 @@ def recognize_glutamate_group(
     residue: ResidueLike,
     config: Optional[SaltBridgeConfig] = None,
 ) -> Optional[ChargedGroup]:
-    """
-    Recognize the negatively charged glutamate carboxylate group.
-
-    Parameters
-    ----------
-    residue
-        Glutamate residue.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    Optional[ChargedGroup]
-        Recognized carboxylate group or ``None``.
-    """
+    """Recognize glutamate group."""
 
     resolved_config = resolve_config(config)
 
@@ -4070,25 +2811,17 @@ def recognize_glutamate_group(
     )
 
 
+_CANONICAL_ANIONIC_RECOGNIZERS = {
+    "ASP": recognize_aspartate_group,
+    "GLU": recognize_glutamate_group,
+}
+
+
 def recognize_canonical_anionic_group(
     residue: ResidueLike,
     config: Optional[SaltBridgeConfig] = None,
 ) -> Optional[ChargedGroup]:
-    """
-    Recognize a canonical anionic protein-residue group.
-
-    Parameters
-    ----------
-    residue
-        Residue-like object.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    Optional[ChargedGroup]
-        Recognized group or ``None``.
-    """
+    """Recognize canonical anionic group."""
 
     resolved_config = resolve_config(config)
 
@@ -4097,12 +2830,7 @@ def recognize_canonical_anionic_group(
 
     residue_name = get_residue_name(residue)
 
-    recognizers = {
-        "ASP": recognize_aspartate_group,
-        "GLU": recognize_glutamate_group,
-    }
-
-    recognizer = recognizers.get(residue_name)
+    recognizer = _CANONICAL_ANIONIC_RECOGNIZERS.get(residue_name)
 
     if recognizer is None:
         return None
@@ -4119,21 +2847,7 @@ def infer_group_type_from_atoms(
     atoms: Sequence[AtomLike],
     polarity: str,
 ) -> str:
-    """
-    Infer a compact chemical-group type from atom elements and connectivity.
-
-    Parameters
-    ----------
-    atoms
-        Atoms defining a charged group.
-    polarity
-        Expected group polarity.
-
-    Returns
-    -------
-    str
-        Inferred group-type label.
-    """
+    """Infer group type from atoms."""
 
     normalized_polarity = normalize_text(
         polarity,
@@ -4193,23 +2907,7 @@ def build_formal_charge_components(
     polarity: str,
     config: Optional[SaltBridgeConfig] = None,
 ) -> List[Tuple[AtomLike, ...]]:
-    """
-    Build connected components of atoms carrying the requested formal polarity.
-
-    Parameters
-    ----------
-    atoms
-        Input atom collection.
-    polarity
-        Requested polarity.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    List[Tuple[AtomLike, ...]]
-        Connected charged-atom components.
-    """
+    """Build formal charge components."""
 
     resolved_config = resolve_config(config)
     normalized_polarity = normalize_text(
@@ -4273,24 +2971,7 @@ def expand_charged_component(
     *,
     polarity: str,
 ) -> Tuple[AtomLike, ...]:
-    """
-    Expand explicitly charged atoms to include directly bonded heteroatoms.
-
-    This expansion captures delocalized groups when only one atom carries an
-    explicit formal charge in the source format.
-
-    Parameters
-    ----------
-    charged_atoms
-        Atoms with explicit charge.
-    polarity
-        Group polarity.
-
-    Returns
-    -------
-    Tuple[AtomLike, ...]
-        Expanded atom component.
-    """
+    """Expand charged component."""
 
     normalized_polarity = normalize_text(
         polarity,
@@ -4326,21 +3007,7 @@ def recognize_ligand_groups_by_formal_charge(
     residue: ResidueLike,
     config: Optional[SaltBridgeConfig] = None,
 ) -> List[ChargedGroup]:
-    """
-    Recognize ligand charged groups using explicit formal charges.
-
-    Parameters
-    ----------
-    residue
-        Ligand-like residue.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    List[ChargedGroup]
-        Recognized cationic and anionic ligand groups.
-    """
+    """Recognize ligand groups by formal charge."""
 
     resolved_config = resolve_config(config)
 
@@ -4428,25 +3095,7 @@ def recognize_ligand_groups_by_partial_charge(
     residue: ResidueLike,
     config: Optional[SaltBridgeConfig] = None,
 ) -> List[ChargedGroup]:
-    """
-    Recognize ligand charged atoms using partial-charge thresholds.
-
-    Partial-charge recognition is conservative and initially produces
-    single-atom groups. Later consolidation may merge adjacent atoms that
-    belong to the same chemically delocalized group.
-
-    Parameters
-    ----------
-    residue
-        Ligand-like residue.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    List[ChargedGroup]
-        Partial-charge-derived groups.
-    """
+    """Recognize ligand groups by partial charge."""
 
     resolved_config = resolve_config(config)
 
@@ -4506,21 +3155,7 @@ def detect_carboxylate_like_groups(
     residue: ResidueLike,
     config: Optional[SaltBridgeConfig] = None,
 ) -> List[ChargedGroup]:
-    """
-    Detect carboxylate-like groups from local carbon-oxygen connectivity.
-
-    Parameters
-    ----------
-    residue
-        Ligand-like residue.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    List[ChargedGroup]
-        Inferred carboxylate-like groups.
-    """
+    """Detect carboxylate like groups."""
 
     resolved_config = resolve_config(config)
     groups: List[ChargedGroup] = []
@@ -4534,6 +3169,16 @@ def detect_carboxylate_like_groups(
             for neighbor in get_atom_neighbors(carbon_atom)
             if get_atom_element(neighbor) == "O"
         )
+        if len(oxygen_neighbors) < 2:
+            carbon_coordinate = get_atom_coordinate(carbon_atom)
+            if carbon_coordinate is not None:
+                oxygen_neighbors = tuple(
+                    atom for atom in get_residue_atoms(residue)
+                    if atom is not carbon_atom
+                    and get_atom_element(atom) == "O"
+                    and (coordinate := get_atom_coordinate(atom)) is not None
+                    and distance(carbon_coordinate, coordinate) <= 1.9
+                )
 
         if len(oxygen_neighbors) < 2:
             continue
@@ -4608,21 +3253,7 @@ def detect_phosphate_or_sulfonate_groups(
     residue: ResidueLike,
     config: Optional[SaltBridgeConfig] = None,
 ) -> List[ChargedGroup]:
-    """
-    Detect phosphate-, sulfate-, and sulfonate-like anionic groups.
-
-    Parameters
-    ----------
-    residue
-        Ligand-like residue.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    List[ChargedGroup]
-        Inferred anionic heteroatom groups.
-    """
+    """Detect phosphate or sulfonate groups."""
 
     resolved_config = resolve_config(config)
     groups: List[ChargedGroup] = []
@@ -4638,6 +3269,16 @@ def detect_phosphate_or_sulfonate_groups(
             for neighbor in get_atom_neighbors(central_atom)
             if get_atom_element(neighbor) == "O"
         )
+        if not oxygen_neighbors:
+            central_coordinate = get_atom_coordinate(central_atom)
+            if central_coordinate is not None:
+                oxygen_neighbors = tuple(
+                    atom for atom in get_residue_atoms(residue)
+                    if atom is not central_atom
+                    and get_atom_element(atom) == "O"
+                    and (coordinate := get_atom_coordinate(atom)) is not None
+                    and distance(central_coordinate, coordinate) <= 2.1
+                )
 
         minimum_oxygen_count = (
             3
@@ -4719,25 +3360,7 @@ def detect_cationic_nitrogen_groups(
     residue: ResidueLike,
     config: Optional[SaltBridgeConfig] = None,
 ) -> List[ChargedGroup]:
-    """
-    Detect ligand cationic nitrogen groups.
-
-    Explicit charge evidence is preferred. A nitrogen without explicit charge
-    is retained only when ambiguity is allowed and its local connectivity is
-    compatible with a protonated or quaternary nitrogen center.
-
-    Parameters
-    ----------
-    residue
-        Ligand-like residue.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    List[ChargedGroup]
-        Inferred cationic nitrogen groups.
-    """
+    """Detect cationic nitrogen groups."""
 
     resolved_config = resolve_config(config)
     groups: List[ChargedGroup] = []
@@ -4812,21 +3435,7 @@ def recognize_ligand_charged_groups(
     residue: ResidueLike,
     config: Optional[SaltBridgeConfig] = None,
 ) -> List[ChargedGroup]:
-    """
-    Recognize charged groups in a ligand-like residue.
-
-    Parameters
-    ----------
-    residue
-        Ligand-like residue.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    List[ChargedGroup]
-        Recognized ligand charged groups.
-    """
+    """Recognize ligand charged groups."""
 
     resolved_config = resolve_config(config)
 
@@ -4883,23 +3492,7 @@ def recognize_single_atom_formal_charge_group(
     atom: AtomLike,
     config: Optional[SaltBridgeConfig] = None,
 ) -> Optional[ChargedGroup]:
-    """
-    Recognize a single-atom charged group from explicit formal charge.
-
-    This fallback is useful when residue-level connectivity is unavailable.
-
-    Parameters
-    ----------
-    atom
-        Atom-like object.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    Optional[ChargedGroup]
-        Charged group or ``None``.
-    """
+    """Recognize single atom formal charge group."""
 
     resolved_config = resolve_config(config)
 
@@ -4947,21 +3540,7 @@ def recognize_single_atom_partial_charge_group(
     atom: AtomLike,
     config: Optional[SaltBridgeConfig] = None,
 ) -> Optional[ChargedGroup]:
-    """
-    Recognize a single-atom group from partial charge.
-
-    Parameters
-    ----------
-    atom
-        Atom-like object.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    Optional[ChargedGroup]
-        Charged group or ``None``.
-    """
+    """Recognize single atom partial charge group."""
 
     resolved_config = resolve_config(config)
 
@@ -5017,19 +3596,7 @@ def recognize_single_atom_partial_charge_group(
 def estimate_group_charge(
     group: ChargedGroup,
 ) -> Optional[float]:
-    """
-    Estimate a charged-group net charge from available atomic values.
-
-    Parameters
-    ----------
-    group
-        Charged group.
-
-    Returns
-    -------
-    Optional[float]
-        Estimated charge or ``None``.
-    """
+    """Estimate group charge."""
 
     if group.net_charge is not None:
         return group.net_charge
@@ -5058,19 +3625,7 @@ def estimate_group_charge(
 def group_charge_is_consistent(
     group: ChargedGroup,
 ) -> bool:
-    """
-    Return whether estimated charge agrees with group polarity.
-
-    Parameters
-    ----------
-    group
-        Charged group.
-
-    Returns
-    -------
-    bool
-        Whether charge and polarity are consistent.
-    """
+    """Group charge is consistent."""
 
     estimated_charge = estimate_group_charge(group)
 
@@ -5086,19 +3641,7 @@ def group_charge_is_consistent(
 def group_atoms_share_residue(
     group: ChargedGroup,
 ) -> bool:
-    """
-    Return whether all charged atoms belong to the same residue.
-
-    Parameters
-    ----------
-    group
-        Charged group.
-
-    Returns
-    -------
-    bool
-        Whether all parent residues are compatible.
-    """
+    """Group atoms share residue."""
 
     residue_keys = {
         residue_identity(charged_atom.residue)
@@ -5115,28 +3658,7 @@ def validate_charged_group(
     *,
     require_coordinates: bool = True,
 ) -> bool:
-    """
-    Validate a charged group against recognition requirements.
-
-    Parameters
-    ----------
-    group
-        Charged group.
-    config
-        Salt-bridge configuration.
-    require_coordinates
-        Whether at least one valid atom coordinate is required.
-
-    Returns
-    -------
-    bool
-        ``True`` when the group is accepted.
-
-    Raises
-    ------
-    InvalidChargedGroupError
-        If the group is invalid in strict mode.
-    """
+    """Validate charged group."""
 
     resolved_config = resolve_config(config)
 
@@ -5213,25 +3735,7 @@ def validate_charged_groups(
     require_coordinates: bool = True,
     warnings: Optional[List[str]] = None,
 ) -> List[ChargedGroup]:
-    """
-    Validate and retain acceptable charged groups.
-
-    Parameters
-    ----------
-    groups
-        Candidate charged groups.
-    config
-        Salt-bridge configuration.
-    require_coordinates
-        Whether valid coordinates are required.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    List[ChargedGroup]
-        Valid charged groups.
-    """
+    """Validate charged groups."""
 
     resolved_config = resolve_config(config)
     valid_groups: List[ChargedGroup] = []
@@ -5273,19 +3777,7 @@ _RECOGNITION_SOURCE_PRIORITY = {
 def charged_group_source_priority(
     group: ChargedGroup,
 ) -> int:
-    """
-    Return the priority assigned to a charged-group recognition source.
-
-    Parameters
-    ----------
-    group
-        Charged group.
-
-    Returns
-    -------
-    int
-        Source-priority value.
-    """
+    """Charged group source priority."""
 
     return _RECOGNITION_SOURCE_PRIORITY.get(
         group.source,
@@ -5297,21 +3789,7 @@ def groups_atomically_overlap(
     first: ChargedGroup,
     second: ChargedGroup,
 ) -> bool:
-    """
-    Return whether two charged groups share at least one original atom.
-
-    Parameters
-    ----------
-    first
-        First charged group.
-    second
-        Second charged group.
-
-    Returns
-    -------
-    bool
-        Whether the groups overlap.
-    """
+    """Groups atomically overlap."""
 
     first_atom_keys = {
         charged_atom_identity(charged_atom)
@@ -5330,21 +3808,7 @@ def groups_are_duplicates(
     first: ChargedGroup,
     second: ChargedGroup,
 ) -> bool:
-    """
-    Return whether two groups represent the same chemical charged feature.
-
-    Parameters
-    ----------
-    first
-        First charged group.
-    second
-        Second charged group.
-
-    Returns
-    -------
-    bool
-        Whether the groups should be considered duplicates.
-    """
+    """Groups are duplicates."""
 
     if first.polarity != second.polarity:
         return False
@@ -5387,21 +3851,7 @@ def select_preferred_group(
     first: ChargedGroup,
     second: ChargedGroup,
 ) -> ChargedGroup:
-    """
-    Select the preferred representation of two duplicate groups.
-
-    Parameters
-    ----------
-    first
-        First charged group.
-    second
-        Second charged group.
-
-    Returns
-    -------
-    ChargedGroup
-        Preferred group.
-    """
+    """Select preferred group."""
 
     first_priority = charged_group_source_priority(first)
     second_priority = charged_group_source_priority(second)
@@ -5440,21 +3890,7 @@ def deduplicate_charged_groups(
     groups: Iterable[ChargedGroup],
     config: Optional[SaltBridgeConfig] = None,
 ) -> List[ChargedGroup]:
-    """
-    Remove duplicate charged-group representations.
-
-    Parameters
-    ----------
-    groups
-        Candidate charged groups.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    List[ChargedGroup]
-        Deduplicated groups.
-    """
+    """Deduplicate charged groups."""
 
     resolved_config = resolve_config(config)
     group_list = list(groups)
@@ -5492,21 +3928,7 @@ def assign_group_identifiers(
     *,
     prefix: str = "charged_group",
 ) -> List[ChargedGroup]:
-    """
-    Assign deterministic identifiers to charged groups lacking an identifier.
-
-    Parameters
-    ----------
-    groups
-        Charged groups.
-    prefix
-        Identifier prefix.
-
-    Returns
-    -------
-    List[ChargedGroup]
-        Same group objects with assigned identifiers.
-    """
+    """Assign group identifiers."""
 
     group_list = list(groups)
 
@@ -5539,23 +3961,7 @@ def consolidate_charged_groups(
     *,
     warnings: Optional[List[str]] = None,
 ) -> List[ChargedGroup]:
-    """
-    Validate, deduplicate, sort, and identify charged groups.
-
-    Parameters
-    ----------
-    groups
-        Candidate groups.
-    config
-        Salt-bridge configuration.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    List[ChargedGroup]
-        Consolidated charged groups.
-    """
+    """Consolidate charged groups."""
 
     resolved_config = resolve_config(config)
 
@@ -5593,25 +3999,7 @@ def recognize_terminal_groups(
     residues: Sequence[ResidueLike],
     config: Optional[SaltBridgeConfig] = None,
 ) -> List[ChargedGroup]:
-    """
-    Recognize protein N-terminal and C-terminal charged groups.
-
-    Terminal recognition is conservative and relies on residue order plus
-    standard terminal atom names. Explicitly capped or modified termini should
-    be represented by their actual formal charges whenever available.
-
-    Parameters
-    ----------
-    residues
-        Ordered protein residues.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    List[ChargedGroup]
-        Recognized terminal groups.
-    """
+    """Recognize terminal groups."""
 
     resolved_config = resolve_config(config)
 
@@ -5746,21 +4134,7 @@ def recognize_nucleic_acid_phosphate_groups(
     residue: ResidueLike,
     config: Optional[SaltBridgeConfig] = None,
 ) -> List[ChargedGroup]:
-    """
-    Recognize negatively charged phosphate groups in nucleic acids.
-
-    Parameters
-    ----------
-    residue
-        Nucleic-acid residue.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    List[ChargedGroup]
-        Recognized phosphate groups.
-    """
+    """Recognize nucleic acid phosphate groups."""
 
     resolved_config = resolve_config(config)
 
@@ -5848,23 +4222,7 @@ def recognize_residue_charged_groups(
     *,
     warnings: Optional[List[str]] = None,
 ) -> List[ChargedGroup]:
-    """
-    Recognize all charged groups associated with one residue.
-
-    Parameters
-    ----------
-    residue
-        Residue-like object.
-    config
-        Salt-bridge configuration.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    List[ChargedGroup]
-        Recognized charged groups.
-    """
+    """Recognize residue charged groups."""
 
     resolved_config = resolve_config(config)
 
@@ -5931,28 +4289,7 @@ def recognize_charged_groups(
     *,
     warnings: Optional[List[str]] = None,
 ) -> Tuple[List[ChargedGroup], List[ChargedGroup]]:
-    """
-    Recognize all cationic and anionic groups in a molecular source.
-
-    The source may be a structure, a residue collection, a residue, or an atom
-    collection. Residue-level recognition is preferred because it supports
-    canonical and chemically grouped features. Atom-level charge recognition
-    is used only as a fallback when residues cannot be obtained.
-
-    Parameters
-    ----------
-    source
-        Molecular structure, residue collection, or atom collection.
-    config
-        Salt-bridge configuration.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    Tuple[List[ChargedGroup], List[ChargedGroup]]
-        Cationic groups followed by anionic groups.
-    """
+    """Recognize charged groups."""
 
     resolved_config = resolve_config(config)
     collected_groups: List[ChargedGroup] = []
@@ -6028,23 +4365,7 @@ def recognize_cationic_groups(
     *,
     warnings: Optional[List[str]] = None,
 ) -> List[ChargedGroup]:
-    """
-    Recognize only positively charged groups.
-
-    Parameters
-    ----------
-    source
-        Molecular source.
-    config
-        Salt-bridge configuration.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    List[ChargedGroup]
-        Recognized cationic groups.
-    """
+    """Recognize cationic groups."""
 
     cationic_groups, _ = recognize_charged_groups(
         source,
@@ -6061,23 +4382,7 @@ def recognize_anionic_groups(
     *,
     warnings: Optional[List[str]] = None,
 ) -> List[ChargedGroup]:
-    """
-    Recognize only negatively charged groups.
-
-    Parameters
-    ----------
-    source
-        Molecular source.
-    config
-        Salt-bridge configuration.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    List[ChargedGroup]
-        Recognized anionic groups.
-    """
+    """Recognize anionic groups."""
 
     _, anionic_groups = recognize_charged_groups(
         source,
@@ -6091,19 +4396,7 @@ def recognize_anionic_groups(
 def split_charged_groups(
     groups: Iterable[ChargedGroup],
 ) -> Tuple[List[ChargedGroup], List[ChargedGroup]]:
-    """
-    Split charged groups into positive and negative collections.
-
-    Parameters
-    ----------
-    groups
-        Charged groups.
-
-    Returns
-    -------
-    Tuple[List[ChargedGroup], List[ChargedGroup]]
-        Cationic groups followed by anionic groups.
-    """
+    """Split charged groups."""
 
     cationic_groups: List[ChargedGroup] = []
     anionic_groups: List[ChargedGroup] = []
@@ -6138,25 +4431,7 @@ def get_charged_atom_coordinate(
     *,
     strict: bool = False,
 ) -> Optional[Coordinate]:
-    """
-    Return the Cartesian coordinate associated with a charged atom.
-
-    The coordinate stored in the ChargedAtom instance is preferred. When it is
-    unavailable, the function attempts to recover the coordinate from the
-    original atom object.
-
-    Parameters
-    ----------
-    charged_atom
-        Charged-atom representation.
-    strict
-        Whether missing or invalid coordinates should raise an exception.
-
-    Returns
-    -------
-    Optional[Coordinate]
-        Normalized Cartesian coordinate or ``None``.
-    """
+    """Return a charged atom coordinate, recovering it from the source atom when needed."""
 
     if not isinstance(charged_atom, ChargedAtom):
         raise SaltBridgeGeometryError(
@@ -6185,21 +4460,7 @@ def iter_group_coordinates(
     *,
     strict: bool = False,
 ) -> Iterator[Tuple[ChargedAtom, Coordinate]]:
-    """
-    Yield charged atoms together with their valid coordinates.
-
-    Parameters
-    ----------
-    group
-        Charged group.
-    strict
-        Whether missing coordinates should raise an exception.
-
-    Yields
-    ------
-    Tuple[ChargedAtom, Coordinate]
-        Charged atom and normalized coordinate.
-    """
+    """Yield each charged atom with a valid normalized coordinate."""
 
     if not isinstance(group, ChargedGroup):
         raise SaltBridgeGeometryError(
@@ -6219,29 +4480,10 @@ def iter_group_coordinates(
 def calculate_group_center(
     group: ChargedGroup,
     *,
-    refresh: bool = False,
+    refresh: bool = True,
     strict: bool = True,
 ) -> Optional[Coordinate]:
-    """
-    Calculate the arithmetic center of a charged group.
-
-    The existing stored center is reused unless ``refresh`` is enabled.
-    The calculated value is stored back in the group to avoid repeated work.
-
-    Parameters
-    ----------
-    group
-        Charged group.
-    refresh
-        Whether an existing center should be recalculated.
-    strict
-        Whether the absence of valid coordinates should raise an exception.
-
-    Returns
-    -------
-    Optional[Coordinate]
-        Group center or ``None``.
-    """
+    """Calculate and cache the arithmetic center of a charged group."""
 
     if not isinstance(group, ChargedGroup):
         raise SaltBridgeGeometryError(
@@ -6278,21 +4520,7 @@ def resolve_group_center(
     *,
     strict: bool = True,
 ) -> Optional[Coordinate]:
-    """
-    Return a valid representative center for a charged group.
-
-    Parameters
-    ----------
-    group
-        Charged group.
-    strict
-        Whether unavailable center coordinates should raise an exception.
-
-    Returns
-    -------
-    Optional[Coordinate]
-        Representative group center.
-    """
+    """Return a valid stored or recalculated group center."""
 
     if group.center is not None:
         normalized_center = normalize_coordinate(
@@ -6315,21 +4543,7 @@ def refresh_group_geometry(
     *,
     strict: bool = True,
 ) -> ChargedGroup:
-    """
-    Refresh atom coordinates and the representative center of a group.
-
-    Parameters
-    ----------
-    group
-        Charged group.
-    strict
-        Whether coordinate failures should raise an exception.
-
-    Returns
-    -------
-    ChargedGroup
-        Same group object with refreshed geometric data.
-    """
+    """Refresh atom coordinates and the cached group center in place."""
 
     for charged_atom in group.atoms:
         coordinate = get_atom_coordinate(
@@ -6360,28 +4574,7 @@ def calculate_group_center_distance(
     *,
     strict: bool = True,
 ) -> float:
-    """
-    Calculate the distance between two charged-group centers.
-
-    Parameters
-    ----------
-    first_group
-        First charged group.
-    second_group
-        Second charged group.
-    strict
-        Whether unavailable centers should raise an exception.
-
-    Returns
-    -------
-    float
-        Center-to-center distance in angstroms.
-
-    Raises
-    ------
-    MissingCoordinatesError
-        If one of the group centers cannot be resolved.
-    """
+    """Return the Euclidean distance between two charged-group centers."""
 
     first_center = resolve_group_center(
         first_group,
@@ -6408,25 +4601,7 @@ def groups_are_center_neighbors(
     *,
     strict: bool = False,
 ) -> bool:
-    """
-    Return whether two group centers are within a distance cutoff.
-
-    Parameters
-    ----------
-    first_group
-        First charged group.
-    second_group
-        Second charged group.
-    cutoff
-        Maximum accepted center distance.
-    strict
-        Whether missing coordinates should raise an exception.
-
-    Returns
-    -------
-    bool
-        Whether the centers are within the cutoff.
-    """
+    """Return whether two group centers lie within a positive cutoff."""
 
     normalized_cutoff = safe_float(cutoff)
 
@@ -6464,31 +4639,7 @@ def iter_intergroup_atom_distances(
     minimum_distance: Optional[float] = None,
     strict: bool = False,
 ) -> Iterator[Tuple[ChargedAtom, ChargedAtom, float]]:
-    """
-    Yield atom-pair distances between two charged groups.
-
-    The function operates as a generator and does not create a complete
-    distance matrix. Optional lower and upper distance filters are evaluated
-    using squared distances before the square root is calculated.
-
-    Parameters
-    ----------
-    first_group
-        First charged group.
-    second_group
-        Second charged group.
-    cutoff
-        Optional maximum distance to retain.
-    minimum_distance
-        Optional minimum distance to retain.
-    strict
-        Whether invalid coordinates should raise an exception.
-
-    Yields
-    ------
-    Tuple[ChargedAtom, ChargedAtom, float]
-        First atom, second atom, and Euclidean distance.
-    """
+    """Yield filtered atom-pair distances between two charged groups."""
 
     maximum_distance = (
         safe_float(cutoff)
@@ -6557,9 +4708,11 @@ def iter_intergroup_atom_distances(
         first_coordinate_found = True
 
         for second_atom, second_coordinate in second_coordinates:
-            pair_squared_distance = squared_distance(
-                first_coordinate,
-                second_coordinate,
+            delta_x = first_coordinate[0] - second_coordinate[0]
+            delta_y = first_coordinate[1] - second_coordinate[1]
+            delta_z = first_coordinate[2] - second_coordinate[2]
+            pair_squared_distance = (
+                delta_x ** 2 + delta_y ** 2 + delta_z ** 2
             )
 
             if (
@@ -6594,27 +4747,7 @@ def iter_cation_anion_atom_distances(
     minimum_distance: Optional[float] = None,
     strict: bool = False,
 ) -> Iterator[Tuple[ChargedAtom, ChargedAtom, float]]:
-    """
-    Yield atom-pair distances in cation-to-anion order.
-
-    Parameters
-    ----------
-    cation
-        Positively charged group.
-    anion
-        Negatively charged group.
-    cutoff
-        Optional maximum distance to retain.
-    minimum_distance
-        Optional minimum distance to retain.
-    strict
-        Whether coordinate failures should raise an exception.
-
-    Yields
-    ------
-    Tuple[ChargedAtom, ChargedAtom, float]
-        Positive atom, negative atom, and distance.
-    """
+    """Yield filtered atom-pair distances in cation-to-anion order."""
 
     if not cation.is_positive:
         raise InvalidChargedGroupError(
@@ -6646,28 +4779,7 @@ def find_closest_atom_pair(
     *,
     strict: bool = True,
 ) -> Tuple[ChargedAtom, ChargedAtom, float]:
-    """
-    Find the shortest atom-to-atom distance between two charged groups.
-
-    Parameters
-    ----------
-    first_group
-        First charged group.
-    second_group
-        Second charged group.
-    strict
-        Whether missing coordinates should raise an exception.
-
-    Returns
-    -------
-    Tuple[ChargedAtom, ChargedAtom, float]
-        Closest atom pair and corresponding distance.
-
-    Raises
-    ------
-    DegenerateGeometryError
-        If no valid atom pair can be evaluated.
-    """
+    """Return the closest valid atom pair and its distance."""
 
     closest_first_atom: Optional[ChargedAtom] = None
     closest_second_atom: Optional[ChargedAtom] = None
@@ -6707,23 +4819,7 @@ def find_closest_cation_anion_pair(
     *,
     strict: bool = True,
 ) -> Tuple[ChargedAtom, ChargedAtom, float]:
-    """
-    Find the closest positive-negative atom pair.
-
-    Parameters
-    ----------
-    cation
-        Positively charged group.
-    anion
-        Negatively charged group.
-    strict
-        Whether coordinate failures should raise an exception.
-
-    Returns
-    -------
-    Tuple[ChargedAtom, ChargedAtom, float]
-        Positive atom, negative atom, and minimum distance.
-    """
+    """Return the closest positive-negative atom pair and distance."""
 
     if not cation.is_positive:
         raise InvalidChargedGroupError(
@@ -6756,23 +4852,7 @@ def calculate_minimum_atom_distance(
     *,
     strict: bool = True,
 ) -> float:
-    """
-    Return the shortest atom-to-atom distance between two groups.
-
-    Parameters
-    ----------
-    first_group
-        First charged group.
-    second_group
-        Second charged group.
-    strict
-        Whether missing coordinates should raise an exception.
-
-    Returns
-    -------
-    float
-        Minimum atom distance in angstroms.
-    """
+    """Return the shortest atom-to-atom distance between two groups."""
 
     _, _, minimum_distance = find_closest_atom_pair(
         first_group,
@@ -6796,30 +4876,7 @@ def collect_atomic_contacts(
     minimum_distance: float = 0.0,
     strict: bool = False,
 ) -> List[Tuple[ChargedAtom, ChargedAtom, float]]:
-    """
-    Collect cation-anion atom pairs satisfying a distance interval.
-
-    This function materializes only accepted contacts, not the full distance
-    matrix.
-
-    Parameters
-    ----------
-    cation
-        Positively charged group.
-    anion
-        Negatively charged group.
-    cutoff
-        Maximum accepted contact distance.
-    minimum_distance
-        Minimum accepted contact distance.
-    strict
-        Whether coordinate failures should raise an exception.
-
-    Returns
-    -------
-    List[Tuple[ChargedAtom, ChargedAtom, float]]
-        Accepted atomic contacts sorted by increasing distance.
-    """
+    """Return accepted cation-anion contacts sorted by distance."""
 
     contacts = list(
         iter_cation_anion_atom_distances(
@@ -6836,7 +4893,7 @@ def collect_atomic_contacts(
     return contacts
 
 
-def count_atomic_contacts(
+def count_group_atomic_contacts(
     cation: ChargedGroup,
     anion: ChargedGroup,
     *,
@@ -6844,27 +4901,7 @@ def count_atomic_contacts(
     minimum_distance: float = 0.0,
     strict: bool = False,
 ) -> int:
-    """
-    Count atom pairs satisfying a distance interval.
-
-    Parameters
-    ----------
-    cation
-        Positively charged group.
-    anion
-        Negatively charged group.
-    cutoff
-        Maximum accepted contact distance.
-    minimum_distance
-        Minimum accepted contact distance.
-    strict
-        Whether coordinate failures should raise an exception.
-
-    Returns
-    -------
-    int
-        Number of accepted atom pairs.
-    """
+    """Count cation-anion atom pairs within a distance interval."""
 
     return sum(
         1
@@ -6883,19 +4920,7 @@ def summarize_atomic_contacts(
         Tuple[ChargedAtom, ChargedAtom, float]
     ],
 ) -> Dict[str, Any]:
-    """
-    Summarize retained cation-anion atomic contacts.
-
-    Parameters
-    ----------
-    contacts
-        Iterable of positive atom, negative atom, and distance tuples.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Contact count, minimum, maximum, mean, and closest atom pair.
-    """
+    """Summarize accepted contacts and identify the closest atom pair."""
 
     contact_count = 0
     distance_sum = 0.0
@@ -6953,22 +4978,7 @@ def validate_group_pair_polarity(
     cation: ChargedGroup,
     anion: ChargedGroup,
 ) -> None:
-    """
-    Validate the polarity and identity of a candidate group pair.
-
-    Parameters
-    ----------
-    cation
-        Expected positively charged group.
-    anion
-        Expected negatively charged group.
-
-    Raises
-    ------
-    InvalidInteractionError
-        If group polarity is invalid or both references describe the same
-        charged feature.
-    """
+    """Validate an opposite-polarity group pair with no shared atoms."""
 
     if not isinstance(cation, ChargedGroup):
         raise InvalidInteractionError(
@@ -6990,15 +5000,8 @@ def validate_group_pair_polarity(
             "The anion group must have negative polarity."
         )
 
-    cation_atoms = {
-        charged_atom_identity(charged_atom)
-        for charged_atom in cation.atoms
-    }
-
-    anion_atoms = {
-        charged_atom_identity(charged_atom)
-        for charged_atom in anion.atoms
-    }
+    cation_atoms = {id(charged_atom.atom) for charged_atom in cation.atoms}
+    anion_atoms = {id(charged_atom.atom) for charged_atom in anion.atoms}
 
     if cation_atoms & anion_atoms:
         raise InvalidInteractionError(
@@ -7013,25 +5016,7 @@ def evaluate_distance_criteria(
     contact_count: int,
     config: Optional[SaltBridgeConfig] = None,
 ) -> Tuple[bool, Optional[str]]:
-    """
-    Evaluate geometric salt-bridge acceptance criteria.
-
-    Parameters
-    ----------
-    center_distance
-        Distance between charged-group centers.
-    minimum_atom_distance
-        Shortest atom-to-atom distance.
-    contact_count
-        Number of retained atomic contacts.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    Tuple[bool, Optional[str]]
-        Validity flag and rejection reason.
-    """
+    """Evaluate the configured geometric acceptance criteria."""
 
     resolved_config = resolve_config(config)
 
@@ -7091,27 +5076,7 @@ def candidate_pair_passes_center_prefilter(
     anion: ChargedGroup,
     config: Optional[SaltBridgeConfig] = None,
 ) -> bool:
-    """
-    Apply a low-cost group-center prefilter to a candidate pair.
-
-    A tolerance equal to the atomic contact cutoff is added to the configured
-    center cutoff because large delocalized groups may contain close atoms even
-    when their arithmetic centers are farther apart.
-
-    Parameters
-    ----------
-    cation
-        Positively charged group.
-    anion
-        Negatively charged group.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    bool
-        Whether the pair should proceed to atom-level evaluation.
-    """
+    """Apply the low-cost center-distance candidate prefilter."""
 
     resolved_config = resolve_config(config)
 
@@ -7149,92 +5114,54 @@ def evaluate_salt_bridge_geometry(
     anion: ChargedGroup,
     config: Optional[SaltBridgeConfig] = None,
 ) -> SaltBridgeGeometry:
-    """
-    Evaluate the complete geometry of a cation-anion candidate pair.
-
-    The evaluation calculates:
-
-    - group-center distance;
-    - shortest atom-to-atom distance;
-    - number of contacts within the atomic contact cutoff;
-    - optional mean and maximum contact distances;
-    - closest positive-negative atom pair;
-    - validity and rejection reason.
-
-    Parameters
-    ----------
-    cation
-        Positively charged group.
-    anion
-        Negatively charged group.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    SaltBridgeGeometry
-        Complete geometric evaluation.
-
-    Raises
-    ------
-    SaltBridgeGeometryError
-        If required geometry cannot be calculated.
-    """
+    """Evaluate complete geometry for one cation-anion pair."""
 
     resolved_config = resolve_config(config)
-
-    validate_group_pair_polarity(
-        cation,
-        anion,
-    )
-
+    validate_group_pair_polarity(cation, anion)
     center_distance = calculate_group_center_distance(
-        cation,
-        anion,
-        strict=resolved_config.strict,
+        cation, anion, strict=resolved_config.strict
     )
 
-    (
-        closest_positive_atom,
-        closest_negative_atom,
-        minimum_atom_distance,
-    ) = find_closest_cation_anion_pair(
-        cation,
-        anion,
-        strict=resolved_config.strict,
-    )
+    pair_count = 0
+    distance_sum = 0.0
+    minimum_atom_distance = math.inf
+    maximum_atom_distance = -math.inf
+    contact_count = 0
+    closest_positive_atom = None
+    closest_negative_atom = None
 
-    contacts = collect_atomic_contacts(
-        cation,
-        anion,
-        cutoff=resolved_config.atomic_contact_cutoff,
-        minimum_distance=resolved_config.minimum_contact_distance,
-        strict=resolved_config.strict,
-    )
+    for positive_atom, negative_atom, atom_distance in (
+        iter_cation_anion_atom_distances(
+            cation, anion, strict=resolved_config.strict
+        )
+    ):
+        pair_count += 1
+        distance_sum += atom_distance
+        if atom_distance < minimum_atom_distance:
+            minimum_atom_distance = atom_distance
+            closest_positive_atom = positive_atom
+            closest_negative_atom = negative_atom
+        if atom_distance > maximum_atom_distance:
+            maximum_atom_distance = atom_distance
+        if (
+            resolved_config.minimum_contact_distance
+            <= atom_distance
+            <= resolved_config.atomic_contact_cutoff
+        ):
+            contact_count += 1
 
-    contact_count = len(contacts)
+    if pair_count == 0:
+        raise DegenerateGeometryError(
+            "No valid atom pair was available for distance calculation."
+        )
 
-    maximum_atom_distance: Optional[float] = None
-    mean_atom_distance: Optional[float] = None
-
-    if resolved_config.calculate_all_contact_distances and contacts:
-        contact_summary = summarize_atomic_contacts(contacts)
-
-        maximum_atom_distance = contact_summary[
-            "maximum_distance"
-        ]
-
-        mean_atom_distance = contact_summary[
-            "mean_distance"
-        ]
-
+    mean_atom_distance = distance_sum / pair_count
     valid, rejection_reason = evaluate_distance_criteria(
         center_distance=center_distance,
         minimum_atom_distance=minimum_atom_distance,
         contact_count=contact_count,
         config=resolved_config,
     )
-
     return SaltBridgeGeometry(
         center_distance=center_distance,
         minimum_atom_distance=minimum_atom_distance,
@@ -7247,7 +5174,6 @@ def evaluate_salt_bridge_geometry(
         rejection_reason=rejection_reason,
     )
 
-
 def try_evaluate_salt_bridge_geometry(
     cation: ChargedGroup,
     anion: ChargedGroup,
@@ -7255,25 +5181,7 @@ def try_evaluate_salt_bridge_geometry(
     *,
     warnings: Optional[List[str]] = None,
 ) -> Optional[SaltBridgeGeometry]:
-    """
-    Evaluate candidate geometry using strict or permissive error handling.
-
-    Parameters
-    ----------
-    cation
-        Positively charged group.
-    anion
-        Negatively charged group.
-    config
-        Salt-bridge configuration.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    Optional[SaltBridgeGeometry]
-        Evaluated geometry or ``None`` after a permissively handled failure.
-    """
+    """Evaluate geometry using strict or permissive error handling."""
 
     resolved_config = resolve_config(config)
 
@@ -7313,28 +5221,7 @@ def iter_geometric_candidates(
 ) -> Iterator[
     Tuple[ChargedGroup, ChargedGroup, SaltBridgeGeometry]
 ]:
-    """
-    Yield geometrically evaluated cation-anion candidate pairs.
-
-    Candidate pairs are generated lazily. The center prefilter is applied
-    before the more expensive atom-level evaluation.
-
-    Parameters
-    ----------
-    cationic_groups
-        Positively charged groups.
-    anionic_groups
-        Negatively charged groups.
-    config
-        Salt-bridge configuration.
-    warnings
-        Optional warning collector.
-
-    Yields
-    ------
-    Tuple[ChargedGroup, ChargedGroup, SaltBridgeGeometry]
-        Cation, anion, and evaluated geometry.
-    """
+    """Yield candidate pairs with accepted or explicitly preserved geometry."""
 
     resolved_config = resolve_config(config)
 
@@ -7384,28 +5271,7 @@ def evaluate_group_pair_geometry(
     second_group: ChargedGroup,
     config: Optional[SaltBridgeConfig] = None,
 ) -> SaltBridgeGeometry:
-    """
-    Evaluate two oppositely charged groups regardless of input order.
-
-    Parameters
-    ----------
-    first_group
-        First charged group.
-    second_group
-        Second charged group.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    SaltBridgeGeometry
-        Evaluated geometry.
-
-    Raises
-    ------
-    InvalidInteractionError
-        If the groups do not have opposite polarities.
-    """
+    """Evaluate two oppositely charged groups in either input order."""
 
     if first_group.is_positive and second_group.is_negative:
         cation = first_group
@@ -7443,25 +5309,7 @@ def validate_detection_groups(
     *,
     warnings: Optional[List[str]] = None,
 ) -> Tuple[List[ChargedGroup], List[ChargedGroup]]:
-    """
-    Validate charged groups before central salt-bridge detection.
-
-    Parameters
-    ----------
-    cationic_groups
-        Candidate positively charged groups.
-    anionic_groups
-        Candidate negatively charged groups.
-    config
-        Salt-bridge configuration.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    Tuple[List[ChargedGroup], List[ChargedGroup]]
-        Validated cationic groups followed by validated anionic groups.
-    """
+    """Validate cationic and anionic groups before central detection."""
 
     resolved_config = resolve_config(config)
 
@@ -7570,19 +5418,7 @@ def validate_detection_groups(
 def normalize_pose_identifier(
     pose_id: Optional[Union[str, int]],
 ) -> Optional[Union[str, int]]:
-    """
-    Normalize a docking-pose identifier.
-
-    Parameters
-    ----------
-    pose_id
-        Pose identifier.
-
-    Returns
-    -------
-    Optional[Union[str, int]]
-        Normalized identifier or ``None``.
-    """
+    """Normalize a docking-pose identifier."""
 
     if pose_id is None:
         return None
@@ -7598,19 +5434,7 @@ def normalize_pose_identifier(
 def normalize_model_identifier(
     model_id: Optional[Union[str, int]],
 ) -> Optional[Union[str, int]]:
-    """
-    Normalize a molecular-model identifier.
-
-    Parameters
-    ----------
-    model_id
-        Model identifier.
-
-    Returns
-    -------
-    Optional[Union[str, int]]
-        Normalized identifier or ``None``.
-    """
+    """Normalize a molecular-model identifier."""
 
     if model_id is None:
         return None
@@ -7636,30 +5460,7 @@ def make_interaction_identifier(
     model_id: Optional[Union[str, int]] = None,
     index: Optional[int] = None,
 ) -> str:
-    """
-    Build a deterministic human-readable interaction identifier.
-
-    The identifier is intended for reporting and serialization. Definitive
-    duplicate detection remains the responsibility of Section 11.
-
-    Parameters
-    ----------
-    cation
-        Positively charged group.
-    anion
-        Negatively charged group.
-    pose_id
-        Optional docking-pose identifier.
-    model_id
-        Optional model identifier.
-    index
-        Optional interaction sequence number.
-
-    Returns
-    -------
-    str
-        Interaction identifier.
-    """
+    """Build a deterministic salt-bridge interaction identifier."""
 
     cation_label = make_group_label(cation)
     anion_label = make_group_label(anion)
@@ -7717,35 +5518,7 @@ def build_salt_bridge_interaction(
     interaction_id: Optional[str] = None,
     metadata: Optional[Mapping[str, Any]] = None,
 ) -> SaltBridgeInteraction:
-    """
-    Build a SaltBridgeInteraction from validated groups and geometry.
-
-    This function does not perform final strength classification or scoring.
-    Those values retain their neutral initial state until Section 10 is
-    applied.
-
-    Parameters
-    ----------
-    cation
-        Positively charged group.
-    anion
-        Negatively charged group.
-    geometry
-        Evaluated interaction geometry.
-    pose_id
-        Optional docking-pose identifier.
-    model_id
-        Optional molecular-model identifier.
-    interaction_id
-        Optional explicit interaction identifier.
-    metadata
-        Optional compact interaction metadata.
-
-    Returns
-    -------
-    SaltBridgeInteraction
-        Constructed interaction.
-    """
+    """Build an interaction from validated groups and geometry."""
 
     validate_group_pair_polarity(
         cation,
@@ -7781,7 +5554,7 @@ def build_salt_bridge_interaction(
     if metadata:
         interaction_metadata.update(dict(metadata))
 
-    return SaltBridgeInteraction(
+    interaction = SaltBridgeInteraction(
         cation=cation,
         anion=anion,
         geometry=geometry,
@@ -7793,6 +5566,8 @@ def build_salt_bridge_interaction(
         interaction_id=final_interaction_id,
         metadata=interaction_metadata,
     )
+    scorer = globals().get("classify_and_score_interaction")
+    return scorer(interaction) if callable(scorer) else interaction
 
 
 # =============================================================================
@@ -7810,31 +5585,7 @@ def detect_salt_bridge_pair(
     interaction_id: Optional[str] = None,
     warnings: Optional[List[str]] = None,
 ) -> Optional[SaltBridgeInteraction]:
-    """
-    Detect a salt bridge between one cationic and one anionic group.
-
-    Parameters
-    ----------
-    cation
-        Positively charged group.
-    anion
-        Negatively charged group.
-    config
-        Salt-bridge configuration.
-    pose_id
-        Optional docking-pose identifier.
-    model_id
-        Optional molecular-model identifier.
-    interaction_id
-        Optional explicit interaction identifier.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    Optional[SaltBridgeInteraction]
-        Detected interaction or ``None``.
-    """
+    """Detect a salt bridge for one ordered cation-anion pair."""
 
     resolved_config = resolve_config(config)
 
@@ -7899,29 +5650,7 @@ def detect_salt_bridge_between_groups(
     model_id: Optional[Union[str, int]] = None,
     warnings: Optional[List[str]] = None,
 ) -> Optional[SaltBridgeInteraction]:
-    """
-    Detect a salt bridge between oppositely charged groups in any input order.
-
-    Parameters
-    ----------
-    first_group
-        First charged group.
-    second_group
-        Second charged group.
-    config
-        Salt-bridge configuration.
-    pose_id
-        Optional docking-pose identifier.
-    model_id
-        Optional molecular-model identifier.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    Optional[SaltBridgeInteraction]
-        Detected interaction or ``None``.
-    """
+    """Detect a salt bridge between opposite groups in either order."""
 
     if first_group.is_positive and second_group.is_negative:
         cation = first_group
@@ -7969,32 +5698,7 @@ def iter_detected_salt_bridges(
     model_id: Optional[Union[str, int]] = None,
     warnings: Optional[List[str]] = None,
 ) -> Iterator[SaltBridgeInteraction]:
-    """
-    Yield salt bridges detected from cationic and anionic group collections.
-
-    Detection is performed lazily. Candidate generation and geometry
-    evaluation do not require materializing the complete Cartesian product.
-
-    Parameters
-    ----------
-    cationic_groups
-        Positively charged groups.
-    anionic_groups
-        Negatively charged groups.
-    config
-        Salt-bridge configuration.
-    pose_id
-        Optional docking-pose identifier.
-    model_id
-        Optional molecular-model identifier.
-    warnings
-        Optional warning collector.
-
-    Yields
-    ------
-    SaltBridgeInteraction
-        Detected interaction.
-    """
+    """Yield detected interactions from charged-group collections."""
 
     resolved_config = resolve_config(config)
 
@@ -8068,29 +5772,7 @@ def detect_salt_bridges_from_groups(
     model_id: Optional[Union[str, int]] = None,
     warnings: Optional[List[str]] = None,
 ) -> List[SaltBridgeInteraction]:
-    """
-    Detect all salt bridges from previously recognized charged groups.
-
-    Parameters
-    ----------
-    cationic_groups
-        Positively charged groups.
-    anionic_groups
-        Negatively charged groups.
-    config
-        Salt-bridge configuration.
-    pose_id
-        Optional docking-pose identifier.
-    model_id
-        Optional molecular-model identifier.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Detected salt-bridge interactions.
-    """
+    """Return all interactions detected from recognized groups."""
 
     return list(
         iter_detected_salt_bridges(
@@ -8117,46 +5799,11 @@ def detect_salt_bridges(
     model_id: Optional[Union[str, int]] = None,
     warnings: Optional[List[str]] = None,
 ) -> SaltBridgeResult:
-    """
-    Recognize charged groups and detect salt bridges in a molecular source.
-
-    This is the principal source-level detection function. It performs:
-
-    1. charged-group recognition;
-    2. group validation and consolidation;
-    3. cation-anion candidate generation;
-    4. geometric evaluation;
-    5. SaltBridgeInteraction construction;
-    6. SaltBridgeResult assembly.
-
-    Final classification, scoring, deduplication, grouping, and statistics are
-    intentionally left to later sections.
-
-    Parameters
-    ----------
-    source
-        Molecular structure, model, residue collection, or atom collection.
-    config
-        Salt-bridge configuration.
-    pose_id
-        Optional docking-pose identifier.
-    model_id
-        Optional molecular-model identifier.
-    warnings
-        Optional external warning collector.
-
-    Returns
-    -------
-    SaltBridgeResult
-        Central detection result.
-    """
+    """Recognize groups and detect salt bridges in one molecular source."""
 
     resolved_config = resolve_config(config)
 
-    local_warnings: List[str] = []
-
-    if warnings is not None:
-        local_warnings.extend(warnings)
+    local_warnings = list(warnings or ())
 
     normalized_pose_id = normalize_pose_identifier(pose_id)
     normalized_model_id = normalize_model_identifier(model_id)
@@ -8216,8 +5863,7 @@ def detect_salt_bridges(
     )
 
     if warnings is not None:
-        warnings.clear()
-        warnings.extend(result.warnings)
+        warnings[:] = result.warnings
 
     return result
 
@@ -8235,33 +5881,10 @@ def detect_salt_bridges_in_group_collection(
     model_id: Optional[Union[str, int]] = None,
     warnings: Optional[List[str]] = None,
 ) -> SaltBridgeResult:
-    """
-    Detect salt bridges from a mixed collection of charged groups.
-
-    Parameters
-    ----------
-    groups
-        Mixed positive and negative charged groups.
-    config
-        Salt-bridge configuration.
-    pose_id
-        Optional docking-pose identifier.
-    model_id
-        Optional molecular-model identifier.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    SaltBridgeResult
-        Central detection result.
-    """
+    """Detect interactions from a mixed charged-group collection."""
 
     resolved_config = resolve_config(config)
-    local_warnings: List[str] = []
-
-    if warnings is not None:
-        local_warnings.extend(warnings)
+    local_warnings = list(warnings or ())
 
     group_list = list(groups)
 
@@ -8323,8 +5946,7 @@ def detect_salt_bridges_in_group_collection(
     )
 
     if warnings is not None:
-        warnings.clear()
-        warnings.extend(result.warnings)
+        warnings[:] = result.warnings
 
     return result
 
@@ -8343,39 +5965,10 @@ def detect_salt_bridges_between_sources(
     model_id: Optional[Union[str, int]] = None,
     warnings: Optional[List[str]] = None,
 ) -> SaltBridgeResult:
-    """
-    Detect salt bridges between two molecular sources.
-
-    Only cationic groups from ``positive_source`` and anionic groups from
-    ``negative_source`` are used. This is useful for receptor-ligand,
-    protein-protein, or chain-chain analyses with a defined direction.
-
-    Parameters
-    ----------
-    positive_source
-        Source providing candidate cationic groups.
-    negative_source
-        Source providing candidate anionic groups.
-    config
-        Salt-bridge configuration.
-    pose_id
-        Optional docking-pose identifier.
-    model_id
-        Optional molecular-model identifier.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    SaltBridgeResult
-        Cross-source detection result.
-    """
+    """Detect directed salt bridges between two molecular sources."""
 
     resolved_config = resolve_config(config)
-    local_warnings: List[str] = []
-
-    if warnings is not None:
-        local_warnings.extend(warnings)
+    local_warnings = list(warnings or ())
 
     positive_cations = recognize_cationic_groups(
         positive_source,
@@ -8421,8 +6014,7 @@ def detect_salt_bridges_between_sources(
     )
 
     if warnings is not None:
-        warnings.clear()
-        warnings.extend(result.warnings)
+        warnings[:] = result.warnings
 
     return result
 
@@ -8436,42 +6028,10 @@ def detect_bidirectional_salt_bridges_between_sources(
     model_id: Optional[Union[str, int]] = None,
     warnings: Optional[List[str]] = None,
 ) -> SaltBridgeResult:
-    """
-    Detect salt bridges between two sources in both charge directions.
-
-    The function evaluates:
-
-    - cations from the first source against anions from the second source;
-    - cations from the second source against anions from the first source.
-
-    Internal interactions within either individual source are not evaluated.
-
-    Parameters
-    ----------
-    first_source
-        First molecular source.
-    second_source
-        Second molecular source.
-    config
-        Salt-bridge configuration.
-    pose_id
-        Optional docking-pose identifier.
-    model_id
-        Optional molecular-model identifier.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    SaltBridgeResult
-        Bidirectional cross-source detection result.
-    """
+    """Detect cross-source salt bridges in both charge directions."""
 
     resolved_config = resolve_config(config)
-    local_warnings: List[str] = []
-
-    if warnings is not None:
-        local_warnings.extend(warnings)
+    local_warnings = list(warnings or ())
 
     (
         first_cations,
@@ -8550,8 +6110,7 @@ def detect_bidirectional_salt_bridges_between_sources(
     )
 
     if warnings is not None:
-        warnings.clear()
-        warnings.extend(result.warnings)
+        warnings[:] = result.warnings
 
     return result
 
@@ -8564,19 +6123,7 @@ def detect_bidirectional_salt_bridges_between_sources(
 def get_valid_salt_bridges(
     result: SaltBridgeResult,
 ) -> List[SaltBridgeInteraction]:
-    """
-    Return geometrically valid interactions from a detection result.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Valid interactions.
-    """
+    """Return geometrically valid interactions from a result."""
 
     if not isinstance(result, SaltBridgeResult):
         raise SaltBridgeDetectionError(
@@ -8593,19 +6140,7 @@ def get_valid_salt_bridges(
 def get_rejected_salt_bridge_candidates(
     result: SaltBridgeResult,
 ) -> List[SaltBridgeInteraction]:
-    """
-    Return preserved geometrically rejected candidates.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Invalid preserved candidates.
-    """
+    """Return preserved geometrically rejected candidates."""
 
     if not isinstance(result, SaltBridgeResult):
         raise SaltBridgeDetectionError(
@@ -8626,26 +6161,7 @@ def filter_salt_bridges_by_distance(
     minimum_distance: float = 0.0,
     use_center_distance: bool = False,
 ) -> List[SaltBridgeInteraction]:
-    """
-    Filter detected interactions by a distance interval.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    maximum_distance
-        Maximum accepted distance.
-    minimum_distance
-        Minimum accepted distance.
-    use_center_distance
-        Whether center distance should be used instead of minimum atom
-        distance.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Filtered interactions.
-    """
+    """Filter interactions by an inclusive distance interval."""
 
     normalized_maximum = safe_float(maximum_distance)
     normalized_minimum = safe_float(minimum_distance)
@@ -8698,33 +6214,7 @@ def classify_salt_bridge_strength(
     geometry: SaltBridgeGeometry,
     config: Optional[SaltBridgeConfig] = None,
 ) -> str:
-    """
-    Classify salt-bridge strength from its geometric measurements.
-
-    Classification is primarily based on the minimum atom-to-atom distance:
-
-    - strong: distance less than or equal to strong_distance_cutoff;
-    - moderate: distance less than or equal to moderate_distance_cutoff;
-    - weak: distance less than or equal to distance_cutoff;
-    - rejected: geometrically invalid or outside the configured cutoff.
-
-    Parameters
-    ----------
-    geometry
-        Evaluated salt-bridge geometry.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    str
-        Strength classification.
-
-    Raises
-    ------
-    SaltBridgeScoringError
-        If geometry is invalid or cannot be classified in strict mode.
-    """
+    """Classify a salt bridge from its minimum atom distance."""
 
     resolved_config = resolve_config(config)
 
@@ -8746,7 +6236,7 @@ def classify_salt_bridge_strength(
     if not geometry.valid:
         return STRENGTH_REJECTED
 
-    if minimum_distance <= resolved_config.strong_distance_cutoff:
+    if minimum_distance < resolved_config.strong_distance_cutoff:
         return STRENGTH_STRONG
 
     if minimum_distance <= resolved_config.moderate_distance_cutoff:
@@ -8764,23 +6254,7 @@ def classify_interaction_strength(
     *,
     update: bool = True,
 ) -> str:
-    """
-    Classify the strength of a salt-bridge interaction.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-    config
-        Salt-bridge configuration.
-    update
-        Whether the interaction object should be updated in place.
-
-    Returns
-    -------
-    str
-        Strength classification.
-    """
+    """Classify an interaction and optionally update it in place."""
 
     if not isinstance(interaction, SaltBridgeInteraction):
         raise SaltBridgeScoringError(
@@ -8812,26 +6286,7 @@ def get_strength_base_score(
     strength: str,
     config: Optional[SaltBridgeConfig] = None,
 ) -> float:
-    """
-    Return the configured base score for a strength classification.
-
-    Parameters
-    ----------
-    strength
-        Strength classification.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    float
-        Base score.
-
-    Raises
-    ------
-    SaltBridgeScoringError
-        If the strength label is unsupported.
-    """
+    """Return the configured base score for a strength class."""
 
     resolved_config = resolve_config(config)
 
@@ -8840,47 +6295,25 @@ def get_strength_base_score(
         lowercase=True,
     )
 
-    score_map = {
-        STRENGTH_STRONG: resolved_config.strong_score,
-        STRENGTH_MODERATE: resolved_config.moderate_score,
-        STRENGTH_WEAK: resolved_config.weak_score,
-        STRENGTH_REJECTED: 0.0,
-    }
+    if normalized_strength == STRENGTH_STRONG:
+        return float(resolved_config.strong_score)
+    if normalized_strength == STRENGTH_MODERATE:
+        return float(resolved_config.moderate_score)
+    if normalized_strength == STRENGTH_WEAK:
+        return float(resolved_config.weak_score)
+    if normalized_strength == STRENGTH_REJECTED:
+        return 0.0
 
-    if normalized_strength not in score_map:
-        raise SaltBridgeScoringError(
-            f"Unsupported salt-bridge strength: {strength!r}."
-        )
-
-    return float(score_map[normalized_strength])
+    raise SaltBridgeScoringError(
+        f"Unsupported salt-bridge strength: {strength!r}."
+    )
 
 
 def calculate_distance_quality_factor(
     geometry: SaltBridgeGeometry,
     config: Optional[SaltBridgeConfig] = None,
 ) -> float:
-    """
-    Calculate a continuous distance-quality factor.
-
-    The factor varies from 0.0 to 1.0. Shorter distances receive larger values,
-    while distances approaching the configured maximum cutoff receive values
-    closer to zero.
-
-    The factor is intended as a secondary refinement and does not replace the
-    categorical strong, moderate, or weak base score.
-
-    Parameters
-    ----------
-    geometry
-        Salt-bridge geometry.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    float
-        Distance-quality factor between 0.0 and 1.0.
-    """
+    """Return a continuous distance-quality factor from 0.0 to 1.0."""
 
     resolved_config = resolve_config(config)
 
@@ -8921,47 +6354,16 @@ def calculate_contact_count_bonus(
     geometry: SaltBridgeGeometry,
     config: Optional[SaltBridgeConfig] = None,
 ) -> float:
-    """
-    Calculate the score bonus derived from multiple atomic contacts.
-
-    Only contacts beyond the configured minimum contact count contribute to
-    the bonus.
-
-    Parameters
-    ----------
-    geometry
-        Salt-bridge geometry.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    float
-        Contact-count bonus.
-    """
+    """Return the bounded bonus for contacts beyond the minimum."""
 
     resolved_config = resolve_config(config)
 
-    contact_count = safe_int(
-        geometry.contact_count,
-        default=0,
-    )
-
-    if contact_count is None:
-        contact_count = 0
-
+    contact_count = safe_int(geometry.contact_count, default=0) or 0
     additional_contacts = max(
-        0,
-        contact_count - resolved_config.minimum_contact_count,
+        0, contact_count - resolved_config.minimum_contact_count
     )
-
-    raw_bonus = (
-        additional_contacts
-        * resolved_config.contact_count_bonus
-    )
-
     return min(
-        raw_bonus,
+        additional_contacts * resolved_config.contact_count_bonus,
         resolved_config.maximum_contact_bonus,
     )
 
@@ -8975,49 +6377,15 @@ def calculate_group_confidence_factor(
     cation: ChargedGroup,
     anion: ChargedGroup,
 ) -> float:
-    """
-    Calculate a joint recognition-confidence factor.
-
-    The geometric mean is used so that one low-confidence group reduces the
-    final factor without allowing the other group to fully compensate for it.
-
-    Parameters
-    ----------
-    cation
-        Positively charged group.
-    anion
-        Negatively charged group.
-
-    Returns
-    -------
-    float
-        Joint confidence factor between 0.0 and 1.0.
-    """
-
-    cation_confidence = safe_float(
-        cation.confidence,
-        default=0.0,
-    )
-
-    anion_confidence = safe_float(
-        anion.confidence,
-        default=0.0,
-    )
+    """Return the geometric mean of both recognition confidences."""
 
     cation_confidence = max(
-        0.0,
-        min(1.0, cation_confidence or 0.0),
+        0.0, min(1.0, safe_float(cation.confidence, default=0.0) or 0.0)
     )
-
     anion_confidence = max(
-        0.0,
-        min(1.0, anion_confidence or 0.0),
+        0.0, min(1.0, safe_float(anion.confidence, default=0.0) or 0.0)
     )
-
-    return math.sqrt(
-        cation_confidence
-        * anion_confidence
-    )
+    return math.sqrt(cation_confidence * anion_confidence)
 
 
 # =============================================================================
@@ -9028,76 +6396,25 @@ def calculate_group_confidence_factor(
 def calculate_group_charge_magnitude(
     group: ChargedGroup,
 ) -> float:
-    """
-    Return the absolute estimated charge magnitude of a group.
-
-    Parameters
-    ----------
-    group
-        Charged group.
-
-    Returns
-    -------
-    float
-        Absolute estimated charge magnitude.
-    """
+    """Return the absolute estimated charge magnitude of a group."""
 
     estimated_charge = estimate_group_charge(group)
-
     if estimated_charge is None:
         return 1.0
-
-    normalized_charge = safe_float(
-        estimated_charge,
-        default=1.0,
-    )
-
-    if normalized_charge is None:
-        return 1.0
-
-    return abs(normalized_charge)
+    return abs(safe_float(estimated_charge, default=1.0) or 0.0)
 
 
 def calculate_charge_factor(
     cation: ChargedGroup,
     anion: ChargedGroup,
 ) -> float:
-    """
-    Calculate a bounded factor from cation and anion charge magnitudes.
-
-    The geometric mean of both absolute charge magnitudes is calculated and
-    limited to the range 0.5 to 2.0.
-
-    Parameters
-    ----------
-    cation
-        Positively charged group.
-    anion
-        Negatively charged group.
-
-    Returns
-    -------
-    float
-        Charge factor.
-    """
-
-    cation_magnitude = calculate_group_charge_magnitude(
-        cation
-    )
-
-    anion_magnitude = calculate_group_charge_magnitude(
-        anion
-    )
+    """Return the bounded geometric mean of both charge magnitudes."""
 
     factor = math.sqrt(
-        cation_magnitude
-        * anion_magnitude
+        calculate_group_charge_magnitude(cation)
+        * calculate_group_charge_magnitude(anion)
     )
-
-    return max(
-        0.5,
-        min(2.0, factor),
-    )
+    return max(0.5, min(2.0, factor))
 
 
 # =============================================================================
@@ -9109,30 +6426,7 @@ def calculate_salt_bridge_score(
     interaction: SaltBridgeInteraction,
     config: Optional[SaltBridgeConfig] = None,
 ) -> float:
-    """
-    Calculate the complete score of a salt-bridge interaction.
-
-    The default score combines:
-
-    1. strength-dependent base score;
-    2. atomic contact-count bonus;
-    3. optional recognition-confidence weighting;
-    4. optional charge-magnitude weighting.
-
-    Rejected or geometrically invalid interactions receive a score of zero.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    float
-        Final non-negative interaction score.
-    """
+    """Calculate the complete non-negative interaction score."""
 
     resolved_config = resolve_config(config)
 
@@ -9167,25 +6461,15 @@ def calculate_salt_bridge_score(
 
     score = base_score + contact_bonus
 
-    confidence_factor = 1.0
-
     if resolved_config.confidence_weighting:
-        confidence_factor = calculate_group_confidence_factor(
-            interaction.cation,
-            interaction.anion,
+        score *= calculate_group_confidence_factor(
+            interaction.cation, interaction.anion
         )
-
-        score *= confidence_factor
-
-    charge_factor = 1.0
 
     if resolved_config.charge_weighting:
-        charge_factor = calculate_charge_factor(
-            interaction.cation,
-            interaction.anion,
+        score *= calculate_charge_factor(
+            interaction.cation, interaction.anion
         )
-
-        score *= charge_factor
 
     return max(0.0, float(score))
 
@@ -9194,21 +6478,7 @@ def build_score_breakdown(
     interaction: SaltBridgeInteraction,
     config: Optional[SaltBridgeConfig] = None,
 ) -> Dict[str, Any]:
-    """
-    Build a detailed score-component dictionary.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Score components and final score.
-    """
+    """Return the score components and final interaction score."""
 
     resolved_config = resolve_config(config)
 
@@ -9275,23 +6545,7 @@ def classify_and_score_interaction(
     *,
     update_metadata: bool = True,
 ) -> SaltBridgeInteraction:
-    """
-    Classify and score one salt-bridge interaction in place.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-    config
-        Salt-bridge configuration.
-    update_metadata
-        Whether score components should be stored in interaction metadata.
-
-    Returns
-    -------
-    SaltBridgeInteraction
-        Updated interaction.
-    """
+    """Classify and score one interaction in place."""
 
     resolved_config = resolve_config(config)
 
@@ -9337,25 +6591,7 @@ def try_classify_and_score_interaction(
     warnings: Optional[List[str]] = None,
     update_metadata: bool = True,
 ) -> Optional[SaltBridgeInteraction]:
-    """
-    Classify and score an interaction using configured error handling.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-    config
-        Salt-bridge configuration.
-    warnings
-        Optional warning collector.
-    update_metadata
-        Whether score components should be stored.
-
-    Returns
-    -------
-    Optional[SaltBridgeInteraction]
-        Updated interaction or ``None`` after a permissively handled failure.
-    """
+    """Classify and score an interaction with configured error handling."""
 
     resolved_config = resolve_config(config)
 
@@ -9393,27 +6629,7 @@ def classify_and_score_interactions(
     preserve_failed: bool = False,
     update_metadata: bool = True,
 ) -> List[SaltBridgeInteraction]:
-    """
-    Classify and score multiple salt-bridge interactions.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    config
-        Salt-bridge configuration.
-    warnings
-        Optional warning collector.
-    preserve_failed
-        Whether interactions that fail classification should be retained.
-    update_metadata
-        Whether score components should be stored.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Classified and scored interactions.
-    """
+    """Classify and score multiple interactions."""
 
     resolved_config = resolve_config(config)
     processed_interactions: List[SaltBridgeInteraction] = []
@@ -9445,23 +6661,7 @@ def classify_and_score_result(
     *,
     in_place: bool = True,
 ) -> SaltBridgeResult:
-    """
-    Classify and score all interactions in a SaltBridgeResult.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge detection result.
-    config
-        Salt-bridge configuration.
-    in_place
-        Whether the original result should be modified.
-
-    Returns
-    -------
-    SaltBridgeResult
-        Result containing classified and scored interactions.
-    """
+    """Classify and score every interaction in a result."""
 
     resolved_config = resolve_config(config)
 
@@ -9518,30 +6718,7 @@ def analyze_salt_bridges(
     model_id: Optional[Union[str, int]] = None,
     warnings: Optional[List[str]] = None,
 ) -> SaltBridgeResult:
-    """
-    Recognize, detect, classify, and score salt bridges in one source.
-
-    This function combines Sections 7 through 10. Deduplication, grouping,
-    statistics, DockModel integration, and serialization remain separate.
-
-    Parameters
-    ----------
-    source
-        Molecular source.
-    config
-        Salt-bridge configuration.
-    pose_id
-        Optional docking-pose identifier.
-    model_id
-        Optional molecular-model identifier.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    SaltBridgeResult
-        Classified and scored salt-bridge result.
-    """
+    """Recognize, detect, classify, and score salt bridges in one source."""
 
     resolved_config = resolve_config(config)
 
@@ -9569,29 +6746,7 @@ def analyze_salt_bridges_from_groups(
     model_id: Optional[Union[str, int]] = None,
     warnings: Optional[List[str]] = None,
 ) -> SaltBridgeResult:
-    """
-    Detect, classify, and score salt bridges from recognized groups.
-
-    Parameters
-    ----------
-    cationic_groups
-        Positively charged groups.
-    anionic_groups
-        Negatively charged groups.
-    config
-        Salt-bridge configuration.
-    pose_id
-        Optional docking-pose identifier.
-    model_id
-        Optional molecular-model identifier.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    SaltBridgeResult
-        Classified and scored result.
-    """
+    """Detect, classify, and score salt bridges from recognized groups."""
 
     resolved_config = resolve_config(config)
 
@@ -9645,21 +6800,7 @@ def filter_salt_bridges_by_strength(
     interactions: Iterable[SaltBridgeInteraction],
     strengths: Union[str, Iterable[str]],
 ) -> List[SaltBridgeInteraction]:
-    """
-    Filter interactions by strength classification.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    strengths
-        Accepted strength or collection of accepted strengths.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Matching interactions.
-    """
+    """Return interactions matching the requested strength classes."""
 
     if isinstance(strengths, str):
         accepted_strengths = {
@@ -9672,12 +6813,7 @@ def filter_salt_bridges_by_strength(
             for strength in strengths
         }
 
-    valid_strengths = {
-        STRENGTH_STRONG,
-        STRENGTH_MODERATE,
-        STRENGTH_WEAK,
-        STRENGTH_REJECTED,
-    }
+    valid_strengths = set(STRENGTH_ORDER)
 
     unsupported_strengths = (
         accepted_strengths - valid_strengths
@@ -9706,23 +6842,7 @@ def filter_salt_bridges_by_score(
     minimum_score: float = 0.0,
     maximum_score: Optional[float] = None,
 ) -> List[SaltBridgeInteraction]:
-    """
-    Filter salt bridges by an inclusive score interval.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    minimum_score
-        Minimum accepted score.
-    maximum_score
-        Optional maximum accepted score.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Matching interactions.
-    """
+    """Return interactions inside an inclusive score interval."""
 
     normalized_minimum = safe_float(minimum_score)
 
@@ -9773,24 +6893,7 @@ def sort_salt_bridges_by_score(
     *,
     descending: bool = True,
 ) -> List[SaltBridgeInteraction]:
-    """
-    Sort salt bridges by score and geometric distance.
-
-    Score is the primary key. Minimum atom distance is used as a secondary key
-    so that shorter interactions are preferred when scores are equal.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    descending
-        Whether higher scores should appear first.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Sorted interactions.
-    """
+    """Sort interactions by score, distance, and identifier."""
 
     interaction_list = list(interactions)
 
@@ -9829,19 +6932,7 @@ def sort_salt_bridges_by_score(
 def get_best_salt_bridge(
     interactions: Iterable[SaltBridgeInteraction],
 ) -> Optional[SaltBridgeInteraction]:
-    """
-    Return the highest-scoring salt bridge.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-
-    Returns
-    -------
-    Optional[SaltBridgeInteraction]
-        Best interaction or ``None``.
-    """
+    """Return the highest-scoring interaction, if available."""
 
     sorted_interactions = sort_salt_bridges_by_score(
         interactions,
@@ -9872,25 +6963,7 @@ def interaction_group_pair_key(
     include_model: bool = True,
     include_group_type: bool = True,
 ) -> Tuple[Any, ...]:
-    """
-    Build an identity key from the cation-anion group pair.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-    include_pose
-        Whether the pose identifier should be included.
-    include_model
-        Whether the model identifier should be included.
-    include_group_type
-        Whether charged-group types should be included.
-
-    Returns
-    -------
-    Tuple[Any, ...]
-        Hashable interaction identity key.
-    """
+    """Build an identity key from the cation-anion group pair."""
 
     if not isinstance(interaction, SaltBridgeInteraction):
         raise SaltBridgeDetectionError(
@@ -9959,23 +7032,7 @@ def interaction_atom_pair_key(
     include_pose: bool = True,
     include_model: bool = True,
 ) -> Tuple[Any, ...]:
-    """
-    Build an identity key from the closest positive-negative atom pair.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-    include_pose
-        Whether the pose identifier should be included.
-    include_model
-        Whether the model identifier should be included.
-
-    Returns
-    -------
-    Tuple[Any, ...]
-        Hashable closest-contact identity key.
-    """
+    """Build an identity key from the closest positive-negative atom pair."""
 
     if not isinstance(interaction, SaltBridgeInteraction):
         raise SaltBridgeDetectionError(
@@ -10028,29 +7085,7 @@ def interaction_residue_pair_key(
     include_model: bool = True,
     include_group_type: bool = False,
 ) -> Tuple[Any, ...]:
-    """
-    Build an interaction key from the participating residues.
-
-    Residue-level keys are intentionally broader than group-level keys. They
-    are useful when one residue pair generates multiple equivalent atomic
-    representations.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-    include_pose
-        Whether the pose identifier should be included.
-    include_model
-        Whether the model identifier should be included.
-    include_group_type
-        Whether cation and anion group types should be included.
-
-    Returns
-    -------
-    Tuple[Any, ...]
-        Hashable residue-pair identity key.
-    """
+    """Build an interaction key from the participating residues."""
 
     if not isinstance(interaction, SaltBridgeInteraction):
         raise SaltBridgeDetectionError(
@@ -10091,31 +7126,7 @@ def interaction_identity_key(
     include_pose: bool = True,
     include_model: bool = True,
 ) -> Tuple[Any, ...]:
-    """
-    Build an interaction identity key using a selected strategy.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-    mode
-        Identity mode. Supported values are ``"group_pair"``,
-        ``"atom_pair"``, and ``"residue_pair"``.
-    include_pose
-        Whether pose information should be included.
-    include_model
-        Whether model information should be included.
-
-    Returns
-    -------
-    Tuple[Any, ...]
-        Hashable identity key.
-
-    Raises
-    ------
-    SaltBridgeDetectionError
-        If the identity mode is unsupported.
-    """
+    """Build an interaction identity key using a selected strategy."""
 
     normalized_mode = normalize_text(
         mode,
@@ -10156,19 +7167,7 @@ def interaction_identity_key(
 def interaction_atom_sets(
     interaction: SaltBridgeInteraction,
 ) -> Tuple[Set[Tuple[Any, ...]], Set[Tuple[Any, ...]]]:
-    """
-    Return cationic and anionic atom-identity sets.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-
-    Returns
-    -------
-    Tuple[Set[Tuple[Any, ...]], Set[Tuple[Any, ...]]]
-        Cationic atom keys followed by anionic atom keys.
-    """
+    """Return cationic and anionic atom-identity sets."""
 
     cation_atoms = {
         charged_atom_identity(charged_atom)
@@ -10187,34 +7186,13 @@ def calculate_set_overlap_fraction(
     first_set: Set[Any],
     second_set: Set[Any],
 ) -> float:
-    """
-    Calculate overlap relative to the smaller non-empty set.
-
-    Parameters
-    ----------
-    first_set
-        First identity set.
-    second_set
-        Second identity set.
-
-    Returns
-    -------
-    float
-        Overlap fraction between 0.0 and 1.0.
-    """
+    """Calculate overlap relative to the smaller non-empty set."""
 
     if not first_set or not second_set:
         return 0.0
 
     overlap_size = len(first_set & second_set)
-    smaller_size = min(
-        len(first_set),
-        len(second_set),
-    )
-
-    if smaller_size == 0:
-        return 0.0
-
+    smaller_size = min(len(first_set), len(second_set))
     return overlap_size / smaller_size
 
 
@@ -10222,21 +7200,7 @@ def calculate_interaction_atomic_overlap(
     first: SaltBridgeInteraction,
     second: SaltBridgeInteraction,
 ) -> Tuple[float, float]:
-    """
-    Calculate cationic and anionic atomic overlap fractions.
-
-    Parameters
-    ----------
-    first
-        First interaction.
-    second
-        Second interaction.
-
-    Returns
-    -------
-    Tuple[float, float]
-        Cation overlap followed by anion overlap.
-    """
+    """Calculate cationic and anionic atomic overlap fractions."""
 
     (
         first_cation_atoms,
@@ -10265,21 +7229,7 @@ def interactions_share_group_pair(
     first: SaltBridgeInteraction,
     second: SaltBridgeInteraction,
 ) -> bool:
-    """
-    Return whether two interactions contain the same charged-group pair.
-
-    Parameters
-    ----------
-    first
-        First interaction.
-    second
-        Second interaction.
-
-    Returns
-    -------
-    bool
-        Whether both group identities match.
-    """
+    """Return whether two interactions contain the same charged-group pair."""
 
     return (
         charged_group_identity(first.cation)
@@ -10293,21 +7243,7 @@ def interactions_share_residue_pair(
     first: SaltBridgeInteraction,
     second: SaltBridgeInteraction,
 ) -> bool:
-    """
-    Return whether two interactions connect the same residue pair.
-
-    Parameters
-    ----------
-    first
-        First interaction.
-    second
-        Second interaction.
-
-    Returns
-    -------
-    bool
-        Whether both residue identities match.
-    """
+    """Return whether two interactions connect the same residue pair."""
 
     return (
         residue_identity(first.cation.residue)
@@ -10324,25 +7260,7 @@ def interactions_share_context(
     include_pose: bool = True,
     include_model: bool = True,
 ) -> bool:
-    """
-    Return whether interactions belong to the same pose and model context.
-
-    Parameters
-    ----------
-    first
-        First interaction.
-    second
-        Second interaction.
-    include_pose
-        Whether pose identifiers must match.
-    include_model
-        Whether model identifiers must match.
-
-    Returns
-    -------
-    bool
-        Whether the selected contextual identifiers match.
-    """
+    """Return whether interactions belong to the same pose and model context."""
 
     if include_pose and first.pose_id != second.pose_id:
         return False
@@ -10365,25 +7283,7 @@ def interactions_are_exact_duplicates(
     include_pose: bool = True,
     include_model: bool = True,
 ) -> bool:
-    """
-    Return whether two interactions have identical group-pair identities.
-
-    Parameters
-    ----------
-    first
-        First interaction.
-    second
-        Second interaction.
-    include_pose
-        Whether pose identifiers must match.
-    include_model
-        Whether model identifiers must match.
-
-    Returns
-    -------
-    bool
-        Whether both interactions are exact duplicates.
-    """
+    """Return whether two interactions have identical group-pair identities."""
 
     if not interactions_share_context(
         first,
@@ -10407,29 +7307,7 @@ def interactions_are_atomic_duplicates(
     include_pose: bool = True,
     include_model: bool = True,
 ) -> bool:
-    """
-    Return whether two interactions substantially overlap atomically.
-
-    Both cationic and anionic atom sets must satisfy the overlap threshold.
-
-    Parameters
-    ----------
-    first
-        First interaction.
-    second
-        Second interaction.
-    minimum_overlap
-        Minimum overlap fraction for both charged sides.
-    include_pose
-        Whether pose identifiers must match.
-    include_model
-        Whether model identifiers must match.
-
-    Returns
-    -------
-    bool
-        Whether the interactions are atomic duplicates.
-    """
+    """Return whether two interactions substantially overlap atomically."""
 
     normalized_overlap = safe_float(minimum_overlap)
 
@@ -10473,31 +7351,7 @@ def interactions_are_residue_duplicates(
     include_pose: bool = True,
     include_model: bool = True,
 ) -> bool:
-    """
-    Return whether interactions represent equivalent contacts for one residue
-    pair.
-
-    Residue-level duplicates require matching context and a sufficiently small
-    difference between minimum atom distances.
-
-    Parameters
-    ----------
-    first
-        First interaction.
-    second
-        Second interaction.
-    distance_tolerance
-        Maximum allowed absolute distance difference.
-    include_pose
-        Whether pose identifiers must match.
-    include_model
-        Whether model identifiers must match.
-
-    Returns
-    -------
-    bool
-        Whether the interactions are residue-level duplicates.
-    """
+    """Return whether interactions represent equivalent contacts for one residue pair."""
 
     normalized_tolerance = safe_float(distance_tolerance)
 
@@ -10550,30 +7404,7 @@ def interactions_are_duplicates(
     include_pose: bool = True,
     include_model: bool = True,
 ) -> bool:
-    """
-    Return whether two salt bridges should be considered duplicates.
-
-    Parameters
-    ----------
-    first
-        First interaction.
-    second
-        Second interaction.
-    config
-        Salt-bridge configuration.
-    mode
-        Optional explicit deduplication mode. Supported values are
-        ``"exact"``, ``"atomic_overlap"``, and ``"residue_pair"``.
-    include_pose
-        Whether pose identifiers must match.
-    include_model
-        Whether model identifiers must match.
-
-    Returns
-    -------
-    bool
-        Whether the interactions are duplicates.
-    """
+    """Return whether two salt bridges should be considered duplicates."""
 
     resolved_config = resolve_config(config)
 
@@ -10654,19 +7485,7 @@ _STRENGTH_PRIORITY = {
 def interaction_strength_priority(
     interaction: SaltBridgeInteraction,
 ) -> int:
-    """
-    Return the ranking priority of an interaction strength.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-
-    Returns
-    -------
-    int
-        Strength-priority value.
-    """
+    """Return the ranking priority of an interaction strength."""
 
     return _STRENGTH_PRIORITY.get(
         normalize_text(
@@ -10680,19 +7499,7 @@ def interaction_strength_priority(
 def interaction_recognition_confidence(
     interaction: SaltBridgeInteraction,
 ) -> float:
-    """
-    Return the joint recognition confidence of an interaction.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-
-    Returns
-    -------
-    float
-        Joint confidence between 0.0 and 1.0.
-    """
+    """Return the joint recognition confidence of an interaction."""
 
     return calculate_group_confidence_factor(
         interaction.cation,
@@ -10703,30 +7510,7 @@ def interaction_recognition_confidence(
 def interaction_quality_key(
     interaction: SaltBridgeInteraction,
 ) -> Tuple[Any, ...]:
-    """
-    Build a sortable interaction-quality key.
-
-    Better interactions produce lexicographically larger values. Ranking
-    considers:
-
-    1. geometric validity;
-    2. score;
-    3. strength;
-    4. recognition confidence;
-    5. atomic contact count;
-    6. shorter minimum distance;
-    7. shorter center distance.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-
-    Returns
-    -------
-    Tuple[Any, ...]
-        Quality-ranking key.
-    """
+    """Build a sortable interaction-quality key."""
 
     valid_priority = (
         1
@@ -10769,21 +7553,7 @@ def select_preferred_interaction(
     first: SaltBridgeInteraction,
     second: SaltBridgeInteraction,
 ) -> SaltBridgeInteraction:
-    """
-    Select the preferred representation of two duplicate interactions.
-
-    Parameters
-    ----------
-    first
-        First interaction.
-    second
-        Second interaction.
-
-    Returns
-    -------
-    SaltBridgeInteraction
-        Preferred interaction.
-    """
+    """Select the preferred representation of two duplicate interactions."""
 
     first_key = interaction_quality_key(first)
     second_key = interaction_quality_key(second)
@@ -10798,21 +7568,7 @@ def merge_duplicate_interaction_metadata(
     preferred: SaltBridgeInteraction,
     discarded: SaltBridgeInteraction,
 ) -> SaltBridgeInteraction:
-    """
-    Record duplicate provenance in the retained interaction.
-
-    Parameters
-    ----------
-    preferred
-        Retained interaction.
-    discarded
-        Duplicate interaction being removed.
-
-    Returns
-    -------
-    SaltBridgeInteraction
-        Retained interaction with updated metadata.
-    """
+    """Record duplicate provenance in the retained interaction."""
 
     duplicate_ids = preferred.metadata.setdefault(
         "merged_duplicate_ids",
@@ -10854,30 +7610,7 @@ def deduplicate_interactions_by_key(
     include_model: bool = True,
     merge_metadata: bool = True,
 ) -> List[SaltBridgeInteraction]:
-    """
-    Deduplicate interactions using an exact hashable identity key.
-
-    This method has approximately linear complexity and should be preferred
-    when exact group-, atom-, or residue-pair identity is sufficient.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    key_mode
-        Identity-key mode.
-    include_pose
-        Whether pose identifiers should be part of the identity.
-    include_model
-        Whether model identifiers should be part of the identity.
-    merge_metadata
-        Whether duplicate provenance should be retained.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Deduplicated interactions.
-    """
+    """Deduplicate interactions using an exact hashable identity key."""
 
     retained_by_key: Dict[
         Tuple[Any, ...],
@@ -10925,9 +7658,7 @@ def deduplicate_interactions_by_key(
                 discarded_interaction,
             )
 
-        retained_by_key[identity_key] = (
-            preferred_interaction
-        )
+        retained_by_key[identity_key] = preferred_interaction
 
     return [
         retained_by_key[identity_key]
@@ -10949,33 +7680,7 @@ def deduplicate_interactions_by_overlap(
     include_model: bool = True,
     merge_metadata: bool = True,
 ) -> List[SaltBridgeInteraction]:
-    """
-    Deduplicate interactions using pairwise duplicate evaluation.
-
-    This method supports partial atomic overlap and residue-level comparison.
-    It is more flexible than exact key-based deduplication but may have
-    quadratic worst-case complexity.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    config
-        Salt-bridge configuration.
-    mode
-        Optional duplicate-comparison mode.
-    include_pose
-        Whether pose identifiers must match.
-    include_model
-        Whether model identifiers must match.
-    merge_metadata
-        Whether duplicate provenance should be retained.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Deduplicated interactions.
-    """
+    """Deduplicate interactions using pairwise duplicate evaluation."""
 
     resolved_config = resolve_config(config)
     retained_interactions: List[SaltBridgeInteraction] = []
@@ -11027,9 +7732,7 @@ def deduplicate_interactions_by_overlap(
                 discarded,
             )
 
-        retained_interactions[
-            duplicate_index
-        ] = preferred
+        retained_interactions[duplicate_index] = preferred
 
     return retained_interactions
 
@@ -11048,34 +7751,7 @@ def deduplicate_salt_bridge_interactions(
     include_model: bool = True,
     merge_metadata: bool = True,
 ) -> List[SaltBridgeInteraction]:
-    """
-    Deduplicate a salt-bridge interaction collection.
-
-    The function automatically selects exact key-based or overlap-based
-    processing according to the requested mode.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    config
-        Salt-bridge configuration.
-    mode
-        Optional deduplication mode. Supported values are ``"exact"``,
-        ``"group_pair"``, ``"atom_pair"``, ``"atomic_overlap"``, and
-        ``"residue_pair"``.
-    include_pose
-        Whether pose identifiers should isolate duplicate groups.
-    include_model
-        Whether model identifiers should isolate duplicate groups.
-    merge_metadata
-        Whether removed duplicate identifiers should be stored.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Deduplicated interactions.
-    """
+    """Deduplicate a salt-bridge interaction collection."""
 
     resolved_config = resolve_config(config)
     interaction_list = list(interactions)
@@ -11143,21 +7819,7 @@ def refresh_interaction_identifiers(
     *,
     preserve_existing: bool = False,
 ) -> List[SaltBridgeInteraction]:
-    """
-    Assign deterministic sequential identifiers after deduplication.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    preserve_existing
-        Whether existing non-empty identifiers should be retained.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Same interaction objects with refreshed identifiers.
-    """
+    """Assign deterministic sequential identifiers after deduplication."""
 
     interaction_list = list(interactions)
 
@@ -11200,33 +7862,7 @@ def deduplicate_salt_bridge_result(
     merge_metadata: bool = True,
     refresh_identifiers: bool = True,
 ) -> SaltBridgeResult:
-    """
-    Deduplicate all interactions stored in a SaltBridgeResult.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-    config
-        Salt-bridge configuration.
-    mode
-        Optional deduplication mode.
-    in_place
-        Whether the original result should be modified.
-    include_pose
-        Whether pose identifiers should isolate duplicates.
-    include_model
-        Whether model identifiers should isolate duplicates.
-    merge_metadata
-        Whether duplicate provenance should be retained.
-    refresh_identifiers
-        Whether identifiers should be regenerated after deduplication.
-
-    Returns
-    -------
-    SaltBridgeResult
-        Result containing deduplicated interactions.
-    """
+    """Deduplicate all interactions stored in a SaltBridgeResult."""
 
     resolved_config = resolve_config(config)
 
@@ -11249,9 +7885,7 @@ def deduplicate_salt_bridge_result(
             metadata=dict(result.metadata),
         )
 
-    original_count = len(
-        target_result.interactions
-    )
+    original_count = len(target_result.interactions)
 
     deduplicated_interactions = (
         deduplicate_salt_bridge_interactions(
@@ -11272,18 +7906,9 @@ def deduplicate_salt_bridge_result(
             )
         )
 
-    target_result.interactions = (
-        deduplicated_interactions
-    )
-
-    final_count = len(
-        deduplicated_interactions
-    )
-
-    removed_count = max(
-        0,
-        original_count - final_count,
-    )
+    target_result.interactions = deduplicated_interactions
+    final_count = len(deduplicated_interactions)
+    removed_count = max(0, original_count - final_count)
 
     target_result.metadata[
         "deduplication_completed"
@@ -11330,30 +7955,7 @@ def group_duplicate_interactions(
     include_pose: bool = True,
     include_model: bool = True,
 ) -> List[List[SaltBridgeInteraction]]:
-    """
-    Group interactions into duplicate-equivalence collections.
-
-    This function is intended for diagnostics and self-tests. It does not
-    remove any interaction.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    config
-        Salt-bridge configuration.
-    mode
-        Optional duplicate-comparison mode.
-    include_pose
-        Whether pose identifiers must match.
-    include_model
-        Whether model identifiers must match.
-
-    Returns
-    -------
-    List[List[SaltBridgeInteraction]]
-        Duplicate-equivalence groups.
-    """
+    """Group interactions into duplicate-equivalence collections."""
 
     resolved_config = resolve_config(config)
     duplicate_groups: List[
@@ -11394,27 +7996,7 @@ def find_duplicate_salt_bridges(
     include_pose: bool = True,
     include_model: bool = True,
 ) -> List[List[SaltBridgeInteraction]]:
-    """
-    Return only interaction groups containing duplicates.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    config
-        Salt-bridge configuration.
-    mode
-        Optional deduplication mode.
-    include_pose
-        Whether pose identifiers must match.
-    include_model
-        Whether model identifiers must match.
-
-    Returns
-    -------
-    List[List[SaltBridgeInteraction]]
-        Groups containing at least two interactions.
-    """
+    """Return only interaction groups containing duplicates."""
 
     return [
         duplicate_group
@@ -11443,33 +8025,7 @@ def analyze_and_deduplicate_salt_bridges(
     warnings: Optional[List[str]] = None,
     deduplication_mode: Optional[str] = None,
 ) -> SaltBridgeResult:
-    """
-    Recognize, detect, classify, score, and deduplicate salt bridges.
-
-    This function combines Sections 7 through 11. Grouping, statistics,
-    DockModel integration, multipose handling, serialization, and ChimeraX
-    compatibility remain separate.
-
-    Parameters
-    ----------
-    source
-        Molecular source.
-    config
-        Salt-bridge configuration.
-    pose_id
-        Optional docking-pose identifier.
-    model_id
-        Optional molecular-model identifier.
-    warnings
-        Optional warning collector.
-    deduplication_mode
-        Optional interaction deduplication mode.
-
-    Returns
-    -------
-    SaltBridgeResult
-        Classified, scored, and deduplicated result.
-    """
+    """Recognize, detect, classify, score, and deduplicate salt bridges."""
 
     resolved_config = resolve_config(config)
 
@@ -11508,21 +8064,7 @@ def normalize_grouping_identifier(
     *,
     fallback: str = "unknown",
 ) -> str:
-    """
-    Normalize a value used as a grouping identifier.
-
-    Parameters
-    ----------
-    value
-        Identifier-like value.
-    fallback
-        Value returned when the identifier is unavailable.
-
-    Returns
-    -------
-    str
-        Normalized grouping identifier.
-    """
+    """Normalize a value used as a grouping identifier."""
 
     if value is None:
         return fallback
@@ -11541,23 +8083,7 @@ def charged_group_grouping_key(
     include_group_type: bool = True,
     include_polarity: bool = True,
 ) -> Tuple[Any, ...]:
-    """
-    Build a stable grouping key for a charged group.
-
-    Parameters
-    ----------
-    group
-        Charged group.
-    include_group_type
-        Whether the chemical group type should be included.
-    include_polarity
-        Whether group polarity should be included.
-
-    Returns
-    -------
-    Tuple[Any, ...]
-        Hashable charged-group key.
-    """
+    """Build a stable grouping key for a charged group."""
 
     if not isinstance(group, ChargedGroup):
         raise SaltBridgeDetectionError(
@@ -11591,25 +8117,7 @@ def interaction_residue_grouping_key(
     *,
     directional: bool = True,
 ) -> Tuple[Any, ...]:
-    """
-    Build a residue-pair grouping key for an interaction.
-
-    Salt bridges are intrinsically directional because one side is cationic
-    and the other is anionic. When ``directional`` is disabled, both residue
-    identities are sorted to produce an undirected residue-pair key.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-    directional
-        Whether cation-anion direction should be preserved.
-
-    Returns
-    -------
-    Tuple[Any, ...]
-        Hashable residue-pair key.
-    """
+    """Build a residue-pair grouping key for an interaction."""
 
     if not isinstance(interaction, SaltBridgeInteraction):
         raise SaltBridgeDetectionError(
@@ -11655,19 +8163,7 @@ def interaction_residue_grouping_key(
 def interaction_group_pair_grouping_key(
     interaction: SaltBridgeInteraction,
 ) -> Tuple[Any, ...]:
-    """
-    Build a grouping key from the complete charged-group pair.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-
-    Returns
-    -------
-    Tuple[Any, ...]
-        Hashable charged-group-pair key.
-    """
+    """Build a grouping key from the complete charged-group pair."""
 
     return (
         "charged_group_pair",
@@ -11685,21 +8181,7 @@ def interaction_chain_pair_grouping_key(
     *,
     directional: bool = True,
 ) -> Tuple[str, str]:
-    """
-    Build a chain-pair grouping key.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-    directional
-        Whether cation-anion chain direction should be preserved.
-
-    Returns
-    -------
-    Tuple[str, str]
-        Cation and anion chain identifiers.
-    """
+    """Build a chain-pair grouping key."""
 
     cation_chain = normalize_grouping_identifier(
         get_chain_id(interaction.cation.residue),
@@ -11727,19 +8209,7 @@ def interaction_chain_pair_grouping_key(
 def interaction_pose_grouping_key(
     interaction: SaltBridgeInteraction,
 ) -> str:
-    """
-    Return a normalized pose grouping key.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-
-    Returns
-    -------
-    str
-        Pose identifier.
-    """
+    """Return a normalized pose grouping key."""
 
     return normalize_grouping_identifier(
         interaction.pose_id,
@@ -11750,19 +8220,7 @@ def interaction_pose_grouping_key(
 def interaction_model_grouping_key(
     interaction: SaltBridgeInteraction,
 ) -> str:
-    """
-    Return a normalized model grouping key.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-
-    Returns
-    -------
-    str
-        Model identifier.
-    """
+    """Return a normalized model grouping key."""
 
     return normalize_grouping_identifier(
         interaction.model_id,
@@ -11782,21 +8240,7 @@ def group_interactions_by_key(
         Hashable,
     ],
 ) -> Dict[Hashable, List[SaltBridgeInteraction]]:
-    """
-    Group interactions using a custom key function.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    key_function
-        Function returning a hashable grouping key.
-
-    Returns
-    -------
-    Dict[Hashable, List[SaltBridgeInteraction]]
-        Mapping from keys to interaction lists.
-    """
+    """Group interactions using a custom key function."""
 
     if not callable(key_function):
         raise SaltBridgeDetectionError(
@@ -11838,21 +8282,7 @@ def sort_interaction_groups(
     *,
     sort_interactions: bool = True,
 ) -> Dict[Hashable, List[SaltBridgeInteraction]]:
-    """
-    Sort interactions inside grouped collections.
-
-    Parameters
-    ----------
-    grouped_interactions
-        Mapping of grouping keys to interactions.
-    sort_interactions
-        Whether interactions should be sorted by score.
-
-    Returns
-    -------
-    Dict[Hashable, List[SaltBridgeInteraction]]
-        Normalized grouped interaction mapping.
-    """
+    """Sort interactions inside grouped collections."""
 
     normalized_groups: Dict[
         Hashable,
@@ -11882,23 +8312,7 @@ def filter_interaction_groups_by_size(
     minimum_size: int = 1,
     maximum_size: Optional[int] = None,
 ) -> Dict[Hashable, List[SaltBridgeInteraction]]:
-    """
-    Filter grouped interaction collections by group size.
-
-    Parameters
-    ----------
-    grouped_interactions
-        Mapping of grouping keys to interactions.
-    minimum_size
-        Minimum accepted group size.
-    maximum_size
-        Optional maximum accepted group size.
-
-    Returns
-    -------
-    Dict[Hashable, List[SaltBridgeInteraction]]
-        Filtered grouping mapping.
-    """
+    """Filter grouped interaction collections by group size."""
 
     normalized_minimum = safe_int(minimum_size)
 
@@ -11959,23 +8373,7 @@ def group_salt_bridges_by_residue_pair(
     Tuple[Any, ...],
     List[SaltBridgeInteraction],
 ]:
-    """
-    Group salt bridges by interacting residue pair.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    directional
-        Whether cation-anion direction should be preserved.
-    sort_interactions
-        Whether interactions should be sorted by score.
-
-    Returns
-    -------
-    Dict[Tuple[Any, ...], List[SaltBridgeInteraction]]
-        Residue-pair groups.
-    """
+    """Group salt bridges by interacting residue pair."""
 
     grouped_interactions = group_interactions_by_key(
         interactions,
@@ -11999,21 +8397,7 @@ def group_salt_bridges_by_cation_residue(
     Tuple[Any, ...],
     List[SaltBridgeInteraction],
 ]:
-    """
-    Group interactions by cationic residue.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    sort_interactions
-        Whether interactions should be sorted by score.
-
-    Returns
-    -------
-    Dict[Tuple[Any, ...], List[SaltBridgeInteraction]]
-        Cationic-residue groups.
-    """
+    """Group interactions by cationic residue."""
 
     grouped_interactions = group_interactions_by_key(
         interactions,
@@ -12036,21 +8420,7 @@ def group_salt_bridges_by_anion_residue(
     Tuple[Any, ...],
     List[SaltBridgeInteraction],
 ]:
-    """
-    Group interactions by anionic residue.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    sort_interactions
-        Whether interactions should be sorted by score.
-
-    Returns
-    -------
-    Dict[Tuple[Any, ...], List[SaltBridgeInteraction]]
-        Anionic-residue groups.
-    """
+    """Group interactions by anionic residue."""
 
     grouped_interactions = group_interactions_by_key(
         interactions,
@@ -12073,25 +8443,7 @@ def group_salt_bridges_by_any_residue(
     Tuple[Any, ...],
     List[SaltBridgeInteraction],
 ]:
-    """
-    Group interactions by every participating residue.
-
-    Each salt bridge is included once in the cationic residue group and once
-    in the anionic residue group. Self-pairs, if present, are included only
-    once.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    sort_interactions
-        Whether interactions should be sorted by score.
-
-    Returns
-    -------
-    Dict[Tuple[Any, ...], List[SaltBridgeInteraction]]
-        Residue-to-interaction mapping.
-    """
+    """Group interactions by every participating residue."""
 
     grouped_interactions: Dict[
         Tuple[Any, ...],
@@ -12135,21 +8487,7 @@ def group_salt_bridges_by_charged_group_pair(
     Tuple[Any, ...],
     List[SaltBridgeInteraction],
 ]:
-    """
-    Group salt bridges by complete cation-anion charged-group identity.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    sort_interactions
-        Whether interactions should be sorted by score.
-
-    Returns
-    -------
-    Dict[Tuple[Any, ...], List[SaltBridgeInteraction]]
-        Charged-group-pair groups.
-    """
+    """Group salt bridges by complete cation-anion charged-group identity."""
 
     grouped_interactions = group_interactions_by_key(
         interactions,
@@ -12171,29 +8509,7 @@ def group_salt_bridges_by_group_type(
     Tuple[str, str],
     List[SaltBridgeInteraction],
 ]:
-    """
-    Group salt bridges by cationic and anionic chemical group types.
-
-    Examples include:
-
-    - ammonium to carboxylate;
-    - guanidinium to phosphate;
-    - imidazolium to sulfonate.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    directional
-        Whether cation-anion direction should be preserved.
-    sort_interactions
-        Whether interactions should be sorted by score.
-
-    Returns
-    -------
-    Dict[Tuple[str, str], List[SaltBridgeInteraction]]
-        Chemical-type groups.
-    """
+    """Group salt bridges by cationic and anionic chemical group types."""
 
     def make_type_key(
         interaction: SaltBridgeInteraction,
@@ -12237,23 +8553,7 @@ def group_salt_bridges_by_strength(
     include_rejected: bool = False,
     sort_interactions: bool = True,
 ) -> Dict[str, List[SaltBridgeInteraction]]:
-    """
-    Group salt bridges by strength classification.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    include_rejected
-        Whether rejected interactions should be included.
-    sort_interactions
-        Whether interactions should be sorted by score.
-
-    Returns
-    -------
-    Dict[str, List[SaltBridgeInteraction]]
-        Strength groups.
-    """
+    """Group salt bridges by strength classification."""
 
     grouped_interactions: Dict[
         str,
@@ -12296,23 +8596,7 @@ def group_salt_bridges_by_chain_pair(
     Tuple[str, str],
     List[SaltBridgeInteraction],
 ]:
-    """
-    Group salt bridges by cationic and anionic chain pair.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    directional
-        Whether cation-anion direction should be preserved.
-    sort_interactions
-        Whether interactions should be sorted by score.
-
-    Returns
-    -------
-    Dict[Tuple[str, str], List[SaltBridgeInteraction]]
-        Chain-pair groups.
-    """
+    """Group salt bridges by cationic and anionic chain pair."""
 
     grouped_interactions = group_interactions_by_key(
         interactions,
@@ -12333,21 +8617,7 @@ def group_salt_bridges_by_pose(
     *,
     sort_interactions: bool = True,
 ) -> Dict[str, List[SaltBridgeInteraction]]:
-    """
-    Group salt bridges by docking-pose identifier.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    sort_interactions
-        Whether interactions should be sorted by score.
-
-    Returns
-    -------
-    Dict[str, List[SaltBridgeInteraction]]
-        Pose groups.
-    """
+    """Group salt bridges by docking-pose identifier."""
 
     grouped_interactions = group_interactions_by_key(
         interactions,
@@ -12365,21 +8635,7 @@ def group_salt_bridges_by_model(
     *,
     sort_interactions: bool = True,
 ) -> Dict[str, List[SaltBridgeInteraction]]:
-    """
-    Group salt bridges by molecular-model identifier.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    sort_interactions
-        Whether interactions should be sorted by score.
-
-    Returns
-    -------
-    Dict[str, List[SaltBridgeInteraction]]
-        Model groups.
-    """
+    """Group salt bridges by molecular-model identifier."""
 
     grouped_interactions = group_interactions_by_key(
         interactions,
@@ -12400,21 +8656,7 @@ def group_salt_bridges_by_model_and_pose(
     Tuple[str, str],
     List[SaltBridgeInteraction],
 ]:
-    """
-    Group salt bridges by model and pose identifiers.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    sort_interactions
-        Whether interactions should be sorted by score.
-
-    Returns
-    -------
-    Dict[Tuple[str, str], List[SaltBridgeInteraction]]
-        Model-pose groups.
-    """
+    """Group salt bridges by model and pose identifiers."""
 
     grouped_interactions = group_interactions_by_key(
         interactions,
@@ -12442,19 +8684,7 @@ def group_salt_bridges_by_model_and_pose(
 def interaction_is_intrachain(
     interaction: SaltBridgeInteraction,
 ) -> bool:
-    """
-    Return whether both residues belong to the same chain.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-
-    Returns
-    -------
-    bool
-        Whether the interaction is intrachain.
-    """
+    """Return whether both residues belong to the same chain."""
 
     cation_chain, anion_chain = (
         interaction_chain_pair_grouping_key(
@@ -12469,19 +8699,7 @@ def interaction_is_intrachain(
 def interaction_is_interchain(
     interaction: SaltBridgeInteraction,
 ) -> bool:
-    """
-    Return whether the residues belong to different chains.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-
-    Returns
-    -------
-    bool
-        Whether the interaction is interchain.
-    """
+    """Return whether the residues belong to different chains."""
 
     return not interaction_is_intrachain(
         interaction
@@ -12493,21 +8711,7 @@ def group_salt_bridges_by_interface_type(
     *,
     sort_interactions: bool = True,
 ) -> Dict[str, List[SaltBridgeInteraction]]:
-    """
-    Group interactions as intrachain or interchain.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    sort_interactions
-        Whether interactions should be sorted by score.
-
-    Returns
-    -------
-    Dict[str, List[SaltBridgeInteraction]]
-        Interface-type groups.
-    """
+    """Group interactions as intrachain or interchain."""
 
     grouped_interactions: Dict[
         str,
@@ -12541,21 +8745,7 @@ def summarize_interaction_group(
     *,
     group_key: Optional[Hashable] = None,
 ) -> Dict[str, Any]:
-    """
-    Build a compact summary for one interaction group.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions in one group.
-    group_key
-        Optional grouping key.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Group summary.
-    """
+    """Build a compact summary for one interaction group."""
 
     interaction_list = list(interactions)
 
@@ -12583,12 +8773,7 @@ def summarize_interaction_group(
         if safe_float(interaction.distance) is not None
     ]
 
-    strength_counts = {
-        STRENGTH_STRONG: 0,
-        STRENGTH_MODERATE: 0,
-        STRENGTH_WEAK: 0,
-        STRENGTH_REJECTED: 0,
-    }
+    strength_counts = {strength: 0 for strength in STRENGTH_ORDER}
 
     for interaction in interaction_list:
         strength = normalize_text(
@@ -12676,19 +8861,7 @@ def summarize_interaction_groups(
         Iterable[SaltBridgeInteraction],
     ],
 ) -> Dict[Hashable, Dict[str, Any]]:
-    """
-    Summarize all groups in a grouped-interaction mapping.
-
-    Parameters
-    ----------
-    grouped_interactions
-        Grouped salt-bridge interactions.
-
-    Returns
-    -------
-    Dict[Hashable, Dict[str, Any]]
-        Group summaries.
-    """
+    """Summarize all groups in a grouped-interaction mapping."""
 
     return {
         grouping_key: summarize_interaction_group(
@@ -12713,30 +8886,7 @@ def calculate_residue_hotspot_score(
     strong_bonus: float = 0.5,
     moderate_bonus: float = 0.25,
 ) -> float:
-    """
-    Calculate a residue hotspot score.
-
-    The score combines interaction count, cumulative interaction score, and
-    optional bonuses for strong and moderate salt bridges.
-
-    Parameters
-    ----------
-    interactions
-        Interactions involving one residue.
-    count_weight
-        Weight applied to the number of valid interactions.
-    score_weight
-        Weight applied to cumulative interaction score.
-    strong_bonus
-        Additional value per strong interaction.
-    moderate_bonus
-        Additional value per moderate interaction.
-
-    Returns
-    -------
-    float
-        Residue hotspot score.
-    """
+    """Calculate a residue hotspot score."""
 
     normalized_count_weight = safe_float(
         count_weight,
@@ -12806,25 +8956,7 @@ def identify_residue_hotspots(
     minimum_hotspot_score: float = 0.0,
     include_singletons: bool = False,
 ) -> List[Dict[str, Any]]:
-    """
-    Identify residues participating in multiple or high-scoring salt bridges.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    minimum_interactions
-        Minimum number of valid interactions required.
-    minimum_hotspot_score
-        Minimum accepted hotspot score.
-    include_singletons
-        Whether one-interaction residues may be retained.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        Hotspot records sorted by decreasing hotspot score.
-    """
+    """Identify residues participating in multiple or high-scoring salt bridges."""
 
     normalized_minimum_interactions = safe_int(
         minimum_interactions,
@@ -12858,9 +8990,7 @@ def identify_residue_hotspots(
             if interaction.geometry.valid
         ]
 
-        interaction_count = len(
-            valid_interactions
-        )
+        interaction_count = len(valid_interactions)
 
         if (
             not include_singletons
@@ -13011,21 +9141,7 @@ def build_salt_bridge_groupings(
     interactions: Iterable[SaltBridgeInteraction],
     config: Optional[SaltBridgeConfig] = None,
 ) -> Dict[str, Any]:
-    """
-    Build the complete grouping collection for salt bridges.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Complete grouping dictionary.
-    """
+    """Build the complete grouping collection for salt bridges."""
 
     resolved_config = resolve_config(config)
     interaction_list = list(interactions)
@@ -13184,28 +9300,14 @@ def build_salt_bridge_groupings(
             ),
         },
         "metadata": {
-            "input_interaction_count": len(
-                interaction_list
-            ),
-            "grouped_interaction_count": len(
-                grouping_interactions
-            ),
+            "input_interaction_count": len(interaction_list),
+            "grouped_interaction_count": len(grouping_interactions),
             "include_rejected": include_rejected,
-            "residue_pair_group_count": len(
-                residue_pairs
-            ),
-            "residue_group_count": len(
-                all_residues
-            ),
-            "charged_group_pair_count": len(
-                charged_group_pairs
-            ),
-            "group_type_count": len(
-                group_types
-            ),
-            "chain_pair_count": len(
-                chain_pairs
-            ),
+            "residue_pair_group_count": len(residue_pairs),
+            "residue_group_count": len(all_residues),
+            "charged_group_pair_count": len(charged_group_pairs),
+            "group_type_count": len(group_types),
+            "chain_pair_count": len(chain_pairs),
             "pose_count": len(poses),
             "model_count": len(models),
             "hotspot_count": len(hotspots),
@@ -13225,29 +9327,7 @@ def group_salt_bridge_result(
     in_place: bool = True,
     store_full_groups: Optional[bool] = None,
 ) -> SaltBridgeResult:
-    """
-    Build and attach grouping information to a SaltBridgeResult.
-
-    Full interaction-group mappings may be stored in result metadata for
-    immediate use. When compact storage is requested, only group summaries,
-    hotspots, and grouping metadata are retained.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-    config
-        Salt-bridge configuration.
-    in_place
-        Whether the original result should be modified.
-    store_full_groups
-        Whether full grouped interaction mappings should be stored.
-
-    Returns
-    -------
-    SaltBridgeResult
-        Result with attached grouping data.
-    """
+    """Build and attach grouping information to a SaltBridgeResult."""
 
     resolved_config = resolve_config(config)
 
@@ -13288,26 +9368,13 @@ def group_salt_bridge_result(
             )
         )
 
-    target_result.metadata[
-        "grouping_completed"
-    ] = True
-
-    target_result.metadata[
-        "grouping_metadata"
-    ] = grouping_data["metadata"]
-
-    target_result.metadata[
-        "group_summaries"
-    ] = grouping_data["summaries"]
-
-    target_result.metadata[
-        "hotspots"
-    ] = grouping_data["hotspots"]
+    target_result.metadata["grouping_completed"] = True
+    target_result.metadata["grouping_metadata"] = grouping_data["metadata"]
+    target_result.metadata["group_summaries"] = grouping_data["summaries"]
+    target_result.metadata["hotspots"] = grouping_data["hotspots"]
 
     if store_full_groups:
-        target_result.metadata[
-            "groups"
-        ] = {
+        target_result.metadata["groups"] = {
             key: value
             for key, value in grouping_data.items()
             if key not in {
@@ -13318,10 +9385,7 @@ def group_salt_bridge_result(
         }
 
     else:
-        target_result.metadata.pop(
-            "groups",
-            None,
-        )
+        target_result.metadata.pop("groups", None)
 
     return target_result
 
@@ -13334,33 +9398,14 @@ def group_salt_bridge_result(
 def get_result_groupings(
     result: SaltBridgeResult,
 ) -> Mapping[str, Any]:
-    """
-    Return full grouped interactions stored in a result.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-
-    Returns
-    -------
-    Mapping[str, Any]
-        Stored grouping mapping.
-
-    Raises
-    ------
-    SaltBridgeDetectionError
-        If grouping data is unavailable.
-    """
+    """Return full grouped interactions stored in a result."""
 
     if not isinstance(result, SaltBridgeResult):
         raise SaltBridgeDetectionError(
             "result must be a SaltBridgeResult instance."
         )
 
-    groupings = result.metadata.get(
-        "groups"
-    )
+    groupings = result.metadata.get("groups")
 
     if groupings is None:
         raise SaltBridgeDetectionError(
@@ -13373,59 +9418,27 @@ def get_result_groupings(
 def get_result_group_summaries(
     result: SaltBridgeResult,
 ) -> Mapping[str, Any]:
-    """
-    Return grouping summaries stored in a result.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-
-    Returns
-    -------
-    Mapping[str, Any]
-        Group summary mapping.
-    """
+    """Return grouping summaries stored in a result."""
 
     if not isinstance(result, SaltBridgeResult):
         raise SaltBridgeDetectionError(
             "result must be a SaltBridgeResult instance."
         )
 
-    return result.metadata.get(
-        "group_summaries",
-        {},
-    )
+    return result.metadata.get("group_summaries", {})
 
 
 def get_result_hotspots(
     result: SaltBridgeResult,
 ) -> List[Dict[str, Any]]:
-    """
-    Return residue hotspots stored in a result.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        Hotspot records.
-    """
+    """Return residue hotspots stored in a result."""
 
     if not isinstance(result, SaltBridgeResult):
         raise SaltBridgeDetectionError(
             "result must be a SaltBridgeResult instance."
         )
 
-    return list(
-        result.metadata.get(
-            "hotspots",
-            [],
-        )
-    )
+    return list(result.metadata.get("hotspots", []))
 
 
 # =============================================================================
@@ -13443,44 +9456,7 @@ def analyze_grouped_salt_bridges(
     deduplication_mode: Optional[str] = None,
     store_full_groups: Optional[bool] = None,
 ) -> SaltBridgeResult:
-    """
-    Execute salt-bridge analysis through the grouping stage.
-
-    The workflow includes:
-
-    1. charged-group recognition;
-    2. central detection;
-    3. strength classification;
-    4. scoring;
-    5. interaction deduplication;
-    6. grouping;
-    7. hotspot identification.
-
-    Statistics, DockModel integration, multipose orchestration,
-    serialization, and ChimeraX compatibility remain separate.
-
-    Parameters
-    ----------
-    source
-        Molecular source.
-    config
-        Salt-bridge configuration.
-    pose_id
-        Optional docking-pose identifier.
-    model_id
-        Optional molecular-model identifier.
-    warnings
-        Optional warning collector.
-    deduplication_mode
-        Optional interaction deduplication mode.
-    store_full_groups
-        Whether full interaction groups should be stored.
-
-    Returns
-    -------
-    SaltBridgeResult
-        Classified, scored, deduplicated, and grouped result.
-    """
+    """Execute salt-bridge analysis through the grouping stage."""
 
     resolved_config = resolve_config(config)
 
@@ -13516,22 +9492,7 @@ def calculate_numeric_statistics(
     *,
     ignore_invalid: bool = True,
 ) -> Dict[str, Optional[float]]:
-    """
-    Calculate descriptive statistics for a numeric collection.
-
-    Parameters
-    ----------
-    values
-        Numeric or numeric-like values.
-    ignore_invalid
-        Whether invalid and non-finite values should be ignored.
-
-    Returns
-    -------
-    Dict[str, Optional[float]]
-        Count, sum, mean, median, minimum, maximum, standard deviation,
-        variance, and quartiles.
-    """
+    """Calculate descriptive statistics for a numeric collection."""
 
     numeric_values: List[float] = []
 
@@ -13552,7 +9513,6 @@ def calculate_numeric_statistics(
         numeric_values.append(normalized_value)
 
     value_count = len(numeric_values)
-
     if value_count == 0:
         return {
             "count": 0,
@@ -13570,13 +9530,8 @@ def calculate_numeric_statistics(
 
     sorted_values = sorted(numeric_values)
 
-    mean_value = statistics.fmean(
-        sorted_values
-    )
-
-    median_value = statistics.median(
-        sorted_values
-    )
+    mean_value = statistics.fmean(sorted_values)
+    median_value = statistics.median(sorted_values)
 
     variance_value = (
         statistics.pvariance(sorted_values)
@@ -13584,9 +9539,7 @@ def calculate_numeric_statistics(
         else 0.0
     )
 
-    standard_deviation = math.sqrt(
-        variance_value
-    )
+    standard_deviation = math.sqrt(variance_value)
 
     if value_count == 1:
         first_quartile = sorted_values[0]
@@ -13623,31 +9576,10 @@ def calculate_percentage(
     count: int,
     total: int,
 ) -> float:
-    """
-    Calculate a percentage while safely handling zero totals.
+    """Calculate a percentage while safely handling zero totals."""
 
-    Parameters
-    ----------
-    count
-        Partial count.
-    total
-        Total count.
-
-    Returns
-    -------
-    float
-        Percentage between 0.0 and 100.0.
-    """
-
-    normalized_count = safe_int(
-        count,
-        default=0,
-    )
-
-    normalized_total = safe_int(
-        total,
-        default=0,
-    )
+    normalized_count = safe_int(count, default=0)
+    normalized_total = safe_int(total, default=0)
 
     if (
         normalized_total is None
@@ -13665,40 +9597,19 @@ def calculate_percentage(
 def normalize_count_distribution(
     counts: Mapping[Any, int],
 ) -> Dict[Any, Dict[str, Union[int, float]]]:
-    """
-    Convert raw counts into count-and-percentage records.
+    """Convert raw counts into count-and-percentage records."""
 
-    Parameters
-    ----------
-    counts
-        Mapping from category to count.
-
-    Returns
-    -------
-    Dict[Any, Dict[str, Union[int, float]]]
-        Category count and percentage records.
-    """
-
-    total_count = sum(
-        max(
-            0,
-            safe_int(count, default=0) or 0,
-        )
-        for count in counts.values()
-    )
-
+    normalized_counts = {
+        category: max(0, safe_int(count, default=0) or 0)
+        for category, count in counts.items()
+    }
+    total_count = sum(normalized_counts.values())
     return {
         category: {
-            "count": max(
-                0,
-                safe_int(count, default=0) or 0,
-            ),
-            "percentage": calculate_percentage(
-                safe_int(count, default=0) or 0,
-                total_count,
-            ),
+            "count": count,
+            "percentage": calculate_percentage(count, total_count),
         }
-        for category, count in counts.items()
+        for category, count in normalized_counts.items()
     }
 
 
@@ -13712,21 +9623,7 @@ def normalize_interaction_collection(
     *,
     include_invalid: bool = False,
 ) -> List[SaltBridgeInteraction]:
-    """
-    Validate and normalize an interaction collection.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    include_invalid
-        Whether geometrically invalid interactions should be retained.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Validated interaction list.
-    """
+    """Validate and normalize an interaction collection."""
 
     normalized_interactions: List[
         SaltBridgeInteraction
@@ -13759,21 +9656,7 @@ def get_scored_interactions(
     *,
     include_zero: bool = True,
 ) -> List[SaltBridgeInteraction]:
-    """
-    Return interactions containing valid finite scores.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    include_zero
-        Whether zero-score interactions should be retained.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Scored interactions.
-    """
+    """Return interactions containing valid finite scores."""
 
     scored_interactions: List[
         SaltBridgeInteraction
@@ -13805,19 +9688,7 @@ def get_scored_interactions(
 def count_valid_salt_bridges(
     interactions: Iterable[SaltBridgeInteraction],
 ) -> int:
-    """
-    Count geometrically valid salt bridges.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-
-    Returns
-    -------
-    int
-        Number of valid interactions.
-    """
+    """Count geometrically valid salt bridges."""
 
     return sum(
         1
@@ -13829,19 +9700,7 @@ def count_valid_salt_bridges(
 def count_rejected_salt_bridges(
     interactions: Iterable[SaltBridgeInteraction],
 ) -> int:
-    """
-    Count geometrically rejected salt-bridge candidates.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-
-    Returns
-    -------
-    int
-        Number of rejected candidates.
-    """
+    """Count geometrically rejected salt-bridge candidates."""
 
     return sum(
         1
@@ -13850,26 +9709,12 @@ def count_rejected_salt_bridges(
     )
 
 
-def count_atomic_contacts(
+def count_interaction_atomic_contacts(
     interactions: Iterable[SaltBridgeInteraction],
     *,
     valid_only: bool = True,
 ) -> int:
-    """
-    Count all atomic contacts represented by salt bridges.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    valid_only
-        Whether invalid interactions should be ignored.
-
-    Returns
-    -------
-    int
-        Total atomic contact count.
-    """
+    """Count all atomic contacts represented by salt bridges."""
 
     total_contacts = 0
 
@@ -13893,22 +9738,18 @@ def count_atomic_contacts(
     return total_contacts
 
 
+def count_atomic_contacts(*args: Any, **kwargs: Any) -> int:
+    """Count contacts for either a charged-group pair or interactions."""
+
+    if len(args) >= 2 and all(isinstance(value, ChargedGroup) for value in args[:2]):
+        return count_group_atomic_contacts(*args, **kwargs)
+    return count_interaction_atomic_contacts(*args, **kwargs)
+
+
 def calculate_interaction_count_statistics(
     interactions: Iterable[SaltBridgeInteraction],
 ) -> Dict[str, Any]:
-    """
-    Calculate global interaction-count statistics.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Global counts and validity percentages.
-    """
+    """Calculate global interaction-count statistics."""
 
     interaction_list = list(interactions)
 
@@ -13918,9 +9759,7 @@ def calculate_interaction_count_statistics(
         interaction_list
     )
 
-    rejected_count = count_rejected_salt_bridges(
-        interaction_list
-    )
+    rejected_count = total_count - valid_count
 
     atomic_contact_count = count_atomic_contacts(
         interaction_list,
@@ -13960,21 +9799,7 @@ def calculate_distance_statistics(
     *,
     include_invalid: bool = False,
 ) -> Dict[str, Dict[str, Optional[float]]]:
-    """
-    Calculate distance statistics for salt bridges.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    include_invalid
-        Whether invalid interactions should be included.
-
-    Returns
-    -------
-    Dict[str, Dict[str, Optional[float]]]
-        Minimum-atom, center, mean-contact, and maximum-contact statistics.
-    """
+    """Calculate distance statistics for salt bridges."""
 
     normalized_interactions = (
         normalize_interaction_collection(
@@ -14042,23 +9867,7 @@ def calculate_score_statistics(
     include_invalid: bool = False,
     include_zero: bool = True,
 ) -> Dict[str, Any]:
-    """
-    Calculate score statistics for salt bridges.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    include_invalid
-        Whether invalid interactions should be included.
-    include_zero
-        Whether zero scores should be included.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Descriptive score statistics and best interaction information.
-    """
+    """Calculate score statistics for salt bridges."""
 
     normalized_interactions = (
         normalize_interaction_collection(
@@ -14128,32 +9937,13 @@ def calculate_strength_distribution(
     *,
     include_rejected: bool = True,
 ) -> Dict[str, Dict[str, Union[int, float]]]:
-    """
-    Calculate the distribution of interaction strengths.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    include_rejected
-        Whether rejected interactions should be included.
-
-    Returns
-    -------
-    Dict[str, Dict[str, Union[int, float]]]
-        Counts and percentages by strength.
-    """
+    """Calculate the distribution of interaction strengths."""
 
     strength_counts: Dict[str, int] = {
-        STRENGTH_STRONG: 0,
-        STRENGTH_MODERATE: 0,
-        STRENGTH_WEAK: 0,
+        strength: 0
+        for strength in STRENGTH_ORDER
+        if include_rejected or strength != STRENGTH_REJECTED
     }
-
-    if include_rejected:
-        strength_counts[
-            STRENGTH_REJECTED
-        ] = 0
 
     for interaction in interactions:
         strength = normalize_text(
@@ -14175,9 +9965,7 @@ def calculate_strength_distribution(
 
         strength_counts[strength] += 1
 
-    return normalize_count_distribution(
-        strength_counts
-    )
+    return normalize_count_distribution(strength_counts)
 
 
 # =============================================================================
@@ -14194,23 +9982,7 @@ def calculate_group_type_distribution(
     Tuple[str, str],
     Dict[str, Union[int, float]],
 ]:
-    """
-    Calculate the distribution of cation-anion chemical group pairs.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    directional
-        Whether cation-anion direction should be preserved.
-    include_invalid
-        Whether invalid interactions should be included.
-
-    Returns
-    -------
-    Dict[Tuple[str, str], Dict[str, Union[int, float]]]
-        Counts and percentages by chemical group pair.
-    """
+    """Calculate the distribution of cation-anion chemical group pairs."""
 
     normalized_interactions = (
         normalize_interaction_collection(
@@ -14259,9 +10031,7 @@ def calculate_group_type_distribution(
             + 1
         )
 
-    return normalize_count_distribution(
-        group_type_counts
-    )
+    return normalize_count_distribution(group_type_counts)
 
 
 def calculate_group_source_distribution(
@@ -14269,21 +10039,7 @@ def calculate_group_source_distribution(
     *,
     include_invalid: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Calculate distributions of charged-group recognition sources.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    include_invalid
-        Whether invalid interactions should be included.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Cationic, anionic, and paired source distributions.
-    """
+    """Calculate distributions of charged-group recognition sources."""
 
     normalized_interactions = (
         normalize_interaction_collection(
@@ -14372,21 +10128,7 @@ def collect_participating_residues(
     *,
     valid_only: bool = True,
 ) -> List[ResidueLike]:
-    """
-    Collect unique residues participating in salt bridges.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    valid_only
-        Whether invalid interactions should be ignored.
-
-    Returns
-    -------
-    List[ResidueLike]
-        Unique participating residues.
-    """
+    """Collect unique residues participating in salt bridges."""
 
     residues: List[ResidueLike] = []
 
@@ -14418,21 +10160,7 @@ def calculate_residue_participation_statistics(
     *,
     include_invalid: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Calculate residue participation statistics.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    include_invalid
-        Whether invalid interactions should be included.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Unique residue counts and residue-role distributions.
-    """
+    """Calculate residue participation statistics."""
 
     normalized_interactions = (
         normalize_interaction_collection(
@@ -14528,21 +10256,7 @@ def calculate_interface_statistics(
     *,
     include_invalid: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Calculate intrachain, interchain, and chain-pair statistics.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    include_invalid
-        Whether invalid interactions should be included.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Interface and chain-pair statistics.
-    """
+    """Calculate intrachain, interchain, and chain-pair statistics."""
 
     normalized_interactions = (
         normalize_interaction_collection(
@@ -14629,21 +10343,7 @@ def calculate_pose_statistics(
     *,
     include_invalid: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Calculate interaction statistics by docking pose.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    include_invalid
-        Whether invalid interactions should be included.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Pose counts, scores, and best-pose information.
-    """
+    """Calculate interaction statistics by docking pose."""
 
     normalized_interactions = (
         normalize_interaction_collection(
@@ -14715,21 +10415,7 @@ def calculate_model_statistics(
     *,
     include_invalid: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Calculate interaction statistics by molecular model.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    include_invalid
-        Whether invalid interactions should be included.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Model counts, scores, and best-model information.
-    """
+    """Calculate interaction statistics by molecular model."""
 
     normalized_interactions = (
         normalize_interaction_collection(
@@ -14805,21 +10491,7 @@ def calculate_hotspot_statistics(
     interactions: Iterable[SaltBridgeInteraction],
     config: Optional[SaltBridgeConfig] = None,
 ) -> Dict[str, Any]:
-    """
-    Calculate residue-hotspot statistics.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Hotspot count, score distribution, and highest-ranked hotspot.
-    """
+    """Calculate residue-hotspot statistics."""
 
     resolved_config = resolve_config(config)
 
@@ -14894,21 +10566,7 @@ def calculate_recognized_group_statistics(
     cationic_groups: Iterable[ChargedGroup],
     anionic_groups: Iterable[ChargedGroup],
 ) -> Dict[str, Any]:
-    """
-    Calculate statistics for recognized charged groups.
-
-    Parameters
-    ----------
-    cationic_groups
-        Recognized positively charged groups.
-    anionic_groups
-        Recognized negatively charged groups.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Group counts, source distributions, confidence statistics, and types.
-    """
+    """Calculate statistics for recognized charged groups."""
 
     cation_list = list(
         cationic_groups
@@ -15052,34 +10710,7 @@ def calculate_salt_bridge_statistics(
     include_model_details: bool = True,
     include_hotspot_details: bool = True,
 ) -> Dict[str, Any]:
-    """
-    Calculate complete salt-bridge statistics.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    cationic_groups
-        Optional recognized cationic groups.
-    anionic_groups
-        Optional recognized anionic groups.
-    config
-        Salt-bridge configuration.
-    include_invalid
-        Whether invalid interactions should be included in descriptive
-        distributions.
-    include_pose_details
-        Whether pose-level statistics should be calculated.
-    include_model_details
-        Whether model-level statistics should be calculated.
-    include_hotspot_details
-        Whether hotspot statistics should be calculated.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Complete statistics dictionary.
-    """
+    """Calculate complete salt-bridge statistics."""
 
     resolved_config = resolve_config(config)
 
@@ -15181,6 +10812,22 @@ def calculate_salt_bridge_statistics(
             resolved_config,
         )
 
+    counts_data = statistics_data["counts"]
+    distance_data = statistics_data["distances"].get("minimum_atom_distance", {})
+    score_data = statistics_data["scores"]
+    strength_data = statistics_data["strength_distribution"]
+    statistics_data.update(
+        interaction_count=counts_data.get("total_interaction_count", 0),
+        total_interactions=counts_data.get("total_interaction_count", 0),
+        total_score=score_data.get("sum", 0.0),
+        minimum_distance=distance_data.get("minimum"),
+        maximum_distance=statistics_data["distances"].get("maximum_contact_distance", {}).get("maximum"),
+        strength_counts={
+            strength: values.get("count", 0)
+            for strength, values in strength_data.items()
+        },
+    )
+
     statistics_data["metadata"] = {
         "statistics_version": "1.0",
         "include_invalid": include_invalid,
@@ -15219,31 +10866,7 @@ def calculate_salt_bridge_result_statistics(
     include_model_details: bool = True,
     include_hotspot_details: bool = True,
 ) -> SaltBridgeResult:
-    """
-    Calculate and attach statistics to a SaltBridgeResult.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-    config
-        Salt-bridge configuration.
-    in_place
-        Whether the original result should be modified.
-    include_invalid
-        Whether invalid interactions should be included.
-    include_pose_details
-        Whether pose-level details should be stored.
-    include_model_details
-        Whether model-level details should be stored.
-    include_hotspot_details
-        Whether hotspot details should be stored.
-
-    Returns
-    -------
-    SaltBridgeResult
-        Result with populated statistics.
-    """
+    """Calculate and attach statistics to a SaltBridgeResult."""
 
     resolved_config = resolve_config(config)
 
@@ -15305,9 +10928,7 @@ def calculate_salt_bridge_result_statistics(
         statistics_data
     )
 
-    target_result.metadata[
-        "statistics_completed"
-    ] = True
+    target_result.metadata["statistics_completed"] = True
 
     target_result.metadata[
         "statistics_interaction_count"
@@ -15333,21 +10954,7 @@ def build_compact_salt_bridge_summary(
     result: SaltBridgeResult,
     config: Optional[SaltBridgeConfig] = None,
 ) -> Dict[str, Any]:
-    """
-    Build a compact machine-readable salt-bridge summary.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Compact summary suitable for reports and DockModel integration.
-    """
+    """Build a compact machine-readable salt-bridge summary."""
 
     if not isinstance(result, SaltBridgeResult):
         raise SaltBridgeDetectionError(
@@ -15535,21 +11142,7 @@ def build_salt_bridge_text_summary(
     result: SaltBridgeResult,
     config: Optional[SaltBridgeConfig] = None,
 ) -> str:
-    """
-    Build a concise human-readable salt-bridge summary.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    str
-        Human-readable summary.
-    """
+    """Build a concise human-readable salt-bridge summary."""
 
     summary = build_compact_salt_bridge_summary(
         result,
@@ -15617,21 +11210,7 @@ def build_salt_bridge_text_summary(
 def build_interaction_summary_record(
     interaction: SaltBridgeInteraction,
 ) -> Dict[str, Any]:
-    """
-    Build a flat summary record for one interaction.
-
-    The record is suitable for table creation and later serialization.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Flat interaction record.
-    """
+    """Build a flat summary record for one interaction."""
 
     return {
         "interaction_id": (
@@ -15704,23 +11283,7 @@ def build_interaction_summary_table(
     include_invalid: bool = False,
     sort_by_score: bool = True,
 ) -> List[Dict[str, Any]]:
-    """
-    Build flat summary records for multiple interactions.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    include_invalid
-        Whether invalid interactions should be included.
-    sort_by_score
-        Whether interactions should be sorted by decreasing score.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        Interaction summary records.
-    """
+    """Build flat summary records for multiple interactions."""
 
     normalized_interactions = (
         normalize_interaction_collection(
@@ -15761,45 +11324,7 @@ def analyze_salt_bridges_with_statistics(
     store_full_groups: Optional[bool] = None,
     include_invalid_statistics: bool = False,
 ) -> SaltBridgeResult:
-    """
-    Execute salt-bridge analysis through the statistics stage.
-
-    The workflow includes:
-
-    1. charged-group recognition;
-    2. central detection;
-    3. classification;
-    4. scoring;
-    5. deduplication;
-    6. grouping;
-    7. hotspot identification;
-    8. statistical analysis;
-    9. compact summary generation.
-
-    Parameters
-    ----------
-    source
-        Molecular source.
-    config
-        Salt-bridge configuration.
-    pose_id
-        Optional docking-pose identifier.
-    model_id
-        Optional molecular-model identifier.
-    warnings
-        Optional warning collector.
-    deduplication_mode
-        Optional interaction deduplication mode.
-    store_full_groups
-        Whether complete grouping mappings should be stored.
-    include_invalid_statistics
-        Whether invalid candidates should enter descriptive statistics.
-
-    Returns
-    -------
-    SaltBridgeResult
-        Fully analyzed result through Section 13.
-    """
+    """Execute salt-bridge analysis through the statistics stage."""
 
     resolved_config = resolve_config(config)
 
@@ -15825,16 +11350,12 @@ def analyze_salt_bridges_with_statistics(
         include_hotspot_details=True,
     )
 
-    result.metadata[
-        "compact_summary"
-    ] = build_compact_salt_bridge_summary(
+    result.metadata["compact_summary"] = build_compact_salt_bridge_summary(
         result,
         resolved_config,
     )
 
-    result.metadata[
-        "text_summary"
-    ] = build_salt_bridge_text_summary(
+    result.metadata["text_summary"] = build_salt_bridge_text_summary(
         result,
         resolved_config,
     )
@@ -15855,23 +11376,7 @@ def analyze_salt_bridges_with_statistics(
 def is_dock_model_instance(
     value: Any,
 ) -> bool:
-    """
-    Return whether a value is a DockModel instance when DockModel is available.
-
-    Duck-typed objects are not accepted by this function. Use
-    ``is_dock_model_like`` when compatibility with custom containers is
-    required.
-
-    Parameters
-    ----------
-    value
-        Object to inspect.
-
-    Returns
-    -------
-    bool
-        Whether the object is an instance of DockModel.
-    """
+    """Return whether a value is a DockModel instance when DockModel is available."""
 
     if DockModel is None:
         return False
@@ -15886,22 +11391,7 @@ def is_dock_model_instance(
 def is_dock_model_like(
     value: Any,
 ) -> bool:
-    """
-    Return whether an object can be used by the DockModel integration layer.
-
-    A compatible object must be mutable through attributes or mapping keys and
-    provide, directly or indirectly, a molecular source.
-
-    Parameters
-    ----------
-    value
-        Object to inspect.
-
-    Returns
-    -------
-    bool
-        Whether the object appears compatible.
-    """
+    """Return whether an object can be used by the DockModel integration layer."""
 
     if value is None:
         return False
@@ -15913,6 +11403,7 @@ def is_dock_model_like(
         return True
 
     candidate_attributes = (
+        "source",
         "structure",
         "model",
         "molecule",
@@ -15933,23 +11424,7 @@ def get_dock_model_value(
     name: str,
     default: Any = None,
 ) -> Any:
-    """
-    Read a DockModel attribute or mapping value safely.
-
-    Parameters
-    ----------
-    dock_model
-        DockModel-like object.
-    name
-        Attribute or mapping key.
-    default
-        Value returned when the field is unavailable.
-
-    Returns
-    -------
-    Any
-        Retrieved value or default.
-    """
+    """Read a DockModel attribute or mapping value safely."""
 
     if dock_model is None:
         return default
@@ -15978,30 +11453,7 @@ def set_dock_model_value(
     *,
     required: bool = True,
 ) -> bool:
-    """
-    Set a DockModel attribute or mutable mapping value.
-
-    Parameters
-    ----------
-    dock_model
-        DockModel-like object.
-    name
-        Attribute or mapping key.
-    value
-        Value to assign.
-    required
-        Whether failure should raise an integration error.
-
-    Returns
-    -------
-    bool
-        Whether the value was assigned successfully.
-
-    Raises
-    ------
-    DockModelSaltBridgeError
-        If assignment fails and ``required`` is true.
-    """
+    """Set a DockModel attribute or mutable mapping value."""
 
     if dock_model is None:
         if required:
@@ -16041,27 +11493,7 @@ def update_dock_model_mapping(
     preserve_existing: bool = True,
     required: bool = False,
 ) -> bool:
-    """
-    Update a mapping-like DockModel field.
-
-    Parameters
-    ----------
-    dock_model
-        DockModel-like object.
-    name
-        Mapping attribute or key.
-    values
-        Values to merge.
-    preserve_existing
-        Whether existing keys should be preserved when conflicts occur.
-    required
-        Whether assignment failure should raise an error.
-
-    Returns
-    -------
-    bool
-        Whether the mapping was updated.
-    """
+    """Update a mapping-like DockModel field."""
 
     existing_value = get_dock_model_value(
         dock_model,
@@ -16103,6 +11535,7 @@ def update_dock_model_mapping(
 
 
 DEFAULT_DOCK_MODEL_SOURCE_FIELDS: Tuple[str, ...] = (
+    "source",
     "structure",
     "molecular_structure",
     "chimera_model",
@@ -16123,31 +11556,7 @@ def resolve_dock_model_source(
     source: Any = None,
     source_fields: Optional[Iterable[str]] = None,
 ) -> Any:
-    """
-    Resolve the molecular source associated with a DockModel.
-
-    An explicitly supplied source has priority. Otherwise, common DockModel
-    fields are inspected in sequence.
-
-    Parameters
-    ----------
-    dock_model
-        DockModel-like object.
-    source
-        Optional explicit molecular source.
-    source_fields
-        Optional ordered field names to inspect.
-
-    Returns
-    -------
-    Any
-        Resolved molecular source.
-
-    Raises
-    ------
-    DockModelSaltBridgeError
-        If no molecular source can be resolved.
-    """
+    """Resolve the molecular source associated with a DockModel."""
 
     if source is not None:
         return source
@@ -16195,21 +11604,7 @@ def resolve_dock_model_pose_id(
     *,
     pose_id: Optional[Union[str, int]] = None,
 ) -> Optional[Union[str, int]]:
-    """
-    Resolve a pose identifier from a DockModel.
-
-    Parameters
-    ----------
-    dock_model
-        DockModel-like object.
-    pose_id
-        Optional explicit pose identifier.
-
-    Returns
-    -------
-    Optional[Union[str, int]]
-        Resolved pose identifier.
-    """
+    """Resolve a pose identifier from a DockModel."""
 
     if pose_id is not None:
         return normalize_pose_identifier(
@@ -16245,21 +11640,7 @@ def resolve_dock_model_model_id(
     *,
     model_id: Optional[Union[str, int]] = None,
 ) -> Optional[Union[str, int]]:
-    """
-    Resolve a model identifier from a DockModel.
-
-    Parameters
-    ----------
-    dock_model
-        DockModel-like object.
-    model_id
-        Optional explicit model identifier.
-
-    Returns
-    -------
-    Optional[Union[str, int]]
-        Resolved model identifier.
-    """
+    """Resolve a model identifier from a DockModel."""
 
     if model_id is not None:
         return normalize_model_identifier(
@@ -16300,26 +11681,7 @@ def merge_salt_bridge_interactions(
     new: Iterable[SaltBridgeInteraction],
     config: Optional[SaltBridgeConfig] = None,
 ) -> List[SaltBridgeInteraction]:
-    """
-    Merge existing and newly detected interactions.
-
-    The combined list is deduplicated while preserving pose and model
-    boundaries.
-
-    Parameters
-    ----------
-    existing
-        Existing interactions.
-    new
-        Newly detected interactions.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Merged and deduplicated interactions.
-    """
+    """Merge existing and newly detected interactions."""
 
     combined_interactions = [
         interaction
@@ -16349,40 +11711,11 @@ def attach_salt_bridge_results(
     *,
     attribute_name: str = "saltbridge",
     preserve_existing: bool = True,
-    attach_result_object: bool = True,
-    attach_statistics: bool = True,
-    attach_summary: bool = True,
+    attach_result_object: bool = False,
+    attach_statistics: bool = False,
+    attach_summary: bool = False,
 ) -> Any:
-    """
-    Attach salt-bridge analysis results to a DockModel.
-
-    The primary ``saltbridge`` field receives a list of
-    ``SaltBridgeInteraction`` objects.
-
-    Parameters
-    ----------
-    dock_model
-        DockModel-like object.
-    result
-        Salt-bridge analysis result.
-    config
-        Salt-bridge configuration.
-    attribute_name
-        DockModel field receiving the interaction list.
-    preserve_existing
-        Whether existing interactions should be merged instead of replaced.
-    attach_result_object
-        Whether the complete SaltBridgeResult should be stored.
-    attach_statistics
-        Whether statistics should be stored separately.
-    attach_summary
-        Whether compact and textual summaries should be stored.
-
-    Returns
-    -------
-    Any
-        Updated DockModel-like object.
-    """
+    """Attach salt-bridge analysis results to a DockModel."""
 
     resolved_config = resolve_config(config)
 
@@ -16499,21 +11832,7 @@ def build_dock_model_salt_bridge_statistics(
     result: SaltBridgeResult,
     config: Optional[SaltBridgeConfig] = None,
 ) -> Dict[str, Any]:
-    """
-    Build DockModel-compatible salt-bridge statistics.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-    config
-        Salt-bridge configuration.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Compact DockModel statistics.
-    """
+    """Build DockModel-compatible salt-bridge statistics."""
 
     if not result.statistics:
         calculate_salt_bridge_result_statistics(
@@ -16587,30 +11906,7 @@ def update_dock_model_statistics(
     statistics_attribute: str = "statistics",
     preserve_existing: bool = True,
 ) -> Any:
-    """
-    Update the general DockModel statistics mapping.
-
-    Salt-bridge statistics are stored under the ``"saltbridge"`` key so
-    unrelated analysis statistics remain intact.
-
-    Parameters
-    ----------
-    dock_model
-        DockModel-like object.
-    result
-        Salt-bridge result.
-    config
-        Salt-bridge configuration.
-    statistics_attribute
-        General statistics mapping field.
-    preserve_existing
-        Whether unrelated existing statistics should be preserved.
-
-    Returns
-    -------
-    Any
-        Updated DockModel-like object.
-    """
+    """Update the general DockModel statistics mapping."""
 
     salt_bridge_statistics = (
         build_dock_model_salt_bridge_statistics(
@@ -16678,19 +11974,7 @@ def update_dock_model_statistics(
 def get_result_salt_bridge_score(
     result: SaltBridgeResult,
 ) -> float:
-    """
-    Return the total valid salt-bridge score from a result.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-
-    Returns
-    -------
-    float
-        Total non-negative salt-bridge score.
-    """
+    """Return the total valid salt-bridge score from a result."""
 
     if not isinstance(result, SaltBridgeResult):
         raise DockModelSaltBridgeError(
@@ -16719,34 +12003,7 @@ def update_dock_model_salt_bridge_score(
     total_score_attribute: str = "score",
     total_score_mode: str = "add",
 ) -> Any:
-    """
-    Update DockModel salt-bridge and optional total scores.
-
-    The dedicated salt-bridge score is always stored when possible. Updating
-    the global DockModel score is optional because different docking pipelines
-    may use incompatible score conventions.
-
-    Parameters
-    ----------
-    dock_model
-        DockModel-like object.
-    result
-        Salt-bridge result.
-    dedicated_attribute
-        Attribute receiving the salt-bridge score.
-    update_total_score
-        Whether the general DockModel score should be modified.
-    total_score_attribute
-        General score attribute.
-    total_score_mode
-        General score update mode. Supported values are ``"add"``,
-        ``"replace"``, and ``"subtract"``.
-
-    Returns
-    -------
-    Any
-        Updated DockModel-like object.
-    """
+    """Update DockModel salt-bridge and optional total scores."""
 
     salt_bridge_score = (
         get_result_salt_bridge_score(
@@ -16830,55 +12087,16 @@ def analyze_dock_model_salt_bridges(
     model_id: Optional[Union[str, int]] = None,
     warnings: Optional[List[str]] = None,
     preserve_existing: bool = True,
-    attach_result_object: bool = True,
-    update_statistics: bool = True,
-    update_score: bool = True,
+    attach_result_object: bool = False,
+    update_statistics: bool = False,
+    update_score: bool = False,
     update_total_score: bool = False,
     total_score_mode: str = "add",
     store_full_groups: Optional[bool] = None,
     include_invalid_statistics: bool = False,
-) -> SaltBridgeResult:
-    """
-    Analyze salt bridges for one DockModel and attach the result.
-
-    Parameters
-    ----------
-    dock_model
-        DockModel-like object.
-    config
-        Salt-bridge configuration.
-    source
-        Optional explicit molecular source.
-    source_fields
-        Optional ordered DockModel source fields.
-    pose_id
-        Optional explicit pose identifier.
-    model_id
-        Optional explicit model identifier.
-    warnings
-        Optional warning collector.
-    preserve_existing
-        Whether existing salt-bridge interactions should be preserved.
-    attach_result_object
-        Whether the complete result should be stored.
-    update_statistics
-        Whether DockModel statistics should be updated.
-    update_score
-        Whether the dedicated salt-bridge score should be updated.
-    update_total_score
-        Whether the general DockModel score should be modified.
-    total_score_mode
-        General score update mode.
-    store_full_groups
-        Whether full grouping mappings should be retained.
-    include_invalid_statistics
-        Whether invalid candidates should enter descriptive statistics.
-
-    Returns
-    -------
-    SaltBridgeResult
-        Salt-bridge result attached to the DockModel.
-    """
+    return_result: bool = False,
+) -> Any:
+    """Analyze salt bridges for one DockModel and attach the result."""
 
     resolved_config = resolve_config(config)
 
@@ -16952,7 +12170,7 @@ def analyze_dock_model_salt_bridges(
                 ),
             )
 
-        return result
+        return result if return_result else dock_model
 
     except SaltBridgeError:
         raise
@@ -16982,42 +12200,9 @@ def analyze_multiple_dock_models_salt_bridges(
     include_invalid_statistics: bool = False,
     continue_on_error: bool = True,
     warnings: Optional[List[str]] = None,
-) -> List[SaltBridgeResult]:
-    """
-    Analyze salt bridges for multiple DockModel objects.
-
-    Parameters
-    ----------
-    dock_models
-        DockModel-like objects.
-    config
-        Salt-bridge configuration.
-    preserve_existing
-        Whether existing interactions should be preserved.
-    attach_result_object
-        Whether complete results should be attached.
-    update_statistics
-        Whether general DockModel statistics should be updated.
-    update_score
-        Whether dedicated salt-bridge scores should be updated.
-    update_total_score
-        Whether general DockModel scores should be modified.
-    total_score_mode
-        General score update mode.
-    store_full_groups
-        Whether complete grouping mappings should be retained.
-    include_invalid_statistics
-        Whether invalid candidates should enter descriptive statistics.
-    continue_on_error
-        Whether processing should continue after a model-level failure.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    List[SaltBridgeResult]
-        Successfully generated results.
-    """
+    return_results: bool = False,
+) -> List[Any]:
+    """Analyze salt bridges for multiple DockModel objects."""
 
     resolved_config = resolve_config(config)
     result_list: List[SaltBridgeResult] = []
@@ -17051,6 +12236,7 @@ def analyze_multiple_dock_models_salt_bridges(
                     include_invalid_statistics
                 ),
                 warnings=warnings,
+                return_result=True,
             )
 
             result.metadata[
@@ -17058,7 +12244,7 @@ def analyze_multiple_dock_models_salt_bridges(
             ] = model_index
 
             result_list.append(
-                result
+                result if return_results else dock_model
             )
 
         except SaltBridgeError as error:
@@ -17089,23 +12275,7 @@ def get_dock_model_salt_bridges(
     attribute_name: str = "saltbridge",
     valid_only: bool = False,
 ) -> List[SaltBridgeInteraction]:
-    """
-    Return salt-bridge interactions attached to a DockModel.
-
-    Parameters
-    ----------
-    dock_model
-        DockModel-like object.
-    attribute_name
-        Interaction-list attribute.
-    valid_only
-        Whether invalid candidates should be removed.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Attached interactions.
-    """
+    """Return salt-bridge interactions attached to a DockModel."""
 
     attached_value = get_dock_model_value(
         dock_model,
@@ -17141,19 +12311,7 @@ def get_dock_model_salt_bridges(
 def get_dock_model_salt_bridge_result(
     dock_model: Any,
 ) -> Optional[SaltBridgeResult]:
-    """
-    Return the complete SaltBridgeResult attached to a DockModel.
-
-    Parameters
-    ----------
-    dock_model
-        DockModel-like object.
-
-    Returns
-    -------
-    Optional[SaltBridgeResult]
-        Attached result or ``None``.
-    """
+    """Return the complete SaltBridgeResult attached to a DockModel."""
 
     result = get_dock_model_value(
         dock_model,
@@ -17176,23 +12334,7 @@ def clear_dock_model_salt_bridges(
     clear_score: bool = True,
     clear_statistics: bool = True,
 ) -> Any:
-    """
-    Remove salt-bridge data from a DockModel.
-
-    Parameters
-    ----------
-    dock_model
-        DockModel-like object.
-    clear_score
-        Whether dedicated salt-bridge score should be reset.
-    clear_statistics
-        Whether dedicated salt-bridge statistics should be cleared.
-
-    Returns
-    -------
-    Any
-        Updated DockModel-like object.
-    """
+    """Remove salt-bridge data from a DockModel."""
 
     set_dock_model_value(
         dock_model,
@@ -17282,19 +12424,7 @@ def clear_dock_model_salt_bridges(
 def summarize_dock_model_salt_bridge_results(
     results: Iterable[SaltBridgeResult],
 ) -> Dict[str, Any]:
-    """
-    Summarize salt-bridge results from multiple DockModel objects.
-
-    Parameters
-    ----------
-    results
-        DockModel salt-bridge results.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Batch-level summary.
-    """
+    """Summarize salt-bridge results from multiple DockModel objects."""
 
     result_list = [
         result
@@ -17399,7 +12529,6 @@ def summarize_dock_model_salt_bridge_results(
     }
 
 
-
 # =============================================================================
 # 15. MULTIPOSE ANALYSIS
 # =============================================================================
@@ -17413,24 +12542,7 @@ def summarize_dock_model_salt_bridge_results(
 def normalize_pose_collection(
     poses: Iterable[Any],
 ) -> List[Any]:
-    """
-    Normalize a collection of docking poses.
-
-    Parameters
-    ----------
-    poses
-        Pose-like molecular sources or DockModel-like objects.
-
-    Returns
-    -------
-    List[Any]
-        Materialized pose collection.
-
-    Raises
-    ------
-    SaltBridgeDetectionError
-        If the pose collection is invalid or empty.
-    """
+    """Normalize a collection of docking poses."""
 
     if poses is None:
         raise SaltBridgeDetectionError(
@@ -17445,11 +12557,6 @@ def normalize_pose_collection(
             "poses must be an iterable collection."
         ) from error
 
-    if not pose_list:
-        raise SaltBridgeDetectionError(
-            "The pose collection cannot be empty."
-        )
-
     return pose_list
 
 
@@ -17459,23 +12566,7 @@ def make_multipose_pose_id(
     *,
     explicit_pose_id: Optional[Union[str, int]] = None,
 ) -> Union[str, int]:
-    """
-    Resolve a stable pose identifier.
-
-    Parameters
-    ----------
-    pose
-        Pose-like object.
-    pose_index
-        One-based pose position in the input collection.
-    explicit_pose_id
-        Optional explicit pose identifier.
-
-    Returns
-    -------
-    Union[str, int]
-        Resolved pose identifier.
-    """
+    """Resolve a stable pose identifier."""
 
     if explicit_pose_id is not None:
         normalized_pose_id = normalize_pose_identifier(
@@ -17530,25 +12621,7 @@ def make_multipose_model_id(
     explicit_model_id: Optional[Union[str, int]] = None,
     default_prefix: str = "model",
 ) -> Union[str, int]:
-    """
-    Resolve a stable model identifier for one pose.
-
-    Parameters
-    ----------
-    pose
-        Pose-like object.
-    pose_index
-        One-based pose position.
-    explicit_model_id
-        Optional explicit model identifier.
-    default_prefix
-        Prefix used for generated identifiers.
-
-    Returns
-    -------
-    Union[str, int]
-        Resolved model identifier.
-    """
+    """Resolve a stable model identifier for one pose."""
 
     if explicit_model_id is not None:
         normalized_model_id = (
@@ -17598,22 +12671,7 @@ def make_multipose_model_id(
 def resolve_multipose_source(
     pose: Any,
 ) -> Any:
-    """
-    Resolve the molecular source for one pose.
-
-    DockModel-like objects are resolved through the DockModel integration
-    layer. Other objects are treated directly as molecular sources.
-
-    Parameters
-    ----------
-    pose
-        Pose-like source or DockModel-like object.
-
-    Returns
-    -------
-    Any
-        Molecular source.
-    """
+    """Resolve the molecular source for one pose."""
 
     if is_dock_model_like(pose):
         try:
@@ -17636,23 +12694,7 @@ def normalize_pose_id_mapping(
         ]
     ] = None,
 ) -> Dict[int, Optional[Union[str, int]]]:
-    """
-    Normalize optional pose identifiers into an index-based mapping.
-
-    Indices are one-based to match user-facing pose numbering.
-
-    Parameters
-    ----------
-    pose_count
-        Number of poses.
-    pose_ids
-        Optional sequence or mapping of pose identifiers.
-
-    Returns
-    -------
-    Dict[int, Optional[Union[str, int]]]
-        One-based pose-index mapping.
-    """
+    """Normalize optional pose identifiers into an index-based mapping."""
 
     if pose_ids is None:
         return {
@@ -17712,37 +12754,7 @@ def analyze_single_multipose_entry(
     include_invalid_statistics: bool = False,
     warnings: Optional[List[str]] = None,
 ) -> SaltBridgeResult:
-    """
-    Analyze one entry from a multipose collection.
-
-    Parameters
-    ----------
-    pose
-        Pose-like source or DockModel-like object.
-    config
-        Salt-bridge configuration.
-    pose_index
-        One-based pose position.
-    pose_id
-        Optional explicit pose identifier.
-    model_id
-        Optional explicit model identifier.
-    attach_to_dock_model
-        Whether results should be attached when the pose is a DockModel.
-    preserve_existing
-        Whether pre-existing DockModel salt bridges should be preserved.
-    store_full_groups
-        Whether complete grouping mappings should be stored.
-    include_invalid_statistics
-        Whether invalid candidates should enter descriptive statistics.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    SaltBridgeResult
-        Analysis result for one pose.
-    """
+    """Analyze one entry from a multipose collection."""
 
     resolved_config = resolve_config(
         config
@@ -17779,6 +12791,7 @@ def analyze_single_multipose_entry(
             include_invalid_statistics=(
                 include_invalid_statistics
             ),
+            return_result=True,
         )
 
     else:
@@ -17837,40 +12850,7 @@ def analyze_multiple_poses_salt_bridges(
     continue_on_error: bool = True,
     warnings: Optional[List[str]] = None,
 ) -> List[SaltBridgeResult]:
-    """
-    Analyze salt bridges across multiple docking poses.
-
-    Each pose is analyzed independently. Interactions are not deduplicated
-    across different poses.
-
-    Parameters
-    ----------
-    poses
-        Pose-like sources or DockModel-like objects.
-    config
-        Salt-bridge configuration.
-    pose_ids
-        Optional pose identifiers.
-    model_ids
-        Optional model identifiers.
-    attach_to_dock_models
-        Whether results should be attached to DockModel-like inputs.
-    preserve_existing
-        Whether existing DockModel interactions should be preserved.
-    store_full_groups
-        Whether complete group mappings should be stored.
-    include_invalid_statistics
-        Whether invalid candidates should enter descriptive statistics.
-    continue_on_error
-        Whether analysis should continue after one pose fails.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    List[SaltBridgeResult]
-        Successfully analyzed pose results.
-    """
+    """Analyze salt bridges across multiple docking poses."""
 
     resolved_config = resolve_config(
         config
@@ -17969,23 +12949,7 @@ def collect_multipose_interactions(
     *,
     valid_only: bool = True,
 ) -> List[SaltBridgeInteraction]:
-    """
-    Collect interactions from multiple pose results.
-
-    No cross-pose deduplication is performed.
-
-    Parameters
-    ----------
-    results
-        Pose-level salt-bridge results.
-    valid_only
-        Whether invalid interactions should be excluded.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Combined interaction collection.
-    """
+    """Collect interactions from multiple pose results."""
 
     collected_interactions: List[
         SaltBridgeInteraction
@@ -18017,19 +12981,7 @@ def collect_multipose_interactions(
 def group_results_by_pose(
     results: Iterable[SaltBridgeResult],
 ) -> Dict[str, SaltBridgeResult]:
-    """
-    Group pose results by normalized pose identifier.
-
-    Parameters
-    ----------
-    results
-        Pose-level results.
-
-    Returns
-    -------
-    Dict[str, SaltBridgeResult]
-        Pose identifier to result mapping.
-    """
+    """Group pose results by normalized pose identifier."""
 
     grouped_results: Dict[
         str,
@@ -18072,24 +13024,7 @@ def multipose_interaction_persistence_key(
     *,
     mode: str = "residue_pair",
 ) -> Hashable:
-    """
-    Build a cross-pose persistence key.
-
-    Pose and model identifiers are intentionally excluded.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-    mode
-        Persistence mode. Supported values are ``"residue_pair"``,
-        ``"group_pair"``, ``"atom_pair"``, and ``"group_type"``.
-
-    Returns
-    -------
-    Hashable
-        Cross-pose persistence key.
-    """
+    """Build a cross-pose persistence key."""
 
     normalized_mode = normalize_text(
         mode,
@@ -18138,26 +13073,7 @@ def calculate_interaction_persistence(
     mode: str = "residue_pair",
     valid_only: bool = True,
 ) -> List[Dict[str, Any]]:
-    """
-    Calculate interaction persistence across docking poses.
-
-    Persistence is the percentage of analyzed poses containing at least one
-    interaction matching the selected key.
-
-    Parameters
-    ----------
-    results
-        Pose-level results.
-    mode
-        Persistence grouping mode.
-    valid_only
-        Whether invalid interactions should be ignored.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        Persistence records sorted by decreasing pose coverage.
-    """
+    """Calculate interaction persistence across docking poses."""
 
     result_list = list(
         results
@@ -18398,23 +13314,7 @@ def filter_persistent_interactions(
     minimum_percentage: float = 50.0,
     minimum_pose_count: int = 1,
 ) -> List[Dict[str, Any]]:
-    """
-    Filter interaction persistence records.
-
-    Parameters
-    ----------
-    persistence_records
-        Persistence records.
-    minimum_percentage
-        Minimum persistence percentage.
-    minimum_pose_count
-        Minimum number of poses.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        Filtered persistence records.
-    """
+    """Filter interaction persistence records."""
 
     normalized_percentage = safe_float(
         minimum_percentage,
@@ -18483,29 +13383,7 @@ def calculate_pose_ranking_score(
     moderate_weight: float = 0.20,
     hotspot_weight: float = 0.10,
 ) -> float:
-    """
-    Calculate a salt-bridge-based pose ranking score.
-
-    Parameters
-    ----------
-    result
-        Pose-level salt-bridge result.
-    score_weight
-        Weight for the total salt-bridge score.
-    interaction_weight
-        Weight for valid interaction count.
-    strong_weight
-        Bonus per strong interaction.
-    moderate_weight
-        Bonus per moderate interaction.
-    hotspot_weight
-        Bonus per hotspot.
-
-    Returns
-    -------
-    float
-        Pose ranking score.
-    """
+    """Calculate a salt-bridge-based pose ranking score."""
 
     compact_summary = (
         result.metadata.get(
@@ -18567,19 +13445,7 @@ def calculate_pose_ranking_score(
 def rank_salt_bridge_poses(
     results: Iterable[SaltBridgeResult],
 ) -> List[Dict[str, Any]]:
-    """
-    Rank poses using salt-bridge quality metrics.
-
-    Parameters
-    ----------
-    results
-        Pose-level results.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        Ranked pose records.
-    """
+    """Rank poses using salt-bridge quality metrics."""
 
     ranking_records: List[
         Dict[str, Any]
@@ -18699,19 +13565,7 @@ def rank_salt_bridge_poses(
 def get_best_salt_bridge_pose(
     results: Iterable[SaltBridgeResult],
 ) -> Optional[SaltBridgeResult]:
-    """
-    Return the highest-ranked pose result.
-
-    Parameters
-    ----------
-    results
-        Pose-level results.
-
-    Returns
-    -------
-    Optional[SaltBridgeResult]
-        Best result or ``None``.
-    """
+    """Return the highest-ranked pose result."""
 
     ranking = rank_salt_bridge_poses(
         results
@@ -18733,21 +13587,7 @@ def calculate_multipose_statistics(
     *,
     persistence_mode: str = "residue_pair",
 ) -> Dict[str, Any]:
-    """
-    Calculate statistics across multiple pose results.
-
-    Parameters
-    ----------
-    results
-        Pose-level salt-bridge results.
-    persistence_mode
-        Interaction persistence mode.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Multipose statistics.
-    """
+    """Calculate statistics across multiple pose results."""
 
     result_list = list(
         results
@@ -18978,25 +13818,7 @@ def identify_consensus_salt_bridges(
     minimum_pose_count: int = 2,
     mode: str = "residue_pair",
 ) -> List[Dict[str, Any]]:
-    """
-    Identify salt bridges conserved across multiple poses.
-
-    Parameters
-    ----------
-    results
-        Pose-level results.
-    minimum_persistence_percentage
-        Minimum pose coverage percentage.
-    minimum_pose_count
-        Minimum number of poses.
-    mode
-        Persistence key mode.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        Consensus salt-bridge records.
-    """
+    """Identify salt bridges conserved across multiple poses."""
 
     persistence_records = (
         calculate_interaction_persistence(
@@ -19083,25 +13905,7 @@ def build_multipose_salt_bridge_summary(
     consensus_percentage: float = 50.0,
     minimum_consensus_poses: int = 2,
 ) -> Dict[str, Any]:
-    """
-    Build a compact summary for multipose salt-bridge analysis.
-
-    Parameters
-    ----------
-    results
-        Pose-level results.
-    persistence_mode
-        Persistence grouping mode.
-    consensus_percentage
-        Minimum percentage for consensus interactions.
-    minimum_consensus_poses
-        Minimum pose count for consensus interactions.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Compact multipose summary.
-    """
+    """Build a compact summary for multipose salt-bridge analysis."""
 
     result_list = list(
         results
@@ -19229,19 +14033,7 @@ def build_multipose_salt_bridge_summary(
 def build_multipose_text_summary(
     results: Iterable[SaltBridgeResult],
 ) -> str:
-    """
-    Build a human-readable multipose summary.
-
-    Parameters
-    ----------
-    results
-        Pose-level results.
-
-    Returns
-    -------
-    str
-        Concise textual summary.
-    """
+    """Build a human-readable multipose summary."""
 
     summary = build_multipose_salt_bridge_summary(
         results
@@ -19325,53 +14117,7 @@ def analyze_salt_bridges_multipose(
     minimum_consensus_poses: int = 2,
     warnings: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """
-    Execute complete multipose salt-bridge analysis.
-
-    The workflow includes:
-
-    1. pose normalization;
-    2. independent analysis of each pose;
-    3. pose-level statistics;
-    4. interaction persistence analysis;
-    5. consensus interaction identification;
-    6. pose ranking;
-    7. compact and textual multipose summaries.
-
-    Parameters
-    ----------
-    poses
-        Pose-like molecular sources or DockModel-like objects.
-    config
-        Salt-bridge configuration.
-    pose_ids
-        Optional pose identifiers.
-    model_ids
-        Optional model identifiers.
-    attach_to_dock_models
-        Whether results should be attached to DockModel inputs.
-    preserve_existing
-        Whether existing DockModel interactions should be preserved.
-    store_full_groups
-        Whether full group mappings should be retained.
-    include_invalid_statistics
-        Whether rejected candidates should enter descriptive statistics.
-    continue_on_error
-        Whether processing should continue after pose-level failures.
-    persistence_mode
-        Cross-pose persistence mode.
-    consensus_percentage
-        Minimum persistence percentage for consensus interactions.
-    minimum_consensus_poses
-        Minimum number of poses for consensus interactions.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Complete multipose analysis result.
-    """
+    """Execute complete multipose salt-bridge analysis."""
 
     warning_list = (
         warnings
@@ -19428,26 +14174,74 @@ def analyze_salt_bridges_multipose(
         )
     )
 
-    compact_summary = (
-        build_multipose_salt_bridge_summary(
-            results,
-            persistence_mode=(
-                persistence_mode
-            ),
-            consensus_percentage=(
-                consensus_percentage
-            ),
-            minimum_consensus_poses=(
-                minimum_consensus_poses
-            ),
-        )
-    )
+    compact_consensus = [
+        {
+            **record,
+            "score_statistics": dict(record["score_statistics"]),
+            "distance_statistics": dict(record["distance_statistics"]),
+            "strength_counts": dict(record["strength_counts"]),
+        }
+        for record in consensus_interactions
+    ]
+    compact_persistence = [
+        {
+            **record,
+            "score_statistics": dict(record["score_statistics"]),
+            "distance_statistics": dict(record["distance_statistics"]),
+            "strength_counts": dict(record["strength_counts"]),
+        }
+        for record in multipose_statistics["persistence"]
+    ]
+    compact_ranking = [
+        dict(record)
+        for record in multipose_statistics["pose_ranking"]
+    ]
+    top_consensus = compact_consensus[0] if compact_consensus else None
+    compact_summary = {
+        "pose_count": multipose_statistics["pose_count"],
+        "poses_with_interactions": multipose_statistics["poses_with_interactions"],
+        "poses_without_interactions": multipose_statistics["poses_without_interactions"],
+        "total_interaction_count": multipose_statistics["total_interaction_count"],
+        "total_score": multipose_statistics["total_score"],
+        "mean_interactions_per_pose": multipose_statistics["interactions_per_pose"].get("mean"),
+        "mean_score_per_pose": multipose_statistics["scores_per_pose"].get("mean"),
+        "best_pose_id": multipose_statistics["best_pose_id"],
+        "best_model_id": multipose_statistics["best_model_id"],
+        "best_pose_score": multipose_statistics["best_pose_total_score"],
+        "persistent_interaction_count": multipose_statistics["unique_persistent_interaction_count"],
+        "consensus_interaction_count": len(compact_consensus),
+        "top_consensus_key": top_consensus["persistence_key"] if top_consensus else None,
+        "top_consensus_persistence": top_consensus["persistence_percentage"] if top_consensus else None,
+        "pose_ranking": compact_ranking,
+        "persistence": compact_persistence,
+        "consensus_interactions": compact_consensus,
+    }
 
-    text_summary = (
-        build_multipose_text_summary(
-            results
-        )
-    )
+    if (
+        persistence_mode == "residue_pair"
+        and consensus_percentage == 50.0
+        and minimum_consensus_poses == 2
+    ):
+        pose_count = compact_summary["pose_count"]
+        if pose_count == 0:
+            text_summary = "No docking poses were analyzed."
+        else:
+            summary_parts = [
+                f"{pose_count} pose{'' if pose_count == 1 else 's'} analyzed",
+                f"{compact_summary['poses_with_interactions']} with valid salt bridges",
+                f"{compact_summary['total_interaction_count']} total valid interactions",
+                f"total score {compact_summary['total_score']:.3f}",
+            ]
+            if compact_summary["best_pose_id"] is not None:
+                summary_parts.append(f"best pose {compact_summary['best_pose_id']}")
+            if compact_summary["consensus_interaction_count"] > 0:
+                summary_parts.append(
+                    f"{compact_summary['consensus_interaction_count']} consensus interactions"
+                )
+            text_summary = "; ".join(summary_parts) + "."
+    else:
+        # Preserve the historical default-mode text summary for custom analyses.
+        text_summary = build_multipose_text_summary(results)
 
     return {
         "results": results,
@@ -19511,28 +14305,14 @@ def analyze_salt_bridges_multipose(
 # 16. SERIALIZATION AND EXPORT PREPARATION
 # =============================================================================
 
-
 # =============================================================================
 # 16.1. SERIALIZATION UTILITIES
 # =============================================================================
 
-
 def is_json_primitive(
     value: Any,
 ) -> bool:
-    """
-    Return whether a value is directly JSON serializable.
-
-    Parameters
-    ----------
-    value
-        Value to inspect.
-
-    Returns
-    -------
-    bool
-        Whether the value is a JSON primitive.
-    """
+    """Return whether a value is directly JSON serializable."""
 
     return (
         value is None
@@ -19547,25 +14327,10 @@ def is_json_primitive(
         )
     )
 
-
 def sanitize_json_number(
     value: Any,
 ) -> Optional[Union[int, float]]:
-    """
-    Convert a numeric-like value into a JSON-safe number.
-
-    Non-finite floating-point values are converted to ``None``.
-
-    Parameters
-    ----------
-    value
-        Numeric-like value.
-
-    Returns
-    -------
-    Optional[Union[int, float]]
-        JSON-safe numeric value.
-    """
+    """Convert a numeric-like value into a JSON-safe number."""
 
     if value is None:
         return None
@@ -19588,23 +14353,10 @@ def sanitize_json_number(
 
     return normalized_value
 
-
 def sanitize_json_key(
     value: Any,
 ) -> str:
-    """
-    Convert a mapping key into a stable JSON string key.
-
-    Parameters
-    ----------
-    value
-        Mapping key.
-
-    Returns
-    -------
-    str
-        JSON-safe key.
-    """
+    """Convert a mapping key into a stable JSON string key."""
 
     if value is None:
         return "null"
@@ -19637,7 +14389,6 @@ def sanitize_json_key(
 
     return str(value)
 
-
 def make_json_safe(
     value: Any,
     *,
@@ -19645,30 +14396,7 @@ def make_json_safe(
     current_depth: int = 0,
     fallback_to_string: bool = True,
 ) -> Any:
-    """
-    Recursively convert a value into JSON-safe data.
-
-    Parameters
-    ----------
-    value
-        Value to convert.
-    max_depth
-        Maximum recursion depth.
-    current_depth
-        Current recursion depth.
-    fallback_to_string
-        Whether unsupported objects should be converted to strings.
-
-    Returns
-    -------
-    Any
-        JSON-compatible representation.
-
-    Raises
-    ------
-    SaltBridgeSerializationError
-        If maximum depth is exceeded or an unsupported value cannot be handled.
-    """
+    """Recursively convert a value into JSON-safe data."""
 
     if current_depth > max_depth:
         raise SaltBridgeSerializationError(
@@ -19777,25 +14505,12 @@ def make_json_safe(
         f"{type(value).__name__}."
     )
 
-
 def serialize_coordinate(
     coordinate: Optional[
         Sequence[float]
     ],
 ) -> Optional[List[float]]:
-    """
-    Convert a coordinate into a JSON-safe three-value list.
-
-    Parameters
-    ----------
-    coordinate
-        Coordinate-like value.
-
-    Returns
-    -------
-    Optional[List[float]]
-        Serialized coordinate or ``None``.
-    """
+    """Convert a coordinate into a JSON-safe three-value list."""
 
     if coordinate is None:
         return None
@@ -19822,34 +14537,16 @@ def serialize_coordinate(
         ),
     ]
 
-
 # =============================================================================
 # 16.2. ATOM AND RESIDUE SERIALIZATION
 # =============================================================================
-
 
 def atom_reference_to_dict(
     atom: Any,
     *,
     include_coordinate: bool = True,
 ) -> Optional[Dict[str, Any]]:
-    """
-    Build a compact serializable atom reference.
-
-    The molecular object itself is not serialized.
-
-    Parameters
-    ----------
-    atom
-        Atom-like object.
-    include_coordinate
-        Whether atom coordinates should be included.
-
-    Returns
-    -------
-    Optional[Dict[str, Any]]
-        Atom reference or ``None``.
-    """
+    """Build a compact serializable atom reference."""
 
     if atom is None:
         return None
@@ -19897,23 +14594,10 @@ def atom_reference_to_dict(
 
     return atom_data
 
-
 def residue_reference_to_dict(
     residue: Any,
 ) -> Optional[Dict[str, Any]]:
-    """
-    Build a compact serializable residue reference.
-
-    Parameters
-    ----------
-    residue
-        Residue-like object.
-
-    Returns
-    -------
-    Optional[Dict[str, Any]]
-        Residue reference or ``None``.
-    """
+    """Build a compact serializable residue reference."""
 
     if residue is None:
         return None
@@ -19939,11 +14623,9 @@ def residue_reference_to_dict(
         ),
     }
 
-
 # =============================================================================
 # 16.3. CHARGED ATOM SERIALIZATION
 # =============================================================================
-
 
 def charged_atom_to_dict(
     charged_atom: ChargedAtom,
@@ -19951,23 +14633,7 @@ def charged_atom_to_dict(
     include_atom_reference: bool = True,
     include_metadata: bool = True,
 ) -> Dict[str, Any]:
-    """
-    Convert a ChargedAtom into a serializable dictionary.
-
-    Parameters
-    ----------
-    charged_atom
-        Charged atom.
-    include_atom_reference
-        Whether the underlying atom reference should be included.
-    include_metadata
-        Whether metadata should be included.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Serialized charged atom.
-    """
+    """Convert a ChargedAtom into a serializable dictionary."""
 
     if not isinstance(
         charged_atom,
@@ -20025,11 +14691,9 @@ def charged_atom_to_dict(
 
     return atom_data
 
-
 # =============================================================================
 # 16.4. CHARGED GROUP SERIALIZATION
 # =============================================================================
-
 
 def charged_group_to_dict(
     group: ChargedGroup,
@@ -20037,23 +14701,7 @@ def charged_group_to_dict(
     include_atoms: bool = True,
     include_metadata: bool = True,
 ) -> Dict[str, Any]:
-    """
-    Convert a ChargedGroup into a serializable dictionary.
-
-    Parameters
-    ----------
-    group
-        Charged group.
-    include_atoms
-        Whether charged atoms should be included.
-    include_metadata
-        Whether group metadata should be included.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Serialized charged group.
-    """
+    """Convert a ChargedGroup into a serializable dictionary."""
 
     if not isinstance(
         group,
@@ -20119,28 +14767,14 @@ def charged_group_to_dict(
 
     return group_data
 
-
 # =============================================================================
 # 16.5. GEOMETRY SERIALIZATION
 # =============================================================================
 
-
 def salt_bridge_geometry_to_dict(
     geometry: SaltBridgeGeometry,
 ) -> Dict[str, Any]:
-    """
-    Convert SaltBridgeGeometry into a serializable dictionary.
-
-    Parameters
-    ----------
-    geometry
-        Salt-bridge geometry.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Serialized geometry.
-    """
+    """Convert SaltBridgeGeometry into a serializable dictionary."""
 
     if not isinstance(
         geometry,
@@ -20185,11 +14819,9 @@ def salt_bridge_geometry_to_dict(
         ),
     }
 
-
 # =============================================================================
 # 16.6. INTERACTION SERIALIZATION
 # =============================================================================
-
 
 def salt_bridge_interaction_to_dict(
     interaction: SaltBridgeInteraction,
@@ -20199,27 +14831,7 @@ def salt_bridge_interaction_to_dict(
     include_metadata: bool = True,
     compact: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Convert a SaltBridgeInteraction into a serializable dictionary.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-    include_groups
-        Whether full charged-group data should be included.
-    include_group_atoms
-        Whether charged-group atoms should be included.
-    include_metadata
-        Whether interaction metadata should be included.
-    compact
-        Whether a compact representation should be generated.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Serialized interaction.
-    """
+    """Convert a SaltBridgeInteraction into a serializable dictionary."""
 
     if not isinstance(
         interaction,
@@ -20333,11 +14945,9 @@ def salt_bridge_interaction_to_dict(
 
     return interaction_data
 
-
 # =============================================================================
 # 16.7. RESULT SERIALIZATION
 # =============================================================================
-
 
 def salt_bridge_result_to_dict(
     result: SaltBridgeResult,
@@ -20350,33 +14960,7 @@ def salt_bridge_result_to_dict(
     include_warnings: bool = True,
     compact_interactions: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Convert a SaltBridgeResult into a serializable dictionary.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-    include_interactions
-        Whether interactions should be included.
-    include_groups
-        Whether recognized charged groups should be included.
-    include_group_atoms
-        Whether atoms within recognized groups should be included.
-    include_statistics
-        Whether statistics should be included.
-    include_metadata
-        Whether metadata should be included.
-    include_warnings
-        Whether warnings should be included.
-    compact_interactions
-        Whether interactions should use flat summary records.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Serialized result.
-    """
+    """Convert a SaltBridgeResult into a serializable dictionary."""
 
     if not isinstance(
         result,
@@ -20486,11 +15070,9 @@ def salt_bridge_result_to_dict(
         result_data
     )
 
-
 # =============================================================================
 # 16.8. JSON SERIALIZATION
 # =============================================================================
-
 
 def serialize_salt_bridge_result(
     result: SaltBridgeResult,
@@ -20504,35 +15086,7 @@ def serialize_salt_bridge_result(
     include_statistics: bool = True,
     include_metadata: bool = True,
 ) -> str:
-    """
-    Serialize a SaltBridgeResult to JSON.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-    indent
-        JSON indentation level.
-    sort_keys
-        Whether JSON keys should be sorted.
-    ensure_ascii
-        Whether non-ASCII characters should be escaped.
-    compact_interactions
-        Whether flat interaction records should be used.
-    include_groups
-        Whether recognized charged groups should be included.
-    include_group_atoms
-        Whether group atoms should be included.
-    include_statistics
-        Whether statistics should be included.
-    include_metadata
-        Whether metadata should be included.
-
-    Returns
-    -------
-    str
-        JSON document.
-    """
+    """Serialize a SaltBridgeResult to JSON."""
 
     try:
         payload = salt_bridge_result_to_dict(
@@ -20573,7 +15127,6 @@ def serialize_salt_bridge_result(
             "Could not serialize SaltBridgeResult to JSON."
         ) from error
 
-
 def serialize_salt_bridge_interactions(
     interactions: Iterable[
         SaltBridgeInteraction
@@ -20583,25 +15136,7 @@ def serialize_salt_bridge_interactions(
     compact: bool = False,
     include_metadata: bool = True,
 ) -> str:
-    """
-    Serialize salt-bridge interactions to JSON.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    indent
-        JSON indentation level.
-    compact
-        Whether flat summary records should be used.
-    include_metadata
-        Whether interaction metadata should be included.
-
-    Returns
-    -------
-    str
-        JSON document.
-    """
+    """Serialize salt-bridge interactions to JSON."""
 
     try:
         payload = [
@@ -20637,11 +15172,9 @@ def serialize_salt_bridge_interactions(
             "Could not serialize salt-bridge interactions."
         ) from error
 
-
 # =============================================================================
 # 16.9. TABLE EXPORT RECORDS
 # =============================================================================
-
 
 def salt_bridge_interactions_to_rows(
     interactions: Iterable[
@@ -20651,23 +15184,7 @@ def salt_bridge_interactions_to_rows(
     include_invalid: bool = False,
     sort_by_score: bool = True,
 ) -> List[Dict[str, Any]]:
-    """
-    Convert interactions into flat tabular rows.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    include_invalid
-        Whether invalid interactions should be included.
-    sort_by_score
-        Whether rows should be ordered by decreasing score.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        Flat table rows.
-    """
+    """Convert interactions into flat tabular rows."""
 
     rows = build_interaction_summary_table(
         interactions,
@@ -20684,23 +15201,10 @@ def salt_bridge_interactions_to_rows(
         for row in rows
     ]
 
-
 def salt_bridge_groups_to_rows(
     groups: Iterable[ChargedGroup],
 ) -> List[Dict[str, Any]]:
-    """
-    Convert charged groups into flat tabular rows.
-
-    Parameters
-    ----------
-    groups
-        Charged groups.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        Flat group rows.
-    """
+    """Convert charged groups into flat tabular rows."""
 
     rows: List[Dict[str, Any]] = []
 
@@ -20785,27 +15289,12 @@ def salt_bridge_groups_to_rows(
 
     return rows
 
-
 def salt_bridge_statistics_to_rows(
     statistics_data: Mapping[str, Any],
     *,
     prefix: str = "",
 ) -> List[Dict[str, Any]]:
-    """
-    Flatten nested statistics into metric-value rows.
-
-    Parameters
-    ----------
-    statistics_data
-        Statistics mapping.
-    prefix
-        Optional metric prefix.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        Flattened statistics rows.
-    """
+    """Flatten nested statistics into metric-value rows."""
 
     rows: List[Dict[str, Any]] = []
 
@@ -20867,30 +15356,16 @@ def salt_bridge_statistics_to_rows(
 
     return rows
 
-
 # =============================================================================
 # 16.10. RESIDUE SUMMARY EXPORT
 # =============================================================================
-
 
 def build_residue_salt_bridge_summary_rows(
     interactions: Iterable[
         SaltBridgeInteraction
     ],
 ) -> List[Dict[str, Any]]:
-    """
-    Build residue-level salt-bridge summary rows.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        Residue summary rows.
-    """
+    """Build residue-level salt-bridge summary rows."""
 
     residue_groups = (
         group_salt_bridges_by_any_residue(
@@ -21075,30 +15550,16 @@ def build_residue_salt_bridge_summary_rows(
 
     return rows
 
-
 # =============================================================================
 # 16.11. POSE SUMMARY EXPORT
 # =============================================================================
-
 
 def build_pose_salt_bridge_summary_rows(
     results: Iterable[
         SaltBridgeResult
     ],
 ) -> List[Dict[str, Any]]:
-    """
-    Build pose-level summary rows.
-
-    Parameters
-    ----------
-    results
-        Pose-level results.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        Pose summary rows.
-    """
+    """Build pose-level summary rows."""
 
     ranking = rank_salt_bridge_poses(
         results
@@ -21204,11 +15665,9 @@ def build_pose_salt_bridge_summary_rows(
         rows
     )
 
-
 # =============================================================================
 # 16.12. MULTIPOSE SERIALIZATION
 # =============================================================================
-
 
 def salt_bridge_multipose_to_dict(
     multipose_result: Mapping[str, Any],
@@ -21220,31 +15679,7 @@ def salt_bridge_multipose_to_dict(
     include_persistence: bool = True,
     include_consensus: bool = True,
 ) -> Dict[str, Any]:
-    """
-    Convert a complete multipose result into serializable data.
-
-    Parameters
-    ----------
-    multipose_result
-        Result returned by ``analyze_salt_bridges_multipose``.
-    include_pose_results
-        Whether individual pose results should be included.
-    include_pose_interactions
-        Whether pose interactions should be included.
-    compact_pose_interactions
-        Whether pose interactions should use flat records.
-    include_statistics
-        Whether multipose statistics should be included.
-    include_persistence
-        Whether persistence records should be included.
-    include_consensus
-        Whether consensus records should be included.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Serialized multipose result.
-    """
+    """Convert a complete multipose result into serializable data."""
 
     if not isinstance(
         multipose_result,
@@ -21369,7 +15804,6 @@ def salt_bridge_multipose_to_dict(
         payload
     )
 
-
 def serialize_salt_bridge_multipose(
     multipose_result: Mapping[str, Any],
     *,
@@ -21377,25 +15811,7 @@ def serialize_salt_bridge_multipose(
     include_pose_results: bool = True,
     compact_pose_interactions: bool = True,
 ) -> str:
-    """
-    Serialize complete multipose salt-bridge analysis to JSON.
-
-    Parameters
-    ----------
-    multipose_result
-        Complete multipose analysis.
-    indent
-        JSON indentation level.
-    include_pose_results
-        Whether individual results should be included.
-    compact_pose_interactions
-        Whether individual interactions should be compact.
-
-    Returns
-    -------
-    str
-        JSON document.
-    """
+    """Serialize complete multipose salt-bridge analysis to JSON."""
 
     try:
         payload = salt_bridge_multipose_to_dict(
@@ -21430,11 +15846,9 @@ def serialize_salt_bridge_multipose(
             "Could not serialize multipose salt-bridge analysis."
         ) from error
 
-
 # =============================================================================
 # 16.13. EXPORT PAYLOAD ASSEMBLY
 # =============================================================================
-
 
 def build_salt_bridge_export_payload(
     result: SaltBridgeResult,
@@ -21445,31 +15859,7 @@ def build_salt_bridge_export_payload(
     include_residue_summary: bool = True,
     include_statistics_table: bool = True,
 ) -> Dict[str, Any]:
-    """
-    Build a complete export payload for one SaltBridgeResult.
-
-    This function prepares data but does not write files.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-    include_full_result
-        Whether the complete serialized result should be included.
-    include_interaction_table
-        Whether a flat interaction table should be included.
-    include_group_tables
-        Whether cationic and anionic group tables should be included.
-    include_residue_summary
-        Whether residue summary rows should be included.
-    include_statistics_table
-        Whether flattened statistics should be included.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Export payload.
-    """
+    """Build a complete export payload for one SaltBridgeResult."""
 
     if not isinstance(
         result,
@@ -21561,30 +15951,13 @@ def build_salt_bridge_export_payload(
         payload
     )
 
-
 def build_multipose_salt_bridge_export_payload(
     multipose_result: Mapping[str, Any],
     *,
     include_pose_results: bool = True,
     include_pose_interaction_rows: bool = True,
 ) -> Dict[str, Any]:
-    """
-    Build a complete multipose export payload.
-
-    Parameters
-    ----------
-    multipose_result
-        Complete multipose analysis result.
-    include_pose_results
-        Whether serialized pose results should be included.
-    include_pose_interaction_rows
-        Whether a unified interaction table should be included.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Multipose export payload.
-    """
+    """Build a complete multipose export payload."""
 
     if not isinstance(
         multipose_result,
@@ -21715,33 +16088,14 @@ def build_multipose_salt_bridge_export_payload(
         payload
     )
 
-
 # =============================================================================
 # 16.14. EXPORT FORMAT ROUTING
 # =============================================================================
 
-
 def normalize_salt_bridge_export_format(
     export_format: str,
 ) -> str:
-    """
-    Normalize an export format identifier.
-
-    Parameters
-    ----------
-    export_format
-        Export format name.
-
-    Returns
-    -------
-    str
-        Normalized format.
-
-    Raises
-    ------
-    SaltBridgeSerializationError
-        If the format is unsupported.
-    """
+    """Normalize an export format identifier."""
 
     normalized_format = normalize_text(
         export_format,
@@ -21784,31 +16138,12 @@ def normalize_salt_bridge_export_format(
 
     return normalized_format
 
-
 def prepare_salt_bridge_export(
     result: SaltBridgeResult,
     export_format: str = "dict",
     **options: Any,
 ) -> Any:
-    """
-    Prepare a SaltBridgeResult in a requested export representation.
-
-    This function does not write files.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-    export_format
-        Output representation.
-    **options
-        Format-specific options.
-
-    Returns
-    -------
-    Any
-        Prepared export data.
-    """
+    """Prepare a SaltBridgeResult in a requested export representation."""
 
     normalized_format = (
         normalize_salt_bridge_export_format(
@@ -21854,49 +16189,26 @@ def prepare_salt_bridge_export(
         "Internal export format routing failure."
     )
 
-
 # =============================================================================
 # 17. CHIMERAX COMPATIBILITY
 # =============================================================================
-
 
 # =============================================================================
 # 17.1. CHIMERAX AVAILABILITY AND VALIDATION
 # =============================================================================
 
-
 def require_chimerax() -> None:
-    """
-    Ensure that ChimeraX integration is available.
-
-    Raises
-    ------
-    ChimeraXUnavailableError
-        If ChimeraX modules could not be imported.
-    """
+    """Ensure that ChimeraX integration is available."""
 
     if not HAS_CHIMERAX:
         raise ChimeraXUnavailableError(
             "ChimeraX integration is unavailable in the current environment."
         )
 
-
 def is_chimerax_atomic_model(
     value: Any,
 ) -> bool:
-    """
-    Return whether an object appears to be a ChimeraX atomic model.
-
-    Parameters
-    ----------
-    value
-        Object to inspect.
-
-    Returns
-    -------
-    bool
-        Whether the object resembles a ChimeraX atomic model.
-    """
+    """Return whether an object appears to be a ChimeraX atomic model."""
 
     if value is None:
         return False
@@ -21919,32 +16231,12 @@ def is_chimerax_atomic_model(
         for attribute_name in candidate_attributes
     )
 
-
 def get_chimerax_session(
     value: Any,
     *,
     required: bool = True,
 ) -> Any:
-    """
-    Resolve a ChimeraX session from an object.
-
-    Parameters
-    ----------
-    value
-        Session-like object or object containing a session.
-    required
-        Whether failure should raise an exception.
-
-    Returns
-    -------
-    Any
-        Resolved ChimeraX session or ``None``.
-
-    Raises
-    ------
-    ChimeraXSaltBridgeError
-        If no session can be resolved and ``required`` is true.
-    """
+    """Resolve a ChimeraX session from an object."""
 
     if value is None:
         if required:
@@ -21979,32 +16271,16 @@ def get_chimerax_session(
 
     return None
 
-
 # =============================================================================
 # 17.2. CHIMERAX MODEL SPECIFICATIONS
 # =============================================================================
-
 
 def get_chimerax_model_spec(
     model: Any,
     *,
     fallback: Optional[str] = None,
 ) -> Optional[str]:
-    """
-    Build a ChimeraX model specification.
-
-    Parameters
-    ----------
-    model
-        ChimeraX model-like object.
-    fallback
-        Value returned when no model identifier is available.
-
-    Returns
-    -------
-    Optional[str]
-        ChimeraX model specification.
-    """
+    """Build a ChimeraX model specification."""
 
     if model is None:
         return fallback
@@ -22056,23 +16332,10 @@ def get_chimerax_model_spec(
 
     return fallback
 
-
 def get_atom_chimerax_model(
     atom: Any,
 ) -> Any:
-    """
-    Resolve the ChimeraX model associated with an atom.
-
-    Parameters
-    ----------
-    atom
-        Atom-like object.
-
-    Returns
-    -------
-    Any
-        ChimeraX model-like object or ``None``.
-    """
+    """Resolve the ChimeraX model associated with an atom."""
 
     if atom is None:
         return None
@@ -22102,28 +16365,14 @@ def get_atom_chimerax_model(
 
     return None
 
-
 # =============================================================================
 # 17.3. ATOM SPECIFICATIONS
 # =============================================================================
 
-
 def escape_chimerax_spec_text(
     value: Any,
 ) -> str:
-    """
-    Escape text used in ChimeraX atom specifications.
-
-    Parameters
-    ----------
-    value
-        Text-like value.
-
-    Returns
-    -------
-    str
-        Sanitized specification component.
-    """
+    """Escape text used in ChimeraX atom specifications."""
 
     text = str(
         value
@@ -22140,7 +16389,6 @@ def escape_chimerax_spec_text(
         )
     )
 
-
 def atom_to_chimerax_spec(
     atom: Any,
     *,
@@ -22149,27 +16397,7 @@ def atom_to_chimerax_spec(
     include_residue: bool = True,
     include_atom_name: bool = True,
 ) -> Optional[str]:
-    """
-    Build a ChimeraX specification for one atom.
-
-    Parameters
-    ----------
-    atom
-        Atom-like object.
-    include_model
-        Whether the model identifier should be included.
-    include_chain
-        Whether the chain identifier should be included.
-    include_residue
-        Whether the residue identifier should be included.
-    include_atom_name
-        Whether the atom name should be included.
-
-    Returns
-    -------
-    Optional[str]
-        ChimeraX atom specification or ``None``.
-    """
+    """Build a ChimeraX specification for one atom."""
 
     if atom is None:
         return None
@@ -22238,27 +16466,12 @@ def atom_to_chimerax_spec(
         specification_parts
     )
 
-
 def atoms_to_chimerax_spec(
     atoms: Iterable[Any],
     *,
     operator: str = " ",
 ) -> Optional[str]:
-    """
-    Build a combined ChimeraX specification for multiple atoms.
-
-    Parameters
-    ----------
-    atoms
-        Atom-like objects.
-    operator
-        Specification separator.
-
-    Returns
-    -------
-    Optional[str]
-        Combined ChimeraX specification.
-    """
+    """Build a combined ChimeraX specification for multiple atoms."""
 
     specifications = unique_preserve_order(
         specification
@@ -22278,11 +16491,9 @@ def atoms_to_chimerax_spec(
         specifications
     )
 
-
 # =============================================================================
 # 17.4. RESIDUE SPECIFICATIONS
 # =============================================================================
-
 
 def residue_to_chimerax_spec(
     residue: Any,
@@ -22290,23 +16501,7 @@ def residue_to_chimerax_spec(
     include_model: bool = True,
     include_chain: bool = True,
 ) -> Optional[str]:
-    """
-    Build a ChimeraX specification for one residue.
-
-    Parameters
-    ----------
-    residue
-        Residue-like object.
-    include_model
-        Whether the model identifier should be included.
-    include_chain
-        Whether the chain identifier should be included.
-
-    Returns
-    -------
-    Optional[str]
-        ChimeraX residue specification.
-    """
+    """Build a ChimeraX specification for one residue."""
 
     if residue is None:
         return None
@@ -22355,27 +16550,12 @@ def residue_to_chimerax_spec(
         specification_parts
     )
 
-
 def residues_to_chimerax_spec(
     residues: Iterable[Any],
     *,
     operator: str = " ",
 ) -> Optional[str]:
-    """
-    Build a combined ChimeraX specification for residues.
-
-    Parameters
-    ----------
-    residues
-        Residue-like objects.
-    operator
-        Specification separator.
-
-    Returns
-    -------
-    Optional[str]
-        Combined ChimeraX specification.
-    """
+    """Build a combined ChimeraX specification for residues."""
 
     specifications = unique_preserve_order(
         specification
@@ -22395,32 +16575,16 @@ def residues_to_chimerax_spec(
         specifications
     )
 
-
 # =============================================================================
 # 17.5. CHARGED GROUP SPECIFICATIONS
 # =============================================================================
-
 
 def charged_group_to_chimerax_spec(
     group: ChargedGroup,
     *,
     representative_only: bool = False,
 ) -> Optional[str]:
-    """
-    Build a ChimeraX specification for a charged group.
-
-    Parameters
-    ----------
-    group
-        Charged group.
-    representative_only
-        Whether only the representative atom should be selected.
-
-    Returns
-    -------
-    Optional[str]
-        ChimeraX atom specification.
-    """
+    """Build a ChimeraX specification for a charged group."""
 
     if not isinstance(
         group,
@@ -22458,30 +16622,13 @@ def charged_group_to_chimerax_spec(
         group.residue
     )
 
-
 def salt_bridge_interaction_to_chimerax_spec(
     interaction: SaltBridgeInteraction,
     *,
     residues_only: bool = False,
     representative_atoms_only: bool = False,
 ) -> Optional[str]:
-    """
-    Build a ChimeraX specification for one salt bridge.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-    residues_only
-        Whether entire residues should be selected.
-    representative_atoms_only
-        Whether only representative group atoms should be selected.
-
-    Returns
-    -------
-    Optional[str]
-        Combined ChimeraX specification.
-    """
+    """Build a ChimeraX specification for one salt bridge."""
 
     if not isinstance(
         interaction,
@@ -22529,11 +16676,9 @@ def salt_bridge_interaction_to_chimerax_spec(
         specifications
     )
 
-
 # =============================================================================
 # 17.6. RESULT SPECIFICATIONS
 # =============================================================================
-
 
 def salt_bridge_result_to_chimerax_spec(
     result: SaltBridgeResult,
@@ -22542,25 +16687,7 @@ def salt_bridge_result_to_chimerax_spec(
     residues_only: bool = False,
     representative_atoms_only: bool = False,
 ) -> Optional[str]:
-    """
-    Build a ChimeraX selection specification for a complete result.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-    valid_only
-        Whether rejected interactions should be excluded.
-    residues_only
-        Whether complete residues should be selected.
-    representative_atoms_only
-        Whether only representative atoms should be selected.
-
-    Returns
-    -------
-    Optional[str]
-        Combined ChimeraX specification.
-    """
+    """Build a ChimeraX selection specification for a complete result."""
 
     if not isinstance(
         result,
@@ -22605,11 +16732,9 @@ def salt_bridge_result_to_chimerax_spec(
         unique_specs
     )
 
-
 # =============================================================================
 # 17.7. SELECTION COMMANDS
 # =============================================================================
-
 
 def build_select_salt_bridge_command(
     result: SaltBridgeResult,
@@ -22619,27 +16744,7 @@ def build_select_salt_bridge_command(
     representative_atoms_only: bool = False,
     clear_existing: bool = True,
 ) -> Optional[str]:
-    """
-    Build a ChimeraX selection command for salt bridges.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-    valid_only
-        Whether invalid interactions should be excluded.
-    residues_only
-        Whether complete residues should be selected.
-    representative_atoms_only
-        Whether only representative atoms should be selected.
-    clear_existing
-        Whether the existing selection should be cleared.
-
-    Returns
-    -------
-    Optional[str]
-        ChimeraX command string.
-    """
+    """Build a ChimeraX selection command for salt bridges."""
 
     atom_spec = salt_bridge_result_to_chimerax_spec(
         result,
@@ -22663,7 +16768,6 @@ def build_select_salt_bridge_command(
 
     return select_command
 
-
 def build_select_interaction_command(
     interaction: SaltBridgeInteraction,
     *,
@@ -22671,25 +16775,7 @@ def build_select_interaction_command(
     representative_atoms_only: bool = False,
     clear_existing: bool = True,
 ) -> Optional[str]:
-    """
-    Build a selection command for one salt bridge.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-    residues_only
-        Whether complete residues should be selected.
-    representative_atoms_only
-        Whether only representative atoms should be selected.
-    clear_existing
-        Whether the existing selection should be cleared.
-
-    Returns
-    -------
-    Optional[str]
-        ChimeraX command.
-    """
+    """Build a selection command for one salt bridge."""
 
     atom_spec = (
         salt_bridge_interaction_to_chimerax_spec(
@@ -22711,32 +16797,16 @@ def build_select_interaction_command(
 
     return command
 
-
 # =============================================================================
 # 17.8. DISPLAY COMMANDS
 # =============================================================================
-
 
 def normalize_chimerax_color(
     color: Optional[str],
     *,
     default: str,
 ) -> str:
-    """
-    Normalize a ChimeraX color name.
-
-    Parameters
-    ----------
-    color
-        Color name.
-    default
-        Fallback color.
-
-    Returns
-    -------
-    str
-        Normalized color name.
-    """
+    """Normalize a ChimeraX color name."""
 
     normalized_color = normalize_text(
         color,
@@ -22749,23 +16819,10 @@ def normalize_chimerax_color(
         or default
     )
 
-
 def get_salt_bridge_strength_color(
     interaction: SaltBridgeInteraction,
 ) -> str:
-    """
-    Return a default ChimeraX color based on interaction strength.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-
-    Returns
-    -------
-    str
-        ChimeraX color name.
-    """
+    """Return a default ChimeraX color based on interaction strength."""
 
     strength = normalize_text(
         interaction.strength,
@@ -22785,7 +16842,6 @@ def get_salt_bridge_strength_color(
         "magenta",
     )
 
-
 def build_show_salt_bridge_command(
     result: SaltBridgeResult,
     *,
@@ -22794,27 +16850,7 @@ def build_show_salt_bridge_command(
     display_style: str = "stick",
     color: Optional[str] = None,
 ) -> Optional[str]:
-    """
-    Build ChimeraX commands to show salt-bridge participants.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-    valid_only
-        Whether invalid interactions should be excluded.
-    residues_only
-        Whether complete residues should be displayed.
-    display_style
-        ChimeraX display style.
-    color
-        Optional display color.
-
-    Returns
-    -------
-    Optional[str]
-        ChimeraX command string.
-    """
+    """Build ChimeraX commands to show salt-bridge participants."""
 
     atom_spec = salt_bridge_result_to_chimerax_spec(
         result,
@@ -22850,39 +16886,14 @@ def build_show_salt_bridge_command(
         command_parts
     )
 
-
 # =============================================================================
 # 17.9. PSEUDOBOND ENDPOINT RESOLUTION
 # =============================================================================
 
-
 def resolve_salt_bridge_pseudobond_atoms(
     interaction: SaltBridgeInteraction,
 ) -> Tuple[Any, Any]:
-    """
-    Resolve atoms used as salt-bridge pseudobond endpoints.
-
-    Priority:
-
-    1. closest atomic contact;
-    2. representative atoms;
-    3. first available atom in each charged group.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-
-    Returns
-    -------
-    Tuple[Any, Any]
-        Positive and negative endpoint atoms.
-
-    Raises
-    ------
-    ChimeraXSaltBridgeError
-        If suitable atoms cannot be resolved.
-    """
+    """Resolve atoms used as salt-bridge pseudobond endpoints."""
 
     if not isinstance(
         interaction,
@@ -22939,23 +16950,10 @@ def resolve_salt_bridge_pseudobond_atoms(
         negative_atom,
     )
 
-
 def build_salt_bridge_pseudobond_specs(
     interaction: SaltBridgeInteraction,
 ) -> Tuple[str, str]:
-    """
-    Build ChimeraX atom specifications for pseudobond endpoints.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-
-    Returns
-    -------
-    Tuple[str, str]
-        Positive and negative atom specifications.
-    """
+    """Build ChimeraX atom specifications for pseudobond endpoints."""
 
     positive_atom, negative_atom = (
         resolve_salt_bridge_pseudobond_atoms(
@@ -22984,32 +16982,16 @@ def build_salt_bridge_pseudobond_specs(
         negative_spec,
     )
 
-
 # =============================================================================
 # 17.10. PSEUDOBOND GROUP NAMING
 # =============================================================================
-
 
 def sanitize_chimerax_group_name(
     value: Any,
     *,
     default: str = "DockAnalyzer salt bridges",
 ) -> str:
-    """
-    Sanitize a ChimeraX pseudobond group name.
-
-    Parameters
-    ----------
-    value
-        Group name.
-    default
-        Fallback name.
-
-    Returns
-    -------
-    str
-        Sanitized group name.
-    """
+    """Sanitize a ChimeraX pseudobond group name."""
 
     normalized_name = str(
         value or default
@@ -23023,7 +17005,6 @@ def sanitize_chimerax_group_name(
         "'",
     )
 
-
 def make_salt_bridge_pseudobond_group_name(
     interaction: Optional[
         SaltBridgeInteraction
@@ -23033,25 +17014,7 @@ def make_salt_bridge_pseudobond_group_name(
     separate_by_strength: bool = False,
     separate_by_pose: bool = False,
 ) -> str:
-    """
-    Build a pseudobond group name.
-
-    Parameters
-    ----------
-    interaction
-        Optional salt-bridge interaction.
-    base_name
-        Base group name.
-    separate_by_strength
-        Whether strength should be included.
-    separate_by_pose
-        Whether pose identifier should be included.
-
-    Returns
-    -------
-    str
-        Pseudobond group name.
-    """
+    """Build a pseudobond group name."""
 
     name_parts = [
         sanitize_chimerax_group_name(
@@ -23083,11 +17046,9 @@ def make_salt_bridge_pseudobond_group_name(
         name_parts
     )
 
-
 # =============================================================================
 # 17.11. PSEUDOBOND COMMAND GENERATION
 # =============================================================================
-
 
 def build_create_salt_bridge_pseudobond_command(
     interaction: SaltBridgeInteraction,
@@ -23099,31 +17060,7 @@ def build_create_salt_bridge_pseudobond_command(
     separate_by_strength: bool = False,
     separate_by_pose: bool = False,
 ) -> str:
-    """
-    Build a ChimeraX command to create one salt-bridge pseudobond.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-    group_name
-        Optional pseudobond group name.
-    color
-        Optional pseudobond color.
-    radius
-        Pseudobond radius.
-    dashes
-        Number of pseudobond dashes.
-    separate_by_strength
-        Whether group names should include strength.
-    separate_by_pose
-        Whether group names should include pose identifier.
-
-    Returns
-    -------
-    str
-        ChimeraX command string.
-    """
+    """Build a ChimeraX command to create one salt-bridge pseudobond."""
 
     positive_spec, negative_spec = (
         build_salt_bridge_pseudobond_specs(
@@ -23199,7 +17136,6 @@ def build_create_salt_bridge_pseudobond_command(
         f'name "{escaped_group_name}"'
     )
 
-
 def build_create_salt_bridge_pseudobonds_commands(
     interactions: Iterable[
         SaltBridgeInteraction
@@ -23214,35 +17150,7 @@ def build_create_salt_bridge_pseudobonds_commands(
     separate_by_strength: bool = False,
     separate_by_pose: bool = False,
 ) -> List[str]:
-    """
-    Build ChimeraX pseudobond creation commands.
-
-    Parameters
-    ----------
-    interactions
-        Salt-bridge interactions.
-    valid_only
-        Whether invalid interactions should be excluded.
-    group_name
-        Base pseudobond group name.
-    color_by_strength
-        Whether interaction strength should determine color.
-    color
-        Optional fixed color.
-    radius
-        Pseudobond radius.
-    dashes
-        Number of dashes.
-    separate_by_strength
-        Whether separate strength groups should be created.
-    separate_by_pose
-        Whether separate pose groups should be created.
-
-    Returns
-    -------
-    List[str]
-        ChimeraX commands.
-    """
+    """Build ChimeraX pseudobond creation commands."""
 
     commands: List[str] = []
 
@@ -23295,27 +17203,11 @@ def build_create_salt_bridge_pseudobonds_commands(
 
     return commands
 
-
 def build_create_result_pseudobonds_commands(
     result: SaltBridgeResult,
     **options: Any,
 ) -> List[str]:
-    """
-    Build pseudobond commands for a complete SaltBridgeResult.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-    **options
-        Options forwarded to
-        ``build_create_salt_bridge_pseudobonds_commands``.
-
-    Returns
-    -------
-    List[str]
-        ChimeraX commands.
-    """
+    """Build pseudobond commands for a complete SaltBridgeResult."""
 
     if not isinstance(
         result,
@@ -23330,29 +17222,15 @@ def build_create_result_pseudobonds_commands(
         **options,
     )
 
-
 # =============================================================================
 # 17.12. PSEUDOBOND DELETION COMMANDS
 # =============================================================================
-
 
 def build_delete_salt_bridge_pseudobonds_command(
     *,
     group_name: str = "DockAnalyzer salt bridges",
 ) -> str:
-    """
-    Build a command to delete a salt-bridge pseudobond group.
-
-    Parameters
-    ----------
-    group_name
-        Pseudobond group name.
-
-    Returns
-    -------
-    str
-        ChimeraX command.
-    """
+    """Build a command to delete a salt-bridge pseudobond group."""
 
     normalized_group_name = (
         sanitize_chimerax_group_name(
@@ -23371,24 +17249,11 @@ def build_delete_salt_bridge_pseudobonds_command(
         f'pbond delete name "{escaped_group_name}"'
     )
 
-
 def build_hide_salt_bridge_pseudobonds_command(
     *,
     group_name: str = "DockAnalyzer salt bridges",
 ) -> str:
-    """
-    Build a command to hide a salt-bridge pseudobond group.
-
-    Parameters
-    ----------
-    group_name
-        Pseudobond group name.
-
-    Returns
-    -------
-    str
-        ChimeraX command.
-    """
+    """Build a command to hide a salt-bridge pseudobond group."""
 
     normalized_group_name = (
         sanitize_chimerax_group_name(
@@ -23407,24 +17272,11 @@ def build_hide_salt_bridge_pseudobonds_command(
         f'hide pseudobonds name "{escaped_group_name}"'
     )
 
-
 def build_show_salt_bridge_pseudobonds_command(
     *,
     group_name: str = "DockAnalyzer salt bridges",
 ) -> str:
-    """
-    Build a command to show a salt-bridge pseudobond group.
-
-    Parameters
-    ----------
-    group_name
-        Pseudobond group name.
-
-    Returns
-    -------
-    str
-        ChimeraX command.
-    """
+    """Build a command to show a salt-bridge pseudobond group."""
 
     normalized_group_name = (
         sanitize_chimerax_group_name(
@@ -23443,11 +17295,9 @@ def build_show_salt_bridge_pseudobonds_command(
         f'show pseudobonds name "{escaped_group_name}"'
     )
 
-
 # =============================================================================
 # 17.13. CHIMERAX COMMAND EXECUTION
 # =============================================================================
-
 
 def run_chimerax_command(
     session: Any,
@@ -23455,30 +17305,7 @@ def run_chimerax_command(
     *,
     log: bool = False,
 ) -> Any:
-    """
-    Execute one ChimeraX command.
-
-    Parameters
-    ----------
-    session
-        ChimeraX session.
-    command
-        Command string.
-    log
-        Whether the command should be logged by ChimeraX.
-
-    Returns
-    -------
-    Any
-        Command result.
-
-    Raises
-    ------
-    ChimeraXUnavailableError
-        If ChimeraX is unavailable.
-    ChimeraXSaltBridgeError
-        If command execution fails.
-    """
+    """Execute one ChimeraX command."""
 
     require_chimerax()
 
@@ -23509,7 +17336,6 @@ def run_chimerax_command(
             f"{normalized_command}"
         ) from error
 
-
 def run_chimerax_commands(
     session: Any,
     commands: Iterable[str],
@@ -23518,27 +17344,7 @@ def run_chimerax_commands(
     continue_on_error: bool = False,
     warnings: Optional[List[str]] = None,
 ) -> List[Any]:
-    """
-    Execute multiple ChimeraX commands.
-
-    Parameters
-    ----------
-    session
-        ChimeraX session.
-    commands
-        Command strings.
-    log
-        Whether commands should be logged.
-    continue_on_error
-        Whether execution should continue after failures.
-    warnings
-        Optional warning collector.
-
-    Returns
-    -------
-    List[Any]
-        Command results.
-    """
+    """Execute multiple ChimeraX commands."""
 
     command_results: List[Any] = []
 
@@ -23573,11 +17379,9 @@ def run_chimerax_commands(
 
     return command_results
 
-
 # =============================================================================
 # 17.14. DIRECT SELECTION AND VISUALIZATION
 # =============================================================================
-
 
 def select_salt_bridges_in_chimerax(
     session: Any,
@@ -23589,31 +17393,7 @@ def select_salt_bridges_in_chimerax(
     clear_existing: bool = True,
     log: bool = False,
 ) -> Any:
-    """
-    Select salt-bridge participants in ChimeraX.
-
-    Parameters
-    ----------
-    session
-        ChimeraX session.
-    result
-        Salt-bridge result.
-    valid_only
-        Whether rejected interactions should be excluded.
-    residues_only
-        Whether complete residues should be selected.
-    representative_atoms_only
-        Whether only representative atoms should be selected.
-    clear_existing
-        Whether the previous selection should be cleared.
-    log
-        Whether the command should be logged.
-
-    Returns
-    -------
-    Any
-        ChimeraX command result.
-    """
+    """Select salt-bridge participants in ChimeraX."""
 
     command = build_select_salt_bridge_command(
         result,
@@ -23634,7 +17414,6 @@ def select_salt_bridges_in_chimerax(
         log=log,
     )
 
-
 def create_salt_bridge_pseudobonds_in_chimerax(
     session: Any,
     result: SaltBridgeResult,
@@ -23652,45 +17431,7 @@ def create_salt_bridge_pseudobonds_in_chimerax(
     warnings: Optional[List[str]] = None,
     log: bool = False,
 ) -> List[Any]:
-    """
-    Create salt-bridge pseudobonds in ChimeraX.
-
-    Parameters
-    ----------
-    session
-        ChimeraX session.
-    result
-        Salt-bridge result.
-    valid_only
-        Whether rejected interactions should be excluded.
-    group_name
-        Base pseudobond group name.
-    color_by_strength
-        Whether pseudobonds should be colored by strength.
-    color
-        Optional fixed color.
-    radius
-        Pseudobond radius.
-    dashes
-        Number of pseudobond dashes.
-    separate_by_strength
-        Whether separate strength groups should be created.
-    separate_by_pose
-        Whether separate pose groups should be created.
-    clear_existing
-        Whether the existing pseudobond group should be deleted first.
-    continue_on_error
-        Whether execution should continue after command failures.
-    warnings
-        Optional warning collector.
-    log
-        Whether commands should be logged.
-
-    Returns
-    -------
-    List[Any]
-        ChimeraX command results.
-    """
+    """Create salt-bridge pseudobonds in ChimeraX."""
 
     require_chimerax()
 
@@ -23733,11 +17474,9 @@ def create_salt_bridge_pseudobonds_in_chimerax(
         warnings=warnings,
     )
 
-
 # =============================================================================
 # 17.15. COMPLETE VISUALIZATION COMMAND SET
 # =============================================================================
-
 
 def build_salt_bridge_visualization_commands(
     result: SaltBridgeResult,
@@ -23757,47 +17496,7 @@ def build_salt_bridge_visualization_commands(
     clear_existing_pseudobonds: bool = True,
     select_participants: bool = True,
 ) -> List[str]:
-    """
-    Build a complete ChimeraX visualization command set.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-    valid_only
-        Whether invalid interactions should be excluded.
-    group_name
-        Pseudobond group name.
-    display_residues
-        Whether entire interacting residues should be displayed.
-    display_style
-        Participant display style.
-    color_participants
-        Whether interacting atoms or residues should be colored.
-    participant_color
-        Participant color.
-    color_by_strength
-        Whether pseudobonds should be colored by strength.
-    pseudobond_color
-        Optional fixed pseudobond color.
-    pseudobond_radius
-        Pseudobond radius.
-    pseudobond_dashes
-        Pseudobond dash count.
-    separate_by_strength
-        Whether pseudobonds should be grouped by strength.
-    separate_by_pose
-        Whether pseudobonds should be grouped by pose.
-    clear_existing_pseudobonds
-        Whether existing pseudobonds should be deleted first.
-    select_participants
-        Whether participants should be selected.
-
-    Returns
-    -------
-    List[str]
-        ChimeraX command strings.
-    """
+    """Build a complete ChimeraX visualization command set."""
 
     commands: List[str] = []
 
@@ -23865,7 +17564,6 @@ def build_salt_bridge_visualization_commands(
 
     return commands
 
-
 def visualize_salt_bridges_in_chimerax(
     session: Any,
     result: SaltBridgeResult,
@@ -23875,30 +17573,7 @@ def visualize_salt_bridges_in_chimerax(
     log: bool = False,
     **visualization_options: Any,
 ) -> List[Any]:
-    """
-    Visualize salt bridges in ChimeraX.
-
-    Parameters
-    ----------
-    session
-        ChimeraX session.
-    result
-        Salt-bridge result.
-    continue_on_error
-        Whether command execution should continue after failures.
-    warnings
-        Optional warning collector.
-    log
-        Whether commands should be logged.
-    **visualization_options
-        Options forwarded to
-        ``build_salt_bridge_visualization_commands``.
-
-    Returns
-    -------
-    List[Any]
-        ChimeraX command results.
-    """
+    """Visualize salt bridges in ChimeraX."""
 
     commands = (
         build_salt_bridge_visualization_commands(
@@ -23917,11 +17592,9 @@ def visualize_salt_bridges_in_chimerax(
         warnings=warnings,
     )
 
-
 # =============================================================================
 # 17.16. MULTIPOSE CHIMERAX VISUALIZATION
 # =============================================================================
-
 
 def build_multipose_salt_bridge_visualization_commands(
     results: Iterable[SaltBridgeResult],
@@ -23934,33 +17607,7 @@ def build_multipose_salt_bridge_visualization_commands(
     pseudobond_radius: float = 0.15,
     pseudobond_dashes: int = 6,
 ) -> List[str]:
-    """
-    Build pseudobond commands for multiple pose results.
-
-    Parameters
-    ----------
-    results
-        Pose-level salt-bridge results.
-    valid_only
-        Whether invalid interactions should be excluded.
-    base_group_name
-        Base pseudobond group name.
-    separate_by_pose
-        Whether each pose should use a separate group.
-    separate_by_strength
-        Whether strength should also define groups.
-    color_by_strength
-        Whether pseudobond colors should reflect strength.
-    pseudobond_radius
-        Pseudobond radius.
-    pseudobond_dashes
-        Pseudobond dash count.
-
-    Returns
-    -------
-    List[str]
-        ChimeraX commands.
-    """
+    """Build pseudobond commands for multiple pose results."""
 
     commands: List[str] = []
 
@@ -23994,7 +17641,6 @@ def build_multipose_salt_bridge_visualization_commands(
 
     return commands
 
-
 def visualize_multipose_salt_bridges_in_chimerax(
     session: Any,
     results: Iterable[SaltBridgeResult],
@@ -24004,29 +17650,7 @@ def visualize_multipose_salt_bridges_in_chimerax(
     log: bool = False,
     **options: Any,
 ) -> List[Any]:
-    """
-    Visualize salt bridges from multiple poses in ChimeraX.
-
-    Parameters
-    ----------
-    session
-        ChimeraX session.
-    results
-        Pose-level results.
-    continue_on_error
-        Whether command execution should continue after failures.
-    warnings
-        Optional warning collector.
-    log
-        Whether commands should be logged.
-    **options
-        Visualization options.
-
-    Returns
-    -------
-    List[Any]
-        ChimeraX command results.
-    """
+    """Visualize salt bridges from multiple poses in ChimeraX."""
 
     commands = (
         build_multipose_salt_bridge_visualization_commands(
@@ -24045,28 +17669,14 @@ def visualize_multipose_salt_bridges_in_chimerax(
         warnings=warnings,
     )
 
-
 # =============================================================================
 # 17.17. CHIMERAX EXPORT RECORDS
 # =============================================================================
 
-
 def build_chimerax_salt_bridge_record(
     interaction: SaltBridgeInteraction,
 ) -> Dict[str, Any]:
-    """
-    Build a ChimeraX-oriented interaction record.
-
-    Parameters
-    ----------
-    interaction
-        Salt-bridge interaction.
-
-    Returns
-    -------
-    Dict[str, Any]
-        ChimeraX-oriented record.
-    """
+    """Build a ChimeraX-oriented interaction record."""
 
     positive_spec, negative_spec = (
         build_salt_bridge_pseudobond_specs(
@@ -24123,27 +17733,12 @@ def build_chimerax_salt_bridge_record(
         ),
     }
 
-
 def build_chimerax_salt_bridge_records(
     result: SaltBridgeResult,
     *,
     valid_only: bool = True,
 ) -> List[Dict[str, Any]]:
-    """
-    Build ChimeraX-oriented records for a result.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-    valid_only
-        Whether invalid interactions should be excluded.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        ChimeraX records.
-    """
+    """Build ChimeraX-oriented records for a result."""
 
     records: List[
         Dict[str, Any]
@@ -24172,40 +17767,30 @@ def build_chimerax_salt_bridge_records(
 
     return records
 
-
-
 # =============================================================================
 # 18. SELF-TESTS
 # =============================================================================
 
 
-# =============================================================================
 # 18.1. TEST INFRASTRUCTURE
-# =============================================================================
 
 
 @dataclass
 class _MockChain:
-    """
-    Minimal chain-like object used by salt-bridge self-tests.
-    """
+    """Minimal chain-like object used by salt-bridge self-tests."""
 
     chain_id: str = "A"
 
     @property
     def id(self) -> str:
-        """
-        Return the chain identifier.
-        """
+        """Return the chain identifier."""
 
         return self.chain_id
 
 
 @dataclass
 class _MockStructure:
-    """
-    Minimal structure-like object used by salt-bridge self-tests.
-    """
+    """Minimal structure-like object used by salt-bridge self-tests."""
 
     name: str = "mock_structure"
     id_string: str = "1"
@@ -24213,9 +17798,7 @@ class _MockStructure:
 
     @property
     def id(self) -> Tuple[int]:
-        """
-        Return a ChimeraX-like model identifier.
-        """
+        """Return a ChimeraX-like model identifier."""
 
         try:
             model_id = int(
@@ -24237,9 +17820,7 @@ class _MockStructure:
 
 @dataclass
 class _MockResidue:
-    """
-    Minimal residue-like object used by salt-bridge self-tests.
-    """
+    """Minimal residue-like object used by salt-bridge self-tests."""
 
     name: str
     number: int
@@ -24253,9 +17834,7 @@ class _MockResidue:
     def __post_init__(
         self,
     ) -> None:
-        """
-        Initialize chain and atom ownership.
-        """
+        """Initialize chain and atom ownership."""
 
         self.chain = _MockChain(
             self.chain_id
@@ -24270,9 +17849,7 @@ class _MockResidue:
 
     @property
     def id(self) -> int:
-        """
-        Return the residue number.
-        """
+        """Return the residue number."""
 
         return self.number
 
@@ -24280,9 +17857,7 @@ class _MockResidue:
     def principal_atom(
         self,
     ) -> Any:
-        """
-        Return the first atom, when available.
-        """
+        """Return the first atom, when available."""
 
         if not self.atoms:
             return None
@@ -24293,9 +17868,7 @@ class _MockResidue:
         self,
         atom: Any,
     ) -> Any:
-        """
-        Add an atom and update ownership references.
-        """
+        """Add an atom and update ownership references."""
 
         atom.residue = self
         atom.structure = self.structure
@@ -24309,9 +17882,7 @@ class _MockResidue:
 
 @dataclass
 class _MockAtom:
-    """
-    Minimal atom-like object used by salt-bridge self-tests.
-    """
+    """Minimal atom-like object used by salt-bridge self-tests."""
 
     name: str
     element: str
@@ -24326,9 +17897,7 @@ class _MockAtom:
     def coordinates(
         self,
     ) -> Tuple[float, float, float]:
-        """
-        Return atom coordinates.
-        """
+        """Return atom coordinates."""
 
         return self.coord
 
@@ -24337,9 +17906,7 @@ class _MockAtom:
         self,
         value: Sequence[float],
     ) -> None:
-        """
-        Set atom coordinates.
-        """
+        """Set atom coordinates."""
 
         self.coord = _test_coordinate_tuple(
             value
@@ -24349,9 +17916,7 @@ class _MockAtom:
     def scene_coord(
         self,
     ) -> Tuple[float, float, float]:
-        """
-        Return a ChimeraX-like scene coordinate.
-        """
+        """Return a ChimeraX-like scene coordinate."""
 
         return self.coord
 
@@ -24359,9 +17924,7 @@ class _MockAtom:
     def serial(
         self,
     ) -> int:
-        """
-        Return the atom serial number.
-        """
+        """Return the atom serial number."""
 
         return self.serial_number
 
@@ -24369,18 +17932,14 @@ class _MockAtom:
     def idatm_type(
         self,
     ) -> str:
-        """
-        Return a minimal atom-type-like value.
-        """
+        """Return a minimal atom-type-like value."""
 
         return self.element
 
 
 @dataclass
 class _MockDockModel:
-    """
-    Minimal DockModel-like object used by integration self-tests.
-    """
+    """Minimal DockModel-like object used by integration self-tests."""
 
     source: Any
     pose_id: Optional[
@@ -24407,9 +17966,7 @@ class _MockDockModel:
 
 @dataclass
 class _SelfTestRecord:
-    """
-    Record describing one self-test execution.
-    """
+    """Record describing one self-test execution."""
 
     name: str
     passed: bool
@@ -24420,9 +17977,7 @@ class _SelfTestRecord:
 
 @dataclass
 class _SelfTestReport:
-    """
-    Aggregated salt-bridge self-test report.
-    """
+    """Aggregated salt-bridge self-test report."""
 
     module_name: str = "saltbridge"
     module_version: str = __version__
@@ -24444,9 +17999,7 @@ class _SelfTestReport:
     def test_count(
         self,
     ) -> int:
-        """
-        Return the number of executed tests.
-        """
+        """Return the number of executed tests."""
 
         return len(
             self.records
@@ -24456,9 +18009,7 @@ class _SelfTestReport:
     def passed_count(
         self,
     ) -> int:
-        """
-        Return the number of passed tests.
-        """
+        """Return the number of passed tests."""
 
         return sum(
             1
@@ -24470,9 +18021,7 @@ class _SelfTestReport:
     def failed_count(
         self,
     ) -> int:
-        """
-        Return the number of failed tests.
-        """
+        """Return the number of failed tests."""
 
         return (
             self.test_count
@@ -24483,9 +18032,7 @@ class _SelfTestReport:
     def success(
         self,
     ) -> bool:
-        """
-        Return whether all tests passed.
-        """
+        """Return whether all tests passed."""
 
         return (
             self.test_count > 0
@@ -24496,9 +18043,7 @@ class _SelfTestReport:
         self,
         record: _SelfTestRecord,
     ) -> None:
-        """
-        Add one self-test record.
-        """
+        """Add one self-test record."""
 
         if not isinstance(
             record,
@@ -24515,9 +18060,7 @@ class _SelfTestReport:
     def to_dict(
         self,
     ) -> Dict[str, Any]:
-        """
-        Convert the report into a JSON-safe dictionary.
-        """
+        """Convert the report into a JSON-safe dictionary."""
 
         return {
             "module_name": self.module_name,
@@ -24563,9 +18106,7 @@ class _SelfTestReport:
 def _test_coordinate_tuple(
     coordinate: Sequence[float],
 ) -> Tuple[float, float, float]:
-    """
-    Convert a coordinate-like value into a three-float tuple.
-    """
+    """Convert a coordinate-like value into a three-float tuple."""
 
     if coordinate is None:
         raise SaltBridgeSelfTestError(
@@ -24620,9 +18161,7 @@ def _make_test_atom(
         _MockResidue
     ] = None,
 ) -> _MockAtom:
-    """
-    Create one atom for salt-bridge self-tests.
-    """
+    """Create one atom for salt-bridge self-tests."""
 
     atom = _MockAtom(
         name=str(name),
@@ -24667,9 +18206,7 @@ def _make_test_residue(
         _MockStructure
     ] = None,
 ) -> _MockResidue:
-    """
-    Create an empty residue for salt-bridge self-tests.
-    """
+    """Create an empty residue for salt-bridge self-tests."""
 
     return _MockResidue(
         name=str(
@@ -24695,9 +18232,7 @@ def _make_test_structure(
     name: str = "mock_structure",
     model_id: Union[str, int] = 1,
 ) -> _MockStructure:
-    """
-    Create a structure-like object for self-tests.
-    """
+    """Create a structure-like object for self-tests."""
 
     return _MockStructure(
         name=name,
@@ -24711,9 +18246,7 @@ def _translate_coordinate(
     coordinate: Sequence[float],
     translation: Sequence[float],
 ) -> Tuple[float, float, float]:
-    """
-    Translate one three-dimensional coordinate.
-    """
+    """Translate one three-dimensional coordinate."""
 
     point = _test_coordinate_tuple(
         coordinate
@@ -24740,9 +18273,7 @@ def _rotate_coordinate_z(
         0.0,
     ),
 ) -> Tuple[float, float, float]:
-    """
-    Rotate one coordinate around the z axis.
-    """
+    """Rotate one coordinate around the z axis."""
 
     point = _test_coordinate_tuple(
         coordinate
@@ -24813,9 +18344,7 @@ def _transform_test_atoms(
     ),
     in_place: bool = False,
 ) -> List[_MockAtom]:
-    """
-    Apply rotation and translation to test atoms.
-    """
+    """Apply rotation and translation to test atoms."""
 
     transformed_atoms: List[
         _MockAtom
@@ -24882,9 +18411,7 @@ def _make_mock_lysine(
         _MockStructure
     ] = None,
 ) -> _MockResidue:
-    """
-    Create a minimal positively charged lysine residue.
-    """
+    """Create a minimal positively charged lysine residue."""
 
     residue = _make_test_residue(
         "LYS",
@@ -24935,9 +18462,7 @@ def _make_mock_arginine(
         _MockStructure
     ] = None,
 ) -> _MockResidue:
-    """
-    Create a minimal positively charged arginine residue.
-    """
+    """Create a minimal positively charged arginine residue."""
 
     residue = _make_test_residue(
         "ARG",
@@ -25024,9 +18549,7 @@ def _make_mock_hip(
         _MockStructure
     ] = None,
 ) -> _MockResidue:
-    """
-    Create a minimal protonated histidine residue.
-    """
+    """Create a minimal protonated histidine residue."""
 
     residue = _make_test_residue(
         "HIP",
@@ -25138,9 +18661,7 @@ def _make_mock_aspartate(
         _MockStructure
     ] = None,
 ) -> _MockResidue:
-    """
-    Create a minimal negatively charged aspartate residue.
-    """
+    """Create a minimal negatively charged aspartate residue."""
 
     residue = _make_test_residue(
         "ASP",
@@ -25211,9 +18732,7 @@ def _make_mock_glutamate(
         _MockStructure
     ] = None,
 ) -> _MockResidue:
-    """
-    Create a minimal negatively charged glutamate residue.
-    """
+    """Create a minimal negatively charged glutamate residue."""
 
     residue = _make_test_residue(
         "GLU",
@@ -25286,9 +18805,7 @@ def _make_mock_cationic_ligand(
         _MockStructure
     ] = None,
 ) -> _MockResidue:
-    """
-    Create a minimal ligand containing a cationic nitrogen.
-    """
+    """Create a minimal ligand containing a cationic nitrogen."""
 
     residue = _make_test_residue(
         residue_name,
@@ -25364,9 +18881,7 @@ def _make_mock_carboxylate_ligand(
         _MockStructure
     ] = None,
 ) -> _MockResidue:
-    """
-    Create a minimal ligand carboxylate.
-    """
+    """Create a minimal ligand carboxylate."""
 
     residue = _make_test_residue(
         residue_name,
@@ -25438,9 +18953,7 @@ def _make_mock_phosphate_ligand(
         _MockStructure
     ] = None,
 ) -> _MockResidue:
-    """
-    Create a minimal ligand phosphate group.
-    """
+    """Create a minimal ligand phosphate group."""
 
     residue = _make_test_residue(
         residue_name,
@@ -25522,9 +19035,7 @@ def _make_mock_sulfonate_ligand(
         _MockStructure
     ] = None,
 ) -> _MockResidue:
-    """
-    Create a minimal ligand sulfonate group.
-    """
+    """Create a minimal ligand sulfonate group."""
 
     residue = _make_test_residue(
         residue_name,
@@ -25602,9 +19113,7 @@ def _make_mock_neutral_ligand(
         _MockStructure
     ] = None,
 ) -> _MockResidue:
-    """
-    Create a neutral ligand used in negative tests.
-    """
+    """Create a neutral ligand used in negative tests."""
 
     residue = _make_test_residue(
         residue_name,
@@ -25667,9 +19176,7 @@ def _make_test_source(
         _MockResidue
     ],
 ) -> List[_MockResidue]:
-    """
-    Materialize a residue collection used as a test source.
-    """
+    """Materialize a residue collection used as a test source."""
 
     return list(
         residues
@@ -25689,9 +19196,7 @@ def _make_test_charged_atom(
     ] = None,
     serial_number: int = 1,
 ) -> ChargedAtom:
-    """
-    Create a ChargedAtom dataclass for direct tests.
-    """
+    """Create a ChargedAtom dataclass for direct tests."""
 
     atom = _make_test_atom(
         name,
@@ -25747,9 +19252,7 @@ def _make_test_charged_group(
     confidence: float = 1.0,
     source: str = "self_test",
 ) -> ChargedGroup:
-    """
-    Create a ChargedGroup dataclass for direct tests.
-    """
+    """Create a ChargedGroup dataclass for direct tests."""
 
     center_coordinate = (
         _test_coordinate_tuple(
@@ -25870,9 +19373,7 @@ def _make_test_cation_group(
     ] = None,
     net_charge: float = 1.0,
 ) -> ChargedGroup:
-    """
-    Create a positive charged group for tests.
-    """
+    """Create a positive charged group for tests."""
 
     return _make_test_charged_group(
         group_id=group_id,
@@ -25901,9 +19402,7 @@ def _make_test_anion_group(
     ] = None,
     net_charge: float = -1.0,
 ) -> ChargedGroup:
-    """
-    Create a negative charged group for tests.
-    """
+    """Create a negative charged group for tests."""
 
     return _make_test_charged_group(
         group_id=group_id,
@@ -25931,9 +19430,7 @@ def _make_test_geometry(
     positive_atom: Any = None,
     negative_atom: Any = None,
 ) -> SaltBridgeGeometry:
-    """
-    Create SaltBridgeGeometry for direct tests.
-    """
+    """Create SaltBridgeGeometry for direct tests."""
 
     return SaltBridgeGeometry(
         center_distance=float(
@@ -25990,9 +19487,7 @@ def _make_test_interaction(
         Union[str, int]
     ] = "model_1",
 ) -> SaltBridgeInteraction:
-    """
-    Create SaltBridgeInteraction for direct tests.
-    """
+    """Create SaltBridgeInteraction for direct tests."""
 
     resolved_cation = (
         cation
@@ -26066,9 +19561,7 @@ def _make_test_result(
         Union[str, int]
     ] = "model_1",
 ) -> SaltBridgeResult:
-    """
-    Create SaltBridgeResult for direct tests.
-    """
+    """Create SaltBridgeResult for direct tests."""
 
     interaction_list = (
         list(
@@ -26133,9 +19626,7 @@ def _make_test_pose_results(
     *,
     pose_count: int = 3,
 ) -> List[SaltBridgeResult]:
-    """
-    Create multiple pose results for persistence and ranking tests.
-    """
+    """Create multiple pose results for persistence and ranking tests."""
 
     if pose_count < 1:
         raise SaltBridgeSelfTestError(
@@ -26254,9 +19745,7 @@ def _assert_true(
         "Expected condition to be true."
     ),
 ) -> None:
-    """
-    Assert that a condition evaluates to true.
-    """
+    """Assert that a condition evaluates to true."""
 
     if not condition:
         raise SaltBridgeSelfTestError(
@@ -26270,9 +19759,7 @@ def _assert_false(
         "Expected condition to be false."
     ),
 ) -> None:
-    """
-    Assert that a condition evaluates to false.
-    """
+    """Assert that a condition evaluates to false."""
 
     if condition:
         raise SaltBridgeSelfTestError(
@@ -26285,9 +19772,7 @@ def _assert_equal(
     expected: Any,
     message: Optional[str] = None,
 ) -> None:
-    """
-    Assert strict equality.
-    """
+    """Assert strict equality."""
 
     if actual != expected:
         raise SaltBridgeSelfTestError(
@@ -26305,9 +19790,7 @@ def _assert_not_equal(
     unexpected: Any,
     message: Optional[str] = None,
 ) -> None:
-    """
-    Assert inequality.
-    """
+    """Assert inequality."""
 
     if actual == unexpected:
         raise SaltBridgeSelfTestError(
@@ -26325,9 +19808,7 @@ def _assert_is_none(
         "Expected value to be None."
     ),
 ) -> None:
-    """
-    Assert that a value is None.
-    """
+    """Assert that a value is None."""
 
     if value is not None:
         raise SaltBridgeSelfTestError(
@@ -26341,9 +19822,7 @@ def _assert_is_not_none(
         "Expected a non-None value."
     ),
 ) -> None:
-    """
-    Assert that a value is not None.
-    """
+    """Assert that a value is not None."""
 
     if value is None:
         raise SaltBridgeSelfTestError(
@@ -26356,9 +19835,7 @@ def _assert_is_instance(
     expected_type: Any,
     message: Optional[str] = None,
 ) -> None:
-    """
-    Assert an object's type.
-    """
+    """Assert an object's type."""
 
     if not isinstance(
         value,
@@ -26379,9 +19856,7 @@ def _assert_length(
     expected_length: int,
     message: Optional[str] = None,
 ) -> None:
-    """
-    Assert collection length.
-    """
+    """Assert collection length."""
 
     try:
         actual_length = len(
@@ -26410,9 +19885,7 @@ def _assert_empty(
         "Expected an empty value."
     ),
 ) -> None:
-    """
-    Assert an empty collection.
-    """
+    """Assert an empty collection."""
 
     _assert_length(
         value,
@@ -26427,9 +19900,7 @@ def _assert_not_empty(
         "Expected a non-empty value."
     ),
 ) -> None:
-    """
-    Assert a non-empty collection.
-    """
+    """Assert a non-empty collection."""
 
     try:
         value_length = len(
@@ -26454,9 +19925,7 @@ def _assert_almost_equal(
     tolerance: float = 1e-6,
     message: Optional[str] = None,
 ) -> None:
-    """
-    Assert approximate numeric equality.
-    """
+    """Assert approximate numeric equality."""
 
     actual_value = safe_float(
         actual
@@ -26502,9 +19971,7 @@ def _assert_sequence_almost_equal(
     tolerance: float = 1e-6,
     message: Optional[str] = None,
 ) -> None:
-    """
-    Assert approximate equality between numeric sequences.
-    """
+    """Assert approximate equality between numeric sequences."""
 
     actual_values = list(
         actual
@@ -26557,9 +20024,7 @@ def _assert_between(
     inclusive: bool = True,
     message: Optional[str] = None,
 ) -> None:
-    """
-    Assert that a numeric value lies within a range.
-    """
+    """Assert that a numeric value lies within a range."""
 
     numeric_value = safe_float(
         value
@@ -26601,9 +20066,7 @@ def _assert_contains(
     expected_item: Any,
     message: Optional[str] = None,
 ) -> None:
-    """
-    Assert that a container includes an item.
-    """
+    """Assert that a container includes an item."""
 
     if expected_item not in container:
         raise SaltBridgeSelfTestError(
@@ -26621,9 +20084,7 @@ def _assert_mapping_contains_keys(
     *,
     message: Optional[str] = None,
 ) -> None:
-    """
-    Assert that a mapping contains all expected keys.
-    """
+    """Assert that a mapping contains all expected keys."""
 
     if not isinstance(
         mapping,
@@ -26661,9 +20122,7 @@ def _assert_raises(
     *args: Any,
     **kwargs: Any,
 ) -> BaseException:
-    """
-    Assert that a callable raises the expected exception.
-    """
+    """Assert that a callable raises the expected exception."""
 
     try:
         callable_object(
@@ -26692,9 +20151,7 @@ def _assert_json_serializable(
     *,
     message: Optional[str] = None,
 ) -> None:
-    """
-    Assert that a value can be serialized as strict JSON.
-    """
+    """Assert that a value can be serialized as strict JSON."""
 
     try:
         json.dumps(
@@ -26721,9 +20178,7 @@ def _assert_valid_charged_group(
         str
     ] = None,
 ) -> None:
-    """
-    Assert basic ChargedGroup invariants.
-    """
+    """Assert basic ChargedGroup invariants."""
 
     _assert_is_instance(
         group,
@@ -26779,9 +20234,7 @@ def _assert_valid_geometry(
         bool
     ] = None,
 ) -> None:
-    """
-    Assert basic SaltBridgeGeometry invariants.
-    """
+    """Assert basic SaltBridgeGeometry invariants."""
 
     _assert_is_instance(
         geometry,
@@ -26846,9 +20299,7 @@ def _assert_valid_interaction(
         bool
     ] = None,
 ) -> None:
-    """
-    Assert basic SaltBridgeInteraction invariants.
-    """
+    """Assert basic SaltBridgeInteraction invariants."""
 
     _assert_is_instance(
         interaction,
@@ -26890,9 +20341,7 @@ def _assert_valid_interaction(
 def _assert_valid_result(
     result: SaltBridgeResult,
 ) -> None:
-    """
-    Assert basic SaltBridgeResult invariants.
-    """
+    """Assert basic SaltBridgeResult invariants."""
 
     _assert_is_instance(
         result,
@@ -26941,9 +20390,7 @@ def _run_self_test_case(
     *,
     raise_on_failure: bool = False,
 ) -> _SelfTestRecord:
-    """
-    Execute one self-test and return its record.
-    """
+    """Execute one self-test and return its record."""
 
     import time
 
@@ -27013,9 +20460,7 @@ def _run_self_test_group(
     ] = None,
     raise_on_failure: bool = False,
 ) -> _SelfTestReport:
-    """
-    Execute a group of named self-tests.
-    """
+    """Execute a group of named self-tests."""
 
     resolved_report = (
         report
@@ -27044,9 +20489,7 @@ def _run_self_test_group(
 def _format_self_test_record(
     record: _SelfTestRecord,
 ) -> str:
-    """
-    Format one self-test record.
-    """
+    """Format one self-test record."""
 
     status = (
         "PASS"
@@ -27075,9 +20518,7 @@ def _format_self_test_report(
     *,
     include_records: bool = True,
 ) -> str:
-    """
-    Format a complete self-test report.
-    """
+    """Format a complete self-test report."""
 
     lines = [
         (
@@ -27129,9 +20570,7 @@ def _print_self_test_report(
     *,
     include_records: bool = True,
 ) -> None:
-    """
-    Print a salt-bridge self-test report.
-    """
+    """Print a salt-bridge self-test report."""
 
     print(
         _format_self_test_report(
@@ -27144,9 +20583,7 @@ def _print_self_test_report(
 
 
 def _test_infrastructure_smoke_test() -> None:
-    """
-    Verify the fundamental self-test infrastructure.
-    """
+    """Verify the fundamental self-test infrastructure."""
 
     structure = _make_test_structure(
         model_id=1
@@ -27235,9 +20672,7 @@ def run_salt_bridge_test_infrastructure_smoke_test(
     *,
     raise_on_failure: bool = True,
 ) -> _SelfTestRecord:
-    """
-    Run the Section 18.1 infrastructure smoke test.
-    """
+    """Run the Section 18.1 infrastructure smoke test."""
 
     return _run_self_test_case(
         "18.1.test_infrastructure_smoke_test",
@@ -27248,41 +20683,16 @@ def run_salt_bridge_test_infrastructure_smoke_test(
     )
 
 
-
-# =============================================================================
 # 18.2. RECOGNITION AND GEOMETRY TESTS
-# =============================================================================
 
 
-# =============================================================================
 # 18.2.1. TEST FUNCTION RESOLUTION
-# =============================================================================
 
 
 def _resolve_self_test_callable(
     *function_names: str,
 ) -> Callable[..., Any]:
-    """
-    Resolve a module-level callable by one of several possible names.
-
-    This helper allows the self-tests to tolerate minor naming differences
-    between DockAnalyzer module versions.
-
-    Parameters
-    ----------
-    *function_names
-        Candidate function names.
-
-    Returns
-    -------
-    Callable[..., Any]
-        Resolved callable.
-
-    Raises
-    ------
-    SaltBridgeSelfTestError
-        If none of the candidate functions exists.
-    """
+    """Resolve a module-level callable by one of several possible names."""
 
     module_globals = globals()
 
@@ -27310,9 +20720,7 @@ def _call_recognize_cationic_groups(
         SaltBridgeConfig
     ] = None,
 ) -> List[ChargedGroup]:
-    """
-    Call the available cationic-group recognition function.
-    """
+    """Call the available cationic-group recognition function."""
 
     recognition_function = (
         _resolve_self_test_callable(
@@ -27353,9 +20761,7 @@ def _call_recognize_anionic_groups(
         SaltBridgeConfig
     ] = None,
 ) -> List[ChargedGroup]:
-    """
-    Call the available anionic-group recognition function.
-    """
+    """Call the available anionic-group recognition function."""
 
     recognition_function = (
         _resolve_self_test_callable(
@@ -27399,12 +20805,7 @@ def _call_recognize_charged_groups(
     List[ChargedGroup],
     List[ChargedGroup],
 ]:
-    """
-    Recognize positive and negative charged groups.
-
-    The combined recognition function is preferred when available.
-    Otherwise, positive and negative recognizers are called separately.
-    """
+    """Recognize positive and negative charged groups."""
 
     combined_function_names = (
         "recognize_charged_groups",
@@ -27541,9 +20942,7 @@ def _call_recognize_charged_groups(
 def _call_calculate_group_center(
     group_or_atoms: Any,
 ) -> Tuple[float, float, float]:
-    """
-    Call the available charged-group center function.
-    """
+    """Call the available charged-group center function."""
 
     center_function = (
         _resolve_self_test_callable(
@@ -27570,9 +20969,7 @@ def _call_calculate_salt_bridge_geometry(
         SaltBridgeConfig
     ] = None,
 ) -> SaltBridgeGeometry:
-    """
-    Call the available salt-bridge geometry function.
-    """
+    """Call the available salt-bridge geometry function."""
 
     geometry_function = (
         _resolve_self_test_callable(
@@ -27616,9 +21013,7 @@ def _call_calculate_group_distance(
     cation: ChargedGroup,
     anion: ChargedGroup,
 ) -> float:
-    """
-    Calculate or resolve the center-to-center group distance.
-    """
+    """Calculate or resolve the center-to-center group distance."""
 
     candidate_names = (
         "calculate_charged_group_distance",
@@ -27672,18 +21067,14 @@ def _call_calculate_group_distance(
     )
 
 
-# =============================================================================
 # 18.2.2. RECOGNITION TEST UTILITIES
-# =============================================================================
 
 
 def _find_group_by_residue_name(
     groups: Iterable[ChargedGroup],
     residue_name: str,
 ) -> Optional[ChargedGroup]:
-    """
-    Return the first group matching a residue name.
-    """
+    """Return the first group matching a residue name."""
 
     normalized_residue_name = str(
         residue_name
@@ -27710,9 +21101,7 @@ def _find_group_by_type_fragment(
     groups: Iterable[ChargedGroup],
     fragment: str,
 ) -> Optional[ChargedGroup]:
-    """
-    Return the first group whose type contains a text fragment.
-    """
+    """Return the first group whose type contains a text fragment."""
 
     normalized_fragment = (
         normalize_text(
@@ -27741,9 +21130,7 @@ def _find_group_by_type_fragment(
 def _assert_unique_group_ids(
     groups: Iterable[ChargedGroup],
 ) -> None:
-    """
-    Assert that recognized groups have unique identifiers.
-    """
+    """Assert that recognized groups have unique identifiers."""
 
     group_list = list(
         groups
@@ -27769,9 +21156,7 @@ def _assert_group_contains_atom_names(
     group: ChargedGroup,
     expected_atom_names: Iterable[str],
 ) -> None:
-    """
-    Assert that a charged group contains expected atom names.
-    """
+    """Assert that a charged group contains expected atom names."""
 
     observed_names = {
         normalize_text(
@@ -27797,15 +21182,11 @@ def _assert_group_contains_atom_names(
         )
 
 
-# =============================================================================
 # 18.2.3. PROTEIN CATION RECOGNITION TESTS
-# =============================================================================
 
 
 def _test_recognize_lysine_cation() -> None:
-    """
-    Test recognition of the lysine terminal ammonium group.
-    """
+    """Test recognition of the lysine terminal ammonium group."""
 
     lysine = _make_mock_lysine(
         number=10,
@@ -27864,9 +21245,7 @@ def _test_recognize_lysine_cation() -> None:
 
 
 def _test_recognize_arginine_cation() -> None:
-    """
-    Test recognition of an arginine guanidinium group.
-    """
+    """Test recognition of an arginine guanidinium group."""
 
     arginine = _make_mock_arginine(
         number=20,
@@ -27932,9 +21311,7 @@ def _test_recognize_arginine_cation() -> None:
 
 
 def _test_recognize_protonated_histidine_cation() -> None:
-    """
-    Test recognition of protonated histidine.
-    """
+    """Test recognition of protonated histidine."""
 
     histidine = _make_mock_hip(
         number=30,
@@ -27978,9 +21355,7 @@ def _test_recognize_protonated_histidine_cation() -> None:
 
 
 def _test_recognize_multiple_protein_cations() -> None:
-    """
-    Test simultaneous recognition of multiple protein cations.
-    """
+    """Test simultaneous recognition of multiple protein cations."""
 
     residues = [
         _make_mock_lysine(
@@ -28028,15 +21403,11 @@ def _test_recognize_multiple_protein_cations() -> None:
     )
 
 
-# =============================================================================
 # 18.2.4. PROTEIN ANION RECOGNITION TESTS
-# =============================================================================
 
 
 def _test_recognize_aspartate_anion() -> None:
-    """
-    Test recognition of an aspartate carboxylate.
-    """
+    """Test recognition of an aspartate carboxylate."""
 
     aspartate = _make_mock_aspartate(
         number=40,
@@ -28096,9 +21467,7 @@ def _test_recognize_aspartate_anion() -> None:
 
 
 def _test_recognize_glutamate_anion() -> None:
-    """
-    Test recognition of a glutamate carboxylate.
-    """
+    """Test recognition of a glutamate carboxylate."""
 
     glutamate = _make_mock_glutamate(
         number=50,
@@ -28142,9 +21511,7 @@ def _test_recognize_glutamate_anion() -> None:
 
 
 def _test_recognize_multiple_protein_anions() -> None:
-    """
-    Test simultaneous recognition of aspartate and glutamate.
-    """
+    """Test simultaneous recognition of aspartate and glutamate."""
 
     residues = [
         _make_mock_aspartate(
@@ -28184,15 +21551,11 @@ def _test_recognize_multiple_protein_anions() -> None:
     )
 
 
-# =============================================================================
 # 18.2.5. LIGAND CHARGED-GROUP RECOGNITION TESTS
-# =============================================================================
 
 
 def _test_recognize_ligand_cation() -> None:
-    """
-    Test recognition of a formally charged ligand nitrogen.
-    """
+    """Test recognition of a formally charged ligand nitrogen."""
 
     ligand = (
         _make_mock_cationic_ligand(
@@ -28248,9 +21611,7 @@ def _test_recognize_ligand_cation() -> None:
 
 
 def _test_recognize_ligand_carboxylate() -> None:
-    """
-    Test recognition of a ligand carboxylate.
-    """
+    """Test recognition of a ligand carboxylate."""
 
     ligand = (
         _make_mock_carboxylate_ligand()
@@ -28298,9 +21659,7 @@ def _test_recognize_ligand_carboxylate() -> None:
 
 
 def _test_recognize_ligand_phosphate() -> None:
-    """
-    Test recognition of a ligand phosphate group.
-    """
+    """Test recognition of a ligand phosphate group."""
 
     ligand = (
         _make_mock_phosphate_ligand()
@@ -28353,9 +21712,7 @@ def _test_recognize_ligand_phosphate() -> None:
 
 
 def _test_recognize_ligand_sulfonate() -> None:
-    """
-    Test recognition of a ligand sulfonate group.
-    """
+    """Test recognition of a ligand sulfonate group."""
 
     ligand = (
         _make_mock_sulfonate_ligand()
@@ -28395,9 +21752,7 @@ def _test_recognize_ligand_sulfonate() -> None:
 
 
 def _test_neutral_ligand_is_not_charged() -> None:
-    """
-    Test rejection of a neutral ligand.
-    """
+    """Test rejection of a neutral ligand."""
 
     neutral_ligand = (
         _make_mock_neutral_ligand()
@@ -28436,15 +21791,11 @@ def _test_neutral_ligand_is_not_charged() -> None:
     )
 
 
-# =============================================================================
 # 18.2.6. RECOGNITION CONSISTENCY TESTS
-# =============================================================================
 
 
 def _test_recognition_polarity_separation() -> None:
-    """
-    Test correct separation between cationic and anionic groups.
-    """
+    """Test correct separation between cationic and anionic groups."""
 
     residues = [
         _make_mock_lysine(
@@ -28497,9 +21848,7 @@ def _test_recognition_polarity_separation() -> None:
 
 
 def _test_recognition_does_not_duplicate_groups() -> None:
-    """
-    Test prevention of duplicate charged groups.
-    """
+    """Test prevention of duplicate charged groups."""
 
     lysine = _make_mock_lysine(
         number=10
@@ -28576,9 +21925,7 @@ def _test_recognition_does_not_duplicate_groups() -> None:
 
 
 def _test_recognition_empty_source() -> None:
-    """
-    Test charged-group recognition with an empty source.
-    """
+    """Test charged-group recognition with an empty source."""
 
     cationic_groups, anionic_groups = (
         _call_recognize_charged_groups(
@@ -28595,15 +21942,11 @@ def _test_recognition_empty_source() -> None:
     )
 
 
-# =============================================================================
 # 18.2.7. GROUP-CENTER GEOMETRY TESTS
-# =============================================================================
 
 
 def _test_single_atom_group_center() -> None:
-    """
-    Test the center of a one-atom charged group.
-    """
+    """Test the center of a one-atom charged group."""
 
     group = _make_test_cation_group(
         center=(
@@ -28630,9 +21973,7 @@ def _test_single_atom_group_center() -> None:
 
 
 def _test_two_atom_group_center() -> None:
-    """
-    Test the arithmetic center of a two-atom group.
-    """
+    """Test the arithmetic center of a two-atom group."""
 
     group = _make_test_anion_group(
         center=(
@@ -28687,9 +22028,7 @@ def _test_two_atom_group_center() -> None:
 
 
 def _test_group_center_translation() -> None:
-    """
-    Test that group centers follow rigid translations.
-    """
+    """Test that group centers follow rigid translations."""
 
     group = _make_test_anion_group(
         center=(
@@ -28743,15 +22082,11 @@ def _test_group_center_translation() -> None:
     )
 
 
-# =============================================================================
 # 18.2.8. DISTANCE GEOMETRY TESTS
-# =============================================================================
 
 
 def _test_group_center_distance() -> None:
-    """
-    Test center-to-center charged-group distance.
-    """
+    """Test center-to-center charged-group distance."""
 
     cation = _make_test_cation_group(
         center=(
@@ -28784,9 +22119,7 @@ def _test_group_center_distance() -> None:
 
 
 def _test_geometry_center_distance() -> None:
-    """
-    Test center distance reported by SaltBridgeGeometry.
-    """
+    """Test center distance reported by SaltBridgeGeometry."""
 
     cation = _make_test_cation_group(
         center=(
@@ -28828,9 +22161,7 @@ def _test_geometry_center_distance() -> None:
 
 
 def _test_geometry_atomic_distance_ordering() -> None:
-    """
-    Test ordering of minimum, mean, and maximum atom distances.
-    """
+    """Test ordering of minimum, mean, and maximum atom distances."""
 
     cation = _make_test_charged_group(
         group_id="cation_distance_order",
@@ -28877,9 +22208,7 @@ def _test_geometry_atomic_distance_ordering() -> None:
 
 
 def _test_geometry_closest_atom_pair() -> None:
-    """
-    Test resolution of the closest positive-negative atom pair.
-    """
+    """Test resolution of the closest positive-negative atom pair."""
 
     cation = _make_test_cation_group(
         center=(
@@ -28931,9 +22260,7 @@ def _test_geometry_closest_atom_pair() -> None:
 
 
 def _test_geometry_contact_count_nonnegative() -> None:
-    """
-    Test that atomic contact counts cannot be negative.
-    """
+    """Test that atomic contact counts cannot be negative."""
 
     geometry = (
         _call_calculate_salt_bridge_geometry(
@@ -28947,15 +22274,11 @@ def _test_geometry_contact_count_nonnegative() -> None:
     )
 
 
-# =============================================================================
 # 18.2.9. VALID AND INVALID GEOMETRY TESTS
-# =============================================================================
 
 
 def _test_valid_short_range_geometry() -> None:
-    """
-    Test a geometrically valid short-range salt bridge.
-    """
+    """Test a geometrically valid short-range salt bridge."""
 
     cation = _make_test_cation_group(
         center=(
@@ -28998,9 +22321,7 @@ def _test_valid_short_range_geometry() -> None:
 
 
 def _test_invalid_long_range_geometry() -> None:
-    """
-    Test rejection of a distant charged-group pair.
-    """
+    """Test rejection of a distant charged-group pair."""
 
     cation = _make_test_cation_group(
         center=(
@@ -29040,9 +22361,7 @@ def _test_invalid_long_range_geometry() -> None:
 
 
 def _test_geometry_at_cutoff_boundary() -> None:
-    """
-    Test geometry near the configured distance cutoff.
-    """
+    """Test geometry near the configured distance cutoff."""
 
     config = resolve_config(
         None
@@ -29116,9 +22435,7 @@ def _test_geometry_at_cutoff_boundary() -> None:
     )
 
 
-# =============================================================================
 # 18.2.10. RIGID-TRANSFORMATION TESTS
-# =============================================================================
 
 
 def _translated_charged_group(
@@ -29127,9 +22444,7 @@ def _translated_charged_group(
     *,
     group_id_suffix: str = "translated",
 ) -> ChargedGroup:
-    """
-    Create a translated copy of a charged group.
-    """
+    """Create a translated copy of a charged group."""
 
     translated_atoms: List[
         ChargedAtom
@@ -29213,9 +22528,7 @@ def _rotated_charged_group_z(
     ),
     group_id_suffix: str = "rotated",
 ) -> ChargedGroup:
-    """
-    Create a z-axis-rotated copy of a charged group.
-    """
+    """Create a z-axis-rotated copy of a charged group."""
 
     rotated_atoms: List[
         ChargedAtom
@@ -29291,9 +22604,7 @@ def _rotated_charged_group_z(
 
 
 def _test_geometry_translation_invariance() -> None:
-    """
-    Test preservation of geometry under a common translation.
-    """
+    """Test preservation of geometry under a common translation."""
 
     cation = _make_test_charged_group(
         group_id="translation_cation",
@@ -29382,9 +22693,7 @@ def _test_geometry_translation_invariance() -> None:
 
 
 def _test_geometry_rotation_invariance() -> None:
-    """
-    Test preservation of geometry under a common rigid rotation.
-    """
+    """Test preservation of geometry under a common rigid rotation."""
 
     cation = _make_test_charged_group(
         group_id="rotation_cation",
@@ -29470,15 +22779,11 @@ def _test_geometry_rotation_invariance() -> None:
     )
 
 
-# =============================================================================
 # 18.2.11. RECOGNITION AND GEOMETRY COMBINED TESTS
-# =============================================================================
 
 
 def _test_recognized_groups_support_geometry() -> None:
-    """
-    Test geometry calculation using groups produced by recognition.
-    """
+    """Test geometry calculation using groups produced by recognition."""
 
     lysine = _make_mock_lysine(
         number=10,
@@ -29550,9 +22855,7 @@ def _test_recognized_groups_support_geometry() -> None:
 
 
 def _test_recognition_geometry_far_negative_case() -> None:
-    """
-    Test a recognized charged pair that is geometrically too distant.
-    """
+    """Test a recognized charged pair that is geometrically too distant."""
 
     lysine = _make_mock_lysine(
         number=10,
@@ -29615,9 +22918,7 @@ def _test_recognition_geometry_far_negative_case() -> None:
     )
 
 
-# =============================================================================
 # 18.2.12. SECTION TEST REGISTRY
-# =============================================================================
 
 
 def get_salt_bridge_recognition_geometry_tests(
@@ -29630,14 +22931,7 @@ def get_salt_bridge_recognition_geometry_tests(
         ],
     ]
 ]:
-    """
-    Return all Section 18.2 self-tests.
-
-    Returns
-    -------
-    List[Tuple[str, Callable[[], Any]]]
-        Named recognition and geometry tests.
-    """
+    """Return all Section 18.2 self-tests."""
 
     return [
         (
@@ -29763,9 +23057,7 @@ def get_salt_bridge_recognition_geometry_tests(
     ]
 
 
-# =============================================================================
 # 18.2.13. SECTION RUNNER
-# =============================================================================
 
 
 def run_salt_bridge_recognition_geometry_tests(
@@ -29776,23 +23068,7 @@ def run_salt_bridge_recognition_geometry_tests(
     raise_on_failure: bool = False,
     print_report: bool = False,
 ) -> _SelfTestReport:
-    """
-    Run all Section 18.2 recognition and geometry self-tests.
-
-    Parameters
-    ----------
-    report
-        Optional existing self-test report.
-    raise_on_failure
-        Whether the first failure should raise an exception.
-    print_report
-        Whether the resulting report should be printed.
-
-    Returns
-    -------
-    _SelfTestReport
-        Updated self-test report.
-    """
+    """Run all Section 18.2 recognition and geometry self-tests."""
 
     resolved_report = (
         _run_self_test_group(
@@ -29812,15 +23088,10 @@ def run_salt_bridge_recognition_geometry_tests(
     return resolved_report
 
 
-
-# =============================================================================
 # 18.3. DETECTION AND CLASSIFICATION TESTS
-# =============================================================================
 
 
-# =============================================================================
 # 18.3.1. DETECTION FUNCTION RESOLUTION
-# =============================================================================
 
 
 def _call_generate_salt_bridge_candidates(
@@ -29834,23 +23105,7 @@ def _call_generate_salt_bridge_candidates(
         SaltBridgeConfig
     ] = None,
 ) -> List[Any]:
-    """
-    Call the available salt-bridge candidate-generation function.
-
-    Parameters
-    ----------
-    cationic_groups
-        Positive charged groups.
-    anionic_groups
-        Negative charged groups.
-    config
-        Optional salt-bridge configuration.
-
-    Returns
-    -------
-    List[Any]
-        Generated candidate pairs.
-    """
+    """Call the available salt-bridge candidate-generation function."""
 
     candidate_function_names = (
         "generate_salt_bridge_candidates",
@@ -29928,27 +23183,7 @@ def _call_detect_salt_bridge_pair(
 ) -> Optional[
     SaltBridgeInteraction
 ]:
-    """
-    Call the available single-pair salt-bridge detector.
-
-    Parameters
-    ----------
-    cation
-        Positive charged group.
-    anion
-        Negative charged group.
-    config
-        Optional configuration.
-    pose_id
-        Optional pose identifier.
-    model_id
-        Optional model identifier.
-
-    Returns
-    -------
-    Optional[SaltBridgeInteraction]
-        Detected interaction or ``None``.
-    """
+    """Call the available single-pair salt-bridge detector."""
 
     detection_function = (
         _resolve_self_test_callable(
@@ -30048,29 +23283,7 @@ def _call_detect_salt_bridges_from_groups(
     ] = None,
     include_invalid: bool = False,
 ) -> List[SaltBridgeInteraction]:
-    """
-    Call the available group-based salt-bridge detection function.
-
-    Parameters
-    ----------
-    cationic_groups
-        Positive charged groups.
-    anionic_groups
-        Negative charged groups.
-    config
-        Optional configuration.
-    pose_id
-        Optional pose identifier.
-    model_id
-        Optional model identifier.
-    include_invalid
-        Whether invalid interactions should be retained.
-
-    Returns
-    -------
-    List[SaltBridgeInteraction]
-        Detected interactions.
-    """
+    """Call the available group-based salt-bridge detection function."""
 
     function_names = (
         "detect_salt_bridges_from_groups",
@@ -30200,25 +23413,7 @@ def _call_analyze_salt_bridges(
         Union[str, int]
     ] = None,
 ) -> SaltBridgeResult:
-    """
-    Call the complete single-source salt-bridge analysis pipeline.
-
-    Parameters
-    ----------
-    source
-        Molecular source.
-    config
-        Optional salt-bridge configuration.
-    pose_id
-        Optional pose identifier.
-    model_id
-        Optional model identifier.
-
-    Returns
-    -------
-    SaltBridgeResult
-        Complete analysis result.
-    """
+    """Call the complete single-source salt-bridge analysis pipeline."""
 
     analysis_function = (
         _resolve_self_test_callable(
@@ -30296,9 +23491,7 @@ def _call_analyze_salt_bridges(
     ) from last_error
 
 
-# =============================================================================
 # 18.3.2. CLASSIFICATION AND SCORING FUNCTION RESOLUTION
-# =============================================================================
 
 
 def _call_classify_salt_bridge_strength(
@@ -30307,21 +23500,7 @@ def _call_classify_salt_bridge_strength(
         SaltBridgeConfig
     ] = None,
 ) -> str:
-    """
-    Call the available salt-bridge strength classifier.
-
-    Parameters
-    ----------
-    geometry_or_interaction
-        SaltBridgeGeometry or SaltBridgeInteraction.
-    config
-        Optional configuration.
-
-    Returns
-    -------
-    str
-        Strength category.
-    """
+    """Call the available salt-bridge strength classifier."""
 
     classification_function = (
         _resolve_self_test_callable(
@@ -30393,25 +23572,7 @@ def _call_score_salt_bridge(
         ChargedGroup
     ] = None,
 ) -> float:
-    """
-    Call the available salt-bridge scoring function.
-
-    Parameters
-    ----------
-    interaction_or_geometry
-        Interaction or geometry to score.
-    config
-        Optional configuration.
-    cation
-        Optional cation group.
-    anion
-        Optional anion group.
-
-    Returns
-    -------
-    float
-        Salt-bridge score.
-    """
+    """Call the available salt-bridge scoring function."""
 
     scoring_function = (
         _resolve_self_test_callable(
@@ -30516,15 +23677,11 @@ def _call_score_salt_bridge(
     ) from last_error
 
 
-# =============================================================================
 # 18.3.3. CANDIDATE-GENERATION TESTS
-# =============================================================================
 
 
 def _test_candidate_generation_cartesian_product() -> None:
-    """
-    Test candidate generation for all cation-anion combinations.
-    """
+    """Test candidate generation for all cation-anion combinations."""
 
     cations = [
         _make_test_cation_group(
@@ -30580,9 +23737,7 @@ def _test_candidate_generation_cartesian_product() -> None:
 
 
 def _test_candidate_generation_empty_cations() -> None:
-    """
-    Test candidate generation with no cations.
-    """
+    """Test candidate generation with no cations."""
 
     candidates = (
         _call_generate_salt_bridge_candidates(
@@ -30599,9 +23754,7 @@ def _test_candidate_generation_empty_cations() -> None:
 
 
 def _test_candidate_generation_empty_anions() -> None:
-    """
-    Test candidate generation with no anions.
-    """
+    """Test candidate generation with no anions."""
 
     candidates = (
         _call_generate_salt_bridge_candidates(
@@ -30618,9 +23771,7 @@ def _test_candidate_generation_empty_anions() -> None:
 
 
 def _test_candidate_generation_polarity_order() -> None:
-    """
-    Test that candidate pairs preserve cation-anion ordering.
-    """
+    """Test that candidate pairs preserve cation-anion ordering."""
 
     cation = _make_test_cation_group(
         group_id="ordered_cation"
@@ -30685,15 +23836,11 @@ def _test_candidate_generation_polarity_order() -> None:
     )
 
 
-# =============================================================================
 # 18.3.4. SINGLE-PAIR DETECTION TESTS
-# =============================================================================
 
 
 def _test_detect_valid_salt_bridge_pair() -> None:
-    """
-    Test detection of a valid close cation-anion pair.
-    """
+    """Test detection of a valid close cation-anion pair."""
 
     cation = _make_test_cation_group(
         center=(
@@ -30742,9 +23889,7 @@ def _test_detect_valid_salt_bridge_pair() -> None:
 
 
 def _test_reject_distant_salt_bridge_pair() -> None:
-    """
-    Test rejection of a distant cation-anion pair.
-    """
+    """Test rejection of a distant cation-anion pair."""
 
     cation = _make_test_cation_group(
         center=(
@@ -30779,9 +23924,7 @@ def _test_reject_distant_salt_bridge_pair() -> None:
 
 
 def _test_detect_pair_preserves_identifiers() -> None:
-    """
-    Test preservation of pose and model identifiers.
-    """
+    """Test preservation of pose and model identifiers."""
 
     interaction = (
         _call_detect_salt_bridge_pair(
@@ -30810,9 +23953,7 @@ def _test_detect_pair_preserves_identifiers() -> None:
 
 
 def _test_detect_pair_builds_unique_identifier() -> None:
-    """
-    Test construction of a non-empty interaction identifier.
-    """
+    """Test construction of a non-empty interaction identifier."""
 
     interaction = (
         _call_detect_salt_bridge_pair(
@@ -30839,15 +23980,11 @@ def _test_detect_pair_builds_unique_identifier() -> None:
     )
 
 
-# =============================================================================
 # 18.3.5. MULTIPLE-GROUP DETECTION TESTS
-# =============================================================================
 
 
 def _test_detect_multiple_valid_pairs() -> None:
-    """
-    Test detection across multiple charged groups.
-    """
+    """Test detection across multiple charged groups."""
 
     cations = [
         _make_test_cation_group(
@@ -30912,9 +24049,7 @@ def _test_detect_multiple_valid_pairs() -> None:
 
 
 def _test_detection_excludes_invalid_by_default() -> None:
-    """
-    Test default exclusion of distant invalid candidates.
-    """
+    """Test default exclusion of distant invalid candidates."""
 
     interactions = (
         _call_detect_salt_bridges_from_groups(
@@ -30948,9 +24083,7 @@ def _test_detection_excludes_invalid_by_default() -> None:
 
 
 def _test_detection_no_duplicate_interactions() -> None:
-    """
-    Test that one group pair does not create duplicate interactions.
-    """
+    """Test that one group pair does not create duplicate interactions."""
 
     cation = _make_test_cation_group(
         group_id="duplicate_test_cation"
@@ -30995,15 +24128,11 @@ def _test_detection_no_duplicate_interactions() -> None:
     )
 
 
-# =============================================================================
 # 18.3.6. STRENGTH CLASSIFICATION TESTS
-# =============================================================================
 
 
 def _test_classify_strong_salt_bridge() -> None:
-    """
-    Test classification of a short strong salt bridge.
-    """
+    """Test classification of a short strong salt bridge."""
 
     geometry = _make_test_geometry(
         center_distance=2.8,
@@ -31031,9 +24160,7 @@ def _test_classify_strong_salt_bridge() -> None:
 
 
 def _test_classify_moderate_salt_bridge() -> None:
-    """
-    Test classification of an intermediate-distance salt bridge.
-    """
+    """Test classification of an intermediate-distance salt bridge."""
 
     geometry = _make_test_geometry(
         center_distance=3.6,
@@ -31064,9 +24191,7 @@ def _test_classify_moderate_salt_bridge() -> None:
 
 
 def _test_classify_weak_salt_bridge() -> None:
-    """
-    Test classification of a near-cutoff salt bridge.
-    """
+    """Test classification of a near-cutoff salt bridge."""
 
     geometry = _make_test_geometry(
         center_distance=4.5,
@@ -31102,9 +24227,7 @@ def _test_classify_weak_salt_bridge() -> None:
 
 
 def _test_classify_invalid_as_rejected() -> None:
-    """
-    Test classification of invalid geometry.
-    """
+    """Test classification of invalid geometry."""
 
     geometry = _make_test_geometry(
         center_distance=10.0,
@@ -31130,9 +24253,7 @@ def _test_classify_invalid_as_rejected() -> None:
 
 
 def _test_strength_improves_with_shorter_distance() -> None:
-    """
-    Test monotonic strength behavior with decreasing distance.
-    """
+    """Test monotonic strength behavior with decreasing distance."""
 
     strong_geometry = _make_test_geometry(
         center_distance=2.8,
@@ -31187,15 +24308,11 @@ def _test_strength_improves_with_shorter_distance() -> None:
     )
 
 
-# =============================================================================
 # 18.3.7. SCORING TESTS
-# =============================================================================
 
 
 def _test_valid_interaction_has_positive_score() -> None:
-    """
-    Test positive scoring of a valid salt bridge.
-    """
+    """Test positive scoring of a valid salt bridge."""
 
     interaction = _make_test_interaction(
         geometry=_make_test_geometry(
@@ -31219,9 +24336,7 @@ def _test_valid_interaction_has_positive_score() -> None:
 
 
 def _test_invalid_interaction_has_zero_or_minimal_score() -> None:
-    """
-    Test scoring of an invalid salt bridge.
-    """
+    """Test scoring of an invalid salt bridge."""
 
     interaction = _make_test_interaction(
         geometry=_make_test_geometry(
@@ -31253,9 +24368,7 @@ def _test_invalid_interaction_has_zero_or_minimal_score() -> None:
 
 
 def _test_shorter_interaction_scores_higher() -> None:
-    """
-    Test that shorter valid interactions score at least as highly.
-    """
+    """Test that shorter valid interactions score at least as highly."""
 
     short_interaction = (
         _make_test_interaction(
@@ -31307,9 +24420,7 @@ def _test_shorter_interaction_scores_higher() -> None:
 
 
 def _test_multiple_contacts_do_not_reduce_score() -> None:
-    """
-    Test score behavior with additional atomic contacts.
-    """
+    """Test score behavior with additional atomic contacts."""
 
     one_contact = _make_test_interaction(
         interaction_id="one_contact",
@@ -31358,9 +24469,7 @@ def _test_multiple_contacts_do_not_reduce_score() -> None:
 
 
 def _test_stronger_charge_does_not_reduce_score() -> None:
-    """
-    Test score behavior with increased charge magnitude.
-    """
+    """Test score behavior with increased charge magnitude."""
 
     weak_cation = _make_test_cation_group(
         group_id="weak_charge_cation",
@@ -31421,9 +24530,7 @@ def _test_stronger_charge_does_not_reduce_score() -> None:
 
 
 def _test_score_is_finite() -> None:
-    """
-    Test that salt-bridge scores are finite.
-    """
+    """Test that salt-bridge scores are finite."""
 
     interaction = _make_test_interaction()
 
@@ -31439,15 +24546,11 @@ def _test_score_is_finite() -> None:
     )
 
 
-# =============================================================================
 # 18.3.8. DETECTION-CLASSIFICATION CONSISTENCY TESTS
-# =============================================================================
 
 
 def _test_detected_interaction_strength_matches_classifier() -> None:
-    """
-    Test consistency between detection and standalone classification.
-    """
+    """Test consistency between detection and standalone classification."""
 
     interaction = (
         _call_detect_salt_bridge_pair(
@@ -31481,9 +24584,7 @@ def _test_detected_interaction_strength_matches_classifier() -> None:
 
 
 def _test_detected_interaction_score_matches_scorer() -> None:
-    """
-    Test consistency between detection and standalone scoring.
-    """
+    """Test consistency between detection and standalone scoring."""
 
     interaction = (
         _call_detect_salt_bridge_pair(
@@ -31514,9 +24615,7 @@ def _test_detected_interaction_score_matches_scorer() -> None:
 
 
 def _test_detected_valid_interaction_not_rejected() -> None:
-    """
-    Test that valid detected interactions are not marked rejected.
-    """
+    """Test that valid detected interactions are not marked rejected."""
 
     interaction = (
         _call_detect_salt_bridge_pair(
@@ -31547,15 +24646,11 @@ def _test_detected_valid_interaction_not_rejected() -> None:
     )
 
 
-# =============================================================================
 # 18.3.9. COMPLETE PIPELINE TESTS
-# =============================================================================
 
 
 def _test_complete_pipeline_positive_case() -> None:
-    """
-    Test complete recognition-to-detection analysis.
-    """
+    """Test complete recognition-to-detection analysis."""
 
     structure = _make_test_structure(
         model_id=1
@@ -31624,9 +24719,7 @@ def _test_complete_pipeline_positive_case() -> None:
 
 
 def _test_complete_pipeline_distant_negative_case() -> None:
-    """
-    Test complete pipeline with charged groups too far apart.
-    """
+    """Test complete pipeline with charged groups too far apart."""
 
     lysine = _make_mock_lysine(
         nz_coordinate=(
@@ -31669,9 +24762,7 @@ def _test_complete_pipeline_distant_negative_case() -> None:
 
 
 def _test_complete_pipeline_neutral_negative_case() -> None:
-    """
-    Test complete pipeline with only neutral residues.
-    """
+    """Test complete pipeline with only neutral residues."""
 
     neutral_ligand = (
         _make_mock_neutral_ligand()
@@ -31695,9 +24786,7 @@ def _test_complete_pipeline_neutral_negative_case() -> None:
 
 
 def _test_complete_pipeline_mixed_pairs() -> None:
-    """
-    Test complete pipeline with close and distant charge pairs.
-    """
+    """Test complete pipeline with close and distant charge pairs."""
 
     lysine_close = _make_mock_lysine(
         number=10,
@@ -31761,9 +24850,7 @@ def _test_complete_pipeline_mixed_pairs() -> None:
 
 
 def _test_complete_pipeline_result_identifiers() -> None:
-    """
-    Test propagation of pose and model identifiers.
-    """
+    """Test propagation of pose and model identifiers."""
 
     result = _call_analyze_salt_bridges(
         [
@@ -31800,15 +24887,11 @@ def _test_complete_pipeline_result_identifiers() -> None:
             )
 
 
-# =============================================================================
 # 18.3.10. RESULT-INVARIANT TESTS
-# =============================================================================
 
 
 def _test_all_detected_interactions_have_valid_polarities() -> None:
-    """
-    Test cation-anion polarity invariants in detection output.
-    """
+    """Test cation-anion polarity invariants in detection output."""
 
     result = _call_analyze_salt_bridges(
         [
@@ -31854,9 +24937,7 @@ def _test_all_detected_interactions_have_valid_polarities() -> None:
 
 
 def _test_all_detected_scores_are_finite() -> None:
-    """
-    Test that all detected interaction scores are finite.
-    """
+    """Test that all detected interaction scores are finite."""
 
     result = _call_analyze_salt_bridges(
         [
@@ -31878,9 +24959,7 @@ def _test_all_detected_scores_are_finite() -> None:
 
 
 def _test_all_detected_geometries_are_consistent() -> None:
-    """
-    Test geometry invariants in all detected interactions.
-    """
+    """Test geometry invariants in all detected interactions."""
 
     result = _call_analyze_salt_bridges(
         [
@@ -31924,9 +25003,7 @@ def _test_all_detected_geometries_are_consistent() -> None:
 
 
 def _test_valid_interactions_have_positive_scores() -> None:
-    """
-    Test that all valid pipeline interactions have positive scores.
-    """
+    """Test that all valid pipeline interactions have positive scores."""
 
     result = _call_analyze_salt_bridges(
         [
@@ -31949,9 +25026,7 @@ def _test_valid_interactions_have_positive_scores() -> None:
 
 
 def _test_rejected_interactions_are_not_strong() -> None:
-    """
-    Test that rejected interactions cannot be strong.
-    """
+    """Test that rejected interactions cannot be strong."""
 
     rejected_interaction = (
         _make_test_interaction(
@@ -31988,9 +25063,7 @@ def _test_rejected_interactions_are_not_strong() -> None:
     )
 
 
-# =============================================================================
 # 18.3.11. SECTION TEST REGISTRY
-# =============================================================================
 
 
 def get_salt_bridge_detection_classification_tests(
@@ -32003,14 +25076,7 @@ def get_salt_bridge_detection_classification_tests(
         ],
     ]
 ]:
-    """
-    Return all Section 18.3 self-tests.
-
-    Returns
-    -------
-    List[Tuple[str, Callable[[], Any]]]
-        Named detection and classification tests.
-    """
+    """Return all Section 18.3 self-tests."""
 
     return [
         (
@@ -32156,9 +25222,7 @@ def get_salt_bridge_detection_classification_tests(
     ]
 
 
-# =============================================================================
 # 18.3.12. SECTION RUNNER
-# =============================================================================
 
 
 def run_salt_bridge_detection_classification_tests(
@@ -32169,23 +25233,7 @@ def run_salt_bridge_detection_classification_tests(
     raise_on_failure: bool = False,
     print_report: bool = False,
 ) -> _SelfTestReport:
-    """
-    Run all Section 18.3 detection and classification self-tests.
-
-    Parameters
-    ----------
-    report
-        Optional existing self-test report.
-    raise_on_failure
-        Whether the first failure should raise an exception.
-    print_report
-        Whether the updated report should be printed.
-
-    Returns
-    -------
-    _SelfTestReport
-        Updated self-test report.
-    """
+    """Run all Section 18.3 detection and classification self-tests."""
 
     resolved_report = (
         _run_self_test_group(
@@ -32205,15 +25253,10 @@ def run_salt_bridge_detection_classification_tests(
     return resolved_report
 
 
-
-# =============================================================================
 # 18.4. INTEGRATION AND SERIALIZATION TESTS
-# =============================================================================
 
 
-# =============================================================================
 # 18.4.1. INTEGRATION FUNCTION RESOLUTION
-# =============================================================================
 
 
 def _call_attach_salt_bridge_results(
@@ -32222,23 +25265,7 @@ def _call_attach_salt_bridge_results(
     *,
     preserve_existing: bool = False,
 ) -> Any:
-    """
-    Call the available DockModel attachment function.
-
-    Parameters
-    ----------
-    dock_model
-        DockModel-like object.
-    result
-        Salt-bridge result.
-    preserve_existing
-        Whether existing interactions should be preserved.
-
-    Returns
-    -------
-    Any
-        Updated DockModel-like object.
-    """
+    """Call the available DockModel attachment function."""
 
     attachment_function = (
         _resolve_self_test_callable(
@@ -32297,23 +25324,7 @@ def _call_analyze_dock_model_salt_bridges(
     *,
     preserve_existing: bool = False,
 ) -> Any:
-    """
-    Call the available DockModel salt-bridge analysis function.
-
-    Parameters
-    ----------
-    dock_model
-        DockModel-like object.
-    config
-        Optional configuration.
-    preserve_existing
-        Whether existing salt bridges should be preserved.
-
-    Returns
-    -------
-    Any
-        Updated DockModel-like object.
-    """
+    """Call the available DockModel salt-bridge analysis function."""
 
     analysis_function = (
         _resolve_self_test_callable(
@@ -32379,21 +25390,7 @@ def _call_analyze_multiple_dock_models_salt_bridges(
         SaltBridgeConfig
     ] = None,
 ) -> List[Any]:
-    """
-    Call the available multiple-DockModel analysis function.
-
-    Parameters
-    ----------
-    dock_models
-        DockModel-like objects.
-    config
-        Optional configuration.
-
-    Returns
-    -------
-    List[Any]
-        Updated models.
-    """
+    """Call the available multiple-DockModel analysis function."""
 
     analysis_function = (
         _resolve_self_test_callable(
@@ -32427,9 +25424,7 @@ def _call_analyze_multiple_dock_models_salt_bridges(
     )
 
 
-# =============================================================================
 # 18.4.2. STATISTICS FUNCTION RESOLUTION
-# =============================================================================
 
 
 def _call_calculate_result_statistics(
@@ -32437,21 +25432,7 @@ def _call_calculate_result_statistics(
     *,
     in_place: bool = False,
 ) -> Mapping[str, Any]:
-    """
-    Call the available result-statistics function.
-
-    Parameters
-    ----------
-    result
-        Salt-bridge result.
-    in_place
-        Whether statistics should be stored in the result.
-
-    Returns
-    -------
-    Mapping[str, Any]
-        Statistics mapping.
-    """
+    """Call the available result-statistics function."""
 
     statistics_function = (
         _resolve_self_test_callable(
@@ -32504,9 +25485,7 @@ def _call_calculate_result_statistics(
 def _call_build_compact_summary(
     result: SaltBridgeResult,
 ) -> Mapping[str, Any]:
-    """
-    Call the available compact-summary function.
-    """
+    """Call the available compact-summary function."""
 
     summary_function = (
         _resolve_self_test_callable(
@@ -32534,9 +25513,7 @@ def _call_build_compact_summary(
 def _call_build_text_summary(
     result: SaltBridgeResult,
 ) -> str:
-    """
-    Call the available text-summary function.
-    """
+    """Call the available text-summary function."""
 
     summary_function = (
         _resolve_self_test_callable(
@@ -32555,9 +25532,7 @@ def _call_build_text_summary(
     )
 
 
-# =============================================================================
 # 18.4.3. MULTIPOSE FUNCTION RESOLUTION
-# =============================================================================
 
 
 def _call_analyze_salt_bridges_multipose(
@@ -32566,21 +25541,7 @@ def _call_analyze_salt_bridges_multipose(
         SaltBridgeConfig
     ] = None,
 ) -> Mapping[str, Any]:
-    """
-    Call the complete multipose salt-bridge pipeline.
-
-    Parameters
-    ----------
-    poses
-        Pose-like inputs.
-    config
-        Optional configuration.
-
-    Returns
-    -------
-    Mapping[str, Any]
-        Multipose analysis.
-    """
+    """Call the complete multipose salt-bridge pipeline."""
 
     multipose_function = (
         _resolve_self_test_callable(
@@ -32624,9 +25585,7 @@ def _call_rank_salt_bridge_poses(
         SaltBridgeResult
     ],
 ) -> List[Mapping[str, Any]]:
-    """
-    Call the available pose-ranking function.
-    """
+    """Call the available pose-ranking function."""
 
     ranking_function = (
         _resolve_self_test_callable(
@@ -32651,9 +25610,7 @@ def _call_calculate_persistence(
         SaltBridgeResult
     ],
 ) -> List[Mapping[str, Any]]:
-    """
-    Call the available interaction-persistence function.
-    """
+    """Call the available interaction-persistence function."""
 
     persistence_function = (
         _resolve_self_test_callable(
@@ -32696,9 +25653,7 @@ def _call_build_consensus_interactions(
         SaltBridgeResult
     ],
 ) -> List[Mapping[str, Any]]:
-    """
-    Call the available multipose consensus function.
-    """
+    """Call the available multipose consensus function."""
 
     consensus_function = (
         _resolve_self_test_callable(
@@ -32736,15 +25691,11 @@ def _call_build_consensus_interactions(
     )
 
 
-# =============================================================================
 # 18.4.4. DOCKMODEL ATTACHMENT TESTS
-# =============================================================================
 
 
 def _test_attach_result_to_dock_model() -> None:
-    """
-    Test attachment of detected interactions to DockModel.
-    """
+    """Test attachment of detected interactions to DockModel."""
 
     result = _make_test_result()
 
@@ -32778,9 +25729,7 @@ def _test_attach_result_to_dock_model() -> None:
 
 
 def _test_attach_result_replaces_existing_by_default() -> None:
-    """
-    Test default replacement of pre-existing salt bridges.
-    """
+    """Test default replacement of pre-existing salt bridges."""
 
     previous_interaction = (
         _make_test_interaction(
@@ -32828,9 +25777,7 @@ def _test_attach_result_replaces_existing_by_default() -> None:
 
 
 def _test_attach_result_preserves_existing_when_requested() -> None:
-    """
-    Test preservation of pre-existing interactions when supported.
-    """
+    """Test preservation of pre-existing interactions when supported."""
 
     previous_interaction = (
         _make_test_interaction(
@@ -32883,11 +25830,7 @@ def _test_attach_result_preserves_existing_when_requested() -> None:
 
 
 def _test_attachment_does_not_add_dynamic_result_fields() -> None:
-    """
-    Test the simplified DockModel architecture.
-
-    Only the ``saltbridge`` field should be required.
-    """
+    """Test the simplified DockModel architecture."""
 
     dock_model = _MockDockModel(
         source=[]
@@ -32925,15 +25868,11 @@ def _test_attachment_does_not_add_dynamic_result_fields() -> None:
         )
 
 
-# =============================================================================
 # 18.4.5. DOCKMODEL ANALYSIS TESTS
-# =============================================================================
 
 
 def _test_analyze_dock_model_salt_bridges() -> None:
-    """
-    Test complete analysis and attachment for one DockModel.
-    """
+    """Test complete analysis and attachment for one DockModel."""
 
     source = [
         _make_mock_lysine(),
@@ -32967,9 +25906,7 @@ def _test_analyze_dock_model_salt_bridges() -> None:
 
 
 def _test_analyze_multiple_dock_models() -> None:
-    """
-    Test analysis of multiple DockModel instances.
-    """
+    """Test analysis of multiple DockModel instances."""
 
     models = [
         _MockDockModel(
@@ -33017,9 +25954,7 @@ def _test_analyze_multiple_dock_models() -> None:
 
 
 def _test_dock_model_empty_source() -> None:
-    """
-    Test DockModel analysis with no molecular source content.
-    """
+    """Test DockModel analysis with no molecular source content."""
 
     dock_model = _MockDockModel(
         source=[]
@@ -33041,16 +25976,12 @@ def _test_dock_model_empty_source() -> None:
     )
 
 
-# =============================================================================
 # 18.4.6. STATISTICS TESTS
-# =============================================================================
 
 
 def _make_statistics_test_result(
 ) -> SaltBridgeResult:
-    """
-    Create a result containing strong, moderate, and weak interactions.
-    """
+    """Create a result containing strong, moderate, and weak interactions."""
 
     interactions = [
         _make_test_interaction(
@@ -33100,9 +26031,7 @@ def _make_statistics_test_result(
 
 
 def _test_statistics_interaction_count() -> None:
-    """
-    Test total interaction count.
-    """
+    """Test total interaction count."""
 
     result = (
         _make_statistics_test_result()
@@ -33133,9 +26062,7 @@ def _test_statistics_interaction_count() -> None:
 
 
 def _test_statistics_total_score() -> None:
-    """
-    Test total interaction score.
-    """
+    """Test total interaction score."""
 
     result = (
         _make_statistics_test_result()
@@ -33163,9 +26090,7 @@ def _test_statistics_total_score() -> None:
 
 
 def _test_statistics_distance_extrema() -> None:
-    """
-    Test minimum and maximum distance statistics.
-    """
+    """Test minimum and maximum distance statistics."""
 
     statistics = (
         _call_calculate_result_statistics(
@@ -33203,9 +26128,7 @@ def _test_statistics_distance_extrema() -> None:
 
 
 def _test_statistics_strength_distribution() -> None:
-    """
-    Test distribution by interaction strength.
-    """
+    """Test distribution by interaction strength."""
 
     statistics = (
         _call_calculate_result_statistics(
@@ -33249,9 +26172,7 @@ def _test_statistics_strength_distribution() -> None:
 
 
 def _test_statistics_in_place_update() -> None:
-    """
-    Test storage of calculated statistics in SaltBridgeResult.
-    """
+    """Test storage of calculated statistics in SaltBridgeResult."""
 
     result = (
         _make_statistics_test_result()
@@ -33272,9 +26193,7 @@ def _test_statistics_in_place_update() -> None:
 
 
 def _test_empty_result_statistics() -> None:
-    """
-    Test statistics for an empty result.
-    """
+    """Test statistics for an empty result."""
 
     result = _make_test_result(
         interactions=[],
@@ -33304,15 +26223,11 @@ def _test_empty_result_statistics() -> None:
     )
 
 
-# =============================================================================
 # 18.4.7. SUMMARY TESTS
-# =============================================================================
 
 
 def _test_compact_summary_structure() -> None:
-    """
-    Test required compact-summary fields.
-    """
+    """Test required compact-summary fields."""
 
     summary = (
         _call_build_compact_summary(
@@ -33330,9 +26245,7 @@ def _test_compact_summary_structure() -> None:
 
 
 def _test_compact_summary_values() -> None:
-    """
-    Test compact-summary values.
-    """
+    """Test compact-summary values."""
 
     summary = (
         _call_build_compact_summary(
@@ -33356,9 +26269,7 @@ def _test_compact_summary_values() -> None:
 
 
 def _test_text_summary_nonempty() -> None:
-    """
-    Test generation of a non-empty text summary.
-    """
+    """Test generation of a non-empty text summary."""
 
     summary = (
         _call_build_text_summary(
@@ -33375,9 +26286,7 @@ def _test_text_summary_nonempty() -> None:
 
 
 def _test_empty_result_text_summary() -> None:
-    """
-    Test text summary generation for an empty result.
-    """
+    """Test text summary generation for an empty result."""
 
     result = _make_test_result(
         interactions=[],
@@ -33397,15 +26306,11 @@ def _test_empty_result_text_summary() -> None:
     )
 
 
-# =============================================================================
 # 18.4.8. MULTIPOSE RANKING TESTS
-# =============================================================================
 
 
 def _test_pose_ranking_count() -> None:
-    """
-    Test one ranking record per pose.
-    """
+    """Test one ranking record per pose."""
 
     results = _make_test_pose_results(
         pose_count=3
@@ -33424,9 +26329,7 @@ def _test_pose_ranking_count() -> None:
 
 
 def _test_pose_ranking_order() -> None:
-    """
-    Test descending ranking-score order.
-    """
+    """Test descending ranking-score order."""
 
     ranking = (
         _call_rank_salt_bridge_poses(
@@ -33464,9 +26367,7 @@ def _test_pose_ranking_order() -> None:
 
 
 def _test_pose_ranking_unique_ranks() -> None:
-    """
-    Test unique sequential pose ranks.
-    """
+    """Test unique sequential pose ranks."""
 
     ranking = (
         _call_rank_salt_bridge_poses(
@@ -33497,16 +26398,12 @@ def _test_pose_ranking_unique_ranks() -> None:
     )
 
 
-# =============================================================================
 # 18.4.9. PERSISTENCE AND CONSENSUS TESTS
-# =============================================================================
 
 
 def _make_persistent_pose_results(
 ) -> List[SaltBridgeResult]:
-    """
-    Create pose results sharing the same residue-level interaction.
-    """
+    """Create pose results sharing the same residue-level interaction."""
 
     results: List[
         SaltBridgeResult
@@ -33584,9 +26481,7 @@ def _make_persistent_pose_results(
 
 
 def _test_persistence_records_nonempty() -> None:
-    """
-    Test persistence calculation across repeated poses.
-    """
+    """Test persistence calculation across repeated poses."""
 
     persistence = (
         _call_calculate_persistence(
@@ -33604,9 +26499,7 @@ def _test_persistence_records_nonempty() -> None:
 
 
 def _test_persistence_fraction_range() -> None:
-    """
-    Test persistence fractions remain between zero and one.
-    """
+    """Test persistence fractions remain between zero and one."""
 
     persistence = (
         _call_calculate_persistence(
@@ -33638,9 +26531,7 @@ def _test_persistence_fraction_range() -> None:
 
 
 def _test_fully_persistent_interaction() -> None:
-    """
-    Test identification of an interaction present in every pose.
-    """
+    """Test identification of an interaction present in every pose."""
 
     persistence = (
         _call_calculate_persistence(
@@ -33688,9 +26579,7 @@ def _test_fully_persistent_interaction() -> None:
 
 
 def _test_consensus_records_nonempty() -> None:
-    """
-    Test consensus generation across repeated poses.
-    """
+    """Test consensus generation across repeated poses."""
 
     consensus = (
         _call_build_consensus_interactions(
@@ -33704,9 +26593,7 @@ def _test_consensus_records_nonempty() -> None:
 
 
 def _test_consensus_is_json_safe() -> None:
-    """
-    Test JSON compatibility of consensus records.
-    """
+    """Test JSON compatibility of consensus records."""
 
     consensus = (
         _call_build_consensus_interactions(
@@ -33721,15 +26608,11 @@ def _test_consensus_is_json_safe() -> None:
     )
 
 
-# =============================================================================
 # 18.4.10. COMPLETE MULTIPOSE PIPELINE TESTS
-# =============================================================================
 
 
 def _test_complete_multipose_analysis() -> None:
-    """
-    Test the complete multipose analysis pipeline.
-    """
+    """Test the complete multipose analysis pipeline."""
 
     poses = [
         [
@@ -33782,9 +26665,7 @@ def _test_complete_multipose_analysis() -> None:
 
 
 def _test_empty_multipose_analysis() -> None:
-    """
-    Test multipose analysis with no poses.
-    """
+    """Test multipose analysis with no poses."""
 
     multipose_result = (
         _call_analyze_salt_bridges_multipose(
@@ -33805,9 +26686,7 @@ def _test_empty_multipose_analysis() -> None:
 
 
 def _test_multipose_results_have_pose_ids() -> None:
-    """
-    Test pose identifier assignment in multipose analysis.
-    """
+    """Test pose identifier assignment in multipose analysis."""
 
     multipose_result = (
         _call_analyze_salt_bridges_multipose(
@@ -33854,15 +26733,11 @@ def _test_multipose_results_have_pose_ids() -> None:
     )
 
 
-# =============================================================================
 # 18.4.11. BASIC SERIALIZATION TESTS
-# =============================================================================
 
 
 def _test_charged_atom_serialization() -> None:
-    """
-    Test ChargedAtom dictionary serialization.
-    """
+    """Test ChargedAtom dictionary serialization."""
 
     charged_atom = (
         _make_test_charged_atom(
@@ -33901,9 +26776,7 @@ def _test_charged_atom_serialization() -> None:
 
 
 def _test_charged_group_serialization() -> None:
-    """
-    Test ChargedGroup dictionary serialization.
-    """
+    """Test ChargedGroup dictionary serialization."""
 
     serialized = (
         charged_group_to_dict(
@@ -33929,9 +26802,7 @@ def _test_charged_group_serialization() -> None:
 
 
 def _test_geometry_serialization() -> None:
-    """
-    Test SaltBridgeGeometry dictionary serialization.
-    """
+    """Test SaltBridgeGeometry dictionary serialization."""
 
     serialized = (
         salt_bridge_geometry_to_dict(
@@ -33957,9 +26828,7 @@ def _test_geometry_serialization() -> None:
 
 
 def _test_interaction_serialization() -> None:
-    """
-    Test SaltBridgeInteraction dictionary serialization.
-    """
+    """Test SaltBridgeInteraction dictionary serialization."""
 
     serialized = (
         salt_bridge_interaction_to_dict(
@@ -33986,9 +26855,7 @@ def _test_interaction_serialization() -> None:
 
 
 def _test_compact_interaction_serialization() -> None:
-    """
-    Test compact interaction serialization.
-    """
+    """Test compact interaction serialization."""
 
     serialized = (
         salt_bridge_interaction_to_dict(
@@ -34008,9 +26875,7 @@ def _test_compact_interaction_serialization() -> None:
 
 
 def _test_result_serialization() -> None:
-    """
-    Test SaltBridgeResult dictionary serialization.
-    """
+    """Test SaltBridgeResult dictionary serialization."""
 
     serialized = (
         salt_bridge_result_to_dict(
@@ -34042,15 +26907,11 @@ def _test_result_serialization() -> None:
     )
 
 
-# =============================================================================
 # 18.4.12. STRICT JSON TESTS
-# =============================================================================
 
 
 def _test_result_json_serialization() -> None:
-    """
-    Test serialization of SaltBridgeResult to JSON text.
-    """
+    """Test serialization of SaltBridgeResult to JSON text."""
 
     json_document = (
         serialize_salt_bridge_result(
@@ -34074,9 +26935,7 @@ def _test_result_json_serialization() -> None:
 
 
 def _test_result_json_rejects_nonfinite_values() -> None:
-    """
-    Test conversion of non-finite values to JSON null.
-    """
+    """Test conversion of non-finite values to JSON null."""
 
     result = _make_test_result()
 
@@ -34132,9 +26991,7 @@ def _test_result_json_rejects_nonfinite_values() -> None:
 
 
 def _test_make_json_safe_nested_data() -> None:
-    """
-    Test recursive conversion of nested values.
-    """
+    """Test recursive conversion of nested values."""
 
     nested_value = {
         (
@@ -34165,9 +27022,7 @@ def _test_make_json_safe_nested_data() -> None:
 
 
 def _test_interactions_json_serialization() -> None:
-    """
-    Test JSON serialization of interaction collections.
-    """
+    """Test JSON serialization of interaction collections."""
 
     json_document = (
         serialize_salt_bridge_interactions(
@@ -34192,15 +27047,11 @@ def _test_interactions_json_serialization() -> None:
     )
 
 
-# =============================================================================
 # 18.4.13. TABLE-EXPORT TESTS
-# =============================================================================
 
 
 def _test_interaction_rows() -> None:
-    """
-    Test generation of flat interaction rows.
-    """
+    """Test generation of flat interaction rows."""
 
     rows = (
         salt_bridge_interactions_to_rows(
@@ -34226,9 +27077,7 @@ def _test_interaction_rows() -> None:
 
 
 def _test_group_rows() -> None:
-    """
-    Test generation of flat charged-group rows.
-    """
+    """Test generation of flat charged-group rows."""
 
     rows = salt_bridge_groups_to_rows(
         [
@@ -34257,9 +27106,7 @@ def _test_group_rows() -> None:
 
 
 def _test_statistics_rows() -> None:
-    """
-    Test flattening of nested statistics.
-    """
+    """Test flattening of nested statistics."""
 
     rows = (
         salt_bridge_statistics_to_rows(
@@ -34297,9 +27144,7 @@ def _test_statistics_rows() -> None:
 
 
 def _test_residue_summary_rows() -> None:
-    """
-    Test residue-level summary export.
-    """
+    """Test residue-level summary export."""
 
     rows = (
         build_residue_salt_bridge_summary_rows(
@@ -34318,9 +27163,7 @@ def _test_residue_summary_rows() -> None:
 
 
 def _test_pose_summary_rows() -> None:
-    """
-    Test pose-level summary export.
-    """
+    """Test pose-level summary export."""
 
     rows = (
         build_pose_salt_bridge_summary_rows(
@@ -34350,15 +27193,11 @@ def _test_pose_summary_rows() -> None:
     )
 
 
-# =============================================================================
 # 18.4.14. EXPORT-PAYLOAD TESTS
-# =============================================================================
 
 
 def _test_single_result_export_payload() -> None:
-    """
-    Test complete export payload for one result.
-    """
+    """Test complete export payload for one result."""
 
     payload = (
         build_salt_bridge_export_payload(
@@ -34387,9 +27226,7 @@ def _test_single_result_export_payload() -> None:
 
 
 def _test_prepare_export_dict() -> None:
-    """
-    Test generic dictionary export routing.
-    """
+    """Test generic dictionary export routing."""
 
     exported = prepare_salt_bridge_export(
         _make_test_result(),
@@ -34403,9 +27240,7 @@ def _test_prepare_export_dict() -> None:
 
 
 def _test_prepare_export_json() -> None:
-    """
-    Test generic JSON export routing.
-    """
+    """Test generic JSON export routing."""
 
     exported = prepare_salt_bridge_export(
         _make_test_result(),
@@ -34423,9 +27258,7 @@ def _test_prepare_export_json() -> None:
 
 
 def _test_prepare_export_rows() -> None:
-    """
-    Test generic table-row export routing.
-    """
+    """Test generic table-row export routing."""
 
     exported = prepare_salt_bridge_export(
         _make_test_result(),
@@ -34439,9 +27272,7 @@ def _test_prepare_export_rows() -> None:
 
 
 def _test_prepare_export_invalid_format() -> None:
-    """
-    Test rejection of unsupported export formats.
-    """
+    """Test rejection of unsupported export formats."""
 
     _assert_raises(
         SaltBridgeSerializationError,
@@ -34451,16 +27282,12 @@ def _test_prepare_export_invalid_format() -> None:
     )
 
 
-# =============================================================================
 # 18.4.15. MULTIPOSE SERIALIZATION TESTS
-# =============================================================================
 
 
 def _make_test_multipose_mapping(
 ) -> Dict[str, Any]:
-    """
-    Create a complete multipose mapping for serialization tests.
-    """
+    """Create a complete multipose mapping for serialization tests."""
 
     results = _make_persistent_pose_results()
 
@@ -34516,9 +27343,7 @@ def _make_test_multipose_mapping(
 
 
 def _test_multipose_dictionary_serialization() -> None:
-    """
-    Test dictionary serialization of multipose results.
-    """
+    """Test dictionary serialization of multipose results."""
 
     serialized = (
         salt_bridge_multipose_to_dict(
@@ -34544,9 +27369,7 @@ def _test_multipose_dictionary_serialization() -> None:
 
 
 def _test_multipose_json_serialization() -> None:
-    """
-    Test JSON serialization of multipose results.
-    """
+    """Test JSON serialization of multipose results."""
 
     json_document = (
         serialize_salt_bridge_multipose(
@@ -34570,9 +27393,7 @@ def _test_multipose_json_serialization() -> None:
 
 
 def _test_multipose_export_payload() -> None:
-    """
-    Test complete multipose export payload.
-    """
+    """Test complete multipose export payload."""
 
     payload = (
         build_multipose_salt_bridge_export_payload(
@@ -34597,16 +27418,12 @@ def _test_multipose_export_payload() -> None:
     )
 
 
-# =============================================================================
 # 18.4.16. CHIMERAX SPECIFICATION TESTS
-# =============================================================================
 
 
 def _make_chimerax_test_interaction(
 ) -> SaltBridgeInteraction:
-    """
-    Create an interaction containing ChimeraX-like model references.
-    """
+    """Create an interaction containing ChimeraX-like model references."""
 
     structure = _make_test_structure(
         model_id=1
@@ -34643,9 +27460,7 @@ def _make_chimerax_test_interaction(
 
 
 def _test_atom_chimerax_spec() -> None:
-    """
-    Test generation of a ChimeraX atom specification.
-    """
+    """Test generation of a ChimeraX atom specification."""
 
     residue = _make_mock_lysine(
         number=10,
@@ -34687,9 +27502,7 @@ def _test_atom_chimerax_spec() -> None:
 
 
 def _test_residue_chimerax_spec() -> None:
-    """
-    Test generation of a ChimeraX residue specification.
-    """
+    """Test generation of a ChimeraX residue specification."""
 
     residue = _make_mock_aspartate(
         number=40,
@@ -34712,9 +27525,7 @@ def _test_residue_chimerax_spec() -> None:
 
 
 def _test_interaction_chimerax_spec() -> None:
-    """
-    Test generation of an interaction selection specification.
-    """
+    """Test generation of an interaction selection specification."""
 
     interaction_spec = (
         salt_bridge_interaction_to_chimerax_spec(
@@ -34733,9 +27544,7 @@ def _test_interaction_chimerax_spec() -> None:
 
 
 def _test_result_selection_command() -> None:
-    """
-    Test ChimeraX selection command generation.
-    """
+    """Test ChimeraX selection command generation."""
 
     result = _make_test_result(
         interactions=[
@@ -34761,9 +27570,7 @@ def _test_result_selection_command() -> None:
 
 
 def _test_pseudobond_command_generation() -> None:
-    """
-    Test ChimeraX pseudobond command generation.
-    """
+    """Test ChimeraX pseudobond command generation."""
 
     command = (
         build_create_salt_bridge_pseudobond_command(
@@ -34793,9 +27600,7 @@ def _test_pseudobond_command_generation() -> None:
 
 
 def _test_visualization_command_generation() -> None:
-    """
-    Test complete ChimeraX visualization command generation.
-    """
+    """Test complete ChimeraX visualization command generation."""
 
     result = _make_test_result(
         interactions=[
@@ -34829,9 +27634,7 @@ def _test_visualization_command_generation() -> None:
 
 
 def _test_chimerax_record_serialization() -> None:
-    """
-    Test ChimeraX-oriented export records.
-    """
+    """Test ChimeraX-oriented export records."""
 
     record = (
         build_chimerax_salt_bridge_record(
@@ -34857,9 +27660,7 @@ def _test_chimerax_record_serialization() -> None:
 
 
 def _test_chimerax_generation_without_runtime() -> None:
-    """
-    Test that command construction does not require ChimeraX imports.
-    """
+    """Test that command construction does not require ChimeraX imports."""
 
     result = _make_test_result(
         interactions=[
@@ -34879,15 +27680,11 @@ def _test_chimerax_generation_without_runtime() -> None:
     )
 
 
-# =============================================================================
 # 18.4.17. SERIALIZATION ROUND-TRIP TESTS
-# =============================================================================
 
 
 def _test_result_json_round_trip_core_fields() -> None:
-    """
-    Test preservation of core fields through JSON serialization.
-    """
+    """Test preservation of core fields through JSON serialization."""
 
     result = _make_test_result(
         pose_id=5,
@@ -34925,9 +27722,7 @@ def _test_result_json_round_trip_core_fields() -> None:
 
 
 def _test_compact_and_full_serialization_counts_match() -> None:
-    """
-    Test consistency between compact and full result serialization.
-    """
+    """Test consistency between compact and full result serialization."""
 
     result = _make_test_result()
 
@@ -34966,9 +27761,7 @@ def _test_compact_and_full_serialization_counts_match() -> None:
 
 
 def _test_serialization_does_not_include_raw_atom_objects() -> None:
-    """
-    Test that serialized output does not retain raw mock atoms.
-    """
+    """Test that serialized output does not retain raw mock atoms."""
 
     serialized = (
         salt_bridge_result_to_dict(
@@ -35026,9 +27819,7 @@ def _test_serialization_does_not_include_raw_atom_objects() -> None:
     )
 
 
-# =============================================================================
 # 18.4.18. SECTION TEST REGISTRY
-# =============================================================================
 
 
 def get_salt_bridge_integration_serialization_tests(
@@ -35041,14 +27832,7 @@ def get_salt_bridge_integration_serialization_tests(
         ],
     ]
 ]:
-    """
-    Return all Section 18.4 self-tests.
-
-    Returns
-    -------
-    List[Tuple[str, Callable[[], Any]]]
-        Named integration and serialization tests.
-    """
+    """Return all Section 18.4 self-tests."""
 
     return [
         (
@@ -35302,9 +28086,7 @@ def get_salt_bridge_integration_serialization_tests(
     ]
 
 
-# =============================================================================
 # 18.4.19. SECTION RUNNER
-# =============================================================================
 
 
 def run_salt_bridge_integration_serialization_tests(
@@ -35315,23 +28097,7 @@ def run_salt_bridge_integration_serialization_tests(
     raise_on_failure: bool = False,
     print_report: bool = False,
 ) -> _SelfTestReport:
-    """
-    Run all Section 18.4 integration and serialization self-tests.
-
-    Parameters
-    ----------
-    report
-        Optional existing self-test report.
-    raise_on_failure
-        Whether the first failure should raise an exception.
-    print_report
-        Whether the updated report should be printed.
-
-    Returns
-    -------
-    _SelfTestReport
-        Updated self-test report.
-    """
+    """Run all Section 18.4 integration and serialization self-tests."""
 
     resolved_report = (
         _run_self_test_group(
@@ -35351,25 +28117,14 @@ def run_salt_bridge_integration_serialization_tests(
     return resolved_report
 
 
-# =============================================================================
 # 18.5. FINAL SELF-TEST RUNNER
-# =============================================================================
 
 
-# =============================================================================
 # 18.5.1. DATE AND ENVIRONMENT UTILITIES
-# =============================================================================
 
 
 def _self_test_timestamp() -> str:
-    """
-    Return the current UTC timestamp in ISO 8601 format.
-
-    Returns
-    -------
-    str
-        Current UTC timestamp.
-    """
+    """Return the current UTC timestamp in ISO 8601 format."""
 
     from datetime import (
         datetime,
@@ -35382,14 +28137,7 @@ def _self_test_timestamp() -> str:
 
 
 def _collect_self_test_environment() -> Dict[str, Any]:
-    """
-    Collect basic runtime information for the self-test report.
-
-    Returns
-    -------
-    Dict[str, Any]
-        JSON-safe runtime metadata.
-    """
+    """Collect basic runtime information for the self-test report."""
 
     import platform
     import sys
@@ -35418,9 +28166,7 @@ def _collect_self_test_environment() -> Dict[str, Any]:
     }
 
 
-# =============================================================================
 # 18.5.2. SECTION REGISTRY
-# =============================================================================
 
 
 def get_salt_bridge_self_test_sections(
@@ -35433,14 +28179,7 @@ def get_salt_bridge_self_test_sections(
         ],
     ]
 ]:
-    """
-    Return the ordered salt-bridge self-test sections.
-
-    Returns
-    -------
-    List[Tuple[str, Callable[..., _SelfTestReport]]]
-        Ordered section runner definitions.
-    """
+    """Return the ordered salt-bridge self-test sections."""
 
     return [
         (
@@ -35464,14 +28203,7 @@ def get_salt_bridge_self_test_sections(
 
 def get_salt_bridge_self_test_names(
 ) -> List[str]:
-    """
-    Return all registered salt-bridge self-test names.
-
-    Returns
-    -------
-    List[str]
-        Registered test names in execution order.
-    """
+    """Return all registered salt-bridge self-test names."""
 
     test_names = [
         "18.1.test_infrastructure_smoke_test"
@@ -35498,9 +28230,7 @@ def get_salt_bridge_self_test_names(
     return test_names
 
 
-# =============================================================================
 # 18.5.3. SECTION 18.1 RUNNER ADAPTER
-# =============================================================================
 
 
 def run_salt_bridge_test_infrastructure(
@@ -35511,26 +28241,7 @@ def run_salt_bridge_test_infrastructure(
     raise_on_failure: bool = False,
     print_report: bool = False,
 ) -> _SelfTestReport:
-    """
-    Run the Section 18.1 infrastructure self-test.
-
-    This adapter gives Section 18.1 the same interface used by the
-    remaining section runners.
-
-    Parameters
-    ----------
-    report
-        Optional existing self-test report.
-    raise_on_failure
-        Whether a failure should immediately raise an exception.
-    print_report
-        Whether the updated report should be printed.
-
-    Returns
-    -------
-    _SelfTestReport
-        Updated self-test report.
-    """
+    """Run the Section 18.1 infrastructure self-test."""
 
     resolved_report = (
         report
@@ -35558,20 +28269,11 @@ def run_salt_bridge_test_infrastructure(
     return resolved_report
 
 
-# =============================================================================
 # 18.5.4. REPORT VALIDATION
-# =============================================================================
 
 
 def _validate_self_test_registry() -> None:
-    """
-    Validate the final self-test registry.
-
-    Raises
-    ------
-    SaltBridgeSelfTestError
-        If duplicate or invalid test names are found.
-    """
+    """Validate the final self-test registry."""
 
     test_names = (
         get_salt_bridge_self_test_names()
@@ -35620,19 +28322,7 @@ def _validate_self_test_registry() -> None:
 def _validate_final_self_test_report(
     report: _SelfTestReport,
 ) -> None:
-    """
-    Validate invariants of a completed self-test report.
-
-    Parameters
-    ----------
-    report
-        Completed self-test report.
-
-    Raises
-    ------
-    SaltBridgeSelfTestError
-        If the report is internally inconsistent.
-    """
+    """Validate invariants of a completed self-test report."""
 
     _assert_is_instance(
         report,
@@ -35714,27 +28404,13 @@ def _validate_final_self_test_report(
             )
 
 
-# =============================================================================
 # 18.5.5. FINAL REPORT FORMATTING
-# =============================================================================
 
 
 def _format_self_test_section_summary(
     report: _SelfTestReport,
 ) -> List[str]:
-    """
-    Build section-level summary lines.
-
-    Parameters
-    ----------
-    report
-        Completed self-test report.
-
-    Returns
-    -------
-    List[str]
-        Formatted section summary lines.
-    """
+    """Build section-level summary lines."""
 
     section_prefixes = (
         (
@@ -35805,25 +28481,7 @@ def format_salt_bridge_self_test_report(
     include_records: bool = True,
     include_environment: bool = False,
 ) -> str:
-    """
-    Format the final salt-bridge self-test report.
-
-    Parameters
-    ----------
-    report
-        Completed self-test report.
-    include_section_summary
-        Whether section-level results should be included.
-    include_records
-        Whether individual test records should be included.
-    include_environment
-        Whether runtime metadata should be included.
-
-    Returns
-    -------
-    str
-        Formatted report.
-    """
+    """Format the final salt-bridge self-test report."""
 
     total_duration = sum(
         record.duration_seconds
@@ -35985,20 +28643,7 @@ def print_salt_bridge_self_test_report(
     include_records: bool = True,
     include_environment: bool = False,
 ) -> None:
-    """
-    Print the final salt-bridge self-test report.
-
-    Parameters
-    ----------
-    report
-        Completed self-test report.
-    include_section_summary
-        Whether section-level results should be shown.
-    include_records
-        Whether individual test records should be shown.
-    include_environment
-        Whether runtime metadata should be shown.
-    """
+    """Print the final salt-bridge self-test report."""
 
     print(
         format_salt_bridge_self_test_report(
@@ -36016,27 +28661,13 @@ def print_salt_bridge_self_test_report(
     )
 
 
-# =============================================================================
 # 18.5.6. REPORT SERIALIZATION
-# =============================================================================
 
 
 def salt_bridge_self_test_report_to_dict(
     report: _SelfTestReport,
 ) -> Dict[str, Any]:
-    """
-    Convert the final self-test report into a JSON-safe dictionary.
-
-    Parameters
-    ----------
-    report
-        Completed self-test report.
-
-    Returns
-    -------
-    Dict[str, Any]
-        JSON-safe report mapping.
-    """
+    """Convert the final self-test report into a JSON-safe dictionary."""
 
     report_dict = report.to_dict()
 
@@ -36075,23 +28706,7 @@ def serialize_salt_bridge_self_test_report(
     indent: Optional[int] = 2,
     sort_keys: bool = True,
 ) -> str:
-    """
-    Serialize the final self-test report as strict JSON.
-
-    Parameters
-    ----------
-    report
-        Completed self-test report.
-    indent
-        JSON indentation.
-    sort_keys
-        Whether dictionary keys should be sorted.
-
-    Returns
-    -------
-    str
-        JSON document.
-    """
+    """Serialize the final self-test report as strict JSON."""
 
     return json.dumps(
         salt_bridge_self_test_report_to_dict(
@@ -36103,9 +28718,7 @@ def serialize_salt_bridge_self_test_report(
     )
 
 
-# =============================================================================
 # 18.5.7. FINAL TEST EXECUTION
-# =============================================================================
 
 
 def run_self_tests(
@@ -36118,39 +28731,7 @@ def run_self_tests(
     validate_registry: bool = True,
     validate_report: bool = True,
 ) -> _SelfTestReport:
-    """
-    Run the complete saltbridge.py self-test suite.
-
-    The runner executes Sections 18.1 through 18.4 in order.
-
-    Parameters
-    ----------
-    raise_on_failure
-        Whether execution should stop at the first failed test.
-    print_report
-        Whether the final report should be printed.
-    include_section_summary
-        Whether the printed report should include section summaries.
-    include_records
-        Whether the printed report should include individual test records.
-    include_environment
-        Whether the printed report should include runtime information.
-    validate_registry
-        Whether the self-test registry should be validated before execution.
-    validate_report
-        Whether the final report should be validated after execution.
-
-    Returns
-    -------
-    _SelfTestReport
-        Completed self-test report.
-
-    Raises
-    ------
-    SaltBridgeSelfTestError
-        If registry validation fails, a test fails while
-        ``raise_on_failure`` is true, or final report validation fails.
-    """
+    """Run the complete saltbridge.py self-test suite."""
 
     if validate_registry:
         _validate_self_test_registry()
@@ -36278,46 +28859,20 @@ def run_self_tests(
 def run_salt_bridge_self_tests(
     **options: Any,
 ) -> _SelfTestReport:
-    """
-    Alias for :func:`run_self_tests`.
-
-    Parameters
-    ----------
-    **options
-        Options forwarded to ``run_self_tests``.
-
-    Returns
-    -------
-    _SelfTestReport
-        Completed self-test report.
-    """
+    """Alias for :func:`run_self_tests`."""
 
     return run_self_tests(
         **options
     )
 
 
-# =============================================================================
 # 18.5.8. COMMAND-LINE ENTRY POINT
-# =============================================================================
 
 
 def _self_test_exit_code(
     report: _SelfTestReport,
 ) -> int:
-    """
-    Return a process exit code for a self-test report.
-
-    Parameters
-    ----------
-    report
-        Completed self-test report.
-
-    Returns
-    -------
-    int
-        Zero for success and one for failure.
-    """
+    """Return a process exit code for a self-test report."""
 
     return (
         0
@@ -36327,14 +28882,7 @@ def _self_test_exit_code(
 
 
 def _run_self_tests_from_command_line() -> int:
-    """
-    Run self-tests from the command line.
-
-    Returns
-    -------
-    int
-        Process exit code.
-    """
+    """Run self-tests from the command line."""
 
     import argparse
 
@@ -36426,13 +28974,20 @@ def _run_self_tests_from_command_line() -> int:
     )
 
 
+# Public module API: local functions/classes, constants, and type aliases.
+__all__ = sorted({
+    name
+    for name, value in globals().items()
+    if not name.startswith("_")
+    and (
+        name.isupper()
+        or getattr(value, "__module__", None) == __name__
+        or name in {"Coordinate", "AtomLike", "ResidueLike", "StructureLike"}
+    )
+})
+
+
 if __name__ == "__main__":
     raise SystemExit(
         _run_self_tests_from_command_line()
     )
-
-
-
-
-
-
