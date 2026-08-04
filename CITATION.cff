@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: If you use DockAnalyzer in your research, please cite the software using the metadata
+  below. DockAnalyzer is not yet formally published, and a DOI is not currently available.
+title: 'DockAnalyzer: A modular Python toolkit for protein–ligand interaction analysis in
+  UCSF ChimeraX'
+type: software
+authors:
+- family-names: Bastos
+  given-names: Leonardo Marensi
+abstract: DockAnalyzer is a modular Python toolkit for identifying, classifying, scoring,
+  reporting, and visualizing protein–ligand interactions from molecular docking studies in
+  UCSF ChimeraX and compatible Python environments.
+repository-code: https://github.com/LeonardoMBastos/Binding-contacts-analysis-in-ChimeraX-
+url: https://github.com/LeonardoMBastos/Binding-contacts-analysis-in-ChimeraX-
+license: MIT
+keywords:
+- molecular docking
+- protein-ligand interactions
+- UCSF ChimeraX
+- computational chemistry
+- structural analysis
+- Python
