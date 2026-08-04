@@ -27,6 +27,12 @@
             color: #262121;
         }
 
+        /*
+        ============================================================
+        HEADER
+        ============================================================
+        */
+
         header {
             padding: 70px 20px 90px;
             text-align: center;
@@ -46,13 +52,6 @@
             font-size: 44px;
         }
 
-        /*
-        ============================================================
-        HEADER SUBTITLE
-        Use this same class on all internal pages.
-        ============================================================
-        */
-
         .header-subtitle {
             max-width: 750px;
             margin: 18px auto 0;
@@ -60,12 +59,6 @@
             font-size: 19px;
             line-height: 1.6;
         }
-
-        /*
-        ============================================================
-        AUTHOR LINE
-        ============================================================
-        */
 
         .header-author {
             margin: 14px auto 0;
@@ -75,8 +68,14 @@
             letter-spacing: 0.3px;
         }
 
+        /*
+        ============================================================
+        MAIN CONTENT
+        ============================================================
+        */
+
         main {
-            max-width: 1000px;
+            max-width: 1100px;
             margin: -50px auto 80px;
             padding: 0 20px;
         }
@@ -95,22 +94,30 @@
         }
 
         .intro {
+            max-width: 850px;
             color: #55494b;
             line-height: 1.7;
         }
 
+        /*
+        ============================================================
+        RESOURCE BOXES
+        Three columns on desktop, two on tablets, and one on mobile.
+        ============================================================
+        */
+
         .links {
             display: grid;
-            grid-template-columns:
-                repeat(auto-fit, minmax(220px, 1fr));
+            grid-template-columns: repeat(3, minmax(0, 1fr));
             gap: 18px;
             margin-top: 30px;
         }
 
         .button {
-            display: block;
-            min-height: 150px;
+            display: flex;
+            min-height: 165px;
             padding: 22px;
+            flex-direction: column;
             color: #85101c;
             text-decoration: none;
             background:
@@ -139,11 +146,17 @@
                 0 10px 22px rgba(126, 13, 25, 0.16);
         }
 
+        .button:focus-visible {
+            outline: 3px solid #d13a45;
+            outline-offset: 3px;
+        }
+
         .button-title {
             display: block;
             margin-bottom: 10px;
             font-size: 18px;
             font-weight: 700;
+            line-height: 1.3;
         }
 
         .button-description {
@@ -154,10 +167,28 @@
             line-height: 1.5;
         }
 
+        /*
+        ============================================================
+        FOOTER
+        ============================================================
+        */
+
         footer {
             padding: 30px;
             text-align: center;
             color: #6f6062;
+        }
+
+        /*
+        ============================================================
+        RESPONSIVE LAYOUT
+        ============================================================
+        */
+
+        @media (max-width: 900px) {
+            .links {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
         }
 
         @media (max-width: 600px) {
@@ -181,6 +212,10 @@
                 padding: 26px;
             }
 
+            .links {
+                grid-template-columns: 1fr;
+            }
+
             .button {
                 min-height: auto;
             }
@@ -189,6 +224,12 @@
 </head>
 
 <body>
+    <!--
+    ================================================================
+    PAGE HEADER
+    ================================================================
+    -->
+
     <header>
         <h1>DockAnalyzer</h1>
 
@@ -203,17 +244,26 @@
         </p>
     </header>
 
+    <!--
+    ================================================================
+    PROJECT RESOURCES
+    ================================================================
+    -->
+
     <main>
         <section class="card">
             <h2>Project Resources</h2>
 
             <p class="intro">
-                Explore the project description, access the pose-splitting
-                tool, download DockAnalyzer, or view the complete source
-                code on GitHub.
+                Explore the scientific background of the project, learn how
+                to use DockAnalyzer, download the software, access the
+                pose-splitting tool and source code, or consult citation
+                and licensing information.
             </p>
 
             <div class="links">
+                <!-- BOX 1: PROJECT DESCRIPTION -->
+
                 <a
                     class="button"
                     href="project-description.html"
@@ -223,24 +273,28 @@
                     </span>
 
                     <span class="button-description">
-                        Learn about the scientific background,
-                        objectives, scope, and structure of the project.
+                        Learn about the scientific background, objectives,
+                        and structure of the project.
                     </span>
                 </a>
+
+                <!-- BOX 2: USER GUIDE -->
 
                 <a
                     class="button"
-                    href="splitting-poses.html"
+                    href="dockanalyzer-user-guide.html"
                 >
                     <span class="button-title">
-                        Splitting Poses Code
+                        DockAnalyzer — User Guide
                     </span>
 
                     <span class="button-description">
-                        Access instructions and download the code used
-                        to separate docking outputs into individual poses.
+                        Follow step-by-step instructions to install,
+                        configure, and use DockAnalyzer.
                     </span>
                 </a>
+
+                <!-- BOX 3: DOWNLOAD -->
 
                 <a
                     class="button"
@@ -252,10 +306,28 @@
                     </span>
 
                     <span class="button-description">
-                        Download the complete DockAnalyzer package
-                        as a compressed ZIP file.
+                        Download the complete DockAnalyzer package as a
+                        compressed ZIP file.
                     </span>
                 </a>
+
+                <!-- BOX 4: SPLITTING POSES -->
+
+                <a
+                    class="button"
+                    href="splitting-poses.html"
+                >
+                    <span class="button-title">
+                        Splitting Poses Code
+                    </span>
+
+                    <span class="button-description">
+                        Access the tool for separating molecular docking
+                        outputs (.pdbqt files) into individual ligand poses.
+                    </span>
+                </a>
+
+                <!-- BOX 5: SOURCE CODE -->
 
                 <a
                     class="button"
@@ -270,6 +342,22 @@
                     <span class="button-description">
                         View the complete source code, project files,
                         version history, and updates on GitHub.
+                    </span>
+                </a>
+
+                <!-- BOX 6: CITATIONS AND LICENSE -->
+
+                <a
+                    class="button"
+                    href="citations-license.html"
+                >
+                    <span class="button-title">
+                        Citations and License
+                    </span>
+
+                    <span class="button-description">
+                        Find citation instructions, authorship information,
+                        licensing terms, and acknowledgments.
                     </span>
                 </a>
             </div>
