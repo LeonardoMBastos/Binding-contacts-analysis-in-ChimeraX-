@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+
+    <title>Citations and License | DockAnalyzer</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            margin: 0;
+            font-family:
+                -apple-system,
+                BlinkMacSystemFont,
+                "Segoe UI",
+                Arial,
+                sans-serif;
+            background: #f8f3f3;
+            color: #262121;
+        }
+
+        /*
+        ============================================================
+        TITLE SECTION STYLE
+        ============================================================
+        */
+
+        header {
+            padding: 70px 20px 90px;
+            text-align: center;
+            color: white;
+            background:
+                linear-gradient(
+                    120deg,
+                    #5c0710,
+                    #a11220,
+                    #d13a45
+                );
+        }
+
+        header h1 {
+            margin: 0;
+            color: #ffffff;
+            font-size: 44px;
+        }
+
+        .header-subtitle {
+            max-width: 750px;
+            margin: 18px auto 0;
+            color: #f7d7da;
+            font-size: 19px;
+            line-height: 1.6;
+        }
+
+        /*
+        ============================================================
+        BODY SECTION STYLE
+        ============================================================
+        */
+
+        main {
+            max-width: 1000px;
+            margin: -50px auto 80px;
+            padding: 0 20px;
+        }
+
+        .card {
+            padding: 40px;
+            background: white;
+            border-radius: 12px;
+            box-shadow:
+                0 12px 30px rgba(82, 7, 16, 0.12);
+        }
+
+        .content-section {
+            padding: 26px 0;
+            border-bottom: 1px solid #eed9dc;
+        }
+
+        .content-section:first-child {
+            padding-top: 0;
+        }
+
+        .content-section:last-child {
+            padding-bottom: 0;
+            border-bottom: none;
+        }
+
+        h2 {
+            margin-top: 0;
+            margin-bottom: 14px;
+            color: #8f101d;
+            font-size: 26px;
+        }
+
+        h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: #a11220;
+            font-size: 20px;
+        }
+
+        p {
+            color: #55494b;
+            line-height: 1.75;
+        }
+
+        strong {
+            color: #85101c;
+        }
+
+        code {
+            padding: 3px 7px;
+            color: #85101c;
+            font-family:
+                "SFMono-Regular",
+                Consolas,
+                "Liberation Mono",
+                monospace;
+            background: #f8e5e7;
+            border-radius: 5px;
+        }
+
+        /*
+        ============================================================
+        HIGHLIGHT BOXES
+        ============================================================
+        */
+
+        .highlight-box {
+            margin-top: 22px;
+            padding: 20px;
+            background:
+                linear-gradient(
+                    145deg,
+                    #fff8f8,
+                    #f8e5e7
+                );
+            border-left: 5px solid #a11220;
+            border-radius: 8px;
+        }
+
+        .highlight-box p:first-child {
+            margin-top: 0;
+        }
+
+        .highlight-box p:last-child {
+            margin-bottom: 0;
+        }
+
+        .citation-box {
+            margin-top: 20px;
+            padding: 22px;
+            background: #fff8f8;
+            border: 1px solid #ecc3c7;
+            border-radius: 10px;
+        }
+
+        .citation-text {
+            margin: 0;
+            color: #493d3f;
+            font-size: 15px;
+            line-height: 1.75;
+        }
+
+        /*
+        ============================================================
+        LICENSE FILE BUTTONS
+        Three buttons remain in one row on desktop.
+        ============================================================
+        */
+
+        .license-links {
+            display: grid;
+            grid-template-columns:
+                repeat(3, minmax(0, 1fr));
+            gap: 14px;
+            margin-top: 24px;
+        }
+
+        .license-button {
+            display: flex;
+            min-height: 92px;
+            padding: 16px 18px;
+            align-items: center;
+            justify-content: center;
+            color: #ffffff;
+            font-weight: 700;
+            line-height: 1.4;
+            text-align: center;
+            text-decoration: none;
+            background:
+                linear-gradient(
+                    120deg,
+                    #7b0b17,
+                    #b31b2a
+                );
+            border: 1px solid #8f101d;
+            border-radius: 8px;
+            transition:
+                transform 0.2s ease,
+                box-shadow 0.2s ease,
+                background 0.2s ease;
+        }
+
+        .license-button:hover {
+            transform: translateY(-3px);
+            background:
+                linear-gradient(
+                    120deg,
+                    #690914,
+                    #a11220
+                );
+            box-shadow:
+                0 9px 20px rgba(126, 13, 25, 0.22);
+        }
+
+        .license-button:focus-visible,
+        .navigation-button:focus-visible {
+            outline: 3px solid #d13a45;
+            outline-offset: 3px;
+        }
+
+        /*
+        ============================================================
+        PROJECT NAVIGATION
+        ============================================================
+        */
+
+        .navigation {
+            display: grid;
+            grid-template-columns:
+                repeat(3, minmax(0, 1fr));
+            gap: 14px;
+            margin-top: 26px;
+        }
+
+        .navigation-button {
+            display: flex;
+            min-height: 76px;
+            padding: 14px 18px;
+            align-items: center;
+            justify-content: center;
+            color: #85101c;
+            font-weight: 600;
+            line-height: 1.35;
+            text-align: center;
+            text-decoration: none;
+            background:
+                linear-gradient(
+                    145deg,
+                    #fff8f8,
+                    #f8e5e7
+                );
+            border: 1px solid #ecc3c7;
+            border-radius: 8px;
+            transition:
+                transform 0.2s ease,
+                box-shadow 0.2s ease,
+                background 0.2s ease;
+        }
+
+        .navigation-button:hover {
+            transform: translateY(-3px);
+            background:
+                linear-gradient(
+                    145deg,
+                    #fcebed,
+                    #f3ced2
+                );
+            box-shadow:
+                0 8px 18px rgba(126, 13, 25, 0.18);
+        }
+
+        .home-button {
+            color: #ffffff;
+            background:
+                linear-gradient(
+                    120deg,
+                    #7b0b17,
+                    #b31b2a
+                );
+            border-color: #8f101d;
+        }
+
+        .home-button:hover {
+            background:
+                linear-gradient(
+                    120deg,
+                    #690914,
+                    #a11220
+                );
+        }
+
+        footer {
+            padding: 30px;
+            text-align: center;
+            color: #6f6062;
+        }
+
+        /*
+        ============================================================
+        RESPONSIVE LAYOUT
+        ============================================================
+        */
+
+        @media (max-width: 850px) {
+            .license-links {
+                grid-template-columns:
+                    repeat(3, minmax(0, 1fr));
+            }
+
+            .navigation {
+                grid-template-columns:
+                    repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 650px) {
+            .license-links {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 600px) {
+            header {
+                padding: 55px 20px 75px;
+            }
+
+            header h1 {
+                font-size: 35px;
+            }
+
+            .header-subtitle {
+                font-size: 17px;
+            }
+
+            .card {
+                padding: 26px;
+            }
+
+            h2 {
+                font-size: 23px;
+            }
+
+            .navigation {
+                grid-template-columns: 1fr;
+            }
+
+            .license-button,
+            .navigation-button {
+                width: 100%;
+                text-align: center;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <!--
+    ================================================================
+    TITLE SECTION
+    ================================================================
+    -->
+
+    <header>
+        <h1>Citations and License</h1>
+
+        <p class="header-subtitle">
+            Citation information, licensing terms, and important
+            considerations for the use and interpretation of
+            DockAnalyzer results.
+        </p>
+    </header>
+
+    <!--
+    ================================================================
+    BODY SECTION
+    ================================================================
+    -->
+
+    <main>
+        <article class="card">
+            <!-- HOW TO CITE -->
+
+            <section class="content-section">
+                <h2>How to Cite</h2>
+
+                <div class="highlight-box">
+                    <p>
+                        <strong>Publication status:</strong>
+                        Unpublished software. A DOI is not yet available.
+                    </p>
+                </div>
+
+                <p>
+                    Until a formal publication and DOI are available,
+                    DockAnalyzer may be cited as:
+                </p>
+
+                <div class="citation-box">
+                    <p class="citation-text">
+                        <strong>
+                            Bastos, L. M. (2026). DockAnalyzer: A modular
+                            Python toolkit for protein–ligand interaction
+                            analysis in UCSF ChimeraX [Computer software].
+                            GitHub repository.
+                        </strong>
+                    </p>
+                </div>
+
+                <p>
+                    The recommended citation will be updated when the
+                    software is formally published and a DOI becomes
+                    available.
+                </p>
+            </section>
+
+            <!-- LICENSE -->
+
+            <section class="content-section">
+                <h2>License</h2>
+
+                <p>
+                    The DockAnalyzer source code is distributed under the
+                    <strong>MIT License</strong>.
+                </p>
+
+                <p>
+                    Unless otherwise stated, the original documentation,
+                    website content, tutorials, explanatory text, and
+                    original figures are licensed under the
+                    <strong>
+                        Creative Commons Attribution 4.0 International
+                        License (CC BY 4.0)
+                    </strong>.
+                </p>
+
+                <p>
+                    Third-party software, libraries, datasets, images,
+                    logos, and other materials remain subject to their
+                    original licenses and terms.
+                </p>
+
+                <div
+                    class="license-links"
+                    aria-label="License and citation files"
+                >
+                    <a
+                        class="license-button"
+                        href="https://github.com/LeonardoMBastos/Binding-contacts-analysis-in-ChimeraX-/blob/main/LICENSE"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
+                        View Software License
+                    </a>
+
+                    <a
+                        class="license-button"
+                        href="https://github.com/LeonardoMBastos/Binding-contacts-analysis-in-ChimeraX-/blob/main/LICENSE-DOCUMENTATION.md"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
+                        View Documentation License
+                    </a>
+
+                    <a
+                        class="license-button"
+                        href="https://github.com/LeonardoMBastos/Binding-contacts-analysis-in-ChimeraX-/blob/main/CITATION.cff"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
+                        View CITATION.cff
+                    </a>
+                </div>
+            </section>
+
+            <!-- RESEARCH USE NOTICE -->
+
+            <section class="content-section">
+                <h2>Research Use Notice</h2>
+
+                <div class="highlight-box">
+                    <p>
+                        DockAnalyzer is intended as a research and analysis
+                        support tool. Its results should be interpreted
+                        together with docking affinity, structural inspection,
+                        experimental evidence, and appropriate validation
+                        procedures.
+                    </p>
+
+                    <p>
+                        The software does not replace experimental validation
+                        or the independent assessment of molecular docking
+                        protocols.
+                    </p>
+                </div>
+            </section>
+
+            <!--
+            ============================================================
+            PROJECT NAVIGATION
+            The current Citations and License page is not repeated here.
+            ============================================================
+            -->
+
+            <section class="content-section">
+                <h2>Explore the Project</h2>
+
+                <p>
+                    Return to the main page or continue to another
+                    DockAnalyzer resource.
+                </p>
+
+                <nav
+                    class="navigation"
+                    aria-label="Project resources"
+                >
+                    <a
+                        class="navigation-button home-button"
+                        href="index.html"
+                    >
+                        Return to Home
+                    </a>
+
+                    <a
+                        class="navigation-button"
+                        href="project-description.html"
+                    >
+                        Project Description
+                    </a>
+
+                    <a
+                        class="navigation-button"
+                        href="dockanalyzer-user-guide.html"
+                    >
+                        DockAnalyzer — User Guide
+                    </a>
+
+                    <a
+                        class="navigation-button"
+                        href="downloads/DockAnalyzer.zip"
+                        download
+                    >
+                        DockAnalyzer — Download
+                    </a>
+
+                    <a
+                        class="navigation-button"
+                        href="splitting-poses.html"
+                    >
+                        Splitting Poses Code
+                    </a>
+
+                    <a
+                        class="navigation-button"
+                        href="https://github.com/LeonardoMBastos/Binding-contacts-analysis-in-ChimeraX-"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
+                        Source Code
+                    </a>
+                </nav>
+            </section>
+        </article>
+    </main>
+
+    <footer>
+        DockAnalyzer — Leonardo Marensi Bastos
+    </footer>
+</body>
+</html>
