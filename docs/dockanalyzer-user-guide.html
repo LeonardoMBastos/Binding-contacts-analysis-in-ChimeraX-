@@ -1,0 +1,751 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+
+    <title>DockAnalyzer — User Guide</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            margin: 0;
+            font-family:
+                -apple-system,
+                BlinkMacSystemFont,
+                "Segoe UI",
+                Arial,
+                sans-serif;
+            background: #f8f3f3;
+            color: #262121;
+        }
+
+        /*
+        ============================================================
+        TITLE SECTION
+        ============================================================
+        */
+
+        header {
+            padding: 70px 20px 90px;
+            text-align: center;
+            color: white;
+            background:
+                linear-gradient(
+                    120deg,
+                    #5c0710,
+                    #a11220,
+                    #d13a45
+                );
+        }
+
+        header h1 {
+            margin: 0;
+            color: #ffffff;
+            font-size: 44px;
+        }
+
+        .header-subtitle {
+            max-width: 750px;
+            margin: 18px auto 0;
+            color: #f7d7da;
+            font-size: 19px;
+            line-height: 1.6;
+        }
+
+        /*
+        ============================================================
+        BODY SECTION
+        ============================================================
+        */
+
+        main {
+            max-width: 1000px;
+            margin: -50px auto 80px;
+            padding: 0 20px;
+        }
+
+        .card {
+            padding: 40px;
+            background: white;
+            border-radius: 12px;
+            box-shadow:
+                0 12px 30px rgba(82, 7, 16, 0.12);
+        }
+
+        .content-section {
+            padding: 26px 0;
+            border-bottom: 1px solid #eed9dc;
+        }
+
+        .content-section:first-child {
+            padding-top: 0;
+        }
+
+        .content-section:last-child {
+            padding-bottom: 0;
+            border-bottom: none;
+        }
+
+        h2 {
+            margin-top: 0;
+            margin-bottom: 14px;
+            color: #8f101d;
+            font-size: 26px;
+        }
+
+        h3 {
+            margin-top: 0;
+            margin-bottom: 8px;
+            color: #a11220;
+            font-size: 19px;
+        }
+
+        p {
+            color: #55494b;
+            line-height: 1.75;
+        }
+
+        ul {
+            margin: 16px 0 0;
+            padding-left: 24px;
+            color: #55494b;
+            line-height: 1.75;
+        }
+
+        li {
+            margin-bottom: 9px;
+        }
+
+        strong {
+            color: #85101c;
+        }
+
+        code {
+            padding: 3px 7px;
+            color: #85101c;
+            font-family:
+                "SFMono-Regular",
+                Consolas,
+                "Liberation Mono",
+                monospace;
+            background: #f8e5e7;
+            border-radius: 5px;
+        }
+
+        /*
+        ============================================================
+        RUNNING STEPS
+        ============================================================
+        */
+
+        .steps {
+            margin-top: 22px;
+            border-top: 1px solid #eed9dc;
+        }
+
+        .step {
+            display: grid;
+            grid-template-columns:
+                44px
+                minmax(0, 1fr);
+            gap: 16px;
+            padding: 18px 0;
+            align-items: start;
+            border-bottom: 1px solid #eed9dc;
+        }
+
+        .step-number {
+            display: flex;
+            width: 36px;
+            height: 36px;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 700;
+            background: #a11220;
+            border-radius: 50%;
+        }
+
+        .step-content p {
+            margin: 0;
+            font-size: 15px;
+            line-height: 1.65;
+        }
+
+        /*
+        ============================================================
+        HIGHLIGHT BOX
+        ============================================================
+        */
+
+        .highlight-box {
+            margin-top: 22px;
+            padding: 20px;
+            background:
+                linear-gradient(
+                    145deg,
+                    #fff8f8,
+                    #f8e5e7
+                );
+            border-left: 5px solid #a11220;
+            border-radius: 8px;
+        }
+
+        .highlight-box p:first-child {
+            margin-top: 0;
+        }
+
+        .highlight-box p:last-child {
+            margin-bottom: 0;
+        }
+
+        .inline-link {
+            color: #8f101d;
+            font-weight: 700;
+        }
+
+        /*
+        ============================================================
+        RESULTS TABLE
+        ============================================================
+        */
+
+        .table-wrapper {
+            margin-top: 22px;
+            overflow-x: auto;
+            border: 1px solid #ecc3c7;
+            border-radius: 10px;
+        }
+
+        table {
+            width: 100%;
+            min-width: 720px;
+            border-collapse: collapse;
+        }
+
+        th,
+        td {
+            padding: 15px 16px;
+            text-align: left;
+            vertical-align: top;
+            border-bottom: 1px solid #eed9dc;
+        }
+
+        th {
+            color: #ffffff;
+            background: #8f101d;
+            font-size: 15px;
+        }
+
+        td {
+            color: #55494b;
+            font-size: 14px;
+            line-height: 1.55;
+        }
+
+        tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        tbody tr:nth-child(even) {
+            background: #fffafa;
+        }
+
+        .format {
+            white-space: nowrap;
+            color: #85101c;
+            font-family:
+                "SFMono-Regular",
+                Consolas,
+                "Liberation Mono",
+                monospace;
+            font-size: 13px;
+        }
+
+        /*
+        ============================================================
+        PROJECT NAVIGATION
+        ============================================================
+        */
+
+        .navigation {
+            display: grid;
+            grid-template-columns:
+                repeat(3, minmax(0, 1fr));
+            gap: 14px;
+            margin-top: 26px;
+        }
+
+        .navigation-button {
+            display: flex;
+            min-height: 76px;
+            padding: 14px 18px;
+            align-items: center;
+            justify-content: center;
+            color: #85101c;
+            font-weight: 600;
+            line-height: 1.35;
+            text-align: center;
+            text-decoration: none;
+            background:
+                linear-gradient(
+                    145deg,
+                    #fff8f8,
+                    #f8e5e7
+                );
+            border: 1px solid #ecc3c7;
+            border-radius: 8px;
+            transition:
+                transform 0.2s ease,
+                box-shadow 0.2s ease,
+                background 0.2s ease;
+        }
+
+        .navigation-button:hover {
+            transform: translateY(-3px);
+            background:
+                linear-gradient(
+                    145deg,
+                    #fcebed,
+                    #f3ced2
+                );
+            box-shadow:
+                0 8px 18px rgba(126, 13, 25, 0.18);
+        }
+
+        .navigation-button:focus-visible {
+            outline: 3px solid #d13a45;
+            outline-offset: 3px;
+        }
+
+        .home-button {
+            color: #ffffff;
+            background:
+                linear-gradient(
+                    120deg,
+                    #7b0b17,
+                    #b31b2a
+                );
+            border-color: #8f101d;
+        }
+
+        .home-button:hover {
+            background:
+                linear-gradient(
+                    120deg,
+                    #690914,
+                    #a11220
+                );
+        }
+
+        footer {
+            padding: 30px;
+            text-align: center;
+            color: #6f6062;
+        }
+
+        /*
+        ============================================================
+        RESPONSIVE LAYOUT
+        ============================================================
+        */
+
+        @media (max-width: 850px) {
+            .navigation {
+                grid-template-columns:
+                    repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 600px) {
+            header {
+                padding: 55px 20px 75px;
+            }
+
+            header h1 {
+                font-size: 35px;
+            }
+
+            .header-subtitle {
+                font-size: 17px;
+            }
+
+            .card {
+                padding: 26px;
+            }
+
+            h2 {
+                font-size: 23px;
+            }
+
+            .navigation {
+                grid-template-columns: 1fr;
+            }
+
+            .navigation-button {
+                width: 100%;
+                text-align: center;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <!--
+    ================================================================
+    TITLE SECTION
+    ================================================================
+    -->
+
+    <header>
+        <h1>DockAnalyzer — User Guide</h1>
+
+        <p class="header-subtitle">
+            Follow the essential steps to run DockAnalyzer in UCSF
+            ChimeraX and understand the files generated by the analysis.
+        </p>
+    </header>
+
+    <!--
+    ================================================================
+    BODY SECTION
+    ================================================================
+    -->
+
+    <main>
+        <article class="card">
+            <!-- RUNNING DOCKANALYZER -->
+
+            <section class="content-section">
+                <h2>Running DockAnalyzer</h2>
+
+                <p>
+                    Complete the following steps to prepare and run a
+                    DockAnalyzer analysis:
+                </p>
+
+                <div class="steps">
+                    <div class="step">
+                        <span class="step-number">1</span>
+
+                        <div class="step-content">
+                            <h3>Download and Extract</h3>
+
+                            <p>
+                                Download the DockAnalyzer package and extract
+                                the ZIP archive while preserving its original
+                                directory structure.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <span class="step-number">2</span>
+
+                        <div class="step-content">
+                            <h3>Open UCSF ChimeraX</h3>
+
+                            <p>
+                                Start UCSF ChimeraX before loading the
+                                structures or running the analysis script.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <span class="step-number">3</span>
+
+                        <div class="step-content">
+                            <h3>Open the Receptor</h3>
+
+                            <p>
+                                Open the prepared receptor structure in the
+                                ChimeraX session.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <span class="step-number">4</span>
+
+                        <div class="step-content">
+                            <h3>Open All Ligand Poses</h3>
+
+                            <p>
+                                Open every individual ligand pose in the same
+                                ChimeraX session as the receptor.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <span class="step-number">5</span>
+
+                        <div class="step-content">
+                            <h3>Check the Loaded Models</h3>
+
+                            <p>
+                                Confirm that the receptor and all ligand poses
+                                are correctly displayed and available as
+                                separate models.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <span class="step-number">6</span>
+
+                        <div class="step-content">
+                            <h3>Run analyze.py</h3>
+
+                            <p>
+                                Run <code>analyze.py</code> directly from the
+                                extracted DockAnalyzer directory using the
+                                ChimeraX Python environment.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <span class="step-number">7</span>
+
+                        <div class="step-content">
+                            <h3>Confirm the Output Directory</h3>
+
+                            <p>
+                                Select or confirm the directory where the
+                                analysis results will be written, if requested
+                                by the final DockAnalyzer interface.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="highlight-box">
+                    <p>
+                        <strong>Important:</strong>
+                        the receptor and all ligand poses must be opened in
+                        the same ChimeraX session. Each ligand pose should be
+                        provided as an individual structure file.
+                    </p>
+
+                    <p>
+                        When a docking output contains multiple poses in a
+                        single <code>.pdbqt</code> file, use the
+                        <a
+                            class="inline-link"
+                            href="splitting-poses.html"
+                        >
+                            Splitting Poses Code
+                        </a>
+                        before running DockAnalyzer.
+                    </p>
+                </div>
+            </section>
+
+            <!-- GENERATED RESULTS -->
+
+            <section class="content-section">
+                <h2>Generated Results</h2>
+
+                <p>
+                    Depending on the selected analysis and export settings,
+                    DockAnalyzer may generate the following result types:
+                </p>
+
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Result</th>
+                                <th>Content</th>
+                                <th>Format</th>
+                            </tr>
+                        </thead>
+
+                        <tbody>
+                            <tr>
+                                <td>Interaction tables</td>
+                                <td>
+                                    Detected contacts and interaction
+                                    classifications.
+                                </td>
+                                <td class="format">
+                                    .csv, .tsv, .xlsx
+                                </td>
+                            </tr>
+
+                            <tr>
+                                <td>Analysis report</td>
+                                <td>
+                                    Pose summaries, residues, hotspots,
+                                    scores, and interpretation.
+                                </td>
+                                <td class="format">
+                                    .html, .md, .txt
+                                </td>
+                            </tr>
+
+                            <tr>
+                                <td>Structured results</td>
+                                <td>
+                                    Complete machine-readable analysis data.
+                                </td>
+                                <td class="format">
+                                    .json
+                                </td>
+                            </tr>
+
+                            <tr>
+                                <td>Pose ranking</td>
+                                <td>
+                                    Comparative scores and ranking of the
+                                    analyzed poses.
+                                </td>
+                                <td>
+                                    Included in reports and tables
+                                </td>
+                            </tr>
+
+                            <tr>
+                                <td>Residue summary</td>
+                                <td>
+                                    Interactions and scores grouped by protein
+                                    residue.
+                                </td>
+                                <td class="format">
+                                    .csv, .xlsx, report
+                                </td>
+                            </tr>
+
+                            <tr>
+                                <td>Interaction statistics</td>
+                                <td>
+                                    Counts, distributions, strengths, and
+                                    geometric measurements.
+                                </td>
+                                <td class="format">
+                                    .csv, .json, report
+                                </td>
+                            </tr>
+
+                            <tr>
+                                <td>Visual outputs</td>
+                                <td>
+                                    Interaction representations and molecular
+                                    snapshots.
+                                </td>
+                                <td class="format">
+                                    .png
+                                </td>
+                            </tr>
+
+                            <tr>
+                                <td>Analysis metadata</td>
+                                <td>
+                                    Input files, settings, software versions,
+                                    and execution information.
+                                </td>
+                                <td class="format">
+                                    .json, .txt
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="highlight-box">
+                    <p>
+                        <strong>Output note:</strong>
+                        the final set of generated files and supported formats
+                        should be confirmed after validation of the completed
+                        <code>analyze.py</code> workflow.
+                    </p>
+                </div>
+            </section>
+
+       
+            <!--
+            ============================================================
+            PROJECT NAVIGATION
+            The current DockAnalyzer User Guide page is not repeated here.
+            ============================================================
+            -->
+
+            <section class="content-section">
+                <h2>Explore the Project</h2>
+
+                <p>
+                    Return to the main page or continue to another
+                    DockAnalyzer resource.
+                </p>
+
+                <nav
+                    class="navigation"
+                    aria-label="Project resources"
+                >
+                    <a
+                        class="navigation-button home-button"
+                        href="index.html"
+                    >
+                        Return to Home
+                    </a>
+
+                    <a
+                        class="navigation-button"
+                        href="project-description.html"
+                    >
+                        Project Description
+                    </a>
+
+                    <a
+                        class="navigation-button"
+                        href="dockanalyzer-download.html"
+                    >
+                        DockAnalyzer — Download
+                    </a>
+
+                    <a
+                        class="navigation-button"
+                        href="splitting-poses.html"
+                    >
+                        Splitting Poses Code
+                    </a>
+
+                    <a
+                        class="navigation-button"
+                        href="https://github.com/LeonardoMBastos/Binding-contacts-analysis-in-ChimeraX-"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
+                        Source Code
+                    </a>
+
+                    <a
+                        class="navigation-button"
+                        href="citations-license.html"
+                    >
+                        Citations and License
+                    </a>
+                </nav>
+            </section>
+        </article>
+    </main>
+
+    <footer>
+        DockAnalyzer — Leonardo Marensi Bastos
+    </footer>
+</body>
+</html>
