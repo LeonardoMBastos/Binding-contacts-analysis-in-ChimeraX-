@@ -1,0 +1,593 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+
+    <title>Project Description | DockAnalyzer</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            margin: 0;
+            font-family:
+                -apple-system,
+                BlinkMacSystemFont,
+                "Segoe UI",
+                Arial,
+                sans-serif;
+            background: #f8f3f3;
+            color: #262121;
+        }
+
+        /*
+        ============================================================
+        TITLE SECTION STYLE
+        Controls the red gradient header displayed at the top.
+        ============================================================
+        */
+
+        header {
+            padding: 70px 20px 90px;
+            text-align: center;
+            color: white;
+            background:
+                linear-gradient(
+                    120deg,
+                    #5c0710,
+                    #a11220,
+                    #d13a45
+                );
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 44px;
+        }
+
+        header p {
+            max-width: 750px;
+            margin: 18px auto 0;
+            font-size: 19px;
+            line-height: 1.6;
+        }
+
+        /*
+        ============================================================
+        BODY SECTION STYLE
+        Controls the main content and information cards.
+        ============================================================
+        */
+
+        main {
+            max-width: 1000px;
+            margin: -50px auto 80px;
+            padding: 0 20px;
+        }
+
+        .card {
+            padding: 40px;
+            background: white;
+            border-radius: 12px;
+            box-shadow:
+                0 12px 30px rgba(82, 7, 16, 0.12);
+        }
+
+        .content-section {
+            padding: 24px 0;
+            border-bottom: 1px solid #eed9dc;
+        }
+
+        .content-section:first-child {
+            padding-top: 0;
+        }
+
+        .content-section:last-child {
+            padding-bottom: 0;
+            border-bottom: none;
+        }
+
+        h2 {
+            margin-top: 0;
+            margin-bottom: 14px;
+            color: #8f101d;
+            font-size: 26px;
+        }
+
+        h3 {
+            margin-top: 24px;
+            margin-bottom: 10px;
+            color: #a11220;
+            font-size: 20px;
+        }
+
+        p {
+            color: #55494b;
+            line-height: 1.75;
+        }
+
+        ul {
+            margin: 16px 0 0;
+            padding-left: 24px;
+            color: #55494b;
+            line-height: 1.75;
+        }
+
+        li {
+            margin-bottom: 8px;
+        }
+
+        .highlight-box {
+            margin-top: 22px;
+            padding: 20px;
+            background:
+                linear-gradient(
+                    145deg,
+                    #fff8f8,
+                    #f8e5e7
+                );
+            border-left: 5px solid #a11220;
+            border-radius: 8px;
+        }
+
+        .highlight-box strong {
+            color: #85101c;
+        }
+
+        .workflow {
+            display: grid;
+            grid-template-columns:
+                repeat(auto-fit, minmax(180px, 1fr));
+            gap: 14px;
+            margin-top: 22px;
+        }
+
+        .workflow-step {
+            padding: 18px;
+            text-align: center;
+            background: #fff8f8;
+            border: 1px solid #ecc3c7;
+            border-radius: 8px;
+        }
+
+        .workflow-number {
+            display: block;
+            width: 34px;
+            height: 34px;
+            margin: 0 auto 12px;
+            color: white;
+            font-weight: 700;
+            line-height: 34px;
+            background: #a11220;
+            border-radius: 50%;
+        }
+
+        .workflow-title {
+            display: block;
+            margin-bottom: 8px;
+            color: #85101c;
+            font-weight: 700;
+        }
+
+        .workflow-description {
+            color: #665255;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .navigation {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+            margin-top: 34px;
+        }
+
+        .navigation-button {
+            display: inline-block;
+            padding: 13px 22px;
+            color: white;
+            font-weight: 600;
+            text-decoration: none;
+            background:
+                linear-gradient(
+                    120deg,
+                    #7b0b17,
+                    #b31b2a
+                );
+            border-radius: 8px;
+            transition:
+                transform 0.2s ease,
+                box-shadow 0.2s ease;
+        }
+
+        .navigation-button:hover {
+            transform: translateY(-2px);
+            box-shadow:
+                0 8px 18px rgba(126, 13, 25, 0.2);
+        }
+
+        .secondary-button {
+            color: #85101c;
+            background: #f8e5e7;
+            border: 1px solid #ecc3c7;
+        }
+
+        footer {
+            padding: 30px;
+            text-align: center;
+            color: #6f6062;
+        }
+
+        @media (max-width: 600px) {
+            header {
+                padding: 55px 20px 75px;
+            }
+
+            header h1 {
+                font-size: 36px;
+            }
+
+            header p {
+                font-size: 17px;
+            }
+
+            .card {
+                padding: 26px;
+            }
+
+            h2 {
+                font-size: 23px;
+            }
+
+            .navigation {
+                flex-direction: column;
+            }
+
+            .navigation-button {
+                width: 100%;
+                text-align: center;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <!--
+    ================================================================
+    TITLE SECTION
+    Edit the page title and introductory subtitle in this section.
+    ================================================================
+    -->
+
+    <header>
+        <h1>Project Description</h1>
+
+        <p>
+            Scientific background, objectives, scope, and computational
+            structure of the DockAnalyzer project.
+        </p>
+    </header>
+
+    <!--
+    ================================================================
+    BODY SECTION
+    Edit the main project description and subsections below.
+    ================================================================
+    -->
+
+    <main>
+        <article class="card">
+
+            <!-- PROJECT OVERVIEW -->
+
+            <section class="content-section">
+                <h2>Project Overview</h2>
+
+                <p>
+                    DockAnalyzer is a modular Python toolkit developed to
+                    support the identification, classification, scoring,
+                    reporting, and visualization of protein–ligand
+                    interactions obtained from molecular docking studies.
+                </p>
+
+                <p>
+                    The project combines docking-pose preparation with an
+                    integrated interaction-analysis workflow designed for
+                    use with UCSF ChimeraX and compatible Python
+                    environments.
+                </p>
+
+                <div class="highlight-box">
+                    <strong>Main purpose:</strong>
+
+                    provide a reproducible workflow for transforming
+                    molecular docking outputs into structured and
+                    interpretable interaction data.
+                </div>
+            </section>
+
+            <!-- SCIENTIFIC MOTIVATION -->
+
+            <section class="content-section">
+                <h2>Abstract</h2>
+
+                <p>
+                    Molecular docking commonly generates multiple ligand
+                    poses and predicted binding affinities. However,
+                    docking scores alone may not fully describe the
+                    molecular interactions responsible for ligand
+                    recognition and stabilization within a binding site.
+                </p>
+
+                <p>
+                    DockAnalyzer was designed to complement docking results
+                    by evaluating the geometric, chemical, and structural
+                    characteristics of protein–ligand contacts.
+                </p>
+            </section>
+
+            <!-- MAIN OBJECTIVES -->
+
+            <section class="content-section">
+                <h2>Main Objectives</h2>
+
+                <ul>
+                    <li>
+                        Separate molecular docking outputs into individual
+                        ligand poses.
+                    </li>
+
+                    <li>
+                        Identify protein–ligand contacts and interaction
+                        families.
+                    </li>
+
+                    <li>
+                        Classify interactions using geometric and chemical
+                        criteria.
+                    </li>
+
+                    <li>
+                        Calculate interaction, residue, and pose-level
+                        scores.
+                    </li>
+
+                    <li>
+                        Compare and rank multiple docking poses.
+                    </li>
+
+                    <li>
+                        Generate structured tables, reports, statistics,
+                        and visual representations.
+                    </li>
+
+                    <li>
+                        Support reproducible analyses inside and outside
+                        UCSF ChimeraX.
+                    </li>
+                </ul>
+            </section>
+
+            <!-- PROJECT COMPONENTS -->
+
+            <section class="content-section">
+                <h2>Project Components</h2>
+
+                <h3>Splitting Poses Code</h3>
+
+                <p>
+                    The pose-splitting tool separates molecular docking
+                    output files into individual structures, allowing each
+                    predicted ligand pose to be inspected and analyzed
+                    independently.
+                </p>
+
+                <h3>DockAnalyzer</h3>
+
+                <p>
+                    DockAnalyzer processes receptor and ligand structures,
+                    detects molecular interactions, applies classification
+                    and scoring rules, compares poses, and generates
+                    analysis outputs.
+                </p>
+            </section>
+
+            <!-- SUPPORTED ANALYSES -->
+
+            <section class="content-section">
+                <h2>Supported Analyses</h2>
+
+                <p>
+                    The modular architecture is intended to support several
+                    protein–ligand interaction families, including:
+                </p>
+
+                <ul>
+                    <li>General atomic contacts</li>
+                    <li>Hydrogen bonds</li>
+                    <li>Hydrophobic interactions</li>
+                    <li>π–π interactions</li>
+                    <li>Cation–π interactions</li>
+                    <li>Anion–π interactions</li>
+                    <li>Amide–π interactions</li>
+                    <li>Salt bridges</li>
+                </ul>
+            </section>
+
+            <!-- ANALYSIS WORKFLOW -->
+
+            <section class="content-section">
+                <h2>Analysis Workflow</h2>
+
+                <div class="workflow">
+                    <div class="workflow-step">
+                        <span class="workflow-number">1</span>
+
+                        <span class="workflow-title">
+                            Prepare Structures
+                        </span>
+
+                        <span class="workflow-description">
+                            Prepare receptor, ligand, and molecular docking
+                            output files.
+                        </span>
+                    </div>
+
+                    <div class="workflow-step">
+                        <span class="workflow-number">2</span>
+
+                        <span class="workflow-title">
+                            Split Poses
+                        </span>
+
+                        <span class="workflow-description">
+                            Separate the docking output into individual
+                            ligand poses.
+                        </span>
+                    </div>
+
+                    <div class="workflow-step">
+                        <span class="workflow-number">3</span>
+
+                        <span class="workflow-title">
+                            Analyze Interactions
+                        </span>
+
+                        <span class="workflow-description">
+                            Detect and classify protein–ligand molecular
+                            contacts.
+                        </span>
+                    </div>
+
+                    <div class="workflow-step">
+                        <span class="workflow-number">4</span>
+
+                        <span class="workflow-title">
+                            Score Poses
+                        </span>
+
+                        <span class="workflow-description">
+                            Calculate interaction, residue, and pose-level
+                            scores.
+                        </span>
+                    </div>
+
+                    <div class="workflow-step">
+                        <span class="workflow-number">5</span>
+
+                        <span class="workflow-title">
+                            Generate Results
+                        </span>
+
+                        <span class="workflow-description">
+                            Export reports, tables, statistics, and
+                            visualization resources.
+                        </span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- SOFTWARE ARCHITECTURE -->
+
+            <section class="content-section">
+                <h2>Software Architecture</h2>
+
+                <p>
+                    DockAnalyzer is organized as a collection of specialized
+                    Python modules. Each module is responsible for a
+                    specific stage of the analysis, such as geometry,
+                    contact detection, interaction classification, scoring,
+                    reporting, export, and visualization.
+                </p>
+
+                <p>
+                    This modular structure allows individual components to
+                    be tested, updated, and reused while preserving an
+                    integrated analysis workflow.
+                </p>
+            </section>
+
+            <!-- PROJECT SCOPE -->
+
+            <section class="content-section">
+                <h2>Project Scope</h2>
+
+                <p>
+                    DockAnalyzer is intended as a research and analysis
+                    support tool. Its results should be interpreted together
+                    with docking affinity, structural inspection,
+                    experimental evidence, and appropriate validation
+                    procedures.
+                </p>
+
+                <p>
+                    The software does not replace experimental validation or
+                    independent assessment of molecular docking protocols.
+                </p>
+            </section>
+
+            <!-- NAVIGATION BUTTONS -->
+
+            <section class="content-section">
+                <h2>Explore the Project</h2>
+
+                <p>
+                    Return to the main page or continue to the project tools
+                    and source-code repository.
+                </p>
+
+                <div class="navigation">
+                    <a
+                        class="navigation-button"
+                        href="index.html"
+                    >
+                        Return to Home
+                    </a>
+
+                    <a
+                        class="navigation-button secondary-button"
+                        href="splitting-poses.html"
+                    >
+                        Splitting Poses Code
+                    </a>
+
+                    <a
+                        class="navigation-button secondary-button"
+                        href="downloads/DockAnalyzer.zip"
+                        download
+                    >
+                        Download DockAnalyzer
+                    </a>
+
+                    <a
+                        class="navigation-button secondary-button"
+                        href="https://github.com/LeonardoMBastos/Binding-contacts-analysis-in-ChimeraX-"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
+                        View Source Code
+                    </a>
+                </div>
+            </section>
+
+        </article>
+    </main>
+
+    <footer>
+        DockAnalyzer — Leonardo Marensi Bastos
+    </footer>
+
+</body>
+</html>
