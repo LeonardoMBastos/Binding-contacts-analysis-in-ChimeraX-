@@ -1,0 +1,724 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+
+    <title>DockAnalyzer — Download</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            margin: 0;
+            font-family:
+                -apple-system,
+                BlinkMacSystemFont,
+                "Segoe UI",
+                Arial,
+                sans-serif;
+            background: #f8f3f3;
+            color: #262121;
+        }
+
+        /*
+        ============================================================
+        TITLE SECTION
+        ============================================================
+        */
+
+        header {
+            padding: 70px 20px 90px;
+            text-align: center;
+            color: white;
+            background:
+                linear-gradient(
+                    120deg,
+                    #5c0710,
+                    #a11220,
+                    #d13a45
+                );
+        }
+
+        header h1 {
+            margin: 0;
+            color: #ffffff;
+            font-size: 44px;
+        }
+
+        .header-subtitle {
+            max-width: 750px;
+            margin: 18px auto 0;
+            color: #f7d7da;
+            font-size: 19px;
+            line-height: 1.6;
+        }
+
+        /*
+        ============================================================
+        BODY SECTION
+        ============================================================
+        */
+
+        main {
+            max-width: 1000px;
+            margin: -50px auto 80px;
+            padding: 0 20px;
+        }
+
+        .card {
+            padding: 40px;
+            background: white;
+            border-radius: 12px;
+            box-shadow:
+                0 12px 30px rgba(82, 7, 16, 0.12);
+        }
+
+        .content-section {
+            padding: 26px 0;
+            border-bottom: 1px solid #eed9dc;
+        }
+
+        .content-section:first-child {
+            padding-top: 0;
+        }
+
+        .content-section:last-child {
+            padding-bottom: 0;
+            border-bottom: none;
+        }
+
+        h2 {
+            margin-top: 0;
+            margin-bottom: 14px;
+            color: #8f101d;
+            font-size: 26px;
+        }
+
+        h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: #a11220;
+            font-size: 20px;
+        }
+
+        p {
+            color: #55494b;
+            line-height: 1.75;
+        }
+
+        strong {
+            color: #85101c;
+        }
+
+        code {
+            padding: 3px 7px;
+            color: #85101c;
+            font-family:
+                "SFMono-Regular",
+                Consolas,
+                "Liberation Mono",
+                monospace;
+            background: #f8e5e7;
+            border-radius: 5px;
+        }
+
+        /*
+        ============================================================
+        HIGHLIGHT AND DOWNLOAD BOXES
+        ============================================================
+        */
+
+        .highlight-box {
+            margin-top: 22px;
+            padding: 20px;
+            background:
+                linear-gradient(
+                    145deg,
+                    #fff8f8,
+                    #f8e5e7
+                );
+            border-left: 5px solid #a11220;
+            border-radius: 8px;
+        }
+
+        .highlight-box p:first-child {
+            margin-top: 0;
+        }
+
+        .highlight-box p:last-child {
+            margin-bottom: 0;
+        }
+
+        .download-box {
+            margin-top: 22px;
+            padding: 30px;
+            text-align: center;
+            background:
+                linear-gradient(
+                    145deg,
+                    #fff8f8,
+                    #f4d9dc
+                );
+            border: 1px solid #e6b8bd;
+            border-radius: 12px;
+        }
+
+        .download-box p {
+            max-width: 650px;
+            margin-right: auto;
+            margin-left: auto;
+        }
+
+        .download-button {
+            display: inline-block;
+            margin-top: 12px;
+            padding: 15px 28px;
+            color: white;
+            font-weight: 700;
+            text-decoration: none;
+            background:
+                linear-gradient(
+                    120deg,
+                    #7b0b17,
+                    #b31b2a
+                );
+            border-radius: 8px;
+            transition:
+                transform 0.2s ease,
+                box-shadow 0.2s ease,
+                background 0.2s ease;
+        }
+
+        .download-button:hover {
+            transform: translateY(-3px);
+            background:
+                linear-gradient(
+                    120deg,
+                    #690914,
+                    #a11220
+                );
+            box-shadow:
+                0 9px 20px rgba(126, 13, 25, 0.24);
+        }
+
+        .download-note {
+            margin-top: 15px;
+            color: #766164;
+            font-size: 13px;
+        }
+
+        /*
+        ============================================================
+        MINIMUM REQUIREMENTS
+        Clean rows without colored background blocks.
+        ============================================================
+        */
+
+        .requirements {
+            margin-top: 22px;
+            border-top: 1px solid #eed9dc;
+        }
+
+        .requirement-item {
+            display: grid;
+            grid-template-columns:
+                minmax(160px, 0.35fr)
+                minmax(0, 1fr);
+            gap: 24px;
+            padding: 18px 0;
+            align-items: start;
+            border-bottom: 1px solid #eed9dc;
+        }
+
+        .requirement-item h3 {
+            margin: 0;
+        }
+
+        .requirement-item p {
+            margin: 0;
+            font-size: 15px;
+            line-height: 1.65;
+        }
+
+        /*
+        ============================================================
+        INSTALLATION WORKFLOW
+        ============================================================
+        */
+
+        .workflow {
+            display: grid;
+            grid-template-columns:
+                repeat(3, minmax(0, 1fr));
+            gap: 12px;
+            margin-top: 22px;
+        }
+
+        .workflow-step {
+            min-width: 0;
+            padding: 18px 14px;
+            text-align: center;
+            background: #fff8f8;
+            border: 1px solid #ecc3c7;
+            border-radius: 8px;
+        }
+
+        .workflow-number {
+            display: block;
+            width: 34px;
+            height: 34px;
+            margin: 0 auto 12px;
+            color: white;
+            font-weight: 700;
+            line-height: 34px;
+            background: #a11220;
+            border-radius: 50%;
+        }
+
+        .workflow-title {
+            display: block;
+            margin-bottom: 8px;
+            color: #85101c;
+            font-weight: 700;
+        }
+
+        .workflow-description {
+            color: #665255;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        /*
+        ============================================================
+        PROJECT NAVIGATION
+        ============================================================
+        */
+
+        .navigation {
+            display: grid;
+            grid-template-columns:
+                repeat(3, minmax(0, 1fr));
+            gap: 14px;
+            margin-top: 26px;
+        }
+
+        .navigation-button {
+            display: flex;
+            min-height: 76px;
+            padding: 14px 18px;
+            align-items: center;
+            justify-content: center;
+            color: #85101c;
+            font-weight: 600;
+            line-height: 1.35;
+            text-align: center;
+            text-decoration: none;
+            background:
+                linear-gradient(
+                    145deg,
+                    #fff8f8,
+                    #f8e5e7
+                );
+            border: 1px solid #ecc3c7;
+            border-radius: 8px;
+            transition:
+                transform 0.2s ease,
+                box-shadow 0.2s ease,
+                background 0.2s ease;
+        }
+
+        .navigation-button:hover {
+            transform: translateY(-3px);
+            background:
+                linear-gradient(
+                    145deg,
+                    #fcebed,
+                    #f3ced2
+                );
+            box-shadow:
+                0 8px 18px rgba(126, 13, 25, 0.18);
+        }
+
+        .download-button:focus-visible,
+        .navigation-button:focus-visible {
+            outline: 3px solid #d13a45;
+            outline-offset: 3px;
+        }
+
+        .home-button {
+            color: #ffffff;
+            background:
+                linear-gradient(
+                    120deg,
+                    #7b0b17,
+                    #b31b2a
+                );
+            border-color: #8f101d;
+        }
+
+        .home-button:hover {
+            background:
+                linear-gradient(
+                    120deg,
+                    #690914,
+                    #a11220
+                );
+        }
+
+        footer {
+            padding: 30px;
+            text-align: center;
+            color: #6f6062;
+        }
+
+        /*
+        ============================================================
+        RESPONSIVE LAYOUT
+        ============================================================
+        */
+
+        @media (max-width: 850px) {
+            .workflow {
+                grid-template-columns:
+                    repeat(2, minmax(0, 1fr));
+            }
+
+            .navigation {
+                grid-template-columns:
+                    repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 600px) {
+            header {
+                padding: 55px 20px 75px;
+            }
+
+            header h1 {
+                font-size: 35px;
+            }
+
+            .header-subtitle {
+                font-size: 17px;
+            }
+
+            .card {
+                padding: 26px;
+            }
+
+            h2 {
+                font-size: 23px;
+            }
+
+            .workflow,
+            .navigation {
+                grid-template-columns: 1fr;
+            }
+
+            .requirement-item {
+                grid-template-columns: 1fr;
+                gap: 8px;
+            }
+
+            .download-button,
+            .navigation-button {
+                width: 100%;
+                text-align: center;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <!--
+    ================================================================
+    TITLE SECTION
+    ================================================================
+    -->
+
+    <header>
+        <h1>DockAnalyzer — Download</h1>
+
+        <p class="header-subtitle">
+            Download the complete DockAnalyzer toolkit and prepare the
+            required environment for protein–ligand interaction analysis
+            in UCSF ChimeraX.
+        </p>
+    </header>
+
+    <!--
+    ================================================================
+    BODY SECTION
+    ================================================================
+    -->
+
+    <main>
+        <article class="card">
+            <!-- PACKAGE OVERVIEW -->
+
+            <section class="content-section">
+                <h2>Package Overview</h2>
+
+                <p>
+                    The DockAnalyzer package contains the Python modules
+                    required to identify, classify, score, report, and
+                    visualize protein–ligand interactions from molecular
+                    docking poses.
+                </p>
+
+                <p>
+                    Keep all downloaded modules together in the extracted
+                    DockAnalyzer directory so that internal imports and
+                    integrations remain available during execution.
+                </p>
+
+                <div class="highlight-box">
+                    <p>
+                        <strong>Basic workflow:</strong>
+                        download and extract the toolkit, open the receptor
+                        and ligand poses in UCSF ChimeraX, and run
+                        <code>analyze.py</code>.
+                    </p>
+                </div>
+            </section>
+
+            <!-- DOWNLOAD PACKAGE -->
+
+            <section class="content-section">
+                <div class="download-box">
+                    <h3>Download DockAnalyzer</h3>
+
+                    <p>
+                        Download the complete toolkit as a compressed ZIP
+                        archive containing the analysis modules and supporting
+                        project files.
+                    </p>
+
+                    <a
+                        class="download-button"
+                        href="downloads/DockAnalyzer.zip"
+                        download
+                    >
+                        Download DockAnalyzer ZIP
+                    </a>
+
+                    <p class="download-note">
+                        File: <code>DockAnalyzer.zip</code>
+                    </p>
+                </div>
+            </section>
+
+            <!-- MINIMUM REQUIREMENTS -->
+
+            <section class="content-section">
+                <h2>Minimum Requirements</h2>
+
+                <p>
+                    Install or prepare the following components before
+                    running the toolkit:
+                </p>
+
+                <div class="requirements">
+                    <div class="requirement-item">
+                        <h3>UCSF ChimeraX</h3>
+
+                        <p>
+                            UCSF ChimeraX 1.11 or later is recommended.
+                            DockAnalyzer accesses molecular structures and
+                            session objects through the ChimeraX Python
+                            environment.
+                        </p>
+                    </div>
+
+                    <div class="requirement-item">
+                        <h3>Python</h3>
+
+                        <p>
+                            Python 3.10 or later is recommended for support
+                            scripts executed outside ChimeraX. A separate
+                            Python installation is not normally required when
+                            DockAnalyzer is executed inside ChimeraX.
+                        </p>
+                    </div>
+
+                    <div class="requirement-item">
+                        <h3>Operating System</h3>
+
+                        <p>
+                            A 64-bit Windows, macOS, or Linux system supported
+                            by the installed UCSF ChimeraX release.
+                        </p>
+                    </div>
+
+                    <div class="requirement-item">
+                        <h3>Input Files</h3>
+
+                        <p>
+                            A prepared receptor structure and one or more
+                            individual ligand poses in formats supported by
+                            UCSF ChimeraX.
+                        </p>
+                    </div>
+
+                    <div class="requirement-item">
+                        <h3>Storage and Permissions</h3>
+
+                        <p>
+                            Sufficient local storage and permission to read
+                            the input structures and write reports, tables,
+                            images, and other analysis outputs.
+                        </p>
+                    </div>
+
+                    <div class="requirement-item">
+                        <h3>ZIP Extraction</h3>
+
+                        <p>
+                            A standard archive utility capable of extracting
+                            <code>.zip</code> files while preserving the
+                            internal directory structure.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="highlight-box">
+                    <p>
+                        <strong>Compatibility note:</strong>
+                        the final minimum-version requirements should be
+                        confirmed after validation of the completed
+                        <code>analyze.py</code> workflow.
+                    </p>
+                </div>
+            </section>
+
+            <!-- INSTALLATION -->
+
+            <section class="content-section">
+                <h2>Installation</h2>
+
+                <div class="workflow">
+                    <div class="workflow-step">
+                        <span class="workflow-number">1</span>
+
+                        <span class="workflow-title">
+                            Download
+                        </span>
+
+                        <span class="workflow-description">
+                            Download <code>DockAnalyzer.zip</code> using the
+                            button above.
+                        </span>
+                    </div>
+
+                    <div class="workflow-step">
+                        <span class="workflow-number">2</span>
+
+                        <span class="workflow-title">
+                            Extract
+                        </span>
+
+                        <span class="workflow-description">
+                            Extract the ZIP archive to a local directory and
+                            preserve the original file structure.
+                        </span>
+                    </div>
+
+                    <div class="workflow-step">
+                        <span class="workflow-number">3</span>
+
+                        <span class="workflow-title">
+                            Open ChimeraX and Run
+                        </span>
+
+                        <span class="workflow-description">
+                            Open UCSF ChimeraX, load the receptor and ligand
+                            poses, and run <code>analyze.py</code> directly
+                            from the extracted DockAnalyzer directory.
+                        </span>
+                    </div>
+                </div>
+            </section>
+
+            <!--
+            ============================================================
+            PROJECT NAVIGATION
+            The current Download page is not repeated here.
+            ============================================================
+            -->
+
+            <section class="content-section">
+                <h2>Explore the Project</h2>
+
+                <p>
+                    Return to the main page or continue to another
+                    DockAnalyzer resource.
+                </p>
+
+                <nav
+                    class="navigation"
+                    aria-label="Project resources"
+                >
+                    <a
+                        class="navigation-button home-button"
+                        href="index.html"
+                    >
+                        Return to Home
+                    </a>
+
+                    <a
+                        class="navigation-button"
+                        href="project-description.html"
+                    >
+                        Project Description
+                    </a>
+
+                    <a
+                        class="navigation-button"
+                        href="dockanalyzer-user-guide.html"
+                    >
+                        DockAnalyzer — User Guide
+                    </a>
+
+                    <a
+                        class="navigation-button"
+                        href="splitting-poses.html"
+                    >
+                        Splitting Poses Code
+                    </a>
+
+                    <a
+                        class="navigation-button"
+                        href="https://github.com/LeonardoMBastos/Binding-contacts-analysis-in-ChimeraX-"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
+                        Source Code
+                    </a>
+
+                    <a
+                        class="navigation-button"
+                        href="citations-license.html"
+                    >
+                        Citations and License
+                    </a>
+                </nav>
+            </section>
+        </article>
+    </main>
+
+    <footer>
+        DockAnalyzer — Leonardo Marensi Bastos
+    </footer>
+</body>
+</html>
