@@ -53,12 +53,21 @@
 
         header h1 {
             margin: 0;
+            color: #ffffff;
             font-size: 44px;
         }
 
-        header p {
+        /*
+        ============================================================
+        HEADER SUBTITLE
+        Keeps the subtitle visually consistent with the home page.
+        ============================================================
+        */
+
+        .header-subtitle {
             max-width: 750px;
             margin: 18px auto 0;
+            color: #f7d7da;
             font-size: 19px;
             line-height: 1.6;
         }
@@ -238,7 +247,7 @@
                 font-size: 36px;
             }
 
-            header p {
+            .header-subtitle {
                 font-size: 17px;
             }
 
@@ -274,7 +283,7 @@
     <header>
         <h1>Project Description</h1>
 
-        <p>
+        <p class="header-subtitle">
             Scientific background, objectives, scope, and computational
             structure of the DockAnalyzer project.
         </p>
