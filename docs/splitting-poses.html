@@ -8,15 +8,11 @@
         content="width=device-width, initial-scale=1"
     >
 
-    <title>Splitting Poses Code | DockAnalyzer</title>
+    <title>DockAnalyzer</title>
 
     <style>
         * {
             box-sizing: border-box;
-        }
-
-        html {
-            scroll-behavior: smooth;
         }
 
         body {
@@ -30,13 +26,6 @@
             background: #f8f3f3;
             color: #262121;
         }
-
-        /*
-        ============================================================
-        TITLE SECTION STYLE
-        Controls the red gradient header displayed at the top.
-        ============================================================
-        */
 
         header {
             padding: 70px 20px 90px;
@@ -53,22 +42,38 @@
 
         header h1 {
             margin: 0;
+            color: #ffffff;
             font-size: 44px;
         }
 
-        header p {
+        /*
+        ============================================================
+        HEADER SUBTITLE
+        Use this same class on all internal pages.
+        ============================================================
+        */
+
+        .header-subtitle {
             max-width: 750px;
             margin: 18px auto 0;
+            color: #f7d7da;
             font-size: 19px;
             line-height: 1.6;
         }
 
         /*
         ============================================================
-        BODY SECTION STYLE
-        Controls the main content and information cards.
+        AUTHOR LINE
         ============================================================
         */
+
+        .header-author {
+            margin: 14px auto 0;
+            color: #fff0f1;
+            font-size: 15px;
+            font-weight: 500;
+            letter-spacing: 0.3px;
+        }
 
         main {
             max-width: 1000px;
@@ -77,237 +82,76 @@
         }
 
         .card {
-            padding: 40px;
+            padding: 36px;
             background: white;
             border-radius: 12px;
             box-shadow:
                 0 12px 30px rgba(82, 7, 16, 0.12);
         }
 
-        .content-section {
-            padding: 26px 0;
-            border-bottom: 1px solid #eed9dc;
-        }
-
-        .content-section:first-child {
-            padding-top: 0;
-        }
-
-        .content-section:last-child {
-            padding-bottom: 0;
-            border-bottom: none;
-        }
-
         h2 {
             margin-top: 0;
-            margin-bottom: 14px;
             color: #8f101d;
-            font-size: 26px;
         }
 
-        h3 {
-            margin-top: 24px;
-            margin-bottom: 10px;
-            color: #a11220;
-            font-size: 20px;
-        }
-
-        p {
+        .intro {
             color: #55494b;
-            line-height: 1.75;
+            line-height: 1.7;
         }
 
-        ul,
-        ol {
-            margin: 16px 0 0;
-            padding-left: 24px;
-            color: #55494b;
-            line-height: 1.75;
+        .links {
+            display: grid;
+            grid-template-columns:
+                repeat(auto-fit, minmax(220px, 1fr));
+            gap: 18px;
+            margin-top: 30px;
         }
 
-        li {
-            margin-bottom: 8px;
-        }
-
-        code {
-            padding: 3px 7px;
+        .button {
+            display: block;
+            min-height: 150px;
+            padding: 22px;
             color: #85101c;
-            font-family:
-                "SFMono-Regular",
-                Consolas,
-                "Liberation Mono",
-                monospace;
-            background: #f8e5e7;
-            border-radius: 5px;
-        }
-
-        .highlight-box {
-            margin-top: 22px;
-            padding: 20px;
+            text-decoration: none;
             background:
                 linear-gradient(
                     145deg,
                     #fff8f8,
                     #f8e5e7
                 );
-            border-left: 5px solid #a11220;
-            border-radius: 8px;
-        }
-
-        .highlight-box strong {
-            color: #85101c;
-        }
-
-        /*
-        ============================================================
-        WORKFLOW CARDS
-        ============================================================
-        */
-
-        .workflow {
-            display: grid;
-            grid-template-columns:
-                repeat(auto-fit, minmax(180px, 1fr));
-            gap: 14px;
-            margin-top: 22px;
-        }
-
-        .workflow-step {
-            padding: 18px;
-            text-align: center;
-            background: #fff8f8;
             border: 1px solid #ecc3c7;
-            border-radius: 8px;
+            border-radius: 10px;
+            transition:
+                transform 0.2s ease,
+                box-shadow 0.2s ease,
+                background 0.2s ease;
         }
 
-        .workflow-number {
-            display: block;
-            width: 34px;
-            height: 34px;
-            margin: 0 auto 12px;
-            color: white;
-            font-weight: 700;
-            line-height: 34px;
-            background: #a11220;
-            border-radius: 50%;
-        }
-
-        .workflow-title {
-            display: block;
-            margin-bottom: 8px;
-            color: #85101c;
-            font-weight: 700;
-        }
-
-        .workflow-description {
-            color: #665255;
-            font-size: 14px;
-            line-height: 1.5;
-        }
-
-        /*
-        ============================================================
-        DOWNLOAD SECTION
-        Controls the highlighted GitHub download area.
-        ============================================================
-        */
-
-        .download-box {
-            margin-top: 22px;
-            padding: 28px;
-            text-align: center;
+        .button:hover {
+            transform: translateY(-4px);
             background:
                 linear-gradient(
                     145deg,
-                    #fff8f8,
-                    #f4d9dc
+                    #fcebed,
+                    #f3ced2
                 );
-            border: 1px solid #e6b8bd;
-            border-radius: 12px;
+            box-shadow:
+                0 10px 22px rgba(126, 13, 25, 0.16);
         }
 
-        .download-box h3 {
-            margin-top: 0;
-        }
-
-        .download-box p {
-            max-width: 650px;
-            margin-right: auto;
-            margin-left: auto;
-        }
-
-        .download-button {
-            display: inline-block;
-            margin-top: 12px;
-            padding: 15px 26px;
-            color: white;
+        .button-title {
+            display: block;
+            margin-bottom: 10px;
+            font-size: 18px;
             font-weight: 700;
-            text-decoration: none;
-            background:
-                linear-gradient(
-                    120deg,
-                    #7b0b17,
-                    #b31b2a
-                );
-            border-radius: 8px;
-            transition:
-                transform 0.2s ease,
-                box-shadow 0.2s ease;
         }
 
-        .download-button:hover {
-            transform: translateY(-3px);
-            box-shadow:
-                0 9px 20px rgba(126, 13, 25, 0.24);
-        }
-
-        .download-note {
-            margin-top: 15px;
-            color: #766164;
-            font-size: 13px;
-        }
-
-        /*
-        ============================================================
-        NAVIGATION BUTTONS
-        ============================================================
-        */
-
-        .navigation {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 14px;
-            margin-top: 34px;
-        }
-
-        .navigation-button {
-            display: inline-block;
-            padding: 13px 22px;
-            color: white;
-            font-weight: 600;
-            text-decoration: none;
-            background:
-                linear-gradient(
-                    120deg,
-                    #7b0b17,
-                    #b31b2a
-                );
-            border-radius: 8px;
-            transition:
-                transform 0.2s ease,
-                box-shadow 0.2s ease;
-        }
-
-        .navigation-button:hover {
-            transform: translateY(-2px);
-            box-shadow:
-                0 8px 18px rgba(126, 13, 25, 0.2);
-        }
-
-        .secondary-button {
-            color: #85101c;
-            background: #f8e5e7;
-            border: 1px solid #ecc3c7;
+        .button-description {
+            display: block;
+            color: #665255;
+            font-size: 14px;
+            font-weight: 400;
+            line-height: 1.5;
         }
 
         footer {
@@ -322,439 +166,118 @@
             }
 
             header h1 {
-                font-size: 35px;
+                font-size: 36px;
             }
 
-            header p {
+            .header-subtitle {
                 font-size: 17px;
+            }
+
+            .header-author {
+                font-size: 14px;
             }
 
             .card {
                 padding: 26px;
             }
 
-            h2 {
-                font-size: 23px;
-            }
-
-            .navigation {
-                flex-direction: column;
-            }
-
-            .navigation-button,
-            .download-button {
-                width: 100%;
-                text-align: center;
+            .button {
+                min-height: auto;
             }
         }
     </style>
 </head>
 
 <body>
-
-    <!--
-    ================================================================
-    TITLE SECTION
-    Edit the page title and introductory subtitle in this section.
-    ================================================================
-    -->
-
     <header>
-        <h1>Splitting Poses Code</h1>
+        <h1>DockAnalyzer</h1>
 
-        <p>
-            A Python tool for separating molecular docking output files
-            into individual ligand poses for independent analysis.
+        <p class="header-subtitle">
+            A modular Python toolkit for identifying, classifying,
+            scoring, reporting, and visualizing protein–ligand
+            interactions in UCSF ChimeraX.
+        </p>
+
+        <p class="header-author">
+            Leonardo Marensi Bastos, 2026
         </p>
     </header>
 
-    <!--
-    ================================================================
-    BODY SECTION
-    Edit the main description and subsections below.
-    ================================================================
-    -->
-
     <main>
-        <article class="card">
-
-            <!-- TOOL OVERVIEW -->
-
-            <section class="content-section">
-                <h2>Tool Overview</h2>
-
-                <p>
-                    The Splitting Poses Code is designed to process molecular
-                    docking output files containing multiple predicted ligand
-                    conformations and separate them into individual structure
-                    files.
-                </p>
-
-                <p>
-                    Each generated file contains a single docking pose,
-                    allowing the predicted conformations to be independently
-                    inspected, organized, visualized, and analyzed with
-                    DockAnalyzer or other molecular-analysis tools.
-                </p>
-
-                <div class="highlight-box">
-                    <strong>Main purpose:</strong>
-
-                    transform a docking output containing multiple ligand
-                    models into separate files containing one pose each.
-                </div>
-            </section>
-
-            <!-- WHY SPLIT DOCKING POSES -->
-
-            <section class="content-section">
-                <h2>Why Split Docking Poses?</h2>
-
-                <p>
-                    Molecular docking programs commonly store several
-                    predicted ligand conformations in a single output file.
-                    Although this format is useful for preserving the complete
-                    docking result, individual pose files may be required for:
-                </p>
-
-                <ul>
-                    <li>Independent structural inspection</li>
-                    <li>Protein–ligand interaction analysis</li>
-                    <li>Pose-specific scoring</li>
-                    <li>Visualization in UCSF ChimeraX</li>
-                    <li>Comparison between docking conformations</li>
-                    <li>Organization of multipose analyses</li>
-                    <li>Generation of individual reports and images</li>
-                </ul>
-            </section>
-
-            <!-- MAIN FUNCTIONS -->
-
-            <section class="content-section">
-                <h2>Main Functions</h2>
-
-                <ul>
-                    <li>
-                        Read molecular docking output files containing
-                        multiple models or poses.
-                    </li>
-
-                    <li>
-                        Identify the beginning and end of each docking pose.
-                    </li>
-
-                    <li>
-                        Preserve the molecular coordinates and structural
-                        information associated with each pose.
-                    </li>
-
-                    <li>
-                        Generate one output file for each detected pose.
-                    </li>
-
-                    <li>
-                        Apply sequential and consistent file names.
-                    </li>
-
-                    <li>
-                        Prepare pose files for downstream analysis with
-                        DockAnalyzer.
-                    </li>
-                </ul>
-            </section>
-
-            <!-- INPUT AND OUTPUT -->
-
-            <section class="content-section">
-                <h2>Input and Output</h2>
-
-                <h3>Input</h3>
-
-                <p>
-                    The input is a molecular docking output file containing
-                    multiple ligand poses. The exact supported format depends
-                    on the version of the splitting script.
-                </p>
-
-                <div class="highlight-box">
-                    <strong>Example input:</strong>
-
-                    <code>docking_output.pdbqt</code>
-                </div>
-
-                <h3>Output</h3>
-
-                <p>
-                    The script creates a separate file for each pose detected
-                    in the original docking output.
-                </p>
-
-                <div class="highlight-box">
-                    <strong>Example output files:</strong>
-
-                    <ul>
-                        <li><code>pose_01.pdbqt</code></li>
-                        <li><code>pose_02.pdbqt</code></li>
-                        <li><code>pose_03.pdbqt</code></li>
-                    </ul>
-                </div>
-            </section>
-
-            <!-- WORKFLOW -->
-
-            <section class="content-section">
-                <h2>Processing Workflow</h2>
-
-                <div class="workflow">
-                    <div class="workflow-step">
-                        <span class="workflow-number">1</span>
-
-                        <span class="workflow-title">
-                            Select Input
-                        </span>
-
-                        <span class="workflow-description">
-                            Choose the molecular docking output file
-                            containing multiple ligand poses.
-                        </span>
-                    </div>
-
-                    <div class="workflow-step">
-                        <span class="workflow-number">2</span>
-
-                        <span class="workflow-title">
-                            Run the Script
-                        </span>
-
-                        <span class="workflow-description">
-                            Execute the Python script using the selected
-                            docking file as input.
-                        </span>
-                    </div>
-
-                    <div class="workflow-step">
-                        <span class="workflow-number">3</span>
-
-                        <span class="workflow-title">
-                            Identify Poses
-                        </span>
-
-                        <span class="workflow-description">
-                            The script detects and separates the individual
-                            docking models.
-                        </span>
-                    </div>
-
-                    <div class="workflow-step">
-                        <span class="workflow-number">4</span>
-
-                        <span class="workflow-title">
-                            Save Files
-                        </span>
-
-                        <span class="workflow-description">
-                            Each pose is saved as an independent molecular
-                            structure file.
-                        </span>
-                    </div>
-
-                    <div class="workflow-step">
-                        <span class="workflow-number">5</span>
-
-                        <span class="workflow-title">
-                            Analyze Poses
-                        </span>
-
-                        <span class="workflow-description">
-                            The generated files can be processed with
-                            DockAnalyzer.
-                        </span>
-                    </div>
-                </div>
-            </section>
-
-            <!-- REQUIREMENTS -->
-
-            <section class="content-section">
-                <h2>Requirements</h2>
-
-                <p>
-                    Before using the script, verify the requirements provided
-                    with the source code. Depending on the script version,
-                    the basic requirements may include:
-                </p>
-
-                <ul>
-                    <li>A compatible Python installation</li>
-                    <li>A supported docking output format</li>
-                    <li>Read permission for the input file</li>
-                    <li>Write permission for the output directory</li>
-                </ul>
-
-                <p>
-                    Additional installation and usage instructions should be
-                    consulted in the GitHub repository before execution.
-                </p>
-            </section>
-
-            <!--
-            ============================================================
-            GITHUB DOWNLOAD SECTION
-            Replace the href value below with the actual GitHub link.
-            ============================================================
-            -->
-
-            <section class="content-section">
-                <h2>Download the Code</h2>
-
-                <p>
-                    The latest version of the Splitting Poses Code,
-                    documentation, and usage instructions are available
-                    through the project repository on GitHub.
-                </p>
-
-                <div class="download-box">
-                    <h3>Splitting Poses Code on GitHub</h3>
-
-                    <p>
-                        Access the source file, review its version history,
-                        and download the code directly from the GitHub
-                        repository.
-                    </p>
-
-                    <!--
-                    ========================================================
-                    DOWNLOAD LINK
-
-                    Replace the href below with the real GitHub download link.
-
-                    Example for a file stored in the main branch:
-
-                    https://github.com/USERNAME/REPOSITORY/raw/main/FILENAME.py
-
-                    Example for a file inside a folder:
-
-                    https://github.com/USERNAME/REPOSITORY/raw/main/FOLDER/FILENAME.py
-                    ========================================================
-                    -->
-
-                    <a
-                        class="download-button"
-                        href="https://github.com/LeonardoMBastos/Binding-contacts-analysis-in-ChimeraX-/blob/main/splitting-poses-code/UBUNTU-LINUX_splitting-poses-code"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                    >
-                        Access Splitting Poses Code
-                    </a>
-
-                    <p class="download-note">
-                        The button currently opens the main project
-                        repository. Replace its link with the direct file or
-                        release URL when the downloadable code is available.
-                    </p>
-                </div>
-            </section>
-
-            <!-- DOWNLOAD INSTRUCTIONS -->
-
-            <section class="content-section">
-                <h2>How to Download from GitHub</h2>
-
-                <ol>
-                    <li>
-                        Open the code page using the download button above.
-                    </li>
-
-                    <li>
-                        Locate the Splitting Poses Python file in the
-                        repository.
-                    </li>
-
-                    <li>
-                        Open the file and select the download or raw-file
-                        option.
-                    </li>
-
-                    <li>
-                        Save the file with its original <code>.py</code>
-                        extension.
-                    </li>
-
-                    <li>
-                        Read the available instructions before running the
-                        script.
-                    </li>
-                </ol>
-            </section>
-
-            <!-- USAGE NOTICE -->
-
-            <section class="content-section">
-                <h2>Usage Notice</h2>
-
-                <p>
-                    The Splitting Poses Code should be used with molecular
-                    docking files that follow the expected structural format.
-                    Always preserve a copy of the original docking output
-                    before processing it.
-                </p>
-
-                <p>
-                    The generated pose files should be visually inspected and
-                    validated before being included in downstream analyses.
-                </p>
-            </section>
-
-            <!-- NAVIGATION BUTTONS -->
-
-            <section class="content-section">
-                <h2>Explore the Project</h2>
-
-                <p>
-                    Return to the main page, read the project description,
-                    download DockAnalyzer, or access the complete repository.
-                </p>
-
-                <div class="navigation">
-                    <a
-                        class="navigation-button"
-                        href="index.html"
-                    >
-                        Return to Home
-                    </a>
-
-                    <a
-                        class="navigation-button secondary-button"
-                        href="project-description.html"
-                    >
+        <section class="card">
+            <h2>Project Resources</h2>
+
+            <p class="intro">
+                Explore the project description, access the pose-splitting
+                tool, download DockAnalyzer, or view the complete source
+                code on GitHub.
+            </p>
+
+            <div class="links">
+                <a
+                    class="button"
+                    href="project-description.html"
+                >
+                    <span class="button-title">
                         Project Description
-                    </a>
+                    </span>
 
-                    <a
-                        class="navigation-button secondary-button"
-                        href="downloads/DockAnalyzer.zip"
-                        download
-                    >
-                        Download DockAnalyzer
-                    </a>
+                    <span class="button-description">
+                        Learn about the scientific background,
+                        objectives, scope, and structure of the project.
+                    </span>
+                </a>
 
-                    <a
-                        class="navigation-button secondary-button"
-                        href="https://github.com/LeonardoMBastos/Binding-contacts-analysis-in-ChimeraX-"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                    >
-                        View Source Code
-                    </a>
-                </div>
-            </section>
+                <a
+                    class="button"
+                    href="splitting-poses.html"
+                >
+                    <span class="button-title">
+                        Splitting Poses Code
+                    </span>
 
-        </article>
+                    <span class="button-description">
+                        Access instructions and download the code used
+                        to separate docking outputs into individual poses.
+                    </span>
+                </a>
+
+                <a
+                    class="button"
+                    href="downloads/DockAnalyzer.zip"
+                    download
+                >
+                    <span class="button-title">
+                        DockAnalyzer — Download
+                    </span>
+
+                    <span class="button-description">
+                        Download the complete DockAnalyzer package
+                        as a compressed ZIP file.
+                    </span>
+                </a>
+
+                <a
+                    class="button"
+                    href="https://github.com/LeonardoMBastos/Binding-contacts-analysis-in-ChimeraX-"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                >
+                    <span class="button-title">
+                        Source Code
+                    </span>
+
+                    <span class="button-description">
+                        View the complete source code, project files,
+                        version history, and updates on GitHub.
+                    </span>
+                </a>
+            </div>
+        </section>
     </main>
 
     <footer>
         DockAnalyzer — Leonardo Marensi Bastos
     </footer>
-
 </body>
 </html>
