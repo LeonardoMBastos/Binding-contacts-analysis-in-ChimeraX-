@@ -23,8 +23,8 @@
                 "Segoe UI",
                 Arial,
                 sans-serif;
-            background: #f4f6fb;
-            color: #222;
+            background: #f8f3f3;
+            color: #262121;
         }
 
         header {
@@ -32,7 +32,12 @@
             text-align: center;
             color: white;
             background:
-                linear-gradient(90deg, #174a7e, #168f72);
+                linear-gradient(
+                    120deg,
+                    #5c0710,
+                    #a11220,
+                    #d13a45
+                );
         }
 
         header h1 {
@@ -57,39 +62,101 @@
             padding: 36px;
             background: white;
             border-radius: 12px;
-            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.09);
+            box-shadow:
+                0 12px 30px rgba(82, 7, 16, 0.12);
         }
 
         h2 {
-            color: #174a7e;
+            margin-top: 0;
+            color: #8f101d;
+        }
+
+        .intro {
+            line-height: 1.7;
+            color: #55494b;
         }
 
         .links {
             display: grid;
             grid-template-columns:
                 repeat(auto-fit, minmax(220px, 1fr));
-            gap: 16px;
-            margin-top: 28px;
+            gap: 18px;
+            margin-top: 30px;
         }
 
         .button {
             display: block;
-            padding: 18px;
-            color: #174a7e;
-            font-weight: 600;
+            min-height: 150px;
+            padding: 22px;
+            color: #85101c;
             text-decoration: none;
-            background: #eef5fb;
-            border-radius: 8px;
+            background:
+                linear-gradient(
+                    145deg,
+                    #fff8f8,
+                    #f8e5e7
+                );
+            border: 1px solid #ecc3c7;
+            border-radius: 10px;
+            transition:
+                transform 0.2s ease,
+                box-shadow 0.2s ease,
+                background 0.2s ease;
         }
 
         .button:hover {
-            background: #dcecf7;
+            transform: translateY(-4px);
+            background:
+                linear-gradient(
+                    145deg,
+                    #fcebed,
+                    #f3ced2
+                );
+            box-shadow:
+                0 10px 22px rgba(126, 13, 25, 0.16);
+        }
+
+        .button-title {
+            display: block;
+            margin-bottom: 10px;
+            font-size: 18px;
+            font-weight: 700;
+        }
+
+        .button-description {
+            display: block;
+            color: #665255;
+            font-size: 14px;
+            font-weight: 400;
+            line-height: 1.5;
         }
 
         footer {
             padding: 30px;
             text-align: center;
-            color: #666;
+            color: #6f6062;
+        }
+
+        @media (max-width: 600px) {
+            header {
+                padding: 55px 20px 75px;
+            }
+
+            header h1 {
+                font-size: 36px;
+            }
+
+            header p {
+                font-size: 17px;
+            }
+
+            .card {
+                padding: 26px;
+            }
+
+            .button {
+                min-height: auto;
+            }
         }
     </style>
 </head>
@@ -107,28 +174,72 @@
 
     <main>
         <section class="card">
-            <h2>Project documentation</h2>
+            <h2>Project Resources</h2>
 
-            <p>
-                Explore the installation instructions, supported
-                interaction types, analysis workflow, examples,
-                and API documentation.
+            <p class="intro">
+                Explore the project description, access the pose-splitting
+                tool, download DockAnalyzer, or view the complete source
+                code on GitHub.
             </p>
 
             <div class="links">
-                <a class="button" href="documentation.html">
-                    Documentation
+                <a
+                    class="button"
+                    href="project-description.html"
+                >
+                    <span class="button-title">
+                        Project Description
+                    </span>
+
+                    <span class="button-description">
+                        Learn about the scientific background,
+                        objectives, scope, and structure of the project.
+                    </span>
                 </a>
 
-                <a class="button" href="examples.html">
-                    Usage examples
+                <a
+                    class="button"
+                    href="splitting-poses.html"
+                >
+                    <span class="button-title">
+                        Splitting Poses Code
+                    </span>
+
+                    <span class="button-description">
+                        Access instructions and download the code used
+                        to separate docking outputs into individual poses.
+                    </span>
+                </a>
+
+                <a
+                    class="button"
+                    href="downloads/DockAnalyzer.zip"
+                    download
+                >
+                    <span class="button-title">
+                        DockAnalyzer — Download
+                    </span>
+
+                    <span class="button-description">
+                        Download the complete DockAnalyzer package
+                        as a compressed ZIP file.
+                    </span>
                 </a>
 
                 <a
                     class="button"
                     href="https://github.com/LeonardoMBastos/Binding-contacts-analysis-in-ChimeraX-"
+                    target="_blank"
+                    rel="noopener noreferrer"
                 >
-                    Source code
+                    <span class="button-title">
+                        Source Code
+                    </span>
+
+                    <span class="button-description">
+                        View the complete source code, project files,
+                        version history, and updates on GitHub.
+                    </span>
                 </a>
             </div>
         </section>
