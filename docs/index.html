@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+
+    <title>DockAnalyzer</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family:
+                -apple-system,
+                BlinkMacSystemFont,
+                "Segoe UI",
+                Arial,
+                sans-serif;
+            background: #f4f6fb;
+            color: #222;
+        }
+
+        header {
+            padding: 70px 20px 90px;
+            text-align: center;
+            color: white;
+            background:
+                linear-gradient(90deg, #174a7e, #168f72);
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 44px;
+        }
+
+        header p {
+            max-width: 750px;
+            margin: 18px auto 0;
+            font-size: 19px;
+            line-height: 1.6;
+        }
+
+        main {
+            max-width: 1000px;
+            margin: -50px auto 80px;
+            padding: 0 20px;
+        }
+
+        .card {
+            padding: 36px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.09);
+        }
+
+        h2 {
+            color: #174a7e;
+        }
+
+        .links {
+            display: grid;
+            grid-template-columns:
+                repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+            margin-top: 28px;
+        }
+
+        .button {
+            display: block;
+            padding: 18px;
+            color: #174a7e;
+            font-weight: 600;
+            text-decoration: none;
+            background: #eef5fb;
+            border-radius: 8px;
+        }
+
+        .button:hover {
+            background: #dcecf7;
+        }
+
+        footer {
+            padding: 30px;
+            text-align: center;
+            color: #666;
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>DockAnalyzer</h1>
+
+        <p>
+            A modular Python toolkit for identifying, classifying,
+            scoring, reporting, and visualizing protein–ligand
+            interactions in UCSF ChimeraX.
+        </p>
+    </header>
+
+    <main>
+        <section class="card">
+            <h2>Project documentation</h2>
+
+            <p>
+                Explore the installation instructions, supported
+                interaction types, analysis workflow, examples,
+                and API documentation.
+            </p>
+
+            <div class="links">
+                <a class="button" href="documentation.html">
+                    Documentation
+                </a>
+
+                <a class="button" href="examples.html">
+                    Usage examples
+                </a>
+
+                <a
+                    class="button"
+                    href="https://github.com/LeonardoMBastos/Binding-contacts-analysis-in-ChimeraX-"
+                >
+                    Source code
+                </a>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        DockAnalyzer — Leonardo Marensi Bastos
+    </footer>
+</body>
+</html>
