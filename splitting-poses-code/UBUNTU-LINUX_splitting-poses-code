@@ -1,20 +1,20 @@
 #!/bin/bash
 
-# Input file
-INPUT="/mnt/c/Users/leoma/Desktop/LN_pjt/04.DK-6x3x-BB_BS/V10/Output"
+# Directory containing the .pdbqt files to be split.
+# Example: /mnt/c/Users/User/Desktop/Docking_poses
+INPUT="/path/to/pdbqt/files"
 
-# Output file and archive 
+# Output directory 
 OUTPUT="$INPUT/poses"
-
 mkdir -p "$OUTPUT"
 
 # Loop in .pdbqt files
 for file in "$INPUT"/*.pdbqt; do
 
-    # Verify the existence of .pdbqt files
+    # Verify the existence of .pdbqt files - Skip if no matching file exists
     [ -e "$file" ] || continue
 
-    # Naming and organizing the files
+    # Create an output directory for each ligand
     base=$(basename "$file" .pdbqt)
     
     mkdir -p "$OUTPUT/$base"
@@ -22,10 +22,10 @@ for file in "$INPUT"/*.pdbqt; do
     echo "===================================="
     echo "Converting: $base"
 
-    # Converting all poses
+    # Convert all poses into individual PDB files
     obabel "$file" -O "$OUTPUT/$base/pose.pdb" -m
 
-    # Renaming positions according to affinity ranking  
+    # Rename poses according to affinity ranking  
     contador=1
     for pose in "$OUTPUT/$base"/pose*.pdb; do
         mv "$pose" "$OUTPUT/$base/pose${contador}.pdb"
