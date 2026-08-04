@@ -196,46 +196,86 @@
         }
 
         .navigation {
-            display: flex;
-            flex-wrap: wrap;
+            display: grid;
+            grid-template-columns:
+                repeat(3, minmax(0, 1fr));
             gap: 14px;
-            margin-top: 34px;
+            margin-top: 26px;
         }
 
         .navigation-button {
-            display: inline-block;
-            padding: 13px 22px;
-            color: white;
+            display: flex;
+            min-height: 76px;
+            padding: 14px 18px;
+            align-items: center;
+            justify-content: center;
+            color: #85101c;
             font-weight: 600;
+            line-height: 1.35;
+            text-align: center;
             text-decoration: none;
+            background:
+                linear-gradient(
+                    145deg,
+                    #fff8f8,
+                    #f8e5e7
+                );
+            border: 1px solid #ecc3c7;
+            border-radius: 8px;
+            transition:
+                transform 0.2s ease,
+                box-shadow 0.2s ease,
+                background 0.2s ease;
+        }
+
+        .navigation-button:hover {
+            transform: translateY(-3px);
+            background:
+                linear-gradient(
+                    145deg,
+                    #fcebed,
+                    #f3ced2
+                );
+            box-shadow:
+                0 8px 18px rgba(126, 13, 25, 0.18);
+        }
+
+        .navigation-button:focus-visible {
+            outline: 3px solid #d13a45;
+            outline-offset: 3px;
+        }
+
+        .home-button {
+            color: #ffffff;
             background:
                 linear-gradient(
                     120deg,
                     #7b0b17,
                     #b31b2a
                 );
-            border-radius: 8px;
-            transition:
-                transform 0.2s ease,
-                box-shadow 0.2s ease;
+            border-color: #8f101d;
         }
 
-        .navigation-button:hover {
-            transform: translateY(-2px);
-            box-shadow:
-                0 8px 18px rgba(126, 13, 25, 0.2);
-        }
-
-        .secondary-button {
-            color: #85101c;
-            background: #f8e5e7;
-            border: 1px solid #ecc3c7;
+        .home-button:hover {
+            background:
+                linear-gradient(
+                    120deg,
+                    #690914,
+                    #a11220
+                );
         }
 
         footer {
             padding: 30px;
             text-align: center;
             color: #6f6062;
+        }
+
+        @media (max-width: 850px) {
+            .navigation {
+                grid-template-columns:
+                    repeat(2, minmax(0, 1fr));
+            }
         }
 
         @media (max-width: 600px) {
@@ -260,7 +300,7 @@
             }
 
             .navigation {
-                flex-direction: column;
+                grid-template-columns: 1fr;
             }
 
             .navigation-button {
@@ -389,30 +429,6 @@
                 </ul>
             </section>
 
-            <!-- PROJECT COMPONENTS -->
-
-            <section class="content-section">
-                <h2>Project Components</h2>
-
-                <h3>Splitting Poses Code</h3>
-
-                <p>
-                    The pose-splitting tool separates molecular docking
-                    output files into individual structures, allowing each
-                    predicted ligand pose to be inspected and analyzed
-                    independently.
-                </p>
-
-                <h3>DockAnalyzer</h3>
-
-                <p>
-                    DockAnalyzer processes receptor and ligand structures,
-                    detects molecular interactions, applies classification
-                    and scoring rules, compares poses, and generates
-                    analysis outputs.
-                </p>
-            </section>
-
             <!-- SUPPORTED ANALYSES -->
 
             <section class="content-section">
@@ -445,7 +461,7 @@
                         <span class="workflow-number">1</span>
 
                         <span class="workflow-title">
-                            Prepare Structures
+                            Prepare Files
                         </span>
 
                         <span class="workflow-description">
@@ -528,67 +544,71 @@
                 </p>
             </section>
 
-            <!-- PROJECT SCOPE -->
-
-            <section class="content-section">
-                <h2>Project Scope</h2>
-
-                <p>
-                    DockAnalyzer is intended as a research and analysis
-                    support tool. Its results should be interpreted together
-                    with docking affinity, structural inspection,
-                    experimental evidence, and appropriate validation
-                    procedures.
-                </p>
-
-                <p>
-                    The software does not replace experimental validation or
-                    independent assessment of molecular docking protocols.
-                </p>
-            </section>
-
-            <!-- NAVIGATION BUTTONS -->
+            <!--
+            ============================================================
+            PROJECT NAVIGATION
+            Links to the home page and the other project resources.
+            The current Project Description page is not repeated here.
+            ============================================================
+            -->
 
             <section class="content-section">
                 <h2>Explore the Project</h2>
 
                 <p>
-                    Return to the main page or continue to the project tools
-                    and source-code repository.
+                    Return to the main page or continue to another
+                    DockAnalyzer resource.
                 </p>
 
-                <div class="navigation">
+                <nav
+                    class="navigation"
+                    aria-label="Project resources"
+                >
                     <a
-                        class="navigation-button"
+                        class="navigation-button home-button"
                         href="index.html"
                     >
                         Return to Home
                     </a>
 
                     <a
-                        class="navigation-button secondary-button"
+                        class="navigation-button"
+                        href="dockanalyzer-user-guide.html"
+                    >
+                        DockAnalyzer — User Guide
+                    </a>
+
+                    <a
+                        class="navigation-button"
+                        href="downloads/DockAnalyzer.zip"
+                        download
+                    >
+                        DockAnalyzer — Download
+                    </a>
+
+                    <a
+                        class="navigation-button"
                         href="splitting-poses.html"
                     >
                         Splitting Poses Code
                     </a>
 
                     <a
-                        class="navigation-button secondary-button"
-                        href="downloads/DockAnalyzer.zip"
-                        download
-                    >
-                        Download DockAnalyzer
-                    </a>
-
-                    <a
-                        class="navigation-button secondary-button"
+                        class="navigation-button"
                         href="https://github.com/LeonardoMBastos/Binding-contacts-analysis-in-ChimeraX-"
                         target="_blank"
                         rel="noopener noreferrer"
                     >
-                        View Source Code
+                        Source Code
                     </a>
-                </div>
+
+                    <a
+                        class="navigation-button"
+                        href="citations-license.html"
+                    >
+                        Citations and License
+                    </a>
+                </nav>
             </section>
 
         </article>
