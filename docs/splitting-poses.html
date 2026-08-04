@@ -435,10 +435,10 @@ Edit the main description and subsections below.
             <h2>Tool Overview</h2>
 
             <p>
-                The Splitting Poses Code is designed to process molecular
-                docking output files containing multiple predicted ligand
+                The Splitting Poses Code was designed to process molecular
+                docking output files (.pdbqt) containing multiple predicted ligand
                 conformations and separate them into individual structure
-                files.
+                files on Ubuntu 22.04 LTS.
             </p>
 
             <p>
@@ -479,40 +479,6 @@ Edit the main description and subsections below.
             </ul>
         </section>
 
-        <!-- MAIN FUNCTIONS -->
-
-        <section class="content-section">
-            <h2>Main Functions</h2>
-
-            <ul>
-                <li>
-                    Read molecular docking output files containing
-                    multiple models or poses.
-                </li>
-
-                <li>
-                    Identify the beginning and end of each docking pose.
-                </li>
-
-                <li>
-                    Preserve the molecular coordinates and structural
-                    information associated with each pose.
-                </li>
-
-                <li>
-                    Generate one output file for each detected pose.
-                </li>
-
-                <li>
-                    Apply sequential and consistent file names.
-                </li>
-
-                <li>
-                    Prepare pose files for downstream analysis with
-                    DockAnalyzer.
-                </li>
-            </ul>
-        </section>
 
         <!-- INPUT AND OUTPUT -->
 
@@ -665,12 +631,6 @@ Edit the main description and subsections below.
                     repository.
                 </p>
 
-                <!--
-                ========================================================
-                GITHUB LINK
-                Replace the href value if the file location changes.
-                ========================================================
-                -->
 
                 <a
                     class="download-button"
@@ -686,33 +646,49 @@ Edit the main description and subsections below.
         <!-- DOWNLOAD INSTRUCTIONS -->
 
         <section class="content-section">
-            <h2>How to Download from GitHub</h2>
+            <h2>How to use the code from GitHub</h2>
 
-            <ol>
-                <li>
-                    Open the code page using the download button above.
-                </li>
+           <ol>
+    <li>
+        Click the <strong>Access Splitting Poses Code</strong>
+        button above to open the script on GitHub.
+    </li>
 
-                <li>
-                    Locate the Splitting Poses Python file in the
-                    repository.
-                </li>
+    <li>
+        Open the Ubuntu terminal.
+    </li>
 
-                <li>
-                    Open the file and select the download or raw-file
-                    option.
-                </li>
+    <li>
+        Identify the directory containing the
+        <code>.pdbqt</code> docking files that you want to split.
+    </li>
 
-                <li>
-                    Save the file with its original <code>.py</code>
-                    extension.
-                </li>
+    <li>
+        Copy the complete script from GitHub and paste it into
+        a new Bash script file.
+    </li>
 
-                <li>
-                    Read the available instructions before running the
-                    script.
-                </li>
-            </ol>
+    <li>
+        In the script, replace the example input path with the
+        path to the directory containing your
+        <code>.pdbqt</code> files.
+    </li>
+
+    <li>
+        Save the script and run it from the Ubuntu terminal.
+    </li>
+
+    <li>
+        The script will process each <code>.pdbqt</code> file
+        and create a separate output directory for it.
+    </li>
+
+    <li>
+        Each output directory will contain the individual docking
+        poses converted into separate <code>.pdb</code> files and
+        numbered according to their original order.
+    </li>
+</ol>
         </section>
 
         <!-- USAGE NOTICE -->
