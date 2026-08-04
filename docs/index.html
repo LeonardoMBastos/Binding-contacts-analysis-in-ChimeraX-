@@ -42,14 +42,37 @@
 
         header h1 {
             margin: 0;
+            color: #ffffff;
             font-size: 44px;
         }
 
-        header p {
+        /*
+        ============================================================
+        HEADER SUBTITLE
+        Use this same class on all internal pages.
+        ============================================================
+        */
+
+        .header-subtitle {
             max-width: 750px;
             margin: 18px auto 0;
+            color: #f7d7da;
             font-size: 19px;
             line-height: 1.6;
+        }
+
+        /*
+        ============================================================
+        AUTHOR LINE
+        ============================================================
+        */
+
+        .header-author {
+            margin: 14px auto 0;
+            color: #fff0f1;
+            font-size: 15px;
+            font-weight: 500;
+            letter-spacing: 0.3px;
         }
 
         main {
@@ -72,8 +95,8 @@
         }
 
         .intro {
-            line-height: 1.7;
             color: #55494b;
+            line-height: 1.7;
         }
 
         .links {
@@ -146,8 +169,12 @@
                 font-size: 36px;
             }
 
-            header p {
+            .header-subtitle {
                 font-size: 17px;
+            }
+
+            .header-author {
+                font-size: 14px;
             }
 
             .card {
@@ -165,10 +192,13 @@
     <header>
         <h1>DockAnalyzer</h1>
 
-        <p>
+        <p class="header-subtitle">
             A modular Python toolkit for identifying, classifying,
             scoring, reporting, and visualizing protein–ligand
             interactions in UCSF ChimeraX.
+        </p>
+
+        <p class="header-author">
             Leonardo Marensi Bastos, 2026
         </p>
     </header>
