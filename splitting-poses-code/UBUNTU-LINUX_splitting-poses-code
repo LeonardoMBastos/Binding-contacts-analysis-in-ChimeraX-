@@ -1,0 +1,40 @@
+#!/bin/bash
+
+# Input file
+INPUT="/mnt/c/Users/leoma/Desktop/LN_pjt/04.DK-6x3x-BB_BS/V10/Output"
+
+# Output file and archive 
+OUTPUT="$INPUT/poses"
+
+mkdir -p "$OUTPUT"
+
+# Loop in .pdbqt files
+for file in "$INPUT"/*.pdbqt; do
+
+    # Verify the existence of .pdbqt files
+    [ -e "$file" ] || continue
+
+    # Naming and organizing the files
+    base=$(basename "$file" .pdbqt)
+    
+    mkdir -p "$OUTPUT/$base"
+
+    echo "===================================="
+    echo "Converting: $base"
+
+    # Converting all poses
+    obabel "$file" -O "$OUTPUT/$base/pose.pdb" -m
+
+    # Renaming positions according to affinity ranking  
+    contador=1
+    for pose in "$OUTPUT/$base"/pose*.pdb; do
+        mv "$pose" "$OUTPUT/$base/pose${contador}.pdb"
+        ((contador++))
+    done
+
+    echo "✓ $((contador-1)) poses salvas em $OUTPUT/$base"
+
+done
+
+echo "===================================="
+echo "Done!"
