@@ -37,7 +37,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
 from datetime import date, datetime, timezone
 from enum import Enum, IntEnum
-from functools import lru_cache, wraps
+from functools import lru_cache
 from hashlib import sha256
 from numbers import Real
 from pathlib import Path
@@ -49,11 +49,9 @@ from typing import (
     Dict,
     Final,
     FrozenSet,
-    Generic,
     Hashable,
     List,
     Literal,
-    NamedTuple,
     Optional,
     Protocol,
     Set,
@@ -84,29 +82,36 @@ import warnings
 
 try:
     import numpy as np
-    from numpy.typing import NDArray
-
-    NUMPY_AVAILABLE: Final[bool] = True
-except ImportError:  # pragma: no cover - environment dependent
+except ModuleNotFoundError as exc:  # pragma: no cover - environment dependent
+    if exc.name != "numpy":
+        raise
     np = None  # type: ignore[assignment]
     NDArray = Any  # type: ignore[misc,assignment]
-    NUMPY_AVAILABLE = False
+    NUMPY_AVAILABLE: Final[bool] = False
+else:
+    try:
+        from numpy.typing import NDArray
+    except (ImportError, ModuleNotFoundError):  # pragma: no cover - old NumPy
+        NDArray = Any  # type: ignore[misc,assignment]
+    NUMPY_AVAILABLE = True
 
 try:
     import chimerax as _chimerax
-
-    CHIMERAX_AVAILABLE: Final[bool] = True
-except ImportError:  # pragma: no cover - expected outside ChimeraX
+except ModuleNotFoundError as exc:  # pragma: no cover - expected outside ChimeraX
+    if exc.name != "chimerax":
+        raise
     _chimerax = None
-    CHIMERAX_AVAILABLE = False
+    CHIMERAX_AVAILABLE: Final[bool] = False
+else:
+    CHIMERAX_AVAILABLE = True
 
 # 1.3. Internal DockAnalyzer imports
 # -----------------------------------------------------------------------------
 
-try:
+if __package__:
     from . import config
     from .utils import AnalysisTimer, DockLogger, DockModel
-except ImportError:
+else:
     import config
     from utils import AnalysisTimer, DockLogger, DockModel
 
@@ -5705,6 +5710,29 @@ def _coerce_analysis_issues(value: Any) -> List[AnalysisIssue]:
     ]
 
 
+@lru_cache(maxsize=256)
+def _cached_dataclass_field_names(data_type: type) -> Tuple[str, ...]:
+    """Return cached dataclass field names for one type."""
+
+    return tuple(data_field.name for data_field in fields(data_type))
+
+
+@lru_cache(maxsize=512)
+def _cached_hashable_signature(callable_object: Any) -> inspect.Signature:
+    """Return a cached signature for a hashable callable."""
+
+    return inspect.signature(callable_object)
+
+
+def _cached_callable_signature(callable_object: Any) -> inspect.Signature:
+    """Return a signature while supporting unhashable callable objects."""
+
+    try:
+        return _cached_hashable_signature(callable_object)
+    except TypeError:
+        return inspect.signature(callable_object)
+
+
 def _result_value_to_data(
     value: Any,
     *,
@@ -5792,12 +5820,12 @@ def _result_value_to_data(
     if is_dataclass(value) and not isinstance(value, type):
         seen.add(object_id)
         converted = {}
-        for data_field in fields(value):
+        for field_name in _cached_dataclass_field_names(type(value)):
             try:
-                item = getattr(value, data_field.name)
+                item = getattr(value, field_name)
             except Exception:
                 continue
-            converted[data_field.name] = _result_value_to_data(
+            converted[field_name] = _result_value_to_data(
                 item,
                 include_objects=include_objects,
                 depth=depth + 1,
@@ -9881,13 +9909,32 @@ def module_import_candidates(
     return tuple(dict.fromkeys(candidates))
 
 
+def _module_not_found_matches_candidate(
+    error: ModuleNotFoundError,
+    import_name: str,
+) -> bool:
+    """Return whether an import failure refers to the requested module."""
+
+    missing_name = str(error.name or "").strip()
+    candidate = str(import_name).strip()
+    return bool(
+        missing_name
+        and candidate
+        and (missing_name == candidate or candidate.startswith(f"{missing_name}."))
+    )
+
+
 def _find_module_spec(import_name: str) -> Any:
     """Return an import specification without importing the target module."""
 
     try:
         util = importlib.import_module("importlib.util")
         return util.find_spec(import_name)
-    except (ImportError, AttributeError, ModuleNotFoundError, ValueError):
+    except ModuleNotFoundError as exc:
+        if not _module_not_found_matches_candidate(exc, import_name):
+            raise
+        return None
+    except (AttributeError, ValueError):
         return None
 
 
@@ -9960,7 +10007,9 @@ def load_analysis_module(
                 if reload:
                     module = importlib.reload(module)
                 break
-            except (ImportError, ModuleNotFoundError) as exc:
+            except ModuleNotFoundError as exc:
+                if not _module_not_found_matches_candidate(exc, import_name):
+                    raise
                 errors.append(exc)
 
     if module is None:
@@ -10836,7 +10885,7 @@ if _RUN_IMPORT_VALIDATIONS:
 
 
 # =============================================================================
-# Section 7 — Generic Object Access and Normalization
+# Section 7 — Generic object access and normalization
 # =============================================================================
 
 # This section defines chemistry-independent access and normalization helpers.
@@ -11204,18 +11253,44 @@ def _normalize_access_token(value: Any) -> str:
     return _ACCESS_TOKEN_PATTERN.sub("", text)
 
 
+def _build_object_field_alias_indexes(
+) -> Tuple[Mapping[str, str], Mapping[str, Tuple[str, ...]]]:
+    """Build immutable token and candidate indexes for object fields."""
+
+    canonical_by_token: Dict[str, str] = {}
+    candidates_by_canonical: Dict[str, Tuple[str, ...]] = {}
+    for canonical, aliases in OBJECT_FIELD_ALIASES.items():
+        ordered_items: List[str] = []
+        seen_items: Set[str] = set()
+        for candidate in (canonical, *aliases):
+            if candidate not in seen_items:
+                ordered_items.append(candidate)
+                seen_items.add(candidate)
+        ordered = tuple(ordered_items)
+        candidates_by_canonical[canonical] = ordered
+        for alias in ordered:
+            token = _normalize_access_token(alias)
+            if token:
+                canonical_by_token.setdefault(token, canonical)
+    return (
+        MappingProxyType(canonical_by_token),
+        MappingProxyType(candidates_by_canonical),
+    )
+
+
+_OBJECT_FIELD_CANONICAL_BY_TOKEN, _OBJECT_FIELD_CANDIDATES = (
+    _build_object_field_alias_indexes()
+)
+
+
 def canonicalize_object_field_name(value: Any) -> str:
     """Return the canonical field name for an object-access token."""
 
-    token = _normalize_access_token(value)
+    raw_name = str(value).strip()
+    token = _normalize_access_token(raw_name)
     if not token:
         raise ValueError("Object field name cannot be empty.")
-    for canonical, aliases in OBJECT_FIELD_ALIASES.items():
-        if token == _normalize_access_token(canonical):
-            return canonical
-        if any(token == _normalize_access_token(alias) for alias in aliases):
-            return canonical
-    return str(value).strip()
+    return _OBJECT_FIELD_CANONICAL_BY_TOKEN.get(token, raw_name)
 
 
 def get_object_field_aliases(
@@ -11230,20 +11305,12 @@ def get_object_field_aliases(
     if not raw_name:
         raise ValueError("Object field name cannot be empty.")
     canonical = canonicalize_object_field_name(raw_name)
-    candidates: List[str] = []
-    if include_canonical:
-        candidates.append(canonical)
-    candidates.extend(OBJECT_FIELD_ALIASES.get(canonical, (raw_name,)))
-    candidates.extend(str(alias).strip() for alias in extra_aliases)
+    base = _OBJECT_FIELD_CANDIDATES.get(canonical, (raw_name,))
+    candidates: List[str] = list(base if include_canonical else base[1:])
     if raw_name not in candidates:
         candidates.insert(0, raw_name)
-    return tuple(
-        unique_preserving_order(
-            candidate
-            for candidate in candidates
-            if candidate
-        )
-    )
+    candidates.extend(str(alias).strip() for alias in extra_aliases)
+    return tuple(unique_preserving_order(candidate for candidate in candidates if candidate))
 
 
 # 7.5. Safe attribute and item access
@@ -11830,8 +11897,7 @@ def iter_object_items(
         return
     if is_dataclass_instance(obj):
         count = 0
-        for data_field in fields(obj):
-            name = data_field.name
+        for name in _cached_dataclass_field_names(type(obj)):
             if not include_private and name.startswith("_"):
                 continue
             if selected is not None and name not in selected:
@@ -12517,22 +12583,23 @@ def infer_object_kind(obj: Any) -> str:
     return "object"
 
 
-def stable_object_fingerprint(
+def _object_fingerprint_from_components(
     obj: Any,
     *,
+    name: str,
+    identifier: Optional[str],
+    kind: str,
     include_metadata: bool = False,
     metadata_keys: Iterable[str] = (),
 ) -> str:
-    """Return a deterministic descriptive fingerprint for orchestration caches."""
+    """Hash object identity components without resolving them repeatedly."""
 
-    type_name = type(obj).__name__ if obj is not None else "NoneType"
-    module_name = type(obj).__module__ if obj is not None else "builtins"
     payload: Dict[str, Any] = {
-        "type": type_name,
-        "module": module_name,
-        "name": resolve_object_name(obj),
-        "identifier": resolve_object_identifier(obj),
-        "kind": infer_object_kind(obj),
+        "type": type(obj).__name__ if obj is not None else "NoneType",
+        "module": type(obj).__module__ if obj is not None else "builtins",
+        "name": name,
+        "identifier": identifier,
+        "kind": kind,
     }
     if include_metadata:
         metadata = get_object_value(obj, "metadata", {}, skip_none=True)
@@ -12555,18 +12622,44 @@ def stable_object_fingerprint(
     return sha256(encoded).hexdigest()
 
 
+def stable_object_fingerprint(
+    obj: Any,
+    *,
+    include_metadata: bool = False,
+    metadata_keys: Iterable[str] = (),
+) -> str:
+    """Return a deterministic descriptive fingerprint for orchestration caches."""
+
+    return _object_fingerprint_from_components(
+        obj,
+        name=resolve_object_name(obj),
+        identifier=resolve_object_identifier(obj),
+        kind=infer_object_kind(obj),
+        include_metadata=include_metadata,
+        metadata_keys=metadata_keys,
+    )
+
+
 def describe_object(obj: Any) -> ObjectIdentity:
     """Return a stable structured identity for any supported input object."""
 
     type_name = type(obj).__name__ if obj is not None else "NoneType"
     module_name = type(obj).__module__ if obj is not None else "builtins"
+    name = resolve_object_name(obj)
+    identifier = resolve_object_identifier(obj)
+    kind = infer_object_kind(obj)
     return ObjectIdentity(
-        name=resolve_object_name(obj),
-        identifier=resolve_object_identifier(obj),
+        name=name,
+        identifier=identifier,
         type_name=type_name,
         module_name=module_name,
-        kind=infer_object_kind(obj),
-        fingerprint=stable_object_fingerprint(obj),
+        kind=kind,
+        fingerprint=_object_fingerprint_from_components(
+            obj,
+            name=name,
+            identifier=identifier,
+            kind=kind,
+        ),
     )
 
 
@@ -12830,7 +12923,7 @@ if _RUN_IMPORT_VALIDATIONS:
 # =============================================================================
 
 # =============================================================================
-# Section 8 — Input Resolution and Model Discovery
+# Section 8 — Input resolution and model discovery
 # =============================================================================
 
 # 8.1. Input-resolution constants and conventions
@@ -13987,13 +14080,17 @@ def discover_models(
 
     pose_models: List[Any] = []
     pose_identifier = getattr(utils_module, "identify_pose_models", None)
-    if callable(pose_identifier) and receptor_model is not None:
+    if explicit_poses is not None:
+        # Explicit pose selections are authoritative and must not depend on
+        # optional discovery helpers returning the same objects again.
+        pose_models = normalize_model_collection(explicit_poses)
+    elif callable(pose_identifier) and receptor_model is not None:
         try:
             pose_models = list(
                 pose_identifier(
                     models=list(normalized_models),
                     receptor=receptor_model,
-                    poses=explicit_poses,
+                    poses=None,
                     include_unknown=include_unknown_poses,
                 )
             )
@@ -14004,8 +14101,6 @@ def discover_models(
                     stage=STAGE_INPUT_RESOLUTION,
                     cause=exc,
                 ) from exc
-    elif explicit_poses is not None:
-        pose_models = normalize_model_collection(explicit_poses)
 
     pose_models = unique_preserving_order(pose_models, key=id)
     ligand_values: List[Any] = []
@@ -14998,7 +15093,7 @@ if _RUN_IMPORT_VALIDATIONS:
 # =============================================================================
 
 # =============================================================================
-# Section 9 — DockModel Construction and Pose Preparation
+# Section 9 — DockModel construction and pose preparation
 # =============================================================================
 
 
@@ -16795,7 +16890,7 @@ def create_model_preparation_stage_result(
                 message=message,
                 stage=STAGE_MODEL_PREPARATION,
                 recoverable=True,
-                action=RecoveryAction.CONTINUE,
+                action=RecoveryAction.CONTINUE_PARTIAL,
                 scope=FailureScope.STAGE,
             )
         )
@@ -16809,7 +16904,7 @@ def create_model_preparation_stage_result(
                 stage=STAGE_MODEL_PREPARATION,
                 recoverable=bool(preparation.dock_models),
                 action=(
-                    RecoveryAction.CONTINUE
+                    RecoveryAction.CONTINUE_PARTIAL
                     if preparation.dock_models
                     else RecoveryAction.ABORT_RUN
                 ),
@@ -19790,7 +19885,7 @@ def _require_contacts_module(module: Optional[ModuleType] = None) -> ModuleType:
     return resolved
 
 
-def _contact_context_target(
+def _resolve_stage_context_target(
     context: Optional[AnalysisContext],
     *,
     dock_model: Any,
@@ -19798,7 +19893,7 @@ def _contact_context_target(
     pose: Any,
     pose_index: Optional[int],
 ) -> Tuple[Any, Any, Any, Optional[int]]:
-    """Fill missing target components from an analysis context."""
+    """Fill missing stage-target components from an analysis context."""
 
     if context is None:
         return dock_model, receptor, pose, pose_index
@@ -19826,6 +19921,25 @@ def _contact_context_target(
             resolved_pose = context.poses[0]
 
     return resolved_model, resolved_receptor, resolved_pose, resolved_index
+
+
+def _contact_context_target(
+    context: Optional[AnalysisContext],
+    *,
+    dock_model: Any,
+    receptor: Any,
+    pose: Any,
+    pose_index: Optional[int],
+) -> Tuple[Any, Any, Any, Optional[int]]:
+    """Resolve contact-stage target components from a context."""
+
+    return _resolve_stage_context_target(
+        context,
+        dock_model=dock_model,
+        receptor=receptor,
+        pose=pose,
+        pose_index=pose_index,
+    )
 
 
 def resolve_contact_stage_target(
@@ -19872,7 +19986,7 @@ def resolve_contact_stage_target(
             dock_model,
             DOCK_MODEL_FIELD_LIGAND,
             default=None,
-            aliases=DOCK_MODEL_FIELD_ALIASES.get(DOCK_MODEL_FIELD_LIGAND, ()),
+            aliases=OBJECT_FIELD_ALIASES.get(DOCK_MODEL_FIELD_LIGAND, ()),
             skip_none=True,
         )
     if pose is None:
@@ -20484,17 +20598,26 @@ def run_contact_analysis_adapter(
     )
 
 
-def _contact_stage_failure_should_raise(
+def _stage_failure_should_raise(
     context: Optional[AnalysisContext],
     raise_on_error: Optional[bool],
 ) -> bool:
-    """Resolve whether adapter failures should be raised."""
+    """Resolve whether one adapter failure should be raised."""
 
     if raise_on_error is not None:
         return bool(raise_on_error)
     if context is None:
         return True
     return context.config.runtime.failure_policy == FAILURE_POLICY_STRICT
+
+
+def _contact_stage_failure_should_raise(
+    context: Optional[AnalysisContext],
+    raise_on_error: Optional[bool],
+) -> bool:
+    """Resolve whether contact-adapter failures should be raised."""
+
+    return _stage_failure_should_raise(context, raise_on_error)
 
 
 def _record_contact_stage_context(
@@ -21799,33 +21922,15 @@ def _hbond_context_target(
     pose: Any,
     pose_index: Optional[int],
 ) -> Tuple[Any, Any, Any, Optional[int]]:
-    """Fill missing target components from an analysis context."""
+    """Resolve hydrogen-bond target components from a context."""
 
-    if context is None:
-        return dock_model, receptor, pose, pose_index
-    if not isinstance(context, AnalysisContext):
-        raise TypeError("context must be an AnalysisContext instance or None.")
-
-    resolved_index = context.current_pose_index if pose_index is None else pose_index
-    resolved_model = dock_model
-    if resolved_model is None:
-        if resolved_index is not None and 0 <= resolved_index < len(context.dock_models):
-            resolved_model = context.dock_models[resolved_index]
-        elif context.current_dock_model is not None:
-            resolved_model = context.current_dock_model
-        elif len(context.dock_models) == 1:
-            resolved_model = context.dock_models[0]
-
-    resolved_receptor = receptor if receptor is not None else context.receptor
-    resolved_pose = pose
-    if resolved_pose is None:
-        if resolved_index is not None and 0 <= resolved_index < len(context.poses):
-            resolved_pose = context.poses[resolved_index]
-        elif context.current_pose is not None:
-            resolved_pose = context.current_pose
-        elif len(context.poses) == 1:
-            resolved_pose = context.poses[0]
-    return resolved_model, resolved_receptor, resolved_pose, resolved_index
+    return _resolve_stage_context_target(
+        context,
+        dock_model=dock_model,
+        receptor=receptor,
+        pose=pose,
+        pose_index=pose_index,
+    )
 
 
 def _hbond_model_identifier(dock_model: Any) -> str:
@@ -21930,7 +22035,7 @@ def resolve_hbond_stage_target(
             dock_model,
             DOCK_MODEL_FIELD_LIGAND,
             default=None,
-            aliases=DOCK_MODEL_FIELD_ALIASES.get(DOCK_MODEL_FIELD_LIGAND, ()),
+            aliases=OBJECT_FIELD_ALIASES.get(DOCK_MODEL_FIELD_LIGAND, ()),
             skip_none=True,
         )
     if pose is None:
@@ -24240,7 +24345,7 @@ def resolve_hydrophobic_stage_target(
             dock_model,
             DOCK_MODEL_FIELD_LIGAND,
             default=None,
-            aliases=DOCK_MODEL_FIELD_ALIASES.get(DOCK_MODEL_FIELD_LIGAND, ()),
+            aliases=OBJECT_FIELD_ALIASES.get(DOCK_MODEL_FIELD_LIGAND, ()),
             skip_none=True,
         )
     if ligand is None:
@@ -29490,13 +29595,9 @@ def _saltbridge_stage_failure_should_raise(
     context: Optional[AnalysisContext],
     raise_on_error: Optional[bool],
 ) -> bool:
-    """Resolve whether adapter failures should be raised."""
+    """Resolve whether salt-bridge adapter failures should be raised."""
 
-    if raise_on_error is not None:
-        return bool(raise_on_error)
-    if context is None:
-        return True
-    return context.config.runtime.failure_policy == FAILURE_POLICY_STRICT
+    return _stage_failure_should_raise(context, raise_on_error)
 
 
 def _record_saltbridge_stage_context(
@@ -33641,7 +33742,7 @@ def _construct_scoring_native_object(
             stage=STAGE_SCORING,
         )
     try:
-        signature = inspect.signature(factory)
+        signature = _cached_callable_signature(factory)
         accepted = {
             name
             for name, parameter in signature.parameters.items()
@@ -35315,6 +35416,8 @@ def validate_scoring_integration_conventions() -> Dict[str, Any]:
 
     try:
         module = _require_scoring_module()
+    except (AnalysisDependencyError, AnalysisCapabilityError, ModuleNotFoundError):
+        raise
     except Exception as exc:
         failures.append(f"The real scoring module could not be loaded: {exc}")
         module = None
@@ -36647,7 +36750,7 @@ def _filter_callable_keyword_arguments(
     """Filter keyword arguments according to a callable signature."""
 
     try:
-        signature = inspect.signature(callable_object)
+        signature = _cached_callable_signature(callable_object)
     except (TypeError, ValueError):
         return dict(values)
     parameters = signature.parameters
@@ -36816,69 +36919,7 @@ def validate_single_pose_analysis_state(
     return result
 
 
-def execute_single_pose_validation_stage(
-    context: AnalysisContext,
-    pose_result: PoseAnalysisResult,
-    *,
-    preparation: Optional[ModelPreparationResult] = None,
-) -> AnalysisStageResult:
-    """Execute integrated single-pose validation."""
-
-    result = AnalysisStageResult(stage=STAGE_VALIDATION, required=True)
-    result.start()
-    try:
-        context.raise_if_cancelled(stage=STAGE_VALIDATION)
-        context.set_current_stage(STAGE_VALIDATION)
-        validation = validate_single_pose_analysis_state(
-            context,
-            pose_result,
-            preparation=preparation,
-            strict=False,
-        )
-        result.statistics = {
-            "valid": validation["valid"],
-            "error_count": len(validation["errors"]),
-            "warning_count": len(validation["warnings"]),
-            "required_failure_count": len(validation["required_failures"]),
-        }
-        result.output_summary = dict(validation)
-        for message in validation["warnings"]:
-            result.diagnostics.add_warning(message, stage=STAGE_VALIDATION)
-        if validation["errors"]:
-            error = AnalysisValidationError(
-                "Single-pose analysis validation failed: "
-                + " ".join(validation["errors"]),
-                stage=STAGE_VALIDATION,
-                details=validation,
-            )
-            if pose_result.stage_results:
-                result.partial(
-                    validation,
-                    issue=error,
-                    message="Single-pose validation completed with errors.",
-                )
-            else:
-                result.fail(error)
-        else:
-            result.succeed(
-                validation,
-                message="Single-pose analysis validation succeeded.",
-            )
-    except Exception as exc:
-        wrapped = exc
-        if not isinstance(exc, AnalysisError):
-            wrapped = AnalysisValidationError(
-                "Single-pose validation failed unexpectedly.",
-                stage=STAGE_VALIDATION,
-                cause=exc,
-            )
-        result.fail(
-            wrapped,
-            include_traceback=context.config.runtime.collect_diagnostics,
-        )
-    finally:
-        context.set_current_stage(None)
-    return result
+# execute_single_pose_validation_stage is implemented by the Section 27 validation layer.
 
 
 # 18.11. Finalization stage
@@ -37604,6 +37645,12 @@ def validate_single_pose_orchestration_conventions() -> Dict[str, Any]:
 # 18.17. Public interface
 # -----------------------------------------------------------------------------
 
+# Registered here to preserve the historical public order; the integrated
+# implementation is declared by Section 27.
+_SECTION_18_FORWARD_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    "execute_single_pose_validation_stage",
+)
+
 _SECTION_18_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "SINGLE_POSE_SCHEMA_NAME",
     "SINGLE_POSE_SCHEMA_VERSION",
@@ -37649,7 +37696,6 @@ _SECTION_18_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "synchronize_single_pose_stage_result",
     "invoke_single_pose_stage_executor",
     "validate_single_pose_analysis_state",
-    "execute_single_pose_validation_stage",
     "execute_single_pose_finalization_stage",
     "create_single_pose_nonexecution_result",
     "run_single_pose_analysis",
@@ -37662,7 +37708,21 @@ _SECTION_18_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "validate_single_pose_orchestration_conventions",
 )
 
-_register_public_names(_SECTION_18_PUBLIC_NAMES)
+_SECTION_18_PUBLIC_REGISTRATION_NAMES: Final[Tuple[str, ...]] = (
+    *_SECTION_18_PUBLIC_NAMES[
+        :_SECTION_18_PUBLIC_NAMES.index(
+            "execute_single_pose_finalization_stage"
+        )
+    ],
+    *_SECTION_18_FORWARD_PUBLIC_NAMES,
+    *_SECTION_18_PUBLIC_NAMES[
+        _SECTION_18_PUBLIC_NAMES.index(
+            "execute_single_pose_finalization_stage"
+        ):
+    ],
+)
+
+_register_public_names(_SECTION_18_PUBLIC_REGISTRATION_NAMES)
 
 if _RUN_IMPORT_VALIDATIONS:
     validate_single_pose_orchestration_conventions()
@@ -39091,7 +39151,7 @@ def run_multipose_scoring_aggregation(
 # -----------------------------------------------------------------------------
 
 
-def execute_multipose_consensus_stage(
+def _execute_preliminary_multipose_consensus_stage(
     context: AnalysisContext,
     result: MultiPoseAnalysisResult,
     *,
@@ -39171,52 +39231,7 @@ def execute_multipose_consensus_stage(
     return stage_result
 
 
-def execute_multipose_validation_stage(
-    context: AnalysisContext,
-    result: MultiPoseAnalysisResult,
-    *,
-    minimum_successful_poses: int = 1,
-) -> AnalysisStageResult:
-    """Validate aggregate multipose state before finalization."""
-
-    stage_result = AnalysisStageResult(stage=STAGE_VALIDATION, required=True)
-    stage_result.start()
-    errors: List[str] = []
-    if result.pose_count == 0:
-        errors.append("Multipose analysis contains no pose results.")
-    if len(result.successful_pose_results) < minimum_successful_poses:
-        errors.append(
-            "Multipose analysis produced fewer successful poses than required."
-        )
-    identifiers = [item.pose_id for item in result.pose_results]
-    if len(identifiers) != len(set(identifiers)):
-        errors.append("Multipose pose identifiers are not unique.")
-    for index, pose_result in enumerate(result.pose_results):
-        pose_errors = validate_core_result(pose_result, raise_on_error=False)
-        errors.extend(
-            f"Pose {index}: {message}"
-            for message in pose_errors
-        )
-    if errors:
-        issue = AnalysisValidationError(
-            "Multipose validation failed: " + " ".join(errors),
-            stage=STAGE_VALIDATION,
-            details={"errors": errors},
-        )
-        stage_result.fail(issue)
-    else:
-        stage_result.statistics = {
-            "pose_count": result.pose_count,
-            "successful_pose_count": len(result.successful_pose_results),
-            "failed_pose_count": len(result.failed_pose_results),
-        }
-        stage_result.succeed(
-            {"valid": True, "errors": []},
-            message="Multipose result validation completed successfully.",
-        )
-    context.set_stage_data(STAGE_VALIDATION, stage_result)
-    context.notify_stage(stage_result)
-    return stage_result
+# execute_multipose_validation_stage is implemented by the Section 27 validation layer.
 
 
 def execute_multipose_finalization_stage(
@@ -39879,6 +39894,13 @@ def validate_multipose_orchestration_conventions() -> Dict[str, Any]:
 # 19.13. Public interface
 # -----------------------------------------------------------------------------
 
+# Registered here to preserve the historical public order; the integrated
+# implementations are declared by Sections 21 and 27.
+_SECTION_19_FORWARD_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
+    "execute_multipose_consensus_stage",
+    "execute_multipose_validation_stage",
+)
+
 _SECTION_19_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "MULTIPOSE_SCHEMA_NAME",
     "MULTIPOSE_SCHEMA_VERSION",
@@ -39932,8 +39954,6 @@ _SECTION_19_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "build_preliminary_multipose_consensus",
     "attach_multipose_global_results",
     "run_multipose_scoring_aggregation",
-    "execute_multipose_consensus_stage",
-    "execute_multipose_validation_stage",
     "execute_multipose_finalization_stage",
     "run_multipose_analysis",
     "analyze_multiple_poses",
@@ -39945,7 +39965,21 @@ _SECTION_19_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "validate_multipose_orchestration_conventions",
 )
 
-_register_public_names(_SECTION_19_PUBLIC_NAMES)
+_SECTION_19_PUBLIC_REGISTRATION_NAMES: Final[Tuple[str, ...]] = (
+    *_SECTION_19_PUBLIC_NAMES[
+        :_SECTION_19_PUBLIC_NAMES.index(
+            "execute_multipose_finalization_stage"
+        )
+    ],
+    *_SECTION_19_FORWARD_PUBLIC_NAMES,
+    *_SECTION_19_PUBLIC_NAMES[
+        _SECTION_19_PUBLIC_NAMES.index(
+            "execute_multipose_finalization_stage"
+        ):
+    ],
+)
+
+_register_public_names(_SECTION_19_PUBLIC_REGISTRATION_NAMES)
 
 if _RUN_IMPORT_VALIDATIONS:
     validate_multipose_orchestration_conventions()
@@ -42292,7 +42326,7 @@ class AnalysisConsensusError(AnalysisIntegrationError):
 
 # Retain the Section 19 preliminary implementation for compatibility and
 # graceful fallback when native scoring outputs are unavailable.
-_execute_preliminary_multipose_consensus_stage = execute_multipose_consensus_stage
+# Preliminary consensus helper is defined explicitly above.
 
 
 # 21.2. Configuration
@@ -45465,18 +45499,111 @@ def merge_dock_model_state_values(existing: Any, incoming: Any) -> Any:
     return incoming
 
 
+def _access_dock_model_managed_value(
+    model: Any,
+    field_name: str,
+) -> Tuple[bool, Any, Optional[str]]:
+    """Read a managed value directly or from its metadata fallback."""
+
+    access = access_object_value(model, field_name, include_aliases=False)
+    if access.found:
+        return True, access.value, "attribute"
+    if field_name in DOCK_MODEL_MANAGED_DYNAMIC_FIELDS:
+        metadata = get_object_value(
+            model,
+            DOCK_MODEL_FIELD_METADATA,
+            default=None,
+            include_aliases=False,
+        )
+        if isinstance(metadata, Mapping) and field_name in metadata:
+            return True, metadata[field_name], "metadata"
+    return False, _STATE_MISSING, None
+
+
+def _set_dock_model_managed_value(
+    model: Any,
+    field_name: str,
+    value: Any,
+) -> str:
+    """Store a managed value directly or in metadata for restricted objects."""
+
+    try:
+        set_object_value(
+            model,
+            field_name,
+            value,
+            include_aliases=False,
+            prefer_existing=True,
+            strict=True,
+        )
+        return "attribute"
+    except (AttributeError, TypeError) as exc:
+        if field_name not in DOCK_MODEL_MANAGED_DYNAMIC_FIELDS:
+            raise AnalysisIntegrationError(
+                f"DockModel field {field_name!r} is not writable.",
+                details={"field": field_name, "model_type": type(model).__name__},
+                cause=exc,
+            ) from exc
+        try:
+            metadata = ensure_dock_model_metadata(model)
+        except Exception as metadata_exc:
+            raise AnalysisIntegrationError(
+                f"DockModel dynamic field {field_name!r} cannot be stored.",
+                details={
+                    "field": field_name,
+                    "model_type": type(model).__name__,
+                    "fallback": "metadata",
+                },
+                cause=metadata_exc,
+            ) from metadata_exc
+        metadata[field_name] = value
+        return "metadata"
+
+
+def _delete_dock_model_managed_value(model: Any, field_name: str) -> bool:
+    """Delete a managed direct value or its metadata fallback."""
+
+    if delete_object_value(
+        model,
+        field_name,
+        include_aliases=False,
+        strict=False,
+    ):
+        return True
+    if field_name in DOCK_MODEL_MANAGED_DYNAMIC_FIELDS:
+        metadata = get_object_value(
+            model,
+            DOCK_MODEL_FIELD_METADATA,
+            default=None,
+            include_aliases=False,
+        )
+        if isinstance(metadata, MutableMapping) and field_name in metadata:
+            del metadata[field_name]
+            return True
+    return False
+
+
 def _record_dock_model_attachment(
     model: Any,
     record: DockModelAttachmentRecord,
     *,
     config: DockModelStateConfig,
 ) -> None:
-    """Append one bounded attachment record to the model state."""
+    """Append one bounded attachment record when state storage is available."""
 
     if config.max_attachment_records <= 0:
+        record.metadata.setdefault("recorded", False)
+        record.metadata.setdefault("recording_reason", "disabled")
         return
-    container = ensure_dock_model_state_container(model)
+    try:
+        container = ensure_dock_model_state_container(model)
+    except Exception as exc:
+        record.metadata.setdefault("recorded", False)
+        record.metadata.setdefault("recording_reason", "state_unavailable")
+        record.metadata.setdefault("recording_error", type(exc).__name__)
+        return
     records = container[DOCK_MODEL_STATE_ATTACHMENTS_KEY]
+    record.metadata.setdefault("recorded", True)
     records.append(record.to_dict())
     excess = len(records) - config.max_attachment_records
     if excess > 0:
@@ -45505,9 +45632,9 @@ def attach_dock_model_field(
         raise ValueError("DockModel attachment requires a field name.")
     config_value = resolve_dock_model_state_config(state_config)
     selected_policy = canonicalize_attachment_policy(policy)
-    access = access_object_value(model, name, include_aliases=False)
-    previous_present = access.found
-    previous = access.value if access.found else _STATE_MISSING
+    previous_present, previous, previous_storage = (
+        _access_dock_model_managed_value(model, name)
+    )
 
     if selected_policy == ATTACHMENT_POLICY_NONE:
         action = DockModelAttachmentAction.SKIPPED
@@ -45529,14 +45656,7 @@ def attach_dock_model_field(
                 if previous_present
                 else DockModelAttachmentAction.CREATED
             )
-        set_object_value(
-            model,
-            name,
-            attached,
-            include_aliases=False,
-            prefer_existing=True,
-            strict=True,
-        )
+        storage = _set_dock_model_managed_value(model, name, attached)
         changed = previous is _STATE_MISSING or attached is not previous or attached != previous
 
     record_value = DockModelAttachmentRecord(
@@ -45557,6 +45677,10 @@ def attach_dock_model_field(
                 "stage": _normalize_optional_stage(stage),
             }
         ),
+        metadata={
+            "previous_storage": previous_storage,
+            "storage": locals().get("storage", previous_storage),
+        },
     )
     if record:
         _record_dock_model_attachment(model, record_value, config=config_value)
@@ -45576,9 +45700,11 @@ def remove_dock_model_field(
 
     name = str(field_name).strip()
     config_value = resolve_dock_model_state_config(state_config)
-    access = access_object_value(model, name, include_aliases=False)
+    previous_present, previous, _previous_storage = (
+        _access_dock_model_managed_value(model, name)
+    )
     changed = False
-    if access.found:
+    if previous_present:
         if name in {
             DOCK_MODEL_FIELD_CONTACTS,
             DOCK_MODEL_FIELD_HBONDS,
@@ -45604,12 +45730,7 @@ def remove_dock_model_field(
             set_object_value(model, name, {}, include_aliases=False)
             changed = True
         else:
-            changed = delete_object_value(
-                model,
-                name,
-                include_aliases=False,
-                strict=False,
-            )
+            changed = _delete_dock_model_managed_value(model, name)
     attachment = DockModelAttachmentRecord(
         field_name=name,
         policy=ATTACHMENT_POLICY_REPLACE,
@@ -45621,8 +45742,8 @@ def remove_dock_model_field(
         changed=changed,
         stage=stage,
         run_id=run_id,
-        previous_present=access.found,
-        previous_type=type(access.value).__name__ if access.found else None,
+        previous_present=previous_present,
+        previous_type=type(previous).__name__ if previous_present else None,
         new_type=None,
     )
     if record:
@@ -46254,12 +46375,12 @@ def snapshot_dock_model_state(
         name = str(raw_name).strip()
         if not name:
             continue
-        access = access_object_value(model, name, include_aliases=False)
-        if not access.found:
+        found, current, _storage = _access_dock_model_managed_value(model, name)
+        if not found:
             continue
         present.append(name)
         values[name] = safe_copy_object(
-            access.value,
+            current,
             deep=deep,
             fallback_to_original=True,
         )
@@ -46288,19 +46409,12 @@ def restore_dock_model_state(
             if name in expected:
                 continue
             if name in DOCK_MODEL_MANAGED_DYNAMIC_FIELDS:
-                delete_object_value(
-                    model,
-                    name,
-                    include_aliases=False,
-                    strict=False,
-                )
+                _delete_dock_model_managed_value(model, name)
     for name in snapshot.present_fields:
-        set_object_value(
+        _set_dock_model_managed_value(
             model,
             name,
             safe_copy_object(snapshot.values[name], deep=True, fallback_to_original=True),
-            include_aliases=False,
-            strict=True,
         )
 
 
@@ -48822,6 +48936,8 @@ def validate_report_integration_conventions() -> Dict[str, Any]:
         failures.append("Report stage adapter is not registered.")
     try:
         module = _require_report_module()
+    except (AnalysisDependencyError, AnalysisCapabilityError, ModuleNotFoundError):
+        raise
     except Exception as exc:
         failures.append(f"The real report module could not be loaded: {exc}")
         module = None
@@ -49178,11 +49294,24 @@ class ExportIntegrationStatus(str, Enum):
 # -----------------------------------------------------------------------------
 
 
-def _export_token(value: Any, *, default: str = "") -> str:
-    """Return a lowercase convention token."""
+def _output_convention_token(value: Any, *, default: str = "") -> str:
+    """Return a normalized lowercase output-convention token."""
 
     raw = getattr(value, "value", value)
-    return normalize_text(raw, default=default).strip().lower().replace("-", "_").replace(" ", "_").lstrip(".")
+    return (
+        normalize_text(raw, default=default)
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+        .lstrip(".")
+    )
+
+
+def _export_token(value: Any, *, default: str = "") -> str:
+    """Return a normalized export-format token."""
+
+    return _output_convention_token(value, default=default)
 
 
 def canonicalize_export_format(value: Any) -> str:
@@ -50824,7 +50953,8 @@ def export_stage_output_to_result(
     elif output.status is ExportIntegrationStatus.PARTIAL or validation_messages:
         issue = AnalysisIssue(
             severity=IssueSeverity.WARNING,
-            category=IssueCategory.OUTPUT,
+            kind=IssueKind.WARNING,
+            details={"category": "output"},
             code="partial_export_output",
             message="Export produced partial output." if not validation_messages else " ".join(validation_messages),
             stage=STAGE_EXPORT,
@@ -51100,6 +51230,8 @@ def validate_export_integration_conventions() -> Dict[str, Any]:
         failures.append("Export stage adapter is not registered.")
     try:
         module = _require_export_module()
+    except (AnalysisDependencyError, AnalysisCapabilityError, ModuleNotFoundError):
+        raise
     except Exception as exc:
         failures.append(f"The real export module could not be loaded: {exc}")
         module = None
@@ -51510,17 +51642,9 @@ class VisualizationIntegrationStatus(str, Enum):
 
 
 def _visualization_token(value: Any, *, default: str = "") -> str:
-    """Return a lowercase convention token."""
+    """Return a normalized visualization token."""
 
-    raw = getattr(value, "value", value)
-    return (
-        normalize_text(raw, default=default)
-        .strip()
-        .lower()
-        .replace("-", "_")
-        .replace(" ", "_")
-        .lstrip(".")
-    )
+    return _output_convention_token(value, default=default)
 
 
 def canonicalize_visualization_profile(value: Any) -> str:
@@ -52189,7 +52313,7 @@ def resolve_visualization_stage_target(
     selected = next((item for item in candidates if item is not None), None)
     if selected is None and context is not None:
         for key in (
-            ADVANCED_CONSENSUS_SHARED_OUTPUT_KEY,
+            CONSENSUS_ANALYSIS_OUTPUT_KEY,
             MULTIPOSE_OUTPUT_KEY,
             SINGLE_POSE_RESULT_KEY,
         ):
@@ -58790,7 +58914,7 @@ def resolve_chimerax_session(value: Any = None, *, required: bool = True) -> Any
             "A usable ChimeraX session could not be resolved.",
             code="chimerax_session_unavailable",
             recoverable=True,
-            action=RecoveryAction.SKIP,
+            action=RecoveryAction.SKIP_STAGE,
         )
     return None
 
@@ -58862,7 +58986,7 @@ def resolve_chimerax_command_runner(
                 "The ChimeraX command runner is unavailable.",
                 code="chimerax_runner_unavailable",
                 recoverable=True,
-                action=RecoveryAction.SKIP,
+                action=RecoveryAction.SKIP_STAGE,
                 cause=exc,
             ) from exc
     return None
@@ -60096,7 +60220,7 @@ def _load_chimerax_command_api() -> Dict[str, Any]:
             "The ChimeraX command registration API is unavailable.",
             code="chimerax_command_api_unavailable",
             recoverable=True,
-            action=RecoveryAction.SKIP,
+            action=RecoveryAction.SKIP_STAGE,
             cause=exc,
         ) from exc
     symbols = {
@@ -61391,6 +61515,33 @@ def _prepare_unified_config(
     return replace(integrated, runtime=runtime, requested_stages=stages)
 
 
+def _unified_analysis_input_is_empty(
+    value: Any,
+    *,
+    receptor: Any = None,
+    pose: Any = None,
+    poses: Any = None,
+    dock_model: Any = None,
+    dock_models: Any = None,
+    requests: Any = None,
+    session: Any = None,
+    models: Any = None,
+    context: Optional[AnalysisContext] = None,
+) -> bool:
+    """Return whether no explicit or contextual analysis input is available."""
+
+    explicit = (
+        value, receptor, pose, poses, dock_model, dock_models, requests, session, models
+    )
+    if any(item is not None for item in explicit):
+        return False
+    if context is not None:
+        return not any(
+            (context.request.input_data, context.receptor, context.poses, context.dock_models, context.session)
+        )
+    return True
+
+
 def run_analysis(
     value: Any = None,
     *,
@@ -61420,6 +61571,38 @@ def run_analysis(
 
     started_at = _utc_timestamp()
     started_clock = time.perf_counter()
+    if _unified_analysis_input_is_empty(
+        value,
+        receptor=receptor,
+        pose=pose,
+        poses=poses,
+        dock_model=dock_model,
+        dock_models=dock_models,
+        requests=requests,
+        session=session,
+        models=models,
+        context=context,
+    ):
+        requested_mode = mode
+        if requested_mode is None and isinstance(config, AnalysisConfig):
+            requested_mode = config.runtime.analysis_mode
+        session_mode = False
+        if requested_mode is not None:
+            try:
+                session_mode = (
+                    canonicalize_analysis_dispatch_mode(requested_mode)
+                    == ANALYSIS_DISPATCH_CHIMERAX
+                )
+            except (TypeError, ValueError):
+                session_mode = False
+        if not session_mode or resolve_chimerax_session(None, required=False) is None:
+            raise AnalysisInputError(
+                "Analysis requires a pose, DockModel, molecular model collection, "
+                "batch request or ChimeraX session.",
+                code="missing_analysis_input",
+                stage=STAGE_INPUT_RESOLUTION,
+                recoverable=False,
+            )
     decision = infer_analysis_dispatch(
         value,
         mode=mode,
@@ -61597,6 +61780,7 @@ def unified_analysis_to_json(
             indent=indent,
             sort_keys=sort_keys,
             ensure_ascii=False,
+            allow_nan=False,
         )
     except (TypeError, ValueError) as exc:
         raise AnalysisSerializationError(
@@ -61890,15 +62074,43 @@ class AnalysisAPISnapshot:
         }
 
 
+def _iter_analysis_public_sections() -> Iterator[Tuple[int, Tuple[str, ...]]]:
+    """Yield every numbered public-name declaration in section order."""
+
+    for section in range(1, 31):
+        names = globals().get(f"_SECTION_{section}_PUBLIC_NAMES", ())
+        yield section, tuple(names)
+
+
+@lru_cache(maxsize=1)
 def _analysis_public_section_map() -> Dict[str, int]:
-    """Return the section that first exported each public name."""
+    """Return the section that declares each public name."""
 
     mapping: Dict[str, int] = {}
-    for section in range(1, 30):
-        names = globals().get(f"_SECTION_{section}_PUBLIC_NAMES", ())
+    for section, names in _iter_analysis_public_sections():
         for name in names:
             mapping.setdefault(str(name), section)
     return mapping
+
+
+@lru_cache(maxsize=1)
+def _analysis_public_registration_order() -> Tuple[str, ...]:
+    """Reconstruct the ordered public registration sequence."""
+
+    ordered: List[str] = []
+    known: Set[str] = set()
+    for section, names in _iter_analysis_public_sections():
+        registration_names = globals().get(
+            f"_SECTION_{section}_PUBLIC_REGISTRATION_NAMES",
+            names,
+        )
+        for name in tuple(registration_names):
+            if not isinstance(name, str):
+                continue
+            if name not in known:
+                ordered.append(name)
+                known.add(name)
+    return tuple(ordered)
 
 
 def _analysis_symbol_kind(value: Any) -> str:
@@ -62193,23 +62405,191 @@ def validate_analysis_public_api(
     *,
     raise_on_error: bool = False,
 ) -> Tuple[str, ...]:
-    """Validate public-name integrity and core convenience signatures."""
+    """Validate public declarations, registration order and core signatures."""
 
     errors: List[str] = []
+    _analysis_public_section_map.cache_clear()
+    _analysis_public_registration_order.cache_clear()
+
+    def format_names(values: Iterable[Any]) -> str:
+        return ", ".join(sorted(repr(value) for value in values))
+
+    if not isinstance(__all__, list):
+        errors.append("__all__ must remain a list.")
+
+    invalid_entries = [
+        repr(name)
+        for name in __all__
+        if not isinstance(name, str) or not name.strip()
+    ]
+    if invalid_entries:
+        errors.append(
+            "Invalid public-name entries: " + ", ".join(invalid_entries) + "."
+        )
+
     duplicates = [
         name
-        for name, count in Counter(__all__).items()
+        for name, count in Counter(
+            name for name in __all__ if isinstance(name, str)
+        ).items()
         if count > 1
     ]
     if duplicates:
         errors.append(
-            "Duplicate public names: " + ", ".join(sorted(duplicates)) + "."
+            "Duplicate public names: " + format_names(duplicates) + "."
         )
-    missing = [name for name in __all__ if name not in globals()]
+
+    private_names = [
+        name for name in __all__
+        if isinstance(name, str) and name.startswith("_")
+    ]
+    if private_names:
+        errors.append(
+            "Private names exported through __all__: "
+            + format_names(private_names)
+            + "."
+        )
+
+    missing = [
+        name for name in __all__
+        if isinstance(name, str) and name not in globals()
+    ]
     if missing:
         errors.append(
-            "Missing public names: " + ", ".join(sorted(missing)) + "."
+            "Missing public names: " + format_names(missing) + "."
         )
+
+    declared_sections: Dict[str, int] = {}
+    for section, names in _iter_analysis_public_sections():
+        declaration_name = f"_SECTION_{section}_PUBLIC_NAMES"
+        raw_names = globals().get(declaration_name)
+        if not isinstance(raw_names, tuple):
+            errors.append(f"{declaration_name} must be a tuple.")
+            continue
+        invalid = [
+            repr(name)
+            for name in names
+            if not isinstance(name, str) or not name.strip()
+        ]
+        if invalid:
+            errors.append(
+                f"{declaration_name} contains invalid entries: "
+                + ", ".join(invalid)
+                + "."
+            )
+        repeated = [
+            name
+            for name, count in Counter(
+                name for name in names if isinstance(name, str)
+            ).items()
+            if count > 1
+        ]
+        if repeated:
+            errors.append(
+                f"{declaration_name} contains duplicates: "
+                + format_names(repeated)
+                + "."
+            )
+        for name in names:
+            if not isinstance(name, str):
+                continue
+            previous = declared_sections.get(name)
+            if previous is not None:
+                errors.append(
+                    f"Public name {name!r} is declared by Sections "
+                    f"{previous} and {section}."
+                )
+            else:
+                declared_sections[name] = section
+
+        forward_name = f"_SECTION_{section}_FORWARD_PUBLIC_NAMES"
+        forward_names = globals().get(forward_name, ())
+        if not isinstance(forward_names, tuple):
+            errors.append(f"{forward_name} must be a tuple when present.")
+            continue
+        forward_repeated = [
+            name
+            for name, count in Counter(
+                name for name in forward_names if isinstance(name, str)
+            ).items()
+            if count > 1
+        ]
+        if forward_repeated:
+            errors.append(
+                f"{forward_name} contains duplicates: "
+                + format_names(forward_repeated)
+                + "."
+            )
+        overlap = {name for name in names if isinstance(name, str)}.intersection(
+            name for name in forward_names if isinstance(name, str)
+        )
+        if overlap:
+            errors.append(
+                f"{forward_name} repeats names declared in the same section: "
+                + format_names(overlap)
+                + "."
+            )
+
+        registration_name = f"_SECTION_{section}_PUBLIC_REGISTRATION_NAMES"
+        registration_names = globals().get(registration_name, names)
+        if not isinstance(registration_names, tuple):
+            errors.append(f"{registration_name} must be a tuple when present.")
+        elif Counter(map(repr, registration_names)) != Counter(
+            map(repr, (*names, *forward_names))
+        ):
+            errors.append(
+                f"{registration_name} does not match its declared and forward names."
+            )
+
+    for section, _names in _iter_analysis_public_sections():
+        forward_names = globals().get(
+            f"_SECTION_{section}_FORWARD_PUBLIC_NAMES",
+            (),
+        )
+        for name in forward_names:
+            if not isinstance(name, str):
+                continue
+            declaration_section = declared_sections.get(name)
+            if declaration_section is None:
+                errors.append(
+                    f"Forward public name {name!r} is never declared."
+                )
+            elif declaration_section <= section:
+                errors.append(
+                    f"Forward public name {name!r} must be declared after "
+                    f"Section {section}."
+                )
+
+    expected_order = _analysis_public_registration_order()
+    if tuple(__all__) != expected_order:
+        errors.append(
+            "__all__ does not match the section registration order."
+        )
+
+    undeclared = [
+        name for name in __all__
+        if isinstance(name, str) and name not in declared_sections
+    ]
+    if undeclared:
+        errors.append(
+            "Public names without a section declaration: "
+            + format_names(undeclared)
+            + "."
+        )
+
+    section_map = _analysis_public_section_map()
+    section_30_names = globals().get("_SECTION_30_PUBLIC_NAMES", ())
+    unmapped_section_30 = [
+        name for name in section_30_names
+        if isinstance(name, str) and name not in section_map
+    ]
+    if unmapped_section_30:
+        errors.append(
+            "Section 30 public names are absent from API introspection: "
+            + format_names(unmapped_section_30)
+            + "."
+        )
+
     for required in ANALYSIS_CORE_CONVENIENCE_NAMES:
         value = globals().get(required)
         if value is None:
@@ -62218,19 +62598,53 @@ def validate_analysis_public_api(
             errors.append(
                 f"Required convenience API name is not callable: {required}."
             )
+
+    required_parameters: Mapping[str, Tuple[str, ...]] = {
+        "analyze": ("value", "return_output", "kwargs"),
+        "run_analysis": ("value", "mode", "config", "requested_stages"),
+        "execute_analysis": ("value", "kwargs"),
+        "analyze_pose": ("value", "kwargs"),
+        "analyze_poses": ("value", "kwargs"),
+        "analyze_dock_model": ("dock_model", "kwargs"),
+        "analyze_dock_models": ("dock_models", "kwargs"),
+        "analyze_session": ("session", "kwargs"),
+        "analyze_single_pose": ("value", "kwargs"),
+        "analyze_single_dock_model": ("dock_model", "kwargs"),
+        "analyze_multiple_poses": ("value", "kwargs"),
+        "analyze_multiple_dock_models": ("dock_models", "kwargs"),
+        "analyze_batch": ("value", "kwargs"),
+        "analyze_chimerax_session": ("session", "config", "options"),
+        "validate_analysis_result": ("value", "config", "policy", "raise_on_error"),
+        "inspect_analysis_api": ("detail", "include_capabilities"),
+    }
+    for function_name, parameters in required_parameters.items():
+        value = globals().get(function_name)
+        if not callable(value):
+            errors.append(f"Required public callable is missing: {function_name}.")
+            continue
+        try:
+            signature = inspect.signature(value)
+        except (TypeError, ValueError) as exc:
+            errors.append(
+                f"{function_name}() signature could not be inspected: {exc}."
+            )
+            continue
+        for parameter in parameters:
+            if parameter not in signature.parameters:
+                errors.append(
+                    f"{function_name}() is missing parameter {parameter!r}."
+                )
+
     try:
         analyze_signature = inspect.signature(analyze)
-        if "return_output" not in analyze_signature.parameters:
+        return_output = analyze_signature.parameters.get("return_output")
+        if return_output is None:
             errors.append("analyze() does not expose return_output.")
+        elif return_output.kind is not inspect.Parameter.KEYWORD_ONLY:
+            errors.append("analyze().return_output must remain keyword-only.")
     except (TypeError, ValueError) as exc:
         errors.append(f"analyze() signature could not be inspected: {exc}.")
-    try:
-        run_signature = inspect.signature(run_analysis)
-        for parameter in ("mode", "config", "requested_stages"):
-            if parameter not in run_signature.parameters:
-                errors.append(f"run_analysis() is missing {parameter!r}.")
-    except (TypeError, ValueError) as exc:
-        errors.append(f"run_analysis() signature could not be inspected: {exc}.")
+
     if raise_on_error and errors:
         raise AnalysisValidationError(
             "The public analysis API is invalid.",
@@ -63817,6 +64231,7 @@ def run_self_test_case(case: SelfTestCase, context: SelfTestContext) -> SelfTest
         except SelfTestEnvironmentalLimitation as exc:
             status = SelfTestStatus.LIMITED
             message = str(exc) or "Environmentally limited."
+            details = dict(getattr(exc, "details", {}) or {})
         except (SelfTestAssertionError, AssertionError) as exc:
             status = SelfTestStatus.FAILED
             message = str(exc) or "Assertion failed."
@@ -64071,6 +64486,21 @@ def _self_test_framework_primitives(
 # 30.2. Configuration, dependencies and input resolution
 # -----------------------------------------------------------------------------
 
+_SELF_TEST_ENVIRONMENTAL_VALIDATORS: Final[FrozenSet[str]] = frozenset(
+    {
+        "validate_contact_adapter_conventions",
+        "validate_hbond_adapter_conventions",
+        "validate_hydrophobic_adapter_conventions",
+        "validate_pi_adapter_conventions",
+        "validate_saltbridge_adapter_conventions",
+        "validate_scoring_integration_conventions",
+        "validate_advanced_multipose_conventions",
+        "validate_report_integration_conventions",
+        "validate_export_integration_conventions",
+        "validate_visualization_integration_conventions",
+    }
+)
+
 _SELF_TEST_VALIDATOR_GROUPS: Final[Mapping[str, Tuple[str, ...]]] = MappingProxyType(
     {
         SELF_TEST_GROUP_CONFIGURATION: (
@@ -64139,7 +64569,31 @@ def _execute_named_convention_validator(
         raise SelfTestAssertionError(
             f"Convention validator {validator_name!r} requires unsupported arguments."
         )
-    value = validator()
+    try:
+        value = validator()
+    except (AnalysisDependencyError, AnalysisCapabilityError) as exc:
+        raise SelfTestEnvironmentalLimitation(
+            f"{validator_name} requires an unavailable DockAnalyzer component: {exc}",
+            details={
+                "validator": validator_name,
+                "dependency_error": type(exc).__name__,
+                "dependency_message": str(exc),
+            },
+            cause=exc,
+        ) from exc
+    except ModuleNotFoundError as exc:
+        missing_root = str(exc.name or "").split(".", 1)[0]
+        internal_modules = set(KNOWN_ANALYSIS_MODULES) | {"config", "utils"}
+        if missing_root in internal_modules:
+            raise SelfTestEnvironmentalLimitation(
+                f"{validator_name} requires unavailable module {exc.name!r}.",
+                details={
+                    "validator": validator_name,
+                    "missing_module": exc.name,
+                },
+                cause=exc,
+            ) from exc
+        raise
     details = _normalize_self_test_details(value)
     details.setdefault("validator", validator_name)
     details.setdefault("valid", True)
@@ -64172,7 +64626,15 @@ for _self_test_group, _validator_names in _SELF_TEST_VALIDATOR_GROUPS.items():
                     {
                         SELF_TEST_TAG_REGRESSION,
                         SELF_TEST_TAG_INTEGRATION,
+                        *(
+                            (SELF_TEST_TAG_ENVIRONMENT,)
+                            if _validator_name in _SELF_TEST_ENVIRONMENTAL_VALIDATORS
+                            else ()
+                        ),
                     }
+                ),
+                environmental=(
+                    _validator_name in _SELF_TEST_ENVIRONMENTAL_VALIDATORS
                 ),
             )
         )
@@ -64618,6 +65080,131 @@ def _self_test_diagnostic_serialization(
     return diagnostics.summary()
 
 
+
+@register_self_test(
+    "empty_unified_input_rejection",
+    group=SELF_TEST_GROUP_VALIDATION_ENVIRONMENT,
+    description="Reject a completely empty public analysis request.",
+    order=95,
+    tags=(SELF_TEST_TAG_REGRESSION, SELF_TEST_TAG_UNIT),
+)
+def _self_test_empty_unified_input_rejection(
+    _context: SelfTestContext,
+) -> Dict[str, Any]:
+    assert_self_test_raises(AnalysisInputError, run_analysis)
+    return {"rejected": True}
+
+
+@register_self_test(
+    "restricted_dock_model_attachment",
+    group=SELF_TEST_GROUP_SINGLE_POSE,
+    description="Store dynamic results in metadata for restricted DockModel objects.",
+    order=95,
+    tags=(SELF_TEST_TAG_INTEGRATION, SELF_TEST_TAG_REGRESSION),
+)
+def _self_test_restricted_dock_model_attachment(
+    _context: SelfTestContext,
+) -> Dict[str, Any]:
+    class RestrictedModel:
+        __slots__ = ("contacts", "metadata")
+        def __init__(self) -> None:
+            self.contacts = []
+            self.metadata = {}
+    model = RestrictedModel()
+    direct = attach_dock_model_field(model, "contacts", [1], record=False)
+    dynamic = attach_dock_model_field(model, "analysis_result", {"ok": True}, record=False)
+    assert_self_test_equal(model.contacts, [1])
+    assert_self_test_equal(model.metadata["analysis_result"], {"ok": True})
+    return {"direct": direct.changed, "dynamic": dynamic.changed}
+
+
+@register_self_test(
+    "attachment_without_state_container",
+    group=SELF_TEST_GROUP_SINGLE_POSE,
+    description="Write essential fields even when attachment history is unavailable.",
+    order=96,
+    tags=(SELF_TEST_TAG_INTEGRATION, SELF_TEST_TAG_REGRESSION),
+)
+def _self_test_attachment_without_state_container(
+    _context: SelfTestContext,
+) -> Dict[str, Any]:
+    class ScoreOnly:
+        __slots__ = ("score",)
+        def __init__(self) -> None:
+            self.score = None
+    model = ScoreOnly()
+    record = attach_dock_model_field(model, "score", 2.5)
+    assert_self_test_equal(model.score, 2.5)
+    assert_self_test_equal(record.metadata.get("recorded"), False)
+    assert_self_test_equal(record.metadata.get("recording_reason"), "state_unavailable")
+    return dict(record.metadata)
+
+
+@register_self_test(
+    "strict_unified_json_serialization",
+    group=SELF_TEST_GROUP_OUTPUTS,
+    description="Serialize recursive and non-finite values without non-standard JSON tokens.",
+    order=95,
+    tags=(SELF_TEST_TAG_SERIALIZATION, SELF_TEST_TAG_REGRESSION),
+)
+def _self_test_strict_unified_json_serialization(
+    _context: SelfTestContext,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"nan": float("nan"), "inf": float("inf")}
+    payload["self"] = payload
+    encoded = unified_analysis_to_json(payload)
+    decoded = json.loads(encoded)
+    assert_self_test_equal(decoded["nan"], "nan")
+    assert_self_test_equal(decoded["inf"], "inf")
+    assert_self_test_equal(decoded["self"], "<recursive-reference>")
+    return {"length": len(encoded)}
+
+
+@register_self_test(
+    "ordinary_python_model_preparation",
+    group=SELF_TEST_GROUP_SINGLE_POSE,
+    description="Prepare ordinary Python receptor and pose objects.",
+    order=97,
+    tags=(SELF_TEST_TAG_INTEGRATION, SELF_TEST_TAG_UNIT),
+)
+def _self_test_ordinary_python_model_preparation(
+    _context: SelfTestContext,
+) -> Dict[str, Any]:
+    receptor = SimpleNamespace(name="receptor", atoms=())
+    pose = SimpleNamespace(name="pose", atoms=())
+    discovery = discover_models((receptor, pose), receptor=receptor, poses=(pose,))
+    assert_self_test(discovery.receptor is receptor)
+    assert_self_test_equal(tuple(discovery.poses), (pose,))
+    return {"pose_count": len(discovery.poses)}
+
+
+@register_self_test(
+    "non_writable_dock_model_field",
+    group=SELF_TEST_GROUP_VALIDATION_ENVIRONMENT,
+    description="Classify a genuinely non-writable essential DockModel field.",
+    order=96,
+    tags=(SELF_TEST_TAG_INTEGRATION, SELF_TEST_TAG_REGRESSION),
+)
+def _self_test_non_writable_dock_model_field(
+    _context: SelfTestContext,
+) -> Dict[str, Any]:
+    class ReadOnly:
+        __slots__ = ()
+        @property
+        def score(self) -> None:
+            return None
+    assert_self_test_raises(
+        AnalysisIntegrationError,
+        attach_dock_model_field,
+        ReadOnly(),
+        "score",
+        1.0,
+        record=False,
+    )
+    return {"rejected": True}
+
+
+
 # 30.8. Final runner
 # -----------------------------------------------------------------------------
 
@@ -64714,7 +65301,10 @@ def _self_test_public_api_integrity(
 @register_self_test(
     "english_developer_text",
     group=SELF_TEST_GROUP_FINAL_RUNNER,
-    description="Check comments, docstrings and string literals for Portuguese markers.",
+    description=(
+        "Check section headings, comments, docstrings, string literals and "
+        "self-test metadata for non-English markers."
+    ),
     order=40,
     tags=(SELF_TEST_TAG_LANGUAGE, SELF_TEST_TAG_REGRESSION),
 )
@@ -64729,46 +65319,119 @@ def _self_test_english_developer_text(
     source_text = source_path.read_text(encoding="utf-8")
     forbidden = (
         "aná" + "lise",
+        "anali" + "sar",
         "arq" + "uivo",
         "configu" + "ração",
+        "conclu" + "ída",
+        "deve" + " ser",
+        "dispon" + "ível",
         "erro" + " ao",
         "execu" + "ção",
+        "importa" + "ção",
+        "indispon" + "ível",
+        "integra" + "ção",
         "intera" + "ção",
         "liga" + "ção",
+        "não" + " foi",
+        "otimiza" + "ção",
         "pontu" + "ação",
         "pró" + "xima",
         "rela" + "tório",
         "resultado" + " da",
         "se" + "ção",
+        "serializa" + "ção",
+        "teste" + " aprovado",
+        "valida" + "ção",
         "visualiza" + "ção",
     )
     findings: List[Dict[str, Any]] = []
+    comment_count = 0
+    string_count = 0
+    docstring_count = 0
 
     for token in tokenize.generate_tokens(io.StringIO(source_text).readline):
-        if token.type == tokenize.COMMENT:
-            lowered = token.string.casefold()
-            for marker in forbidden:
-                if marker in lowered:
-                    findings.append(
-                        {"line": token.start[0], "kind": "comment", "marker": marker}
-                    )
+        if token.type != tokenize.COMMENT:
+            continue
+        comment_count += 1
+        lowered = token.string.casefold()
+        for marker in forbidden:
+            if marker in lowered:
+                findings.append(
+                    {"line": token.start[0], "kind": "comment", "marker": marker}
+                )
 
     tree = ast.parse(source_text, filename=str(source_path))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            lowered = node.value.casefold()
-            for marker in forbidden:
-                if marker in lowered:
-                    findings.append(
-                        {
-                            "line": getattr(node, "lineno", None),
-                            "kind": "string",
-                            "marker": marker,
-                        }
-                    )
+    docstring_nodes: Set[int] = set()
+    for owner in (tree, *(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    )):
+        if not owner.body:
+            continue
+        first = owner.body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            docstring_nodes.add(id(first.value))
 
-    assert_self_test(not findings, f"Portuguese developer text found: {findings[:10]!r}.")
-    return {"checked_markers": len(forbidden), "finding_count": len(findings)}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+            continue
+        string_count += 1
+        if id(node) in docstring_nodes:
+            docstring_count += 1
+        lowered = node.value.casefold()
+        for marker in forbidden:
+            if marker in lowered:
+                findings.append(
+                    {
+                        "line": getattr(node, "lineno", None),
+                        "kind": "docstring" if id(node) in docstring_nodes else "string",
+                        "marker": marker,
+                    }
+                )
+
+    section_headings = tuple(
+        line.strip()
+        for line in source_text.splitlines()
+        if line.startswith("# Section ") and " — " in line
+    )
+    assert_self_test_equal(
+        len(section_headings),
+        30,
+        "The source must contain exactly thirty English section headings.",
+    )
+
+    cases = get_self_test_registry().cases()
+    for case in cases:
+        metadata_text = f"{case.name} {case.description}".casefold()
+        for marker in forbidden:
+            if marker in metadata_text:
+                findings.append(
+                    {
+                        "line": None,
+                        "kind": "self_test_metadata",
+                        "marker": marker,
+                        "case": case.qualified_name,
+                    }
+                )
+
+    assert_self_test(
+        not findings,
+        f"Non-English developer text found: {findings[:10]!r}.",
+    )
+    return {
+        "checked_markers": len(forbidden),
+        "comments": comment_count,
+        "strings": string_count,
+        "docstrings": docstring_count,
+        "section_headings": len(section_headings),
+        "self_tests": len(cases),
+        "finding_count": len(findings),
+    }
 
 
 @register_self_test(
