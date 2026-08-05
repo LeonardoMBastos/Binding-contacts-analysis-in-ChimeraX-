@@ -65,61 +65,24 @@ from typing import (
 import numpy as np
 from numpy.typing import NDArray
 
-if __package__:
-    from . import config
-
-    from .contacts import (
-        ResidueContactKey,
-        get_atom_coordinate,
-        get_atom_element,
-        get_atom_identifier,
-        get_atom_name,
-        get_atom_residue,
-        get_residue_contact_key,
-        is_atom_like,
-        is_heavy_atom,
-        is_hydrogen_atom,
-        validate_atom,
-        validate_atom_collection,
-    )
-
-    from .geometry import (
-        angle,
-        distance,
-    )
-
-    from .utils import (
-        DockLogger,
-        DockModel,
-    )
-
-else:
-    import config
-
-    from contacts import (
-        ResidueContactKey,
-        get_atom_coordinate,
-        get_atom_element,
-        get_atom_identifier,
-        get_atom_name,
-        get_atom_residue,
-        get_residue_contact_key,
-        is_atom_like,
-        is_heavy_atom,
-        is_hydrogen_atom,
-        validate_atom,
-        validate_atom_collection,
-    )
-
-    from geometry import (
-        angle,
-        distance,
-    )
-
-    from utils import (
-        DockLogger,
-        DockModel,
-    )
+from . import config
+from ._version import __version__
+from .contacts import (
+    ResidueContactKey,
+    get_atom_coordinate,
+    get_atom_element,
+    get_atom_identifier,
+    get_atom_name,
+    get_atom_residue,
+    get_residue_contact_key,
+    is_atom_like,
+    is_heavy_atom,
+    is_hydrogen_atom,
+    validate_atom,
+    validate_atom_collection,
+)
+from .geometry import angle, distance
+from .utils import DockLogger, DockModel
 
 
 # -----------------------------------------------------------------------------
@@ -127,7 +90,6 @@ else:
 # -----------------------------------------------------------------------------
 
 __author__: Final[str] = "DockAnalyzer contributors"
-__version__: Final[str] = "0.1.0"
 __license__: Final[str] = "MIT"
 
 _MODULE_NAME: Final[str] = "hbonds"
@@ -23793,6 +23755,34 @@ def format_hydrogen_bond_summary(
         {},
     )
 
+    mean_donor_acceptor_distance = _format_optional_number(
+        donor_acceptor_statistics.get("mean"),
+        decimal_places=normalized_decimal_places,
+        suffix=" Å",
+    )
+
+    median_donor_acceptor_distance = _format_optional_number(
+        donor_acceptor_statistics.get("median"),
+        decimal_places=normalized_decimal_places,
+        suffix=" Å",
+    )
+
+    mean_dha_angle = _format_optional_number(
+        dha_statistics.get("mean"),
+        decimal_places=normalized_decimal_places,
+        suffix="°",
+    )
+
+    mean_strength_score = _format_optional_number(
+        strength_statistics.get("mean"),
+        decimal_places=normalized_decimal_places,
+    )
+
+    maximum_strength_score = _format_optional_number(
+        strength_statistics.get("maximum"),
+        decimal_places=normalized_decimal_places,
+    )
+
     lines = [
         (
             "Hydrogen bonds: "
@@ -23822,35 +23812,17 @@ def format_hydrogen_bond_summary(
         ),
         (
             "D...A distance: mean "
-            f"{_format_optional_number(
-                donor_acceptor_statistics.get('mean'),
-                decimal_places=normalized_decimal_places,
-                suffix=' Å',
-            )}, median "
-            f"{_format_optional_number(
-                donor_acceptor_statistics.get('median'),
-                decimal_places=normalized_decimal_places,
-                suffix=' Å',
-            )}."
+            f"{mean_donor_acceptor_distance}, median "
+            f"{median_donor_acceptor_distance}."
         ),
         (
             "D-H...A angle: mean "
-            f"{_format_optional_number(
-                dha_statistics.get('mean'),
-                decimal_places=normalized_decimal_places,
-                suffix='°',
-            )}."
+            f"{mean_dha_angle}."
         ),
         (
             "Geometric strength score: mean "
-            f"{_format_optional_number(
-                strength_statistics.get('mean'),
-                decimal_places=normalized_decimal_places,
-            )}, maximum "
-            f"{_format_optional_number(
-                strength_statistics.get('maximum'),
-                decimal_places=normalized_decimal_places,
-            )}."
+            f"{mean_strength_score}, maximum "
+            f"{maximum_strength_score}."
         ),
         (
             "Interacting receptor residue groups: "

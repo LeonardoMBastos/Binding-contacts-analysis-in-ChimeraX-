@@ -72,18 +72,13 @@ import shutil
 import sys
 
 # -----------------------------------------------------------------------------
-# 1.2. Optional NumPy support
+# 1.2. Required NumPy support
 # -----------------------------------------------------------------------------
 
-try:
-    import numpy as np
-    from numpy.typing import NDArray
+import numpy as np
+from numpy.typing import NDArray
 
-    NUMPY_AVAILABLE: Final[bool] = True
-except ImportError:  # pragma: no cover - environment dependent
-    np = None  # type: ignore[assignment]
-    NDArray = Any  # type: ignore[misc,assignment]
-    NUMPY_AVAILABLE = False
+NUMPY_AVAILABLE: Final[bool] = True
 
 # -----------------------------------------------------------------------------
 # 1.3. Optional pandas support
@@ -93,7 +88,9 @@ try:
     import pandas as pd
 
     PANDAS_AVAILABLE: Final[bool] = True
-except ImportError:  # pragma: no cover - environment dependent
+except ModuleNotFoundError as exc:  # pragma: no cover - environment dependent
+    if exc.name != "pandas":
+        raise
     pd = None  # type: ignore[assignment]
     PANDAS_AVAILABLE = False
 
@@ -109,7 +106,9 @@ try:
     from openpyxl.worksheet.table import Table, TableStyleInfo
 
     OPENPYXL_AVAILABLE: Final[bool] = True
-except ImportError:  # pragma: no cover - environment dependent
+except ModuleNotFoundError as exc:  # pragma: no cover - environment dependent
+    if exc.name != "openpyxl":
+        raise
     openpyxl = None  # type: ignore[assignment]
     Workbook = Any  # type: ignore[misc,assignment]
     Alignment = Any  # type: ignore[misc,assignment]
@@ -125,12 +124,16 @@ except ImportError:  # pragma: no cover - environment dependent
 # -----------------------------------------------------------------------------
 
 try:
+    import chimerax
     from chimerax.atomic import Atom as ChimeraXAtom
     from chimerax.atomic import AtomicStructure as ChimeraXAtomicStructure
     from chimerax.atomic import Residue as ChimeraXResidue
 
     CHIMERAX_AVAILABLE: Final[bool] = True
-except ImportError:  # pragma: no cover - expected outside ChimeraX
+except ModuleNotFoundError as exc:  # pragma: no cover - expected outside ChimeraX
+    if exc.name != "chimerax":
+        raise
+    chimerax = None  # type: ignore[assignment]
     ChimeraXAtom = Any  # type: ignore[misc,assignment]
     ChimeraXAtomicStructure = Any  # type: ignore[misc,assignment]
     ChimeraXResidue = Any  # type: ignore[misc,assignment]
@@ -140,19 +143,14 @@ except ImportError:  # pragma: no cover - expected outside ChimeraX
 # 1.6. Internal DockAnalyzer imports
 # -----------------------------------------------------------------------------
 
-if __package__:
-    from . import config
-    from .utils import DockLogger, DockModel
-else:
-    import config
-    from utils import DockLogger, DockModel
+from . import config
+from ._version import __version__
 
 # -----------------------------------------------------------------------------
 # 1.7. Module metadata
 # -----------------------------------------------------------------------------
 
 __author__: Final[str] = "Leonardo Bastos and DockAnalyzer contributors"
-__version__: Final[str] = "0.1.0"
 __license__: Final[str] = "MIT"
 __status__: Final[str] = "Development"
 
@@ -160,8 +158,6 @@ _MODULE_NAME: Final[str] = "export"
 _MODULE_DESCRIPTION: Final[str] = (
     "Serialization and multi-format export utilities for DockAnalyzer."
 )
-
-_LOGGER: Final[DockLogger] = DockLogger(_MODULE_NAME)
 
 # -----------------------------------------------------------------------------
 # 1.8. Public interface
@@ -224,7 +220,11 @@ StructureLike: TypeAlias = Any
 InteractionLike: TypeAlias = Any
 AnalysisResultLike: TypeAlias = Any
 ScoringResultLike: TypeAlias = Any
-DockModelLike: TypeAlias = Union[DockModel, Any]
+# Dock models are handled through their public, duck-typed attributes.  Keeping
+# this alias independent from ``utils`` is intentional: importing ``utils``
+# currently creates a file logger, which would make importing this output module
+# create directories and log files before an export is requested.
+DockModelLike: TypeAlias = Any
 
 AtomCollection: TypeAlias = Iterable[AtomLike]
 ResidueCollection: TypeAlias = Iterable[ResidueLike]
@@ -8523,13 +8523,16 @@ def json_lines_dumps(
             registry=registry,
             serialization_options=serialization_options,
         )
-        lines.append(json.dumps(
-            payload,
-            ensure_ascii=opts.ensure_ascii,
-            sort_keys=opts.sort_keys,
-            allow_nan=opts.allow_nan,
-            separators=opts.separators,
-        ))
+        try:
+            lines.append(json.dumps(
+                payload,
+                ensure_ascii=opts.ensure_ascii,
+                sort_keys=opts.sort_keys,
+                allow_nan=opts.allow_nan,
+                separators=opts.separators,
+            ))
+        except (TypeError, ValueError) as exc:
+            raise ExportSerializationError("Unable to encode JSON Lines payload") from exc
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -8540,18 +8543,26 @@ def _write_text_atomic(path: Path, text: str, *, encoding: str, append: bool) ->
         with path.open("a", encoding=encoding, newline="") as handle:
             handle.write(text)
         return
-    with NamedTemporaryFile(
-        "w",
-        encoding=encoding,
-        newline="",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as handle:
-        temp_path = Path(handle.name)
-        handle.write(text)
-    temp_path.replace(path)
+    temp_path: Optional[Path] = None
+    try:
+        with NamedTemporaryFile(
+            "w",
+            encoding=encoding,
+            newline="",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(text)
+        temp_path.replace(path)
+    finally:
+        if temp_path is not None and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
 
 
 def write_json(
@@ -8568,6 +8579,10 @@ def write_json(
 ) -> ExportedFile:
     """Write one JSON document."""
     opts = _json_options(options)
+    if opts.append:
+        raise ExportConfigurationError(
+            "A JSON document cannot be appended safely; use write_json_lines() instead."
+        )
     target = resolve_output_path(
         path,
         output_dir=output_dir,
@@ -8603,14 +8618,14 @@ def write_json_lines(
 ) -> ExportedFile:
     """Write iterable values as JSON Lines."""
     opts = _json_options(options)
-    opts.json_lines = True
+    opts = replace(opts, json_lines=True)
     records = list(values)
     target = resolve_output_path(
         path,
         output_dir=output_dir,
         basename=basename,
         format_name=EXPORT_FORMAT_JSONL,
-        overwrite=overwrite,
+        overwrite=(OverwriteMode.OVERWRITE.value if opts.append else overwrite),
     )
     text = json_lines_dumps(
         records,
@@ -8760,18 +8775,17 @@ def write_delimited(
         basename=basename,
         format_name=normalized_format,
         table=table.name,
-        overwrite=overwrite,
+        overwrite=(OverwriteMode.OVERWRITE.value if opts.append else overwrite),
     )
-    text = delimited_dumps(table, format_name=normalized_format, options=opts)
-    append_header = opts.include_header
+    write_options = opts
     if opts.append and target.exists() and target.stat().st_size > 0:
-        opts.include_header = False
-    try:
-        _write_text_atomic(target, text if opts.include_header == append_header else delimited_dumps(
-            table, format_name=normalized_format, options=opts
-        ), encoding=encoding, append=opts.append)
-    finally:
-        opts.include_header = append_header
+        write_options = replace(opts, include_header=False)
+    text = delimited_dumps(
+        table,
+        format_name=normalized_format,
+        options=write_options,
+    )
+    _write_text_atomic(target, text, encoding=encoding, append=opts.append)
     exported = ExportedFile(
         path=target,
         format=normalized_format,
@@ -11575,11 +11589,7 @@ def is_chimerax_session(value: Any) -> bool:
 
 def chimerax_available() -> bool:
     """Return whether ChimeraX APIs can be imported."""
-    try:
-        import chimerax  # type: ignore  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    return CHIMERAX_AVAILABLE
 
 
 def _chimerax_log(session: Any, level: str, message: str) -> None:
@@ -11632,15 +11642,13 @@ def run_chimerax_command(session: Any, command: str) -> Any:
             feature="command execution",
             message="A valid ChimeraX session is required.",
         )
-    try:
-        from chimerax.core.commands import run  # type: ignore
-    except ImportError as exc:
+    if not CHIMERAX_AVAILABLE:
         raise ExportDependencyError(
             "chimerax.core.commands",
             feature="command execution",
             message="ChimeraX command API is unavailable.",
-            cause=exc,
-        ) from exc
+        )
+    from chimerax.core.commands import run  # type: ignore
     return run(session, command)
 
 

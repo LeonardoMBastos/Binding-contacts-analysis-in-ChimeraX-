@@ -130,6 +130,7 @@ from typing import (
 import contextlib
 import json
 import math
+import os
 import warnings
 import sys
 
@@ -156,18 +157,9 @@ from numpy.typing import NDArray
 # and, when strictly necessary, local imports.
 # -----------------------------------------------------------------------------
 
-try:
-    from . import config
-    from .utils import (
-        DockLogger,
-        DockModel,
-    )
-except ImportError:
-    import config
-    from utils import (
-        DockLogger,
-        DockModel,
-    )
+from . import config
+from ._version import __version__
+from .utils import DockLogger, DockModel
 
 
 # -----------------------------------------------------------------------------
@@ -175,7 +167,6 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 __author__: Final[str] = "Leonardo Bastos and DockAnalyzer contributors"
-__version__: Final[str] = "0.1.0"
 __license__: Final[str] = "MIT"
 
 _MODULE_NAME: Final[str] = "scoring"
@@ -186,6 +177,16 @@ _MODULE_DESCRIPTION: Final[str] = (
 
 _LOGGER: Final[DockLogger] = DockLogger(
     _MODULE_NAME,
+)
+
+# Importing the production scoring module must not execute its extensive
+# internal section validators.  They remain available for development and can
+# be enabled explicitly when diagnosing the module in isolation.
+_RUN_IMPORT_VALIDATIONS: Final[bool] = (
+    os.getenv("DOCKANALYZER_VALIDATE_IMPORTS", "")
+    .strip()
+    .lower()
+    in {"1", "true", "yes", "on"}
 )
 
 
@@ -661,6 +662,19 @@ SCORE_TYPE_PI: Final[str] = "pi"
 SCORE_TYPE_SALT_BRIDGE: Final[str] = "salt_bridge"
 SCORE_TYPE_CLASH: Final[str] = "clash"
 SCORE_TYPE_UNKNOWN: Final[str] = "unknown"
+
+
+# -----------------------------------------------------------------------------
+# 2.2.1. Canonical interaction-family aliases
+# -----------------------------------------------------------------------------
+
+SCORE_FAMILY_CONTACT: Final[str] = SCORE_TYPE_CONTACT
+SCORE_FAMILY_HYDROGEN_BOND: Final[str] = SCORE_TYPE_HYDROGEN_BOND
+SCORE_FAMILY_HYDROPHOBIC: Final[str] = SCORE_TYPE_HYDROPHOBIC
+SCORE_FAMILY_PI: Final[str] = SCORE_TYPE_PI
+SCORE_FAMILY_IONIC: Final[str] = SCORE_TYPE_SALT_BRIDGE
+SCORE_FAMILY_STERIC: Final[str] = SCORE_TYPE_CLASH
+SCORE_FAMILY_UNKNOWN: Final[str] = SCORE_TYPE_UNKNOWN
 
 
 # -----------------------------------------------------------------------------
@@ -1756,6 +1770,21 @@ def get_interaction_polarity(value: Any) -> str:
     return POLARITY_UNKNOWN
 
 
+def normalize_score_polarity(
+    value: Any,
+    *,
+    interaction_type: Any = None,
+) -> str:
+    """Normalize a score polarity, optionally inferring it from its type."""
+
+    normalized = _normalize_scoring_name(value)
+    if normalized in CANONICAL_POLARITIES and normalized != POLARITY_UNKNOWN:
+        return normalized
+    if interaction_type is not None:
+        return get_interaction_polarity(interaction_type)
+    return POLARITY_UNKNOWN
+
+
 def is_favorable_interaction_type(value: Any) -> bool:
     """Return whether an interaction type is favorable by default."""
 
@@ -2215,7 +2244,8 @@ def _validate_section_2_constants() -> None:
         )
 
 
-_validate_section_2_constants()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_2_constants()
 
 
 # -----------------------------------------------------------------------------
@@ -2246,6 +2276,15 @@ _SECTION_2_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "SCORE_TYPE_CLASH",
     "SCORE_TYPE_STERIC_CLASH",
     "SCORE_TYPE_UNKNOWN",
+
+    # Canonical interaction families
+    "SCORE_FAMILY_CONTACT",
+    "SCORE_FAMILY_HYDROGEN_BOND",
+    "SCORE_FAMILY_HYDROPHOBIC",
+    "SCORE_FAMILY_PI",
+    "SCORE_FAMILY_IONIC",
+    "SCORE_FAMILY_STERIC",
+    "SCORE_FAMILY_UNKNOWN",
 
     # Contact types
     "SCORE_TYPE_VAN_DER_WAALS",
@@ -4128,7 +4167,8 @@ def _validate_section_3_defaults() -> None:
         )
 
 
-_validate_section_3_defaults()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_3_defaults()
 
 
 # -----------------------------------------------------------------------------
@@ -5233,6 +5273,8 @@ class InteractionScore:
 
     pose_id: str = ""
     model_id: str = ""
+    ligand_id: str = ""
+    container_name: str = ""
 
     components: Tuple[ScoreComponent, ...] = field(
         default_factory=tuple
@@ -5300,7 +5342,10 @@ class InteractionScore:
             self.polarity
         )
 
-        if normalized_polarity not in CANONICAL_POLARITIES:
+        if (
+            normalized_polarity not in CANONICAL_POLARITIES
+            or normalized_polarity == POLARITY_UNKNOWN
+        ):
             normalized_polarity = get_interaction_polarity(
                 normalized_type
             )
@@ -5546,6 +5591,22 @@ class InteractionScore:
             self,
             "model_id",
             _coerce_identifier(self.model_id),
+        )
+        object.__setattr__(
+            self,
+            "ligand_id",
+            _coerce_identifier(
+                self.ligand_id
+                or self.metadata.get("ligand_id", "")
+            ),
+        )
+        object.__setattr__(
+            self,
+            "container_name",
+            _coerce_optional_text(
+                self.container_name
+                or self.metadata.get("container_name", "")
+            ),
         )
         object.__setattr__(
             self,
@@ -6022,6 +6083,8 @@ class InteractionScore:
             ),
             "pose_id": self.pose_id,
             "model_id": self.model_id,
+            "ligand_id": self.ligand_id,
+            "container_name": self.container_name,
         }
 
         if include_components:
@@ -6080,9 +6143,28 @@ class InteractionScore:
                 self.residue_pair,
                 self.pose_id,
                 self.model_id,
+                self.ligand_id,
+                self.container_name,
                 self.components,
             )
         )
+
+
+def interaction_score_to_dict(
+    score: InteractionScore,
+    *,
+    include_metadata: bool = True,
+    include_components: bool = True,
+    include_interaction: bool = False,
+) -> Dict[str, Any]:
+    """Serialize an InteractionScore through its canonical method."""
+
+    validate_interaction_score(score, validate_consistency=False)
+    return score.to_dict(
+        include_metadata=include_metadata,
+        include_components=include_components,
+        include_interaction=include_interaction,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -6268,6 +6350,8 @@ def create_interaction_score(
     residue_pair: Optional[Sequence[Any]] = None,
     pose_id: Any = "",
     model_id: Any = "",
+    ligand_id: Any = "",
+    container_name: Any = "",
     interaction: Any = None,
     metadata: Optional[Mapping[str, Any]] = None,
     preserve_components: bool = True,
@@ -6334,6 +6418,8 @@ def create_interaction_score(
         ),
         pose_id=_coerce_identifier(pose_id),
         model_id=_coerce_identifier(model_id),
+        ligand_id=_coerce_identifier(ligand_id),
+        container_name=_coerce_optional_text(container_name),
         components=components,
         interaction=interaction,
         metadata=metadata or _EMPTY_METADATA,
@@ -6642,7 +6728,8 @@ def _validate_section_4_1_structures() -> None:
     test_result.validate_consistency()
 
 
-_validate_section_4_1_structures()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_4_1_structures()
 
 
 # -----------------------------------------------------------------------------
@@ -6692,6 +6779,7 @@ _SECTION_4_1_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "create_interaction_score",
     "create_rejected_interaction_score",
     "create_duplicate_interaction_score",
+    "interaction_score_to_dict",
 
     # Execution and construction
     "apply_score_components",
@@ -9717,7 +9805,8 @@ def _validate_section_4_2_structures() -> None:
     )
 
 
-_validate_section_4_2_structures()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_4_2_structures()
 
 
 # -----------------------------------------------------------------------------
@@ -13546,7 +13635,8 @@ def _validate_section_4_3_structures() -> None:
     )
 
 
-_validate_section_4_3_structures()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_4_3_structures()
 
 
 # -----------------------------------------------------------------------------
@@ -14100,10 +14190,13 @@ def is_sequence_like(
     return isinstance(value, Sequence)
 
 
+_SAFE_ACCESS_UNSET: Final[object] = object()
+
+
 def safe_getattr(
     obj: Any,
     name: str,
-    default: Any = MISSING,
+    default: Any = _SAFE_ACCESS_UNSET,
 ) -> Any:
     """
     Read an attribute without propagating property-access exceptions.
@@ -14118,7 +14211,7 @@ def safe_getattr(
         ValueError,
         RuntimeError,
     ):
-        if default is MISSING:
+        if default is _SAFE_ACCESS_UNSET:
             raise
 
         return default
@@ -14127,7 +14220,7 @@ def safe_getattr(
 def safe_call_zero_argument(
     value: Any,
     *,
-    default: Any = MISSING,
+    default: Any = _SAFE_ACCESS_UNSET,
 ) -> Any:
     """
     Call a zero-argument callable safely.
@@ -14147,7 +14240,7 @@ def safe_call_zero_argument(
         AttributeError,
         KeyError,
     ):
-        if default is MISSING:
+        if default is _SAFE_ACCESS_UNSET:
             raise
 
         return default
@@ -16422,6 +16515,7 @@ class ExtractedInteractionData:
     pose_id: str = ""
     model_id: str = ""
     ligand_id: str = ""
+    container_name: str = ""
 
     distance: Optional[float] = None
     angle: Optional[float] = None
@@ -16473,7 +16567,10 @@ class ExtractedInteractionData:
             self.polarity
         )
 
-        if polarity not in CANONICAL_POLARITIES:
+        if (
+            polarity not in CANONICAL_POLARITIES
+            or polarity == POLARITY_UNKNOWN
+        ):
             polarity = get_interaction_polarity(
                 interaction_type
             )
@@ -16566,6 +16663,13 @@ class ExtractedInteractionData:
             "ligand_id",
             _coerce_identifier(
                 self.ligand_id
+            ),
+        )
+        object.__setattr__(
+            self,
+            "container_name",
+            _coerce_optional_text(
+                self.container_name
             ),
         )
         object.__setattr__(
@@ -16739,6 +16843,7 @@ class ExtractedInteractionData:
             "pose_id": self.pose_id,
             "model_id": self.model_id,
             "ligand_id": self.ligand_id,
+            "container_name": self.container_name,
             "geometry": dict(self.geometry),
             "source": self.source,
         }
@@ -16774,6 +16879,7 @@ class ExtractedInteractionData:
                 self.pose_id,
                 self.model_id,
                 self.ligand_id,
+                self.container_name,
                 self.distance,
                 self.angle,
                 self.dihedral,
@@ -16793,6 +16899,7 @@ def extract_interaction_data(
     interaction: Any,
     *,
     index: Optional[int] = None,
+    container_name: Optional[str] = None,
     pose_id: Optional[str] = None,
     model_id: Optional[str] = None,
     ligand_id: Optional[str] = None,
@@ -16817,6 +16924,9 @@ def extract_interaction_data(
 
         if ligand_id is not None:
             updates["ligand_id"] = ligand_id
+
+        if container_name is not None:
+            updates["container_name"] = container_name
 
         if not preserve_reference:
             updates["interaction"] = None
@@ -16866,7 +16976,10 @@ def extract_interaction_data(
                 else model_id
             ),
             ligand_id=(
-                ligand_id or ""
+                ligand_id or interaction.ligand_id
+            ),
+            container_name=(
+                container_name or interaction.container_name
             ),
             distance=geometry.get("distance"),
             angle=geometry.get("angle"),
@@ -16974,6 +17087,7 @@ def extract_interaction_data(
         pose_id=resolved_pose_id,
         model_id=resolved_model_id,
         ligand_id=resolved_ligand_id,
+        container_name=_coerce_optional_text(container_name),
         distance=extract_interaction_distance(
             interaction
         ),
@@ -17093,6 +17207,7 @@ def interaction_score_from_extracted_data(
         data.geometry
     )
     metadata["ligand_id"] = data.ligand_id
+    metadata["container_name"] = data.container_name
 
     return create_interaction_score(
         interaction_id=data.interaction_id,
@@ -17114,6 +17229,8 @@ def interaction_score_from_extracted_data(
         residue_pair=data.residue_pair,
         pose_id=data.pose_id,
         model_id=data.model_id,
+        ligand_id=data.ligand_id,
+        container_name=data.container_name,
         interaction=data.interaction,
         metadata=metadata,
         preserve_components=preserve_components,
@@ -17698,7 +17815,8 @@ def _validate_section_5_extraction() -> None:
         )
 
 
-_validate_section_5_extraction()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_5_extraction()
 
 
 # -----------------------------------------------------------------------------
@@ -20962,7 +21080,8 @@ def _validate_section_6_recognition() -> None:
     )
 
 
-_validate_section_6_recognition()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_6_recognition()
 
 
 # -----------------------------------------------------------------------------
@@ -21770,7 +21889,7 @@ class DeduplicationConfig:
         Optional custom deterministic identity function.
     """
 
-    mode: str = DEDUPLICATION_MODE_ATOM_PAIR
+    mode: str = DEDUPLICATION_ATOM_PAIR
     identity_scope: str = IDENTITY_SCOPE_INTERACTION
     orientation: str = IDENTITY_ORIENTATION_AUTO
     selection_mode: str = DUPLICATE_SELECTION_FIRST
@@ -22153,7 +22272,7 @@ _SYMMETRIC_INTERACTION_TYPES: Final[FrozenSet[str]] = frozenset(
     {
         SCORE_TYPE_HYDROPHOBIC,
         SCORE_TYPE_PI_STACKING,
-        SCORE_TYPE_T_SHAPED,
+        SCORE_TYPE_PI_T_SHAPED,
         SCORE_TYPE_SALT_BRIDGE,
         SCORE_TYPE_CLASH,
         SCORE_TYPE_CONTACT,
@@ -22381,24 +22500,24 @@ def build_interaction_identity_key(
     residue_pair: Optional[Tuple[str, str]] = None
     custom_parts: Tuple[str, ...] = ()
 
-    if config.mode == DEDUPLICATION_MODE_NONE:
+    if config.mode == DEDUPLICATION_NONE:
         custom_parts = (
             data.interaction_id,
         )
 
-    elif config.mode == DEDUPLICATION_MODE_INTERACTION_ID:
+    elif config.mode == DEDUPLICATION_EXACT:
         custom_parts = (
             data.interaction_id,
         )
 
-    elif config.mode == DEDUPLICATION_MODE_RESIDUE_PAIR:
+    elif config.mode == DEDUPLICATION_RESIDUE_PAIR:
         residue_pair = normalize_identity_pair(
             data.residue_pair,
             orientation=orientation,
             field_name="residue_pair",
         )
 
-    elif config.mode == DEDUPLICATION_MODE_ATOM_PAIR:
+    elif config.mode == DEDUPLICATION_ATOM_PAIR:
         atom_pair = normalize_identity_pair(
             data.atom_pair,
             orientation=orientation,
@@ -22545,10 +22664,10 @@ def interactions_share_identity(
 
 _GEOMETRY_QUALITY_RANK: Final[Mapping[str, int]] = MappingProxyType(
     {
-        GEOMETRY_IDEAL: 4,
-        GEOMETRY_GOOD: 3,
-        GEOMETRY_ACCEPTABLE: 2,
-        GEOMETRY_POOR: 1,
+        GEOMETRY_OPTIMAL: 4,
+        GEOMETRY_FAVORABLE: 3,
+        GEOMETRY_WEAK: 2,
+        GEOMETRY_BORDERLINE: 1,
         GEOMETRY_UNKNOWN: 0,
     }
 )
@@ -23400,7 +23519,7 @@ def infer_duplicate_reason(
     if config.custom_key is not None:
         return DUPLICATE_REASON_CUSTOM_KEY
 
-    if config.mode == DEDUPLICATION_MODE_INTERACTION_ID:
+    if config.mode == DEDUPLICATION_EXACT:
         return DUPLICATE_REASON_INTERACTION_ID
 
     if (
@@ -23531,7 +23650,7 @@ def deduplicate_interactions(
         iter_interaction_objects(source)
     )
 
-    if config.mode == DEDUPLICATION_MODE_NONE:
+    if config.mode == DEDUPLICATION_NONE:
         records = tuple(
             DeduplicationRecord(
                 input_index=index,
@@ -24332,7 +24451,7 @@ def _validate_section_7_identity_and_deduplication() -> None:
     )
 
     identity_config = DeduplicationConfig(
-        mode=DEDUPLICATION_MODE_ATOM_PAIR,
+        mode=DEDUPLICATION_ATOM_PAIR,
         include_pose_id=True,
         include_model_id=True,
         include_geometry=False,
@@ -24403,7 +24522,8 @@ def _validate_section_7_identity_and_deduplication() -> None:
     validate_deduplication_result(result)
 
 
-_validate_section_7_identity_and_deduplication()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_7_identity_and_deduplication()
 
 
 # -----------------------------------------------------------------------------
@@ -26635,7 +26755,8 @@ def _validate_section_8_base_weights() -> None:
     )
 
 
-_validate_section_8_base_weights()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_8_base_weights()
 
 
 # -----------------------------------------------------------------------------
@@ -29162,7 +29283,8 @@ def _validate_section_9_multipliers() -> None:
     )
 
 
-_validate_section_9_multipliers()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_9_multipliers()
 
 
 # -----------------------------------------------------------------------------
@@ -30015,7 +30137,7 @@ DEFAULT_GEOMETRY_RULES_BY_TYPE: Final[
         SCORE_TYPE_PI_STACKING: (
             DEFAULT_PI_STACKING_GEOMETRY_RULES
         ),
-        SCORE_TYPE_T_SHAPED: (
+        SCORE_TYPE_PI_T_SHAPED: (
             DEFAULT_T_SHAPED_GEOMETRY_RULES
         ),
         SCORE_TYPE_CATION_PI: (
@@ -30234,16 +30356,16 @@ class GeometryQualityProfile:
         )
 
         if normalized_score >= self.ideal_minimum_score:
-            return GEOMETRY_IDEAL
+            return GEOMETRY_OPTIMAL
 
         if normalized_score >= self.good_minimum_score:
-            return GEOMETRY_GOOD
+            return GEOMETRY_FAVORABLE
 
         if normalized_score >= self.acceptable_minimum_score:
-            return GEOMETRY_ACCEPTABLE
+            return GEOMETRY_WEAK
 
         if normalized_score >= self.poor_minimum_score:
-            return GEOMETRY_POOR
+            return GEOMETRY_BORDERLINE
 
         return GEOMETRY_UNKNOWN
 
@@ -30342,11 +30464,6 @@ class GeometryQualityProfile:
             result["metadata"] = dict(self.metadata)
 
         return result
-
-
-DEFAULT_GEOMETRY_QUALITY_PROFILE: Final[
-    GeometryQualityProfile
-] = GeometryQualityProfile()
 
 
 # -----------------------------------------------------------------------------
@@ -30795,6 +30912,14 @@ def normalize_geometry_multiplier_mapping(
         normalized[quality] = multiplier
 
     return MappingProxyType(normalized)
+
+
+# Instantiate the default profile only after all helpers used by its
+# ``__post_init__`` method have been defined.  The original ordering raised a
+# NameError during module import.
+DEFAULT_GEOMETRY_QUALITY_PROFILE: Final[
+    GeometryQualityProfile
+] = GeometryQualityProfile()
 
 
 # -----------------------------------------------------------------------------
@@ -31833,7 +31958,7 @@ def _validate_section_10_geometry_quality() -> None:
         profile=profile,
     )
 
-    if resolution.quality != GEOMETRY_IDEAL:
+    if resolution.quality != GEOMETRY_OPTIMAL:
         raise RuntimeError(
             "Ideal geometry-quality classification failed."
         )
@@ -31908,7 +32033,8 @@ def _validate_section_10_geometry_quality() -> None:
     )
 
 
-_validate_section_10_geometry_quality()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_10_geometry_quality()
 
 
 # -----------------------------------------------------------------------------
@@ -32819,8 +32945,9 @@ class FamilyScoreContribution:
         components.append(
             make_multiplier_component(
                 component_type=FAMILY_COMPONENT_MULTIPLIER,
+                name=self.interaction_family,
                 value=self.multiplier,
-                label=self.interaction_family,
+                interaction_type=self.interaction_type,
                 source=self.source,
                 description=self.reason,
                 metadata={
@@ -32836,7 +32963,8 @@ class FamilyScoreContribution:
                     component_type=FAMILY_COMPONENT_ADJUSTMENT,
                     name=self.interaction_family,
                     value=self.adjustment,
-                    operation=SCORE_OPERATION_ADD,
+                    operation=COMPONENT_OPERATION_ADD,
+                    interaction_type=self.interaction_type,
                     source=self.source,
                     description=self.reason,
                     metadata={
@@ -33419,11 +33547,6 @@ class FamilyScoringProfile:
         return result
 
 
-DEFAULT_FAMILY_SCORING_PROFILE: Final[
-    FamilyScoringProfile
-] = FamilyScoringProfile()
-
-
 # -----------------------------------------------------------------------------
 # 11.9. Mapping normalization
 # -----------------------------------------------------------------------------
@@ -33517,6 +33640,13 @@ def normalize_family_adjustment_mapping(
         normalized[family] = adjustment
 
     return MappingProxyType(normalized)
+
+
+# Delay construction until the normalization helpers used by
+# ``FamilyScoringProfile.__post_init__`` exist.
+DEFAULT_FAMILY_SCORING_PROFILE: Final[
+    FamilyScoringProfile
+] = FamilyScoringProfile()
 
 
 # -----------------------------------------------------------------------------
@@ -33825,7 +33955,7 @@ def _score_pi_family(
                 "Large aromatic centroid offset."
             )
 
-    elif context.interaction_type == SCORE_TYPE_T_SHAPED:
+    elif context.interaction_type == SCORE_TYPE_PI_T_SHAPED:
         if (
             context.angle is not None
             and 75.0 <= context.angle <= 105.0
@@ -35341,7 +35471,8 @@ def _validate_section_11_family_scoring() -> None:
     validate_family_scoring_profile(profile)
 
 
-_validate_section_11_family_scoring()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_11_family_scoring()
 
 
 # -----------------------------------------------------------------------------
@@ -36059,7 +36190,8 @@ class ScoreAdjustmentContext:
             self,
             "polarity",
             normalize_score_polarity(
-                self.polarity
+                self.polarity,
+                interaction_type=self.interaction_type,
             ),
         )
         object.__setattr__(
@@ -37205,9 +37337,15 @@ def _poor_geometry_penalty_rule(
     ):
         return ()
 
+    # Uncertainty penalties only reduce favorable evidence.  Applying them to
+    # neutral contacts would turn their intentional zero weight negative, and
+    # applying them to clashes would make uncertain clashes more severe.
+    if context.polarity != POLARITY_FAVORABLE:
+        return ()
+
     adjustments: List[ScoreAdjustment] = []
 
-    if context.geometry_quality == GEOMETRY_POOR:
+    if context.geometry_quality == GEOMETRY_BORDERLINE:
         adjustments.append(
             ScoreAdjustment(
                 adjustment_id="geometry:poor",
@@ -37285,6 +37423,9 @@ def _unknown_classification_penalty_rule(
         profile,
         ScoreAdjustmentProfile,
     ):
+        return ()
+
+    if context.polarity != POLARITY_FAVORABLE:
         return ()
 
     adjustments: List[ScoreAdjustment] = []
@@ -38775,7 +38916,8 @@ def _validate_section_12_penalties_and_corrections() -> None:
     )
 
 
-_validate_section_12_penalties_and_corrections()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_12_penalties_and_corrections()
 
 
 # -----------------------------------------------------------------------------
@@ -39467,9 +39609,8 @@ class IndividualScoringProfile:
                 "options must be an IndividualScoringOptions instance."
             )
 
-        weight_overrides = normalize_base_weight_mapping(
+        weight_overrides = normalize_interaction_weight_mapping(
             self.weight_overrides,
-            allow_zero=True,
         )
         strength_overrides = (
             normalize_strength_multiplier_mapping(
@@ -40037,8 +40178,7 @@ class IndividualScoringResult:
             result["score"] = (
                 None
                 if self.score is None
-                else interaction_score_to_dict(
-                    self.score,
+                else self.score.to_dict(
                     include_metadata=include_metadata,
                 )
             )
@@ -40047,8 +40187,7 @@ class IndividualScoringResult:
             result["extracted_data"] = (
                 None
                 if self.extracted_data is None
-                else extracted_interaction_data_to_dict(
-                    self.extracted_data,
+                else self.extracted_data.to_dict(
                     include_metadata=include_metadata,
                 )
             )
@@ -40155,17 +40294,15 @@ def extracted_interaction_data_from_mapping(
             "polarity",
             POLARITY_UNKNOWN,
         ),
-        atom_pair=tuple(
-            value.get(
-                "atom_pair",
-                (),
-            )
+        atom_pair=(
+            None
+            if not value.get("atom_pair")
+            else tuple(value["atom_pair"])
         ),
-        residue_pair=tuple(
-            value.get(
-                "residue_pair",
-                (),
-            )
+        residue_pair=(
+            None
+            if not value.get("residue_pair")
+            else tuple(value["residue_pair"])
         ),
         distance=value.get("distance"),
         angle=value.get("angle"),
@@ -40283,10 +40420,26 @@ def recognize_single_interaction(
     if not profile.options.recognize_interaction:
         return data
 
-    recognized = recognize_extracted_interaction(
-        data,
+    # Extraction has already normalized an explicit detector/mapping type.
+    # Re-running heuristic recognition is unnecessary in that case and can
+    # invoke object-only adapters on dictionaries.
+    if (
+        profile.recognition_config.trust_explicit_type
+        and data.interaction_type != SCORE_TYPE_UNKNOWN
+    ):
+        return data
+
+    recognition = recognize_interaction(
+        data.interaction if data.interaction is not None else data,
         config=profile.recognition_config,
         custom_rules=profile.recognition_rules,
+    )
+
+    recognized = apply_recognition_to_extracted_data(
+        data,
+        recognition,
+        reject_unknown=profile.recognition_config.reject_unknown,
+        reject_ambiguous=profile.recognition_config.reject_ambiguous,
     )
 
     validate_extracted_interaction_data(
@@ -41759,7 +41912,8 @@ def _validate_section_13_individual_scoring() -> None:
     )
 
 
-_validate_section_13_individual_scoring()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_13_individual_scoring()
 
 
 # -----------------------------------------------------------------------------
@@ -41955,7 +42109,7 @@ DEFAULT_COLLECTION_ERROR_POLICY: Final[str] = (
     COLLECTION_ERROR_POLICY_COLLECT
 )
 DEFAULT_COLLECTION_DEDUPLICATION_MODE: Final[str] = (
-    COLLECTION_DEDUPLICATION_NONE
+    COLLECTION_DEDUPLICATION_KEEP_BEST
 )
 DEFAULT_COLLECTION_AGGREGATION_MODE: Final[str] = (
     COLLECTION_AGGREGATION_SUM
@@ -43044,7 +43198,7 @@ def collection_score_identity(
                 score,
                 "atom_pair",
                 (),
-            )
+            ) or ()
         )
     )
     residue_pair = tuple(
@@ -43054,7 +43208,7 @@ def collection_score_identity(
                 score,
                 "residue_pair",
                 (),
-            )
+            ) or ()
         )
     )
 
@@ -43065,7 +43219,7 @@ def collection_score_identity(
                 for value in score.metadata.get(
                     "atom_pair",
                     (),
-                )
+                ) or ()
             )
         )
 
@@ -43076,18 +43230,35 @@ def collection_score_identity(
                 for value in score.metadata.get(
                     "residue_pair",
                     (),
-                )
+                ) or ()
             )
+        )
+
+    # Prefer atom-level identity.  When atom identifiers are unavailable,
+    # retain the explicit interaction id instead of collapsing every distinct
+    # interaction between the same residue pair.  This makes the default
+    # deduplication conservative while still catching repeated records.
+    identity_discriminator: Tuple[Any, ...]
+    if atom_pair:
+        identity_discriminator = ("atom_pair", atom_pair)
+    else:
+        identity_discriminator = (
+            "interaction_id",
+            score.interaction_id,
         )
 
     return (
         score.pose_id,
         score.model_id,
-        score.ligand_id,
+        getattr(
+            score,
+            "ligand_id",
+            score.metadata.get("ligand_id", ""),
+        ),
         score.interaction_type,
         score.interaction_family,
-        atom_pair,
         residue_pair,
+        identity_discriminator,
     )
 
 
@@ -43147,8 +43318,16 @@ def deduplicate_collection_scores(
             selected = max(
                 values,
                 key=lambda item: (
-                    item.final_score,
-                    item.raw_score,
+                    (
+                        -item.final_score
+                        if item.is_penalty
+                        else item.final_score
+                    ),
+                    (
+                        -item.raw_score
+                        if item.is_penalty
+                        else item.raw_score
+                    ),
                     item.interaction_id,
                 ),
             )
@@ -44543,7 +44722,8 @@ def _validate_section_14_collection_scoring() -> None:
     )
 
 
-_validate_section_14_collection_scoring()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_14_collection_scoring()
 
 
 # -----------------------------------------------------------------------------
@@ -47802,7 +47982,8 @@ def _validate_section_15_residue_aggregation() -> None:
     )
 
 
-_validate_section_15_residue_aggregation()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_15_residue_aggregation()
 
 
 # -----------------------------------------------------------------------------
@@ -48747,9 +48928,10 @@ class PoseScoringProfile:
         validate_residue_aggregation_options(
             self.residue_options
         )
-        validate_pose_scoring_options(
-            self.options
-        )
+        if not isinstance(self.options, PoseScoringOptions):
+            raise PoseScoringValidationError(
+                "options must be a PoseScoringOptions instance."
+            )
 
         object.__setattr__(
             self,
@@ -51367,7 +51549,8 @@ def _validate_section_16_total_pose_score() -> None:
     )
 
 
-_validate_section_16_total_pose_score()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_16_total_pose_score()
 
 
 # -----------------------------------------------------------------------------
@@ -55307,7 +55490,8 @@ def _validate_section_17_score_normalization() -> None:
     )
 
 
-_validate_section_17_score_normalization()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_17_score_normalization()
 
 
 # -----------------------------------------------------------------------------
@@ -60353,7 +60537,8 @@ def _validate_section_18_diversity_part_1() -> None:
         )
 
 
-_validate_section_18_diversity_part_1()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_18_diversity_part_1()
 
 
 # -----------------------------------------------------------------------------
@@ -64659,7 +64844,8 @@ def _validate_section_18_complementarity_part_2() -> None:
     )
 
 
-_validate_section_18_complementarity_part_2()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_18_complementarity_part_2()
 
 
 # -----------------------------------------------------------------------------
@@ -68720,7 +68906,8 @@ def _validate_section_18_complementarity_part_3() -> None:
     )
 
 
-_validate_section_18_complementarity_part_3()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_18_complementarity_part_3()
 
 
 # -----------------------------------------------------------------------------
@@ -72944,7 +73131,8 @@ def _validate_section_18_part_4() -> None:
         )
 
 
-_validate_section_18_part_4()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_18_part_4()
 
 
 # -----------------------------------------------------------------------------
@@ -73160,7 +73348,8 @@ if "validate_section_18_public_interface" not in __all__:
     )
 
 
-validate_section_18_public_interface()
+if _RUN_IMPORT_VALIDATIONS:
+    validate_section_18_public_interface()
 
 
 # =============================================================================
@@ -76671,7 +76860,8 @@ def _validate_section_19_definition() -> None:
         )
 
 
-_validate_section_19_definition()
+if _RUN_IMPORT_VALIDATIONS:
+    _validate_section_19_definition()
 
 
 # -----------------------------------------------------------------------------
@@ -76792,7 +76982,8 @@ if "section_19_public_names" not in __all__:
 if "validate_section_19_public_interface" not in __all__:
     __all__.append("validate_section_19_public_interface")
 
-validate_section_19_public_interface()
+if _RUN_IMPORT_VALIDATIONS:
+    validate_section_19_public_interface()
 
 # =============================================================================
 # End of Section 19
@@ -80264,7 +80455,8 @@ if "section_20_public_names" not in __all__:
 if "validate_section_20_public_interface" not in __all__:
     __all__.append("validate_section_20_public_interface")
 
-validate_section_20_public_interface()
+if _RUN_IMPORT_VALIDATIONS:
+    validate_section_20_public_interface()
 
 # =============================================================================
 # End of Section 20
@@ -83718,7 +83910,8 @@ if "section_21_public_names" not in __all__:
 if "validate_section_21_public_interface" not in __all__:
     __all__.append("validate_section_21_public_interface")
 
-validate_section_21_public_interface()
+if _RUN_IMPORT_VALIDATIONS:
+    validate_section_21_public_interface()
 
 # =============================================================================
 # End of Section 21
@@ -85331,6 +85524,8 @@ def _pose_result_final_score(result: Any) -> Optional[float]:
         _dock_model_get(_dock_model_get(result, "summary"), "final_score"),
         _dock_model_get(result, "total_score"),
         _dock_model_get(result, "score"),
+        _dock_model_get(result, "normalized_score"),
+        _dock_model_get(result, "ranking_score"),
     ):
         if candidate is None:
             continue
@@ -86296,7 +86491,7 @@ def score_multiple_dock_models(
     continue_on_error: bool = True,
     build_ranking: bool = True,
     ranking_options: Any = None,
-    build_consensus: bool = True,
+    build_consensus: bool = False,
     consensus_options: Any = None,
     attach_ranking: bool = True,
     attach_consensus: bool = True,
@@ -87048,7 +87243,8 @@ if "section_22_public_names" not in __all__:
 if "validate_section_22_public_interface" not in __all__:
     __all__.append("validate_section_22_public_interface")
 
-validate_section_22_public_interface()
+if _RUN_IMPORT_VALIDATIONS:
+    validate_section_22_public_interface()
 
 # =============================================================================
 # End of Section 22
@@ -91802,7 +91998,8 @@ if "section_23_public_names" not in __all__:
 if "validate_section_23_public_interface" not in __all__:
     __all__.append("validate_section_23_public_interface")
 
-validate_section_23_public_interface()
+if _RUN_IMPORT_VALIDATIONS:
+    validate_section_23_public_interface()
 
 # =============================================================================
 # End of Section 23
@@ -97747,7 +97944,8 @@ if "section_24_public_names" not in __all__:
 if "validate_section_24_public_interface" not in __all__:
     __all__.append("validate_section_24_public_interface")
 
-validate_section_24_public_interface()
+if _RUN_IMPORT_VALIDATIONS:
+    validate_section_24_public_interface()
 
 # =============================================================================
 # End of Section 24
@@ -101554,7 +101752,8 @@ if "section_25_public_names" not in __all__:
 if "validate_section_25_public_interface" not in __all__:
     __all__.append("validate_section_25_public_interface")
 
-validate_section_25_public_interface()
+if _RUN_IMPORT_VALIDATIONS:
+    validate_section_25_public_interface()
 
 # =============================================================================
 # End of Section 25
@@ -105547,7 +105746,8 @@ if "validate_section_26_public_interface" not in __all__:
     __all__.append("validate_section_26_public_interface")
 
 _initialize_default_scoring_report_adapters()
-validate_section_26_public_interface()
+if _RUN_IMPORT_VALIDATIONS:
+    validate_section_26_public_interface()
 
 # =============================================================================
 # End of Section 26
@@ -108892,7 +109092,8 @@ if "validate_section_27_public_interface" not in __all__:
     __all__.append("validate_section_27_public_interface")
 
 _initialize_default_scoring_validators()
-validate_section_27_public_interface()
+if _RUN_IMPORT_VALIDATIONS:
+    validate_section_27_public_interface()
 
 # =============================================================================
 # End of Section 27
@@ -112458,7 +112659,8 @@ if "section_28_public_names" not in __all__:
 if "validate_section_28_public_interface" not in __all__:
     __all__.append("validate_section_28_public_interface")
 
-validate_section_28_public_interface()
+if _RUN_IMPORT_VALIDATIONS:
+    validate_section_28_public_interface()
 
 # =============================================================================
 # End of Section 28
@@ -116552,7 +116754,8 @@ if "section_29_public_names" not in __all__:
 if "validate_section_29_public_interface" not in __all__:
     __all__.append("validate_section_29_public_interface")
 
-validate_section_29_public_interface()
+if _RUN_IMPORT_VALIDATIONS:
+    validate_section_29_public_interface()
 
 # =============================================================================
 # End of Section 29
@@ -119933,7 +120136,8 @@ if "section_30_1_public_names" not in __all__:
 if "validate_section_30_1_public_interface" not in __all__:
     __all__.append("validate_section_30_1_public_interface")
 
-validate_section_30_1_public_interface()
+if _RUN_IMPORT_VALIDATIONS:
+    validate_section_30_1_public_interface()
 
 # =============================================================================
 # End of Section 30.1
@@ -122116,7 +122320,8 @@ if "section_30_2_public_names" not in __all__:
 if "validate_section_30_2_public_interface" not in __all__:
     __all__.append("validate_section_30_2_public_interface")
 
-validate_section_30_2_public_interface()
+if _RUN_IMPORT_VALIDATIONS:
+    validate_section_30_2_public_interface()
 
 # =============================================================================
 # End of Section 30.2
@@ -124462,7 +124667,8 @@ if "section_30_3_public_names" not in __all__:
 if "validate_section_30_3_public_interface" not in __all__:
     __all__.append("validate_section_30_3_public_interface")
 
-validate_section_30_3_public_interface()
+if _RUN_IMPORT_VALIDATIONS:
+    validate_section_30_3_public_interface()
 
 # =============================================================================
 # End of Section 30.3
@@ -127007,7 +127213,8 @@ if "section_30_4_public_names" not in __all__:
 if "validate_section_30_4_public_interface" not in __all__:
     __all__.append("validate_section_30_4_public_interface")
 
-validate_section_30_4_public_interface()
+if _RUN_IMPORT_VALIDATIONS:
+    validate_section_30_4_public_interface()
 
 # =============================================================================
 # End of Section 30.4
@@ -129251,7 +129458,8 @@ if "section_30_5_public_names" not in __all__:
 if "validate_section_30_5_public_interface" not in __all__:
     __all__.append("validate_section_30_5_public_interface")
 
-validate_section_30_5_public_interface()
+if _RUN_IMPORT_VALIDATIONS:
+    validate_section_30_5_public_interface()
 
 # =============================================================================
 # End of Section 30.5
@@ -129261,5 +129469,3 @@ validate_section_30_5_public_interface()
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-

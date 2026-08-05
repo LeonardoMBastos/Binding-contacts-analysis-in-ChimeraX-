@@ -69,28 +69,19 @@ import contextlib
 import io
 import inspect
 import math
+import sys
 import time
 import traceback
 import uuid
 
 # -----------------------------------------------------------------------------
-# 1.2. Optional NumPy support
+# 1.2. Required NumPy support
 # -----------------------------------------------------------------------------
 
-try:
-    import numpy as np
-    from numpy.typing import NDArray
+import numpy as np
+from numpy.typing import NDArray
 
-    NUMPY_AVAILABLE: Final[bool] = True
-
-except ModuleNotFoundError as exc:  # pragma: no cover - environment dependent
-    if exc.name not in {"numpy", "numpy.typing"}:
-        raise
-
-    np = None  # type: ignore[assignment]
-    NDArray = Any  # type: ignore[misc,assignment]
-
-    NUMPY_AVAILABLE = False
+NUMPY_AVAILABLE: Final[bool] = True
 
 
 # -----------------------------------------------------------------------------
@@ -98,6 +89,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - environment dependent
 # -----------------------------------------------------------------------------
 
 try:
+    import chimerax
     from chimerax.atomic import Atom as ChimeraXAtom
     from chimerax.atomic import AtomicStructure as ChimeraXAtomicStructure
     from chimerax.atomic import Residue as ChimeraXResidue
@@ -105,9 +97,10 @@ try:
     CHIMERAX_AVAILABLE: Final[bool] = True
 
 except ModuleNotFoundError as exc:  # pragma: no cover - expected outside ChimeraX
-    if exc.name not in {"chimerax", "chimerax.atomic"}:
+    if exc.name != "chimerax":
         raise
 
+    chimerax = None  # type: ignore[assignment]
     ChimeraXAtom = Any  # type: ignore[misc,assignment]
     ChimeraXAtomicStructure = Any  # type: ignore[misc,assignment]
     ChimeraXResidue = Any  # type: ignore[misc,assignment]
@@ -119,8 +112,10 @@ except ModuleNotFoundError as exc:  # pragma: no cover - expected outside Chimer
 # 1.4. Module metadata
 # -----------------------------------------------------------------------------
 
+from ._version import __version__
+
 MODULE_NAME: Final[str] = "pi"
-MODULE_VERSION: Final[str] = "1.0.0"
+MODULE_VERSION: Final[str] = __version__
 
 MODULE_DESCRIPTION: Final[str] = (
     "Detection, classification, scoring, grouping, and serialization of "
@@ -41757,23 +41752,26 @@ def format_pi_analysis_result(
         )
 
         if statistics_report is not None:
+            total_score = float(
+                _pi_api_get(
+                    statistics_report,
+                    ("total_score",),
+                    0.0,
+                )
+            )
+            normalized_total_score = float(
+                _pi_api_get(
+                    statistics_report,
+                    ("normalized_total_score",),
+                    0.0,
+                )
+            )
             lines.extend(
                 [
-                    (
-                        "Total score: "
-                        f"{float(_pi_api_get(
-                            statistics_report,
-                            ('total_score',),
-                            0.0
-                        )):.2f}"
-                    ),
+                    f"Total score: {total_score:.2f}",
                     (
                         "Normalized score: "
-                        f"{float(_pi_api_get(
-                            statistics_report,
-                            ('normalized_total_score',),
-                            0.0
-                        )):.2f}"
+                        f"{normalized_total_score:.2f}"
                     ),
                 ]
             )
@@ -48148,15 +48146,7 @@ def is_chimerax_available() -> bool:
     Return whether ChimeraX Python modules are importable.
     """
 
-    try:
-        import chimerax  # type: ignore  # noqa: F401
-    except ModuleNotFoundError as exc:
-        if exc.name != "chimerax":
-            raise
-
-        return False
-
-    return True
+    return CHIMERAX_AVAILABLE
 
 
 def require_chimerax() -> None:
@@ -59526,7 +59516,22 @@ def print_pi_self_test_report(
         include_tracebacks=include_tracebacks,
     )
 
-    print(formatted_report)
+    try:
+        print(formatted_report)
+
+    except UnicodeEncodeError:
+        # Windows consoles may still use a legacy code page such as cp1252,
+        # which cannot encode the Greek pi used in the report title.  Preserve
+        # a readable report instead of failing an otherwise successful suite.
+        output_encoding = (
+            getattr(sys.stdout, "encoding", None)
+            or "ascii"
+        )
+        safe_report = formatted_report.encode(
+            output_encoding,
+            errors="backslashreplace",
+        ).decode(output_encoding)
+        print(safe_report)
 
 
 # -----------------------------------------------------------------------------

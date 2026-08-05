@@ -54,6 +54,7 @@ from typing import (
 import colorsys
 import inspect
 import json
+import logging
 import math
 import os
 import platform
@@ -67,19 +68,17 @@ import warnings
 # 1.2. Optional dependencies
 # -----------------------------------------------------------------------------
 
-try:
-    import numpy as np
+import numpy as np
 
-    NUMPY_AVAILABLE: Final[bool] = True
-except ImportError:  # pragma: no cover - environment dependent
-    np = None  # type: ignore[assignment]
-    NUMPY_AVAILABLE = False
+NUMPY_AVAILABLE: Final[bool] = True
 
 try:
     from PIL import Image
 
     PILLOW_AVAILABLE: Final[bool] = True
-except ImportError:  # pragma: no cover - environment dependent
+except ModuleNotFoundError as exc:  # pragma: no cover - environment dependent
+    if exc.name != "PIL":
+        raise
     Image = None  # type: ignore[assignment]
     PILLOW_AVAILABLE = False
 
@@ -87,27 +86,25 @@ try:
     import chimerax as _chimerax
 
     CHIMERAX_AVAILABLE: Final[bool] = True
-except ImportError:  # pragma: no cover - environment dependent
+except ModuleNotFoundError as exc:  # pragma: no cover - expected outside ChimeraX
+    if exc.name != "chimerax":
+        raise
     _chimerax = None
     CHIMERAX_AVAILABLE = False
 
 # 1.3. Internal DockAnalyzer imports
 # -----------------------------------------------------------------------------
 
-try:
-    from . import config
-    from .utils import DockLogger, DockModel
-except ImportError:
-    import config
-    from utils import DockLogger, DockModel
+# Heavy modules are imported locally by integration functions.  Core planning
+# intentionally avoids importing ``utils`` because that module configures a
+# file logger and creates output directories during import.
 
-# Heavy modules are imported locally by integration functions.
+from ._version import __version__
 
 # 1.4. Module metadata
 # -----------------------------------------------------------------------------
 
 __author__: Final[str] = "Leonardo Bastos and DockAnalyzer contributors"
-__version__: Final[str] = "0.1.0"
 __license__: Final[str] = "MIT"
 __status__: Final[str] = "Development"
 
@@ -115,8 +112,6 @@ _MODULE_NAME: Final[str] = "visualization"
 _MODULE_DESCRIPTION: Final[str] = (
     "Backend-neutral molecular visualization planning for DockAnalyzer."
 )
-_LOGGER: Final[DockLogger] = DockLogger(_MODULE_NAME)
-
 _RUN_IMPORT_VALIDATIONS: Final[bool] = os.getenv(
     "DOCKANALYZER_VALIDATE_IMPORTS",
     "",
@@ -214,7 +209,8 @@ InteractionCollectionLike: TypeAlias = Any
 ScoringLike: TypeAlias = Any
 PoseLike: TypeAlias = Any
 HotspotLike: TypeAlias = Any
-DockModelLike: TypeAlias = Union[DockModel, Any]
+# Dock models are consumed through their public, duck-typed attributes.
+DockModelLike: TypeAlias = Any
 ChimeraXSessionLike: TypeAlias = Any
 ChimeraXModelLike: TypeAlias = Any
 
@@ -10214,6 +10210,7 @@ def _interaction_endpoint_payload(endpoint: InteractionEndpointSpec) -> Dict[str
 
     return {
         "selection": endpoint.selection.expression or None,
+        "selection_kind": endpoint.selection.kind.value,
         "point": endpoint.point,
         "label": endpoint.effective_label or None,
         "role": endpoint.role.value,
@@ -22198,13 +22195,19 @@ def _render_molecular_action(action: VisualizationAction) -> List[str]:
     return commands
 
 
-def _endpoint_argument(value: Mapping[str, Any]) -> Optional[str]:
+def _endpoint_argument(
+    value: Mapping[str, Any],
+    *,
+    prefer_selection: bool = True,
+) -> Optional[str]:
     selection = value.get("selection")
-    if selection:
+    if prefer_selection and selection:
         return str(selection)
     point = value.get("point")
     if point is not None:
         return format_chimerax_point(point)
+    if selection:
+        return str(selection)
     return None
 
 
@@ -22219,19 +22222,50 @@ def _render_interaction_action(action: VisualizationAction) -> List[str]:
     if not segments:
         return _render_molecular_action(action)
     commands: List[str] = []
-    color = format_chimerax_color(params.get("color", INTERACTION_FAMILY_COLORS[INTERACTION_UNKNOWN]))
+    color = format_chimerax_color(color_with_opacity(
+        params.get("color", INTERACTION_FAMILY_COLORS[INTERACTION_UNKNOWN]),
+        params.get("opacity", DEFAULT_INTERACTION_OPACITY),
+    ))
     radius = format_chimerax_number(params.get("radius", DEFAULT_INTERACTION_RADIUS))
     dashes = int(params.get("dash_count", DEFAULT_INTERACTION_DASH_COUNT))
+    if str(params.get("line_style", LineStyle.DASHED.value)) == LineStyle.SOLID.value:
+        dashes = 0
     group_name = quote_chimerax_value(params.get("group_name", DEFAULT_PSEUDOBOND_GROUP), always=True)
     show_distance = format_chimerax_bool(params.get("show_distances", False))
     for index, segment in enumerate(segments):
-        source = _endpoint_argument(segment.get("source", {}))
-        target = _endpoint_argument(segment.get("target", {}))
+        source_data = segment.get("source", {})
+        target_data = segment.get("target", {})
+        source_is_atom = (
+            bool(source_data.get("selection"))
+            and source_data.get("selection_kind") == SelectionKind.ATOM.value
+        )
+        target_is_atom = (
+            bool(target_data.get("selection"))
+            and target_data.get("selection_kind") == SelectionKind.ATOM.value
+        )
+        use_atom_selections = source_is_atom and target_is_atom
+        if not use_atom_selections and (
+            source_data.get("point") is None
+            or target_data.get("point") is None
+        ):
+            raise VisualizationCommandError(
+                "Non-atomic interaction endpoints require explicit coordinates.",
+                context={"interaction_id": segment.get("interaction_id")},
+            )
+        source = _endpoint_argument(
+            source_data,
+            prefer_selection=use_atom_selections,
+        )
+        target = _endpoint_argument(
+            target_data,
+            prefer_selection=use_atom_selections,
+        )
         if not source or not target:
-            continue
-        source_is_selection = bool(segment.get("source", {}).get("selection"))
-        target_is_selection = bool(segment.get("target", {}).get("selection"))
-        if source_is_selection and target_is_selection:
+            raise VisualizationCommandError(
+                "Interaction endpoints cannot be rendered.",
+                context={"interaction_id": segment.get("interaction_id")},
+            )
+        if use_atom_selections:
             commands.append(
                 _command_join(
                     "pbond", source, target,
@@ -22489,6 +22523,12 @@ def _render_snapshot_action(action: VisualizationAction) -> List[str]:
     path = params.get("output_path") or params.get("filename")
     if not path:
         raise VisualizationCommandError("Snapshot action has no output path.")
+    try:
+        path = Path(os.fspath(path)).expanduser().as_posix()
+    except (TypeError, ValueError) as exc:
+        raise VisualizationCommandError(
+            "Snapshot action has an invalid output path."
+        ) from exc
     commands.append(_command_join(
         "save", quote_chimerax_value(path, always=True),
         "format", params.get("format", DEFAULT_SNAPSHOT_FORMAT),
@@ -23085,9 +23125,24 @@ def _backend_version(session_value: Any = None) -> Optional[str]:
     return None
 
 
+def _default_backend_logger() -> logging.Logger:
+    """Return a silent standard-library logger without filesystem effects."""
+
+    logger = logging.getLogger(f"DockAnalyzer.{_MODULE_NAME}")
+    if not any(
+        getattr(handler, "_dockanalyzer_visualization_null", False)
+        for handler in logger.handlers
+    ):
+        handler = logging.NullHandler()
+        handler._dockanalyzer_visualization_null = True  # type: ignore[attr-defined]
+        logger.addHandler(handler)
+    logger.propagate = False
+    return logger
+
+
 def _backend_logger(session_value: Any = None) -> Any:
     logger = getattr(session_value, "logger", None)
-    return logger if logger is not None else _LOGGER
+    return logger if logger is not None else _default_backend_logger()
 
 
 def _emit_backend_log(level: str, message: str, *, session: Any = None) -> None:
@@ -23836,6 +23891,45 @@ def create_chimerax_backend(
     )
 
 
+def _prepare_visualization_output_paths(plan: VisualizationPlan) -> None:
+    """Prepare explicit snapshot destinations immediately before execution."""
+
+    for action in plan.ordered():
+        if not action.enabled or action.operation is not PlanOperation.SAVE_SNAPSHOT:
+            continue
+        raw_path = action.parameters.get("output_path") or action.parameters.get("filename")
+        if not raw_path:
+            raise VisualizationSnapshotError(
+                "Snapshot action has no output path.",
+                context={"action_id": action.action_id},
+            )
+        path = Path(os.fspath(raw_path)).expanduser()
+        parent = path.parent
+        if parent.exists() and not parent.is_dir():
+            raise VisualizationSnapshotError(
+                "Snapshot parent path is not a directory.",
+                context={"action_id": action.action_id, "path": str(parent)},
+            )
+        if not parent.exists():
+            if not bool(action.parameters.get("create_parents", True)):
+                raise VisualizationSnapshotError(
+                    "Snapshot parent directory does not exist.",
+                    context={"action_id": action.action_id, "path": str(parent)},
+                )
+            try:
+                parent.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise VisualizationSnapshotError(
+                    "Unable to create snapshot parent directory.",
+                    context={"action_id": action.action_id, "path": str(parent)},
+                ) from exc
+        if path.exists() and not bool(action.parameters.get("overwrite", False)):
+            raise VisualizationSnapshotError(
+                "Snapshot output already exists and overwrite is disabled.",
+                context={"action_id": action.action_id, "path": str(path)},
+            )
+
+
 def execute_visualization_plan(
     plan: Any,
     *,
@@ -23869,6 +23963,8 @@ def execute_visualization_plan(
                 VisualizationBackendWarning,
                 stacklevel=2,
             )
+    if execution_mode in {ExecutionMode.IMMEDIATE, ExecutionMode.BATCH}:
+        _prepare_visualization_output_paths(visualization)
     export_settings = CommandExportSpec(
         filename=Path(DEFAULT_COMMAND_FILENAME),
         include_header=False,
@@ -28522,9 +28618,9 @@ def inspect_visualization_dependencies() -> Mapping[str, Any]:
     """Describe dependencies."""
 
     internal = {
-        "config": getattr(config, "__name__", "config"),
-        "utils": getattr(DockLogger, "__module__", "utils"),
-        "dock_model": getattr(DockModel, "__module__", "utils"),
+        "config": "internal visualization dataclasses",
+        "utils": "not imported by core planning",
+        "dock_model": "duck-typed",
     }
     optional = {
         item.name: item.to_dict()

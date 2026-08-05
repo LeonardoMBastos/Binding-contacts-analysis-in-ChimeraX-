@@ -10,9 +10,6 @@ Author:
 Project:
     DockAnalyzer
 
-Version:
-    0.1.0
-
 Description
 -----------
 General utility functions used throughout the DockAnalyzer package.
@@ -36,10 +33,15 @@ Main responsibilities
 
 This module contains NO interaction-detection algorithms.
 
+Importing this module is side-effect free. Log handlers and output files are
+initialized lazily, only when logging or export functionality is invoked.
+
 ===============================================================================
 """
 
 from __future__ import annotations
+
+from ._version import __version__
 
 # =============================================================================
 # Standard Library
@@ -147,10 +149,7 @@ pd = _LazyModuleProxy("pandas", "pd")
 # DockAnalyzer Modules
 # =============================================================================
 
-if __package__:
-    from . import config
-else:
-    import config
+from . import config
 
 # =============================================================================
 # ChimeraX Imports
@@ -175,7 +174,6 @@ else:
 # =============================================================================
 
 __author__ = "Leonardo Bastos"
-__version__ = "0.1.0"
 __license__ = "MIT"
 __status__ = "Development"
 
@@ -337,12 +335,17 @@ class DockLogger:
         self._logger = logging.getLogger(self.name)
         self._logger.setLevel(self.level)
         self._logger.propagate = False
-
-        self._configure_handlers()
+        self._configured = False
 
     # -------------------------------------------------------------------------
     # Logger configuration
     # -------------------------------------------------------------------------
+
+    def _ensure_configured(self) -> None:
+        """Configure handlers on first use instead of during module import."""
+
+        if not self._configured:
+            self._configure_handlers()
 
     @staticmethod
     def _normalize_level(level: Union[int, str]) -> int:
@@ -441,6 +444,7 @@ class DockLogger:
         """
 
         self._remove_dockanalyzer_handlers()
+        self._configured = True
 
         formatter = self._build_formatter()
 
@@ -601,6 +605,8 @@ class DockLogger:
         Record a debug message.
         """
 
+        self._ensure_configured()
+
         formatted_message = self._prepare_message(
             message,
             args,
@@ -625,6 +631,8 @@ class DockLogger:
         """
         Record an informational message.
         """
+
+        self._ensure_configured()
 
         formatted_message = self._prepare_message(
             message,
@@ -651,6 +659,8 @@ class DockLogger:
         Record a warning message.
         """
 
+        self._ensure_configured()
+
         formatted_message = self._prepare_message(
             message,
             args,
@@ -676,6 +686,8 @@ class DockLogger:
         Record an error message.
         """
 
+        self._ensure_configured()
+
         formatted_message = self._prepare_message(
             message,
             args,
@@ -700,6 +712,8 @@ class DockLogger:
         """
         Record a critical error message.
         """
+
+        self._ensure_configured()
 
         formatted_message = self._prepare_message(
             message,
@@ -727,6 +741,8 @@ class DockLogger:
 
         This method should normally be called inside an ``except`` block.
         """
+
+        self._ensure_configured()
 
         formatted_message = self._prepare_message(
             message,
@@ -777,6 +793,8 @@ class DockLogger:
         **kwargs : Any
             Additional arguments passed to the Python logger.
         """
+
+        self._ensure_configured()
 
         normalized_level = self._normalize_level(level)
 
@@ -956,6 +974,7 @@ class DockLogger:
         """
 
         self._remove_dockanalyzer_handlers()
+        self._configured = False
 
     @property
     def python_logger(self) -> logging.Logger:
@@ -988,7 +1007,7 @@ logger = DockLogger()
 # =============================================================================
 
 
-@dataclass(slots=True)
+@dataclass
 class TimerRecord:
     """
     Store timing information for one analysis step.
@@ -3486,7 +3505,9 @@ def get_atomic_models(
         except TypeError:
             try:
                 from chimerax.atomic import AtomicStructure
-            except ImportError:
+            except ModuleNotFoundError as exc:
+                if exc.name != "chimerax":
+                    raise
                 models = []
             else:
                 try:
@@ -12125,7 +12146,6 @@ def _build_timer_decorator(
 
 def timer(
     function: Any = None,
-    /,
     step: Optional[str] = None,
     *,
     timer_object: Any = None,
@@ -14180,7 +14200,6 @@ def _build_log_call_decorator(
 
 def log_call(
     function: Any = None,
-    /,
     name: Optional[str] = None,
     *,
     logger: Any = None,
@@ -16388,7 +16407,6 @@ def _build_safe_execution_decorator(
 
 def safe_execution(
     function: Any = None,
-    /,
     name: Optional[str] = None,
     *,
     default: Any = _DECORATOR_UNSET,
@@ -19576,4 +19594,3 @@ if __name__ == "__main__":
 # =============================================================================
 # End of Section 12
 # =============================================================================
-

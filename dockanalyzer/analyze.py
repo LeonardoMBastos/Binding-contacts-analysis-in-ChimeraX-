@@ -5,6 +5,11 @@
 
 """Central analysis orchestration for DockAnalyzer.
 
+Audited for the DockAnalyzer 0.1.0 MVP.  This revision keeps the existing
+public API while making imports side-effect free, using one canonical score
+resolution path for pose attachment and comparison, and making fallback
+multipose ranking explicit and deterministic for ties.
+
 This module coordinates receptor and pose discovery, interaction analysis,
 result consolidation, scoring, multipose comparison, reporting, export and
 visualization. It provides the high-level execution layer that connects the
@@ -77,23 +82,13 @@ import time
 import traceback
 import warnings
 
-# 1.2. Optional dependencies
+# 1.2. Required and optional dependencies
 # -----------------------------------------------------------------------------
 
-try:
-    import numpy as np
-except ModuleNotFoundError as exc:  # pragma: no cover - environment dependent
-    if exc.name != "numpy":
-        raise
-    np = None  # type: ignore[assignment]
-    NDArray = Any  # type: ignore[misc,assignment]
-    NUMPY_AVAILABLE: Final[bool] = False
-else:
-    try:
-        from numpy.typing import NDArray
-    except (ImportError, ModuleNotFoundError):  # pragma: no cover - old NumPy
-        NDArray = Any  # type: ignore[misc,assignment]
-    NUMPY_AVAILABLE = True
+import numpy as np
+from numpy.typing import NDArray
+
+NUMPY_AVAILABLE: Final[bool] = True
 
 try:
     import chimerax as _chimerax
@@ -108,12 +103,125 @@ else:
 # 1.3. Internal DockAnalyzer imports
 # -----------------------------------------------------------------------------
 
-if __package__:
-    from . import config
+from . import config
+from ._version import __version__
+
+
+def _resolve_desktop_directory() -> Path:
+    """Return the current user's desktop directory."""
+
+    override = os.getenv("DOCKANALYZER_DESKTOP", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+
+    if os.name == "nt":
+        try:
+            import ctypes
+            import uuid
+
+            class _GUID(ctypes.Structure):
+                _fields_ = (
+                    ("Data1", ctypes.c_uint32),
+                    ("Data2", ctypes.c_uint16),
+                    ("Data3", ctypes.c_uint16),
+                    ("Data4", ctypes.c_ubyte * 8),
+                )
+
+            desktop_guid = _GUID.from_buffer_copy(
+                uuid.UUID("B4BFCC3A-DB2C-424C-B029-7FE99A87C641").bytes_le
+            )
+            path_pointer = ctypes.c_void_p()
+            result = ctypes.windll.shell32.SHGetKnownFolderPath(
+                ctypes.byref(desktop_guid),
+                0,
+                None,
+                ctypes.byref(path_pointer),
+            )
+            if result == 0 and path_pointer.value:
+                try:
+                    return Path(ctypes.wstring_at(path_pointer.value)).resolve()
+                finally:
+                    ctypes.windll.ole32.CoTaskMemFree(path_pointer)
+        except Exception:
+            pass
+
+        candidates = [
+            Path(value) / "Desktop"
+            for value in (
+                os.getenv("OneDriveCommercial"),
+                os.getenv("OneDriveConsumer"),
+                os.getenv("OneDrive"),
+                os.getenv("USERPROFILE"),
+            )
+            if value
+        ]
+        user_profile = os.getenv("USERPROFILE")
+        if user_profile:
+            candidates.append(Path(user_profile) / "Área de Trabalho")
+    else:
+        candidates = [Path.home() / "Desktop", Path.home()]
+
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate.resolve()
+    return candidates[0].expanduser().resolve() if candidates else Path.home().resolve()
+
+
+def _configure_runtime_output_paths() -> Path:
+    """Configure every DockAnalyzer output path under the desktop folder."""
+
+    output_directory = _resolve_desktop_directory() / "DockAnalyzer_Output"
+    paths = {
+        "OUTPUT_DIR": output_directory,
+        "CSV_DIR": output_directory / "CSV",
+        "EXCEL_DIR": output_directory / "Excel",
+        "IMAGE_DIR": output_directory / "Images",
+        "SESSION_DIR": output_directory / "Sessions",
+        "REPORT_DIR": output_directory / "Reports",
+        "JSON_DIR": output_directory / "JSON",
+        "LOG_DIR": output_directory / "Logs",
+    }
+    for name, path in paths.items():
+        setattr(config, name, path)
+        path.mkdir(parents=True, exist_ok=True)
+
+    config.DIRECTORIES = list(paths.values())
+    config.SAVE_LOG = True
+    config.EXPORT_CSV = True
+    config.EXPORT_EXCEL = False
+    config.EXPORT_JSON = True
+    config.EXPORT_IMAGES = False
+    config.EXPORT_SESSION = False
+    os.environ["DOCKANALYZER_OUTPUT_DIR"] = str(output_directory)
+    return output_directory
+
+
+# Output paths are configured only when an analysis is explicitly executed.
+# Importing this module must not create directories or mutate global settings.
+_RUNTIME_OUTPUT_DIRECTORY: Final[Optional[Path]] = None
+
+# ``utils`` exposes a legacy module-level logger.  Temporarily disable logging
+# while importing it so importing ``analyze`` cannot create a log directory or
+# attach console/file handlers.  The original configuration is restored before
+# this module continues loading and runtime logging is enabled explicitly when
+# an analysis starts.
+_IMPORT_SAVE_LOG = getattr(config, "SAVE_LOG", None)
+_IMPORT_VERBOSE = getattr(config, "VERBOSE", None)
+config.SAVE_LOG = False
+config.VERBOSE = False
+try:
     from .utils import AnalysisTimer, DockLogger, DockModel
-else:
-    import config
-    from utils import AnalysisTimer, DockLogger, DockModel
+finally:
+    if _IMPORT_SAVE_LOG is None:
+        delattr(config, "SAVE_LOG")
+    else:
+        config.SAVE_LOG = _IMPORT_SAVE_LOG
+    if _IMPORT_VERBOSE is None:
+        delattr(config, "VERBOSE")
+    else:
+        config.VERBOSE = _IMPORT_VERBOSE
+    del _IMPORT_SAVE_LOG
+    del _IMPORT_VERBOSE
 
 # Specialized analyzers and output modules are imported lazily by later
 # integration sections. This keeps the orchestration layer importable when an
@@ -123,7 +231,6 @@ else:
 # -----------------------------------------------------------------------------
 
 __author__: Final[str] = "Leonardo Bastos and DockAnalyzer contributors"
-__version__: Final[str] = "0.1.0"
 __license__: Final[str] = "MIT"
 __status__: Final[str] = "Development"
 
@@ -132,7 +239,11 @@ _MODULE_DESCRIPTION: Final[str] = (
     "Central orchestration of DockAnalyzer interaction, scoring, reporting, "
     "export and visualization workflows."
 )
-_LOGGER: Final[DockLogger] = DockLogger(_MODULE_NAME)
+_LOGGER: DockLogger = DockLogger(
+    _MODULE_NAME,
+    save_log=False,
+    verbose=False,
+)
 
 _RUN_IMPORT_VALIDATIONS: Final[bool] = os.getenv(
     "DOCKANALYZER_VALIDATE_IMPORTS",
@@ -7568,17 +7679,34 @@ class MultiPoseAnalysisResult:
 
         def numeric_score(result: PoseAnalysisResult) -> float:
             value = result.scoring
-            if isinstance(value, Real):
-                return float(value)
-            for attribute in ("total_score", "normalized_score", "score"):
-                candidate = getattr(value, attribute, None)
-                if isinstance(candidate, Real):
-                    return float(candidate)
-            if isinstance(value, Mapping):
-                for key in ("total_score", "normalized_score", "score"):
-                    candidate = value.get(key)
-                    if isinstance(candidate, Real):
-                        return float(candidate)
+            if isinstance(value, Real) and not isinstance(value, bool):
+                numeric = float(value)
+                return numeric if math.isfinite(numeric) else float("-inf")
+
+            def read(container: Any, name: str) -> Any:
+                if isinstance(container, Mapping):
+                    return container.get(name)
+                return getattr(container, name, None)
+
+            summary = read(value, "summary")
+            candidates = (
+                read(value, "final_score"),
+                read(summary, "final_score"),
+                read(value, "normalized_score"),
+                read(summary, "normalized_score"),
+                read(value, "total_score"),
+                read(value, "ranking_score"),
+                read(value, "score"),
+            )
+            for candidate in candidates:
+                if candidate is None or isinstance(candidate, bool):
+                    continue
+                try:
+                    numeric = float(candidate)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if math.isfinite(numeric):
+                    return numeric
             return float("-inf")
 
         return max(self.pose_results, key=numeric_score)
@@ -22821,13 +22949,65 @@ def execute_hbonds_stage(
             ),
         )
     except Exception as exc:
+        # Report the original exception before it is wrapped by the orchestration
+        # layer. This preserves the module-level failure type and message in both
+        # the ChimeraX Log and the persistent DockAnalyzer log.
+        internal_exception = format_exception_chain(exc)
+        internal_message = (
+            "Internal exception in hbonds: "
+            f"{internal_exception}"
+        )
+        _LOGGER.error(internal_message)
+
+        # Preserve the complete module-level traceback before wrapping the
+        # exception. ``traceback.format_exception`` keeps chained causes and
+        # the original hbonds.py stack frames, allowing ChimeraX users to see
+        # the exact failing function and source line.
+        internal_traceback = "".join(
+            traceback.format_exception(
+                type(exc),
+                exc,
+                exc.__traceback__,
+                chain=True,
+            )
+        ).rstrip()
+        traceback_message = (
+            "Full traceback for stage hbonds:\n"
+            f"{internal_traceback}"
+        )
+        _LOGGER.error(traceback_message)
+
+        if context is not None and context.session is not None:
+            try:
+                emit_chimerax_message(
+                    internal_message,
+                    session=context.session,
+                    level="error",
+                )
+                emit_chimerax_message(
+                    traceback_message,
+                    session=context.session,
+                    level="error",
+                )
+            except Exception as log_exc:
+                _LOGGER.error(
+                    "Failed to write the hbonds internal exception or "
+                    "traceback to the ChimeraX Log: "
+                    f"{type(log_exc).__name__}: {log_exc}"
+                )
+
         wrapped = exc
         if not isinstance(exc, AnalysisError):
             wrapped = AnalysisStageError(
                 "Hydrogen-bond analysis failed.",
                 stage=STAGE_HBONDS,
                 cause=exc,
-                details={"exception_type": type(exc).__name__},
+                details={
+                    "exception_type": type(exc).__name__,
+                    "exception_message": str(exc),
+                    "exception_chain": internal_exception,
+                    "exception_traceback": internal_traceback,
+                },
             )
         stage_result.fail(
             wrapped,
@@ -34136,6 +34316,8 @@ def scoring_result_final_score(value: Any) -> Optional[float]:
     for candidate in (
         get_object_value(value, "final_score", default=None),
         get_nested_value(value, ("summary", "final_score"), default=None),
+        get_object_value(value, "normalized_score", default=None),
+        get_nested_value(value, ("summary", "normalized_score"), default=None),
         get_object_value(value, "total_score", default=None),
         get_object_value(value, "ranking_score", default=None),
         get_object_value(value, "score", default=None),
@@ -35654,6 +35836,15 @@ SINGLE_POSE_DEPENDENCY_SUCCESS_STATUSES: Final[FrozenSet[StageStatus]] = frozens
 SINGLE_POSE_ABORT_STATUSES: Final[FrozenSet[StageStatus]] = frozenset(
     {StageStatus.FAILED, StageStatus.CANCELLED, StageStatus.BLOCKED}
 )
+SINGLE_POSE_NON_ABORTING_FAILURE_STAGES: Final[FrozenSet[str]] = frozenset(
+    {
+        STAGE_CONTACTS,
+        STAGE_HBONDS,
+        STAGE_HYDROPHOBIC,
+        STAGE_PI,
+        STAGE_SALTBRIDGE,
+    }
+)
 
 DEFAULT_SINGLE_POSE_INCLUDE_DEPENDENCIES: Final[bool] = True
 DEFAULT_SINGLE_POSE_INCLUDE_ORDERING_PREDECESSORS: Final[bool] = True
@@ -37032,6 +37223,8 @@ def _single_pose_should_abort(
 
     if result.status not in SINGLE_POSE_ABORT_STATUSES:
         return False
+    if entry.stage in SINGLE_POSE_NON_ABORTING_FAILURE_STAGES:
+        return False
     if options.stop_on_any_failure:
         return True
     return bool(options.stop_on_required_failure and entry.required)
@@ -37308,6 +37501,31 @@ def run_single_pose_analysis(
     runtime_context.set_status(pose_result.status, force=True)
     runtime_context.set_current_pose(None)
     runtime_context.set_current_stage(None)
+
+    # Stage adapters may attach their native payloads independently, but the
+    # complete canonical pose result must also be attached once finalization is
+    # complete.  The indirection keeps import-time convention checks safe while
+    # this later section of the module is still being defined.
+    if integrated.runtime.attach_results and pose_result.dock_model is not None:
+        result_attacher = globals().get("attach_pose_analysis_result_to_dock_model")
+        if callable(result_attacher):
+            try:
+                attachment_records = result_attacher(
+                    pose_result.dock_model,
+                    pose_result,
+                    config=integrated,
+                    execution_plan=plan,
+                )
+                pose_result.metadata["attachment_record_count"] = len(
+                    attachment_records
+                )
+            except Exception as exc:
+                if integrated.runtime.failure_policy == FAILURE_POLICY_STRICT:
+                    raise
+                pose_result.diagnostics.add_warning(
+                    f"Canonical pose-result attachment failed: {exc}",
+                    stage=STAGE_FINALIZATION,
+                )
 
     output = SinglePoseAnalysisOutput(
         request=request,
@@ -38771,31 +38989,7 @@ def _multipose_pose_numeric_score(value: Any) -> Optional[float]:
     if isinstance(scoring, Real) and not isinstance(scoring, bool):
         numeric = float(scoring)
         return numeric if math.isfinite(numeric) else None
-    candidates = [
-        get_object_value(scoring, "final_score", default=MISSING_VALUE),
-        get_object_value(scoring, "normalized_score", default=MISSING_VALUE),
-        get_object_value(scoring, "total_score", default=MISSING_VALUE),
-        get_object_value(scoring, "score", default=MISSING_VALUE),
-    ]
-    summary = get_object_value(scoring, "summary", default=None)
-    if summary is not None:
-        candidates.extend(
-            [
-                get_object_value(summary, "final_score", default=MISSING_VALUE),
-                get_object_value(summary, "normalized_score", default=MISSING_VALUE),
-                get_object_value(summary, "total_score", default=MISSING_VALUE),
-            ]
-        )
-    for candidate in candidates:
-        if is_missing_value(candidate) or candidate is None or isinstance(candidate, bool):
-            continue
-        try:
-            numeric = float(candidate)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if math.isfinite(numeric):
-            return numeric
-    return None
+    return scoring_result_final_score(scoring)
 
 
 def _failed_multipose_pose_result(
@@ -38942,14 +39136,23 @@ def build_multipose_ranking(
     pose_results: Sequence[PoseAnalysisResult],
     *,
     include_failed: bool = False,
+    include_unscored: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Build a stable fallback ranking from integrated pose scores."""
+    """Build a stable fallback ranking from integrated pose scores.
+
+    Higher finite scores rank first. Exact score ties share the same rank and
+    retain input order. Unscored poses are excluded by default because assigning
+    them a numerical rank would imply a comparison that was never calculated.
+    """
 
     candidates: List[Tuple[int, PoseAnalysisResult, Optional[float]]] = []
     for index, result in enumerate(pose_results):
         if not include_failed and result.status not in MULTIPOSE_SUCCESS_STATUSES:
             continue
-        candidates.append((index, result, _multipose_pose_numeric_score(result)))
+        score = _multipose_pose_numeric_score(result)
+        if score is None and not include_unscored:
+            continue
+        candidates.append((index, result, score))
     candidates.sort(
         key=lambda item: (
             item[2] is not None,
@@ -38959,10 +39162,16 @@ def build_multipose_ranking(
         reverse=True,
     )
     ranking: List[Dict[str, Any]] = []
-    for rank, (index, result, score) in enumerate(candidates, start=1):
+    previous_score: Optional[float] = None
+    previous_rank = 0
+    for position, (index, result, score) in enumerate(candidates, start=1):
+        tied = position > 1 and score is not None and score == previous_score
+        rank = previous_rank if tied else position
         ranking.append(
             {
                 "rank": rank,
+                "position": position,
+                "tied": tied,
                 "pose_index": index,
                 "pose_id": result.pose_id,
                 "name": result.name,
@@ -38971,6 +39180,8 @@ def build_multipose_ranking(
                 "interaction_count": result.interaction_count,
             }
         )
+        previous_score = score
+        previous_rank = rank
     return ranking
 
 
@@ -46659,12 +46870,9 @@ def attach_pose_analysis_result_to_dock_model(
                     state_config=options,
                 )
             )
-            score_value = get_first_object_value(
-                result.scoring,
-                ("total_score", "score", "normalized_score"),
-                default=None,
-                skip_none=True,
-            )
+            # Keep the scalar DockModel score aligned with the same canonical
+            # precedence used by scoring validation and multipose ranking.
+            score_value = scoring_result_final_score(result.scoring)
             if score_value is not None:
                 records.append(
                     attach_dock_model_field(
@@ -59286,28 +59494,60 @@ class ChimeraXModelSelection:
 
 
 def _selection_mode(mode: Any, pose_count: int) -> str:
-    """Resolve the final single-pose or multipose mode."""
+    """Resolve and validate the final single-pose or multipose mode."""
 
     canonical = canonicalize_chimerax_analysis_mode(mode)
     if canonical == ANALYSIS_MODE_AUTO:
-        return (
+        resolved = (
             ANALYSIS_MODE_SINGLE_POSE
-            if pose_count <= 1
+            if pose_count == 1
             else ANALYSIS_MODE_MULTIPOSE
         )
-    if canonical == ANALYSIS_MODE_SINGLE_POSE and pose_count != 1:
+    else:
+        resolved = canonical
+
+    if resolved == ANALYSIS_MODE_SINGLE_POSE and pose_count != 1:
         raise AnalysisInputError(
             "Single-pose ChimeraX analysis requires exactly one pose.",
             code="invalid_chimerax_single_pose_count",
             details={"pose_count": pose_count},
         )
-    if canonical == ANALYSIS_MODE_MULTIPOSE and pose_count < 2:
+    if resolved == ANALYSIS_MODE_MULTIPOSE and pose_count < 2:
         raise AnalysisInputError(
             "Multipose ChimeraX analysis requires at least two poses.",
             code="invalid_chimerax_multipose_count",
             details={"pose_count": pose_count},
         )
-    return canonical
+    if resolved not in {ANALYSIS_MODE_SINGLE_POSE, ANALYSIS_MODE_MULTIPOSE}:
+        raise AnalysisStateError(
+            "ChimeraX analysis mode resolution did not produce a final pose mode.",
+            code="unresolved_chimerax_analysis_mode",
+            details={
+                "requested_mode": canonical,
+                "resolved_mode": resolved,
+                "pose_count": pose_count,
+            },
+        )
+    return resolved
+
+
+def _format_chimerax_atomic_model_for_log(model: Any, position: int) -> str:
+    """Return one safe, concise atomic-model description for the ChimeraX Log."""
+
+    try:
+        identity = describe_object(model)
+        identifier = normalize_text(identity.identifier, default="")
+        if identifier and not identifier.startswith("#"):
+            identifier = f"#{identifier}"
+        name = normalize_text(identity.name, default=f"model_{position}")
+        type_name = normalize_text(identity.type_name, default=type(model).__name__)
+        prefix = f"{identifier} " if identifier else ""
+        return f"{prefix}{name} [{type_name}]"
+    except Exception as exc:
+        return (
+            f"model_{position} [{type(model).__name__}] "
+            f"(description unavailable: {type(exc).__name__}: {exc})"
+        )
 
 
 def resolve_chimerax_model_selection(
@@ -59335,6 +59575,20 @@ def resolve_chimerax_model_selection(
             atomic_only=True,
             maximum=CHIMERAX_MAX_OPEN_MODELS,
         )
+
+    emit_chimerax_message(
+        f"Atomic models found: {len(model_values)}",
+        session=session_value,
+        level="info",
+    )
+    for position, model_value in enumerate(model_values, start=1):
+        emit_chimerax_message(
+            "Atomic model "
+            f"{position}: {_format_chimerax_atomic_model_for_log(model_value, position)}",
+            session=session_value,
+            level="info",
+        )
+
     discovery = discover_models(
         model_values,
         receptor=receptor,
@@ -59347,10 +59601,96 @@ def resolve_chimerax_model_selection(
         source_kind=InputSourceKind.SESSION,
     )
     selected_poses = tuple(discovery.poses)
-    final_mode = _selection_mode(mode, len(selected_poses)) if selected_poses else canonicalize_chimerax_analysis_mode(mode)
     warnings_list = list(discovery.warnings)
+
+    selected_receptor = discovery.receptor
+    if selected_receptor is None:
+        emit_chimerax_message(
+            "Receptor selected: none.",
+            session=session_value,
+            level="warning",
+        )
+    else:
+        receptor_position = next(
+            (
+                position
+                for position, model_value in enumerate(model_values, start=1)
+                if model_value is selected_receptor
+            ),
+            1,
+        )
+        emit_chimerax_message(
+            "Receptor selected: "
+            + _format_chimerax_atomic_model_for_log(
+                selected_receptor,
+                receptor_position,
+            ),
+            session=session_value,
+            level="info",
+        )
+
+    emit_chimerax_message(
+        f"Poses selected: {len(selected_poses)}",
+        session=session_value,
+        level="info" if selected_poses else "warning",
+    )
+    for pose_position, pose_value in enumerate(selected_poses, start=1):
+        model_position = next(
+            (
+                position
+                for position, model_value in enumerate(model_values, start=1)
+                if model_value is pose_value
+            ),
+            pose_position,
+        )
+        emit_chimerax_message(
+            "Selected pose "
+            f"{pose_position}: "
+            + _format_chimerax_atomic_model_for_log(
+                pose_value,
+                model_position,
+            ),
+            session=session_value,
+            level="info",
+        )
+
     if not selected_poses:
-        warnings_list.append("No docking poses were selected from the ChimeraX session.")
+        emit_chimerax_message(
+            "No docking poses were identified.",
+            session=session_value,
+            level="error",
+        )
+        emit_chimerax_message(
+            "Open the receptor and poses as separate atomic models.",
+            session=session_value,
+            level="error",
+        )
+        raise AnalysisInputError(
+            "No docking poses were identified. "
+            "Open the receptor and poses as separate atomic models.",
+            code="no_chimerax_docking_poses",
+            details={
+                "atomic_model_count": len(model_values),
+                "explicit_receptor": receptor is not None,
+                "explicit_poses": poses is not None,
+                "discovery_warnings": list(discovery.warnings),
+            },
+        )
+    final_mode = _selection_mode(mode, len(selected_poses))
+    emit_chimerax_message(
+        f"Resolved analysis mode: {final_mode}",
+        session=session_value,
+        level="info",
+    )
+    if final_mode == ANALYSIS_MODE_AUTO:
+        raise AnalysisStateError(
+            "The final ChimeraX analysis mode cannot remain 'auto'.",
+            code="unresolved_chimerax_auto_mode",
+            details={
+                "requested_mode": canonicalize_chimerax_analysis_mode(mode),
+                "pose_count": len(selected_poses),
+            },
+        )
     if discovery.receptor is None:
         warnings_list.append("No receptor was selected from the ChimeraX session.")
     selection = ChimeraXModelSelection(
@@ -65744,3 +66084,240 @@ if _RUN_IMPORT_VALIDATIONS:
 # =============================================================================
 # End of Section 30
 # =============================================================================
+
+# =============================================================================
+# ChimeraX runscript entry point
+# =============================================================================
+
+
+def _build_chimerax_autorun_config(
+    output_directory: Path,
+    *,
+    file_prefix: str,
+) -> AnalysisConfig:
+    """Return the reproducible MVP configuration for ChimeraX runscript."""
+
+    runtime = AnalysisRuntimeConfig(
+        analysis_mode=ANALYSIS_MODE_AUTO,
+        failure_policy=FAILURE_POLICY_PERMISSIVE,
+        attachment_policy=ATTACHMENT_POLICY_MERGE,
+        execution_mode=EXECUTION_MODE_SEQUENTIAL,
+        max_workers=1,
+        attach_results=True,
+        reuse_results=False,
+        validate_inputs=True,
+        validate_results=True,
+        collect_timings=True,
+        collect_provenance=True,
+        collect_diagnostics=True,
+        allow_partial_results=True,
+        record_history=True,
+        dry_run=False,
+        allow_chimerax_threads=False,
+    )
+    output = AnalysisOutputConfig(
+        generate_report=True,
+        report_formats=("markdown",),
+        export_results=True,
+        export_formats=("json", "csv"),
+        visualize_results=True,
+        output_directory=output_directory,
+        file_prefix=file_prefix,
+        overwrite=True,
+        create_directories=True,
+        update_dock_model_files=True,
+        write_manifest=True,
+        create_snapshot=False,
+        image_format=CHIMERAX_DEFAULT_IMAGE_FORMAT,
+        export_commands=False,
+        save_session=False,
+        visualization_options={
+            "execution_mode": "immediate",
+            "create_snapshot": False,
+            "continue_on_error": True,
+        },
+        metadata={
+            "automatic_chimerax_run": True,
+            "output_directory": str(output_directory),
+        },
+    )
+    return AnalysisConfig(
+        profile_name="chimerax_autorun",
+        runtime=runtime,
+        output=output,
+        requested_stages=DEFAULT_ANALYSIS_STAGES,
+        enable_scoring=True,
+        enable_consensus=False,
+        include_internal_stages=True,
+        include_stage_dependencies=True,
+        metadata={
+            "automatic_chimerax_run": True,
+            "output_directory": str(output_directory),
+        },
+    )
+
+
+def _make_chimerax_autorun_progress_callback(
+    session_value: Any,
+) -> ProgressCallback:
+    """Return a progress callback that writes to ChimeraX and the file log."""
+
+    reporter = make_chimerax_progress_callback(
+        session_value,
+        minimum_interval_seconds=0.1,
+        include_metadata=False,
+    )
+
+    def callback(
+        stage: str,
+        completed: int,
+        total: int,
+        metadata: Mapping[str, Any],
+    ) -> None:
+        reporter(stage, completed, total, metadata)
+        if total:
+            _LOGGER.info(f"{stage}: {completed}/{total}")
+        else:
+            _LOGGER.info(f"{stage}: {completed}")
+
+    return callback
+
+
+def _write_chimerax_autorun_summary(
+    result: ChimeraXAnalysisOutput,
+    *,
+    file_prefix: str,
+) -> Path:
+    """Write an execution summary even when the analysis is partial or failed."""
+
+    summary_path = Path(config.JSON_DIR) / f"{file_prefix}_run_summary.json"
+    payload = result.to_dict(include_objects=False)
+    payload["runtime_output_paths"] = {
+        name: str(getattr(config, name))
+        for name in (
+            "OUTPUT_DIR",
+            "CSV_DIR",
+            "EXCEL_DIR",
+            "IMAGE_DIR",
+            "SESSION_DIR",
+            "REPORT_DIR",
+            "JSON_DIR",
+            "LOG_DIR",
+        )
+    }
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(
+        json.dumps(
+            to_json_compatible(payload),
+            indent=DEFAULT_JSON_INDENT,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding=ANALYSIS_ENCODING,
+    )
+    result.metadata["run_summary"] = str(summary_path)
+    return summary_path
+
+
+def run_chimerax_autorun(session_value: Any = None) -> ChimeraXAnalysisOutput:
+    """Run the complete DockAnalyzer pipeline from ChimeraX ``runscript``."""
+
+    global _LOGGER
+
+    output_directory = _configure_runtime_output_paths()
+    active_session = resolve_chimerax_session(session_value, required=True)
+    _LOGGER = DockLogger(
+        _MODULE_NAME,
+        session=active_session,
+        log_directory=config.LOG_DIR,
+        save_log=config.SAVE_LOG,
+        verbose=config.VERBOSE,
+    )
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_prefix = f"dockanalyzer_{timestamp}"
+    autorun_config = _build_chimerax_autorun_config(
+        output_directory,
+        file_prefix=file_prefix,
+    )
+    command_options = ChimeraXCommandOptions(
+        mode=ANALYSIS_MODE_AUTO,
+        strict=False,
+        generate_report=True,
+        export_results=True,
+        visualize_results=True,
+        output_directory=output_directory,
+        snapshot_path=None,
+        save_session_path=None,
+        include_unknown_poses=True,
+        reuse_results=False,
+        attach_results=True,
+        dry_run=False,
+        log_commands=True,
+        metadata={
+            "automatic_chimerax_run": True,
+            "file_prefix": file_prefix,
+        },
+    )
+
+    start_message = (
+        "Automatic ChimeraX analysis started. "
+        f"All outputs will be stored in: {output_directory}"
+    )
+    emit_chimerax_message(start_message, session=active_session, level="info")
+    _LOGGER.info(start_message)
+    if getattr(_LOGGER, "log_path", None) is not None:
+        log_message = f"File log: {_LOGGER.log_path}"
+        emit_chimerax_message(log_message, session=active_session, level="info")
+        _LOGGER.info(log_message)
+
+    try:
+        result = analyze_chimerax_session(
+            active_session,
+            config=autorun_config,
+            options=command_options,
+            progress_callback=_make_chimerax_autorun_progress_callback(
+                active_session
+            ),
+            name="DockAnalyzer automatic ChimeraX analysis",
+            metadata={
+                "automatic_chimerax_run": True,
+                "file_prefix": file_prefix,
+                "output_directory": str(output_directory),
+            },
+        )
+        summary_path = _write_chimerax_autorun_summary(
+            result,
+            file_prefix=file_prefix,
+        )
+        globals()["DOCKANALYZER_LAST_RESULT"] = result
+        finish_message = (
+            f"Automatic analysis finished with status {result.status}. "
+            f"Run summary: {summary_path}"
+        )
+        emit_chimerax_message(
+            finish_message,
+            session=active_session,
+            level="info" if result.succeeded else "warning",
+        )
+        _LOGGER.info(finish_message)
+        return result
+    except BaseException as exc:
+        error_message = f"Automatic analysis failed: {type(exc).__name__}: {exc}"
+        emit_chimerax_message(
+            error_message,
+            session=active_session,
+            level="error",
+        )
+        _LOGGER.exception(error_message)
+        raise
+
+
+_register_public_names(("run_chimerax_autorun",))
+
+
+# Importing this module is intentionally inert.  ChimeraX execution is started
+# by the dedicated runscript launcher, which calls ``run_chimerax_autorun``
+# explicitly.  Direct command-line execution remains available for diagnostics.
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -23,46 +23,29 @@ from typing import (
     Union,
 )
 
-try:  # Optional acceleration.
-    import numpy as np
-except ImportError:  # pragma: no cover - environment dependent
-    np = None
-    HAS_NUMPY = False
-else:
-    HAS_NUMPY = True
+import numpy as np
+
+HAS_NUMPY = True
 
 try:  # Optional ChimeraX integration.
+    import chimerax
     from chimerax.atomic import Atom, Atoms, Residue, Structure
     from chimerax.core.commands import run as chimerax_run
-except ImportError:  # pragma: no cover - environment dependent
+except ModuleNotFoundError as exc:  # pragma: no cover - expected outside ChimeraX
+    if exc.name != "chimerax":
+        raise
+    chimerax = None
     Atom = Atoms = Residue = Structure = Any
     chimerax_run = None
     HAS_CHIMERAX = False
 else:
     HAS_CHIMERAX = True
 
-# DockModel may live in utils.py in the current package layout or in the
-# legacy dockmodel.py module. Support package and direct-file imports.
-if __package__:
-    try:  # pragma: no cover - package layout dependent
-        from .utils import DockModel
-    except ImportError:  # pragma: no cover
-        try:
-            from .dockmodel import DockModel
-        except ImportError:
-            DockModel = Any
-else:
-    try:  # pragma: no cover - direct execution layout dependent
-        from utils import DockModel
-    except ImportError:  # pragma: no cover
-        try:
-            from dockmodel import DockModel
-        except ImportError:
-            DockModel = Any
+from ._version import __version__
+from .utils import DockModel
 
 __all__: List[str] = []
 __author__ = "DockAnalyzer Project"
-__version__ = "1.0.0"
 
 
 # =============================================================================

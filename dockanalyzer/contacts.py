@@ -46,31 +46,10 @@ import numpy as np
 # DockAnalyzer imports
 # =============================================================================
 
-if __package__:
-    from . import config
-    from . import geometry
-    from . import utils
-    from .geometry import (
-        ContactGeometry,
-    )
-
-    from .utils import (
-        DockLogger,
-        DockModel,
-    )
-
-else:
-    import config
-    import geometry
-    import utils
-    from geometry import (
-        ContactGeometry,
-    )
-
-    from utils import (
-        DockLogger,
-        DockModel,
-    )
+from . import config, geometry, utils
+from ._version import __version__
+from .geometry import ContactGeometry
+from .utils import DockLogger, DockModel
 
 
 # =============================================================================
@@ -79,7 +58,6 @@ else:
 
 __author__ = "Leonardo Marensi Bastos"
 __license__ = "MIT"
-__version__ = "1.0.0"
 
 # =============================================================================
 # Public module interface
@@ -2245,6 +2223,62 @@ def get_atom_coordinate(
         If the coordinate has an invalid shape or non-finite values.
     """
 
+    coordinate_names: Tuple[
+        str,
+        ...,
+    ]
+
+    if scene:
+        coordinate_names = (
+            "scene_coord",
+            "scene_coordinate",
+            "scene_coords",
+            "coord",
+            "coordinate",
+            "coords",
+            "xyz",
+            "position",
+        )
+
+    else:
+        coordinate_names = (
+            "coord",
+            "coordinate",
+            "coords",
+            "xyz",
+            "position",
+            "scene_coord",
+            "scene_coordinate",
+        )
+
+    # Read coordinate descriptors only once.  Some ChimeraX-compatible
+    # objects expose coordinates through computed properties; probing those
+    # properties with ``hasattr`` before ``getattr`` repeats the read and can
+    # return inconsistent scene data if a transform changes between probes.
+    coordinate = _get_object_value(
+        atom,
+        coordinate_names,
+        default=None,
+        call_if_callable=True,
+    )
+
+    if coordinate is not None:
+        try:
+            return geometry.as_coordinate(
+                coordinate,
+                scene=False,
+                name="Atom coordinate",
+                copy=copy,
+                require_finite=require_finite,
+            )
+
+        except (
+            AttributeError,
+            TypeError,
+            ValueError,
+        ):
+            pass
+
     try:
         return geometry.get_atom_coordinate(
             atom,
@@ -2258,41 +2292,6 @@ def get_atom_coordinate(
         TypeError,
         ValueError,
     ) as primary_error:
-        coordinate_names: Tuple[
-            str,
-            ...,
-        ]
-
-        if scene:
-            coordinate_names = (
-                "scene_coord",
-                "scene_coordinate",
-                "scene_coords",
-                "coord",
-                "coordinate",
-                "coords",
-                "xyz",
-                "position",
-            )
-
-        else:
-            coordinate_names = (
-                "coord",
-                "coordinate",
-                "coords",
-                "xyz",
-                "position",
-                "scene_coord",
-                "scene_coordinate",
-            )
-
-        coordinate = _get_object_value(
-            atom,
-            coordinate_names,
-            default=None,
-            call_if_callable=True,
-        )
-
         if coordinate is None:
             coordinate = atom
 
@@ -11541,7 +11540,5 @@ if __name__ == "__main__":
 # =============================================================================
 # End of Section 11
 # =============================================================================
-
-
 
 

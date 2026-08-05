@@ -94,65 +94,27 @@ from numpy.typing import NDArray
 # DockAnalyzer imports
 # -----------------------------------------------------------------------------
 
-if __package__:
-    from . import config
-
-    from .contacts import (
-        ResidueContactKey,
-        get_atom_atomic_number,
-        get_atom_coordinate,
-        get_atom_element,
-        get_atom_identifier,
-        get_atom_index,
-        get_atom_name,
-        get_atom_residue,
-        get_atom_structure,
-        get_dock_model_pose,
-        get_residue_contact_key,
-        is_atom_like,
-        is_heavy_atom,
-        is_hydrogen_atom,
-        validate_atom,
-    )
-
-    from .geometry import (
-        distance,
-    )
-
-    from .utils import (
-        DockLogger,
-        DockModel,
-    )
-
-else:
-    import config
-
-    from contacts import (
-        ResidueContactKey,
-        get_atom_atomic_number,
-        get_atom_coordinate,
-        get_atom_element,
-        get_atom_identifier,
-        get_atom_index,
-        get_atom_name,
-        get_atom_residue,
-        get_atom_structure,
-        get_dock_model_pose,
-        get_residue_contact_key,
-        is_atom_like,
-        is_heavy_atom,
-        is_hydrogen_atom,
-        validate_atom,
-    )
-
-    from geometry import (
-        distance,
-    )
-
-    from utils import (
-        DockLogger,
-        DockModel,
-    )
+from . import config
+from ._version import __version__
+from .contacts import (
+    ResidueContactKey,
+    get_atom_atomic_number,
+    get_atom_coordinate,
+    get_atom_element,
+    get_atom_identifier,
+    get_atom_index,
+    get_atom_name,
+    get_atom_residue,
+    get_atom_structure,
+    get_dock_model_pose,
+    get_residue_contact_key,
+    is_atom_like,
+    is_heavy_atom,
+    is_hydrogen_atom,
+    validate_atom,
+)
+from .geometry import distance
+from .utils import DockLogger, DockModel
 
 
 # -----------------------------------------------------------------------------
@@ -160,7 +122,6 @@ else:
 # -----------------------------------------------------------------------------
 
 __author__: Final[str] = "DockAnalyzer contributors"
-__version__: Final[str] = "0.1.0"
 __license__: Final[str] = "MIT"
 
 _MODULE_NAME: Final[str] = "hydrophobic"
@@ -2932,8 +2893,16 @@ def _safe_residue_key_from_atom(
     if atom is None:
         return None
 
+    # ``get_residue_contact_key`` expects a residue-like object.  Passing the
+    # atom itself makes atom names and indices masquerade as residue fields,
+    # splitting contacts from the same receptor residue into separate groups.
+    residue = _safe_atom_residue(atom)
+
+    if residue is None:
+        return None
+
     try:
-        key = get_residue_contact_key(atom)
+        key = get_residue_contact_key(residue)
     except Exception:
         key = None
 
@@ -46137,5 +46106,3 @@ if __name__ == "__main__":
 # End of Section 12.5
 # End of hydrophobic.py
 # =============================================================================
-
-

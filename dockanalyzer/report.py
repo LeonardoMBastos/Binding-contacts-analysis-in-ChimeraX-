@@ -69,34 +69,26 @@ import sys
 import traceback
 import warnings
 
-# 1.2. Optional NumPy support
+# 1.2. Required NumPy support
 # -----------------------------------------------------------------------------
 
-try:
-    import numpy as np
+import numpy as np
 
-    NUMPY_AVAILABLE: Final[bool] = True
-except ImportError:  # pragma: no cover - environment dependent
-    np = None  # type: ignore[assignment]
-    NUMPY_AVAILABLE = False
+NUMPY_AVAILABLE: Final[bool] = True
 
 # 1.3. Internal DockAnalyzer imports
 # -----------------------------------------------------------------------------
 
-try:
-    from . import config
-    from .utils import DockLogger, DockModel
-except ImportError:
-    import config
-    from utils import DockLogger, DockModel
-
 # ``scoring`` and ``export`` are imported locally by integration functions.
+# Report construction is intentionally independent from ``utils``: importing
+# that module currently configures a file logger and creates output directories.
+
+from ._version import __version__
 
 # 1.4. Module metadata
 # -----------------------------------------------------------------------------
 
 __author__: Final[str] = "Leonardo Bastos and DockAnalyzer contributors"
-__version__: Final[str] = "0.1.0"
 __license__: Final[str] = "MIT"
 __status__: Final[str] = "Development"
 
@@ -104,8 +96,6 @@ _MODULE_NAME: Final[str] = "report"
 _MODULE_DESCRIPTION: Final[str] = (
     "Structured report construction and rendering for DockAnalyzer."
 )
-_LOGGER: Final[DockLogger] = DockLogger(_MODULE_NAME)
-
 _RUN_IMPORT_VALIDATIONS: Final[bool] = os.getenv(
     "DOCKANALYZER_VALIDATE_IMPORTS",
     "",
@@ -160,7 +150,8 @@ ReportBlockLike: TypeAlias = Any
 InteractionLike: TypeAlias = Any
 ScoringLike: TypeAlias = Any
 PoseLike: TypeAlias = Any
-DockModelLike: TypeAlias = Union[DockModel, Any]
+# Dock models are consumed through their public, duck-typed attributes.
+DockModelLike: TypeAlias = Any
 ChimeraXSessionLike: TypeAlias = Any
 
 ReportRow: TypeAlias = Dict[str, Any]
@@ -4053,7 +4044,7 @@ def safe_string(
         except Exception:
             text = repr(value)
     elif isinstance(value, Path):
-        text = str(value)
+        text = value.as_posix()
     elif isinstance(value, Enum):
         text = str(value.value)
     else:
@@ -4379,7 +4370,7 @@ def format_path(
             path = Path("~") / path.relative_to(Path.home())
         except (ValueError, OSError):
             pass
-    return str(path)
+    return path.as_posix()
 
 
 # 7.5. Atom and residue formatting
@@ -9268,10 +9259,7 @@ def _local_scoring_recalculation(value: Any) -> Any:
     """Try a compatible local scoring entry point."""
 
     try:
-        try:
-            from . import scoring as scoring_module
-        except ImportError:
-            import scoring as scoring_module
+        from . import scoring as scoring_module
     except ImportError as error:
         raise ReportDependencyError(
             "scoring",
@@ -13202,6 +13190,8 @@ def render_markdown_code(
     """Render a fenced Markdown code block."""
 
     text = safe_string(value, "", strip=False)
+    language = single_line_text(language, "")
+    language = re.sub(r"[^A-Za-z0-9_+.-]", "", language)
     fence = MARKDOWN_CODE_FENCE
     while fence in text:
         fence += "`"
@@ -14290,7 +14280,7 @@ def to_json_safe(
             datetime,
         ) else value.isoformat()
     if isinstance(value, Path):
-        return str(value)
+        return value.as_posix()
     if isinstance(value, bytes):
         return value.decode(DEFAULT_ENCODING, errors="replace")
     if isinstance(value, BaseException):
@@ -15457,23 +15447,13 @@ def load_export_module(
 ) -> Any:
     """Import ``export.py`` locally to avoid circular imports."""
 
-    errors: List[BaseException] = []
-
-    if __package__:
-        try:
-            from . import export as export_module
-            return export_module
-        except (ImportError, AttributeError) as error:
-            errors.append(error)
-
     try:
-        import export as export_module
+        from . import export as export_module
         return export_module
-    except ImportError as error:
-        errors.append(error)
+    except (ImportError, AttributeError) as error:
+        cause: Optional[BaseException] = error
 
     if required:
-        cause = errors[-1] if errors else None
         raise ReportExportError(
             "DockAnalyzer export module is unavailable.",
             cause=cause,
@@ -25981,4 +25961,3 @@ _register_public_names(_SECTION_30_8_PUBLIC_NAMES)
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

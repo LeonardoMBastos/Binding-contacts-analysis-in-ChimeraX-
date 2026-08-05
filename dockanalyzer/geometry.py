@@ -1,3 +1,10 @@
+"""Molecular geometry utilities for DockAnalyzer 0.1.0.
+
+This module has no file-system side effects and does not require ChimeraX at
+import time. ChimeraX atoms and collections are supported through duck typing.
+NumPy is the only required third-party dependency.
+"""
+
 # =============================================================================
 # DockAnalyzer — Molecular Geometry Utilities
 # =============================================================================
@@ -16,7 +23,7 @@
 #     coordinate objects and ChimeraX-like atomic objects through duck typing.
 #
 #     Basic general-purpose functions such as distance(), centroid(), angle()
-#     and normalize() are imported from utils.py rather than reimplemented.
+#     and normalize() are implemented locally to keep imports side-effect free.
 #
 # =============================================================================
 
@@ -46,14 +53,33 @@ from typing import (
     Callable,
     Dict,
     List,
-    Literal,
     Optional,
-    Protocol,
     Tuple,
-    TypeAlias,
     Union,
-    runtime_checkable,
 )
+
+try:
+    from typing import (
+        Literal,
+        Protocol,
+        TypeAlias,
+        runtime_checkable,
+    )
+except ImportError:  # pragma: no cover - compatibility with Python 3.7
+    class _SubscriptableAny:
+        """Fallback used only to evaluate type-alias expressions."""
+
+        def __class_getitem__(cls, item):
+            return Any
+
+    Literal = _SubscriptableAny
+    TypeAlias = Any
+
+    class Protocol:
+        """Minimal runtime fallback for a typing-only protocol base."""
+
+    def runtime_checkable(cls):
+        return cls
 
 
 # -----------------------------------------------------------------------------
@@ -62,32 +88,26 @@ from typing import (
 
 import numpy as np
 
-from numpy.typing import (
-    ArrayLike,
-    NDArray,
-)
-
-
-# -----------------------------------------------------------------------------
-# DockAnalyzer imports
-# -----------------------------------------------------------------------------
-
-if __package__:
-    from .utils import (
-        angle,
-        centroid,
-        distance,
-        normalize,
+try:
+    from numpy.typing import (
+        ArrayLike,
+        NDArray,
     )
+except ImportError:  # pragma: no cover - compatibility with older NumPy
+    ArrayLike = Any
 
-else:
-    # Support direct execution without masking dependency import failures.
-    from utils import (
-        angle,
-        centroid,
-        distance,
-        normalize,
-    )
+    class NDArray:
+        """Fallback used only to evaluate type-alias expressions."""
+
+        def __class_getitem__(cls, item):
+            return np.ndarray
+
+
+# This foundation module intentionally does not import ``utils``. The four
+# basic geometry functions are implemented locally so importing ``geometry``
+# cannot initialize logging or create output directories indirectly.
+
+from ._version import __version__
 
 
 # -----------------------------------------------------------------------------
@@ -136,11 +156,154 @@ AlignmentMethod: TypeAlias = Literal[
 
 
 # -----------------------------------------------------------------------------
+# Side-effect-free basic geometry
+# -----------------------------------------------------------------------------
+
+def normalize(
+    vector: Any,
+    *,
+    zero_tolerance: float = 1.0e-12,
+) -> FloatArray:
+    """Return a three-dimensional vector normalized to unit length."""
+
+    vector_array = as_coordinate(
+        vector,
+        name="vector",
+    )
+    vector_norm = float(
+        np.linalg.norm(vector_array)
+    )
+
+    if vector_norm <= float(zero_tolerance):
+        raise ValueError(
+            "A zero-length vector cannot be normalized."
+        )
+
+    return vector_array / vector_norm
+
+
+def distance(
+    point_a: Any,
+    point_b: Any,
+) -> float:
+    """Return the Euclidean distance between two 3D points or atoms."""
+
+    coordinate_a = as_coordinate(
+        point_a,
+        name="point A",
+    )
+    coordinate_b = as_coordinate(
+        point_b,
+        name="point B",
+    )
+    return float(
+        np.linalg.norm(coordinate_b - coordinate_a)
+    )
+
+
+def centroid(
+    coordinates: Any,
+    *,
+    weights: Optional[Any] = None,
+) -> FloatArray:
+    """Return the arithmetic or weighted centroid of 3D coordinates."""
+
+    coordinate_matrix = as_coordinate_matrix(
+        coordinates,
+        name="coordinates",
+    )
+
+    if weights is None:
+        return np.mean(
+            coordinate_matrix,
+            axis=0,
+        )
+
+    try:
+        weight_array = np.asarray(
+            weights,
+            dtype=np.float64,
+        )
+    except (TypeError, ValueError, OverflowError) as error:
+        raise TypeError(
+            "Weights must contain numeric values."
+        ) from error
+
+    weight_array = np.squeeze(weight_array)
+    if weight_array.ndim != 1:
+        raise ValueError(
+            "Weights must be a one-dimensional sequence."
+        )
+    if weight_array.size != coordinate_matrix.shape[0]:
+        raise ValueError(
+            "The number of weights must match the number of coordinates."
+        )
+    if not np.all(np.isfinite(weight_array)):
+        raise ValueError(
+            "Weights contain NaN or infinite values."
+        )
+    if np.isclose(float(np.sum(weight_array)), 0.0):
+        raise ValueError(
+            "The sum of the centroid weights cannot be zero."
+        )
+
+    return np.average(
+        coordinate_matrix,
+        axis=0,
+        weights=weight_array,
+    )
+
+
+def angle(
+    point_a: Any,
+    vertex: Any,
+    point_c: Any,
+    *,
+    degrees: bool = True,
+    zero_tolerance: float = 1.0e-12,
+) -> float:
+    """Return the angle formed by ``point_a - vertex - point_c``."""
+
+    coordinate_a = as_coordinate(
+        point_a,
+        name="point A",
+    )
+    vertex_coordinate = as_coordinate(
+        vertex,
+        name="vertex",
+    )
+    coordinate_c = as_coordinate(
+        point_c,
+        name="point C",
+    )
+    vector_a = coordinate_a - vertex_coordinate
+    vector_c = coordinate_c - vertex_coordinate
+    norm_a = float(np.linalg.norm(vector_a))
+    norm_c = float(np.linalg.norm(vector_c))
+
+    if norm_a <= zero_tolerance or norm_c <= zero_tolerance:
+        raise ValueError(
+            "An angle cannot be calculated when an endpoint "
+            "coincides with the vertex."
+        )
+
+    cosine_value = float(
+        np.dot(vector_a, vector_c) / (norm_a * norm_c)
+    )
+    angle_radians = float(
+        np.arccos(np.clip(cosine_value, -1.0, 1.0))
+    )
+    if degrees:
+        return float(np.degrees(angle_radians))
+    return angle_radians
+
+
+# -----------------------------------------------------------------------------
 # Public interface
 # -----------------------------------------------------------------------------
 
 __all__ = [
-    # Basic geometry imported from utils.py
+    # Side-effect-free basic geometry
     "distance",
     "centroid",
     "angle",
@@ -18162,4 +18325,3 @@ if __name__ == "__main__":
 # =============================================================================
 # End of Section 15
 # =============================================================================
-

@@ -1,110 +1,68 @@
-"""
-===============================================================================
-DockAnalyzer Configuration File
--------------------------------------------------------------------------------
-Author : Leonardo Bastos & ChatGPT
-Project: DockAnalyzer
-Version: 0.1.0
+"""Configuration defaults for DockAnalyzer.
 
-This file contains every configurable parameter used by DockAnalyzer.
-
-Changing values here automatically affects the entire project.
-
-Units
------
-Distances : Angstrom (Å)
-Angles    : Degrees
-Energy    : kcal/mol
-===============================================================================
+The module is deliberately side-effect free: importing it does not create
+directories, open files, or require ChimeraX.  Distances are expressed in
+angstroms, angles in degrees, and energies in kcal/mol.
 """
 
 from pathlib import Path
+from ._version import __version__
 
-# =============================================================================
-# GENERAL SETTINGS
-# =============================================================================
 
+# General settings
 PROJECT_NAME = "DockAnalyzer"
-
-VERSION = "0.1.0"
-
+VERSION = __version__
 AUTHOR = "Leonardo Bastos"
-
 VERBOSE = True
-
 SAVE_LOG = True
-
 OVERWRITE_OUTPUT = True
 
 
-# =============================================================================
-# INPUT
-# =============================================================================
-
-# The receptor is always opened FIRST in ChimeraX.
-# All subsequent models are considered docking poses.
-
+# Input model conventions
 RECEPTOR_MODEL_ID = 1
-
 FIRST_POSE_MODEL_ID = 2
-
 RECEPTOR_NAME = "Receptor"
-
 LIGAND_NAME = "Ligand"
 
 
-# =============================================================================
-# OUTPUT DIRECTORY
-# =============================================================================
-
+# Output paths.  These are declarations only; importing this module does not
+# create them.  Relative paths are resolved when an output operation runs.
 OUTPUT_DIR = Path("DockAnalyzer_Output")
-
 CSV_DIR = OUTPUT_DIR / "CSV"
-
 EXCEL_DIR = OUTPUT_DIR / "Excel"
-
 IMAGE_DIR = OUTPUT_DIR / "Images"
-
 SESSION_DIR = OUTPUT_DIR / "Sessions"
-
 REPORT_DIR = OUTPUT_DIR / "Reports"
-
 JSON_DIR = OUTPUT_DIR / "JSON"
-
 LOG_DIR = OUTPUT_DIR / "Logs"
 
+DIRECTORIES = (
+    OUTPUT_DIR,
+    CSV_DIR,
+    EXCEL_DIR,
+    IMAGE_DIR,
+    SESSION_DIR,
+    REPORT_DIR,
+    JSON_DIR,
+    LOG_DIR,
+)
 
-# =============================================================================
-# CONTACT ANALYSIS
-# =============================================================================
 
+# Contact analysis
 CONTACT_DISTANCE = 4.0
-
 MAX_CONTACT_DISTANCE = 5.0
-
 MIN_CONTACT_DISTANCE = 2.0
 
 
-# =============================================================================
-# HYDROGEN BONDS
-# =============================================================================
-
+# Hydrogen bonds
 HBOND_MAX_DISTANCE = 3.5
-
 HBOND_MIN_ANGLE = 120.0
-
 HBOND_SHOW_DASHES = True
 
 
-# =============================================================================
-# HYDROPHOBIC INTERACTIONS
-# =============================================================================
-
+# Hydrophobic interactions
 HYDROPHOBIC_DISTANCE = 4.5
-
-
 HYDROPHOBIC_RESIDUES = {
-
     "ALA",
     "VAL",
     "LEU",
@@ -113,213 +71,166 @@ HYDROPHOBIC_RESIDUES = {
     "PRO",
     "PHE",
     "TRP",
-    "TYR"
-
-}
-
-
-# =============================================================================
-# PI INTERACTIONS
-# =============================================================================
-
-PI_STACK_MAX_DISTANCE = 5.5
-
-PI_STACK_MAX_ANGLE = 30.0
-
-PI_CATION_MAX_DISTANCE = 6.0
-
-
-AROMATIC_RESIDUES = {
-
-    "PHE",
     "TYR",
-    "TRP",
-    "HIS"
-
 }
 
 
-CATIONIC_RESIDUES = {
+# Pi interactions
+PI_STACK_MAX_DISTANCE = 5.5
+PI_STACK_MAX_ANGLE = 30.0
+PI_CATION_MAX_DISTANCE = 6.0
+AROMATIC_RESIDUES = {"PHE", "TYR", "TRP", "HIS"}
+CATIONIC_RESIDUES = {"ARG", "LYS", "HIS"}
 
-    "ARG",
-    "LYS",
-    "HIS"
 
-}
-
-
-# =============================================================================
-# SALT BRIDGES
-# =============================================================================
-
+# Salt bridges
 SALT_BRIDGE_DISTANCE = 4.0
+POSITIVE_RESIDUES = {"ARG", "LYS", "HIS"}
+NEGATIVE_RESIDUES = {"ASP", "GLU"}
 
 
-POSITIVE_RESIDUES = {
-
-    "ARG",
-    "LYS",
-    "HIS"
-
-}
-
-
-NEGATIVE_RESIDUES = {
-
-    "ASP",
-    "GLU"
-
-}
-
-
-# =============================================================================
-# CLASH ANALYSIS
-# =============================================================================
-
+# Clash analysis
 CLASH_OVERLAP = 0.4
 
 
-# =============================================================================
-# VISUALIZATION
-# =============================================================================
-
+# Visualization
 BACKGROUND_COLOR = "white"
-
 PROTEIN_COLOR = "light gray"
-
 LIGAND_COLOR = "gold"
-
 HBOND_COLOR = "green"
-
 HYDROPHOBIC_COLOR = "orange"
-
 PI_STACK_COLOR = "blue"
-
 PI_CATION_COLOR = "purple"
-
 SALT_BRIDGE_COLOR = "red"
-
 CONTACT_COLOR = "cyan"
-
-
 IMAGE_WIDTH = 2400
-
 IMAGE_HEIGHT = 1800
-
 IMAGE_DPI = 300
 
 
-# =============================================================================
-# EXPORT OPTIONS
-# =============================================================================
-
+# Export options
 EXPORT_CSV = True
-
-EXPORT_EXCEL = True
-
+EXPORT_EXCEL = False
 EXPORT_JSON = True
-
-EXPORT_IMAGES = True
-
-EXPORT_SESSION = True
+EXPORT_IMAGES = False
+EXPORT_SESSION = False
 
 
-# =============================================================================
-# SCORING
-# =============================================================================
-
+# Scoring weights
 SCORE = {
-
     "hydrogen_bond": 2,
-
     "hydrophobic": 1,
-
     "pi_stack": 2,
-
     "pi_cation": 2,
-
     "salt_bridge": 3,
-
-    "clash": -2
-
+    "clash": -2,
 }
 
 
-# =============================================================================
-# SUPPORTED FILES
-# =============================================================================
-
-SUPPORTED_EXTENSIONS = {
-
-    ".pdb",
-
-    ".mol2",
-
-    ".sdf"
-
-}
+# Supported input files
+SUPPORTED_EXTENSIONS = {".pdb", ".mol2", ".sdf"}
 
 
-# =============================================================================
-# CREATE OUTPUT FOLDERS
-# =============================================================================
+def validate_configuration():
+    """Validate configuration invariants and return ``True``.
 
-DIRECTORIES = [
+    Raises:
+        ValueError: If a cutoff, angle, image dimension, model identifier, or
+            supported file extension is invalid.
+    """
 
-    OUTPUT_DIR,
+    positive_distances = {
+        "CONTACT_DISTANCE": CONTACT_DISTANCE,
+        "MAX_CONTACT_DISTANCE": MAX_CONTACT_DISTANCE,
+        "MIN_CONTACT_DISTANCE": MIN_CONTACT_DISTANCE,
+        "HBOND_MAX_DISTANCE": HBOND_MAX_DISTANCE,
+        "HYDROPHOBIC_DISTANCE": HYDROPHOBIC_DISTANCE,
+        "PI_STACK_MAX_DISTANCE": PI_STACK_MAX_DISTANCE,
+        "PI_CATION_MAX_DISTANCE": PI_CATION_MAX_DISTANCE,
+        "SALT_BRIDGE_DISTANCE": SALT_BRIDGE_DISTANCE,
+        "CLASH_OVERLAP": CLASH_OVERLAP,
+    }
+    for name, value in positive_distances.items():
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+            raise ValueError("{} must be a positive number".format(name))
 
-    CSV_DIR,
+    if not MIN_CONTACT_DISTANCE <= CONTACT_DISTANCE <= MAX_CONTACT_DISTANCE:
+        raise ValueError(
+            "contact distances must satisfy "
+            "MIN_CONTACT_DISTANCE <= CONTACT_DISTANCE <= MAX_CONTACT_DISTANCE"
+        )
 
-    EXCEL_DIR,
+    for name, value in {
+        "HBOND_MIN_ANGLE": HBOND_MIN_ANGLE,
+        "PI_STACK_MAX_ANGLE": PI_STACK_MAX_ANGLE,
+    }.items():
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ValueError("{} must be numeric".format(name))
+        if not 0.0 <= value <= 180.0:
+            raise ValueError("{} must be between 0 and 180 degrees".format(name))
 
-    IMAGE_DIR,
+    if RECEPTOR_MODEL_ID < 1 or FIRST_POSE_MODEL_ID <= RECEPTOR_MODEL_ID:
+        raise ValueError("pose model identifiers must follow the receptor model")
 
-    SESSION_DIR,
+    for name, value in {
+        "IMAGE_WIDTH": IMAGE_WIDTH,
+        "IMAGE_HEIGHT": IMAGE_HEIGHT,
+        "IMAGE_DPI": IMAGE_DPI,
+    }.items():
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError("{} must be a positive integer".format(name))
 
-    REPORT_DIR,
+    if any(not extension.startswith(".") for extension in SUPPORTED_EXTENSIONS):
+        raise ValueError("supported file extensions must start with a period")
 
-    JSON_DIR,
-
-    LOG_DIR
-
-]
+    return True
 
 
 def create_output_directories():
-    """
-    Create all output directories if they do not exist.
+    """Create the declared output directories explicitly.
+
+    This function preserves the original public API and is never called
+    automatically during module import.
     """
 
     for folder in DIRECTORIES:
         folder.mkdir(parents=True, exist_ok=True)
 
 
-# =============================================================================
-# PRINT CONFIGURATION
-# =============================================================================
-
 def print_configuration():
+    """Print a concise summary of the effective configuration."""
 
     print("=" * 70)
     print(PROJECT_NAME)
     print("Version:", VERSION)
     print("=" * 70)
-
-    print(f"Output folder : {OUTPUT_DIR}")
-    print(f"Contact cutoff: {CONTACT_DISTANCE:.1f} Å")
-    print(f"HBond cutoff  : {HBOND_MAX_DISTANCE:.1f} Å")
-    print(f"Hydrophobic   : {HYDROPHOBIC_DISTANCE:.1f} Å")
-    print(f"π-π cutoff    : {PI_STACK_MAX_DISTANCE:.1f} Å")
-    print(f"π-cation      : {PI_CATION_MAX_DISTANCE:.1f} Å")
+    print("Output folder : {}".format(OUTPUT_DIR))
+    print("Contact cutoff: {:.1f} Å".format(CONTACT_DISTANCE))
+    print("HBond cutoff  : {:.1f} Å".format(HBOND_MAX_DISTANCE))
+    print("Hydrophobic   : {:.1f} Å".format(HYDROPHOBIC_DISTANCE))
+    print("π-π cutoff    : {:.1f} Å".format(PI_STACK_MAX_DISTANCE))
+    print("π-cation      : {:.1f} Å".format(PI_CATION_MAX_DISTANCE))
     print("=" * 70)
 
 
-# =============================================================================
-# INITIALIZATION
-# =============================================================================
+def _self_test():
+    """Run deterministic checks that do not touch the file system."""
+
+    assert validate_configuration() is True
+    assert OUTPUT_DIR not in OUTPUT_DIR.parents
+    assert all(isinstance(folder, Path) for folder in DIRECTORIES)
+    assert set(SCORE) == {
+        "hydrogen_bond",
+        "hydrophobic",
+        "pi_stack",
+        "pi_cation",
+        "salt_bridge",
+        "clash",
+    }
+    return True
+
 
 if __name__ == "__main__":
-
+    _self_test()
     create_output_directories()
-
     print_configuration()
