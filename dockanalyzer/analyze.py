@@ -630,10 +630,10 @@ PIPELINE_STAGE_ORDER: Final[Tuple[str, ...]] = (
     STAGE_CONSOLIDATION,
     STAGE_SCORING,
     STAGE_CONSENSUS,
-    STAGE_REPORT,
-    STAGE_EXPORT,
-    STAGE_VISUALIZATION,
     STAGE_VALIDATION,
+    STAGE_EXPORT,
+    STAGE_REPORT,
+    STAGE_VISUALIZATION,
     STAGE_FINALIZATION,
 )
 
@@ -665,8 +665,8 @@ MULTIPOSE_STAGES: Final[Tuple[str, ...]] = (
 )
 
 OUTPUT_STAGES: Final[Tuple[str, ...]] = (
-    STAGE_REPORT,
     STAGE_EXPORT,
+    STAGE_REPORT,
     STAGE_VISUALIZATION,
 )
 
@@ -676,6 +676,18 @@ INTERNAL_STAGES: Final[Tuple[str, ...]] = (
     STAGE_CONSOLIDATION,
     STAGE_VALIDATION,
     STAGE_FINALIZATION,
+)
+
+# These stages are intentionally dispatched by the high-level orchestration
+# loops because their signatures depend on run state rather than a generic
+# per-stage callback. They therefore have an effective executor even though
+# ``AnalysisStageDefinition.executor`` remains ``None``.
+ORCHESTRATOR_MANAGED_STAGES: Final[FrozenSet[str]] = frozenset(
+    {
+        STAGE_INPUT_RESOLUTION,
+        STAGE_MODEL_PREPARATION,
+        STAGE_FINALIZATION,
+    }
 )
 
 OPTIONAL_STAGES: Final[FrozenSet[str]] = frozenset(
@@ -728,11 +740,11 @@ STAGE_DEPENDENCIES: Final[Mapping[str, Tuple[str, ...]]] = MappingProxyType(
         STAGE_CONSOLIDATION: (STAGE_MODEL_PREPARATION,),
         STAGE_SCORING: (STAGE_CONSOLIDATION,),
         STAGE_CONSENSUS: (STAGE_SCORING,),
-        STAGE_REPORT: (STAGE_CONSOLIDATION,),
-        STAGE_EXPORT: (STAGE_CONSOLIDATION,),
-        STAGE_VISUALIZATION: (STAGE_MODEL_PREPARATION,),
+        STAGE_REPORT: (STAGE_SCORING, STAGE_VALIDATION),
+        STAGE_EXPORT: (STAGE_SCORING, STAGE_VALIDATION),
+        STAGE_VISUALIZATION: (STAGE_SCORING, STAGE_VALIDATION),
         STAGE_VALIDATION: (STAGE_CONSOLIDATION,),
-        STAGE_FINALIZATION: (STAGE_INPUT_RESOLUTION,),
+        STAGE_FINALIZATION: (STAGE_VALIDATION,),
     }
 )
 
@@ -743,20 +755,30 @@ STAGE_ORDERING_PREDECESSORS: Final[
         STAGE_CONSOLIDATION: INTERACTION_STAGES,
         STAGE_SCORING: (STAGE_CONSOLIDATION,),
         STAGE_CONSENSUS: (STAGE_SCORING,),
-        STAGE_REPORT: (STAGE_CONSOLIDATION, STAGE_SCORING, STAGE_CONSENSUS),
-        STAGE_EXPORT: (STAGE_CONSOLIDATION, STAGE_SCORING, STAGE_CONSENSUS),
-        STAGE_VISUALIZATION: (
-            STAGE_CONSOLIDATION,
-            STAGE_SCORING,
-            STAGE_CONSENSUS,
-        ),
         STAGE_VALIDATION: (
             STAGE_CONSOLIDATION,
             STAGE_SCORING,
             STAGE_CONSENSUS,
-            *OUTPUT_STAGES,
         ),
-        STAGE_FINALIZATION: (STAGE_VALIDATION,),
+        STAGE_EXPORT: (
+            STAGE_SCORING,
+            STAGE_CONSENSUS,
+            STAGE_VALIDATION,
+        ),
+        STAGE_REPORT: (
+            STAGE_SCORING,
+            STAGE_CONSENSUS,
+            STAGE_VALIDATION,
+            STAGE_EXPORT,
+        ),
+        STAGE_VISUALIZATION: (
+            STAGE_SCORING,
+            STAGE_CONSENSUS,
+            STAGE_VALIDATION,
+            STAGE_EXPORT,
+            STAGE_REPORT,
+        ),
+        STAGE_FINALIZATION: (STAGE_VALIDATION, *OUTPUT_STAGES),
     }
 )
 
@@ -1630,6 +1652,36 @@ def validate_pipeline_conventions(*, raise_on_error: bool = True) -> Tuple[str, 
                 f"{sorted(unknown)!r}."
             )
 
+    final_stage_sequence = (
+        STAGE_CONSOLIDATION,
+        STAGE_SCORING,
+        STAGE_CONSENSUS,
+        STAGE_VALIDATION,
+        STAGE_EXPORT,
+        STAGE_REPORT,
+        STAGE_VISUALIZATION,
+        STAGE_FINALIZATION,
+    )
+    resolved_final_sequence = tuple(
+        stage for stage in PIPELINE_STAGE_ORDER if stage in final_stage_sequence
+    )
+    if resolved_final_sequence != final_stage_sequence:
+        issues.append(
+            "Final pipeline stages do not follow consolidation, scoring, consensus, "
+            "validation, export, report, visualization and finalization order."
+        )
+    if any(
+        PIPELINE_STAGE_INDEX[stage] >= PIPELINE_STAGE_INDEX[STAGE_CONSOLIDATION]
+        for stage in INTERACTION_STAGES
+    ):
+        issues.append("Interaction detection must precede consolidation.")
+    for output_stage in OUTPUT_STAGES:
+        hard_dependencies = set(STAGE_DEPENDENCIES[output_stage])
+        if not {STAGE_SCORING, STAGE_VALIDATION}.issubset(hard_dependencies):
+            issues.append(
+                f"Output stage {output_stage!r} must depend on scoring and validation."
+            )
+
     for alias, target in STAGE_ALIASES.items():
         if _normalize_convention_token(alias, field_name="stage alias") != alias:
             issues.append(f"Stage alias {alias!r} is not normalized.")
@@ -1661,6 +1713,11 @@ def validate_pipeline_conventions(*, raise_on_error: bool = True) -> Tuple[str, 
 
     if len(KNOWN_FILE_KEYS) != len(set(KNOWN_FILE_KEYS)):
         issues.append("KNOWN_FILE_KEYS contains duplicate keys.")
+
+    if not ORCHESTRATOR_MANAGED_STAGES.issubset(INTERNAL_STAGES):
+        issues.append(
+            "ORCHESTRATOR_MANAGED_STAGES must contain only internal stages."
+        )
 
     result = tuple(issues)
     if result and raise_on_error:
@@ -1706,6 +1763,7 @@ _SECTION_2_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "MULTIPOSE_STAGES",
     "OUTPUT_STAGES",
     "INTERNAL_STAGES",
+    "ORCHESTRATOR_MANAGED_STAGES",
     "OPTIONAL_STAGES",
     "ALWAYS_AVAILABLE_STAGE_NAMES",
     "DEFAULT_REQUESTED_STAGES",
@@ -4793,10 +4851,10 @@ class AnalysisOutputConfig:
         """Return optional output stages enabled by this configuration."""
 
         stages: List[str] = []
-        if self.generate_report:
-            stages.append(STAGE_REPORT)
         if self.export_results:
             stages.append(STAGE_EXPORT)
+        if self.generate_report:
+            stages.append(STAGE_REPORT)
         if self.visualize_results:
             stages.append(STAGE_VISUALIZATION)
         return tuple(stages)
@@ -7659,9 +7717,15 @@ class MultiPoseAnalysisResult:
 
     @property
     def best_pose(self) -> Optional[PoseAnalysisResult]:
-        """Return the first ranked pose or the highest numeric score."""
+        """Return the best pose only when a scientifically useful score exists."""
 
         if not self.pose_results:
+            return None
+        ranking_validity = self.metadata.get("ranking_validity", {})
+        if isinstance(ranking_validity, Mapping) and (
+            ranking_validity.get("reason") == "no_comparable_scores"
+            or ranking_validity.get("comparable_result_count") == 0
+        ):
             return None
         if self.ranking:
             first = self.ranking[0]
@@ -7669,6 +7733,11 @@ class MultiPoseAnalysisResult:
                 return first
             identifier = None
             if isinstance(first, Mapping):
+                if (
+                    first.get("score_comparable") is False
+                    or first.get("rank") is None
+                ):
+                    return None
                 identifier = first.get("pose_id") or first.get("id") or first.get("name")
             else:
                 identifier = first
@@ -7677,39 +7746,15 @@ class MultiPoseAnalysisResult:
                     if str(identifier) in {result.pose_id, result.name}:
                         return result
 
-        def numeric_score(result: PoseAnalysisResult) -> float:
-            value = result.scoring
-            if isinstance(value, Real) and not isinstance(value, bool):
-                numeric = float(value)
-                return numeric if math.isfinite(numeric) else float("-inf")
-
-            def read(container: Any, name: str) -> Any:
-                if isinstance(container, Mapping):
-                    return container.get(name)
-                return getattr(container, name, None)
-
-            summary = read(value, "summary")
-            candidates = (
-                read(value, "final_score"),
-                read(summary, "final_score"),
-                read(value, "normalized_score"),
-                read(summary, "normalized_score"),
-                read(value, "total_score"),
-                read(value, "ranking_score"),
-                read(value, "score"),
-            )
-            for candidate in candidates:
-                if candidate is None or isinstance(candidate, bool):
-                    continue
-                try:
-                    numeric = float(candidate)
-                except (TypeError, ValueError, OverflowError):
-                    continue
-                if math.isfinite(numeric):
-                    return numeric
-            return float("-inf")
-
-        return max(self.pose_results, key=numeric_score)
+        comparable = [
+            (result, score)
+            for result in self.pose_results
+            for score, _reason in (_multipose_pose_comparable_score(result),)
+            if score is not None
+        ]
+        if not comparable:
+            return None
+        return max(comparable, key=lambda item: item[1])[0]
 
     def add_pose_result(self, value: Any) -> PoseAnalysisResult:
         """Append one pose result and merge its diagnostics."""
@@ -12962,7 +13007,7 @@ def validate_generic_object_access_conventions() -> Dict[str, Any]:
     return {
         "valid": True,
         "field_groups": len(OBJECT_FIELD_ALIASES),
-        "validated_cases": 15,
+        "validated_cases": 19,
         "maximum_depth": MAX_OBJECT_ACCESS_DEPTH,
         "maximum_items": MAX_OBJECT_ACCESS_ITEMS,
     }
@@ -15131,7 +15176,7 @@ def validate_input_resolution_conventions() -> Dict[str, Any]:
         "valid": True,
         "input_source_kinds": len(INPUT_SOURCE_KINDS),
         "model_roles": len(MODEL_ROLES),
-        "validated_cases": 14,
+        "validated_cases": 18,
         "maximum_models": MAX_DISCOVERY_MODELS,
         "maximum_batch_requests": MAX_BATCH_REQUESTS,
     }
@@ -17648,6 +17693,18 @@ class AnalysisStageDefinition:
         return self.executor is not None
 
     @property
+    def orchestrator_managed(self) -> bool:
+        """Return whether the orchestration loop directly executes this stage."""
+
+        return self.name in ORCHESTRATOR_MANAGED_STAGES
+
+    @property
+    def executor_available(self) -> bool:
+        """Return whether a registered or orchestrator-managed executor exists."""
+
+        return self.executor_registered or self.orchestrator_managed
+
+    @property
     def known_pipeline_stage(self) -> bool:
         """Return whether this is a built-in canonical pipeline stage."""
 
@@ -17686,6 +17743,11 @@ class AnalysisStageDefinition:
             "requires_chimerax": self.requires_chimerax,
             "supports_standalone": self.supports_standalone,
             "executor_registered": self.executor_registered,
+            "orchestrator_managed": self.orchestrator_managed,
+            "executor_available": self.executor_available,
+            "execution_owner": "orchestrator"
+            if self.orchestrator_managed
+            else "registry",
             "executor": _callable_identity(self.executor),
             "predicate": _callable_identity(self.predicate),
             "result_adapter": _callable_identity(self.result_adapter),
@@ -18331,10 +18393,22 @@ class StagePlanEntry:
         return self.definition.executor_registered
 
     @property
-    def ready_for_execution(self) -> bool:
-        """Return whether the entry is executable and has an executor."""
+    def orchestrator_managed(self) -> bool:
+        """Return whether this entry is directly executed by the orchestrator."""
 
-        return self.executable and self.executor_registered
+        return self.definition.orchestrator_managed
+
+    @property
+    def executor_available(self) -> bool:
+        """Return whether this entry has an effective execution implementation."""
+
+        return self.definition.executor_available
+
+    @property
+    def ready_for_execution(self) -> bool:
+        """Return whether the entry is executable and has an implementation."""
+
+        return self.executable and self.executor_available
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a serialization-ready plan entry."""
@@ -18349,6 +18423,8 @@ class StagePlanEntry:
             "available": self.available,
             "executable": self.executable,
             "executor_registered": self.executor_registered,
+            "orchestrator_managed": self.orchestrator_managed,
+            "executor_available": self.executor_available,
             "ready_for_execution": self.ready_for_execution,
             "disposition": self.disposition.value,
             "reason": self.reason,
@@ -18437,7 +18513,7 @@ class AnalysisExecutionPlan:
 
     @property
     def ready_stages(self) -> Tuple[str, ...]:
-        """Return stages with registered executors in execution order."""
+        """Return stages with effective executors in execution order."""
 
         return tuple(entry.stage for entry in self.entries if entry.ready_for_execution)
 
@@ -18463,12 +18539,12 @@ class AnalysisExecutionPlan:
 
     @property
     def stages_without_executors(self) -> Tuple[str, ...]:
-        """Return executable stages without a registered executor."""
+        """Return executable stages without any execution implementation."""
 
         return tuple(
             entry.stage
             for entry in self.entries
-            if entry.executable and not entry.executor_registered
+            if entry.executable and not entry.executor_available
         )
 
     @property
@@ -18488,7 +18564,7 @@ class AnalysisExecutionPlan:
 
     @property
     def ready_for_execution(self) -> bool:
-        """Return whether every executable stage has an executor."""
+        """Return whether every executable stage has an implementation."""
 
         return self.structurally_ready and not self.stages_without_executors
 
@@ -19044,7 +19120,7 @@ def build_analysis_execution_plan(
     missing_executors = [
         entry.stage
         for entry in entries
-        if entry.executable and not entry.executor_registered
+        if entry.executable and not entry.executor_available
     ]
     if missing_executors:
         message = (
@@ -19162,7 +19238,11 @@ def validate_analysis_execution_plan(
             issues_list.append(
                 f"Blocked stage {entry.stage!r} does not identify blockers."
             )
-        if require_registered_executors and entry.executable and not entry.executor_registered:
+        if (
+            require_registered_executors
+            and entry.executable
+            and not entry.executor_available
+        ):
             issues_list.append(
                 f"Executable stage {entry.stage!r} has no registered executor."
             )
@@ -19336,6 +19416,96 @@ def validate_stage_registry_and_plan_conventions() -> Dict[str, Any]:
     if json.loads(plan.to_json())["plan_id"] != plan.plan_id:
         failures.append("Execution-plan JSON round-trip failed.")
 
+    for managed_stage in ORCHESTRATOR_MANAGED_STAGES:
+        definition = registry.require(managed_stage)
+        if definition.executor_registered:
+            failures.append(
+                f"Orchestrator-managed stage {managed_stage!r} unexpectedly "
+                "registered a generic executor."
+            )
+        if not definition.orchestrator_managed or not definition.executor_available:
+            failures.append(
+                f"Orchestrator-managed stage {managed_stage!r} was not recognized "
+                "as executable."
+            )
+        definition_record = definition.to_dict()
+        if definition_record.get("execution_owner") != "orchestrator":
+            failures.append(
+                f"Stage {managed_stage!r} did not disclose orchestration ownership."
+            )
+
+    managed_plan = build_analysis_execution_plan(
+        AnalysisConfig(
+            requested_stages=(
+                STAGE_INPUT_RESOLUTION,
+                STAGE_MODEL_PREPARATION,
+            ),
+            include_internal_stages=False,
+            include_stage_dependencies=True,
+        ),
+        registry=registry,
+        inspect_capabilities=False,
+        require_registered_executors=True,
+    )
+    if managed_plan.stages_without_executors:
+        failures.append(
+            "Orchestrator-managed stages were reported without executors: "
+            f"{managed_plan.stages_without_executors!r}."
+        )
+    if not managed_plan.ready_for_execution:
+        failures.append("The orchestrator-managed input plan is not executable.")
+    managed_warning_text = " ".join((*plan.warnings, *managed_plan.warnings))
+    for managed_stage in ORCHESTRATOR_MANAGED_STAGES:
+        if (
+            managed_stage in managed_plan.stages
+            and managed_stage in managed_warning_text
+        ):
+            failures.append(
+                f"Stage {managed_stage!r} still appears in missing-executor warnings."
+            )
+
+    final_sequence_config = AnalysisConfig(
+        requested_stages=(
+            *INTERACTION_STAGES,
+            STAGE_SCORING,
+            STAGE_CONSENSUS,
+            STAGE_EXPORT,
+            STAGE_REPORT,
+            STAGE_VISUALIZATION,
+            STAGE_FINALIZATION,
+        ),
+        include_internal_stages=False,
+        include_stage_dependencies=True,
+    )
+    final_sequence_plan = build_analysis_execution_plan(
+        final_sequence_config,
+        registry=registry,
+        analysis_mode=ANALYSIS_MODE_MULTIPOSE,
+        inspect_capabilities=False,
+        require_registered_executors=False,
+    )
+    if final_sequence_plan.stages != PIPELINE_STAGE_ORDER:
+        failures.append(
+            "Final-stage planning produced an unexpected execution order: "
+            f"{final_sequence_plan.stages!r}."
+        )
+    for output_stage in OUTPUT_STAGES:
+        output_entry = final_sequence_plan.entry(output_stage)
+        predecessors = set(
+            (*output_entry.dependencies, *output_entry.ordering_predecessors)
+        )
+        required_predecessors = {
+            STAGE_SCORING,
+            STAGE_CONSENSUS,
+            STAGE_VALIDATION,
+        }
+        missing_predecessors = required_predecessors.difference(predecessors)
+        if missing_predecessors:
+            failures.append(
+                f"Output stage {output_stage!r} can run before scored, ranked and "
+                f"validated results are available: {sorted(missing_predecessors)!r}."
+            )
+
     custom_definition = AnalysisStageDefinition(
         name="custom_postprocess",
         dependencies=(STAGE_SCORING,),
@@ -19351,6 +19521,8 @@ def validate_stage_registry_and_plan_conventions() -> Dict[str, Any]:
     )
     if custom_plan.stages[-1] != "custom_postprocess":
         failures.append("Custom stage was not topologically ordered after scoring.")
+    if "custom_postprocess" not in custom_plan.stages_without_executors:
+        failures.append("A custom stage without an executor was not reported.")
     if registry.clone().snapshot().fingerprint != registry.snapshot().fingerprint:
         failures.append("Registry cloning changed its fingerprint.")
 
@@ -19385,7 +19557,7 @@ def validate_stage_registry_and_plan_conventions() -> Dict[str, Any]:
         "canonical_stages": len(PIPELINE_STAGE_ORDER),
         "planned_stages": len(plan.entries),
         "execution_waves": len(plan.waves),
-        "validated_cases": 15,
+        "validated_cases": 31,
     }
 
 
@@ -24708,40 +24880,48 @@ def _hydrophobic_interaction_type_counts(value: Any) -> Dict[str, int]:
     return dict(counter)
 
 
+def _hydrophobic_group_is_hotspot(group: Any) -> bool:
+    """Return whether one residue group is explicitly marked as a hotspot."""
+
+    marker = get_object_value(
+        group,
+        "is_hotspot",
+        default=None,
+        aliases=("hotspot",),
+        skip_none=True,
+    )
+    if marker is None:
+        group_metadata = get_object_value(
+            group,
+            "metadata",
+            default={},
+            skip_none=True,
+        )
+        if isinstance(group_metadata, Mapping):
+            marker = group_metadata.get("is_hotspot")
+    return normalize_boolean(marker, default=False, strict=False) is True
+
+
 def _hydrophobic_hotspot_groups(value: Any) -> Tuple[Any, ...]:
-    """Return hotspot residue groups exposed by result metadata."""
+    """Return only residue groups explicitly marked with ``is_hotspot=True``."""
 
     metadata = hydrophobic_result_metadata(value)
     candidates = (
         metadata.get("hotspot_groups"),
         metadata.get("hotspots"),
+        hydrophobic_result_residue_groups(value),
     )
     for candidate in candidates:
-        if candidate is not None:
-            groups = tuple(normalize_object_sequence(candidate))
-            if groups:
-                return groups
-    groups: List[Any] = []
-    for group in hydrophobic_result_residue_groups(value):
-        marker = get_object_value(
-            group,
-            "is_hotspot",
-            default=None,
-            aliases=("hotspot",),
-            skip_none=True,
+        if candidate is None:
+            continue
+        groups = tuple(
+            group
+            for group in normalize_object_sequence(candidate)
+            if _hydrophobic_group_is_hotspot(group)
         )
-        if marker is None:
-            group_metadata = get_object_value(
-                group,
-                "metadata",
-                default={},
-                skip_none=True,
-            )
-            if isinstance(group_metadata, Mapping):
-                marker = group_metadata.get("is_hotspot", False)
-        if bool(marker):
-            groups.append(group)
-    return tuple(groups)
+        if groups:
+            return groups
+    return ()
 
 
 def validate_hydrophobic_analysis_result(
@@ -24867,9 +25047,9 @@ def summarize_hydrophobic_analysis_result(
         local_interaction_count=int(
             pick("local_interaction_count", len(interactions))
         ),
-        residue_count=int(pick("residue_count", len(groups))),
+        residue_count=len(groups),
         chain_count=int(pick("chain_count", 0)),
-        hotspot_count=int(pick("hotspot_count", len(hotspots))),
+        hotspot_count=len(hotspots),
         receptor_atom_count=int(pick("receptor_atom_count", 0)),
         ligand_atom_count=int(pick("ligand_atom_count", 0)),
         total_score=float(pick("total_score", 0.0)),
@@ -24975,9 +25155,9 @@ def validate_hydrophobic_stage_output(
             issues.append(
                 "Hydrophobic output summary does not match residue groups."
             )
-        if value.summary.hotspot_count < len(value.hotspots):
+        if value.summary.hotspot_count != len(value.hotspots):
             issues.append(
-                "Hydrophobic output summary reports fewer hotspots than the "
+                "Hydrophobic output summary hotspot count does not match the "
                 "adapter collection."
             )
     result = tuple(issues)
@@ -25561,6 +25741,96 @@ def validate_hydrophobic_adapter_conventions() -> Dict[str, Any]:
             self.statistics = FakeStatistics()
             self.metadata = {}
 
+    marked_hotspot = SimpleNamespace(is_hotspot=True, metadata={})
+    non_hotspot = SimpleNamespace(is_hotspot=False, metadata={})
+    unmarked_group = SimpleNamespace(metadata={})
+    hotspot_result = FakeResult()
+    hotspot_result.residue_groups = (
+        marked_hotspot,
+        non_hotspot,
+        unmarked_group,
+    )
+    hotspot_result.metadata = {
+        "hotspots": (
+            marked_hotspot,
+            non_hotspot,
+            unmarked_group,
+        )
+    }
+    extracted_hotspots = _hydrophobic_hotspot_groups(hotspot_result)
+    if len(extracted_hotspots) != 1 or extracted_hotspots[0] is not marked_hotspot:
+        failures.append("Hydrophobic hotspot extraction retained unmarked groups.")
+
+    def check_hotspot_case(
+        name: str,
+        result: Any,
+        expected: Tuple[Any, ...],
+    ) -> None:
+        observed = _hydrophobic_hotspot_groups(result)
+        if len(observed) != len(expected) or any(
+            actual is not wanted
+            for actual, wanted in zip(observed, expected)
+        ):
+            failures.append(f"Hydrophobic hotspot case {name!r} failed.")
+
+    no_hotspot_groups = (
+        SimpleNamespace(is_hotspot=False, metadata={}),
+        SimpleNamespace(metadata={}),
+    )
+    check_hotspot_case(
+        "none",
+        SimpleNamespace(
+            residue_groups=no_hotspot_groups,
+            metadata={"hotspots": no_hotspot_groups},
+        ),
+        (),
+    )
+
+    all_hotspot_groups = (
+        SimpleNamespace(is_hotspot=True, metadata={}),
+        SimpleNamespace(metadata={"is_hotspot": True}),
+    )
+    check_hotspot_case(
+        "all",
+        SimpleNamespace(
+            residue_groups=all_hotspot_groups,
+            metadata={"hotspots": all_hotspot_groups},
+        ),
+        all_hotspot_groups,
+    )
+
+    partial_hotspot_groups = (
+        SimpleNamespace(is_hotspot=True, metadata={}),
+        SimpleNamespace(is_hotspot=False, metadata={}),
+        SimpleNamespace(is_hotspot=True, metadata={}),
+    )
+    check_hotspot_case(
+        "partial",
+        SimpleNamespace(
+            residue_groups=partial_hotspot_groups,
+            metadata={"hotspots": partial_hotspot_groups},
+        ),
+        (partial_hotspot_groups[0], partial_hotspot_groups[2]),
+    )
+
+    check_hotspot_case(
+        "metadata_without_hotspots",
+        SimpleNamespace(
+            residue_groups=partial_hotspot_groups,
+            metadata={"source": "synthetic"},
+        ),
+        (partial_hotspot_groups[0], partial_hotspot_groups[2]),
+    )
+
+    check_hotspot_case(
+        "metadata_hotspot_groups",
+        SimpleNamespace(
+            residue_groups=partial_hotspot_groups,
+            metadata={"hotspot_groups": partial_hotspot_groups},
+        ),
+        (partial_hotspot_groups[0], partial_hotspot_groups[2]),
+    )
+
     class FakeSummary:
         interaction_count = 1
         atomic_pair_count = 1
@@ -25579,6 +25849,11 @@ def validate_hydrophobic_adapter_conventions() -> Dict[str, Any]:
         classification_counts = {"moderate": 1}
         interaction_type_counts = {"aliphatic_aliphatic": 1}
         hotspot_residue_identifiers = ()
+
+    class FakeHotspotStatistics(FakeStatistics):
+        residue_count = 3
+
+    hotspot_result.statistics = FakeHotspotStatistics()
 
     class FakeAttachment:
         def __init__(self, result: Any) -> None:
@@ -25626,6 +25901,21 @@ def validate_hydrophobic_adapter_conventions() -> Dict[str, Any]:
     fake_module.attach_hydrophobic_results = (
         lambda model, result, **kwargs: FakeAttachment(result)
     )
+
+    synchronized_output = adapt_hydrophobic_analysis_result(
+        hotspot_result,
+        hydrophobic_module=fake_module,
+    )
+    if synchronized_output.summary.hotspot_count != len(synchronized_output.hotspots):
+        failures.append("Hydrophobic summary and hotspot collection are inconsistent.")
+    if len(synchronized_output.residue_groups) != 3:
+        failures.append("Hydrophobic adaptation discarded residue groups.")
+    if non_hotspot not in synchronized_output.residue_groups:
+        failures.append("A non-hotspot residue group was not preserved.")
+    if non_hotspot in synchronized_output.hotspots:
+        failures.append("A non-hotspot residue group leaked into hotspots.")
+    if validate_hydrophobic_stage_output(synchronized_output):
+        failures.append("Synchronized hydrophobic output did not validate.")
 
     receptor = SimpleNamespace(name="receptor")
     ligand = SimpleNamespace(name="pose_1")
@@ -25721,6 +26011,87 @@ def validate_hydrophobic_adapter_conventions() -> Dict[str, Any]:
             "The repository hydrophobic module is missing required symbols: "
             + ", ".join(missing_interface)
         )
+    else:
+        try:
+            receptor_atoms = (
+                real_module.make_hydrophobic_test_atom(
+                    name="CD1",
+                    coordinate=(0.0, 0.0, 0.0),
+                    residue_name="LEU",
+                    residue_number=10,
+                    chain_identifier="A",
+                    atom_index=1,
+                    structure_name="receptor",
+                ),
+                real_module.make_hydrophobic_test_atom(
+                    name="CG",
+                    coordinate=(0.0, 10.0, 0.0),
+                    residue_name="PHE",
+                    residue_number=20,
+                    chain_identifier="B",
+                    atom_index=2,
+                    structure_name="receptor",
+                ),
+            )
+            ligand_coordinates = (
+                (3.5, 0.0, 0.0),
+                (3.6, 0.4, 0.0),
+                (3.7, -0.4, 0.0),
+                (3.5, 10.0, 0.0),
+                (3.6, 10.4, 0.0),
+                (3.7, 9.6, 0.0),
+            )
+            ligand_atoms = tuple(
+                real_module.make_hydrophobic_test_atom(
+                    name=f"LC{index + 1}",
+                    coordinate=coordinate,
+                    residue_name="LIG",
+                    residue_number=1,
+                    chain_identifier="L",
+                    atom_index=10 + index,
+                    structure_name="ligand",
+                )
+                for index, coordinate in enumerate(ligand_coordinates)
+            )
+            multichain_result = real_module.analyze_hydrophobic_interactions(
+                receptor_atoms,
+                ligand_atoms,
+                include_serializable_tables=False,
+                analysis_identifier="analyze:section13:multichain",
+            )
+            if not isinstance(
+                multichain_result,
+                real_module.HydrophobicAnalysisResult,
+            ):
+                failures.append("Multichain analysis did not return a native result.")
+            chain_identifiers = {
+                real_module.get_residue_chain_identifier(group.residue)
+                for group in multichain_result.residue_groups
+            }
+            if chain_identifiers != {"A", "B"}:
+                failures.append("Native multichain result did not preserve chains A and B.")
+            native_hotspots = _hydrophobic_hotspot_groups(multichain_result)
+            if len(native_hotspots) != 2 or not all(
+                _hydrophobic_group_is_hotspot(group)
+                for group in native_hotspots
+            ):
+                failures.append("Native multichain hotspots were extracted incorrectly.")
+            multichain_output = adapt_hydrophobic_analysis_result(
+                multichain_result,
+                hydrophobic_module=real_module,
+            )
+            if (
+                multichain_output.summary.hotspot_count
+                != len(multichain_output.hotspots)
+            ):
+                failures.append("Native multichain hotspot summary is inconsistent.")
+            if len(multichain_output.residue_groups) != 2:
+                failures.append("Native multichain residue groups were not preserved.")
+        except Exception as exc:
+            failures.append(
+                "Native multichain hydrophobic validation failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
     if failures:
         raise RuntimeError(
@@ -25733,7 +26104,7 @@ def validate_hydrophobic_adapter_conventions() -> Dict[str, Any]:
         "schema_version": HYDROPHOBIC_ADAPTER_SCHEMA_VERSION,
         "required_symbols": len(HYDROPHOBIC_REQUIRED_SYMBOLS),
         "supported_parameters": len(HYDROPHOBIC_ADAPTER_FIELDS),
-        "validated_cases": 24,
+        "validated_cases": 40,
     }
 
 
@@ -26623,6 +26994,10 @@ def resolve_pi_adapter_config(
     merged.setdefault("attach", attach_enabled)
     merged.setdefault("attachment_mode", _pi_runtime_attachment_mode(integrated))
     merged.setdefault("strict", integrated.runtime.failure_policy == FAILURE_POLICY_STRICT)
+    if integrated.enable_scoring:
+        # The central scoring stage owns DockModel.score. Pi-specific scores remain
+        # available in the pi result and statistics without changing its type.
+        merged["update_global_score"] = False
     resolved = PiAdapterConfig.from_mapping(merged, strict=strict)
     if metadata:
         resolved = resolved.with_metadata(metadata)
@@ -27963,7 +28338,16 @@ def validate_pi_adapter_conventions() -> Dict[str, Any]:
     fake_module.summarize_pi_analysis_result = lambda result: {"total_interactions": len(result.interactions)}
     fake_module.attach_pi_results = lambda model, result, config=None: FakeIntegrationResult(result, model)
     fake_module.analyze_pi_interactions = lambda *args, **kwargs: FakeResult()
-    fake_module.analyze_dock_model_pi = lambda model, **kwargs: FakeIntegrationResult(FakeResult(), model)
+    observed_integration_configs: List[Any] = []
+
+    def fake_analyze_dock_model_pi(model: Any, **kwargs: Any) -> FakeIntegrationResult:
+        integration_config = kwargs.get("integration_config")
+        observed_integration_configs.append(integration_config)
+        if bool(getattr(integration_config, "update_global_score", True)):
+            model.score = {"pi": FakeResult().total_score}
+        return FakeIntegrationResult(FakeResult(), model)
+
+    fake_module.analyze_dock_model_pi = fake_analyze_dock_model_pi
     fake_module.analyze_multiple_dock_models_pi = lambda *args, **kwargs: FakeMultipleResult()
 
     dock_model = SimpleNamespace(
@@ -27971,6 +28355,7 @@ def validate_pi_adapter_conventions() -> Dict[str, Any]:
         pose_id="pose-1",
         structure=SimpleNamespace(name="complex-1"),
         pi=[],
+        score=None,
         statistics={},
         metadata={},
     )
@@ -27994,6 +28379,9 @@ def validate_pi_adapter_conventions() -> Dict[str, Any]:
         failures.append("Pi result was not marked as attached.")
     if json.loads(json.dumps(output.to_dict()))["summary"]["total_score"] != 1.25:
         failures.append("Pi output JSON conversion failed.")
+    if not isinstance(dock_model.score, Mapping):
+        failures.append("The synthetic native pi integration did not exercise score mutation.")
+    dock_model.score = None
 
     integrated = AnalysisConfig(
         interactions=InteractionSelection(
@@ -28036,6 +28424,15 @@ def validate_pi_adapter_conventions() -> Dict[str, Any]:
         failures.append("Pi executor returned an unexpected value.")
     if context.get_stage_data(STAGE_PI) is not stage_result:
         failures.append("Pi result was not stored in the context.")
+    if dock_model.score is not None:
+        failures.append("Pi stage changed DockModel.score while central scoring was enabled.")
+    if not observed_integration_configs:
+        failures.append("Pi integration configuration was not observed.")
+    elif bool(getattr(observed_integration_configs[-1], "update_global_score", True)):
+        failures.append("Pi stage did not disable the native global-score update.")
+    stage_configuration = stage_result.metadata.get("configuration", {})
+    if stage_configuration.get("update_global_score") is not False:
+        failures.append("Pi stage metadata did not record central score ownership.")
 
     registry = create_default_stage_registry()
     register_pi_stage_adapter(registry=registry)
@@ -28063,7 +28460,7 @@ def validate_pi_adapter_conventions() -> Dict[str, Any]:
         "required_symbols": len(PI_REQUIRED_SYMBOLS),
         "supported_parameters": len(PI_ADAPTER_FIELDS),
         "supported_subtypes": len(PI_INTERACTION_SUBTYPES),
-        "validated_cases": 25,
+        "validated_cases": 29,
     }
 
 
@@ -30389,7 +30786,7 @@ def validate_saltbridge_adapter_conventions() -> Dict[str, Any]:
         "required_symbols": len(SALTBRIDGE_REQUIRED_SYMBOLS),
         "supported_native_parameters": len(SALTBRIDGE_NATIVE_CONFIG_FIELDS),
         "supported_control_parameters": len(SALTBRIDGE_ADAPTER_CONTROL_FIELDS),
-        "validated_cases": 24,
+        "validated_cases": 40,
     }
 
 
@@ -32216,9 +32613,13 @@ def build_interaction_bundle_from_records(
     )
     for record in records:
         if record.family == INTERACTION_FAMILY_PI:
-            bundle.add(record.family, record.interaction, subtype=record.subtype)
+            bundle.add(
+                record.family,
+                (record.interaction,),
+                subtype=record.subtype,
+            )
         else:
-            bundle.add(record.family, record.interaction)
+            bundle.add(record.family, (record.interaction,))
     return bundle
 
 
@@ -32870,31 +33271,242 @@ def validate_interaction_consolidation_conventions() -> Dict[str, Any]:
         attached=False,
         reused=False,
     )
+
+    @dataclass
+    class FakeHydrogenBond:
+        donor: FakeAtom
+        acceptor: FakeAtom
+        distance: float
+        interaction_type: str = "hydrogen_bond"
+        classification: str = "favorable"
+        score: float = 1.0
+        accepted: bool = True
+
+    hydrogen_bond = FakeHydrogenBond(
+        receptor_atom,
+        ligand_atom,
+        2.9,
+    )
+    hbond_output = SimpleNamespace(
+        hydrogen_bonds=(hydrogen_bond,),
+        residue_hydrogen_bonds=(),
+        result_type="hbond_stage_output",
+        attached=False,
+        reused=False,
+    )
+
+    @dataclass
+    class FakePiInteraction:
+        ring_1: FakeAtom
+        ring_2: FakeAtom
+        distance: float
+        subtype: str = PI_SUBTYPE_STACKING
+        score: float = 1.2
+        accepted: bool = True
+
+    pi_interaction = FakePiInteraction(
+        receptor_atom,
+        ligand_atom,
+        4.8,
+    )
+    pi_output = SimpleNamespace(
+        interactions=(pi_interaction,),
+        interactions_by_subtype={
+            PI_SUBTYPE_STACKING: (pi_interaction,),
+        },
+        result_type="pi_stage_output",
+        attached=False,
+        reused=False,
+    )
+
+    @dataclass
+    class FakeSaltBridge:
+        cation: FakeAtom
+        anion: FakeAtom
+        distance: float
+        interaction_type: str = "salt_bridge"
+        classification: str = "favorable"
+        score: float = 1.5
+        accepted: bool = True
+
+    salt_bridge = FakeSaltBridge(
+        receptor_atom,
+        ligand_atom,
+        3.6,
+    )
+    saltbridge_output = SimpleNamespace(
+        interactions=(salt_bridge,),
+        result_type="saltbridge_stage_output",
+        attached=False,
+        reused=False,
+    )
     result = consolidate_interaction_results(
         {
             INTERACTION_FAMILY_CONTACTS: contact_output,
+            INTERACTION_FAMILY_HBONDS: hbond_output,
             INTERACTION_FAMILY_HYDROPHOBIC: hydrophobic_output,
+            INTERACTION_FAMILY_PI: pi_output,
+            INTERACTION_FAMILY_SALTBRIDGE: saltbridge_output,
         },
         overrides={
             "deduplication_mode": "canonical",
             "cross_family_policy": "annotate",
         },
     )
-    if result.summary.input_count != 3:
+    expected_input_counts = {
+        INTERACTION_FAMILY_CONTACTS: 2,
+        INTERACTION_FAMILY_HBONDS: 1,
+        INTERACTION_FAMILY_HYDROPHOBIC: 1,
+        INTERACTION_FAMILY_PI: 1,
+        INTERACTION_FAMILY_SALTBRIDGE: 1,
+    }
+    expected_retained_counts = {
+        family: 1 for family in INTERACTION_FAMILY_ORDER
+    }
+    if result.summary.input_count != 6:
         failures.append("Consolidation input count is incorrect.")
-    if result.summary.retained_count != 2:
-        failures.append("Within-family deduplication did not retain two records.")
+    if dict(result.summary.family_input_counts) != expected_input_counts:
+        failures.append("Consolidation family input counts are incorrect.")
+    if result.summary.retained_count <= 0:
+        failures.append("Consolidation discarded every available interaction.")
+    if result.summary.retained_count != 5:
+        failures.append("Within-family deduplication did not retain five records.")
+    if dict(result.summary.family_retained_counts) != expected_retained_counts:
+        failures.append("A family disappeared during interaction conversion.")
     if result.summary.duplicate_count != 1:
         failures.append("Within-family duplicate count is incorrect.")
-    if result.bundle.count(INTERACTION_FAMILY_CONTACTS) != 1:
-        failures.append("Contact bundle count is incorrect.")
-    if result.bundle.count(INTERACTION_FAMILY_HYDROPHOBIC) != 1:
-        failures.append("Hydrophobic bundle count is incorrect.")
+    if result.bundle.families != INTERACTION_FAMILY_ORDER:
+        failures.append("The consolidated bundle did not preserve every family.")
+    for family in INTERACTION_FAMILY_ORDER:
+        if result.bundle.count(family) != 1:
+            failures.append(
+                f"Consolidated bundle count is incorrect for family {family!r}."
+            )
+
+    if not any(item is contact_1 or item is contact_2 for item in result.bundle.contacts):
+        failures.append("The specialized contact object was not preserved.")
+    specialized_objects = {
+        INTERACTION_FAMILY_HBONDS: hydrogen_bond,
+        INTERACTION_FAMILY_HYDROPHOBIC: hydrophobic,
+        INTERACTION_FAMILY_PI: pi_interaction,
+        INTERACTION_FAMILY_SALTBRIDGE: salt_bridge,
+    }
+    for family, expected_object in specialized_objects.items():
+        if family == INTERACTION_FAMILY_PI:
+            family_values = tuple(
+                item
+                for values in result.bundle.pi.values()
+                for item in values
+            )
+        else:
+            family_values = tuple(result.bundle.get(family, ()))
+        if not any(item is expected_object for item in family_values):
+            failures.append(
+                f"The specialized {family!r} object was not preserved."
+            )
     if validate_interaction_consolidation_result(result):
         failures.append("A valid consolidation result did not validate.")
     serialized = json.loads(json.dumps(result.to_dict()))
-    if serialized["summary"]["retained_count"] != 2:
+    if serialized["summary"]["retained_count"] != 5:
         failures.append("Consolidation JSON conversion failed.")
+
+    hbond_module = _require_hbonds_module()
+    classify_hydrogen_bond = getattr(
+        hbond_module,
+        "classify_hydrogen_bond",
+        None,
+    )
+    if not callable(classify_hydrogen_bond):
+        failures.append(
+            "The public hydrogen-bond classification API is unavailable."
+        )
+    else:
+        native_hydrogen_bond = hbond_module.HydrogenBond(
+            donor=receptor_atom,
+            acceptor=ligand_atom,
+            geometry=hbond_module.HydrogenBondGeometry(
+                donor_acceptor_distance=np.float64(2.9),
+            ),
+            direction="receptor_donor",
+            donor_residue=receptor_residue,
+            acceptor_residue=ligand_residue,
+        )
+        classified_hydrogen_bond = classify_hydrogen_bond(
+            native_hydrogen_bond
+        )
+        if type(classified_hydrogen_bond).__name__ != "_ClassifiedHydrogenBond":
+            failures.append(
+                "The public classifier did not produce a classified H-bond."
+            )
+        if len(tuple(classified_hydrogen_bond)) != 2:
+            failures.append(
+                "The classified H-bond no longer exposes its legacy iterable view."
+            )
+
+        native_hbond_analysis = hbond_module.HydrogenBondAnalysisResult(
+            hydrogen_bonds=(classified_hydrogen_bond,),
+            residue_hydrogen_bonds=(),
+            ligand_atoms=(ligand_atom,),
+            receptor_atoms=(receptor_atom,),
+        )
+        classified_hbond_output = adapt_hydrogen_bond_analysis_result(
+            native_hbond_analysis,
+            hbonds_module=hbond_module,
+        )
+        classified_hbond_result = consolidate_interaction_results(
+            {INTERACTION_FAMILY_HBONDS: classified_hbond_output}
+        )
+        if len(classified_hbond_result.records) != 1:
+            failures.append(
+                "One classified H-bond did not produce exactly one canonical record."
+            )
+        if classified_hbond_result.bundle.count(INTERACTION_FAMILY_HBONDS) != 1:
+            failures.append(
+                "One classified H-bond did not produce exactly one bundle item."
+            )
+        if classified_hbond_result.bundle.total_count != 1:
+            failures.append(
+                "The classified H-bond was expanded through its iterable view."
+            )
+        if validate_interaction_consolidation_result(classified_hbond_result) != ():
+            failures.append(
+                "The isolated classified H-bond consolidation did not validate."
+            )
+        if classified_hbond_result.bundle.hbonds[0] is not classified_hydrogen_bond:
+            failures.append(
+                "The classified H-bond native object was not preserved."
+            )
+
+        mixed_classified_result = consolidate_interaction_results(
+            {
+                INTERACTION_FAMILY_CONTACTS: contact_output,
+                INTERACTION_FAMILY_HBONDS: classified_hbond_output,
+                INTERACTION_FAMILY_HYDROPHOBIC: hydrophobic_output,
+            },
+            overrides={
+                "deduplication_mode": "canonical",
+                "cross_family_policy": "annotate",
+            },
+        )
+        expected_mixed_counts = {
+            INTERACTION_FAMILY_CONTACTS: 1,
+            INTERACTION_FAMILY_HBONDS: 1,
+            INTERACTION_FAMILY_HYDROPHOBIC: 1,
+        }
+        for family, expected_count in expected_mixed_counts.items():
+            if mixed_classified_result.bundle.count(family) != expected_count:
+                failures.append(
+                    "Mixed classified H-bond consolidation has an incorrect "
+                    f"{family!r} count."
+                )
+        if mixed_classified_result.bundle.total_count != 3:
+            failures.append(
+                "Mixed classified H-bond consolidation has an incorrect total."
+            )
+        if validate_interaction_consolidation_result(mixed_classified_result) != ():
+            failures.append(
+                "Mixed classified H-bond consolidation did not validate."
+            )
 
     registry = create_default_stage_registry()
     register_consolidation_stage_adapter(registry=registry)
@@ -32932,10 +33544,17 @@ def validate_interaction_consolidation_conventions() -> Dict[str, Any]:
         current_pose_index=0,
     )
     context.set_stage_data(INTERACTION_FAMILY_CONTACTS, contact_output)
+    context.set_stage_data(INTERACTION_FAMILY_HBONDS, hbond_output)
     context.set_stage_data(INTERACTION_FAMILY_HYDROPHOBIC, hydrophobic_output)
+    context.set_stage_data(INTERACTION_FAMILY_PI, pi_output)
+    context.set_stage_data(INTERACTION_FAMILY_SALTBRIDGE, saltbridge_output)
     stage_result = execute_consolidation_stage(context, raise_on_error=True)
     if not stage_result.succeeded:
         failures.append("Consolidation stage executor did not succeed.")
+    if not isinstance(stage_result.value, InteractionConsolidationResult):
+        failures.append("Consolidation stage did not return its specialized result.")
+    elif dict(stage_result.value.summary.family_input_counts) != expected_input_counts:
+        failures.append("The stage executor did not consume every interaction family.")
     if context.get_shared(CONSOLIDATION_SHARED_BUNDLE_KEY) is None:
         failures.append("Consolidated interaction bundle was not stored in context.")
     if failures:
@@ -32950,7 +33569,7 @@ def validate_interaction_consolidation_conventions() -> Dict[str, Any]:
         "supported_families": len(INTERACTION_FAMILY_ORDER),
         "deduplication_modes": len(DEDUPLICATION_MODES),
         "cross_family_policies": len(CROSS_FAMILY_POLICIES),
-        "validated_cases": 26,
+        "validated_cases": 50,
     }
 
 
@@ -33128,6 +33747,43 @@ SCORING_SOURCE_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
         "clashes": SCORING_SOURCE_CLASH,
         "steric": SCORING_SOURCE_CLASH,
         "custom": SCORING_SOURCE_CUSTOM,
+    }
+)
+
+# Canonical interaction types consumed by scoring.py.  Detector-specific
+# labels are intentionally translated here because consolidation knows both
+# the interaction family and its subtype, while a bare native object may not
+# expose enough information for the generic scoring recognizer.
+_SCORING_CONTACT_TYPES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "contact": "contact",
+        "close_contact": "close_contact",
+        "van_der_waals": "van_der_waals",
+        "vdw": "van_der_waals",
+        "clash": "clash",
+        "steric_clash": "clash",
+        "overlap": "clash",
+    }
+)
+_SCORING_PI_TYPES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "pi": "pi",
+        "pi_pi": "pi_stacking",
+        "pi_stack": "pi_stacking",
+        "pi_stacking": "pi_stacking",
+        "stacking": "pi_stacking",
+        "parallel": "pi_parallel",
+        "face_to_face": "pi_parallel",
+        "offset": "pi_offset",
+        "offset_stacked": "pi_offset",
+        "t_shaped": "pi_t_shaped",
+        "edge_to_face": "pi_t_shaped",
+        "cation": "cation_pi",
+        "cation_pi": "cation_pi",
+        "anion": "anion_pi",
+        "anion_pi": "anion_pi",
+        "amide": "amide_pi",
+        "amide_pi": "amide_pi",
     }
 )
 
@@ -34210,8 +34866,141 @@ def _scoring_records_by_source(
         source = SCORING_FAMILY_TO_SOURCE.get(family)
         if source is None:
             continue
-        result[source] = tuple(record.interaction for record in records)
+        result[source] = tuple(
+            _scoring_record_payload(record)
+            for record in records
+        )
     return result
+
+
+def _scoring_type_for_interaction(
+    family: Any,
+    subtype: Any,
+    interaction: Any,
+) -> str:
+    """Translate one consolidated family/subtype to a scoring type."""
+
+    canonical_family = canonicalize_interaction_family(family)
+    subtype_token = normalize_identifier(
+        subtype,
+        default=CONSOLIDATION_UNKNOWN_SUBTYPE,
+        lowercase=True,
+        maximum_length=128,
+    )
+    if canonical_family == INTERACTION_FAMILY_CONTACTS:
+        return _SCORING_CONTACT_TYPES.get(subtype_token, "contact")
+    if canonical_family == INTERACTION_FAMILY_HBONDS:
+        mode = normalize_identifier(
+            get_object_value(interaction, "mode", default=""),
+            default="",
+            lowercase=True,
+            maximum_length=64,
+        )
+        if "inferred" in mode or "inferred" in subtype_token:
+            return "hydrogen_bond_inferred"
+        if "water" in subtype_token:
+            return "hydrogen_bond_water_mediated"
+        if "charge" in subtype_token:
+            return "hydrogen_bond_charge_assisted"
+        if subtype_token == "weak":
+            return "hydrogen_bond_weak"
+        return "hydrogen_bond"
+    if canonical_family == INTERACTION_FAMILY_HYDROPHOBIC:
+        # HydrophobicStageOutput contains atom-pair interactions.  Their
+        # chemical subtypes (for example aliphatic_aromatic) are detector
+        # labels, not scoring.py interaction types.
+        return "hydrophobic_atomic"
+    if canonical_family == INTERACTION_FAMILY_PI:
+        return _SCORING_PI_TYPES.get(subtype_token, "pi")
+    if canonical_family == INTERACTION_FAMILY_SALTBRIDGE:
+        return "salt_bridge"
+    return "unknown"
+
+
+def _scoring_interaction_payload(
+    interaction: Any,
+    *,
+    family: Any,
+    subtype: Any,
+    interaction_id: Any,
+    participant_keys: Sequence[Any] = (),
+    receptor_residue_key: Optional[Any] = None,
+    ligand_residue_key: Optional[Any] = None,
+    distance: Optional[float] = None,
+    strength: Optional[Any] = None,
+    accepted: bool = True,
+) -> Dict[str, Any]:
+    """Build a compact scoring.py-compatible interaction mapping."""
+
+    canonical_family = canonicalize_interaction_family(family)
+    scoring_type = _scoring_type_for_interaction(
+        canonical_family,
+        subtype,
+        interaction,
+    )
+    participants = tuple(str(item) for item in participant_keys if str(item))
+    payload: Dict[str, Any] = {
+        "interaction_id": normalize_identifier(
+            interaction_id,
+            default=f"{canonical_family}_interaction",
+            maximum_length=256,
+        ),
+        "interaction_type": scoring_type,
+        "interaction_family": SCORING_FAMILY_TO_SOURCE.get(
+            canonical_family,
+            canonical_family,
+        ),
+        "classification": normalize_identifier(
+            subtype,
+            default="unknown",
+            lowercase=True,
+            maximum_length=128,
+        ),
+        "accepted": bool(accepted),
+        "metadata": {
+            "consolidation_family": canonical_family,
+            "consolidation_subtype": normalize_identifier(
+                subtype,
+                default="unknown",
+                lowercase=True,
+                maximum_length=128,
+            ),
+            "native_type": type(interaction).__name__,
+        },
+    }
+    if len(participants) >= 2:
+        payload["atom_pair"] = participants[:2]
+    residue_pair = tuple(
+        str(item)
+        for item in (receptor_residue_key, ligand_residue_key)
+        if item is not None and str(item)
+    )
+    if len(residue_pair) == 2:
+        payload["residue_pair"] = residue_pair
+    if distance is not None:
+        payload["distance"] = float(distance)
+    if strength is not None:
+        payload["strength"] = strength
+    return payload
+
+
+def _scoring_record_payload(
+    record: CanonicalInteractionRecord,
+) -> Dict[str, Any]:
+    """Adapt one canonical record without leaking a live ChimeraX object."""
+
+    return _scoring_interaction_payload(
+        record.interaction,
+        family=record.family,
+        subtype=record.subtype,
+        interaction_id=record.record_id,
+        participant_keys=record.participant_keys,
+        receptor_residue_key=record.receptor_residue_key,
+        ligand_residue_key=record.ligand_residue_key,
+        distance=record.distance,
+        strength=record.strength,
+        accepted=record.accepted,
+    )
 
 
 def _scoring_stage_outputs_by_source(
@@ -34227,7 +35016,25 @@ def _scoring_stage_outputs_by_source(
             continue
         interactions = interaction_output_interactions(family, output)
         if interactions:
-            result[source] = tuple(interactions)
+            result[source] = tuple(
+                _scoring_interaction_payload(
+                    interaction,
+                    family=family,
+                    subtype=subtype,
+                    interaction_id=(
+                        interaction_explicit_identifier(interaction)
+                        or f"{family}_{index}"
+                    ),
+                    participant_keys=tuple(
+                        canonical_participant_key(item)
+                        for item in interaction_participants(interaction, family)
+                    ),
+                    distance=interaction_distance(interaction),
+                    strength=interaction_strength(interaction),
+                    accepted=interaction_is_accepted(interaction),
+                )
+                for index, (subtype, interaction) in enumerate(interactions)
+            )
     return result
 
 
@@ -34263,6 +35070,106 @@ def build_scoring_interaction_sources(
         if source in effective.interaction_sources
     }
     return MappingProxyType(filtered) if filtered else None
+
+
+def _scoring_source_diagnostics(
+    sources: Optional[Mapping[str, Sequence[Any]]],
+    *,
+    profile: Any,
+    scoring_module: ModuleType,
+) -> Dict[str, Any]:
+    """Describe source conversion, canonical types and resolved weights."""
+
+    if not sources:
+        return {
+            "source_counts": {},
+            "type_counts": {},
+            "resolved_weights": {},
+            "unknown_types": [],
+        }
+    effective_profile = profile or getattr(
+        scoring_module,
+        "DEFAULT_POSE_SCORING_PROFILE",
+        None,
+    )
+    collection_profile = get_object_value(
+        effective_profile,
+        "collection_profile",
+        default=None,
+    )
+    individual_profile = get_object_value(
+        collection_profile,
+        "individual_profile",
+        default=None,
+    )
+    base_weight_profile = get_object_value(
+        individual_profile,
+        "base_weight_profile",
+        default=None,
+    )
+    interaction_weights = get_object_value(
+        base_weight_profile,
+        "interaction_weights",
+        default=getattr(scoring_module, "DEFAULT_INTERACTION_WEIGHTS", {}),
+    )
+    family_weights = get_object_value(
+        base_weight_profile,
+        "family_weights",
+        default={},
+    )
+    normalizer = getattr(scoring_module, "normalize_interaction_type", None)
+    extractor = getattr(scoring_module, "extract_interaction_type", None)
+    known_checker = getattr(scoring_module, "is_known_interaction_type", None)
+    source_counts: Dict[str, int] = {}
+    type_counts: Dict[str, int] = {}
+    resolved_weights: Dict[str, float] = {}
+    unknown_types: List[str] = []
+    for source, interactions in sources.items():
+        values = tuple(interactions)
+        source_counts[str(source)] = len(values)
+        for interaction in values:
+            raw_type = (
+                extractor(interaction)
+                if callable(extractor)
+                else get_object_value(
+                    interaction,
+                    "interaction_type",
+                    default="unknown",
+                )
+            )
+            canonical_type = (
+                normalizer(raw_type, preserve_unknown=True)
+                if callable(normalizer)
+                else str(raw_type)
+            )
+            type_counts[canonical_type] = type_counts.get(canonical_type, 0) + 1
+            if isinstance(interaction_weights, Mapping):
+                weight = interaction_weights.get(canonical_type)
+                if weight is None and isinstance(family_weights, Mapping):
+                    family_resolver = getattr(
+                        scoring_module,
+                        "canonical_interaction_family",
+                        None,
+                    )
+                    family = (
+                        family_resolver(canonical_type)
+                        if callable(family_resolver)
+                        else canonical_type
+                    )
+                    weight = family_weights.get(family)
+                if weight is not None:
+                    resolved_weights.setdefault(
+                        canonical_type,
+                        float(weight),
+                    )
+            if callable(known_checker) and not known_checker(canonical_type):
+                unknown_types.append(canonical_type)
+    return {
+        "source_counts": source_counts,
+        "type_counts": type_counts,
+        "resolved_weights": resolved_weights,
+        "unknown_types": sorted(set(unknown_types)),
+    }
 
 
 # 17.6. Native result access, validation and summary
@@ -34800,6 +35707,7 @@ def adapt_scoring_integration_result(
     explainability: Any = None,
     external_result: Any = None,
     reused: bool = False,
+    source_diagnostics: Optional[Mapping[str, Any]] = None,
     scoring_module: Optional[ModuleType] = None,
 ) -> ScoringStageOutput:
     """Adapt one native scoring integration to the common pipeline output."""
@@ -34863,6 +35771,16 @@ def adapt_scoring_integration_result(
         "explainability_generated": explainability is not None,
         "external_scores_integrated": external_result is not None,
         "reused": reused,
+        "source_diagnostics": to_json_compatible(
+            dict(source_diagnostics or {})
+        ),
+        "native_errors": list(errors_tuple),
+        "native_warnings": list(warnings_tuple),
+        "attachment_status": normalize_identifier(
+            get_object_value(attachment, "status", default="not_attached"),
+            default="not_attached",
+            maximum_length=64,
+        ),
     }
     native_metadata = get_object_value(
         integration_result,
@@ -34889,6 +35807,58 @@ def adapt_scoring_integration_result(
         reused=reused,
         module_version=getattr(module, "__version__", None),
         configuration=config,
+    )
+
+
+def validate_dock_model_score_for_scoring(
+    dock_model: Any,
+    *,
+    dock_model_identifier: Optional[str] = None,
+) -> Optional[float]:
+    """Validate the global score field before invoking native scoring."""
+
+    score = get_object_value(
+        dock_model,
+        DOCK_MODEL_FIELD_SCORE,
+        default=None,
+    )
+    if score is None or is_missing_value(score):
+        return None
+
+    identifier = (
+        dock_model_identifier
+        or resolve_object_identifier(
+            dock_model,
+            default="unknown_dock_model",
+        )
+        or "unknown_dock_model"
+    )
+    invalid_type = isinstance(
+        score,
+        (bool, str, bytes, bytearray, Mapping, Sequence),
+    )
+    if not invalid_type:
+        try:
+            normalized = float(score)
+        except (TypeError, ValueError, OverflowError):
+            invalid_type = True
+        else:
+            if math.isfinite(normalized):
+                return normalized
+
+    raise AnalysisScoringError(
+        "DockModel.score must be None or a finite numeric value before scoring.",
+        stage=STAGE_SCORING,
+        details={
+            "dock_model": identifier,
+            "score_type": type(score).__name__,
+            "score_value": normalize_text(
+                repr(score),
+                default="unrepresentable",
+                maximum_length=256,
+            ),
+            "expected": "None or a finite numeric value",
+        },
     )
 
 
@@ -34920,6 +35890,10 @@ def run_scoring_analysis(
         dock_model=dock_model,
         pose_index=pose_index,
         scoring_module=module,
+    )
+    validate_dock_model_score_for_scoring(
+        target.dock_model,
+        dock_model_identifier=target.dock_model_identifier,
     )
     native_options = build_native_scoring_integration_options(
         effective,
@@ -34955,6 +35929,11 @@ def run_scoring_analysis(
         context,
         explicit_sources=interaction_sources,
         config=effective,
+    )
+    source_diagnostics = _scoring_source_diagnostics(
+        resolved_sources,
+        profile=native_profile,
+        scoring_module=module,
     )
     try:
         integration = module.integrate_dock_model_scoring(
@@ -35006,6 +35985,7 @@ def run_scoring_analysis(
         config=effective,
         explainability=explainability,
         external_result=external_result,
+        source_diagnostics=source_diagnostics,
         scoring_module=module,
     )
 
@@ -35224,6 +36204,10 @@ def _record_scoring_context(
         "reused": output.reused,
         "explainability_generated": output.explainability is not None,
         "external_scores_integrated": output.external_result is not None,
+        "attachment_status": output.metadata.get("attachment_status"),
+        "source_diagnostics": output.metadata.get("source_diagnostics", {}),
+        "errors": list(output.errors),
+        "warnings": list(output.warnings),
     }
 
 
@@ -35297,6 +36281,14 @@ def execute_scoring_stage(
                     else None
                 ),
                 "explainability_summary": dict(output.explainability_summary),
+                "source_diagnostics": output.metadata.get(
+                    "source_diagnostics",
+                    {},
+                ),
+                "attachment_status": output.metadata.get(
+                    "attachment_status"
+                ),
+                "native_errors": list(output.errors),
             }
         )
         stage_result.output_summary = output.summary.to_dict()
@@ -35596,6 +36588,36 @@ def validate_scoring_integration_conventions() -> Dict[str, Any]:
     if not scoring_stage_adapter_registered():
         failures.append("Scoring stage adapter is not registered.")
 
+    score_validation_model = SimpleNamespace(
+        name="score_validation_pose",
+        score=None,
+    )
+    if validate_dock_model_score_for_scoring(score_validation_model) is not None:
+        failures.append("A missing DockModel score did not validate as None.")
+    score_validation_model.score = 1.25
+    if validate_dock_model_score_for_scoring(score_validation_model) != 1.25:
+        failures.append("A finite DockModel score did not validate.")
+    invalid_scores = (
+        {"pi": 1.0},
+        "1.0",
+        True,
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+    )
+    for invalid_score in invalid_scores:
+        score_validation_model.score = invalid_score
+        try:
+            validate_dock_model_score_for_scoring(score_validation_model)
+        except AnalysisScoringError as exc:
+            if exc.stage != STAGE_SCORING:
+                failures.append("Invalid score diagnostic used the wrong stage.")
+        else:
+            failures.append(
+                "An invalid DockModel score reached the native scoring boundary: "
+                f"{type(invalid_score).__name__}."
+            )
+
     try:
         module = _require_scoring_module()
     except (AnalysisDependencyError, AnalysisCapabilityError, ModuleNotFoundError):
@@ -35673,6 +36695,116 @@ def validate_scoring_integration_conventions() -> Dict[str, Any]:
                 failures.append("Registered scoring-stage execution failed.")
             if context.get_shared(SCORING_SHARED_RESULT_KEY) is None:
                 failures.append("Scoring result was not stored in context.")
+
+            conversion_cases = (
+                (INTERACTION_FAMILY_CONTACTS, "steric_clash", "clash"),
+                (INTERACTION_FAMILY_HBONDS, "strong", "hydrogen_bond"),
+                (
+                    INTERACTION_FAMILY_HYDROPHOBIC,
+                    "aliphatic_aromatic",
+                    "hydrophobic_atomic",
+                ),
+                (INTERACTION_FAMILY_PI, "pi_stacking", "pi_stacking"),
+                (
+                    INTERACTION_FAMILY_SALTBRIDGE,
+                    "salt_bridge",
+                    "salt_bridge",
+                ),
+            )
+            converted_sources: Dict[str, List[Any]] = {}
+            for index, (family, subtype, expected_type) in enumerate(
+                conversion_cases
+            ):
+                native = SimpleNamespace(
+                    interaction_type=subtype,
+                    atom1=object(),
+                    atom2=object(),
+                )
+                record = build_canonical_interaction_record(
+                    native,
+                    family=family,
+                    subtype=subtype,
+                    ordinal=index,
+                )
+                payload = _scoring_record_payload(record)
+                if payload.get("interaction_type") != expected_type:
+                    failures.append(
+                        f"Scoring conversion lost {family}/{subtype}."
+                    )
+                converted_sources.setdefault(
+                    SCORING_FAMILY_TO_SOURCE[family],
+                    [],
+                ).append(payload)
+
+            attachment_model = DockModel(
+                name="section17_pi_list_attachment",
+                pose=object(),
+                receptor=object(),
+            )
+            # pi.py uses a flat list for its active attachment.  Scoring must
+            # not call the legacy DockModel statistics refresher, which
+            # assumes a dictionary and would roll the score back.
+            attachment_model.pi = []
+            attachment_output = run_scoring_analysis(
+                attachment_model,
+                interaction_sources=converted_sources,
+                config=replace(
+                    integrated,
+                    stage_configs={
+                        STAGE_SCORING: AnalysisStageConfig(
+                            enabled=True,
+                            required=True,
+                            attach_results=True,
+                            validate_result=True,
+                            reuse_result=False,
+                            parameters={
+                                "build_explainability": False,
+                                "continue_on_error": False,
+                            },
+                        )
+                    },
+                ),
+                scoring_module=module,
+            )
+            if attachment_output.errors:
+                failures.append(
+                    "Scoring attachment retained native integration errors."
+                )
+            if not attachment_output.attached:
+                failures.append(
+                    "Scoring was not attached after a pi-list integration."
+                )
+            if attachment_model.score != attachment_output.final_score:
+                failures.append(
+                    "The native score was not synchronized with DockModel.score."
+                )
+            diagnostics = attachment_output.metadata.get(
+                "source_diagnostics",
+                {},
+            )
+            expected_sources = {
+                SCORING_SOURCE_CONTACT,
+                SCORING_SOURCE_HBOND,
+                SCORING_SOURCE_HYDROPHOBIC,
+                SCORING_SOURCE_PI,
+                SCORING_SOURCE_SALTBRIDGE,
+            }
+            if set(diagnostics.get("source_counts", {})) != expected_sources:
+                failures.append("Scoring source diagnostics lost a family.")
+            if diagnostics.get("unknown_types"):
+                failures.append("Converted scoring types were not recognized.")
+            resolved_weights = diagnostics.get("resolved_weights", {})
+            for expected_type in (
+                "hydrogen_bond",
+                "hydrophobic_atomic",
+                "pi_stacking",
+                "salt_bridge",
+                "clash",
+            ):
+                if expected_type not in resolved_weights:
+                    failures.append(
+                        f"No scoring weight was resolved for {expected_type}."
+                    )
             second_interaction = interaction_factory(
                 "hydrophobic",
                 distance=3.8,
@@ -35712,7 +36844,7 @@ def validate_scoring_integration_conventions() -> Dict[str, Any]:
         "supported_sources": len(SCORING_SOURCE_ORDER),
         "attachment_modes": len(SCORING_ATTACHMENT_MODES),
         "explanation_levels": len(SCORING_EXPLANATION_LEVELS),
-        "validated_cases": 27,
+        "validated_cases": 47,
     }
 
 
@@ -35761,6 +36893,7 @@ _SECTION_17_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "build_native_scoring_explainability_options",
     "resolve_scoring_stage_target",
     "build_scoring_interaction_sources",
+    "validate_dock_model_score_for_scoring",
     "is_scoring_integration_result",
     "scoring_integration_scoring_result",
     "scoring_integration_bundle",
@@ -36997,14 +38130,24 @@ def invoke_single_pose_stage_executor(
         return result
 
     dock_model = pose_result.dock_model
+    if entry.stage in OUTPUT_STAGES:
+        apply_permissive_partial_disclosure(
+            pose_result,
+            failure_policy=context.config.runtime.failure_policy,
+        )
     override_values = dict(options.stage_override(entry.stage))
+    stage_source = (
+        context.stage_data
+        if entry.stage == STAGE_CONSOLIDATION
+        else dock_model
+    )
     candidate_arguments: Dict[str, Any] = {
         "context": context,
         "dock_model": dock_model,
         "receptor": pose_result.receptor,
         "pose": pose_result.pose,
         "ligand": pose_result.ligand,
-        "source": dock_model,
+        "source": stage_source,
         "pose_index": 0,
         "config": context.config,
         "overrides": override_values,
@@ -37117,6 +38260,127 @@ def validate_single_pose_analysis_state(
 # -----------------------------------------------------------------------------
 
 
+def build_permissive_partial_disclosure(
+    result: PoseAnalysisResult,
+) -> Dict[str, Any]:
+    """Describe recoverable scientific incompleteness for one pose result."""
+
+    failed_stages: List[str] = []
+    partial_stages: List[str] = []
+    for stage in INTERACTION_STAGES:
+        stage_result = result.get_stage_result(stage)
+        if stage_result is None:
+            continue
+        if stage_result.status in {StageStatus.FAILED, StageStatus.BLOCKED}:
+            failed_stages.append(stage)
+        elif stage_result.status is StageStatus.PARTIAL:
+            partial_stages.append(stage)
+    degraded_stages = tuple((*failed_stages, *partial_stages))
+    if not degraded_stages:
+        return {}
+
+    available_interactions = result.interactions.counts()
+    limitations = [
+        "The score was calculated from the interaction families that remained "
+        "available after recoverable detector failures.",
+        "Scores and ranks are provisional and must not be compared with complete "
+        "analyses without accounting for the missing interaction families.",
+    ]
+    diagnostic_issues = [
+        issue.to_dict()
+        for issue in result.diagnostics.issues
+        if issue.stage in degraded_stages
+    ]
+    for stage in degraded_stages:
+        stage_result = result.get_stage_result(stage)
+        if stage_result is None:
+            continue
+        diagnostic_issues.extend(
+            {
+                "stage": stage,
+                "message": str(message),
+                "severity": "warning",
+                "recoverable": True,
+            }
+            for message in stage_result.messages
+            if message
+        )
+        diagnostic_issues.extend(
+            issue.to_dict()
+            for issue in stage_result.diagnostics.issues
+        )
+    return {
+        "status": AnalysisStatus.PARTIAL.value,
+        "failed_stages": failed_stages,
+        "partial_stages": partial_stages,
+        "degraded_stages": list(degraded_stages),
+        "available_interactions": available_interactions,
+        "available_interaction_count": int(
+            available_interactions.get(
+                "total",
+                sum(
+                    count
+                    for family, count in available_interactions.items()
+                    if family != "total"
+                ),
+            )
+        ),
+        "scoring": {
+            "status": "limited",
+            "comparable": False,
+            "limitations": limitations,
+        },
+        "ranking": {
+            "status": "partial",
+            "valid": False,
+            "warning": limitations[1],
+        },
+        "diagnostics": diagnostic_issues,
+    }
+
+
+def apply_permissive_partial_disclosure(
+    result: PoseAnalysisResult,
+    *,
+    failure_policy: Any,
+) -> Dict[str, Any]:
+    """Attach controlled partial-result disclosure in permissive mode."""
+
+    if canonicalize_failure_policy(failure_policy) != FAILURE_POLICY_PERMISSIVE:
+        return {}
+    disclosure = build_permissive_partial_disclosure(result)
+    if not disclosure:
+        return {}
+    result.status = AnalysisStatus.PARTIAL
+    result.metadata["partial_result"] = disclosure
+    result.statistics["failed_scientific_stages"] = list(
+        disclosure["failed_stages"]
+    )
+    result.statistics["partial_scientific_stages"] = list(
+        disclosure["partial_stages"]
+    )
+    if not any(
+        issue.code == "partial_scientific_result"
+        for issue in result.diagnostics.issues
+    ):
+        result.diagnostics.add_issue(
+            AnalysisIssue(
+                kind=IssueKind.WARNING,
+                severity=IssueSeverity.WARNING,
+                code="partial_scientific_result",
+                message=(
+                    "Scientific analysis is partial; exported scores and rankings "
+                    "are explicitly marked as provisional."
+                ),
+                recoverable=True,
+                action=RecoveryAction.CONTINUE_PARTIAL,
+                scope=FailureScope.POSE,
+                details=disclosure,
+            )
+        )
+    return disclosure
+
+
 def execute_single_pose_finalization_stage(
     context: AnalysisContext,
     pose_result: PoseAnalysisResult,
@@ -37130,6 +38394,10 @@ def execute_single_pose_finalization_stage(
     result.start()
     try:
         context.set_current_stage(STAGE_FINALIZATION)
+        partial_disclosure = apply_permissive_partial_disclosure(
+            pose_result,
+            failure_policy=context.config.runtime.failure_policy,
+        )
         pose_result.metadata.update(
             {
                 "schema": SINGLE_POSE_SCHEMA_NAME,
@@ -37154,6 +38422,7 @@ def execute_single_pose_finalization_stage(
             "interaction_count": pose_result.interaction_count,
             "completed_stages": list(pose_result.completed_stages),
             "failed_stages": list(pose_result.failed_stages),
+            "partial_result": partial_disclosure or None,
         }
         result.statistics = {
             "interaction_count": pose_result.interaction_count,
@@ -37791,7 +39060,6 @@ def validate_single_pose_orchestration_conventions() -> Dict[str, Any]:
                 required_modules=(),
             )
         )
-
     integrated = AnalysisConfig(
         requested_stages=(
             STAGE_INPUT_RESOLUTION,
@@ -37856,7 +39124,7 @@ def validate_single_pose_orchestration_conventions() -> Dict[str, Any]:
         "schema_version": SINGLE_POSE_SCHEMA_VERSION,
         "stage_count": len(output.pose_result.stage_results),
         "interaction_count": output.pose_result.interaction_count,
-        "validated_cases": 24,
+        "validated_cases": 40,
     }
 
 
@@ -37975,6 +39243,7 @@ MULTIPOSE_GLOBAL_STAGES: Final[FrozenSet[str]] = frozenset(
         STAGE_MODEL_PREPARATION,
         STAGE_CONSENSUS,
         STAGE_VALIDATION,
+        *OUTPUT_STAGES,
         STAGE_FINALIZATION,
     }
 )
@@ -38500,7 +39769,10 @@ class MultiposeAnalysisOutput:
         best = self.best_pose
         scores = [
             score
-            for score in (_multipose_pose_numeric_score(item) for item in self.pose_results)
+            for score, _reason in (
+                _multipose_pose_comparable_score(item)
+                for item in self.pose_results
+            )
             if score is not None
         ]
         return {
@@ -38992,6 +40264,65 @@ def _multipose_pose_numeric_score(value: Any) -> Optional[float]:
     return scoring_result_final_score(scoring)
 
 
+def _multipose_score_failure_evidence(
+    result: PoseAnalysisResult,
+) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    """Return hard score failures and contextual failure evidence."""
+
+    hard: List[str] = []
+    contextual: List[str] = []
+    if result.status in {AnalysisStatus.FAILED, AnalysisStatus.CANCELLED}:
+        hard.append(f"pose_status:{result.status.value}")
+    elif result.status == AnalysisStatus.PARTIAL:
+        contextual.append("pose_status:partial")
+
+    scoring_stage = result.get_stage_result(STAGE_SCORING)
+    if scoring_stage is not None:
+        if scoring_stage.status in {StageStatus.FAILED, StageStatus.BLOCKED}:
+            hard.append(f"scoring_stage:{scoring_stage.status.value}")
+        elif scoring_stage.status == StageStatus.PARTIAL:
+            contextual.append("scoring_stage:partial")
+
+    scoring = result.scoring
+    for field_name in ("valid", "score_valid", "comparable"):
+        candidate = get_object_value(scoring, field_name, default=None)
+        if candidate is False:
+            hard.append(f"scoring_payload:{field_name}=false")
+    payload_status = get_object_value(scoring, "status", default=None)
+    payload_status_token = str(
+        getattr(payload_status, "value", payload_status) or ""
+    ).strip().lower()
+    if payload_status_token in {"failed", "failure", "error", "blocked"}:
+        hard.append(f"scoring_payload:{payload_status_token}")
+
+    if isinstance(result.metadata.get("partial_result"), Mapping):
+        contextual.append("partial_scientific_result")
+    if result.diagnostics.errors:
+        contextual.append("analysis_diagnostics_errors")
+    return (
+        tuple(unique_preserving_order(hard)),
+        tuple(unique_preserving_order(contextual)),
+    )
+
+
+def _multipose_pose_comparable_score(
+    value: Any,
+) -> Tuple[Optional[float], Optional[str]]:
+    """Return a useful score and a rejection reason for pose comparison."""
+
+    score = _multipose_pose_numeric_score(value)
+    if score is None:
+        return None, "missing_score"
+    if not isinstance(value, PoseAnalysisResult):
+        return score, None
+    hard_failures, contextual_failures = _multipose_score_failure_evidence(value)
+    if hard_failures:
+        return None, hard_failures[0]
+    if score == 0.0 and contextual_failures:
+        return None, "zero_score_after_failure"
+    return score, None
+
+
 def _failed_multipose_pose_result(
     index: int,
     dock_model: Any,
@@ -39149,7 +40480,7 @@ def build_multipose_ranking(
     for index, result in enumerate(pose_results):
         if not include_failed and result.status not in MULTIPOSE_SUCCESS_STATUSES:
             continue
-        score = _multipose_pose_numeric_score(result)
+        score, _rejection_reason = _multipose_pose_comparable_score(result)
         if score is None and not include_unscored:
             continue
         candidates.append((index, result, score))
@@ -39167,6 +40498,20 @@ def build_multipose_ranking(
     for position, (index, result, score) in enumerate(candidates, start=1):
         tied = position > 1 and score is not None and score == previous_score
         rank = previous_rank if tied else position
+        disclosure = result.metadata.get("partial_result")
+        if not isinstance(disclosure, Mapping):
+            disclosure = build_permissive_partial_disclosure(result)
+        ranking_valid = not bool(disclosure)
+        scoring_disclosure = (
+            disclosure.get("scoring", {})
+            if isinstance(disclosure, Mapping)
+            else {}
+        )
+        ranking_disclosure = (
+            disclosure.get("ranking", {})
+            if isinstance(disclosure, Mapping)
+            else {}
+        )
         ranking.append(
             {
                 "rank": rank,
@@ -39178,11 +40523,183 @@ def build_multipose_ranking(
                 "status": result.status.value,
                 "score": score,
                 "interaction_count": result.interaction_count,
+                "score_comparable": score is not None,
+                "ranking_status": "valid" if ranking_valid else "partial",
+                "ranking_valid": ranking_valid,
+                "failed_stages": list(disclosure.get("failed_stages", ()))
+                if isinstance(disclosure, Mapping)
+                else [],
+                "score_limitations": list(
+                    scoring_disclosure.get("limitations", ())
+                ),
+                "warnings": [ranking_disclosure.get("warning")]
+                if ranking_disclosure.get("warning")
+                else [],
             }
         )
         previous_score = score
         previous_rank = rank
     return ranking
+
+
+def apply_multipose_ranking_disclosure(
+    result: MultiPoseAnalysisResult,
+    ranking: Sequence[Mapping[str, Any]],
+    *,
+    ranking_requested: bool = True,
+) -> Dict[str, Any]:
+    """Describe ranking validity and refuse a best pose without useful scores."""
+
+    if not ranking_requested:
+        disclosure = {
+            "status": "disabled",
+            "valid": False,
+            "reason": "ranking_not_requested",
+            "best_pose_id": None,
+            "comparable_result_count": 0,
+            "affected_pose_ids": [],
+            "excluded_pose_ids": [],
+            "failed_stages": [],
+            "limitations": [],
+        }
+        result.metadata["ranking_validity"] = disclosure
+        return disclosure
+
+    score_assessments = [
+        (pose_result, *_multipose_pose_comparable_score(pose_result))
+        for pose_result in result.pose_results
+    ]
+    comparable_pose_ids = [
+        pose_result.pose_id
+        for pose_result, score, _reason in score_assessments
+        if score is not None
+    ]
+    excluded = [
+        {
+            "pose_id": pose_result.pose_id,
+            "reason": reason or "missing_score",
+        }
+        for pose_result, score, reason in score_assessments
+        if score is None
+    ]
+    if result.pose_results and not comparable_pose_ids:
+        warning = (
+            "No comparable scoring results are available; no best pose was "
+            "selected. Empty scores and failure-derived zero scores were not ranked."
+        )
+        disclosure = {
+            "status": "unavailable",
+            "valid": False,
+            "reason": "no_comparable_scores",
+            "warning": warning,
+            "best_pose_id": None,
+            "comparable_result_count": 0,
+            "affected_pose_ids": [item.pose_id for item in result.pose_results],
+            "excluded_pose_ids": [item["pose_id"] for item in excluded],
+            "excluded_results": excluded,
+            "failed_stages": [],
+            "limitations": [
+                "No pose can be identified as best until at least one useful "
+                "scientific score is available."
+            ],
+        }
+        result.metadata["ranking_validity"] = disclosure
+        result.statistics["comparable_scored_pose_count"] = 0
+        result.status = AnalysisStatus.PARTIAL
+        if not any(
+            issue.code == "no_comparable_scores"
+            for issue in result.diagnostics.issues
+        ):
+            result.diagnostics.add_issue(
+                AnalysisIssue(
+                    kind=IssueKind.WARNING,
+                    severity=IssueSeverity.WARNING,
+                    code="no_comparable_scores",
+                    message=warning,
+                    recoverable=True,
+                    action=RecoveryAction.CONTINUE_PARTIAL,
+                    scope=FailureScope.RUN,
+                    details=disclosure,
+                )
+            )
+        return disclosure
+
+    affected = [
+        entry
+        for entry in ranking
+        if not bool(entry.get("ranking_valid", True))
+    ]
+    if not affected and not excluded:
+        disclosure = {
+            "status": "valid",
+            "valid": True,
+            "reason": None,
+            "best_pose_id": ranking[0].get("pose_id") if ranking else None,
+            "comparable_result_count": len(comparable_pose_ids),
+            "affected_pose_ids": [],
+            "excluded_pose_ids": [],
+            "failed_stages": [],
+            "limitations": [],
+        }
+        result.metadata["ranking_validity"] = disclosure
+        return disclosure
+
+    failed_stages = sorted(
+        {
+            str(stage)
+            for entry in affected
+            for stage in entry.get("failed_stages", ())
+        }
+    )
+    limitations = list(
+        dict.fromkeys(
+            str(message)
+            for entry in affected
+            for message in entry.get("score_limitations", ())
+            if message
+        )
+    )
+    warning = (
+        "Ranking is provisional because one or more poses have incomplete "
+        "scientific interaction results or no useful score."
+    )
+    disclosure = {
+        "status": "partial",
+        "valid": False,
+        "warning": warning,
+        "reason": "incomplete_comparison",
+        "best_pose_id": ranking[0].get("pose_id") if ranking else None,
+        "comparable_result_count": len(comparable_pose_ids),
+        "affected_pose_ids": list(
+            dict.fromkeys(
+                [entry.get("pose_id") for entry in affected]
+                + [item["pose_id"] for item in excluded]
+            )
+        ),
+        "excluded_pose_ids": [item["pose_id"] for item in excluded],
+        "excluded_results": excluded,
+        "failed_stages": failed_stages,
+        "limitations": limitations,
+    }
+    result.metadata["ranking_validity"] = disclosure
+    result.status = AnalysisStatus.PARTIAL
+    if not any(
+        issue.code == "partial_scientific_ranking"
+        for issue in result.diagnostics.issues
+    ):
+        result.diagnostics.add_issue(
+            AnalysisIssue(
+                kind=IssueKind.WARNING,
+                severity=IssueSeverity.WARNING,
+                code="partial_scientific_ranking",
+                message=warning,
+                recoverable=True,
+                action=RecoveryAction.CONTINUE_PARTIAL,
+                scope=FailureScope.RUN,
+                details=disclosure,
+            )
+        )
+    return disclosure
 
 
 def _multipose_family_presence(
@@ -39273,11 +40790,11 @@ def attach_multipose_global_results(
                 DOCK_MODEL_FIELD_METADATA,
                 default={},
             ),
-            copy_values=True,
+            copy_values=False,
         )
         multipose_metadata = normalize_metadata_mapping(
             metadata.get("multipose_analysis"),
-            copy_values=True,
+            copy_values=False,
         )
         multipose_metadata.update(
             {
@@ -39303,7 +40820,7 @@ def attach_multipose_global_results(
                 DOCK_MODEL_FIELD_STATISTICS,
                 default={},
             ),
-            copy_values=True,
+            copy_values=False,
         )
         statistics["multipose_rank"] = rank_by_pose.get(pose_result.pose_id)
         statistics["multipose_pose_count"] = result.pose_count
@@ -39358,7 +40875,7 @@ def run_multipose_scoring_aggregation(
         return None
 
 
-# 19.8. Global consensus, validation and finalization stages
+# 19.8. Global consensus, validation, output and finalization stages
 # -----------------------------------------------------------------------------
 
 
@@ -39390,6 +40907,11 @@ def _execute_preliminary_multipose_consensus_stage(
             else build_preliminary_multipose_consensus(result.pose_results)
         )
         result.ranking = ranking
+        ranking_disclosure = apply_multipose_ranking_disclosure(
+            result,
+            ranking,
+            ranking_requested=options.build_ranking,
+        )
         result.consensus = consensus
         if native_scoring is not None:
             result.metadata[MULTIPOSE_SCORING_OUTPUT_KEY] = {
@@ -39412,6 +40934,8 @@ def _execute_preliminary_multipose_consensus_stage(
             "successful_pose_count": len(result.successful_pose_results),
             "failed_pose_count": len(result.failed_pose_results),
             "attached_dock_model_count": attached_count,
+            "ranking_valid": ranking_disclosure["valid"],
+            "ranking_status": ranking_disclosure["status"],
         }
         stage_result.output_summary = {
             "ranking_generated": bool(ranking),
@@ -39443,6 +40967,187 @@ def _execute_preliminary_multipose_consensus_stage(
 
 
 # execute_multipose_validation_stage is implemented by the Section 27 validation layer.
+
+
+def _multipose_output_plan_entries(
+    plan: AnalysisExecutionPlan,
+) -> Tuple[StagePlanEntry, ...]:
+    """Return planned aggregate output stages in canonical execution order."""
+
+    entries_by_stage = {
+        entry.stage: entry
+        for entry in plan.entries
+        if entry.stage in OUTPUT_STAGES
+    }
+    return tuple(
+        entries_by_stage[stage]
+        for stage in OUTPUT_STAGES
+        if stage in entries_by_stage
+    )
+
+
+def _synchronize_multipose_output_stage(
+    context: AnalysisContext,
+    result: MultiPoseAnalysisResult,
+    run_result: AnalysisRunResult,
+    stage_result: AnalysisStageResult,
+) -> None:
+    """Attach one aggregate output result to every top-level run container."""
+
+    result.add_stage_result(stage_result)
+    run_result.add_stage_result(stage_result)
+    if stage_result.duration_seconds is not None:
+        result.timings[stage_result.stage] = stage_result.duration_seconds
+    if stage_result.statistics:
+        result.statistics[stage_result.stage] = dict(stage_result.statistics)
+    if stage_result.files:
+        result.files.update(stage_result.files)
+        context.files.update(stage_result.files)
+    output_metadata = result.metadata.setdefault("output_stages", {})
+    output_metadata[stage_result.stage] = {
+        "status": stage_result.status.value,
+        "files": dict(stage_result.files),
+        "warnings": [issue.message for issue in stage_result.warnings],
+        "errors": [issue.message for issue in stage_result.errors],
+    }
+    context.set_stage_data(stage_result.stage, stage_result)
+    context.notify_stage(stage_result)
+
+
+def _execute_multipose_output_stage(
+    entry: StagePlanEntry,
+    *,
+    context: AnalysisContext,
+    result: MultiPoseAnalysisResult,
+    run_result: AnalysisRunResult,
+    plan: AnalysisExecutionPlan,
+    options: MultiposeExecutionOptions,
+    blocked_reason: Optional[str] = None,
+) -> AnalysisStageResult:
+    """Execute one planned output stage against the aggregate multipose result."""
+
+    stage_result = AnalysisStageResult(stage=entry.stage, required=entry.required)
+    if blocked_reason:
+        return stage_result.block(blocked_reason)
+    if context.is_cancelled():
+        return stage_result.cancel("Output execution was cancelled.")
+    if not entry.executable:
+        reason = entry.reason or (
+            "The output stage is unavailable in the resolved execution plan."
+        )
+        if entry.required or entry.disposition is PlanEntryDisposition.BLOCKED:
+            return stage_result.block(reason)
+        return stage_result.skip(reason)
+
+    executor = entry.definition.executor
+    if executor is None:
+        reason = "No executor is registered for the planned output stage."
+        if entry.required:
+            return stage_result.block(reason)
+        return stage_result.skip(reason)
+
+    for pose_result in result.pose_results:
+        apply_permissive_partial_disclosure(
+            pose_result,
+            failure_policy=context.config.runtime.failure_policy,
+        )
+
+    # Writers must see a meaningful aggregate status instead of the transient
+    # RUNNING value. Finalization will derive the definitive status afterwards.
+    result.status = result.derive_status()
+    context.set_current_stage(entry.stage)
+    try:
+        candidate_arguments: Dict[str, Any] = {
+            "context": context,
+            "source": result,
+            "analysis_result": result,
+            "multipose_result": result,
+            "run_result": run_result,
+            "config": context.config,
+            "overrides": dict(options.stage_override(entry.stage)),
+            "session": context.session,
+            "execution_plan": plan,
+            "plan": plan,
+            "raise_on_error": False,
+        }
+        raw_result = executor(
+            **_filter_callable_keyword_arguments(executor, candidate_arguments)
+        )
+        if isinstance(raw_result, AnalysisStageResult):
+            return raw_result
+        if entry.definition.result_adapter is not None:
+            raw_result = _invoke_single_pose_result_adapter(
+                entry.definition.result_adapter,
+                raw_result,
+                stage=entry.stage,
+            )
+            if isinstance(raw_result, AnalysisStageResult):
+                return raw_result
+        return stage_result.start().succeed(raw_result)
+    except Exception as exc:
+        wrapped = exc if isinstance(exc, AnalysisError) else AnalysisIntegrationError(
+            f"Multipose output stage {entry.stage!r} failed.",
+            stage=entry.stage,
+            code="multipose_output_stage_failed",
+            cause=exc,
+        )
+        return stage_result.start().fail(
+            wrapped,
+            include_traceback=context.config.runtime.collect_diagnostics,
+        )
+    finally:
+        context.set_current_stage(None)
+
+
+def _execute_multipose_output_stages(
+    context: AnalysisContext,
+    result: MultiPoseAnalysisResult,
+    run_result: AnalysisRunResult,
+    *,
+    plan: AnalysisExecutionPlan,
+    options: MultiposeExecutionOptions,
+    initial_blocked_reason: Optional[str] = None,
+) -> Tuple[AnalysisStageResult, ...]:
+    """Execute planned export, report and visualization at aggregate scope."""
+
+    output_results: List[AnalysisStageResult] = []
+    strict_block_reason = initial_blocked_reason
+    for entry in _multipose_output_plan_entries(plan):
+        stage_result = _execute_multipose_output_stage(
+            entry,
+            context=context,
+            result=result,
+            run_result=run_result,
+            plan=plan,
+            options=options,
+            blocked_reason=strict_block_reason,
+        )
+        _synchronize_multipose_output_stage(
+            context,
+            result,
+            run_result,
+            stage_result,
+        )
+        output_results.append(stage_result)
+        if (
+            context.config.runtime.is_strict
+            and stage_result.status
+            in {StageStatus.FAILED, StageStatus.BLOCKED, StageStatus.CANCELLED}
+        ):
+            strict_block_reason = (
+                f"Execution stopped after output stage {entry.stage!r} failed."
+            )
+
+    result.metadata["planned_output_stages"] = [
+        entry.stage for entry in _multipose_output_plan_entries(plan)
+    ]
+    result.metadata["executed_output_stages"] = [
+        stage_result.stage
+        for stage_result in output_results
+        if stage_result.status
+        not in {StageStatus.BLOCKED, StageStatus.SKIPPED, StageStatus.CANCELLED}
+    ]
+    return tuple(output_results)
 
 
 def execute_multipose_finalization_stage(
@@ -39704,6 +41409,33 @@ def run_multipose_analysis(
             details=validation_stage.errors[0].details,
         )
 
+    output_stage_results = _execute_multipose_output_stages(
+        runtime_context,
+        multipose_result,
+        run_result,
+        plan=plan,
+        options=resolved_options,
+        initial_blocked_reason=(
+            "Validation did not complete successfully under the strict failure policy."
+            if integrated.runtime.is_strict
+            and validation_stage.status
+            in {StageStatus.FAILED, StageStatus.BLOCKED, StageStatus.CANCELLED}
+            else None
+        ),
+    )
+    for output_stage_result in output_stage_results:
+        warnings_list.extend(
+            issue.message for issue in output_stage_result.warnings
+        )
+        errors.extend(issue.message for issue in output_stage_result.errors)
+        if output_stage_result.errors and first_failure is None:
+            first_issue = output_stage_result.errors[0]
+            first_failure = AnalysisIntegrationError(
+                first_issue.message,
+                stage=output_stage_result.stage,
+                details=first_issue.details,
+            )
+
     execute_multipose_finalization_stage(
         runtime_context,
         multipose_result,
@@ -39731,11 +41463,19 @@ def run_multipose_analysis(
             "plan_id": plan.plan_id,
             "configuration_fingerprint": integrated.fingerprint,
             "options_fingerprint": resolved_options.fingerprint,
-            "deferred_output_stages": [
-                stage
-                for stage in plan.stages
-                if stage in MULTIPOSE_DEFERRED_OUTPUT_STAGES
-            ],
+            "planned_output_stages": list(
+                multipose_result.metadata.get("planned_output_stages", ())
+            ),
+            "executed_output_stages": list(
+                multipose_result.metadata.get("executed_output_stages", ())
+            ),
+            "output_stage_statuses": {
+                stage_result.stage: stage_result.status.value
+                for stage_result in output_stage_results
+            },
+            # Retained for schema compatibility. Planned aggregate outputs are
+            # now consumed before finalization, so none remain deferred.
+            "deferred_output_stages": [],
         },
         options=resolved_options,
     )
@@ -40005,6 +41745,28 @@ def validate_multipose_orchestration_conventions() -> Dict[str, Any]:
         stage_result.start().succeed(scoring)
         return stage_result
 
+    output_execution_order: List[str] = []
+
+    def _synthetic_output_executor(
+        context: Optional[AnalysisContext] = None,
+        multipose_result: Optional[MultiPoseAnalysisResult] = None,
+        **_: Any,
+    ) -> AnalysisStageResult:
+        stage = context.current_stage if context is not None else None
+        if stage not in OUTPUT_STAGES:
+            raise RuntimeError("Synthetic output executor received no output stage.")
+        if multipose_result is None:
+            raise RuntimeError("Synthetic output executor received no aggregate result.")
+        if multipose_result.status is AnalysisStatus.RUNNING:
+            raise RuntimeError("Synthetic output executor received a running result.")
+        output_execution_order.append(stage)
+        stage_result = AnalysisStageResult(stage=stage, required=False)
+        stage_result.start().succeed(
+            {"stage": stage, "pose_count": multipose_result.pose_count}
+        )
+        stage_result.files[stage] = f"section19_{stage}.txt"
+        return stage_result
+
     registry = get_default_stage_registry(copy_registry=True)
     for stage, executor in (
         (STAGE_CONTACTS, _synthetic_contacts_executor),
@@ -40021,6 +41783,17 @@ def validate_multipose_orchestration_conventions() -> Dict[str, Any]:
                 required_modules=(),
             )
         )
+    for stage in OUTPUT_STAGES:
+        definition = registry.require(stage)
+        registry.replace(
+            replace(
+                definition,
+                executor=_synthetic_output_executor,
+                result_adapter=None,
+                validator=None,
+                required_modules=(),
+            )
+        )
 
     requested = (
         STAGE_INPUT_RESOLUTION,
@@ -40030,6 +41803,7 @@ def validate_multipose_orchestration_conventions() -> Dict[str, Any]:
         STAGE_SCORING,
         STAGE_CONSENSUS,
         STAGE_VALIDATION,
+        *OUTPUT_STAGES,
         STAGE_FINALIZATION,
     )
     integrated = AnalysisConfig(
@@ -40073,6 +41847,28 @@ def validate_multipose_orchestration_conventions() -> Dict[str, Any]:
         failures.append("Synthetic multipose consensus was not retained.")
     if len(output.pose_trace) != 2:
         failures.append("Synthetic multipose trace is incomplete.")
+    if output_execution_order != list(OUTPUT_STAGES):
+        failures.append(
+            "Aggregate output stages did not execute in canonical order."
+        )
+    for stage in OUTPUT_STAGES:
+        stage_result = output.multipose_result.stage_results.get(stage)
+        if stage_result is None or not stage_result.succeeded:
+            failures.append(
+                f"Aggregate output stage {stage!r} was not retained as successful."
+            )
+        if stage not in output.run_result.stage_results:
+            failures.append(
+                f"Aggregate output stage {stage!r} was omitted from the run result."
+            )
+        if stage not in output.multipose_result.files:
+            failures.append(
+                f"Aggregate output stage {stage!r} did not synchronize its file."
+            )
+    if output.metadata.get("deferred_output_stages"):
+        failures.append("Executed aggregate output stages remained marked as deferred.")
+    if output.metadata.get("executed_output_stages") != list(OUTPUT_STAGES):
+        failures.append("Aggregate executed-output metadata is incomplete.")
     validation_errors = validate_multipose_analysis_output(
         output,
         raise_on_error=False,
@@ -40087,6 +41883,70 @@ def validate_multipose_orchestration_conventions() -> Dict[str, Any]:
     if output.context.get_shared(MULTIPOSE_OUTPUT_KEY) is not output:
         failures.append("Multipose output was not retained in the context.")
 
+    missing_score_poses = [
+        PoseAnalysisResult(
+            pose_id=f"missing-{index}",
+            status=AnalysisStatus.SUCCEEDED,
+            scoring=None,
+        )
+        for index in range(2)
+    ]
+    missing_ranking = build_multipose_ranking(missing_score_poses)
+    missing_result = MultiPoseAnalysisResult(
+        pose_results=missing_score_poses,
+        ranking=missing_ranking,
+    )
+    missing_disclosure = apply_multipose_ranking_disclosure(
+        missing_result,
+        missing_ranking,
+    )
+    if missing_ranking:
+        failures.append("Empty scores unexpectedly produced ranking entries.")
+    if missing_result.best_pose is not None:
+        failures.append("An empty-score ranking selected a best pose.")
+    if missing_disclosure.get("reason") != "no_comparable_scores":
+        failures.append("Empty scores did not disclose unavailable comparison.")
+
+    failed_zero_poses: List[PoseAnalysisResult] = []
+    for index in range(2):
+        pose_result = PoseAnalysisResult(
+            pose_id=f"failed-zero-{index}",
+            status=AnalysisStatus.PARTIAL,
+            scoring={"total_score": 0.0},
+        )
+        pose_result.add_stage_result(
+            AnalysisStageResult(
+                stage=STAGE_SCORING,
+                status=StageStatus.FAILED,
+            )
+        )
+        failed_zero_poses.append(pose_result)
+    failed_zero_ranking = build_multipose_ranking(failed_zero_poses)
+    failed_zero_result = MultiPoseAnalysisResult(
+        pose_results=failed_zero_poses,
+        ranking=failed_zero_ranking,
+    )
+    failed_zero_disclosure = apply_multipose_ranking_disclosure(
+        failed_zero_result,
+        failed_zero_ranking,
+    )
+    if failed_zero_ranking or failed_zero_result.best_pose is not None:
+        failures.append("Failure-derived zero scores selected a best pose.")
+    if failed_zero_disclosure.get("comparable_result_count") != 0:
+        failures.append("Failure-derived zero scores were marked comparable.")
+
+    legitimate_zero_poses = [
+        PoseAnalysisResult(
+            pose_id=f"valid-zero-{index}",
+            status=AnalysisStatus.SUCCEEDED,
+            scoring={"total_score": 0.0},
+        )
+        for index in range(2)
+    ]
+    legitimate_zero_ranking = build_multipose_ranking(legitimate_zero_poses)
+    if len(legitimate_zero_ranking) != 2:
+        failures.append("Legitimate zero-score ties were incorrectly discarded.")
+
     if failures:
         raise RuntimeError(
             "Multipose orchestration convention validation failed: "
@@ -40098,7 +41958,7 @@ def validate_multipose_orchestration_conventions() -> Dict[str, Any]:
         "schema_version": MULTIPOSE_SCHEMA_VERSION,
         "pose_count": len(output.pose_results),
         "ranking_count": len(output.multipose_result.ranking),
-        "validated_cases": 28,
+        "validated_cases": 49,
     }
 
 
@@ -42286,20 +44146,25 @@ def validate_batch_execution_conventions() -> Dict[str, Any]:
         build_ranking=True,
         build_consensus=True,
     )
+    single_model = copy.deepcopy(dock_models[0])
+    multipose_models = tuple(
+        copy.deepcopy(model)
+        for model in dock_models
+    )
     requests = (
         AnalysisRequest(
-            receptor=receptor_model,
-            poses=(dock_models[0].pose,),
-            dock_models=(dock_models[0],),
+            receptor=single_model.receptor,
+            poses=(single_model.pose,),
+            dock_models=(single_model,),
             config=integrated,
             name="section20_single",
             mode=ANALYSIS_MODE_SINGLE_POSE,
             requested_stages=requested_stages,
         ),
         AnalysisRequest(
-            receptor=receptor_model,
-            poses=tuple(model.pose for model in dock_models),
-            dock_models=tuple(dock_models),
+            receptor=multipose_models[0].receptor,
+            poses=tuple(model.pose for model in multipose_models),
+            dock_models=multipose_models,
             config=integrated,
             name="section20_multi",
             mode=ANALYSIS_MODE_MULTIPOSE,
@@ -44316,6 +46181,11 @@ def execute_multipose_consensus_stage(
                 include_failed=options.include_failed_in_ranking,
             ) if options.build_ranking else []
             result.ranking = ranking
+            ranking_disclosure = apply_multipose_ranking_disclosure(
+                result,
+                ranking,
+                ranking_requested=options.build_ranking,
+            )
             result.consensus = output
             attached_count = 0
             if options.attach_global_results:
@@ -44335,6 +46205,8 @@ def execute_multipose_consensus_stage(
                     "consensus_generated": True,
                     "native_scoring_used": native_scoring is not None,
                     "advanced_analysis": True,
+                    "ranking_valid": ranking_disclosure["valid"],
+                    "ranking_status": ranking_disclosure["status"],
                 }
             )
             return stage_result
@@ -44460,8 +46332,64 @@ def advanced_consensus_stage_result_adapter(
     return analyze_consensus_diversity_complementarity(value, **kwargs)
 
 
+def _validate_preliminary_consensus_output(value: Any) -> Optional[Tuple[str, ...]]:
+    """Validate the lightweight consensus format or report it as unrecognized."""
+
+    if not isinstance(value, Mapping):
+        return None
+    if "consensus" in value and any(
+        key in value for key in ("ranking", "native_scoring")
+    ):
+        ranking = value.get("ranking")
+        consensus = value.get("consensus")
+        errors: List[str] = []
+        if ranking is not None and not isinstance(ranking, Sequence):
+            errors.append("Preliminary consensus ranking must be a sequence.")
+        if consensus is None:
+            errors.append("Preliminary consensus payload does not contain consensus data.")
+            return tuple(errors)
+        nested = _validate_preliminary_consensus_output(consensus)
+        if nested is not None:
+            errors.extend(nested)
+        # Native scoring consensus objects are valid fallback values even when
+        # they do not use the lightweight mapping schema.
+        return tuple(errors)
+    if value.get("scope") != "preliminary_consensus":
+        return None
+
+    errors = []
+    pose_count = value.get("pose_count")
+    if not isinstance(pose_count, int) or isinstance(pose_count, bool) or pose_count < 0:
+        errors.append("Preliminary consensus pose_count must be a non-negative integer.")
+    families = value.get("families")
+    if not isinstance(families, Mapping):
+        errors.append("Preliminary consensus families must be a mapping.")
+    else:
+        for family, summary in families.items():
+            if not isinstance(summary, Mapping):
+                errors.append(
+                    f"Preliminary consensus family {family!r} must contain a mapping."
+                )
+                continue
+            frequency = summary.get("frequency")
+            if frequency is not None and (
+                not isinstance(frequency, (int, float))
+                or isinstance(frequency, bool)
+                or not 0.0 <= float(frequency) <= 1.0
+            ):
+                errors.append(
+                    f"Preliminary consensus family {family!r} has invalid frequency."
+                )
+    persistent = value.get("persistent_families", ())
+    if not isinstance(persistent, Sequence) or isinstance(
+        persistent, (str, bytes, bytearray)
+    ):
+        errors.append("Preliminary persistent families must be a sequence.")
+    return tuple(errors)
+
+
 def advanced_consensus_stage_validator(value: Any, **_: Any) -> Tuple[str, ...]:
-    """Registry-compatible validator for advanced consensus outputs."""
+    """Validate advanced output or the orchestrator's preliminary fallback."""
 
     if isinstance(value, AnalysisStageResult):
         if value.value is None:
@@ -44469,6 +46397,9 @@ def advanced_consensus_stage_validator(value: Any, **_: Any) -> Tuple[str, ...]:
                 "Consensus stage result does not contain a value.",
             )
         value = value.value
+    preliminary_errors = _validate_preliminary_consensus_output(value)
+    if preliminary_errors is not None:
+        return preliminary_errors
     return validate_advanced_multipose_output(value)
 
 
@@ -44624,6 +46555,23 @@ def validate_advanced_multipose_conventions() -> Dict[str, Any]:
     register_advanced_consensus_stage_adapter()
     if not advanced_consensus_stage_adapter_registered():
         failures.append("Advanced consensus stage adapter was not registered.")
+    preliminary = build_preliminary_multipose_consensus(())
+    preliminary_result = AnalysisStageResult(
+        stage=STAGE_CONSENSUS,
+        required=False,
+    ).start().succeed(
+        {
+            "ranking": [],
+            "consensus": preliminary,
+            "native_scoring": None,
+        }
+    )
+    if advanced_consensus_stage_validator(preliminary_result):
+        failures.append("Preliminary consensus fallback was rejected by its validator.")
+    malformed_preliminary = dict(preliminary)
+    malformed_preliminary["pose_count"] = -1
+    if not advanced_consensus_stage_validator(malformed_preliminary):
+        failures.append("Malformed preliminary consensus was not rejected.")
     if failures:
         raise RuntimeError(
             "Advanced multipose convention validation failed: " + " ".join(failures)
@@ -44632,7 +46580,7 @@ def validate_advanced_multipose_conventions() -> Dict[str, Any]:
         "valid": True,
         "schema": CONSENSUS_ANALYSIS_SCHEMA_NAME,
         "schema_version": CONSENSUS_ANALYSIS_SCHEMA_VERSION,
-        "validated_cases": 24,
+        "validated_cases": 42,
         "pose_count": len(pose_results),
     }
 
@@ -45073,8 +47021,8 @@ def resolve_dock_model_state_config(
                 "attachment_policy": integrated.runtime.attachment_policy,
                 "cache_enabled": any(
                     stage.cache_enabled
-                    for stage in integrated.stages.values()
-                ) if integrated.stages else True,
+                    for stage in integrated.stage_configs.values()
+                ) if integrated.stage_configs else True,
             }
         )
         metadata_options = integrated.metadata.get("dock_model_state")
@@ -47314,7 +49262,7 @@ def validate_dock_model_state_management_conventions() -> Dict[str, Any]:
         "valid": True,
         "schema": DOCK_MODEL_STATE_SCHEMA_NAME,
         "schema_version": DOCK_MODEL_STATE_SCHEMA_VERSION,
-        "validated_cases": 30,
+        "validated_cases": 40,
         "public_state_statuses": len(DockModelStateStatus),
         "cache_statuses": len(DockModelCacheLookupStatus),
     }
@@ -48884,9 +50832,31 @@ def report_stage_output_to_result(
     for message in output.messages:
         result.add_message(message)
     for message in output.warnings:
-        result.add_warning(message, code="report_warning")
+        result.add_issue(
+            AnalysisIssue(
+                kind=IssueKind.WARNING,
+                severity=IssueSeverity.WARNING,
+                code="report_warning",
+                message=str(message),
+                stage=STAGE_REPORT,
+                recoverable=True,
+                action=RecoveryAction.CONTINUE_PARTIAL,
+                scope=FailureScope.STAGE,
+            )
+        )
     for message in output.errors:
-        result.add_error(message, code="report_error")
+        result.add_issue(
+            AnalysisIssue(
+                kind=IssueKind.ERROR,
+                severity=IssueSeverity.ERROR,
+                code="report_error",
+                message=str(message),
+                stage=STAGE_REPORT,
+                recoverable=True,
+                action=RecoveryAction.CONTINUE_PARTIAL,
+                scope=FailureScope.STAGE,
+            )
+        )
     result.statistics.update(output.statistics)
     result.files.update(output.written_files)
     result.metadata.update(
@@ -57927,6 +59897,24 @@ def validate_analysis_files_phase(
             report.mark_check(VALIDATION_PHASE_FILES)
 
 
+def _validation_compact_serialization_target(
+    target: AnalysisValidationTarget,
+) -> Dict[str, Any]:
+    """Build a bounded JSON target without traversing native result objects."""
+
+    value = target.primary_result
+    stage_summaries = {
+        str(stage): summarize_core_result(stage_result)
+        for stage, stage_result in target.stage_results.items()
+    }
+    return {
+        "target_type": target.target_type,
+        "target_id": target.target_id,
+        "result": summarize_core_result(value),
+        "stages": stage_summaries,
+    }
+
+
 def validate_analysis_serialization_phase(
     target: AnalysisValidationTarget,
     report: AnalysisValidationReport,
@@ -57939,21 +59927,28 @@ def validate_analysis_serialization_phase(
     if value is None:
         return
     try:
-        payload = json.dumps(
-            to_json_compatible(value),
+        compact_target = _validation_compact_serialization_target(target)
+        encoder = json.JSONEncoder(
             ensure_ascii=False,
             sort_keys=True,
         )
-        if len(payload) > report.policy.max_serialized_characters:
+        character_count = sum(
+            len(chunk)
+            for chunk in encoder.iterencode(
+                to_json_compatible(compact_target)
+            )
+        )
+        if character_count > report.policy.max_serialized_characters:
             report.add(
                 "serialized_result_too_large",
-                "Serialized validation target exceeds the configured character limit.",
+                "Compact serialized validation summary exceeds the configured character limit.",
                 phase=VALIDATION_PHASE_SERIALIZATION,
                 category=VALIDATION_CATEGORY_SERIALIZATION,
                 severity=IssueSeverity.WARNING,
                 recoverable=True,
                 details={
-                    "characters": len(payload),
+                    "scope": "compact_summary",
+                    "characters": character_count,
                     "limit": report.policy.max_serialized_characters,
                 },
             )
@@ -58710,6 +60705,29 @@ def validate_integrated_validation_conventions() -> Dict[str, Any]:
     payload = validation_report_to_json(valid_report)
     if VALIDATION_SCHEMA_NAME not in payload:
         failures.append("Validation JSON does not include the schema name.")
+    large_metadata_pose = replace(
+        valid_pose,
+        metadata={"large_native_payload": "x" * 2_000_000},
+    )
+    serialization_policy = AnalysisValidationPolicy(
+        failure_policy=FAILURE_POLICY_PERMISSIVE,
+        phases=(VALIDATION_PHASE_SERIALIZATION,),
+        validate_serialization=True,
+        max_serialized_characters=1024,
+    )
+    serialization_report = validate_pose_analysis_result(
+        large_metadata_pose,
+        policy=serialization_policy,
+    )
+    if any(
+        finding.code == "serialized_result_too_large"
+        for finding in serialization_report.findings
+    ):
+        failures.append(
+            "Serialization validation traversed the complete native result tree."
+        )
+    if serialization_report.checks.get(VALIDATION_PHASE_SERIALIZATION) != 1:
+        failures.append("Compact serialization validation did not run exactly once.")
     if failures:
         raise RuntimeError(
             "Integrated validation convention validation failed: "
@@ -58722,7 +60740,7 @@ def validate_integrated_validation_conventions() -> Dict[str, Any]:
         "phase_count": len(VALIDATION_PHASE_ORDER),
         "category_count": len(VALIDATION_CATEGORIES),
         "registered_validator_count": len(registered_analysis_validators()),
-        "validated_cases": 18,
+        "validated_cases": 20,
     }
 
 
@@ -59907,7 +61925,25 @@ def build_chimerax_analysis_config(
         create_snapshot=command_options.snapshot_path is not None,
         save_session=command_options.save_session_path is not None,
     )
-    requested = command_options.stages or base.requested_stages
+    requested_base = command_options.stages or base.requested_stages
+    requested_suffix: List[str] = []
+    if output.enabled_output_stages:
+        requested_suffix.append(STAGE_SCORING)
+        if command_options.mode in {
+            ANALYSIS_MODE_MULTIPOSE,
+            ANALYSIS_MODE_BATCH,
+            ANALYSIS_MODE_SESSION,
+        }:
+            requested_suffix.append(STAGE_CONSENSUS)
+        requested_suffix.append(STAGE_VALIDATION)
+        requested_suffix.extend(output.enabled_output_stages)
+        requested_suffix.append(STAGE_FINALIZATION)
+    requested = canonicalize_stage_sequence(
+        (*requested_base, *requested_suffix),
+        strict=True,
+        unique=True,
+        sort=False,
+    )
     return replace(
         base,
         runtime=runtime,
@@ -60238,6 +62274,399 @@ class ChimeraXAnalysisOutput:
             "metadata": to_json_compatible(self.metadata),
             "summary": self.summary(),
         }
+
+    def to_run_summary_dict(
+        self,
+        *,
+        summary_path: Optional[PathLike] = None,
+    ) -> Dict[str, Any]:
+        """Return the compact, reproducible JSON payload used by runscript."""
+
+        return build_chimerax_run_summary(self, summary_path=summary_path)
+
+
+def _compact_chimerax_model_identity(value: Any) -> Optional[Dict[str, Any]]:
+    """Return stable model identity fields without retaining a native object."""
+
+    if value is None:
+        return None
+    identity = describe_object(value)
+    return {
+        "identifier": identity.identifier,
+        "name": identity.name,
+        "type": identity.type_name,
+        "kind": identity.kind,
+        "atomspec": chimerax_model_atomspec(value),
+    }
+
+
+def _compact_stage_statuses(
+    stage_results: Any,
+) -> Dict[str, Dict[str, Any]]:
+    """Return status and timing only for each stage result."""
+
+    if not isinstance(stage_results, Mapping):
+        return {}
+    compact: Dict[str, Dict[str, Any]] = {}
+    for stage, stage_result in stage_results.items():
+        status = getattr(stage_result, "status", None)
+        compact[str(stage)] = {
+            "status": getattr(status, "value", str(status or "unknown")),
+            "duration_seconds": getattr(stage_result, "duration_seconds", None),
+        }
+    return compact
+
+
+def _compact_ranking_entries(value: Any) -> List[Dict[str, Any]]:
+    """Return rank-relevant fields without embedding scoring result objects."""
+
+    entries: List[Dict[str, Any]] = []
+    for item in normalize_object_sequence(value):
+        read = item.get if isinstance(item, Mapping) else lambda name, default=None: getattr(
+            item,
+            name,
+            default,
+        )
+        entries.append(
+            {
+                "rank": read("rank"),
+                "position": read("position"),
+                "tied": read("tied"),
+                "pose_id": read("pose_id", read("id")),
+                "name": read("name", read("pose_name")),
+                "status": getattr(
+                    read("status"),
+                    "value",
+                    read("status"),
+                ),
+                "score": read("score", read("total_score")),
+                "score_comparable": read("score_comparable"),
+                "ranking_valid": read("ranking_valid"),
+            }
+        )
+    return entries
+
+
+def _compact_generated_files(
+    sources: Iterable[Any],
+    *,
+    summary_path: Optional[PathLike] = None,
+) -> Dict[str, str]:
+    """Collect unique generated paths while ignoring non-file payload data."""
+
+    collected: Dict[str, str] = {}
+    seen_paths: Set[str] = set()
+
+    def is_path_field(name: Any, value: str) -> bool:
+        """Return whether a text field is explicitly file-oriented."""
+
+        normalized_name = str(name or "").lower()
+        path_tokens = (
+            "file",
+            "path",
+            "directory",
+            "output",
+            "export",
+            "report",
+            "snapshot",
+            "session",
+            "log",
+            "csv",
+            "json",
+            "markdown",
+        )
+        if any(token in normalized_name for token in path_tokens):
+            return True
+        return Path(value).suffix.lower() in {
+            ".csv",
+            ".json",
+            ".md",
+            ".xlsx",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".cxs",
+            ".log",
+            ".txt",
+        }
+
+    def add(name: Any, candidate: Any, depth: int = 0) -> None:
+        if candidate is None or depth > 4:
+            return
+        path_value = getattr(candidate, "path", None)
+        if path_value is not None and path_value is not candidate:
+            add(name, path_value, depth + 1)
+            return
+        if isinstance(candidate, Mapping):
+            for child_name, child_value in candidate.items():
+                key = f"{name}.{child_name}" if name else str(child_name)
+                add(key, child_value, depth + 1)
+            return
+        if isinstance(candidate, Sequence) and not isinstance(
+            candidate,
+            (str, bytes, bytearray),
+        ):
+            for index, child_value in enumerate(candidate):
+                add(f"{name}[{index}]", child_value, depth + 1)
+            return
+        if not isinstance(candidate, (str, os.PathLike, Path)):
+            return
+        text = str(candidate).strip()
+        if (
+            not text
+            or text in seen_paths
+            or (isinstance(candidate, str) and not is_path_field(name, text))
+        ):
+            return
+        seen_paths.add(text)
+        key = str(name or "file")
+        if key in collected:
+            suffix = 2
+            while f"{key}_{suffix}" in collected:
+                suffix += 1
+            key = f"{key}_{suffix}"
+        collected[key] = text
+
+    for source in sources:
+        add("", source)
+    if summary_path is not None:
+        add("run_summary", summary_path)
+    return collected
+
+
+def _compact_module_versions(
+    result: ChimeraXAnalysisOutput,
+) -> Dict[str, Dict[str, Any]]:
+    """Return availability and version only, excluding source paths."""
+
+    raw_versions = collect_observability_module_versions()
+    versions = {
+        str(name): {
+            "available": bool(values.get("available", False)),
+            "version": values.get("version"),
+        }
+        for name, values in raw_versions.items()
+        if isinstance(values, Mapping)
+    }
+    versions.setdefault(
+        "dockanalyzer",
+        {"available": True, "version": __version__},
+    )
+    versions.setdefault(
+        "python",
+        {"available": True, "version": platform.python_version()},
+    )
+    versions["chimerax"] = {
+        "available": bool(result.session_info.available or CHIMERAX_AVAILABLE),
+        "version": result.session_info.chimerax_version,
+    }
+    return versions
+
+
+def _compact_run_diagnostics(
+    result: ChimeraXAnalysisOutput,
+    pose_results: Sequence[PoseAnalysisResult],
+    global_result: Any,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Collect unique warning and error records without serializing contexts."""
+
+    warnings_out: List[Dict[str, Any]] = []
+    errors_out: List[Dict[str, Any]] = []
+    seen: Set[Tuple[str, str, str, str]] = set()
+
+    def add(
+        kind: str,
+        message: Any,
+        *,
+        stage: Any = None,
+        code: Any = None,
+    ) -> None:
+        text = str(message or "").strip()
+        if not text:
+            return
+        normalized_kind = "error" if kind == "error" else "warning"
+        key = (
+            normalized_kind,
+            str(stage or ""),
+            str(code or ""),
+            text,
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        record = {
+            "stage": None if stage is None else str(stage),
+            "code": None if code is None else str(code),
+            "message": text,
+        }
+        (errors_out if normalized_kind == "error" else warnings_out).append(record)
+
+    analysis_output = result.analysis_output
+    for message in (*result.warnings, *getattr(analysis_output, "warnings", ())):
+        add("warning", message)
+    for message in (*result.errors, *getattr(analysis_output, "errors", ())):
+        add("error", message)
+
+    diagnostic_sources = [
+        getattr(global_result, "diagnostics", None),
+        *(getattr(item, "diagnostics", None) for item in pose_results),
+    ]
+    for diagnostics in diagnostic_sources:
+        for issue in getattr(diagnostics, "issues", ()) if diagnostics is not None else ():
+            severity = getattr(issue, "severity", None)
+            token = str(getattr(severity, "value", severity) or "").lower()
+            kind = "error" if token in {"error", "critical", "fatal"} else "warning"
+            add(
+                kind,
+                getattr(issue, "message", issue),
+                stage=getattr(issue, "stage", None),
+                code=getattr(issue, "code", None),
+            )
+
+    for action in result.post_actions:
+        if not action.succeeded:
+            add(
+                "error",
+                getattr(action, "error", None)
+                or getattr(action, "message", None)
+                or "ChimeraX post-action failed.",
+                stage="post_action",
+                code=getattr(action, "command", None),
+            )
+    return warnings_out, errors_out
+
+
+def build_chimerax_run_summary(
+    result: ChimeraXAnalysisOutput,
+    *,
+    summary_path: Optional[PathLike] = None,
+) -> Dict[str, Any]:
+    """Build the compact and non-redundant JSON payload used by runscript."""
+
+    if not isinstance(result, ChimeraXAnalysisOutput):
+        raise TypeError("result must be a ChimeraXAnalysisOutput instance.")
+    analysis_output = result.analysis_output
+    if isinstance(analysis_output, SinglePoseAnalysisOutput):
+        pose_results = [analysis_output.pose_result]
+        aggregate_result: Any = analysis_output.pose_result
+        global_stage_results: Mapping[str, AnalysisStageResult] = {}
+    elif isinstance(analysis_output, MultiposeAnalysisOutput):
+        pose_results = list(analysis_output.pose_results)
+        aggregate_result = analysis_output.multipose_result
+        global_stage_results = analysis_output.multipose_result.stage_results
+    else:
+        aggregate_result = getattr(
+            analysis_output,
+            "multipose_result",
+            getattr(analysis_output, "pose_result", None),
+        )
+        pose_results = list(
+            normalize_object_sequence(
+                getattr(
+                    aggregate_result,
+                    "pose_results",
+                    (aggregate_result,) if isinstance(aggregate_result, PoseAnalysisResult) else (),
+                )
+            )
+        )
+        global_stage_results = getattr(aggregate_result, "stage_results", {})
+
+    pose_summaries: List[Dict[str, Any]] = []
+    pose_stage_statuses: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for pose_result in pose_results:
+        score, score_rejection_reason = _multipose_pose_comparable_score(pose_result)
+        raw_score = _multipose_pose_numeric_score(pose_result)
+        pose_summaries.append(
+            {
+                "pose_id": pose_result.pose_id,
+                "name": pose_result.name,
+                "status": pose_result.status.value,
+                "score": raw_score,
+                "score_comparable": score is not None,
+                "score_rejection_reason": score_rejection_reason,
+                "interaction_count": pose_result.interaction_count,
+                "failed_stages": list(pose_result.failed_stages),
+                "duration_seconds": pose_result.duration_seconds,
+            }
+        )
+        pose_stage_statuses[pose_result.pose_id] = _compact_stage_statuses(
+            pose_result.stage_results
+        )
+
+    ranking = _compact_ranking_entries(getattr(aggregate_result, "ranking", ()))
+    ranking_validity = getattr(aggregate_result, "metadata", {}).get(
+        "ranking_validity",
+        {},
+    ) if aggregate_result is not None else {}
+    best_pose = getattr(aggregate_result, "best_pose", None)
+
+    file_sources: List[Any] = [
+        getattr(getattr(analysis_output, "context", None), "files", {}),
+        getattr(getattr(analysis_output, "run_result", None), "files", {}),
+        getattr(aggregate_result, "files", {}),
+        *(getattr(item, "files", {}) for item in pose_results),
+        *(getattr(action, "metadata", {}) for action in result.post_actions),
+        {"log_file": result.metadata.get("log_file")},
+    ]
+    generated_files = _compact_generated_files(
+        file_sources,
+        summary_path=summary_path,
+    )
+    warnings_out, errors_out = _compact_run_diagnostics(
+        result,
+        pose_results,
+        aggregate_result,
+    )
+
+    effective_config = result.request.config
+    config_data = (
+        effective_config.to_dict()
+        if callable(getattr(effective_config, "to_dict", None))
+        else to_json_compatible(effective_config)
+    )
+    plan = getattr(analysis_output, "plan", None)
+    run_result = getattr(analysis_output, "run_result", None)
+    return {
+        "schema": "dockanalyzer.chimerax.run_summary",
+        "schema_version": "1.0",
+        "result_type": "chimerax_run_summary",
+        "run_id": getattr(getattr(analysis_output, "context", None), "run_id", None),
+        "request_id": result.request.request_id,
+        "status": result.status,
+        "succeeded": result.succeeded,
+        "mode": result.selection.mode,
+        "effective_config": config_data,
+        "inputs": {
+            "receptor": _compact_chimerax_model_identity(result.selection.receptor),
+            "poses": [
+                _compact_chimerax_model_identity(item)
+                for item in result.selection.poses
+            ],
+        },
+        "stages": {
+            "planned_order": list(getattr(plan, "stages", ())),
+            "global": _compact_stage_statuses(global_stage_results),
+            "poses": pose_stage_statuses,
+        },
+        "scores": pose_summaries,
+        "ranking": {
+            "best_pose_id": getattr(best_pose, "pose_id", None),
+            "validity": to_json_compatible(ranking_validity),
+            "entries": ranking,
+        },
+        "files": generated_files,
+        "warnings": warnings_out,
+        "errors": errors_out,
+        "timings": {
+            "started_at": result.started_at,
+            "finished_at": result.finished_at,
+            "duration_seconds": result.duration_seconds,
+            "analysis_started_at": getattr(run_result, "started_at", None),
+            "analysis_finished_at": getattr(run_result, "finished_at", None),
+            "analysis_duration_seconds": getattr(run_result, "duration_seconds", None),
+        },
+        "module_versions": _compact_module_versions(result),
+    }
 
 
 def dispatch_chimerax_analysis(
@@ -60924,6 +63353,74 @@ def validate_chimerax_integration_conventions() -> Dict[str, Any]:
     if request.mode != ANALYSIS_MODE_SINGLE_POSE:
         raise AssertionError("The ChimeraX request mode was not preserved.")
 
+    base_requested_stages = (
+        STAGE_INPUT_RESOLUTION,
+        STAGE_MODEL_PREPARATION,
+    )
+    output_stage_cases = (
+        ("report", {"generate_report": True}, STAGE_REPORT),
+        ("export", {"export_results": True}, STAGE_EXPORT),
+        ("visualization", {"visualize_results": True}, STAGE_VISUALIZATION),
+    )
+    output_stage_names = frozenset(
+        (STAGE_REPORT, STAGE_EXPORT, STAGE_VISUALIZATION)
+    )
+    for case_name, option_overrides, expected_stage in output_stage_cases:
+        planned_config = build_chimerax_analysis_config(
+            AnalysisConfig(requested_stages=base_requested_stages),
+            options=ChimeraXCommandOptions(
+                mode="single",
+                strict=True,
+                dry_run=True,
+                **option_overrides,
+            ),
+        )
+        if planned_config.requested_stages[: len(base_requested_stages)] != (
+            base_requested_stages
+        ):
+            raise AssertionError(
+                f"The {case_name} output stage displaced base requested stages."
+            )
+        if planned_config.requested_stages.count(expected_stage) != 1:
+            raise AssertionError(
+                f"The enabled {case_name} output stage was not planned exactly once."
+            )
+        unexpected_output_stages = output_stage_names.difference(
+            (expected_stage,)
+        ).intersection(planned_config.requested_stages)
+        if unexpected_output_stages:
+            raise AssertionError(
+                f"Disabled output stages were planned for the {case_name} case: "
+                f"{sorted(unexpected_output_stages)!r}."
+            )
+
+    all_outputs_config = build_chimerax_analysis_config(
+        AnalysisConfig(requested_stages=base_requested_stages),
+        options=ChimeraXCommandOptions(
+            mode="single",
+            generate_report=True,
+            export_results=True,
+            visualize_results=True,
+            strict=True,
+            dry_run=True,
+        ),
+    )
+    expected_requested_stages = (
+        *base_requested_stages,
+        STAGE_SCORING,
+        STAGE_VALIDATION,
+        STAGE_EXPORT,
+        STAGE_REPORT,
+        STAGE_VISUALIZATION,
+        STAGE_FINALIZATION,
+    )
+    if all_outputs_config.requested_stages != expected_requested_stages:
+        raise AssertionError(
+            "Enabled output stages were not appended to the base requested stages: "
+            f"expected {expected_requested_stages!r}, got "
+            f"{all_outputs_config.requested_stages!r}."
+        )
+
     class _SyntheticOutput:
         status = AnalysisStatus.SUCCEEDED
         succeeded = True
@@ -60958,12 +63455,19 @@ def validate_chimerax_integration_conventions() -> Dict[str, Any]:
     )
     if not command_result.succeeded or commands != ["view #1 #2"]:
         raise AssertionError("Native command execution failed.")
-    dry_result = create_chimerax_snapshot(
-        "/tmp/dockanalyzer_section28_test.png",
-        session=session,
-        runner=runner,
-        dry_run=True,
-    )
+    with TemporaryDirectory(
+        prefix="dockanalyzer-section28-"
+    ) as temporary_directory:
+        snapshot_path = (
+            Path(temporary_directory)
+            / "dockanalyzer_section28_test.png"
+        )
+        dry_result = create_chimerax_snapshot(
+            snapshot_path,
+            session=session,
+            runner=runner,
+            dry_run=True,
+        )
     if dry_result.status is not ChimeraXCommandStatus.VALIDATED:
         raise AssertionError("Snapshot dry-run validation failed.")
     if canonicalize_chimerax_analysis_mode("multi-pose") != ANALYSIS_MODE_MULTIPOSE:
@@ -60974,6 +63478,164 @@ def validate_chimerax_integration_conventions() -> Dict[str, Any]:
     ):
         raise AssertionError("ChimeraX stage parsing is inconsistent.")
     json.loads(chimerax_analysis_to_json(output))
+    output.metadata["large_native_context"] = {
+        "payload": ["not-for-run-summary" * 100] * 100,
+        "model": receptor,
+    }
+    compact_summary = build_chimerax_run_summary(
+        output,
+        summary_path=Path("dockanalyzer_test_run_summary.json"),
+    )
+    required_summary_sections = {
+        "effective_config",
+        "inputs",
+        "stages",
+        "scores",
+        "ranking",
+        "files",
+        "warnings",
+        "errors",
+        "timings",
+        "module_versions",
+    }
+    if not required_summary_sections.issubset(compact_summary):
+        raise AssertionError("The compact run summary is missing required sections.")
+    forbidden_summary_sections = {
+        "analysis_output",
+        "selection",
+        "request",
+        "context",
+        "post_actions",
+        "session_info",
+        "metadata",
+        "dock_models",
+        "native_scoring_output",
+    }
+    if forbidden_summary_sections.intersection(compact_summary):
+        raise AssertionError("The compact run summary retained a full result section.")
+    compact_text = json.dumps(
+        to_json_compatible(compact_summary),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    if "not-for-run-summary" in compact_text:
+        raise AssertionError("Runtime-native metadata leaked into the run summary.")
+    if len(compact_text.encode("utf-8")) > 250_000:
+        raise AssertionError("The synthetic compact run summary is unexpectedly large.")
+    if compact_summary["inputs"]["receptor"]["name"] != "Receptor":
+        raise AssertionError("The compact summary lost receptor identification.")
+    if compact_summary["inputs"]["poses"][0]["name"] != "pose_1":
+        raise AssertionError("The compact summary lost pose identification.")
+    if "run_summary" not in compact_summary["files"]:
+        raise AssertionError("The compact summary did not identify its own JSON file.")
+    with TemporaryDirectory(
+        prefix="dockanalyzer-section28-log-"
+    ) as log_directory:
+        log_path = Path(log_directory) / "autorun.log"
+        test_logger = DockLogger(
+            "analyze.stage14.selftest",
+            log_directory=log_directory,
+            log_filename=log_path.name,
+            save_log=True,
+            verbose=False,
+        )
+        try:
+            _log_chimerax_autorun_selection(selection, logger=test_logger)
+            progress_callback = _make_chimerax_autorun_progress_callback(
+                session,
+                logger=test_logger,
+            )
+            progress_callback(
+                STAGE_CONTACTS,
+                1,
+                1,
+                {"interaction_count": 2},
+            )
+            stage_callback = _make_chimerax_autorun_stage_callback(
+                logger=test_logger
+            )
+            diagnostic_stage_result = AnalysisStageResult(
+                stage=STAGE_CONTACTS,
+                status=StageStatus.SUCCEEDED,
+                duration_seconds=0.01,
+                statistics={"interaction_count": 2},
+                files={"contacts_csv": Path(log_directory) / "contacts.csv"},
+            )
+            diagnostic_stage_result.diagnostics.add_issue(
+                AnalysisIssue(
+                    kind=IssueKind.ERROR,
+                    severity=IssueSeverity.ERROR,
+                    code="synthetic_consolidation_error",
+                    message="Synthetic consolidation validation failure.",
+                    stage=STAGE_CONSOLIDATION,
+                    details={
+                        "errors": [
+                            "Synthetic consolidation native detail."
+                        ]
+                    },
+                )
+            )
+            diagnostic_stage_result.diagnostics.add_issue(
+                AnalysisIssue(
+                    kind=IssueKind.WARNING,
+                    severity=IssueSeverity.WARNING,
+                    code="synthetic_scoring_error",
+                    message="Synthetic scoring integration warning.",
+                    stage=STAGE_SCORING,
+                    details={
+                        "errors": [
+                            "Synthetic scoring native detail."
+                        ]
+                    },
+                )
+            )
+            stage_callback(
+                STAGE_CONTACTS,
+                diagnostic_stage_result,
+            )
+            output.warnings.append("synthetic autorun warning")
+            output.errors.append("synthetic autorun error")
+            output.metadata["log_file"] = str(log_path)
+            _log_chimerax_autorun_result(
+                output,
+                summary_path=Path(log_directory) / "summary.json",
+                logger=test_logger,
+            )
+            test_logger.info("Automatic analysis finished with status succeeded.")
+        finally:
+            _finalize_chimerax_autorun_logger(test_logger)
+        log_text = log_path.read_text(encoding=ANALYSIS_ENCODING)
+        required_log_records = (
+            "Selected receptor:",
+            "Selected pose 1:",
+            "Current stage: contacts",
+            "interaction_count=2",
+            "Stage finished: contacts",
+            "Stage error details [consolidation]",
+            "Synthetic consolidation native detail.",
+            "Stage warning details [scoring]",
+            "Synthetic scoring native detail.",
+            "Run counts:",
+            "Run warning",
+            "Run error",
+            "Produced file",
+            "Automatic analysis finished",
+        )
+        missing_log_records = [
+            item for item in required_log_records if item not in log_text
+        ]
+        if missing_log_records:
+            raise AssertionError(
+                "The autorun log is missing required records: "
+                f"{missing_log_records!r}."
+            )
+        remaining_handlers = [
+            handler
+            for handler in test_logger.python_logger.handlers
+            if getattr(handler, "_dockanalyzer_handler", False)
+        ]
+        if remaining_handlers:
+            raise AssertionError("Autorun log handlers were not finalized.")
     return {
         "valid": True,
         "schema": CHIMERAX_INTEGRATION_SCHEMA_NAME,
@@ -60981,7 +63643,7 @@ def validate_chimerax_integration_conventions() -> Dict[str, Any]:
         "session_state": info.backend_state.value,
         "model_count": len(selection.models),
         "pose_count": selection.pose_count,
-        "validated_cases": 14,
+        "validated_cases": 45,
     }
 
 
@@ -61057,6 +63719,7 @@ _SECTION_28_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "save_chimerax_session",
     "focus_chimerax_models",
     "ChimeraXAnalysisOutput",
+    "build_chimerax_run_summary",
     "dispatch_chimerax_analysis",
     "analyze_chimerax_session",
     "analyze_open_models",
@@ -65510,8 +68173,14 @@ def _self_test_strict_unified_json_serialization(
 def _self_test_ordinary_python_model_preparation(
     _context: SelfTestContext,
 ) -> Dict[str, Any]:
-    receptor = SimpleNamespace(name="receptor", atoms=())
-    pose = SimpleNamespace(name="pose", atoms=())
+    receptor = SimpleNamespace(
+        name="receptor",
+        atoms=(object(),),
+    )
+    pose = SimpleNamespace(
+        name="pose",
+        atoms=(object(),),
+    )
     discovery = discover_models((receptor, pose), receptor=receptor, poses=(pose,))
     assert_self_test(discovery.receptor is receptor)
     assert_self_test_equal(tuple(discovery.poses), (pose,))
@@ -66074,6 +68743,7 @@ _SECTION_30_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "build_self_test_argument_parser",
     "analysis_self_test_cli",
     "run_final_self_test_runner",
+    "run_chimerax_autorun",
 )
 
 _register_public_names(_SECTION_30_PUBLIC_NAMES)
@@ -66159,14 +68829,18 @@ def _build_chimerax_autorun_config(
 
 def _make_chimerax_autorun_progress_callback(
     session_value: Any,
+    *,
+    logger: Optional[DockLogger] = None,
 ) -> ProgressCallback:
     """Return a progress callback that writes to ChimeraX and the file log."""
 
+    active_logger = logger or _LOGGER
     reporter = make_chimerax_progress_callback(
         session_value,
         minimum_interval_seconds=0.1,
         include_metadata=False,
     )
+    last_stage: Optional[str] = None
 
     def callback(
         stage: str,
@@ -66174,13 +68848,299 @@ def _make_chimerax_autorun_progress_callback(
         total: int,
         metadata: Mapping[str, Any],
     ) -> None:
+        nonlocal last_stage
+
         reporter(stage, completed, total, metadata)
+        if stage != last_stage:
+            active_logger.info(f"Current stage: {stage}")
+            last_stage = stage
+        count_fields = {
+            str(key): value
+            for key, value in dict(metadata or {}).items()
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and "count" in str(key).lower()
+            )
+        }
+        count_text = ""
+        if count_fields:
+            count_text = "; " + ", ".join(
+                f"{key}={value}"
+                for key, value in list(count_fields.items())[:12]
+            )
         if total:
-            _LOGGER.info(f"{stage}: {completed}/{total}")
+            active_logger.info(
+                f"Stage progress: {stage} {completed}/{total}{count_text}"
+            )
         else:
-            _LOGGER.info(f"{stage}: {completed}")
+            active_logger.info(
+                f"Stage progress: {stage} {completed}{count_text}"
+            )
 
     return callback
+
+
+def _make_chimerax_autorun_stage_callback(
+    *,
+    logger: Optional[DockLogger] = None,
+) -> StageCallback:
+    """Return a callback that records terminal stage state and diagnostics."""
+
+    active_logger = logger or _LOGGER
+
+    def callback(stage: str, stage_result: AnalysisStageResultLike) -> None:
+        status = getattr(stage_result, "status", None)
+        status_text = getattr(status, "value", str(status or "unknown"))
+        duration = getattr(stage_result, "duration_seconds", None)
+        statistics = getattr(stage_result, "statistics", {})
+        count_fields = {
+            str(key): value
+            for key, value in dict(statistics or {}).items()
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and "count" in str(key).lower()
+            )
+        }
+        details = [f"status={status_text}"]
+        if duration is not None:
+            details.append(f"duration_seconds={float(duration):.6f}")
+        details.extend(
+            f"{key}={value}"
+            for key, value in list(count_fields.items())[:12]
+        )
+        active_logger.info(
+            f"Stage finished: {stage}; " + "; ".join(details)
+        )
+
+        diagnostics = getattr(stage_result, "diagnostics", None)
+        for issue in getattr(diagnostics, "warnings", ()) if diagnostics else ():
+            _log_chimerax_autorun_issue(
+                active_logger,
+                issue,
+                fallback_stage=stage,
+                level="warning",
+            )
+        for issue in getattr(diagnostics, "errors", ()) if diagnostics else ():
+            _log_chimerax_autorun_issue(
+                active_logger,
+                issue,
+                fallback_stage=stage,
+                level="error",
+            )
+        for name, path in dict(getattr(stage_result, "files", {}) or {}).items():
+            active_logger.info(f"Produced file [{name}]: {path}")
+
+    return callback
+
+
+def _bounded_chimerax_log_detail(
+    value: Any,
+    *,
+    depth: int = 0,
+) -> Any:
+    """Convert diagnostic detail to a small JSON-safe logging value."""
+
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:2_000]
+    if isinstance(value, Enum):
+        return _bounded_chimerax_log_detail(value.value, depth=depth + 1)
+    if isinstance(value, BaseException):
+        return f"{type(value).__name__}: {value}"[:2_000]
+    if depth >= 3:
+        return str(value)[:2_000]
+    if isinstance(value, Mapping):
+        return {
+            str(key)[:128]: _bounded_chimerax_log_detail(
+                item,
+                depth=depth + 1,
+            )
+            for key, item in list(value.items())[:20]
+        }
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        return [
+            _bounded_chimerax_log_detail(item, depth=depth + 1)
+            for item in list(value)[:20]
+        ]
+    return str(value)[:2_000]
+
+
+def _format_chimerax_autorun_issue_details(issue: Any) -> Optional[str]:
+    """Return bounded issue details with native error lists kept first."""
+
+    raw_details = getattr(issue, "details", None)
+    if not isinstance(raw_details, Mapping) or not raw_details:
+        return None
+    ordered_details: Dict[str, Any] = {}
+    if "errors" in raw_details:
+        ordered_details["errors"] = raw_details["errors"]
+    for key, value in raw_details.items():
+        text_key = str(key)
+        if text_key == "errors":
+            continue
+        ordered_details[text_key] = value
+        if len(ordered_details) >= 12:
+            break
+    payload = json.dumps(
+        _bounded_chimerax_log_detail(ordered_details),
+        ensure_ascii=False,
+        sort_keys=False,
+    )
+    maximum_characters = 8_000
+    if len(payload) > maximum_characters:
+        payload = payload[: maximum_characters - 18] + "... [truncated]"
+    return payload
+
+
+def _log_chimerax_autorun_issue(
+    logger: DockLogger,
+    issue: Any,
+    *,
+    fallback_stage: str,
+    level: str,
+) -> None:
+    """Log an issue message followed by its bounded structured details."""
+
+    stage = getattr(issue, "stage", None) or fallback_stage
+    code = getattr(issue, "code", None) or "unspecified"
+    message = getattr(issue, "message", issue)
+    method = logger.error if level == "error" else logger.warning
+    label = "error" if level == "error" else "warning"
+    method(f"Stage {label} [{stage}] [{code}]: {message}")
+    details = _format_chimerax_autorun_issue_details(issue)
+    if details is not None:
+        method(f"Stage {label} details [{stage}] [{code}]: {details}")
+
+
+def _format_chimerax_autorun_model_identity(value: Any) -> str:
+    """Format stable model identity for one bounded log record."""
+
+    identity = _compact_chimerax_model_identity(value) or {}
+    fields = (
+        ("name", identity.get("name")),
+        ("identifier", identity.get("identifier")),
+        ("atomspec", identity.get("atomspec")),
+        ("type", identity.get("type")),
+    )
+    return ", ".join(
+        f"{name}={value}"
+        for name, value in fields
+        if value not in {None, ""}
+    ) or "unidentified model"
+
+
+def _log_chimerax_autorun_selection(
+    selection: ChimeraXModelSelection,
+    *,
+    logger: Optional[DockLogger] = None,
+) -> None:
+    """Record the receptor and every selected pose without native objects."""
+
+    active_logger = logger or _LOGGER
+    active_logger.info(
+        "Selected receptor: "
+        + _format_chimerax_autorun_model_identity(selection.receptor)
+    )
+    active_logger.info(f"Selected pose count: {selection.pose_count}")
+    for index, pose in enumerate(selection.poses, start=1):
+        active_logger.info(
+            f"Selected pose {index}: "
+            + _format_chimerax_autorun_model_identity(pose)
+        )
+    for warning in selection.warnings:
+        active_logger.warning(f"Selection warning: {warning}")
+
+
+def _log_chimerax_autorun_result(
+    result: ChimeraXAnalysisOutput,
+    *,
+    summary_path: PathLike,
+    logger: Optional[DockLogger] = None,
+) -> None:
+    """Record compact scientific counts, diagnostics and generated files."""
+
+    active_logger = logger or _LOGGER
+    summary = result.to_run_summary_dict(summary_path=summary_path)
+    scores = list(summary.get("scores", ()))
+    ranking = dict(summary.get("ranking", {}) or {})
+    files = dict(summary.get("files", {}) or {})
+    warnings_value = list(summary.get("warnings", ()))
+    errors_value = list(summary.get("errors", ()))
+    total_interactions = sum(
+        int(item.get("interaction_count") or 0)
+        for item in scores
+        if isinstance(item, Mapping)
+    )
+    comparable_scores = sum(
+        bool(item.get("score_comparable"))
+        for item in scores
+        if isinstance(item, Mapping)
+    )
+    active_logger.info(
+        "Run counts: "
+        f"poses={len(scores)}, interactions={total_interactions}, "
+        f"comparable_scores={comparable_scores}, "
+        f"ranking_entries={len(ranking.get('entries', ()))}, "
+        f"warnings={len(warnings_value)}, errors={len(errors_value)}, "
+        f"files={len(files)}"
+    )
+    for item in scores:
+        if not isinstance(item, Mapping):
+            continue
+        active_logger.info(
+            "Pose result: "
+            f"pose_id={item.get('pose_id')}, name={item.get('name')}, "
+            f"status={item.get('status')}, score={item.get('score')}, "
+            f"score_comparable={item.get('score_comparable')}, "
+            f"interactions={item.get('interaction_count')}"
+        )
+    active_logger.info(
+        "Ranking result: "
+        f"best_pose_id={ranking.get('best_pose_id')}, "
+        f"entry_count={len(ranking.get('entries', ()))}"
+    )
+    for item in warnings_value:
+        if isinstance(item, Mapping):
+            active_logger.warning(
+                "Run warning"
+                f" [{item.get('stage') or 'run'}]"
+                f" [{item.get('code') or 'unspecified'}]: "
+                f"{item.get('message')}"
+            )
+        else:
+            active_logger.warning(f"Run warning: {item}")
+    for item in errors_value:
+        if isinstance(item, Mapping):
+            active_logger.error(
+                "Run error"
+                f" [{item.get('stage') or 'run'}]"
+                f" [{item.get('code') or 'unspecified'}]: "
+                f"{item.get('message')}"
+            )
+        else:
+            active_logger.error(f"Run error: {item}")
+    for name, path in files.items():
+        active_logger.info(f"Produced file [{name}]: {path}")
+
+
+def _finalize_chimerax_autorun_logger(logger: DockLogger) -> None:
+    """Flush and close every file/console handler owned by the run logger."""
+
+    python_logger = logger.python_logger
+    for handler in tuple(python_logger.handlers):
+        if not getattr(handler, "_dockanalyzer_handler", False):
+            continue
+        try:
+            handler.flush()
+        except Exception:
+            pass
+    logger.close()
 
 
 def _write_chimerax_autorun_summary(
@@ -66191,20 +69151,7 @@ def _write_chimerax_autorun_summary(
     """Write an execution summary even when the analysis is partial or failed."""
 
     summary_path = Path(config.JSON_DIR) / f"{file_prefix}_run_summary.json"
-    payload = result.to_dict(include_objects=False)
-    payload["runtime_output_paths"] = {
-        name: str(getattr(config, name))
-        for name in (
-            "OUTPUT_DIR",
-            "CSV_DIR",
-            "EXCEL_DIR",
-            "IMAGE_DIR",
-            "SESSION_DIR",
-            "REPORT_DIR",
-            "JSON_DIR",
-            "LOG_DIR",
-        )
-    }
+    payload = result.to_run_summary_dict(summary_path=summary_path)
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(
         json.dumps(
@@ -66226,16 +69173,18 @@ def run_chimerax_autorun(session_value: Any = None) -> ChimeraXAnalysisOutput:
     global _LOGGER
 
     output_directory = _configure_runtime_output_paths()
-    active_session = resolve_chimerax_session(session_value, required=True)
-    _LOGGER = DockLogger(
-        _MODULE_NAME,
-        session=active_session,
-        log_directory=config.LOG_DIR,
-        save_log=config.SAVE_LOG,
-        verbose=config.VERBOSE,
-    )
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     file_prefix = f"dockanalyzer_{timestamp}"
+    active_session: Any = None
+    run_logger = DockLogger(
+        _MODULE_NAME,
+        session=None,
+        log_directory=config.LOG_DIR,
+        log_filename=f"{file_prefix}.log",
+        save_log=True,
+        verbose=config.VERBOSE,
+    )
+    _LOGGER = run_logger
     autorun_config = _build_chimerax_autorun_config(
         output_directory,
         file_prefix=file_prefix,
@@ -66260,24 +69209,47 @@ def run_chimerax_autorun(session_value: Any = None) -> ChimeraXAnalysisOutput:
         },
     )
 
-    start_message = (
-        "Automatic ChimeraX analysis started. "
-        f"All outputs will be stored in: {output_directory}"
-    )
-    emit_chimerax_message(start_message, session=active_session, level="info")
-    _LOGGER.info(start_message)
-    if getattr(_LOGGER, "log_path", None) is not None:
-        log_message = f"File log: {_LOGGER.log_path}"
-        emit_chimerax_message(log_message, session=active_session, level="info")
-        _LOGGER.info(log_message)
-
     try:
+        start_message = (
+            "Automatic ChimeraX analysis started. "
+            f"All outputs will be stored in: {output_directory}"
+        )
+        run_logger.info(start_message)
+        active_session = resolve_chimerax_session(session_value, required=True)
+        run_logger.set_session(active_session)
+        emit_chimerax_message(start_message, session=active_session, level="info")
+        if run_logger.log_path is not None:
+            log_message = f"File log: {run_logger.log_path}"
+            emit_chimerax_message(log_message, session=active_session, level="info")
+            run_logger.info(log_message)
+
+        try:
+            preview_selection = resolve_chimerax_model_selection(
+                active_session,
+                mode=ANALYSIS_MODE_AUTO,
+                include_unknown_poses=True,
+                strict=False,
+            )
+            _log_chimerax_autorun_selection(
+                preview_selection,
+                logger=run_logger,
+            )
+        except Exception as exc:
+            run_logger.warning(
+                "The pre-analysis model selection could not be logged: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
         result = analyze_chimerax_session(
             active_session,
             config=autorun_config,
             options=command_options,
             progress_callback=_make_chimerax_autorun_progress_callback(
-                active_session
+                active_session,
+                logger=run_logger,
+            ),
+            stage_callback=_make_chimerax_autorun_stage_callback(
+                logger=run_logger,
             ),
             name="DockAnalyzer automatic ChimeraX analysis",
             metadata={
@@ -66286,9 +69258,17 @@ def run_chimerax_autorun(session_value: Any = None) -> ChimeraXAnalysisOutput:
                 "output_directory": str(output_directory),
             },
         )
+        _log_chimerax_autorun_selection(result.selection, logger=run_logger)
+        if run_logger.log_path is not None:
+            result.metadata["log_file"] = str(run_logger.log_path)
         summary_path = _write_chimerax_autorun_summary(
             result,
             file_prefix=file_prefix,
+        )
+        _log_chimerax_autorun_result(
+            result,
+            summary_path=summary_path,
+            logger=run_logger,
         )
         globals()["DOCKANALYZER_LAST_RESULT"] = result
         finish_message = (
@@ -66300,7 +69280,7 @@ def run_chimerax_autorun(session_value: Any = None) -> ChimeraXAnalysisOutput:
             session=active_session,
             level="info" if result.succeeded else "warning",
         )
-        _LOGGER.info(finish_message)
+        run_logger.info(finish_message)
         return result
     except BaseException as exc:
         error_message = f"Automatic analysis failed: {type(exc).__name__}: {exc}"
@@ -66309,12 +69289,19 @@ def run_chimerax_autorun(session_value: Any = None) -> ChimeraXAnalysisOutput:
             session=active_session,
             level="error",
         )
-        _LOGGER.exception(error_message)
+        run_logger.exception(error_message)
         raise
-
-
-_register_public_names(("run_chimerax_autorun",))
-
+    finally:
+        try:
+            run_logger.info("DockAnalyzer runscript logging finished.")
+        finally:
+            _finalize_chimerax_autorun_logger(run_logger)
+            if _LOGGER is run_logger:
+                _LOGGER = DockLogger(
+                    _MODULE_NAME,
+                    save_log=False,
+                    verbose=False,
+                )
 
 # Importing this module is intentionally inert.  ChimeraX execution is started
 # by the dedicated runscript launcher, which calls ``run_chimerax_autorun``

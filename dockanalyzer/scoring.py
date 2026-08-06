@@ -128,6 +128,7 @@ from typing import (
 )
 
 import contextlib
+import itertools
 import json
 import math
 import os
@@ -85667,12 +85668,13 @@ def _update_dock_model_statistics(
         raise DockModelScoringAttachmentError(
             "DockModel.statistics must be mutable for scoring attachment."
         )
-    updater = _dock_model_get(dock_model, "update_statistics")
-    if callable(updater):
-        try:
-            updater()
-        except TypeError:
-            updater(None)
+    # Do not call DockModel.update_statistics() here.  Interaction adapters
+    # are allowed to attach their native collection shape to the public
+    # fields (notably pi.py stores a flat list in DockModel.pi), while the
+    # legacy DockModel updater assumes that ``pi`` is always a mapping.  The
+    # scoring transaction only owns the scoring keys below; refreshing
+    # unrelated interaction counters can therefore fail after a perfectly
+    # valid score has already been calculated and force a rollback.
     statistics[options.statistics_key] = payload
     flat_values = {
         "scoring_status": payload.get("status"),
@@ -85959,6 +85961,19 @@ def _integration_status_from_pose_result(
     return DOCK_MODEL_SCORING_STATUS_COMPLETE
 
 
+def _dock_model_scoring_exception_chain(exc: BaseException) -> str:
+    """Return the complete causal chain for one integration failure."""
+
+    messages: List[str] = []
+    visited: Set[int] = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        messages.append(f"{type(current).__name__}: {current}")
+        current = current.__cause__ or current.__context__
+    return " <- ".join(messages)
+
+
 def score_dock_model(
     dock_model: Any,
     *,
@@ -86102,7 +86117,7 @@ def integrate_dock_model_scoring(
             bundle=bundle,
             scoring_result=result,
             attachment=attachment,
-            errors=(f"{type(exc).__name__}: {exc}",),
+            errors=(_dock_model_scoring_exception_chain(exc),),
             warnings=tuple(warnings),
             message="DockModel scoring failed.",
             metadata={

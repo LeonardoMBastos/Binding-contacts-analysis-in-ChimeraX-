@@ -5822,6 +5822,18 @@ _ANALYSIS_ERROR_FIELDS: Final[Tuple[str, ...]] = (
 _ANALYSIS_TIMESTAMP_FIELDS: Final[Tuple[str, ...]] = (
     "created_at", "timestamp", "analyzed_at", "completed_at",
 )
+_ANALYSIS_STATUS_FIELDS: Final[Tuple[str, ...]] = (
+    "status", "analysis_status", "state",
+)
+_ANALYSIS_STAGE_RESULT_FIELDS: Final[Tuple[str, ...]] = (
+    "stage_results", "stages",
+)
+_ANALYSIS_DIAGNOSTIC_FIELDS: Final[Tuple[str, ...]] = (
+    "diagnostics", "diagnostic_messages",
+)
+_ANALYSIS_RANKING_FIELDS: Final[Tuple[str, ...]] = (
+    "ranking", "rankings",
+)
 
 
 class AnalysisGranularity(str, Enum):
@@ -5908,6 +5920,7 @@ class AnalysisCollectionSummary:
     with_warnings: int
     by_type: Mapping[str, int]
     interaction_total: int
+    partial: int = 0
     score_min: Optional[float] = None
     score_max: Optional[float] = None
     score_mean: Optional[float] = None
@@ -5918,6 +5931,7 @@ class AnalysisCollectionSummary:
             "total": self.total,
             "successful": self.successful,
             "failed": self.failed,
+            "partial": self.partial,
             "with_warnings": self.with_warnings,
             "by_type": dict(self.by_type),
             "interaction_total": self.interaction_total,
@@ -6078,16 +6092,6 @@ def _analysis_sequence(value: Any) -> List[Any]:
 def extract_analysis_interactions(value: Any) -> Dict[str, List[Any]]:
     """Extract interactions grouped by family."""
     grouped: Dict[str, List[Any]] = defaultdict(list)
-    fields_map = _analysis_mapping(value)
-    generic = fields_map.get("interactions")
-    if generic is not None:
-        if isinstance(generic, Mapping):
-            for family, items in generic.items():
-                canonical = normalize_interaction_family(family)
-                grouped[canonical].extend(_analysis_sequence(items))
-        else:
-            for item in _analysis_sequence(generic):
-                grouped[infer_interaction_family(item)].append(item)
     aliases = {
         "contacts": "contact",
         "hbonds": "hbond",
@@ -6098,9 +6102,40 @@ def extract_analysis_interactions(value: Any) -> Dict[str, List[Any]]:
         "saltbridge": "saltbridge",
         "salt_bridges": "saltbridge",
     }
+
+    def extend_family(family: str, candidate: Any) -> None:
+        if isinstance(candidate, Mapping) and not any(
+            marker in candidate
+            for marker in (
+                "family", "type", "interaction_type", "distance", "atoms",
+                "ligand_atom", "receptor_atom",
+            )
+        ):
+            for nested in candidate.values():
+                grouped[family].extend(_analysis_sequence(nested))
+            return
+        grouped[family].extend(_analysis_sequence(candidate))
+
+    fields_map = _analysis_mapping(value)
+    generic = fields_map.get("interactions")
+    if generic is not None:
+        if isinstance(generic, Mapping):
+            for family, items in generic.items():
+                canonical = normalize_interaction_family(family)
+                extend_family(canonical, items)
+        else:
+            generic_fields = _analysis_mapping(generic)
+            recognized = False
+            for field_name, family in aliases.items():
+                if field_name in generic_fields:
+                    extend_family(family, generic_fields[field_name])
+                    recognized = True
+            if not recognized:
+                for item in _analysis_sequence(generic):
+                    grouped[infer_interaction_family(item)].append(item)
     for field_name, family in aliases.items():
         if field_name in fields_map:
-            grouped[family].extend(_analysis_sequence(fields_map[field_name]))
+            extend_family(family, fields_map[field_name])
     return {family: items for family, items in sorted(grouped.items()) if items}
 
 
@@ -6123,14 +6158,21 @@ def extract_analysis_scores(value: Any) -> Dict[str, Any]:
     """Extract score fields."""
     result: Dict[str, Any] = {}
     fields_map = _analysis_mapping(value)
-    nested = fields_map.get("scores")
-    if isinstance(nested, Mapping):
-        result.update(nested)
+    for nested_name in ("scores", "scoring"):
+        nested = fields_map.get(nested_name)
+        if nested is None:
+            continue
+        nested_mapping = (
+            dict(nested)
+            if isinstance(nested, Mapping)
+            else _analysis_mapping(nested)
+        )
+        result.update(nested_mapping)
     for field_name in _ANALYSIS_SCORE_FIELDS:
         if field_name in fields_map:
             result.setdefault(field_name, fields_map[field_name])
     for name, candidate in fields_map.items():
-        if "score" in _analysis_token(name):
+        if "score" in _analysis_token(name) and name not in {"scores", "scoring"}:
             result.setdefault(name, candidate)
     return result
 
@@ -6149,6 +6191,79 @@ def extract_analysis_messages(value: Any, fields_: Sequence[str]) -> List[str]:
             else:
                 messages.append(str(item))
     return list(dict.fromkeys(message for message in messages if message))
+
+
+def _analysis_status_token(value: Any) -> str:
+    """Normalize an analysis or stage status without importing analyze.py."""
+
+    raw = getattr(value, "value", value)
+    token = _analysis_token(raw or "")
+    aliases = {
+        "succeeded": "success",
+        "successful": "success",
+        "completed": "success",
+        "complete": "success",
+        "blocked": "failed",
+        "error": "failed",
+    }
+    return aliases.get(token, token)
+
+
+def extract_analysis_failed_stages(value: Any) -> Tuple[List[str], List[str]]:
+    """Return failed and partial stage names from a result object."""
+
+    failed: List[str] = []
+    partial: List[str] = []
+    stage_results = _analysis_get(value, _ANALYSIS_STAGE_RESULT_FIELDS, {})
+    if isinstance(stage_results, Mapping):
+        entries = stage_results.items()
+    else:
+        entries = (
+            (getattr(item, "stage", "unknown"), item)
+            for item in _analysis_sequence(stage_results)
+        )
+    for stage_name, stage_result in entries:
+        status = _analysis_status_token(_analysis_get(stage_result, ("status",), ""))
+        if status == "failed":
+            failed.append(str(stage_name))
+        elif status == "partial":
+            partial.append(str(stage_name))
+    return list(dict.fromkeys(failed)), list(dict.fromkeys(partial))
+
+
+def extract_analysis_diagnostics(value: Any) -> Dict[str, Any]:
+    """Serialize diagnostic details while preserving their scientific context."""
+
+    diagnostics = _analysis_get(value, _ANALYSIS_DIAGNOSTIC_FIELDS)
+    if diagnostics is None:
+        return {}
+    converter = getattr(diagnostics, "to_dict", None)
+    if callable(converter):
+        try:
+            diagnostics = converter()
+        except Exception:
+            diagnostics = {"messages": [str(diagnostics)]}
+    elif not isinstance(diagnostics, Mapping):
+        issues = getattr(diagnostics, "issues", None)
+        diagnostics = (
+            {"issues": [make_json_safe(item) for item in _analysis_sequence(issues)]}
+            if issues is not None
+            else {"messages": [str(diagnostics)]}
+        )
+    safe = make_json_safe(diagnostics)
+    return dict(safe) if isinstance(safe, Mapping) else {"messages": [str(safe)]}
+
+
+def extract_partial_result_disclosure(value: Any) -> Dict[str, Any]:
+    """Return explicit partial-result metadata, including ranking validity."""
+
+    metadata = extract_analysis_metadata(value)
+    disclosure = metadata.get("partial_result")
+    result = dict(disclosure) if isinstance(disclosure, Mapping) else {}
+    ranking_validity = metadata.get("ranking_validity")
+    if isinstance(ranking_validity, Mapping):
+        result.setdefault("ranking", dict(ranking_validity))
+    return result
 
 
 def extract_analysis_metadata(value: Any) -> Dict[str, Any]:
@@ -6237,8 +6352,71 @@ def analysis_to_record(
         metadata = extract_analysis_metadata(value)
         if options.include_metadata and (metadata or options.include_empty):
             record["metadata"] = _analysis_serialize_mapping(metadata, options)
+        failed_stages, partial_stages = extract_analysis_failed_stages(value)
+        disclosure = extract_partial_result_disclosure(value)
+        if isinstance(disclosure.get("failed_stages"), Sequence):
+            failed_stages = list(
+                dict.fromkeys(
+                    (*failed_stages, *(str(item) for item in disclosure["failed_stages"]))
+                )
+            )
+        if isinstance(disclosure.get("partial_stages"), Sequence):
+            partial_stages = list(
+                dict.fromkeys(
+                    (*partial_stages, *(str(item) for item in disclosure["partial_stages"]))
+                )
+            )
+        if failed_stages or options.include_empty:
+            record["failed_stages"] = failed_stages
+        if partial_stages or options.include_empty:
+            record["partial_stages"] = partial_stages
+
+        diagnostics = extract_analysis_diagnostics(value)
+        disclosure_diagnostics = disclosure.get("diagnostics", ())
+        if disclosure_diagnostics:
+            diagnostics = dict(diagnostics)
+            diagnostics["scientific_stage_issues"] = make_json_safe(
+                disclosure_diagnostics
+            )
+        if diagnostics or options.include_empty:
+            record["diagnostics"] = diagnostics
+
+        scoring_disclosure = disclosure.get("scoring", {})
+        score_limitations = (
+            list(scoring_disclosure.get("limitations", ()))
+            if isinstance(scoring_disclosure, Mapping)
+            else []
+        )
+        if score_limitations or options.include_empty:
+            record["score_limitations"] = score_limitations
+
+        ranking = _analysis_get(value, _ANALYSIS_RANKING_FIELDS)
+        if ranking is not None:
+            record["ranking"] = make_json_safe(ranking)
+        ranking_disclosure = disclosure.get("ranking", {})
+        if isinstance(ranking_disclosure, Mapping) and ranking_disclosure:
+            record["ranking_validity"] = make_json_safe(ranking_disclosure)
+
         warnings_ = extract_analysis_messages(value, _ANALYSIS_WARNING_FIELDS)
         errors = extract_analysis_messages(value, _ANALYSIS_ERROR_FIELDS)
+        if isinstance(ranking_disclosure, Mapping):
+            ranking_warning = ranking_disclosure.get("warning")
+            if ranking_warning:
+                warnings_.append(str(ranking_warning))
+        diagnostic_issues = diagnostics.get("issues", ()) if diagnostics else ()
+        for issue in _analysis_sequence(diagnostic_issues):
+            if not isinstance(issue, Mapping):
+                continue
+            message = issue.get("message")
+            if not message:
+                continue
+            severity = _analysis_token(issue.get("severity", issue.get("kind", "")))
+            if severity in {"error", "critical", "fatal"}:
+                errors.append(str(message))
+            else:
+                warnings_.append(str(message))
+        warnings_ = list(dict.fromkeys(warnings_))
+        errors = list(dict.fromkeys(errors))
         if options.include_warnings and (warnings_ or options.include_empty):
             record["warnings"] = warnings_
         if options.include_errors and (errors or options.include_empty):
@@ -6247,7 +6425,27 @@ def analysis_to_record(
             timestamp = _analysis_get(value, _ANALYSIS_TIMESTAMP_FIELDS)
             if timestamp is not None:
                 record["timestamp"] = make_json_safe(timestamp)
-        record["status"] = "failed" if errors else "success"
+        explicit_status = _analysis_status_token(
+            _analysis_get(value, _ANALYSIS_STATUS_FIELDS, "")
+        )
+        has_available_results = bool(grouped or scores)
+        scientific_partial = bool(
+            disclosure
+            or failed_stages
+            or partial_stages
+            or (
+                isinstance(ranking_disclosure, Mapping)
+                and ranking_disclosure.get("valid") is False
+            )
+        )
+        if scientific_partial:
+            record["status"] = "partial" if has_available_results else "failed"
+        elif explicit_status in {"success", "partial", "failed"}:
+            record["status"] = explicit_status
+        elif errors:
+            record["status"] = "partial" if has_available_results else "failed"
+        else:
+            record["status"] = "success"
         if options.include_raw_fields:
             excluded = set(
                 _ANALYSIS_ID_FIELDS + _ANALYSIS_NAME_FIELDS + _ANALYSIS_TYPE_FIELDS
@@ -6301,12 +6499,16 @@ def summarize_analysis_records(records: Iterable[Mapping[str, Any]]) -> Analysis
     scores: List[float] = []
     successful = 0
     failed = 0
+    partial = 0
     with_warnings = 0
     interaction_total = 0
     for record in items:
         by_type[str(record.get("analysis_type", "analysis"))] += 1
-        if record.get("status") == "failed" or record.get("errors"):
+        status = _analysis_status_token(record.get("status"))
+        if status == "failed":
             failed += 1
+        elif status == "partial":
+            partial += 1
         else:
             successful += 1
         if record.get("warnings"):
@@ -6325,6 +6527,7 @@ def summarize_analysis_records(records: Iterable[Mapping[str, Any]]) -> Analysis
         total=len(items),
         successful=successful,
         failed=failed,
+        partial=partial,
         with_warnings=with_warnings,
         by_type=dict(sorted(by_type.items())),
         interaction_total=interaction_total,

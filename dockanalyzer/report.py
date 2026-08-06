@@ -4762,6 +4762,33 @@ _register_public_names(_SECTION_7_PUBLIC_NAMES)
 # 8.1. Normalized interaction record
 # -----------------------------------------------------------------------------
 
+def _interaction_fingerprint_value(value: Any) -> Any:
+    """Convert heterogeneous identifiers into stable, hashable values."""
+
+    if isinstance(value, Enum):
+        return _interaction_fingerprint_value(value.value)
+    if isinstance(value, Mapping):
+        return tuple(
+            sorted(
+                (
+                    safe_string(key, ""),
+                    _interaction_fingerprint_value(item),
+                )
+                for key, item in value.items()
+            )
+        )
+    if isinstance(value, (set, frozenset)):
+        converted = [_interaction_fingerprint_value(item) for item in value]
+        return tuple(sorted(converted, key=repr))
+    if is_sequence_like(value):
+        return tuple(_interaction_fingerprint_value(item) for item in value)
+    try:
+        hash(value)
+    except (TypeError, ValueError):
+        return safe_string(value, "")
+    return value
+
+
 @dataclass(frozen=True)
 class NormalizedInteraction:
     """Canonical report representation of one interaction."""
@@ -4879,8 +4906,8 @@ class NormalizedInteraction:
             self.family.value,
             normalize_field_name(self.type),
             normalize_field_name(self.subtype),
-            self.pose_id,
-            self.model_id,
+            _interaction_fingerprint_value(self.pose_id),
+            _interaction_fingerprint_value(self.model_id),
             normalize_field_name(self.ligand_atom),
             normalize_field_name(self.receptor_atom),
             normalize_field_name(self.ligand_residue),
@@ -9680,6 +9707,114 @@ _register_public_names(_SECTION_14_PUBLIC_NAMES)
 # 15.1. Pose ranking records
 # -----------------------------------------------------------------------------
 
+
+def _report_status_token(value: Any) -> str:
+    """Normalize result status values without depending on analyze.py."""
+
+    raw = getattr(value, "value", value)
+    token = normalize_field_name(raw or "")
+    return {
+        "succeeded": "success",
+        "successful": "success",
+        "completed": "success",
+        "blocked": "failed",
+        "error": "failed",
+    }.get(token, token)
+
+
+def _report_partial_disclosure(value: Any) -> Dict[str, Any]:
+    """Extract controlled partial-result and ranking disclosures."""
+
+    metadata = get_object_field(value, "metadata", {})
+    if not isinstance(metadata, Mapping):
+        metadata = {}
+    partial = metadata.get("partial_result")
+    result = dict(partial) if isinstance(partial, Mapping) else {}
+    ranking = metadata.get("ranking_validity")
+    if isinstance(ranking, Mapping):
+        result.setdefault("ranking", dict(ranking))
+    return result
+
+
+def _report_failed_stages(value: Any) -> Tuple[str, ...]:
+    """Return scientific stages that failed or were blocked."""
+
+    disclosure = _report_partial_disclosure(value)
+    names = list(disclosure.get("failed_stages", ()))
+    stage_results = get_object_field(value, "stage_results", {})
+    if isinstance(stage_results, Mapping):
+        for stage_name, stage_result in stage_results.items():
+            status = _report_status_token(
+                get_object_field(stage_result, "status", "")
+            )
+            if status == "failed":
+                names.append(str(stage_name))
+    return tuple(dict.fromkeys(str(name) for name in names if name))
+
+
+def _report_score_limitations(value: Any) -> Tuple[str, ...]:
+    """Return score-comparability warnings attached by the analyzer."""
+
+    disclosure = _report_partial_disclosure(value)
+    scoring = disclosure.get("scoring", {})
+    values = scoring.get("limitations", ()) if isinstance(scoring, Mapping) else ()
+    return tuple(dict.fromkeys(str(item) for item in values if item))
+
+
+def _report_score_comparability(
+    value: Any,
+    score: Optional[float],
+) -> Tuple[bool, Optional[str], bool]:
+    """Qualify a score and distinguish valid zero from failure fallback zero."""
+
+    if score is None:
+        return False, "missing_score", False
+    status = _report_status_token(get_object_field(value, "status", ""))
+    hard_failure = status == "failed"
+    contextual_failure = status == "partial"
+    disclosure = _report_partial_disclosure(value)
+    contextual_failure = contextual_failure or bool(disclosure)
+    failed_stages = _report_failed_stages(value)
+    contextual_failure = contextual_failure or bool(failed_stages)
+
+    scoring = get_object_field(value, "scoring", None)
+    for field_name in ("valid", "score_valid", "comparable"):
+        if get_object_field(scoring, field_name, None) is False:
+            hard_failure = True
+    scoring_status = _report_status_token(
+        get_object_field(scoring, "status", "")
+    )
+    if scoring_status == "failed":
+        hard_failure = True
+
+    if hard_failure:
+        return False, "scoring_failure", True
+    if score == 0.0 and contextual_failure:
+        return False, "zero_score_after_failure", True
+    return True, None, contextual_failure
+
+
+def _report_diagnostic_messages(value: Any) -> Tuple[str, ...]:
+    """Extract diagnostic messages for visible report notices."""
+
+    diagnostics = get_object_field(value, "diagnostics", None)
+    if diagnostics is None:
+        return ()
+    issues = get_object_field(diagnostics, "issues", ())
+    messages: List[str] = []
+    for issue in iter_object_collection(issues):
+        message = get_object_field(issue, "message", None)
+        if message:
+            messages.append(single_line_text(message, ""))
+    disclosure = _report_partial_disclosure(value)
+    for issue in iter_object_collection(disclosure.get("diagnostics", ())):
+        message = get_object_field(issue, "message", None)
+        stage = get_object_field(issue, "stage", None)
+        if message:
+            prefix = f"{stage}: " if stage else ""
+            messages.append(prefix + single_line_text(message, ""))
+    return tuple(dict.fromkeys(message for message in messages if message))
+
 @dataclass(frozen=True)
 class PoseRankingEntry:
     """Ranked pose with structural and scoring summaries."""
@@ -9699,6 +9834,10 @@ class PoseRankingEntry:
     source_index: int = 0
     overview: Optional[PoseOverview] = None
     scoring: Optional[ScoringSection] = None
+    result_status: str = "success"
+    ranking_valid: bool = True
+    score_comparable: bool = True
+    limitations: Tuple[str, ...] = ()
     metadata: Mapping[str, Any] = field(
         default_factory=lambda: _EMPTY_METADATA
     )
@@ -9741,6 +9880,18 @@ class PoseRankingEntry:
             )
         object.__setattr__(
             self,
+            "result_status",
+            _report_status_token(self.result_status) or "success",
+        )
+        object.__setattr__(self, "ranking_valid", bool(self.ranking_valid))
+        object.__setattr__(self, "score_comparable", bool(self.score_comparable))
+        object.__setattr__(
+            self,
+            "limitations",
+            _freeze_config_strings(self.limitations, unique=False),
+        )
+        object.__setattr__(
+            self,
             "metadata",
             _freeze_config_mapping(self.metadata),
         )
@@ -9762,6 +9913,10 @@ class PoseRankingEntry:
             "hotspot_count": self.hotspot_count,
             "tie_group": self.tie_group,
             "source_index": self.source_index,
+            "result_status": self.result_status,
+            "ranking_valid": self.ranking_valid,
+            "score_comparable": self.score_comparable,
+            "limitations": list(self.limitations),
             KEY_METADATA: dict(self.metadata),
         }
 
@@ -9796,6 +9951,10 @@ class MultiposeSummary:
     )
     warnings: Tuple[str, ...] = ()
     errors: Tuple[str, ...] = ()
+    ranking_valid: bool = True
+    ranking_limitations: Tuple[str, ...] = ()
+    comparable_pose_count: int = 0
+    unranked_pose_count: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "poses", tuple(self.poses))
@@ -9867,6 +10026,22 @@ class MultiposeSummary:
             "errors",
             _freeze_config_strings(self.errors, unique=False),
         )
+        object.__setattr__(self, "ranking_valid", bool(self.ranking_valid))
+        object.__setattr__(
+            self,
+            "comparable_pose_count",
+            max(0, to_safe_int(self.comparable_pose_count, 0)),
+        )
+        object.__setattr__(
+            self,
+            "unranked_pose_count",
+            max(0, to_safe_int(self.unranked_pose_count, 0)),
+        )
+        object.__setattr__(
+            self,
+            "ranking_limitations",
+            _freeze_config_strings(self.ranking_limitations, unique=False),
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a plain multipose summary."""
@@ -9886,6 +10061,10 @@ class MultiposeSummary:
             "affinity_statistics": dict(self.affinity_statistics),
             KEY_WARNINGS: list(self.warnings),
             KEY_ERRORS: list(self.errors),
+            "ranking_valid": self.ranking_valid,
+            "ranking_limitations": list(self.ranking_limitations),
+            "comparable_pose_count": self.comparable_pose_count,
+            "unranked_pose_count": self.unranked_pose_count,
         }
 
 
@@ -9975,6 +10154,30 @@ def build_pose_ranking_entry(
         if scoring.total_score is not None
         else overview.total_score
     )
+    disclosure = _report_partial_disclosure(pose)
+    failed_stages = _report_failed_stages(pose)
+    limitations = _report_score_limitations(pose)
+    result_status = _report_status_token(
+        get_object_field(pose, "status", "success")
+    ) or "success"
+    ranking_disclosure = disclosure.get("ranking", {})
+    score_comparable, score_rejection_reason, failure_evidence = (
+        _report_score_comparability(pose, total_score)
+    )
+    if not score_comparable:
+        limitations = tuple(
+            dict.fromkeys(
+                (*limitations, "This pose has no useful score for ranking.")
+            )
+        )
+    ranking_valid = not (
+        result_status in {"partial", "failed"}
+        or failed_stages
+        or (
+            isinstance(ranking_disclosure, Mapping)
+            and ranking_disclosure.get("valid") is False
+        )
+    )
     return PoseRankingEntry(
         pose_id=overview.pose_id
         if overview.pose_id is not None
@@ -9993,6 +10196,15 @@ def build_pose_ranking_entry(
         source_index=source_index,
         overview=overview,
         scoring=scoring,
+        result_status=result_status,
+        ranking_valid=ranking_valid,
+        score_comparable=score_comparable,
+        limitations=limitations,
+        metadata={
+            "failed_stages": list(failed_stages),
+            "score_rejection_reason": score_rejection_reason,
+            "score_failure_evidence": failure_evidence,
+        },
     )
 
 
@@ -10017,6 +10229,24 @@ def pose_primary_metric(
         normalize_field_name(KEY_TOTAL_RESIDUES): float(entry.residue_count),
     }
     return mapping.get(normalized, entry.total_score)
+
+
+def _pose_metric_is_comparable(
+    entry: PoseRankingEntry,
+    *,
+    metric: str,
+) -> bool:
+    """Return whether the selected metric is scientifically rankable."""
+
+    primary = pose_primary_metric(entry, metric=metric)
+    if primary is None:
+        return False
+    rejection_reason = entry.metadata.get("score_rejection_reason")
+    if rejection_reason == "scoring_failure":
+        return False
+    if primary == 0.0 and entry.metadata.get("score_failure_evidence"):
+        return False
+    return True
 
 
 def pose_ranking_sort_key(
@@ -10224,12 +10454,34 @@ def build_multipose_summary(
         == normalize_field_name(KEY_AFFINITY)
         else config.multipose.rank_direction
     )
-    ranked = assign_pose_ranks(
-        entries,
+    comparable_entries = [
+        entry
+        for entry in entries
+        if _pose_metric_is_comparable(entry, metric=ranking_metric)
+    ]
+    unranked_entries = [
+        replace(
+            entry,
+            rank=None,
+            tie_group=None,
+            ranking_valid=False,
+            score_comparable=False,
+            limitations=tuple(
+                dict.fromkeys(
+                    (*entry.limitations, "No useful score is available for ranking.")
+                )
+            ),
+        )
+        for entry in entries
+        if not _pose_metric_is_comparable(entry, metric=ranking_metric)
+    ]
+    ranked_comparable = assign_pose_ranks(
+        comparable_entries,
         metric=ranking_metric,
         direction=direction,
         tolerance=config.multipose.tie_tolerance,
     )
+    ranked = [*ranked_comparable, *unranked_entries]
 
     if config.multipose.top_poses:
         ranked = ranked[: config.multipose.top_poses]
@@ -10259,10 +10511,41 @@ def build_multipose_summary(
         else ()
     )
 
+    invalid_entries = [entry for entry in ranked if not entry.ranking_valid]
+    ranking_limitations = tuple(
+        dict.fromkeys(
+            limitation
+            for entry in invalid_entries
+            for limitation in entry.limitations
+        )
+    )
+    ranking_valid = bool(ranked_comparable) and not invalid_entries
+    if not ranked_comparable:
+        ranking_warnings = (
+            "No comparable scoring results are available; no best pose was selected.",
+        )
+        ranking_limitations = tuple(
+            dict.fromkeys(
+                (
+                    *ranking_limitations,
+                    "Empty scores and failure-derived zero scores cannot be ranked.",
+                )
+            )
+        )
+    elif invalid_entries:
+        ranking_warnings = (
+            "Ranking is provisional because one or more poses have partial "
+            "scientific results or no useful score.",
+        )
+    else:
+        ranking_warnings = ()
+
     return MultiposeSummary(
         poses=tuple(ranked),
         total_poses=len(pose_values),
-        best_pose_id=ranked[0].pose_id if ranked else None,
+        best_pose_id=ranked_comparable[0].pose_id
+        if ranked_comparable
+        else None,
         ranking_metric=ranking_metric,
         rank_direction=direction,
         consensus_residues=consensus,
@@ -10275,11 +10558,16 @@ def build_multipose_summary(
         if config.multipose.include_persistence
         else {},
         score_statistics=numeric_statistics(
-            entry.total_score for entry in entries
+            entry.total_score for entry in comparable_entries
         ),
         affinity_statistics=numeric_statistics(
-            entry.affinity for entry in entries
+            entry.affinity for entry in comparable_entries
         ),
+        warnings=ranking_warnings,
+        ranking_valid=ranking_valid,
+        ranking_limitations=ranking_limitations,
+        comparable_pose_count=len(ranked_comparable),
+        unranked_pose_count=len(unranked_entries),
     )
 
 
@@ -10330,6 +10618,10 @@ def multipose_ranking_rows(
             "favorable_interactions": entry.favorable_count,
             "penalty_interactions": entry.penalty_count,
             "hotspot_count": entry.hotspot_count,
+            "result_status": entry.result_status,
+            "ranking_valid": entry.ranking_valid,
+            "score_comparable": entry.score_comparable,
+            "limitations": "; ".join(entry.limitations),
         }
         for entry in summary.poses
     ]
@@ -11312,6 +11604,53 @@ class ReportBuildContext:
     warnings: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        """Propagate partial scientific state into visible report notices."""
+
+        candidates: List[Any] = [self.value]
+        pose_results = get_object_field(self.value, "pose_results", None)
+        if pose_results is not None:
+            candidates.extend(iter_object_collection(pose_results))
+        elif isinstance(self.value, Sequence) and not isinstance(
+            self.value,
+            (str, bytes, bytearray),
+        ):
+            candidates.extend(self.value)
+
+        for candidate in candidates:
+            status = _report_status_token(
+                get_object_field(candidate, "status", "")
+            )
+            failed_stages = _report_failed_stages(candidate)
+            disclosure = _report_partial_disclosure(candidate)
+            ranking_disclosure = disclosure.get("ranking", {})
+            if status == "partial" or failed_stages:
+                stage_text = ", ".join(failed_stages) or "unspecified"
+                self.warnings.append(
+                    "PARTIAL SCIENTIFIC RESULT: detector stages affected: "
+                    f"{stage_text}. Available interactions were retained."
+                )
+            if (
+                isinstance(ranking_disclosure, Mapping)
+                and ranking_disclosure.get("valid") is False
+            ):
+                self.warnings.append(
+                    str(
+                        ranking_disclosure.get(
+                            "warning",
+                            "Ranking is provisional and is not a complete "
+                            "scientific comparison.",
+                        )
+                    )
+                )
+            self.warnings.extend(_report_score_limitations(candidate))
+            self.warnings.extend(
+                f"Diagnostic: {message}"
+                for message in _report_diagnostic_messages(candidate)
+            )
+        self.warnings[:] = list(dict.fromkeys(self.warnings))
+        self.errors[:] = list(dict.fromkeys(self.errors))
+
     @property
     def strict(self) -> bool:
         """Return whether section construction is strict."""
@@ -11824,6 +12163,12 @@ def build_multipose_report_section(
                 "Best pose": section.best_pose_id,
                 "Ranking metric": section.ranking_metric,
                 "Direction": section.rank_direction.value,
+                "Ranking valid": section.ranking_valid,
+                "Ranking status": "valid"
+                if section.ranking_valid
+                else "partial / provisional",
+                "Comparable poses": section.comparable_pose_count,
+                "Unranked poses": section.unranked_pose_count,
             },
             title="Multipose summary",
         )
@@ -11838,6 +12183,13 @@ def build_multipose_report_section(
                 ranking_rows,
                 title="Pose ranking",
                 name=TABLE_RANKING,
+            )
+        )
+    for warning in section.warnings:
+        blocks.append(
+            notice_block(
+                warning,
+                severity=Severity.WARNING,
             )
         )
     if section.residue_persistence:
@@ -11935,10 +12287,26 @@ def build_diagnostics_report_section(
             : context.config.errors.max_messages
         ]
     ]
-    return _section_base(
+    section = _section_base(
         section_id,
         blocks,
         config=context.config,
+        warnings=values
+        if section_id is ReportSectionID.WARNINGS
+        else (),
+        errors=values
+        if section_id is ReportSectionID.ERRORS
+        else (),
+    )
+    include_messages = (
+        context.config.errors.include_warnings
+        if section_id is ReportSectionID.WARNINGS
+        else context.config.errors.include_errors
+    )
+    return replace(
+        section,
+        enabled=bool(values) and include_messages,
+        empty=not bool(values),
     )
 
 
@@ -23268,6 +23636,16 @@ def test_interaction_serialization() -> None:
     assert_equal(len(records), 1)
     assert_equal(records[0][KEY_ID], normalized.id)
 
+    collection_identifier = replace(
+        normalized,
+        pose_id=["pose-1", "pose-2"],
+        model_id={"models": [1, 2]},
+    )
+    deduplicated = deduplicate_interactions(
+        (collection_identifier, collection_identifier)
+    )
+    assert_equal(len(deduplicated), 1)
+
 
 @self_test(
     section=SELF_TEST_SECTION_INTERACTIONS,
@@ -23950,6 +24328,45 @@ def test_multipose_complete_summary() -> None:
     record = summary.to_dict()
     assert_equal(record[KEY_TOTAL_POSES], 3)
     assert_equal(len(record[KEY_RANKING]), 3)
+
+    missing_score_poses = list(_make_multipose_fixture()[:2])
+    for pose in missing_score_poses:
+        pose.total_score = None
+        pose.scoring = {}
+    missing_summary = build_multipose_summary(missing_score_poses)
+    assert_equal(missing_summary.best_pose_id, None)
+    assert_false(missing_summary.ranking_valid)
+    assert_equal(missing_summary.comparable_pose_count, 0)
+    assert_equal(missing_summary.unranked_pose_count, 2)
+    assert_true(all(entry.rank is None for entry in missing_summary.poses))
+
+    failed_zero_poses = list(_make_multipose_fixture()[:2])
+    for pose in failed_zero_poses:
+        pose.total_score = 0.0
+        pose.scoring = {"total_score": 0.0}
+        pose.metadata = {
+            "partial_result": {
+                "status": "partial",
+                "failed_stages": ["scoring"],
+                "scoring": {"comparable": False},
+            }
+        }
+    failed_zero_summary = build_multipose_summary(failed_zero_poses)
+    assert_equal(failed_zero_summary.best_pose_id, None)
+    assert_equal(failed_zero_summary.comparable_pose_count, 0)
+    assert_contains(
+        failed_zero_summary.warnings,
+        "No comparable scoring results are available; no best pose was selected.",
+    )
+
+    legitimate_zero_poses = list(_make_multipose_fixture()[:2])
+    for pose in legitimate_zero_poses:
+        pose.total_score = 0.0
+        pose.scoring = {"total_score": 0.0}
+        pose.metadata = {}
+    legitimate_zero_summary = build_multipose_summary(legitimate_zero_poses)
+    assert_equal(legitimate_zero_summary.comparable_pose_count, 2)
+    assert_true(legitimate_zero_summary.best_pose_id is not None)
 
 
 @self_test(
