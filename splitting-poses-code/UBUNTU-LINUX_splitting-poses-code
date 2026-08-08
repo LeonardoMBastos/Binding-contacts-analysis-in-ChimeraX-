@@ -11,12 +11,13 @@ mkdir -p "$OUTPUT"
 # Loop in .pdbqt files
 for file in "$INPUT"/*.pdbqt; do
 
-    # Verify the existence of .pdbqt files - Skip if no matching file exists
+    # Skip if no matching .pdbqt file exists
     [ -e "$file" ] || continue
 
-    # Create an output directory for each ligand
+    # Get archive name without extension
     base=$(basename "$file" .pdbqt)
-    
+
+    # Create an output directory for each ligand
     mkdir -p "$OUTPUT/$base"
 
     echo "===================================="
@@ -25,14 +26,15 @@ for file in "$INPUT"/*.pdbqt; do
     # Convert all poses into individual PDB files
     obabel "$file" -O "$OUTPUT/$base/pose.pdb" -m
 
-    # Rename poses according to affinity ranking  
+    # Rename poses according to affinity ranking
     contador=1
-    for pose in "$OUTPUT/$base"/pose*.pdb; do
-        mv "$pose" "$OUTPUT/$base/pose${contador}.pdb"
+
+    for pose in $(find "$OUTPUT/$base" -maxdepth 1 -type f -name 'pose*.pdb' | sort -V); do
+        mv "$pose" "$OUTPUT/$base/${base}_pose_${contador}.pdb"
         ((contador++))
     done
 
-    echo "✓ $((contador-1)) poses salvas em $OUTPUT/$base"
+    echo "✓ $((contador-1)) poses saved in $OUTPUT/$base"
 
 done
 
