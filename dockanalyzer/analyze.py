@@ -16791,6 +16791,46 @@ def _validate_preparation_input_duplicates(
     return errors
 
 
+def _prepare_shared_receptor_runtime_cache(
+    result: ModelPreparationResult,
+) -> Optional[Any]:
+    """Prepare one private receptor cache and share it across all DockModels."""
+
+    receptor = result.receptor
+    if receptor is None or not result.dock_models:
+        result.metadata["prepared_receptor"] = {"available": False}
+        return None
+    try:
+        utils_module = load_analysis_module("utils", required=True)
+        prepared = None
+        resolver = getattr(utils_module, "_prepared_receptor_from_dock_model", None)
+        if callable(resolver):
+            for dock_model in result.dock_models:
+                prepared = resolver(dock_model, receptor=receptor)
+                if prepared is not None:
+                    break
+        if prepared is None:
+            builder = getattr(utils_module, "_prepare_receptor_cache")
+            prepared = builder(receptor)
+        attacher = getattr(utils_module, "_attach_prepared_receptor_cache", None)
+        if callable(attacher):
+            attacher(result.dock_models, prepared)
+        summary = getattr(prepared, "summary", None)
+        result.metadata["prepared_receptor"] = (
+            summary() if callable(summary) else {"available": True}
+        )
+        return prepared
+    except Exception as exc:
+        # This optimization must never make molecular preparation fail. All
+        # interaction modules retain their legacy non-cached paths.
+        result.metadata["prepared_receptor"] = {
+            "available": False,
+            "fallback": True,
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
+        return None
+
+
 def prepare_resolved_dock_models(
     resolved: ResolvedAnalysisInput,
     *,
@@ -16947,6 +16987,7 @@ def prepare_resolved_dock_models(
             )
 
     result.dock_models = unique_preserving_order(result.dock_models, key=id)
+    _prepare_shared_receptor_runtime_cache(result)
     result.warnings = unique_preserving_order(result.warnings)
     result.errors = unique_preserving_order(result.errors)
     result.metadata.update(
@@ -16992,6 +17033,22 @@ def apply_model_preparation_to_context(
     context.set_stage_data(STAGE_MODEL_PREPARATION, result)
     context.set_shared("model_preparation", result)
     context.set_shared("prepared_dock_models", tuple(result.dock_models))
+    try:
+        utils_module = load_analysis_module("utils", required=False)
+        resolver = (
+            getattr(utils_module, "_prepared_receptor_from_dock_model", None)
+            if utils_module is not None
+            else None
+        )
+        prepared_receptor = (
+            resolver(result.dock_models[0], receptor=result.receptor)
+            if callable(resolver) and result.dock_models
+            else None
+        )
+    except Exception:
+        prepared_receptor = None
+    if prepared_receptor is not None:
+        context.set_shared("prepared_receptor", prepared_receptor)
     context.metadata.update(
         {
             "prepared_dock_model_count": result.prepared_count,
@@ -40367,6 +40424,685 @@ def _failed_multipose_pose_result(
     return result.finalize(AnalysisStatus.FAILED)
 
 
+
+
+class _DetachedWorkerElement:
+    """Minimal immutable element descriptor safe for worker threads."""
+
+    __slots__ = ("name", "symbol", "number", "atomic_number")
+
+    def __init__(self, name: Any = "", number: Any = 0) -> None:
+        text = str(name or "").strip()
+        self.name = text
+        self.symbol = text
+        try:
+            numeric = int(number or 0)
+        except (TypeError, ValueError, OverflowError):
+            numeric = 0
+        self.number = numeric
+        self.atomic_number = numeric
+
+
+class _DetachedWorkerResidue:
+    """Plain-Python residue snapshot used by detached multipose workers."""
+
+    __slots__ = (
+        "name", "number", "chain_id", "insertion_code", "atoms", "structure",
+        "polymer_type", "id", "atomspec",
+    )
+
+    def __init__(
+        self,
+        *,
+        name: Any = "UNK",
+        number: Any = 0,
+        chain_id: Any = "",
+        insertion_code: Any = "",
+        polymer_type: Any = None,
+        identifier: Any = None,
+        atomspec: Any = None,
+    ) -> None:
+        self.name = str(name or "UNK")
+        try:
+            self.number = int(number)
+        except (TypeError, ValueError, OverflowError):
+            self.number = number
+        self.chain_id = str(chain_id or "")
+        self.insertion_code = str(insertion_code or "")
+        self.atoms: List[Any] = []
+        self.structure: Any = None
+        self.polymer_type = polymer_type
+        self.id = identifier
+        self.atomspec = str(atomspec) if atomspec not in (None, "") else None
+
+
+class _DetachedWorkerBond:
+    """Plain-Python bond snapshot used by detached multipose workers."""
+
+    __slots__ = ("atoms", "order", "aromatic")
+
+    def __init__(self, atom1: Any, atom2: Any, *, order: Any = 1.0, aromatic: Any = False) -> None:
+        self.atoms = (atom1, atom2)
+        try:
+            self.order = float(order)
+        except (TypeError, ValueError, OverflowError):
+            self.order = 1.0
+        self.aromatic = bool(aromatic)
+
+
+class _DetachedWorkerAtom:
+    """Plain-Python atom snapshot containing only analysis-facing attributes."""
+
+    __slots__ = (
+        "name", "element", "coord", "residue", "structure", "formal_charge",
+        "charge", "partial_charge", "occupancy", "alt_loc", "deleted", "display",
+        "radius", "serial_number", "serial", "index", "atomspec", "aromatic",
+        "aliphatic", "atom_type", "idatm_type", "color", "neighbors", "bonds",
+    )
+
+    def __init__(
+        self,
+        *,
+        name: Any,
+        element: _DetachedWorkerElement,
+        coord: Any,
+        formal_charge: Any = None,
+        charge: Any = None,
+        partial_charge: Any = None,
+        occupancy: Any = 1.0,
+        alt_loc: Any = "",
+        deleted: Any = False,
+        display: Any = True,
+        radius: Any = None,
+        serial_number: Any = None,
+        index: Any = None,
+        atomspec: Any = None,
+        aromatic: Any = None,
+        aliphatic: Any = None,
+        atom_type: Any = None,
+        idatm_type: Any = None,
+        color: Any = None,
+    ) -> None:
+        self.name = str(name or "")
+        self.element = element
+        self.coord = np.asarray(coord, dtype=np.float64).reshape(3).copy()
+        self.residue: Any = None
+        self.structure: Any = None
+        self.formal_charge = formal_charge
+        self.charge = charge
+        self.partial_charge = partial_charge
+        try:
+            self.occupancy = float(occupancy)
+        except (TypeError, ValueError, OverflowError):
+            self.occupancy = 1.0
+        self.alt_loc = str(alt_loc or "")
+        self.deleted = bool(deleted)
+        self.display = bool(display)
+        self.radius = radius
+        self.serial_number = serial_number
+        self.serial = serial_number
+        self.index = index
+        self.atomspec = str(atomspec) if atomspec not in (None, "") else None
+        self.aromatic = aromatic
+        self.aliphatic = aliphatic
+        self.atom_type = atom_type
+        self.idatm_type = idatm_type if idatm_type not in (None, "") else atom_type
+        self.color = color
+        self.neighbors: List[Any] = []
+        self.bonds: List[Any] = []
+
+    @property
+    def scene_coord(self) -> NDArray[np.float64]:
+        return self.coord
+
+    @property
+    def coordinates(self) -> NDArray[np.float64]:
+        return self.coord
+
+
+class _DetachedWorkerStructure:
+    """Plain-Python atomic structure snapshot safe for detached worker threads."""
+
+    __slots__ = ("name", "atoms", "residues", "atomspec", "id_string", "id", "metadata")
+
+    def __init__(
+        self,
+        *,
+        name: Any,
+        atomspec: Any = None,
+        id_string: Any = None,
+        identifier: Any = None,
+    ) -> None:
+        self.name = str(name or "model")
+        self.atoms: Tuple[Any, ...] = ()
+        self.residues: Tuple[Any, ...] = ()
+        self.atomspec = str(atomspec) if atomspec not in (None, "") else None
+        self.id_string = str(id_string) if id_string not in (None, "") else None
+        self.id = identifier
+        self.metadata: Dict[str, Any] = {}
+
+
+def _safe_worker_attribute(value: Any, name: str, default: Any = None) -> Any:
+    """Read one source attribute while still on the main ChimeraX thread."""
+
+    try:
+        result = getattr(value, name)
+    except Exception:
+        return default
+    if callable(result):
+        try:
+            result = result()
+        except Exception:
+            return default
+    return result
+
+
+def _worker_element_snapshot(atom: Any) -> _DetachedWorkerElement:
+    element = _safe_worker_attribute(atom, "element", None)
+    if element is None:
+        name = _safe_worker_attribute(atom, "element_name", "")
+        number = _safe_worker_attribute(atom, "atomic_number", 0)
+    elif isinstance(element, str):
+        name = element
+        number = _safe_worker_attribute(atom, "atomic_number", 0)
+    else:
+        name = (
+            _safe_worker_attribute(element, "name", None)
+            or _safe_worker_attribute(element, "symbol", None)
+            or str(element)
+        )
+        number = (
+            _safe_worker_attribute(element, "number", None)
+            or _safe_worker_attribute(element, "atomic_number", None)
+            or _safe_worker_attribute(atom, "atomic_number", 0)
+        )
+    return _DetachedWorkerElement(name, number)
+
+
+def _worker_coordinate_snapshot(atom: Any) -> NDArray[np.float64]:
+    for name in ("scene_coord", "coord", "coordinates", "position", "xyz"):
+        value = _safe_worker_attribute(atom, name, None)
+        if value is None:
+            continue
+        try:
+            array = np.asarray(value, dtype=np.float64).reshape(-1)
+        except Exception:
+            continue
+        if array.size == 3 and np.all(np.isfinite(array)):
+            return array.reshape(3).copy()
+    raise AnalysisConcurrencyError(
+        "Could not detach a molecular atom because no finite coordinate was available.",
+        details={"atom": str(_safe_worker_attribute(atom, "name", "?"))},
+    )
+
+
+def _detach_atomic_structure_for_workers(
+    source: Any,
+) -> Tuple[_DetachedWorkerStructure, Dict[int, Any], Dict[int, Any]]:
+    """Snapshot a structure and its topology before worker-thread execution."""
+
+    if source is None:
+        raise AnalysisConcurrencyError("Detached worker preparation requires a molecular structure.")
+    atom_values = _safe_worker_attribute(source, "atoms", None)
+    if atom_values is None:
+        atom_values = _safe_worker_attribute(source, "all_atoms", None)
+    if atom_values is None:
+        try:
+            atom_values = tuple(source)
+        except Exception as exc:
+            raise AnalysisConcurrencyError(
+                "Could not obtain atoms while detaching a molecular structure.",
+                cause=exc,
+            ) from exc
+    original_atoms = tuple(atom_values)
+    if not original_atoms:
+        raise AnalysisConcurrencyError("Cannot detach an empty molecular structure.")
+
+    detached = _DetachedWorkerStructure(
+        name=_safe_worker_attribute(source, "name", "model"),
+        atomspec=_safe_worker_attribute(source, "atomspec", None),
+        id_string=_safe_worker_attribute(source, "id_string", None),
+        identifier=_safe_worker_attribute(source, "id", None),
+    )
+    atom_map: Dict[int, _DetachedWorkerAtom] = {}
+    residue_map: Dict[int, _DetachedWorkerResidue] = {}
+    original_residues: Dict[int, Any] = {}
+
+    for index, atom in enumerate(original_atoms):
+        residue = _safe_worker_attribute(atom, "residue", None)
+        if residue is not None and id(residue) not in residue_map:
+            detached_residue = _DetachedWorkerResidue(
+                name=_safe_worker_attribute(residue, "name", "UNK"),
+                number=_safe_worker_attribute(residue, "number", 0),
+                chain_id=(
+                    _safe_worker_attribute(residue, "chain_id", None)
+                    or _safe_worker_attribute(_safe_worker_attribute(residue, "chain", None), "chain_id", "")
+                ),
+                insertion_code=_safe_worker_attribute(residue, "insertion_code", ""),
+                polymer_type=_safe_worker_attribute(residue, "polymer_type", None),
+                identifier=_safe_worker_attribute(residue, "id", None),
+                atomspec=_safe_worker_attribute(residue, "atomspec", None),
+            )
+            residue_map[id(residue)] = detached_residue
+            original_residues[id(residue)] = residue
+
+        detached_atom = _DetachedWorkerAtom(
+            name=_safe_worker_attribute(atom, "name", f"A{index + 1}"),
+            element=_worker_element_snapshot(atom),
+            coord=_worker_coordinate_snapshot(atom),
+            formal_charge=_safe_worker_attribute(atom, "formal_charge", None),
+            charge=_safe_worker_attribute(atom, "charge", None),
+            partial_charge=(
+                _safe_worker_attribute(atom, "partial_charge", None)
+                or _safe_worker_attribute(atom, "charge", None)
+            ),
+            occupancy=_safe_worker_attribute(atom, "occupancy", 1.0),
+            alt_loc=_safe_worker_attribute(atom, "alt_loc", ""),
+            deleted=_safe_worker_attribute(atom, "deleted", False),
+            display=_safe_worker_attribute(atom, "display", True),
+            radius=_safe_worker_attribute(atom, "radius", None),
+            serial_number=(
+                _safe_worker_attribute(atom, "serial_number", None)
+                or _safe_worker_attribute(atom, "serial", None)
+            ),
+            index=_safe_worker_attribute(atom, "index", index),
+            atomspec=_safe_worker_attribute(atom, "atomspec", None),
+            aromatic=_safe_worker_attribute(atom, "aromatic", None),
+            aliphatic=_safe_worker_attribute(atom, "aliphatic", None),
+            atom_type=_safe_worker_attribute(atom, "atom_type", None),
+            idatm_type=_safe_worker_attribute(atom, "idatm_type", None),
+            color=_safe_worker_attribute(atom, "color", None),
+        )
+        detached_atom.structure = detached
+        if residue is not None:
+            detached_residue = residue_map[id(residue)]
+            detached_atom.residue = detached_residue
+            detached_residue.atoms.append(detached_atom)
+        atom_map[id(atom)] = detached_atom
+
+    detached.atoms = tuple(atom_map[id(atom)] for atom in original_atoms)
+    detached.residues = tuple(residue_map.values())
+    for residue in detached.residues:
+        residue.structure = detached
+
+    bond_map: Dict[int, _DetachedWorkerBond] = {}
+    for original_atom in original_atoms:
+        detached_atom = atom_map[id(original_atom)]
+        raw_bonds = _safe_worker_attribute(original_atom, "bonds", ()) or ()
+        try:
+            bonds = tuple(raw_bonds)
+        except TypeError:
+            bonds = ()
+        for bond in bonds:
+            marker = id(bond)
+            if marker in bond_map:
+                detached_bond = bond_map[marker]
+                if detached_bond not in detached_atom.bonds:
+                    detached_atom.bonds.append(detached_bond)
+                continue
+            raw_pair = _safe_worker_attribute(bond, "atoms", None)
+            if raw_pair is None:
+                raw_pair = (
+                    _safe_worker_attribute(bond, "atom1", None),
+                    _safe_worker_attribute(bond, "atom2", None),
+                )
+            try:
+                pair = tuple(raw_pair)
+            except TypeError:
+                pair = ()
+            if len(pair) != 2 or id(pair[0]) not in atom_map or id(pair[1]) not in atom_map:
+                continue
+            atom1 = atom_map[id(pair[0])]
+            atom2 = atom_map[id(pair[1])]
+            detached_bond = _DetachedWorkerBond(
+                atom1,
+                atom2,
+                order=(
+                    _safe_worker_attribute(bond, "order", None)
+                    or _safe_worker_attribute(bond, "bond_order", 1.0)
+                ),
+                aromatic=_safe_worker_attribute(bond, "aromatic", False),
+            )
+            bond_map[marker] = detached_bond
+            atom1.bonds.append(detached_bond)
+            atom2.bonds.append(detached_bond)
+            if atom2 not in atom1.neighbors:
+                atom1.neighbors.append(atom2)
+            if atom1 not in atom2.neighbors:
+                atom2.neighbors.append(atom1)
+
+    # Some synthetic/adapter atom types expose neighbors without bond objects.
+    for original_atom in original_atoms:
+        detached_atom = atom_map[id(original_atom)]
+        raw_neighbors = _safe_worker_attribute(original_atom, "neighbors", ()) or ()
+        try:
+            neighbors = tuple(raw_neighbors)
+        except TypeError:
+            neighbors = ()
+        for neighbor in neighbors:
+            detached_neighbor = atom_map.get(id(neighbor))
+            if detached_neighbor is None or detached_neighbor is detached_atom:
+                continue
+            if detached_neighbor not in detached_atom.neighbors:
+                detached_atom.neighbors.append(detached_neighbor)
+            if detached_atom not in detached_neighbor.neighbors:
+                detached_neighbor.neighbors.append(detached_atom)
+
+    return detached, atom_map, residue_map
+
+
+def _detach_ligand_for_workers(
+    ligand: Any,
+    original_pose: Any,
+    detached_pose: Any,
+    atom_map: Mapping[int, Any],
+    residue_map: Mapping[int, Any],
+) -> Any:
+    """Map a pose-associated ligand to its detached counterpart."""
+
+    if ligand is None:
+        return None
+    if ligand is original_pose:
+        return detached_pose
+    mapped_residue = residue_map.get(id(ligand))
+    if mapped_residue is not None:
+        return mapped_residue
+    raw_atoms = _safe_worker_attribute(ligand, "atoms", None)
+    if raw_atoms is None and not isinstance(ligand, (str, bytes, Mapping)):
+        try:
+            raw_atoms = tuple(ligand)
+        except Exception:
+            raw_atoms = None
+    if raw_atoms is not None:
+        try:
+            mapped_atoms = tuple(
+                atom_map[id(atom)]
+                for atom in tuple(raw_atoms)
+                if id(atom) in atom_map
+            )
+        except Exception:
+            mapped_atoms = ()
+        if mapped_atoms:
+            if len(mapped_atoms) == len(detached_pose.atoms):
+                return detached_pose
+            return mapped_atoms
+    return detached_pose
+
+
+def _copy_worker_safe_model_metadata(value: Any) -> Dict[str, Any]:
+    metadata = get_object_value(value, "metadata", default={})
+    if not isinstance(metadata, Mapping):
+        return {}
+    copied: Dict[str, Any] = {}
+    for key, item in metadata.items():
+        if str(key).startswith("_") or key in {"analysis_cache", "prepared_receptor"}:
+            continue
+        try:
+            copied[str(key)] = copy.deepcopy(item)
+        except Exception:
+            if item is None or isinstance(item, (str, int, float, bool)):
+                copied[str(key)] = item
+    copied["detached_worker_snapshot"] = True
+    return copied
+
+
+def _detach_dock_models_for_workers(
+    preparation: ModelPreparationResult,
+) -> Tuple[List[Any], Dict[int, Any]]:
+    """Detach ChimeraX molecular objects on the main thread before concurrency."""
+
+    utils_module = load_analysis_module("utils", required=True)
+    dock_model_type = getattr(utils_module, "DockModel")
+    detached_receptor, _, _ = _detach_atomic_structure_for_workers(preparation.receptor)
+    worker_models: List[Any] = []
+    original_by_worker_id: Dict[int, Any] = {}
+
+    for index, original in enumerate(preparation.dock_models):
+        original_pose = get_object_value(original, DOCK_MODEL_FIELD_POSE, default=None)
+        if original_pose is None:
+            original_pose = preparation.poses[index] if index < len(preparation.poses) else None
+        detached_pose, atom_map, residue_map = _detach_atomic_structure_for_workers(original_pose)
+        original_ligand = get_object_value(original, DOCK_MODEL_FIELD_LIGAND, default=None)
+        detached_ligand = _detach_ligand_for_workers(
+            original_ligand,
+            original_pose,
+            detached_pose,
+            atom_map,
+            residue_map,
+        )
+        worker = dock_model_type(
+            name=get_preparation_model_name(original, default=f"pose_{index + 1}"),
+            pose=detached_pose,
+            receptor=detached_receptor,
+            ligand=detached_ligand,
+            metadata=_copy_worker_safe_model_metadata(original),
+        )
+        for field_name in (
+            "pose_id", "model_id", "identifier", "affinity", "docking_affinity",
+            "vina_affinity", "binding_affinity", "external_score",
+        ):
+            value = get_object_value(original, field_name, default=MISSING_VALUE)
+            if value is MISSING_VALUE:
+                continue
+            try:
+                setattr(worker, field_name, copy.deepcopy(value))
+            except Exception:
+                pass
+        worker_models.append(worker)
+        original_by_worker_id[id(worker)] = original
+
+    builder = getattr(utils_module, "_prepare_receptor_cache", None)
+    attacher = getattr(utils_module, "_attach_prepared_receptor_cache", None)
+    if callable(builder) and callable(attacher):
+        prepared = builder(detached_receptor)
+        attacher(worker_models, prepared)
+    return worker_models, original_by_worker_id
+
+
+def _synchronize_detached_worker_result(
+    output: SinglePoseAnalysisOutput,
+    original_model: Any,
+) -> SinglePoseAnalysisOutput:
+    """Attach detached-worker results back to the original main-thread DockModel."""
+
+    worker_model = output.pose_result.dock_model
+    protected = {"name", "pose", "receptor", "ligand"}
+    if worker_model is not None:
+        for field_name, value in vars(worker_model).items():
+            if field_name.startswith("_") or field_name in protected:
+                continue
+            try:
+                setattr(original_model, field_name, value)
+            except Exception:
+                continue
+    output.pose_result.dock_model = original_model
+    output.pose_result.receptor = get_object_value(
+        original_model, DOCK_MODEL_FIELD_RECEPTOR, default=output.pose_result.receptor
+    )
+    output.pose_result.ligand = get_object_value(
+        original_model, DOCK_MODEL_FIELD_LIGAND, default=output.pose_result.ligand
+    )
+    output.pose_result.pose = get_object_value(
+        original_model, DOCK_MODEL_FIELD_POSE, default=output.pose_result.pose
+    )
+    output.pose_result.metadata["parallel_worker_detached"] = True
+    return output
+
+
+def _multipose_parallel_worker_count(context: AnalysisContext, total: int) -> int:
+    """Return a bounded worker count while respecting explicit sequential mode."""
+
+    if total <= 1:
+        return 1
+    runtime = context.config.runtime
+    mode = runtime.execution_mode
+    if mode == EXECUTION_MODE_SEQUENTIAL:
+        return 1
+    maximum = max(1, min(int(runtime.max_workers), total))
+    return maximum if maximum > 1 else 1
+
+
+def _run_multipose_pose_worker(
+    index: int,
+    dock_model: Any,
+    *,
+    child_config: AnalysisConfig,
+    child_options: SinglePoseExecutionOptions,
+    registry: AnalysisStageRegistry,
+    capabilities: Optional[AnalysisCapabilities],
+    parent_run_id: str,
+    parent_request_id: str,
+    total: int,
+    cancel_event: threading.Event,
+) -> Tuple[int, SinglePoseAnalysisOutput]:
+    """Execute one detached pose without calling ChimeraX/UI callbacks."""
+
+    output = run_single_pose_analysis(
+        dock_model=dock_model,
+        config=child_config,
+        options=child_options,
+        registry=registry,
+        capabilities=capabilities,
+        name=get_preparation_model_name(dock_model, default=f"pose_{index + 1}"),
+        metadata={
+            "parent_run_id": parent_run_id,
+            "parent_request_id": parent_request_id,
+            "pose_index": index,
+            "pose_count": total,
+            "parallel_worker": True,
+        },
+        stage_callback=None,
+        progress_callback=None,
+        cancellation_callback=cancel_event.is_set,
+    )
+    return index, output
+
+
+def _run_multipose_pose_pipelines_parallel(
+    context: AnalysisContext,
+    preparation: ModelPreparationResult,
+    *,
+    options: MultiposeExecutionOptions,
+    child_config: AnalysisConfig,
+    child_options: SinglePoseExecutionOptions,
+    registry: AnalysisStageRegistry,
+    capabilities: Optional[AnalysisCapabilities],
+    workers: int,
+) -> Tuple[List[SinglePoseAnalysisOutput], List[PoseAnalysisResult], List[MultiposePoseTrace]]:
+    """Run detached pose pipelines concurrently and restore deterministic order."""
+
+    total = len(preparation.dock_models)
+    started = time.perf_counter()
+    detached_started = time.perf_counter()
+    try:
+        worker_models, original_by_worker_id = _detach_dock_models_for_workers(preparation)
+    except AnalysisConcurrencyError:
+        raise
+    except Exception as exc:
+        raise AnalysisConcurrencyError(
+            "Detached multipose worker preparation failed.",
+            cause=exc,
+        ) from exc
+    detach_seconds = time.perf_counter() - detached_started
+    context.metadata["multipose_parallel"] = {
+        "enabled": True,
+        "worker_count": workers,
+        "detached_workers": True,
+        "detachment_seconds": detach_seconds,
+    }
+
+    outputs_by_index: Dict[int, SinglePoseAnalysisOutput] = {}
+    results_by_index: Dict[int, PoseAnalysisResult] = {}
+    traces_by_index: Dict[int, MultiposePoseTrace] = {}
+    futures: Dict[Future[Any], Tuple[int, Any]] = {}
+
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="dockanalyzer-pose") as executor:
+        for index, worker_model in enumerate(worker_models):
+            if context._cancel_event.is_set():
+                break
+            future = executor.submit(
+                _run_multipose_pose_worker,
+                index,
+                worker_model,
+                child_config=child_config,
+                child_options=child_options,
+                registry=registry,
+                capabilities=capabilities,
+                parent_run_id=context.run_id,
+                parent_request_id=context.request_id,
+                total=total,
+                cancel_event=context._cancel_event,
+            )
+            futures[future] = (index, worker_model)
+
+        completed = 0
+        stop_requested = False
+        for future in as_completed(futures):
+            index, worker_model = futures[future]
+            original_model = original_by_worker_id[id(worker_model)]
+            context.set_current_pose(index)
+            started_at = _utc_timestamp()
+            try:
+                _, output = future.result()
+                output = _synchronize_detached_worker_result(output, original_model)
+                pose_result = output.pose_result
+                outputs_by_index[index] = output
+            except Exception as exc:
+                wrapped = exc if isinstance(exc, AnalysisError) else AnalysisStageError(
+                    f"Parallel multipose child pipeline failed at pose index {index}.",
+                    details={"pose_index": index},
+                    cause=exc,
+                )
+                pose_result = _failed_multipose_pose_result(
+                    index,
+                    original_model,
+                    wrapped,
+                    started_at=started_at,
+                )
+            results_by_index[index] = pose_result
+            traces_by_index[index] = MultiposePoseTrace.from_pose_result(index, pose_result)
+
+            # Replay completed stage callbacks only on the main orchestration thread.
+            if context.stage_callback is not None:
+                for stage_result in pose_result.stage_results.values():
+                    context.stage_callback(stage_result.stage, stage_result)
+            completed += 1
+            context.update_progress(
+                STAGE_FINALIZATION,
+                completed,
+                total,
+                {
+                    "scope": ANALYSIS_MODE_MULTIPOSE,
+                    "pose_index": index,
+                    "pose_id": pose_result.pose_id,
+                    "pose_status": pose_result.status.value,
+                    "parallel": True,
+                    "worker_count": workers,
+                },
+            )
+            if pose_result.status not in MULTIPOSE_SUCCESS_STATUSES:
+                if options.stop_on_any_pose_failure or not options.continue_on_pose_error:
+                    stop_requested = True
+            if stop_requested:
+                context._cancel_event.set()
+                for pending in futures:
+                    if not pending.done():
+                        pending.cancel()
+                break
+
+    ordered_indexes = sorted(results_by_index)
+    outputs = [outputs_by_index[index] for index in ordered_indexes if index in outputs_by_index]
+    results = [results_by_index[index] for index in ordered_indexes]
+    traces = [traces_by_index[index] for index in ordered_indexes]
+    context.metadata["multipose_parallel"].update(
+        {
+            "completed_pose_count": len(results),
+            "duration_seconds": time.perf_counter() - started,
+        }
+    )
+    context.set_current_pose(None)
+    return outputs, results, traces
+
 def run_multipose_pose_pipelines(
     context: AnalysisContext,
     preparation: ModelPreparationResult,
@@ -40385,6 +41121,30 @@ def run_multipose_pose_pipelines(
     results: List[PoseAnalysisResult] = []
     traces: List[MultiposePoseTrace] = []
     total = len(preparation.dock_models)
+    worker_count = _multipose_parallel_worker_count(context, total)
+    if worker_count > 1:
+        try:
+            return _run_multipose_pose_pipelines_parallel(
+                context,
+                preparation,
+                options=options,
+                child_config=child_config,
+                child_options=child_options,
+                registry=registry,
+                capabilities=capabilities,
+                workers=worker_count,
+            )
+        except AnalysisConcurrencyError as exc:
+            # Parallel execution is an optimization only. If detachment cannot
+            # represent an unusual molecular object, preserve scientific
+            # behavior by reverting to the validated sequential path before
+            # any worker result is attached to the original DockModels.
+            context.metadata["multipose_parallel"] = {
+                "enabled": False,
+                "requested": True,
+                "fallback": "sequential",
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
 
     for index, dock_model in enumerate(preparation.dock_models):
         if context.is_cancelled():
@@ -49792,6 +50552,28 @@ def _report_stage_parameter_mapping(config: AnalysisConfig) -> Mapping[str, Any]
     return stage_config.parameters
 
 
+def _default_report_output_directory(directory: Optional[PathLike]) -> Optional[Path]:
+    """Prefer the dedicated Reports directory when a generic output root is used."""
+
+    module_config = globals().get("config")
+    report_dir = getattr(module_config, "REPORT_DIR", None) if module_config is not None else None
+    output_root = getattr(module_config, "OUTPUT_DIR", None) if module_config is not None else None
+    if directory is None:
+        return Path(report_dir).expanduser() if report_dir else None
+    try:
+        value = Path(directory).expanduser()
+    except Exception:
+        return directory  # type: ignore[return-value]
+    if report_dir is None:
+        return value
+    report_path = Path(report_dir).expanduser()
+    if value == report_path or value.name.casefold() in {"reports", "report"}:
+        return value
+    if output_root is not None and value == Path(output_root).expanduser():
+        return report_path
+    return value
+
+
 def resolve_report_integration_config(
     config: ReportIntegrationConfigLike = None,
     *,
@@ -49815,7 +50597,7 @@ def resolve_report_integration_config(
             "validate_document": True if stage is None else stage.validate_result,
             "strict_validation": config.runtime.is_strict,
             "include_rendered_content": True,
-            "output_directory": output.output_directory,
+            "output_directory": _default_report_output_directory(output.output_directory),
             "basename": output.file_prefix or REPORT_DEFAULT_BASENAME,
             "overwrite": output.overwrite,
             "create_directories": output.create_directories,
@@ -50405,13 +51187,17 @@ def build_report_document(
         "strict_validation": config.strict_validation,
     }
     common = {key: value for key, value in common.items() if value is not None}
+    report_source = target.source
+    if target.kind is ReportTargetKind.MULTIPOSE and target.dock_models:
+        report_source = target.dock_models
+
     if target.kind is ReportTargetKind.POSE and hasattr(module, "create_pose_report"):
         function = getattr(module, "create_pose_report")
     elif target.kind is ReportTargetKind.MULTIPOSE and hasattr(module, "create_multipose_report"):
         function = getattr(module, "create_multipose_report")
     else:
         function = getattr(module, "create_report")
-    return function(target.source, **_report_supported_kwargs(function, common))
+    return function(report_source, **_report_supported_kwargs(function, common))
 
 
 def validate_report_document_integration(
@@ -52348,7 +53134,7 @@ def _export_source_identifier(value: Any) -> Optional[str]:
 
 
 def _export_collect_dock_models(value: Any, *, seen: Optional[Set[int]] = None) -> Tuple[Any, ...]:
-    """Collect unique DockModel-like objects from nested results."""
+    """Collect real DockModel-like objects from nested analysis results."""
 
     if value is None:
         return ()
@@ -52358,6 +53144,49 @@ def _export_collect_dock_models(value: Any, *, seen: Optional[Set[int]] = None) 
     if marker in seen:
         return ()
     seen.add(marker)
+
+    # Analysis-result containers may themselves satisfy the broad structural
+    # DockModel predicate (for example through ``name`` + ``statistics``).
+    # Always unwrap those containers before applying duck typing so aggregate
+    # multipose results can never become synthetic exported poses.
+    if isinstance(value, PoseAnalysisResult):
+        direct = get_object_value(value, "dock_model", default=None, include_aliases=False)
+        if direct is not None and is_dock_model_like(direct):
+            return (direct,)
+        nested_pose = get_object_value(value, "pose", default=None, include_aliases=False)
+        return (nested_pose,) if nested_pose is not None and is_dock_model_like(nested_pose) else ()
+    if isinstance(value, MultiPoseAnalysisResult):
+        models: List[Any] = []
+        for pose_result in value.pose_results:
+            for model in _export_collect_dock_models(pose_result, seen=seen):
+                if all(id(existing) != id(model) for existing in models):
+                    models.append(model)
+        return tuple(models)
+    if isinstance(value, BatchAnalysisItem):
+        for candidate in (value.result, value.source):
+            if candidate is None or candidate is value:
+                continue
+            models = _export_collect_dock_models(candidate, seen=seen)
+            if models:
+                return models
+        return ()
+    if isinstance(value, BatchAnalysisResult):
+        models: List[Any] = []
+        for item in value.items:
+            for model in _export_collect_dock_models(item, seen=seen):
+                if all(id(existing) != id(model) for existing in models):
+                    models.append(model)
+        return tuple(models)
+    if isinstance(value, AnalysisRunResult):
+        models: List[Any] = []
+        for candidate in (value.multipose_result, value.pose_result, value.batch_result, value.result, value.payload):
+            if candidate is None or candidate is value:
+                continue
+            for model in _export_collect_dock_models(candidate, seen=seen):
+                if all(id(existing) != id(model) for existing in models):
+                    models.append(model)
+        return tuple(models)
+
     if is_dock_model_like(value):
         return (value,)
     direct = get_object_value(value, "dock_model", default=None, include_aliases=False)
@@ -52626,7 +53455,7 @@ def build_native_export_validation_options(
     values.setdefault("require_source", True)
     values.setdefault("require_output_dir", True)
     values.setdefault("check_output_writable", True)
-    values.setdefault("check_serializable", True)
+    values.setdefault("check_serializable", False)
     values.setdefault("require_files_for_success", True)
     return option_type(**_export_supported_kwargs(option_type, values))
 
@@ -52768,6 +53597,19 @@ def adapt_native_export_result(
             "native_result_type": type(native_result).__name__,
             "native_status": _export_token(get_object_value(result, "status", default="", include_aliases=False)),
             "recovered": bool(get_object_value(recovery_report, "recovered", default=False, include_aliases=False)),
+            "export_timings": to_json_compatible(
+                dict(get_object_value(result, "metadata", default={}, include_aliases=False) or {}).get(
+                    "export_timings",
+                    {},
+                )
+            ),
+            "native_export_duration_seconds": get_object_value(
+                result,
+                "duration_seconds",
+                default=None,
+                include_aliases=False,
+                call=True,
+            ),
         },
     )
     output.duration_seconds = get_object_value(result, "duration_seconds", default=None, include_aliases=False, call=True)
@@ -53025,10 +53867,21 @@ def run_export_analysis(
     overrides: Optional[Mapping[str, Any]] = None,
     export_module: Optional[ModuleType] = None,
 ) -> ExportStageOutput:
-    """Resolve, execute, validate and attach one export operation."""
+    """Resolve, execute, validate and attach one timed export operation."""
 
+    integration_started_at = _utc_timestamp()
+    integration_started = time.perf_counter()
+    integration_timings: Dict[str, float] = {}
+
+    phase_started = time.perf_counter()
     module = _require_export_module(export_module)
-    active = resolve_export_integration_config(config or (context.config if context is not None else None), overrides=overrides)
+    active = resolve_export_integration_config(
+        config or (context.config if context is not None else None),
+        overrides=overrides,
+    )
+    integration_timings["resolve_config_seconds"] = max(0.0, time.perf_counter() - phase_started)
+
+    phase_started = time.perf_counter()
     target = resolve_export_stage_target(
         source,
         context=context,
@@ -53038,17 +53891,36 @@ def run_export_analysis(
         run_result=run_result,
         dock_model=dock_model,
     )
+    integration_timings["resolve_target_seconds"] = max(0.0, time.perf_counter() - phase_started)
+
+    phase_started = time.perf_counter()
     reusable = find_reusable_export_output(target, active)
+    integration_timings["reuse_lookup_seconds"] = max(0.0, time.perf_counter() - phase_started)
     if reusable is not None:
         reusable.metadata["config_fingerprint"] = active.fingerprint
+        reusable.metadata["integration_timings"] = integration_timings
+        reusable.metadata["integration_timings"]["total_seconds"] = max(
+            0.0, time.perf_counter() - integration_started
+        )
         return reusable
+
     validation_before = None
+    phase_started = time.perf_counter()
     if active.validate_before_export:
         validation_before = validate_export_target_preflight(target, active, export_module=module)
+    integration_timings["validation_before_seconds"] = max(0.0, time.perf_counter() - phase_started)
+
+    phase_started = time.perf_counter()
     native_result = _run_native_export(target, active, export_module=module)
+    integration_timings["native_export_seconds"] = max(0.0, time.perf_counter() - phase_started)
+
     validation_after = None
+    phase_started = time.perf_counter()
     if active.validate_after_export:
         validation_after = validate_native_export_result(native_result, active, export_module=module)
+    integration_timings["validation_after_seconds"] = max(0.0, time.perf_counter() - phase_started)
+
+    phase_started = time.perf_counter()
     output = adapt_native_export_result(
         native_result,
         target=target,
@@ -53056,14 +53928,27 @@ def run_export_analysis(
         validation_before=validation_before,
         validation_after=validation_after,
     )
+    integration_timings["adapt_result_seconds"] = max(0.0, time.perf_counter() - phase_started)
     output.metadata.update(
         {
             "config_fingerprint": active.fingerprint,
             "schema": EXPORT_INTEGRATION_SCHEMA_NAME,
             "schema_version": EXPORT_INTEGRATION_SCHEMA_VERSION,
+            "integration_timings": integration_timings,
         }
     )
+
+    phase_started = time.perf_counter()
     attach_export_output_to_dock_models(output, export_module=module)
+    integration_timings["attach_results_seconds"] = max(0.0, time.perf_counter() - phase_started)
+    integration_timings["total_seconds"] = max(0.0, time.perf_counter() - integration_started)
+
+    # The pipeline-level export stage must include target resolution, validation,
+    # native preparation/serialization/writing and attachment, not only the
+    # native writer's post-preparation interval.
+    output.started_at = integration_started_at
+    output.finished_at = _utc_timestamp()
+    output.duration_seconds = integration_timings["total_seconds"]
     return output
 
 
@@ -53278,6 +54163,8 @@ def summarize_export_stage(value: Any) -> Dict[str, Any]:
         "warning_count": len(value.warnings),
         "error_count": len(value.errors),
         "duration_seconds": value.duration_seconds,
+        "export_timings": to_json_compatible(value.metadata.get("export_timings", {})),
+        "integration_timings": to_json_compatible(value.metadata.get("integration_timings", {})),
     }
 
 
@@ -54767,6 +55654,58 @@ def _visualization_outcome_execution(value: Any) -> Any:
     return execution
 
 
+def _visualization_execution_diagnostics(
+    executions: Sequence[Any],
+) -> Tuple[Tuple[str, ...], Tuple[str, ...], Dict[str, int]]:
+    """Return warnings, errors and counts from native command executions."""
+
+    warnings_out: List[str] = []
+    errors_out: List[str] = []
+    failed_commands = 0
+    failed_executions = 0
+    for execution in executions:
+        execution_failed = False
+        commands_value = get_object_value(execution, "commands", default=())
+        try:
+            commands = tuple(commands_value or ())
+        except TypeError:
+            commands = ()
+        for command in commands:
+            status = _visualization_token(get_object_value(command, "status", default=""))
+            if status != "failed":
+                continue
+            failed_commands += 1
+            execution_failed = True
+            text = normalize_text(get_object_value(command, "text", default=""))
+            error_type = normalize_text(get_object_value(command, "error_type", default=""))
+            message = normalize_text(get_object_value(command, "error_message", default=""))
+            sequence = get_object_value(command, "sequence", default=None)
+            optional = bool(get_object_value(command, "optional", default=False))
+            prefix = "ChimeraX command failed"
+            if sequence is not None:
+                prefix += f" at sequence {sequence}"
+            details = message or error_type or "The command did not complete successfully."
+            if text:
+                details = f"{text}: {details}"
+            record = f"{prefix}: {details}"
+            (warnings_out if optional else errors_out).append(record)
+        state = _visualization_token(get_object_value(execution, "state", default=""))
+        if state == "failed":
+            execution_failed = True
+            if not commands:
+                errors_out.append("ChimeraX visualization execution failed without command details.")
+        if execution_failed:
+            failed_executions += 1
+    return (
+        tuple(unique_preserving_order(warnings_out)),
+        tuple(unique_preserving_order(errors_out)),
+        {
+            "failed_command_count": failed_commands,
+            "failed_execution_count": failed_executions,
+        },
+    )
+
+
 def adapt_native_visualization_result(
     value: Any,
     *,
@@ -54818,6 +55757,9 @@ def adapt_native_visualization_result(
         model = get_object_value(outcome, "model", default=None)
         if model is not None:
             attached_models.append(model)
+    command_warnings, command_errors, execution_counts = _visualization_execution_diagnostics(executions)
+    warnings_list.extend(command_warnings)
+    errors.extend(command_errors)
     if reused:
         status = VisualizationIntegrationStatus.REUSED
     elif errors and states:
@@ -54849,6 +55791,7 @@ def adapt_native_visualization_result(
                 _visualization_token(get_object_value(item, "execution_mode", default=""))
                 for item in executions
             ],
+            **execution_counts,
         },
     )
 
@@ -55150,12 +56093,34 @@ def visualization_stage_output_to_result(
     )
     result.output_summary.update(summarize_visualization_stage(output))
     for warning_text in output.warnings:
-        result.messages.append(str(warning_text))
+        result.add_issue(AnalysisIssue(
+            kind=IssueKind.WARNING,
+            severity=IssueSeverity.WARNING,
+            code="visualization_warning",
+            message=str(warning_text),
+            stage=STAGE_VISUALIZATION,
+            recoverable=True,
+            action=RecoveryAction.CONTINUE_PARTIAL,
+            scope=FailureScope.STAGE,
+        ))
+        result.add_message(str(warning_text))
+    for error_text in output.errors:
+        result.add_issue(AnalysisIssue(
+            kind=IssueKind.ERROR,
+            severity=IssueSeverity.ERROR,
+            code="visualization_command_failed",
+            message=str(error_text),
+            stage=STAGE_VISUALIZATION,
+            recoverable=True,
+            action=RecoveryAction.CONTINUE_PARTIAL,
+            scope=FailureScope.STAGE,
+        ))
+        result.add_message(str(error_text))
     if output.status in {VisualizationIntegrationStatus.SUCCEEDED, VisualizationIntegrationStatus.REUSED}:
         result.succeed(output, message="Visualization completed successfully.")
         result.cached = output.reused
     elif output.status is VisualizationIntegrationStatus.PARTIAL:
-        result.finish(StageStatus.PARTIAL, value=output, message="Visualization completed with partial output.")
+        result.partial(output, message="Visualization completed with partial output.")
     elif output.status is VisualizationIntegrationStatus.SKIPPED:
         result.skip("Visualization produced no plan or state.")
     else:
@@ -56569,20 +57534,28 @@ def collect_observability_module_versions(
         if len(versions) >= resolved.max_version_items:
             break
         module: Any = None
+        load_error: Optional[BaseException] = None
         if name == "analyze":
             module = sys.modules.get(__name__)
-        elif name == "config":
-            module = config
-        elif name == "utils":
-            module_name = getattr(DockModel, "__module__", "")
-            module = sys.modules.get(module_name)
         else:
             try:
-                module = load_analysis_module(name, validate=False)
-            except Exception:
+                module = get_loaded_analysis_module(name)
+                if module is None:
+                    module = load_analysis_module(name, required=False)
+            except Exception as exc:
+                load_error = exc
                 module = None
         if module is None:
-            versions[name] = {"available": False, "version": None}
+            entry: Dict[str, Any] = {
+                "available": False,
+                "version": None,
+            }
+            if load_error is not None:
+                entry["load_error"] = {
+                    "type": type(load_error).__name__,
+                    "message": str(load_error),
+                }
+            versions[name] = entry
         else:
             versions[name] = {
                 "available": True,
@@ -62186,6 +63159,379 @@ def focus_chimerax_models(
     )
 
 
+def _chimerax_models_target(models: Any) -> str:
+    """Return one ChimeraX target atomspec string for the provided models."""
+
+    atomspecs = [
+        spec
+        for spec in (chimerax_model_atomspec(item) for item in normalize_object_sequence(models))
+        if spec
+    ]
+    return " ".join(atomspecs) if atomspecs else "all"
+
+
+def _show_chimerax_models(
+    models: Any,
+    *,
+    style: str = "models",
+    session: Any = None,
+    runner: Any = None,
+    dry_run: bool = False,
+    raise_on_error: bool = False,
+) -> ChimeraXCommandExecution:
+    """Ensure the provided models are visible before a snapshot."""
+
+    target = _chimerax_models_target(models)
+    suffix = (style or "models").strip() or "models"
+    return execute_chimerax_native_command(
+        f"show {target} {suffix}",
+        session=session,
+        runner=runner,
+        dry_run=dry_run,
+        raise_on_error=raise_on_error,
+    )
+
+
+def _wait_chimerax_frames(
+    frame_count: int = 1,
+    *,
+    session: Any = None,
+    runner: Any = None,
+    dry_run: bool = False,
+    raise_on_error: bool = False,
+) -> ChimeraXCommandExecution:
+    """Wait for one or more ChimeraX redraw frames."""
+
+    frames = max(1, int(frame_count))
+    return execute_chimerax_native_command(
+        f"wait {frames}",
+        session=session,
+        runner=runner,
+        dry_run=dry_run,
+        raise_on_error=raise_on_error,
+    )
+
+
+def _prepare_pose_snapshot_scene(
+    receptor: Any,
+    pose: Any,
+    *,
+    session: Any = None,
+    runner: Any = None,
+    dry_run: bool = False,
+) -> List[ChimeraXCommandExecution]:
+    """Prepare a stable visible scene before saving one pose snapshot."""
+
+    actions: List[ChimeraXCommandExecution] = []
+    if receptor is not None:
+        actions.append(
+            _show_chimerax_models(
+                receptor,
+                style="cartoons",
+                session=session,
+                runner=runner,
+                dry_run=dry_run,
+                raise_on_error=False,
+            )
+        )
+    if pose is not None:
+        actions.append(
+            _show_chimerax_models(
+                pose,
+                style="atoms",
+                session=session,
+                runner=runner,
+                dry_run=dry_run,
+                raise_on_error=False,
+            )
+        )
+        actions.append(
+            focus_chimerax_models(
+                pose,
+                session=session,
+                runner=runner,
+                dry_run=dry_run,
+                raise_on_error=False,
+            )
+        )
+    else:
+        actions.append(
+            execute_chimerax_native_command(
+                "view",
+                session=session,
+                runner=runner,
+                dry_run=dry_run,
+                raise_on_error=False,
+            )
+        )
+    actions.append(
+        _wait_chimerax_frames(
+            2,
+            session=session,
+            runner=runner,
+            dry_run=dry_run,
+            raise_on_error=False,
+        )
+    )
+    return actions
+
+
+def _restore_snapshot_overview_scene(
+    receptor: Any,
+    poses: Any,
+    *,
+    session: Any = None,
+    runner: Any = None,
+    dry_run: bool = False,
+) -> List[ChimeraXCommandExecution]:
+    """Restore a general receptor + all poses view after snapshot generation."""
+
+    pose_models = tuple(item for item in normalize_object_sequence(poses) if item is not None)
+    if receptor is None and not pose_models:
+        return []
+    actions: List[ChimeraXCommandExecution] = []
+    if receptor is not None:
+        actions.append(
+            _show_chimerax_models(
+                receptor,
+                style="cartoons",
+                session=session,
+                runner=runner,
+                dry_run=dry_run,
+                raise_on_error=False,
+            )
+        )
+    if pose_models:
+        actions.append(
+            _show_chimerax_models(
+                pose_models,
+                style="atoms",
+                session=session,
+                runner=runner,
+                dry_run=dry_run,
+                raise_on_error=False,
+            )
+        )
+    actions.append(
+        execute_chimerax_native_command(
+            "view",
+            session=session,
+            runner=runner,
+            dry_run=dry_run,
+            raise_on_error=False,
+        )
+    )
+    actions.append(
+        _wait_chimerax_frames(
+            2,
+            session=session,
+            runner=runner,
+            dry_run=dry_run,
+            raise_on_error=False,
+        )
+    )
+    return actions
+
+
+def _ask_generate_pose_snapshots(
+    session: Any = None,
+    *,
+    pose_count: int = 0,
+    default: bool = False,
+) -> bool:
+    """Ask whether one snapshot per pose should be generated."""
+
+    message = (
+        f"Generate one snapshot for each analyzed pose ({pose_count})?"
+        if pose_count
+        else "Generate one snapshot for each analyzed pose?"
+    )
+    title = "DockAnalyzer pose snapshots"
+    ui = getattr(session, "ui", None)
+    if ui is not None and getattr(ui, "is_gui", False):
+        try:
+            from Qt.QtWidgets import QMessageBox  # type: ignore
+
+            parent = getattr(ui, "main_window", None)
+            buttons = QMessageBox.Yes | QMessageBox.No
+            default_button = QMessageBox.Yes if default else QMessageBox.No
+            choice = QMessageBox.question(parent, title, message, buttons, default_button)
+            return choice == QMessageBox.Yes
+        except Exception:
+            pass
+    try:
+        response = input(f"{message} [y/N]: ").strip().lower()
+    except Exception:
+        return bool(default)
+    if not response:
+        return bool(default)
+    return response in {"y", "yes", "s", "sim", "true", "1"}
+
+
+def _pose_snapshot_rank_from_dock_model(model: Any) -> Optional[int]:
+    """Return the authoritative multipose rank attached to one DockModel."""
+
+    metadata = get_object_value(model, "metadata", default=None)
+    if isinstance(metadata, Mapping):
+        multipose = metadata.get("multipose_analysis")
+        if isinstance(multipose, Mapping):
+            rank_info = multipose.get("rank")
+            if isinstance(rank_info, Mapping):
+                for key in ("rank", "position"):
+                    try:
+                        value = rank_info.get(key)
+                        if value is not None:
+                            return int(value)
+                    except (TypeError, ValueError):
+                        continue
+    return None
+
+
+def _pose_snapshot_identifier(value: Any) -> str:
+    """Return a stable token used in snapshot filenames."""
+
+    if value not in (None, ""):
+        text = str(value)
+    else:
+        text = "unknown"
+    text = text.strip().lstrip("#")
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
+    text = text.strip("_")
+    return text or "unknown"
+
+
+def _pose_snapshot_filename(model: Any, *, rank: Optional[int], image_format: str = "png") -> str:
+    """Return the snapshot filename for one analyzed pose."""
+
+    pose_value = get_object_value(model, "pose", default=None)
+    pose_token = _pose_snapshot_identifier(
+        chimerax_model_atomspec(pose_value) or get_object_value(model, "pose_id", default=None) or get_object_value(model, "id", default=None)
+    )
+    prefix = f"rank{int(rank)}" if rank is not None else "rank_unknown"
+    return f"{prefix}_pose_{pose_token}.{canonicalize_visualization_image_format(image_format)}"
+
+
+def _generate_optional_pose_snapshots(
+    output: "ChimeraXAnalysisOutput",
+    *,
+    session: Any = None,
+    runner: Any = None,
+    logger: Any = None,
+) -> List[str]:
+    """Generate one focused snapshot per analyzed pose without affecting success state."""
+
+    dock_models = tuple(output.dock_models)
+    if not dock_models:
+        return []
+    active_session = session if session is not None else output.selection.session
+    receptor = output.selection.receptor
+    image_dir = getattr(config, "IMAGE_DIR", None)
+    if image_dir is None:
+        base_dir = output.command_options.output_directory or Path.cwd()
+        image_dir = Path(base_dir) / "Images"
+    image_dir = Path(image_dir)
+    image_dir.mkdir(parents=True, exist_ok=True)
+    created: List[str] = []
+    action_records: List[Dict[str, Any]] = []
+    post_actions = getattr(output, "post_actions", None)
+    if not isinstance(post_actions, list):
+        post_actions = []
+        setattr(output, "post_actions", post_actions)
+    ordered_models = sorted(
+        dock_models,
+        key=lambda item: (
+            _pose_snapshot_rank_from_dock_model(item) is None,
+            _pose_snapshot_rank_from_dock_model(item) if _pose_snapshot_rank_from_dock_model(item) is not None else float("inf"),
+            _pose_snapshot_identifier(
+                get_object_value(item, "pose_id", default=None)
+                or chimerax_model_atomspec(get_object_value(item, "pose", default=None))
+                or get_object_value(item, "id", default=None)
+            ),
+        ),
+    )
+    for model in ordered_models:
+        pose_value = get_object_value(model, "pose", default=None)
+        rank = _pose_snapshot_rank_from_dock_model(model)
+        filename = _pose_snapshot_filename(
+            model,
+            rank=rank,
+            image_format=output.request.config.output.image_format,
+        )
+        path = image_dir / filename
+        preparation_actions = _prepare_pose_snapshot_scene(
+            receptor,
+            pose_value,
+            session=active_session,
+            runner=runner,
+            dry_run=output.command_options.dry_run,
+        )
+        snapshot_action = create_chimerax_snapshot(
+            path,
+            session=active_session,
+            runner=runner,
+            dry_run=output.command_options.dry_run,
+            raise_on_error=False,
+        )
+        settle_action = _wait_chimerax_frames(
+            1,
+            session=active_session,
+            runner=runner,
+            dry_run=output.command_options.dry_run,
+            raise_on_error=False,
+        )
+        record = {
+            "pose_id": get_object_value(model, "pose_id", default=None) or chimerax_model_atomspec(pose_value),
+            "rank": rank,
+            "path": str(path),
+            "preparation_actions": [
+                item.to_dict() if callable(getattr(item, "to_dict", None)) else {
+                    "succeeded": bool(getattr(item, "succeeded", False)),
+                    "error": getattr(item, "error", None),
+                }
+                for item in preparation_actions
+            ],
+            "snapshot_succeeded": bool(snapshot_action.succeeded),
+            "snapshot_error": snapshot_action.error,
+            "settle_action": settle_action.to_dict() if callable(getattr(settle_action, "to_dict", None)) else {
+                "succeeded": bool(getattr(settle_action, "succeeded", False)),
+                "error": getattr(settle_action, "error", None),
+            },
+        }
+        action_records.append(record)
+        post_actions.extend(preparation_actions)
+        post_actions.append(snapshot_action)
+        post_actions.append(settle_action)
+        if snapshot_action.succeeded:
+            created.append(str(path))
+        else:
+            warning = f"Snapshot for {record['pose_id']} could not be created: {snapshot_action.error or 'unknown error'}"
+            output.warnings.append(warning)
+            if logger is not None:
+                try:
+                    logger.warning(warning)
+                except Exception:
+                    pass
+    restore_actions = _restore_snapshot_overview_scene(
+        receptor,
+        [get_object_value(model, "pose", default=None) for model in ordered_models],
+        session=active_session,
+        runner=runner,
+        dry_run=output.command_options.dry_run,
+    )
+    post_actions.extend(restore_actions)
+    output.metadata["pose_snapshots"] = action_records
+    output.metadata["pose_snapshot_paths"] = list(created)
+    output.metadata["pose_snapshot_count"] = len(created)
+    output.metadata["pose_snapshot_restore_actions"] = [
+        item.to_dict() if callable(getattr(item, "to_dict", None)) else {
+            "succeeded": bool(getattr(item, "succeeded", False)),
+            "error": getattr(item, "error", None),
+        }
+        for item in restore_actions
+    ]
+    return created
+
+
 # 28.8. Session analysis orchestration
 # -----------------------------------------------------------------------------
 
@@ -62310,10 +63656,23 @@ def _compact_stage_statuses(
     compact: Dict[str, Dict[str, Any]] = {}
     for stage, stage_result in stage_results.items():
         status = getattr(stage_result, "status", None)
-        compact[str(stage)] = {
+        record: Dict[str, Any] = {
             "status": getattr(status, "value", str(status or "unknown")),
             "duration_seconds": getattr(stage_result, "duration_seconds", None),
         }
+        diagnostics = getattr(stage_result, "diagnostics", None)
+        if diagnostics is not None:
+            record["warning_count"] = len(getattr(diagnostics, "warnings", ()) or ())
+            record["error_count"] = len(getattr(diagnostics, "errors", ()) or ())
+        output_summary = getattr(stage_result, "output_summary", None)
+        if isinstance(output_summary, Mapping):
+            export_timings = output_summary.get("export_timings")
+            integration_timings = output_summary.get("integration_timings")
+            if isinstance(export_timings, Mapping) and export_timings:
+                record["export_timings"] = to_json_compatible(export_timings)
+            if isinstance(integration_timings, Mapping) and integration_timings:
+                record["integration_timings"] = to_json_compatible(integration_timings)
+        compact[str(stage)] = record
     return compact
 
 
@@ -62440,14 +63799,21 @@ def _compact_module_versions(
     """Return availability and version only, excluding source paths."""
 
     raw_versions = collect_observability_module_versions()
-    versions = {
-        str(name): {
+    versions: Dict[str, Dict[str, Any]] = {}
+    for name, values in raw_versions.items():
+        if not isinstance(values, Mapping):
+            continue
+        entry: Dict[str, Any] = {
             "available": bool(values.get("available", False)),
             "version": values.get("version"),
         }
-        for name, values in raw_versions.items()
-        if isinstance(values, Mapping)
-    }
+        load_error = values.get("load_error")
+        if isinstance(load_error, Mapping):
+            entry["load_error"] = {
+                "type": str(load_error.get("type") or "Error"),
+                "message": str(load_error.get("message") or ""),
+            }
+        versions[str(name)] = entry
     versions.setdefault(
         "dockanalyzer",
         {"available": True, "version": __version__},
@@ -62507,15 +63873,37 @@ def _compact_run_diagnostics(
     for message in (*result.errors, *getattr(analysis_output, "errors", ())):
         add("error", message)
 
+    global_stage_results = getattr(global_result, "stage_results", {})
+    stage_diagnostics: List[Any] = []
+    if isinstance(global_stage_results, Mapping):
+        stage_diagnostics.extend(
+            getattr(item, "diagnostics", None)
+            for item in global_stage_results.values()
+        )
+    for pose_result in pose_results:
+        pose_stage_results = getattr(pose_result, "stage_results", {})
+        if isinstance(pose_stage_results, Mapping):
+            stage_diagnostics.extend(
+                getattr(item, "diagnostics", None)
+                for item in pose_stage_results.values()
+            )
     diagnostic_sources = [
         getattr(global_result, "diagnostics", None),
         *(getattr(item, "diagnostics", None) for item in pose_results),
+        *stage_diagnostics,
     ]
     for diagnostics in diagnostic_sources:
         for issue in getattr(diagnostics, "issues", ()) if diagnostics is not None else ():
             severity = getattr(issue, "severity", None)
-            token = str(getattr(severity, "value", severity) or "").lower()
-            kind = "error" if token in {"error", "critical", "fatal"} else "warning"
+            severity_value = getattr(severity, "value", severity)
+            try:
+                is_error = int(severity_value) >= int(IssueSeverity.ERROR)
+            except (TypeError, ValueError):
+                token = str(
+                    getattr(severity, "name", severity_value) or ""
+                ).lower()
+                is_error = token in {"error", "critical", "fatal"}
+            kind = "error" if is_error else "warning"
             add(
                 kind,
                 getattr(issue, "message", issue),
@@ -62626,6 +64014,47 @@ def build_chimerax_run_summary(
     )
     plan = getattr(analysis_output, "plan", None)
     run_result = getattr(analysis_output, "run_result", None)
+
+    pose_runtime_seconds = sum(
+        float(item.duration_seconds or 0.0)
+        for item in pose_results
+        if getattr(item, "duration_seconds", None) is not None
+    )
+    analysis_context = getattr(analysis_output, "context", None)
+    parallel_execution = (
+        getattr(analysis_context, "metadata", {}).get("multipose_parallel", {})
+        if analysis_context is not None
+        else {}
+    )
+    if not isinstance(parallel_execution, Mapping):
+        parallel_execution = {}
+    pose_wall_runtime_seconds = pose_runtime_seconds
+    if parallel_execution.get("enabled"):
+        try:
+            pose_wall_runtime_seconds = float(
+                parallel_execution.get("duration_seconds", pose_runtime_seconds)
+                or pose_runtime_seconds
+            )
+        except (TypeError, ValueError, OverflowError):
+            pose_wall_runtime_seconds = pose_runtime_seconds
+    parallel_overlap_seconds = max(0.0, pose_runtime_seconds - pose_wall_runtime_seconds)
+    global_runtime_seconds = sum(
+        float(getattr(stage_result, "duration_seconds", 0.0) or 0.0)
+        for stage_result in global_stage_results.values()
+    ) if isinstance(global_stage_results, Mapping) else 0.0
+    accounted_runtime_seconds = pose_wall_runtime_seconds + global_runtime_seconds
+    analysis_runtime_seconds = getattr(run_result, "duration_seconds", None)
+    unattributed_runtime_seconds = None
+    unattributed_runtime_percent = None
+    if analysis_runtime_seconds is not None:
+        analysis_runtime_seconds = float(analysis_runtime_seconds)
+        unattributed_runtime_seconds = max(0.0, analysis_runtime_seconds - accounted_runtime_seconds)
+        unattributed_runtime_percent = (
+            (unattributed_runtime_seconds / analysis_runtime_seconds) * 100.0
+            if analysis_runtime_seconds > 0.0
+            else 0.0
+        )
+
     return {
         "schema": "dockanalyzer.chimerax.run_summary",
         "schema_version": "1.0",
@@ -62648,6 +64077,7 @@ def build_chimerax_run_summary(
             "global": _compact_stage_statuses(global_stage_results),
             "poses": pose_stage_statuses,
         },
+        "parallel_execution": to_json_compatible(parallel_execution),
         "scores": pose_summaries,
         "ranking": {
             "best_pose_id": getattr(best_pose, "pose_id", None),
@@ -62664,6 +64094,13 @@ def build_chimerax_run_summary(
             "analysis_started_at": getattr(run_result, "started_at", None),
             "analysis_finished_at": getattr(run_result, "finished_at", None),
             "analysis_duration_seconds": getattr(run_result, "duration_seconds", None),
+            "pose_runtime_seconds": pose_runtime_seconds,
+            "pose_wall_runtime_seconds": pose_wall_runtime_seconds,
+            "parallel_overlap_seconds": parallel_overlap_seconds,
+            "global_stage_runtime_seconds": global_runtime_seconds,
+            "accounted_runtime_seconds": accounted_runtime_seconds,
+            "unattributed_runtime_seconds": unattributed_runtime_seconds,
+            "unattributed_runtime_percent": unattributed_runtime_percent,
         },
         "module_versions": _compact_module_versions(result),
     }
@@ -62781,6 +64218,7 @@ def analyze_chimerax_session(
     """Analyze receptor and pose models from an active ChimeraX session."""
 
     command_options = coerce_chimerax_command_options(options)
+    started_at = _utc_timestamp()
     started = time.perf_counter()
     session_value = resolve_chimerax_session(session, required=command_options.strict)
     selection = resolve_chimerax_model_selection(
@@ -62826,6 +64264,7 @@ def analyze_chimerax_session(
             command_options=command_options,
             session_info=inspect_chimerax_session(session_value, runner=runner),
             warnings=list(selection.warnings),
+            started_at=started_at,
             metadata={"name": name, **dict(metadata or {})},
         )
         _run_chimerax_post_actions(output, runner=runner)
@@ -62845,6 +64284,7 @@ def analyze_chimerax_session(
             session_info=inspect_chimerax_session(session_value, runner=runner),
             warnings=list(selection.warnings),
             errors=[f"{type(exc).__name__}: {exc}"],
+            started_at=started_at,
             metadata={"name": name, **dict(metadata or {})},
         )
     output.finished_at = _utc_timestamp()
@@ -64593,7 +66033,7 @@ def run_analysis(
         if requested_mode is not None:
             try:
                 session_mode = (
-                    canonicalize_analysis_dispatch_mode(requested_mode)
+                    canonicalize_analysis_dispatch_kind(requested_mode)
                     == ANALYSIS_DISPATCH_CHIMERAX
                 )
             except (TypeError, ValueError):
@@ -68094,8 +69534,18 @@ def _self_test_diagnostic_serialization(
 def _self_test_empty_unified_input_rejection(
     _context: SelfTestContext,
 ) -> Dict[str, Any]:
-    assert_self_test_raises(AnalysisInputError, run_analysis)
-    return {"rejected": True}
+    modes = (
+        None,
+        ANALYSIS_MODE_SINGLE_POSE,
+        ANALYSIS_MODE_MULTIPOSE,
+        ANALYSIS_MODE_BATCH,
+        ANALYSIS_MODE_SESSION,
+    )
+    for analysis_mode in modes:
+        kwargs = {} if analysis_mode is None else {"mode": analysis_mode}
+        error = assert_self_test_raises(AnalysisInputError, run_analysis, **kwargs)
+        assert_self_test_equal(error.code, "missing_analysis_input")
+    return {"rejected": True, "mode_count": len(modes)}
 
 
 @register_self_test(
@@ -68771,8 +70221,8 @@ def _build_chimerax_autorun_config(
         analysis_mode=ANALYSIS_MODE_AUTO,
         failure_policy=FAILURE_POLICY_PERMISSIVE,
         attachment_policy=ATTACHMENT_POLICY_MERGE,
-        execution_mode=EXECUTION_MODE_SEQUENTIAL,
-        max_workers=1,
+        execution_mode=EXECUTION_MODE_AUTOMATIC,
+        max_workers=max(1, min(8, os.cpu_count() or 1)),
         attach_results=True,
         reuse_results=False,
         validate_inputs=True,
@@ -69261,6 +70711,35 @@ def run_chimerax_autorun(session_value: Any = None) -> ChimeraXAnalysisOutput:
         _log_chimerax_autorun_selection(result.selection, logger=run_logger)
         if run_logger.log_path is not None:
             result.metadata["log_file"] = str(run_logger.log_path)
+        try:
+            should_snapshot = _ask_generate_pose_snapshots(
+                active_session,
+                pose_count=result.selection.pose_count,
+                default=False,
+            )
+        except Exception as exc:
+            should_snapshot = False
+            run_logger.warning(
+                "The pose snapshot prompt could not be completed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+        result.metadata["pose_snapshot_prompt"] = {
+            "asked": True,
+            "accepted": bool(should_snapshot),
+        }
+        if should_snapshot:
+            paths = _generate_optional_pose_snapshots(
+                result,
+                session=active_session,
+                logger=run_logger,
+            )
+            message = (
+                f"Pose snapshots created: {len(paths)} file(s) in {config.IMAGE_DIR}"
+                if paths
+                else "No pose snapshots were created."
+            )
+            emit_chimerax_message(message, session=active_session, level="info" if paths else "warning")
+            run_logger.info(message)
         summary_path = _write_chimerax_autorun_summary(
             result,
             file_prefix=file_prefix,

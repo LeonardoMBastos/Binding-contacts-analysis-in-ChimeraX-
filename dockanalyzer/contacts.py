@@ -4707,70 +4707,113 @@ def find_atom_contacts(
         allow_empty=False,
         require_finite=True,
     )
-    resolved_block_size = _resolve_contact_block_size(
-        len(normalized_atoms_1),
-        len(normalized_atoms_2),
-        block_size=block_size,
-        maximum_matrix_elements=matrix_element_limit,
-    )
-
+    # Stage 9: sparse radius search replaces receptor x ligand matrices.
+    # The fallback below preserves the legacy blocked implementation if an
+    # unexpected spatial-index backend failure occurs.
     contact_metadata = {} if metadata is None else dict(metadata)
     contact_metadata.setdefault("cutoff", float(cutoff_value))
     contact_metadata.setdefault("scene_coordinates", scene_value)
-    contact_metadata.setdefault(
-        "search_strategy", "full_matrix" if resolved_block_size is None else "blocked"
-    )
     contacts: List[AtomContact] = []
 
-    def process_distance_block(
-        squared_distances: FloatArray,
-        *,
-        index_offset_1: int,
-    ) -> None:
-        for local_index_1_raw, index_2_raw in np.argwhere(
-            squared_distances <= cutoff_squared
-        ):
-            local_index_1 = int(local_index_1_raw)
-            index_1 = index_offset_1 + local_index_1
-            index_2 = int(index_2_raw)
-            atom_1 = normalized_atoms_1[index_1]
-            atom_2 = normalized_atoms_2[index_2]
-            if exclude_identical_atoms and atom_1 is atom_2:
-                continue
-            if exclude_same_residue and atoms_share_residue(atom_1, atom_2):
-                continue
-            distance_value = np.float64(
-                np.sqrt(squared_distances[local_index_1, index_2])
-            )
-            contacts.append(
-                _build_atom_contact(
-                    atom_1,
-                    atom_2,
-                    distance=distance_value,
-                    cutoff=cutoff_value,
-                    atom_1_index=index_1,
-                    atom_2_index=index_2,
-                    classification=classification,
-                    metadata=contact_metadata,
-                    scene=scene_value,
-                    coordinate_1=coordinates_1[index_1],
-                    coordinate_2=coordinates_2[index_2],
-                )
-            )
-
-    if resolved_block_size is None:
-        process_distance_block(
-            _calculate_squared_distance_block(coordinates_1, coordinates_2),
-            index_offset_1=0,
+    try:
+        spatial_index = geometry._build_spatial_neighbor_index(coordinates_2)
+        neighborhoods = spatial_index.query_ball_points(
+            coordinates_1,
+            float(cutoff_value),
         )
-    else:
-        for block_start, _, coordinate_block in _iter_coordinate_blocks(
-            coordinates_1, resolved_block_size
-        ):
+        contact_metadata.setdefault(
+            "search_strategy",
+            f"spatial_{getattr(spatial_index, 'backend', 'index')}",
+        )
+        for index_1, candidate_indices in enumerate(neighborhoods):
+            atom_1 = normalized_atoms_1[index_1]
+            coordinate_1 = coordinates_1[index_1]
+            for index_2 in candidate_indices:
+                atom_2 = normalized_atoms_2[index_2]
+                if exclude_identical_atoms and atom_1 is atom_2:
+                    continue
+                if exclude_same_residue and atoms_share_residue(atom_1, atom_2):
+                    continue
+                offset = coordinate_1 - coordinates_2[index_2]
+                distance_squared = np.float64(np.dot(offset, offset))
+                if distance_squared > cutoff_squared:
+                    continue
+                distance_value = np.float64(np.sqrt(max(float(distance_squared), 0.0)))
+                contacts.append(
+                    _build_atom_contact(
+                        atom_1,
+                        atom_2,
+                        distance=distance_value,
+                        cutoff=cutoff_value,
+                        atom_1_index=index_1,
+                        atom_2_index=index_2,
+                        classification=classification,
+                        metadata=contact_metadata,
+                        scene=scene_value,
+                        coordinate_1=coordinate_1,
+                        coordinate_2=coordinates_2[index_2],
+                    )
+                )
+    except Exception:
+        resolved_block_size = _resolve_contact_block_size(
+            len(normalized_atoms_1),
+            len(normalized_atoms_2),
+            block_size=block_size,
+            maximum_matrix_elements=matrix_element_limit,
+        )
+        contact_metadata["search_strategy"] = (
+            "full_matrix" if resolved_block_size is None else "blocked"
+        )
+
+        def process_distance_block(
+            squared_distances: FloatArray,
+            *,
+            index_offset_1: int,
+        ) -> None:
+            for local_index_1_raw, index_2_raw in np.argwhere(
+                squared_distances <= cutoff_squared
+            ):
+                local_index_1 = int(local_index_1_raw)
+                index_1 = index_offset_1 + local_index_1
+                index_2 = int(index_2_raw)
+                atom_1 = normalized_atoms_1[index_1]
+                atom_2 = normalized_atoms_2[index_2]
+                if exclude_identical_atoms and atom_1 is atom_2:
+                    continue
+                if exclude_same_residue and atoms_share_residue(atom_1, atom_2):
+                    continue
+                distance_value = np.float64(
+                    np.sqrt(squared_distances[local_index_1, index_2])
+                )
+                contacts.append(
+                    _build_atom_contact(
+                        atom_1,
+                        atom_2,
+                        distance=distance_value,
+                        cutoff=cutoff_value,
+                        atom_1_index=index_1,
+                        atom_2_index=index_2,
+                        classification=classification,
+                        metadata=contact_metadata,
+                        scene=scene_value,
+                        coordinate_1=coordinates_1[index_1],
+                        coordinate_2=coordinates_2[index_2],
+                    )
+                )
+
+        if resolved_block_size is None:
             process_distance_block(
-                _calculate_squared_distance_block(coordinate_block, coordinates_2),
-                index_offset_1=block_start,
+                _calculate_squared_distance_block(coordinates_1, coordinates_2),
+                index_offset_1=0,
             )
+        else:
+            for block_start, _, coordinate_block in _iter_coordinate_blocks(
+                coordinates_1, resolved_block_size
+            ):
+                process_distance_block(
+                    _calculate_squared_distance_block(coordinate_block, coordinates_2),
+                    index_offset_1=block_start,
+                )
 
     if sort_by_distance:
         contacts.sort(key=_contact_sort_key)
@@ -9323,14 +9366,47 @@ def analyze_contacts(
         scene_value,
     )
 
-    ligand_atoms, receptor_atoms = select_contact_collections(
+    ligand_atoms = select_ligand_atoms(
         resolved_ligand,
-        resolved_receptor,
         heavy_only=heavy_only,
         exclude_solvent=exclude_solvent,
-        exclude_ions=exclude_ions,
+        exclude_ions=False,
+        allow_empty=False,
         require_coordinate=True,
     )
+    prepared_receptor = utils._prepared_receptor_from_dock_model(
+        dock_model,
+        receptor=resolved_receptor,
+    )
+    if prepared_receptor is not None:
+        receptor_cache_key = (
+            "contacts_receptor_atoms",
+            bool(heavy_only),
+            bool(exclude_solvent),
+            bool(exclude_ions),
+        )
+        receptor_atoms = prepared_receptor.get_or_create(
+            receptor_cache_key,
+            lambda: select_receptor_atoms(
+                resolved_receptor,
+                heavy_only=heavy_only,
+                exclude_solvent=exclude_solvent,
+                exclude_ions=exclude_ions,
+                allow_empty=False,
+                require_coordinate=True,
+            ),
+        )
+        analysis_metadata.setdefault("prepared_receptor_reused", True)
+    else:
+        receptor_atoms = select_receptor_atoms(
+            resolved_receptor,
+            heavy_only=heavy_only,
+            exclude_solvent=exclude_solvent,
+            exclude_ions=exclude_ions,
+            allow_empty=False,
+            require_coordinate=True,
+        )
+        analysis_metadata.setdefault("prepared_receptor_reused", False)
 
     atom_contacts = find_atom_contacts(
         ligand_atoms,

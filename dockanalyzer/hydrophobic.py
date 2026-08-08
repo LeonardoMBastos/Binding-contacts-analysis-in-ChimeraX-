@@ -95,6 +95,7 @@ from numpy.typing import NDArray
 # -----------------------------------------------------------------------------
 
 from . import config
+from . import utils as _utils
 from ._version import __version__
 from .contacts import (
     ResidueContactKey,
@@ -113,7 +114,7 @@ from .contacts import (
     is_hydrogen_atom,
     validate_atom,
 )
-from .geometry import distance
+from .geometry import distance, _build_spatial_neighbor_index
 from .utils import DockLogger, DockModel
 
 
@@ -9307,7 +9308,25 @@ def prepare_hydrophobic_atom_collections(
             ligand
         )
 
-    receptor_atoms = prepare_atom_collection(
+    prepared_receptor = _utils._get_prepared_receptor_cache(receptor_source)
+    receptor_cache_key = (
+        "hydrophobic_receptor_atoms",
+        bool(allow_empty_receptor),
+        bool(remove_hydrogens),
+        bool(remove_water),
+        bool(remove_deleted),
+        bool(displayed_only),
+        tuple(sorted(str(value).strip().upper() for value in allowed_altlocs))
+        if allowed_altlocs is not None
+        else None,
+        None if minimum_occupancy is None else float(minimum_occupancy),
+        bool(require_coordinates),
+        bool(require_element),
+        bool(raise_on_invalid),
+        str(deduplication_strategy),
+        id(receptor_predicate) if receptor_predicate is not None else None,
+    )
+    receptor_builder = lambda: prepare_atom_collection(
         receptor_source,
         collection_name="receptor atom collection",
         allow_empty=allow_empty_receptor,
@@ -9322,6 +9341,11 @@ def prepare_hydrophobic_atom_collections(
         raise_on_invalid=raise_on_invalid,
         deduplication_strategy=deduplication_strategy,
         predicate=receptor_predicate,
+    )
+    receptor_atoms = (
+        prepared_receptor.get_or_create(receptor_cache_key, receptor_builder)
+        if prepared_receptor is not None
+        else receptor_builder()
     )
 
     ligand_atoms = prepare_atom_collection(
@@ -9341,25 +9365,39 @@ def prepare_hydrophobic_atom_collections(
         predicate=ligand_predicate,
     )
 
+    overlapping_atoms = find_collection_overlap(receptor_atoms, ligand_atoms)
     receptor_atoms, ligand_atoms = remove_collection_overlap(
         receptor_atoms,
         ligand_atoms,
         prefer=overlap_policy,
     )
 
+    receptor_descriptor_builder = lambda: prepare_hydrophobic_descriptors(
+        receptor_atoms,
+        role=HYDROPHOBIC_ROLE_RECEPTOR,
+        include_rejected=True,
+        maximum_absolute_partial_charge=maximum_absolute_partial_charge,
+        maximum_polar_neighbors=maximum_polar_neighbors,
+        hydrophobic_residue_names=hydrophobic_residue_names,
+    )
+    receptor_descriptor_key = (
+        "hydrophobic_receptor_descriptors",
+        receptor_cache_key,
+        None
+        if maximum_absolute_partial_charge is None
+        else float(maximum_absolute_partial_charge),
+        maximum_polar_neighbors,
+        tuple(sorted(str(value).strip().upper() for value in hydrophobic_residue_names))
+        if hydrophobic_residue_names is not None
+        else None,
+    )
     receptor_descriptor_result = (
-        prepare_hydrophobic_descriptors(
-            receptor_atoms,
-            role=HYDROPHOBIC_ROLE_RECEPTOR,
-            include_rejected=True,
-            maximum_absolute_partial_charge=(
-                maximum_absolute_partial_charge
-            ),
-            maximum_polar_neighbors=maximum_polar_neighbors,
-            hydrophobic_residue_names=(
-                hydrophobic_residue_names
-            ),
+        prepared_receptor.get_or_create(
+            receptor_descriptor_key,
+            receptor_descriptor_builder,
         )
+        if prepared_receptor is not None and not overlapping_atoms
+        else receptor_descriptor_builder()
     )
 
     ligand_descriptor_result = (
@@ -9394,6 +9432,7 @@ def prepare_hydrophobic_atom_collections(
             "source_is_dock_model": (
                 supplied_dock_model is not None
             ),
+            "prepared_receptor_reused": prepared_receptor is not None,
             "remove_hydrogens": bool(remove_hydrogens),
             "remove_water": bool(remove_water),
             "remove_deleted": bool(remove_deleted),
@@ -11488,29 +11527,89 @@ def hydrophobic_contact_indices(
     Return indices of atom pairs satisfying the distance criteria.
     """
 
-    contact_mask = hydrophobic_contact_mask(
-        first_group,
-        second_group,
-        maximum_distance=maximum_distance,
-        minimum_distance=minimum_distance,
-        tolerance=tolerance,
-    )
-
-    row_indices, column_indices = np.nonzero(
-        contact_mask
-    )
-
-    return tuple(
-        (
-            int(row_index),
-            int(column_index),
-        )
-        for row_index, column_index
-        in zip(
-            row_indices,
-            column_indices,
+    maximum_cutoff = (
+        get_default_maximum_hydrophobic_distance()
+        if maximum_distance is None
+        else _positive_float(
+            maximum_distance,
+            name="maximum hydrophobic contact distance",
         )
     )
+    minimum_cutoff = (
+        get_default_minimum_hydrophobic_distance()
+        if minimum_distance is None
+        else _nonnegative_float(
+            minimum_distance,
+            name="minimum hydrophobic contact distance",
+        )
+    )
+    distance_tolerance = (
+        get_default_hydrophobic_distance_tolerance()
+        if tolerance is None
+        else _nonnegative_float(
+            tolerance,
+            name="hydrophobic distance tolerance",
+        )
+    )
+    if minimum_cutoff > maximum_cutoff:
+        raise ValueError("minimum_distance cannot exceed maximum_distance.")
+
+    first_coordinates = hydrophobic_atom_coordinates(first_group, allow_empty=True)
+    second_coordinates = hydrophobic_atom_coordinates(second_group, allow_empty=True)
+    if first_coordinates.shape[0] == 0 or second_coordinates.shape[0] == 0:
+        return ()
+
+    lower_limit = max(float(minimum_cutoff - distance_tolerance), 0.0)
+    upper_limit = float(maximum_cutoff + distance_tolerance)
+    lower_squared = lower_limit * lower_limit
+    upper_squared = upper_limit * upper_limit
+    pairs: List[IndexedAtomPair] = []
+
+    try:
+        # Index the larger side and query the smaller one. The final sort restores
+        # the exact row-major ordering produced historically by np.nonzero().
+        if first_coordinates.shape[0] >= second_coordinates.shape[0]:
+            spatial_index = _build_spatial_neighbor_index(first_coordinates)
+            neighborhoods = spatial_index.query_ball_points(
+                second_coordinates,
+                upper_limit,
+            )
+            for second_index, first_indices in enumerate(neighborhoods):
+                second_coordinate = second_coordinates[second_index]
+                for first_index in first_indices:
+                    offset = first_coordinates[first_index] - second_coordinate
+                    squared_distance = float(np.dot(offset, offset))
+                    if lower_squared <= squared_distance <= upper_squared:
+                        pairs.append((int(first_index), int(second_index)))
+        else:
+            spatial_index = _build_spatial_neighbor_index(second_coordinates)
+            neighborhoods = spatial_index.query_ball_points(
+                first_coordinates,
+                upper_limit,
+            )
+            for first_index, second_indices in enumerate(neighborhoods):
+                first_coordinate = first_coordinates[first_index]
+                for second_index in second_indices:
+                    offset = first_coordinate - second_coordinates[second_index]
+                    squared_distance = float(np.dot(offset, offset))
+                    if lower_squared <= squared_distance <= upper_squared:
+                        pairs.append((int(first_index), int(second_index)))
+        pairs.sort()
+        return tuple(pairs)
+    except Exception:
+        # Compatibility fallback: retain the legacy exact matrix path.
+        contact_mask = hydrophobic_contact_mask(
+            first_group,
+            second_group,
+            maximum_distance=maximum_distance,
+            minimum_distance=minimum_distance,
+            tolerance=tolerance,
+        )
+        row_indices, column_indices = np.nonzero(contact_mask)
+        return tuple(
+            (int(row_index), int(column_index))
+            for row_index, column_index in zip(row_indices, column_indices)
+        )
 
 
 def hydrophobic_contact_pairs(
@@ -12354,6 +12453,260 @@ def is_aromatic_aromatic_hydrophobic_contact(
 # -----------------------------------------------------------------------------
 # Pair-level geometric analysis
 # -----------------------------------------------------------------------------
+
+
+def _build_local_hydrophobic_neighbor_cache(
+    central_descriptors: Sequence[HydrophobicAtom],
+    candidates: HydrophobicGroupInput,
+    *,
+    radius: Number,
+) -> Dict[int, Tuple[AtomLike, ...]]:
+    """Build local-neighbor tuples once for all requested central atoms."""
+
+    local_radius = _positive_float(
+        radius,
+        name="local contact radius",
+    )
+
+    candidate_atoms, _ = _normalize_geometry_descriptors(
+        candidates
+    )
+
+    if not candidate_atoms or not central_descriptors:
+        return {}
+
+    central_atoms: List[AtomLike] = []
+    seen_central_atom_ids: Set[int] = set()
+
+    for descriptor in central_descriptors:
+        central_atom = descriptor.atom
+        central_identity = id(central_atom)
+        if central_identity in seen_central_atom_ids:
+            continue
+        seen_central_atom_ids.add(central_identity)
+        central_atoms.append(central_atom)
+
+    if not central_atoms:
+        return {}
+
+    distance_matrix = hydrophobic_distance_matrix(
+        central_atoms,
+        candidate_atoms,
+    )
+
+    neighbor_cache: Dict[int, Tuple[AtomLike, ...]] = {}
+
+    for row_index, central_atom in enumerate(central_atoms):
+        row = distance_matrix[row_index]
+        neighbor_cache[id(central_atom)] = tuple(
+            candidate_atom
+            for candidate_atom, measured_distance
+            in zip(candidate_atoms, row)
+            if (
+                candidate_atom is not central_atom
+                and measured_distance <= local_radius
+            )
+        )
+
+    return neighbor_cache
+
+
+def _analyze_hydrophobic_pair_geometry_cached(
+    receptor_descriptor: HydrophobicAtom,
+    ligand_descriptor: HydrophobicAtom,
+    *,
+    receptor_neighbors: Sequence[AtomLike],
+    ligand_neighbors: Sequence[AtomLike],
+    local_radius: Number,
+    maximum_contact_distance: Optional[Number],
+) -> HydrophobicPairGeometry:
+    """Analyze one pair while reusing cached neighborhoods and one local matrix."""
+
+    receptor_atom = receptor_descriptor.atom
+    ligand_atom = ligand_descriptor.atom
+
+    pair_distance = hydrophobic_distance(
+        receptor_atom,
+        ligand_atom,
+    )
+
+    geometry_type = classify_hydrophobic_geometry_type(
+        receptor_descriptor,
+        ligand_descriptor,
+    )
+
+    resolved_local_radius = _positive_float(
+        local_radius,
+        name="local radius",
+    )
+
+    maximum_cutoff = (
+        get_default_maximum_hydrophobic_distance()
+        if maximum_contact_distance is None
+        else _positive_float(
+            maximum_contact_distance,
+            name="maximum contact distance",
+        )
+    )
+
+    receptor_local_group = (
+        receptor_atom,
+        *tuple(receptor_neighbors),
+    )
+    ligand_local_group = (
+        ligand_atom,
+        *tuple(ligand_neighbors),
+    )
+
+    local_distance_matrix = hydrophobic_distance_matrix(
+        receptor_local_group,
+        ligand_local_group,
+    )
+
+    possible_pair_count = int(local_distance_matrix.size)
+    distance_tolerance = get_default_hydrophobic_distance_tolerance()
+
+    tolerant_contact_mask = (
+        (local_distance_matrix >= 0.0)
+        & (
+            local_distance_matrix
+            <= maximum_cutoff + distance_tolerance
+        )
+    )
+    shared_local_contact_count = int(
+        np.count_nonzero(tolerant_contact_mask)
+    )
+
+    exact_contact_mask = (
+        (local_distance_matrix >= 0.0)
+        & (local_distance_matrix <= maximum_cutoff)
+    )
+    exact_contact_distances = local_distance_matrix[
+        exact_contact_mask
+    ]
+
+    if exact_contact_distances.size:
+        minimum_distance_score = distance_compaction_score(
+            np.min(exact_contact_distances),
+            reference_distance=maximum_cutoff,
+            minimum_distance=0.0,
+        )
+        mean_distance_score = distance_compaction_score(
+            np.mean(exact_contact_distances),
+            reference_distance=maximum_cutoff,
+            minimum_distance=0.0,
+        )
+        contact_fraction = (
+            exact_contact_distances.size
+            / possible_pair_count
+        )
+        local_compaction = validate_hydrophobic_score(
+            0.45 * float(minimum_distance_score)
+            + 0.35 * float(mean_distance_score)
+            + 0.20 * float(contact_fraction)
+        )
+
+        radius = _positive_float(
+            DEFAULT_CONTACT_AREA_ATOM_RADIUS,
+            name="contact atom radius",
+        )
+        normalized_overlap = np.clip(
+            (
+                maximum_cutoff
+                - exact_contact_distances
+            ) / maximum_cutoff,
+            0.0,
+            1.0,
+        )
+        pair_areas = np.clip(
+            np.pi * radius ** 2 * normalized_overlap,
+            DEFAULT_MINIMUM_CONTACT_AREA,
+            DEFAULT_MAXIMUM_CONTACT_AREA_PER_PAIR,
+        )
+        approximate_area = np.float64(
+            np.sum(pair_areas)
+        )
+    else:
+        local_compaction = np.float64(0.0)
+        approximate_area = np.float64(0.0)
+
+    if shared_local_contact_count:
+        pair_density = (
+            shared_local_contact_count
+            / possible_pair_count
+        )
+        receptor_contact_fraction = (
+            np.count_nonzero(
+                np.any(tolerant_contact_mask, axis=1)
+            )
+            / tolerant_contact_mask.shape[0]
+        )
+        ligand_contact_fraction = (
+            np.count_nonzero(
+                np.any(tolerant_contact_mask, axis=0)
+            )
+            / tolerant_contact_mask.shape[1]
+        )
+        contacted_fraction = (
+            receptor_contact_fraction
+            + ligand_contact_fraction
+        ) / 2.0
+        contact_density = validate_hydrophobic_score(
+            0.60 * float(pair_density)
+            + 0.40 * float(contacted_fraction)
+        )
+    else:
+        contact_density = np.float64(0.0)
+
+    receptor_coordinates = hydrophobic_atom_coordinates(
+        receptor_local_group,
+        allow_empty=False,
+    )
+    ligand_coordinates = hydrophobic_atom_coordinates(
+        ligand_local_group,
+        allow_empty=False,
+    )
+
+    receptor_local_centroid = np.asarray(
+        np.mean(receptor_coordinates, axis=0),
+        dtype=np.float64,
+    )
+    ligand_local_centroid = np.asarray(
+        np.mean(ligand_coordinates, axis=0),
+        dtype=np.float64,
+    )
+    local_centroid_distance = hydrophobic_distance(
+        receptor_local_centroid,
+        ligand_local_centroid,
+    )
+
+    pair_metadata: Dict[str, Any] = {
+        "local_radius": float(resolved_local_radius),
+        "aromatic_aromatic_is_not_pi_stacking": (
+            geometry_type
+            == HYDROPHOBIC_TYPE_AROMATIC_AROMATIC
+        ),
+    }
+
+    return HydrophobicPairGeometry(
+        receptor_atom=receptor_atom,
+        ligand_atom=ligand_atom,
+        receptor_descriptor=receptor_descriptor,
+        ligand_descriptor=ligand_descriptor,
+        distance=pair_distance,
+        geometry_type=geometry_type,
+        receptor_neighbor_count=len(receptor_neighbors),
+        ligand_neighbor_count=len(ligand_neighbors),
+        shared_local_contact_count=shared_local_contact_count,
+        local_compaction=local_compaction,
+        contact_density=contact_density,
+        approximate_contact_area=approximate_area,
+        receptor_local_centroid=receptor_local_centroid,
+        ligand_local_centroid=ligand_local_centroid,
+        local_centroid_distance=local_centroid_distance,
+        metadata=pair_metadata,
+    )
+
 
 def analyze_hydrophobic_pair_geometry(
     receptor: Union[
@@ -14546,179 +14899,97 @@ def create_hydrophobic_interaction(
 # Contact detection
 # -----------------------------------------------------------------------------
 
-def detect_hydrophobic_contacts(
-    receptor: Union[
-        Any,
-        HydrophobicAtomCollections,
-    ],
-    ligand: Optional[Any] = None,
+def _detect_hydrophobic_contacts_from_pairs(
+    resolved_prepared: HydrophobicAtomCollections,
+    candidate_pairs: Sequence[HydrophobicDescriptorPair],
     *,
-    prepared_collections: Optional[
-        HydrophobicAtomCollections
-    ] = None,
-    minimum_distance: Optional[Number] = None,
-    maximum_distance: Optional[Number] = None,
-    local_radius: Optional[Number] = None,
-    remove_duplicates: bool = (
-        DEFAULT_REMOVE_DUPLICATE_PAIRS
-    ),
-    sort_interactions: bool = (
-        DEFAULT_SORT_HYDROPHOBIC_INTERACTIONS
-    ),
-    maximum_interactions: Optional[int] = None,
-    include_geometry_metadata: bool = (
-        DEFAULT_INCLUDE_PAIR_GEOMETRY_METADATA
-    ),
-    preparation_options: Optional[
-        Mapping[str, Any]
-    ] = None,
-) -> Tuple[
-    HydrophobicInteraction,
-    ...,
-]:
-    """
-    Detect individual receptor–ligand hydrophobic contacts.
+    minimum_cutoff: Number,
+    maximum_cutoff: Number,
+    local_radius: Optional[Number],
+    remove_duplicates: bool,
+    sort_interactions: bool,
+    maximum_interactions: Optional[int],
+    include_geometry_metadata: bool,
+    timing_sink: Optional[MutableMapping[str, float]] = None,
+) -> Tuple[HydrophobicInteraction, ...]:
+    """Create hydrophobic interactions from already validated candidate pairs."""
 
-    Processing steps
-    ----------------
-    1. prepare receptor and ligand atoms;
-    2. perceive hydrophobic atoms;
-    3. search pairs within the distance cutoff;
-    4. validate each candidate pair;
-    5. calculate detailed local geometry;
-    6. classify chemical contact type;
-    7. assign preliminary strength and score;
-    8. remove duplicate interactions.
-    """
-
-    minimum_cutoff = (
-        get_default_minimum_hydrophobic_distance()
-        if minimum_distance is None
-        else _nonnegative_float(
-            minimum_distance,
-            name="minimum hydrophobic distance",
-        )
-    )
-
-    maximum_cutoff = (
-        get_default_maximum_hydrophobic_distance()
-        if maximum_distance is None
-        else _positive_float(
-            maximum_distance,
-            name="maximum hydrophobic distance",
-        )
-    )
-
-    if minimum_cutoff > maximum_cutoff:
-        raise ValueError(
-            "minimum_distance cannot exceed maximum_distance."
-        )
-
-    resolved_prepared = prepared_collections
-
-    if resolved_prepared is None:
-        if isinstance(
-            receptor,
-            HydrophobicAtomCollections,
-        ):
-            resolved_prepared = receptor
-
-        else:
-            options = (
-                {}
-                if preparation_options is None
-                else dict(preparation_options)
-            )
-
-            resolved_prepared = (
-                prepare_hydrophobic_atom_collections(
-                    receptor,
-                    ligand,
-                    **options,
-                )
-            )
-
-    if not isinstance(
-        resolved_prepared,
-        HydrophobicAtomCollections,
-    ):
-        raise TypeError(
-            "Could not resolve prepared hydrophobic atom "
-            "collections."
-        )
-
+    total_started = time.perf_counter()
     receptor_descriptors = tuple(
         resolved_prepared.receptor_hydrophobic_atoms
     )
-
     ligand_descriptors = tuple(
         resolved_prepared.ligand_hydrophobic_atoms
     )
+    pairs = tuple(candidate_pairs)
 
-    if (
-        not receptor_descriptors
-        or not ligand_descriptors
-    ):
+    if not pairs:
+        if timing_sink is not None:
+            timing_sink.update(
+                {
+                    "neighbor_cache_seconds": 0.0,
+                    "interaction_creation_seconds": 0.0,
+                    "finalization_seconds": 0.0,
+                    "total_seconds": time.perf_counter() - total_started,
+                }
+            )
         return ()
 
-    candidate_pairs = find_hydrophobic_pairs(
-        resolved_prepared,
-        minimum_distance=minimum_cutoff,
-        maximum_distance=maximum_cutoff,
-        remove_duplicates=remove_duplicates,
-        validate_pairs=True,
+    resolved_local_radius = (
+        DEFAULT_LOCAL_CONTACT_RADIUS
+        if local_radius is None
+        else _positive_float(
+            local_radius,
+            name="local radius",
+        )
     )
 
-    interactions: List[
-        HydrophobicInteraction
-    ] = []
+    cache_started = time.perf_counter()
+    receptor_neighbor_cache = _build_local_hydrophobic_neighbor_cache(
+        tuple(pair[0] for pair in pairs),
+        receptor_descriptors,
+        radius=resolved_local_radius,
+    )
+    ligand_neighbor_cache = _build_local_hydrophobic_neighbor_cache(
+        tuple(pair[1] for pair in pairs),
+        ligand_descriptors,
+        radius=resolved_local_radius,
+    )
+    cache_seconds = time.perf_counter() - cache_started
 
-    for receptor_descriptor, ligand_descriptor in candidate_pairs:
+    creation_started = time.perf_counter()
+    interactions: List[HydrophobicInteraction] = []
+
+    for receptor_descriptor, ligand_descriptor in pairs:
         try:
-            pair_geometry = (
-                analyze_hydrophobic_pair_geometry(
-                    receptor_descriptor,
-                    ligand_descriptor,
-                    receptor_candidates=(
-                        receptor_descriptors
-                    ),
-                    ligand_candidates=(
-                        ligand_descriptors
-                    ),
-                    local_radius=local_radius,
-                    maximum_contact_distance=(
-                        maximum_cutoff
-                    ),
-                )
+            pair_geometry = _analyze_hydrophobic_pair_geometry_cached(
+                receptor_descriptor,
+                ligand_descriptor,
+                receptor_neighbors=receptor_neighbor_cache.get(
+                    id(receptor_descriptor.atom),
+                    (),
+                ),
+                ligand_neighbors=ligand_neighbor_cache.get(
+                    id(ligand_descriptor.atom),
+                    (),
+                ),
+                local_radius=resolved_local_radius,
+                maximum_contact_distance=maximum_cutoff,
             )
 
-            interaction = (
-                create_hydrophobic_interaction(
-                    receptor_descriptor,
-                    ligand_descriptor,
-                    geometry=pair_geometry,
-                    receptor_candidates=(
-                        receptor_descriptors
-                    ),
-                    ligand_candidates=(
-                        ligand_descriptors
-                    ),
-                    minimum_distance=minimum_cutoff,
-                    maximum_distance=maximum_cutoff,
-                    detection_method=(
-                        HYDROPHOBIC_METHOD_ATOMIC
-                    ),
-                    include_geometry_metadata=(
-                        include_geometry_metadata
-                    ),
-                )
+            interaction = create_hydrophobic_interaction(
+                receptor_descriptor,
+                ligand_descriptor,
+                geometry=pair_geometry,
+                receptor_candidates=receptor_descriptors,
+                ligand_candidates=ligand_descriptors,
+                minimum_distance=minimum_cutoff,
+                maximum_distance=maximum_cutoff,
+                detection_method=HYDROPHOBIC_METHOD_ATOMIC,
+                include_geometry_metadata=include_geometry_metadata,
             )
 
-        except (
-            TypeError,
-            ValueError,
-            AttributeError,
-        ) as exc:
+        except (TypeError, ValueError, AttributeError) as exc:
             try:
                 _LOGGER.warning(
                     "A candidate hydrophobic pair was rejected "
@@ -14726,23 +14997,20 @@ def detect_hydrophobic_contacts(
                 )
             except Exception:
                 pass
-
             continue
 
         interactions.append(interaction)
 
-    if remove_duplicates:
-        interactions_tuple = (
-            deduplicate_hydrophobic_interactions(
-                interactions,
-                prefer_highest_score=True,
-            )
-        )
+    creation_seconds = time.perf_counter() - creation_started
 
-    else:
-        interactions_tuple = tuple(
-            interactions
+    finalization_started = time.perf_counter()
+    if remove_duplicates:
+        interactions_tuple = deduplicate_hydrophobic_interactions(
+            interactions,
+            prefer_highest_score=True,
         )
+    else:
+        interactions_tuple = tuple(interactions)
 
     if sort_interactions:
         interactions_tuple = tuple(
@@ -14767,11 +15035,107 @@ def detect_hydrophobic_contacts(
     )
 
     if interaction_limit is not None:
-        interactions_tuple = interactions_tuple[
-            :interaction_limit
-        ]
+        interactions_tuple = interactions_tuple[:interaction_limit]
+
+    finalization_seconds = time.perf_counter() - finalization_started
+
+    if timing_sink is not None:
+        timing_sink.update(
+            {
+                "neighbor_cache_seconds": cache_seconds,
+                "interaction_creation_seconds": creation_seconds,
+                "finalization_seconds": finalization_seconds,
+                "total_seconds": time.perf_counter() - total_started,
+            }
+        )
 
     return interactions_tuple
+
+
+def detect_hydrophobic_contacts(
+    receptor: Union[Any, HydrophobicAtomCollections],
+    ligand: Optional[Any] = None,
+    *,
+    prepared_collections: Optional[HydrophobicAtomCollections] = None,
+    minimum_distance: Optional[Number] = None,
+    maximum_distance: Optional[Number] = None,
+    local_radius: Optional[Number] = None,
+    remove_duplicates: bool = DEFAULT_REMOVE_DUPLICATE_PAIRS,
+    sort_interactions: bool = DEFAULT_SORT_HYDROPHOBIC_INTERACTIONS,
+    maximum_interactions: Optional[int] = None,
+    include_geometry_metadata: bool = DEFAULT_INCLUDE_PAIR_GEOMETRY_METADATA,
+    preparation_options: Optional[Mapping[str, Any]] = None,
+) -> Tuple[HydrophobicInteraction, ...]:
+    """Detect individual receptor-ligand hydrophobic contacts."""
+
+    minimum_cutoff = (
+        get_default_minimum_hydrophobic_distance()
+        if minimum_distance is None
+        else _nonnegative_float(
+            minimum_distance,
+            name="minimum hydrophobic distance",
+        )
+    )
+    maximum_cutoff = (
+        get_default_maximum_hydrophobic_distance()
+        if maximum_distance is None
+        else _positive_float(
+            maximum_distance,
+            name="maximum hydrophobic distance",
+        )
+    )
+
+    if minimum_cutoff > maximum_cutoff:
+        raise ValueError(
+            "minimum_distance cannot exceed maximum_distance."
+        )
+
+    resolved_prepared = prepared_collections
+    if resolved_prepared is None:
+        if isinstance(receptor, HydrophobicAtomCollections):
+            resolved_prepared = receptor
+        else:
+            options = (
+                {}
+                if preparation_options is None
+                else dict(preparation_options)
+            )
+            resolved_prepared = prepare_hydrophobic_atom_collections(
+                receptor,
+                ligand,
+                **options,
+            )
+
+    if not isinstance(resolved_prepared, HydrophobicAtomCollections):
+        raise TypeError(
+            "Could not resolve prepared hydrophobic atom collections."
+        )
+
+    if (
+        not resolved_prepared.receptor_hydrophobic_atoms
+        or not resolved_prepared.ligand_hydrophobic_atoms
+    ):
+        return ()
+
+    candidate_pairs = find_hydrophobic_pairs(
+        resolved_prepared,
+        minimum_distance=minimum_cutoff,
+        maximum_distance=maximum_cutoff,
+        remove_duplicates=remove_duplicates,
+        validate_pairs=True,
+    )
+
+    return _detect_hydrophobic_contacts_from_pairs(
+        resolved_prepared,
+        candidate_pairs,
+        minimum_cutoff=minimum_cutoff,
+        maximum_cutoff=maximum_cutoff,
+        local_radius=local_radius,
+        remove_duplicates=remove_duplicates,
+        sort_interactions=sort_interactions,
+        maximum_interactions=maximum_interactions,
+        include_geometry_metadata=include_geometry_metadata,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -15058,45 +15422,27 @@ def _build_detection_statistics(
 # -----------------------------------------------------------------------------
 
 def detect_hydrophobic_interactions(
-    receptor: Union[
-        Any,
-        HydrophobicAtomCollections,
-    ],
+    receptor: Union[Any, HydrophobicAtomCollections],
     ligand: Optional[Any] = None,
     *,
-    prepared_collections: Optional[
-        HydrophobicAtomCollections
-    ] = None,
+    prepared_collections: Optional[HydrophobicAtomCollections] = None,
     minimum_distance: Optional[Number] = None,
     maximum_distance: Optional[Number] = None,
     grouping_distance: Optional[Number] = None,
     local_radius: Optional[Number] = None,
-    remove_duplicates: bool = (
-        DEFAULT_REMOVE_DUPLICATE_PAIRS
-    ),
-    sort_interactions: bool = (
-        DEFAULT_SORT_HYDROPHOBIC_INTERACTIONS
-    ),
+    remove_duplicates: bool = DEFAULT_REMOVE_DUPLICATE_PAIRS,
+    sort_interactions: bool = DEFAULT_SORT_HYDROPHOBIC_INTERACTIONS,
     maximum_interactions: Optional[int] = None,
-    include_geometry_metadata: bool = (
-        DEFAULT_INCLUDE_PAIR_GEOMETRY_METADATA
-    ),
-    preparation_options: Optional[
-        Mapping[str, Any]
-    ] = None,
+    include_geometry_metadata: bool = DEFAULT_INCLUDE_PAIR_GEOMETRY_METADATA,
+    preparation_options: Optional[Mapping[str, Any]] = None,
     receptor_identifier: Optional[str] = None,
     ligand_identifier: Optional[str] = None,
     analysis_identifier: Optional[str] = None,
     metadata: Optional[Mapping[str, Any]] = None,
 ) -> HydrophobicAnalysisResult:
-    """
-    Run the complete atomic hydrophobic-interaction detection workflow.
+    """Run the complete atomic hydrophobic-interaction detection workflow."""
 
-    At this stage, the result contains individual interactions and basic
-    statistics. Residue groups are intentionally empty until Section 8
-    performs residue-level grouping.
-    """
-
+    workflow_started = time.perf_counter()
     minimum_cutoff = (
         get_default_minimum_hydrophobic_distance()
         if minimum_distance is None
@@ -15105,7 +15451,6 @@ def detect_hydrophobic_interactions(
             name="minimum hydrophobic distance",
         )
     )
-
     maximum_cutoff = (
         get_default_maximum_hydrophobic_distance()
         if maximum_distance is None
@@ -15114,7 +15459,6 @@ def detect_hydrophobic_interactions(
             name="maximum hydrophobic distance",
         )
     )
-
     grouping_cutoff = (
         get_default_grouping_distance()
         if grouping_distance is None
@@ -15129,30 +15473,25 @@ def detect_hydrophobic_interactions(
             "minimum_distance cannot exceed maximum_distance."
         )
 
+    preparation_started = time.perf_counter()
     resolved_prepared = prepared_collections
-
     if resolved_prepared is None:
-        if isinstance(
-            receptor,
-            HydrophobicAtomCollections,
-        ):
+        if isinstance(receptor, HydrophobicAtomCollections):
             resolved_prepared = receptor
-
         else:
             options = (
                 {}
                 if preparation_options is None
                 else dict(preparation_options)
             )
-
-            resolved_prepared = (
-                prepare_hydrophobic_atom_collections(
-                    receptor,
-                    ligand,
-                    **options,
-                )
+            resolved_prepared = prepare_hydrophobic_atom_collections(
+                receptor,
+                ligand,
+                **options,
             )
+    preparation_seconds = time.perf_counter() - preparation_started
 
+    pair_search_started = time.perf_counter()
     candidate_pairs = find_hydrophobic_pairs(
         resolved_prepared,
         minimum_distance=minimum_cutoff,
@@ -15160,77 +15499,78 @@ def detect_hydrophobic_interactions(
         remove_duplicates=remove_duplicates,
         validate_pairs=True,
     )
+    pair_search_seconds = time.perf_counter() - pair_search_started
 
-    interactions = detect_hydrophobic_contacts(
+    contact_timings: Dict[str, float] = {}
+    interactions = _detect_hydrophobic_contacts_from_pairs(
         resolved_prepared,
-        prepared_collections=resolved_prepared,
-        minimum_distance=minimum_cutoff,
-        maximum_distance=maximum_cutoff,
+        candidate_pairs,
+        minimum_cutoff=minimum_cutoff,
+        maximum_cutoff=maximum_cutoff,
         local_radius=local_radius,
         remove_duplicates=remove_duplicates,
         sort_interactions=sort_interactions,
         maximum_interactions=maximum_interactions,
-        include_geometry_metadata=(
-            include_geometry_metadata
-        ),
+        include_geometry_metadata=include_geometry_metadata,
+        timing_sink=contact_timings,
     )
 
+    statistics_started = time.perf_counter()
     statistics = _build_detection_statistics(
         interactions,
-        receptor_atom_count=len(
-            resolved_prepared.receptor_atoms
-        ),
-        ligand_atom_count=len(
-            resolved_prepared.ligand_atoms
-        ),
+        receptor_atom_count=len(resolved_prepared.receptor_atoms),
+        ligand_atom_count=len(resolved_prepared.ligand_atoms),
     )
+    statistics_seconds = time.perf_counter() - statistics_started
 
+    accounting_started = time.perf_counter()
     detected_pair_keys = {
-        hydrophobic_interaction_pair_key(
-            interaction
-        )
+        hydrophobic_interaction_pair_key(interaction)
         for interaction in interactions
     }
-
     candidate_pair_keys = {
         hydrophobic_descriptor_pair_key(
             receptor_descriptor,
             ligand_descriptor,
         )
-        for receptor_descriptor, ligand_descriptor
-        in candidate_pairs
+        for receptor_descriptor, ligand_descriptor in candidate_pairs
     }
-
     rejected_pair_count = len(
-        candidate_pair_keys
-        - detected_pair_keys
+        candidate_pair_keys - detected_pair_keys
+    )
+    accounting_seconds = time.perf_counter() - accounting_started
+
+    performance_timings = {
+        "preparation_seconds": preparation_seconds,
+        "pair_search_seconds": pair_search_seconds,
+        "neighbor_cache_seconds": contact_timings.get(
+            "neighbor_cache_seconds", 0.0
+        ),
+        "interaction_creation_seconds": contact_timings.get(
+            "interaction_creation_seconds", 0.0
+        ),
+        "interaction_finalization_seconds": contact_timings.get(
+            "finalization_seconds", 0.0
+        ),
+        "statistics_seconds": statistics_seconds,
+        "pair_accounting_seconds": accounting_seconds,
+    }
+    performance_timings["total_seconds"] = (
+        time.perf_counter() - workflow_started
     )
 
     analysis_metadata: Dict[str, Any] = (
         {} if metadata is None else dict(metadata)
     )
-
     analysis_metadata.update(
         {
             "analysis_stage": "atomic_detection",
-            "candidate_pair_count": len(
-                candidate_pairs
-            ),
-            "detected_interaction_count": len(
-                interactions
-            ),
-            "rejected_pair_count": (
-                rejected_pair_count
-            ),
-            "minimum_distance": float(
-                minimum_cutoff
-            ),
-            "maximum_distance": float(
-                maximum_cutoff
-            ),
-            "grouping_distance": float(
-                grouping_cutoff
-            ),
+            "candidate_pair_count": len(candidate_pairs),
+            "detected_interaction_count": len(interactions),
+            "rejected_pair_count": rejected_pair_count,
+            "minimum_distance": float(minimum_cutoff),
+            "maximum_distance": float(maximum_cutoff),
+            "grouping_distance": float(grouping_cutoff),
             "local_radius": (
                 None
                 if local_radius is None
@@ -15241,16 +15581,14 @@ def detect_hydrophobic_interactions(
                     )
                 )
             ),
-            "duplicates_removed": bool(
-                remove_duplicates
-            ),
-            "interactions_sorted": bool(
-                sort_interactions
-            ),
+            "duplicates_removed": bool(remove_duplicates),
+            "interactions_sorted": bool(sort_interactions),
             "geometric_classification_is_preliminary": True,
             "score_is_preliminary": True,
             "residue_grouping_completed": False,
             "aromatic_aromatic_is_not_pi_stacking": True,
+            "performance_timings_seconds": performance_timings,
+            "performance_optimization": "stage8_cached_local_geometry",
         }
     )
 
@@ -15263,12 +15601,8 @@ def detect_hydrophobic_interactions(
         ligand_hydrophobic_atoms=(
             resolved_prepared.ligand_hydrophobic_atoms
         ),
-        receptor_atoms=(
-            resolved_prepared.receptor_atoms
-        ),
-        ligand_atoms=(
-            resolved_prepared.ligand_atoms
-        ),
+        receptor_atoms=resolved_prepared.receptor_atoms,
+        ligand_atoms=resolved_prepared.ligand_atoms,
         minimum_distance=minimum_cutoff,
         maximum_distance=maximum_cutoff,
         grouping_distance=grouping_cutoff,
@@ -15396,13 +15730,18 @@ def run_hydrophobic_detection(
         - len(unique_pairs)
     )
 
-    interactions = detect_hydrophobic_contacts(
+    interactions = _detect_hydrophobic_contacts_from_pairs(
         resolved_prepared,
-        prepared_collections=resolved_prepared,
-        minimum_distance=minimum_cutoff,
-        maximum_distance=maximum_cutoff,
+        unique_pairs,
+        minimum_cutoff=minimum_cutoff,
+        maximum_cutoff=maximum_cutoff,
         local_radius=local_radius,
         remove_duplicates=remove_duplicates,
+        sort_interactions=DEFAULT_SORT_HYDROPHOBIC_INTERACTIONS,
+        maximum_interactions=None,
+        include_geometry_metadata=(
+            DEFAULT_INCLUDE_PAIR_GEOMETRY_METADATA
+        ),
     )
 
     detection_metadata: Dict[str, Any] = (
@@ -17420,6 +17759,133 @@ def group_hydrophobic_interactions_by_residue(
 # Local-region clustering
 # -----------------------------------------------------------------------------
 
+
+def _build_hydrophobic_local_adjacency(
+    interactions: Sequence[HydrophobicInteraction],
+    *,
+    grouping_distance: Number,
+    require_same_pose: bool,
+    require_same_chain: bool,
+) -> Dict[int, Set[int]]:
+    """Build direct local-connectivity adjacency with cached interaction geometry."""
+
+    interaction_tuple = tuple(interactions)
+    cutoff = _positive_float(
+        grouping_distance,
+        name="local interaction grouping distance",
+    )
+    adjacency: Dict[int, Set[int]] = {
+        index: set()
+        for index in range(len(interaction_tuple))
+    }
+
+    if len(interaction_tuple) <= 1:
+        return adjacency
+
+    pose_identifiers = (
+        tuple(
+            get_interaction_pose_identifier(interaction)
+            for interaction in interaction_tuple
+        )
+        if require_same_pose
+        else ()
+    )
+    chain_identifiers = (
+        tuple(
+            get_interaction_chain_identifier(interaction)
+            for interaction in interaction_tuple
+        )
+        if require_same_chain
+        else ()
+    )
+    midpoints = np.asarray(
+        [
+            hydrophobic_interaction_midpoint(interaction)
+            for interaction in interaction_tuple
+        ],
+        dtype=np.float64,
+    )
+    receptor_atom_ids = tuple(
+        id(interaction.receptor_atom)
+        for interaction in interaction_tuple
+    )
+    ligand_atom_ids = tuple(
+        id(interaction.ligand_atom)
+        for interaction in interaction_tuple
+    )
+    receptor_identifiers = tuple(
+        interaction.receptor_atom_identifier
+        for interaction in interaction_tuple
+    )
+    ligand_identifiers = tuple(
+        interaction.ligand_atom_identifier
+        for interaction in interaction_tuple
+    )
+
+    cutoff_squared = float(cutoff) ** 2
+    boundary_tolerance = max(
+        np.finfo(np.float64).eps * max(cutoff_squared, 1.0) * 16.0,
+        1.0e-15,
+    )
+
+    for first_index in range(len(interaction_tuple)):
+        for second_index in range(first_index + 1, len(interaction_tuple)):
+            if (
+                require_same_pose
+                and pose_identifiers[first_index]
+                != pose_identifiers[second_index]
+            ):
+                continue
+
+            if (
+                require_same_chain
+                and chain_identifiers[first_index]
+                != chain_identifiers[second_index]
+            ):
+                continue
+
+            shares_atom = bool(
+                receptor_atom_ids[first_index]
+                == receptor_atom_ids[second_index]
+                or ligand_atom_ids[first_index]
+                == ligand_atom_ids[second_index]
+                or (
+                    receptor_identifiers[first_index] is not None
+                    and receptor_identifiers[first_index]
+                    == receptor_identifiers[second_index]
+                )
+                or (
+                    ligand_identifiers[first_index] is not None
+                    and ligand_identifiers[first_index]
+                    == ligand_identifiers[second_index]
+                )
+            )
+
+            connected = shares_atom
+            if not connected:
+                offset = (
+                    midpoints[first_index]
+                    - midpoints[second_index]
+                )
+                squared_distance = float(np.dot(offset, offset))
+                if abs(squared_distance - cutoff_squared) <= boundary_tolerance:
+                    connected = bool(
+                        hydrophobic_distance(
+                            midpoints[first_index],
+                            midpoints[second_index],
+                        )
+                        <= cutoff
+                    )
+                else:
+                    connected = squared_distance <= cutoff_squared
+
+            if connected:
+                adjacency[first_index].add(second_index)
+                adjacency[second_index].add(first_index)
+
+    return adjacency
+
+
 def cluster_hydrophobic_local_regions(
     interactions: HydrophobicInteractionCollection,
     *,
@@ -17463,55 +17929,12 @@ def cluster_hydrophobic_local_regions(
         )
     )
 
-    adjacency: Dict[
-        int,
-        Set[int],
-    ] = {
-        index: set()
-        for index in range(
-            len(interaction_tuple)
-        )
-    }
-
-    for first_index in range(
-        len(interaction_tuple)
-    ):
-        first = interaction_tuple[
-            first_index
-        ]
-
-        for second_index in range(
-            first_index + 1,
-            len(interaction_tuple),
-        ):
-            second = interaction_tuple[
-                second_index
-            ]
-
-            if require_same_chain:
-                if (
-                    get_interaction_chain_identifier(
-                        first
-                    )
-                    != get_interaction_chain_identifier(
-                        second
-                    )
-                ):
-                    continue
-
-            if are_hydrophobic_interactions_locally_connected(
-                first,
-                second,
-                grouping_distance=cutoff,
-                require_same_pose=require_same_pose,
-            ):
-                adjacency[
-                    first_index
-                ].add(second_index)
-
-                adjacency[
-                    second_index
-                ].add(first_index)
+    adjacency = _build_hydrophobic_local_adjacency(
+        interaction_tuple,
+        grouping_distance=cutoff,
+        require_same_pose=require_same_pose,
+        require_same_chain=require_same_chain,
+    )
 
     visited: Set[int] = set()
     components: List[
@@ -20702,18 +21125,24 @@ def refine_hydrophobic_interaction(
         weights=weights,
     )
 
+    return _rebuild_refined_hydrophobic_interaction_from_assessment(
+        interaction,
+        assessment,
+    )
+
+
+def _rebuild_refined_hydrophobic_interaction_from_assessment(
+    interaction: HydrophobicInteraction,
+    assessment: HydrophobicStrengthAssessment,
+) -> HydrophobicInteraction:
+    """Rebuild one final interaction from an already computed assessment."""
+
     refined_metadata = {
         "preliminary_classification": False,
         "preliminary_score": False,
-        "classification_stage": (
-            "final_multifactor"
-        ),
-        "strength_assessment": (
-            assessment.to_dict()
-        ),
-        "local_group_contact_count": (
-            assessment.contact_count
-        ),
+        "classification_stage": "final_multifactor",
+        "strength_assessment": assessment.to_dict(),
+        "local_group_contact_count": assessment.contact_count,
         "local_group_minimum_distance": float(
             assessment.minimum_distance
         ),
@@ -20724,21 +21153,12 @@ def refine_hydrophobic_interaction(
 
     return rebuild_hydrophobic_interaction(
         interaction,
-        classification=(
-            assessment.classification
-        ),
+        classification=assessment.classification,
         strength=assessment.strength,
         score=assessment.score,
-        interaction_type=(
-            assessment.interaction_type
-        ),
-        local_contact_count=max(
-            assessment.contact_count,
-            1,
-        ),
-        polar_penalty=(
-            assessment.polar_penalty
-        ),
+        interaction_type=assessment.interaction_type,
+        local_contact_count=max(assessment.contact_count, 1),
+        polar_penalty=assessment.polar_penalty,
         metadata=refined_metadata,
     )
 
@@ -20771,54 +21191,40 @@ def refine_hydrophobic_interactions(
     if not interaction_tuple:
         return ()
 
-    regions = cluster_hydrophobic_local_regions(
-        interaction_tuple,
-        grouping_distance=grouping_distance,
-        require_same_pose=True,
-        identify_hotspots=False,
+    resolved_grouping_distance = (
+        DEFAULT_LOCAL_INTERACTION_CLUSTER_DISTANCE
+        if grouping_distance is None
+        else _positive_float(
+            grouping_distance,
+            name="local interaction grouping distance",
+        )
     )
 
-    region_by_interaction_key: Dict[
-        HydrophobicPairKey,
-        Tuple[HydrophobicInteraction, ...],
-    ] = {}
+    adjacency = _build_hydrophobic_local_adjacency(
+        interaction_tuple,
+        grouping_distance=resolved_grouping_distance,
+        require_same_pose=True,
+        require_same_chain=False,
+    )
 
-    for region in regions:
-        region_interactions = tuple(
-            region.interactions
+    refined: List[HydrophobicInteraction] = []
+
+    for interaction_index, interaction in enumerate(interaction_tuple):
+        related_indices = sorted(
+            {interaction_index, *adjacency[interaction_index]}
         )
-
-        for interaction in region_interactions:
-            region_by_interaction_key[
-                hydrophobic_interaction_pair_key(
-                    interaction
-                )
-            ] = region_interactions
-
-    refined: List[
-        HydrophobicInteraction
-    ] = []
-
-    for interaction in interaction_tuple:
-        interaction_key = (
-            hydrophobic_interaction_pair_key(
-                interaction
-            )
+        related = tuple(
+            interaction_tuple[index]
+            for index in related_indices
         )
-
-        related = region_by_interaction_key.get(
-            interaction_key,
-            (
-                interaction,
-            ),
+        assessment = assess_hydrophobic_interaction_strength(
+            related,
+            weights=weights,
         )
-
         refined.append(
-            refine_hydrophobic_interaction(
+            _rebuild_refined_hydrophobic_interaction_from_assessment(
                 interaction,
-                related_interactions=related,
-                grouping_distance=grouping_distance,
-                weights=weights,
+                assessment,
             )
         )
 

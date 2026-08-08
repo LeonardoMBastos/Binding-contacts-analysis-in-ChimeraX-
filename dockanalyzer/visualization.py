@@ -8005,7 +8005,7 @@ def build_standard_visualization_plan(
     """Build the standard receptor-ligand-interaction plan."""
 
     config_obj = resolve_visualization_config(config_value)
-    bundle = selections if isinstance(selections, MolecularSelectionBundle) else molecular_bundle_to_selections(selections)
+    bundle = selections if isinstance(selections, MolecularSelectionBundle) else build_molecular_selection_bundle(selections)
     interaction_collection = build_visual_interactions(interactions or (), config_value=config_obj)
     builder = VisualizationPlanBuilder(
         plan_id=plan_id,
@@ -20098,7 +20098,7 @@ def resolve_framing_selection(
         selection_bundle = None
     else:
         try:
-            selection_bundle = bundle_to_selections(bundle)
+            selection_bundle = build_molecular_selection_bundle(bundle)
         except (VisualizationError, TypeError, ValueError, AttributeError):
             selection_bundle = None
     if selection_bundle is None:
@@ -21842,7 +21842,7 @@ def format_chimerax_color(value: Any) -> str:
 
 
 def format_chimerax_selection(value: Any, *, allow_none: bool = False) -> str:
-    """Format one atom specification."""
+    """Format one atom specification as a single ChimeraX command token."""
 
     selection = coerce_selection(value)
     if selection.is_none:
@@ -21852,7 +21852,11 @@ def format_chimerax_selection(value: Any, *, allow_none: bool = False) -> str:
     text = selection.expression.strip()
     if ";" in text or "\n" in text or "\r" in text or _COMMAND_CONTROL_PATTERN.search(text):
         raise VisualizationCommandError("Unsafe selection in command export.")
-    return text
+    # ChimeraX parses whitespace as command-argument separators.  Keep Boolean
+    # atom-spec operators inside one token so compound selections such as
+    # ``#2 | #3 | #4`` are emitted as ``#2|#3|#4`` rather than extra command
+    # arguments. Parentheses and negation remain unchanged.
+    return re.sub(r"\s*([|&])\s*", r"\1", text)
 
 
 def _command_join(*parts: Any) -> str:
@@ -22484,8 +22488,9 @@ def _render_camera_action(action: VisualizationAction) -> List[str]:
         )]
     commands: List[str] = []
     mode = str(params.get("mode", CAMERA_MODE_ORTHOGRAPHIC))
-    commands.append(f"camera {'orthographic' if mode == CAMERA_MODE_ORTHOGRAPHIC else 'mono'}")
-    selection = params.get("selection") or format_chimerax_selection(action.selection, allow_none=True)
+    commands.append(f"camera {'ortho' if mode == CAMERA_MODE_ORTHOGRAPHIC else 'mono'}")
+    selection_value = params.get("selection") or action.selection
+    selection = format_chimerax_selection(selection_value, allow_none=True)
     if params.get("fit", True) and selection:
         commands.append(f"view {selection} clip false")
     elif params.get("view") and params.get("view") != "auto":
@@ -26287,7 +26292,7 @@ def _convenience_snapshot_manifest(
             continue
         image = None
         try:
-            image = inspect_image(path)
+            image = inspect_image_file(path)
         except (OSError, VisualizationError):
             image = None
         results.append(SnapshotResultSpec(
@@ -31781,8 +31786,9 @@ def _self_test_command_rendering(
     visualization_assert_true(bool(script.commands))
     visualization_assert_false(validate_command_script(script, policy="strict"))
     names = tuple(command.name for command in script.commands)
-    for name in ("hide", "show", "color", "style", "view", "clip"):
+    for name in ("hide", "show", "color", "style", "clip"):
         visualization_assert_contains(names, name)
+    visualization_assert_false(any(command.text.startswith("view none") for command in script.commands))
     visualization_assert_equal(len(script.action_ids), len(set(script.action_ids)))
     batches = partition_command_script(script, batch_size=5)
     visualization_assert_true(len(batches) >= 2)
@@ -32011,6 +32017,33 @@ def _self_test_backend_failure(
         )
     return {"status": result.status.value, "error": result.error_type}
 
+
+
+@register_visualization_self_test(
+    test_id="30.5.selection_bundle_regression",
+    name="Selection bundle regression",
+    section=SELF_TEST_SECTION_SCENE_COMMANDS,
+    tags=("plan", "selection", "regression"),
+)
+def _self_test_selection_bundle_regression(
+    context: VisualizationSelfTestContext,
+) -> Mapping[str, Any]:
+    fixture = _build_specification_self_test_fixture()
+    bundle_data = fixture["bundle"].to_dict()
+    plan = build_standard_visualization_plan(bundle_data, interactions=())
+    action_ids = tuple(action.action_id for action in plan.actions)
+    visualization_assert_contains(action_ids, "receptor:show")
+    visualization_assert_contains(action_ids, "ligand:show")
+    framing = resolve_framing_selection(
+        FramingTarget.RECEPTOR,
+        bundle=bundle_data,
+    )
+    visualization_assert_false(framing.is_none)
+    visualization_assert_equal(
+        framing.expression,
+        build_molecular_selection_bundle(bundle_data).receptor.expression,
+    )
+    return {"actions": len(action_ids), "framing": framing.expression}
 
 _SECTION_30_5_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "SELF_TEST_SECTION_SCENE_COMMANDS",
@@ -33205,6 +33238,41 @@ def _self_test_execution_serialization(
     visualization_assert_equal(summary["failed"], 0)
     return {"commands": result.command_count, "state": result.state.value}
 
+
+
+@register_visualization_self_test(
+    test_id="30.7.convenience_snapshot_manifest_regression",
+    name="Convenience snapshot manifest regression",
+    section=SELF_TEST_SECTION_CHIMERAX_SNAPSHOTS,
+    tags=("snapshots", "images", "regression"),
+    requires=("pillow", "filesystem"),
+)
+def _self_test_convenience_snapshot_manifest_regression(
+    context: VisualizationSelfTestContext,
+) -> Mapping[str, Any]:
+    with visualization_test_workspace(prefix="dockanalyzer_snapshot_manifest_regression_") as workspace:
+        path = workspace / "snapshot.png"
+        Image.new("RGB", (32, 24), (10, 20, 30)).save(path, format="PNG")  # type: ignore[union-attr]
+        collection = SnapshotCollection(
+            requests=(
+                SnapshotRequestSpec(
+                    snapshot_id="snapshot",
+                    filename=path,
+                    overwrite=True,
+                ),
+            ),
+            name="regression",
+        )
+        state = VisualizationPlan(
+            plan_id="snapshot-regression",
+            name="Snapshot regression",
+            actions=(),
+        )
+        manifest = _convenience_snapshot_manifest(collection, state)
+        visualization_assert_true(manifest is not None)
+        visualization_assert_equal(len(manifest.results), 1)
+        visualization_assert_equal(manifest.results[0].image.size, (32, 24))
+    return {"results": len(manifest.results), "size": manifest.results[0].image.size}
 
 _SECTION_30_7_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "SELF_TEST_SECTION_CHIMERAX_SNAPSHOTS",

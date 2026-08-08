@@ -70,6 +70,9 @@ import platform
 import re
 import shutil
 import sys
+import time as _time
+import zipfile
+from xml.sax.saxutils import escape as _xml_escape
 
 # -----------------------------------------------------------------------------
 # 1.2. Required NumPy support
@@ -804,6 +807,17 @@ CONFIG_ENABLE_KEYS: Final[Mapping[str, Tuple[str, ...]]] = MappingProxyType(
         EXPORT_FORMAT_TSV: ("EXPORT_CSV", "ENABLE_CSV_EXPORT"),
         EXPORT_FORMAT_EXCEL: ("EXPORT_EXCEL", "ENABLE_EXCEL_EXPORT"),
         EXPORT_FORMAT_TEXT: ("EXPORT_REPORT", "ENABLE_TEXT_EXPORT"),
+    }
+)
+
+FORMAT_DIRECTORY_LABELS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        EXPORT_FORMAT_JSON: "JSON",
+        EXPORT_FORMAT_JSONL: "JSON",
+        EXPORT_FORMAT_CSV: "CSV",
+        EXPORT_FORMAT_TSV: "CSV",
+        EXPORT_FORMAT_EXCEL: "Excel",
+        EXPORT_FORMAT_TEXT: "Reports",
     }
 )
 
@@ -2258,6 +2272,59 @@ def is_format_enabled(format_name: Any, *, default: bool = True) -> bool:
     return bool(value)
 
 
+def _configured_root_output_directory() -> Optional[Path]:
+    """Return the configured root output directory when available."""
+
+    value = getattr(config, "OUTPUT_DIR", None) or os.getenv("DOCKANALYZER_OUTPUT_DIR")
+    return absolute_path(value) if value else None
+
+
+def _format_directory_label(format_name: Any) -> Optional[str]:
+    """Return the preferred folder label for one export format."""
+
+    try:
+        normalized = normalize_export_format(format_name)
+    except Exception:
+        return None
+    return FORMAT_DIRECTORY_LABELS.get(normalized)
+
+
+def _directory_matches_label(path: PathLike, format_name: Any) -> bool:
+    """Return whether a directory already points to the format-specific folder."""
+
+    label = _format_directory_label(format_name)
+    if not label:
+        return False
+    value = absolute_path(path)
+    return value.name.casefold() == label.casefold()
+
+
+def _route_output_directory(path: Path, format_name: Any) -> Path:
+    """Route a generic root directory to the canonical folder for a format."""
+
+    label = _format_directory_label(format_name)
+    if not label:
+        return path
+    configured = configured_output_directory(format_name)
+    if configured is not None:
+        configured = absolute_path(configured)
+        if path == configured or _directory_matches_label(path, format_name):
+            return configured
+    root = _configured_root_output_directory()
+    if root is not None and path == root:
+        return absolute_path(configured or (root / label))
+    if _directory_matches_label(path, format_name):
+        return path
+    expected_children = {item.casefold() for item in FORMAT_DIRECTORY_LABELS.values()}
+    try:
+        child_names = {child.name.casefold() for child in path.iterdir() if child.is_dir()}
+    except OSError:
+        child_names = set()
+    if root is None and child_names and expected_children.intersection(child_names):
+        return path / label
+    return path
+
+
 def resolve_output_directory(
     output_dir: Optional[PathLike] = None,
     *,
@@ -2267,6 +2334,8 @@ def resolve_output_directory(
     """Resolve the directory used for export."""
     if output_dir is not None:
         result = absolute_path(output_dir)
+        if format_name is not None:
+            result = _route_output_directory(result, format_name)
     elif format_name is not None:
         configured = configured_output_directory(format_name)
         result = absolute_path(configured or Path.cwd())
@@ -2432,17 +2501,9 @@ def create_export_directory_tree(
     """Create standard format directories."""
     root_path = ensure_output_directory(root)
     result: Dict[str, Path] = {"root": root_path}
-    labels = {
-        EXPORT_FORMAT_JSON: "JSON",
-        EXPORT_FORMAT_JSONL: "JSON",
-        EXPORT_FORMAT_CSV: "CSV",
-        EXPORT_FORMAT_TSV: "CSV",
-        EXPORT_FORMAT_EXCEL: "Excel",
-        EXPORT_FORMAT_TEXT: "Text",
-    }
     for value in formats:
         format_name = normalize_export_format(value)
-        key = labels[format_name]
+        key = FORMAT_DIRECTORY_LABELS[format_name]
         result[format_name] = ensure_output_directory(root_path / key)
     return result
 
@@ -2752,6 +2813,103 @@ def _stable_sort_key(value: Any) -> Tuple[str, str]:
     return qualified_type_name(value), repr(value)
 
 
+_ANALYSIS_CACHE_EXPORT_KEY: Final[str] = "analysis_cache"
+_INTERNAL_RESULT_METADATA_KEYS: Final[FrozenSet[str]] = frozenset(
+    {
+        "hydrogen_bond_result",
+        "hydrogen_bond_results",
+    }
+)
+
+
+def _cache_entry_export_summary(value: Any) -> Dict[str, Any]:
+    """Return a bounded cache-entry summary without serializing its payload."""
+    method = getattr(value, "to_dict", None)
+    if callable(method):
+        try:
+            payload = method(include_value=False)
+        except TypeError:
+            payload = None
+        except Exception:
+            payload = None
+        if isinstance(payload, Mapping):
+            result = dict(payload)
+            result.pop("value", None)
+            result.setdefault("value_type", qualified_type_name(getattr(value, "value", None)))
+            return result
+
+    if isinstance(value, Mapping):
+        result = {str(key): item for key, item in value.items() if str(key) != "value"}
+        raw_value = value.get("value")
+        if raw_value is not None:
+            result.setdefault("value_type", qualified_type_name(raw_value))
+        return result
+
+    return {"value_type": qualified_type_name(getattr(value, "value", value))}
+
+
+def _analysis_cache_export_summary(value: Any) -> Dict[str, Any]:
+    """Return cache diagnostics while excluding all cached stage-result values."""
+    if not isinstance(value, Mapping):
+        return {
+            "value_type": qualified_type_name(value),
+            "serialization": "summary_only",
+        }
+
+    result: Dict[str, Any] = {}
+    entries = value.get("entries")
+    for key, item in value.items():
+        name = str(key)
+        if name == "entries":
+            continue
+        if isinstance(item, _SIMPLE_SERIALIZABLE):
+            result[name] = item
+        elif isinstance(item, (date, datetime, time, timedelta, Enum, Path)):
+            result[name] = to_serializable(item)
+        else:
+            result[name] = str(item)
+
+    if isinstance(entries, Mapping):
+        result["entry_count"] = len(entries)
+        result["entries"] = {
+            str(key): _cache_entry_export_summary(entry)
+            for key, entry in entries.items()
+        }
+    else:
+        result["entry_count"] = 0
+        result["entries"] = {}
+    result["serialization"] = "summary_only"
+    return result
+
+
+def _internal_result_export_summary(value: Any) -> Dict[str, Any]:
+    """Summarize duplicated runtime result containers stored in metadata."""
+    summary: Dict[str, Any] = {
+        "value_type": qualified_type_name(value),
+        "serialization": "summary_only",
+    }
+    results = getattr(value, "results", None)
+    if results is None and isinstance(value, Mapping):
+        results = value.get("results")
+    if isinstance(results, Mapping):
+        summary["result_count"] = len(results)
+        summary["result_keys"] = [str(key) for key in results.keys()]
+
+    pose_order = getattr(value, "pose_order", None)
+    if pose_order is None and isinstance(value, Mapping):
+        pose_order = value.get("pose_order")
+    if isinstance(pose_order, Sequence) and not isinstance(pose_order, (str, bytes, bytearray)):
+        summary["pose_order"] = [str(item) for item in pose_order]
+
+    failed = getattr(value, "failed_poses", None)
+    if failed is None and isinstance(value, Mapping):
+        failed = value.get("failed_poses")
+    if isinstance(failed, Mapping):
+        summary["failed_pose_count"] = len(failed)
+        summary["failed_pose_ids"] = [str(key) for key in failed.keys()]
+    return summary
+
+
 def serialize_mapping(
     value: Mapping[Any, Any],
     *,
@@ -2759,15 +2917,19 @@ def serialize_mapping(
     path: str = "$",
     depth: int = 0,
 ) -> Dict[str, Any]:
-    """Recursively convert a mapping."""
+    """Recursively convert a mapping with bounded runtime metadata handling."""
     active_state = state or SerializationState()
     result: Dict[str, Any] = {}
     for key, item in value.items():
         converted_key = _mapping_key(key, active_state.options)
         if active_state.options.omit_none and item is None:
             continue
-        child_path = f"{path}.{converted_key}"
-        result[str(converted_key)] = _to_serializable(item, active_state, child_path, depth + 1)
+        name = str(converted_key)
+        child_path = f"{path}.{name}"
+        if name == _ANALYSIS_CACHE_EXPORT_KEY:
+            result[name] = _analysis_cache_export_summary(item)
+            continue
+        result[name] = _to_serializable(item, active_state, child_path, depth + 1)
     return result
 
 
@@ -2988,6 +3150,13 @@ def _to_serializable(
     if track:
         state.active_ids.add(identity)
     try:
+        if type(value).__name__ == "DockModelStageCacheEntry":
+            return _to_serializable(
+                _cache_entry_export_summary(value),
+                state,
+                path,
+                depth + 1,
+            )
         if is_dataclass(value) and not isinstance(value, type):
             return serialize_dataclass(value, state=state, path=path, depth=depth)
         if isinstance(value, Mapping):
@@ -7575,6 +7744,24 @@ def _dock_model_files_record(value: Any) -> Any:
     return str(source) if isinstance(source, (Path, os.PathLike)) else to_serializable(source)
 
 
+def _dock_model_metadata_record(value: Any) -> Any:
+    """Serialize public DockModel metadata without duplicating runtime result containers."""
+    source = _dock_model_get(value, _DOCK_MODEL_METADATA_FIELDS)
+    if source is None:
+        return None
+    if not isinstance(source, Mapping):
+        return to_serializable(source)
+
+    prepared: Dict[str, Any] = {}
+    for key, item in source.items():
+        name = str(key)
+        if name in _INTERNAL_RESULT_METADATA_KEYS:
+            prepared[name] = _internal_result_export_summary(item)
+        else:
+            prepared[name] = item
+    return to_serializable(prepared)
+
+
 def _clean_dock_model_record(record: Dict[str, Any], options: DockModelExportOptions) -> Dict[str, Any]:
     """Remove omitted DockModel values."""
     if options.omit_none:
@@ -7639,9 +7826,7 @@ def dock_model_to_record(
         if resolved_options.include_scoring:
             record["scoring"] = _dock_model_scoring_record(value, resolved_context)
         if resolved_options.include_metadata:
-            record["metadata"] = to_serializable(
-                _dock_model_get(value, _DOCK_MODEL_METADATA_FIELDS)
-            )
+            record["metadata"] = _dock_model_metadata_record(value)
         if resolved_options.include_files:
             record["files"] = _dock_model_files_record(value)
         if resolved_options.include_raw_fields and resolved_options.layout is DockModelLayout.FULL:
@@ -10303,6 +10488,770 @@ class MultiposeExportContext:
     options: MultiposeExportOptions
 
 
+def _analysis_result_token(value: Any) -> str:
+    """Return a normalized analysis-result discriminator when available."""
+
+    if value is None:
+        return ""
+    result_type = _plain_field_get(value, ("result_type",), None)
+    if result_type is not None:
+        return str(getattr(result_type, "value", result_type)).strip().lower()
+    return value.__class__.__name__.strip().lower()
+
+
+def _is_pose_result_container(value: Any) -> bool:
+    """Return whether ``value`` wraps one analyzed pose rather than being it."""
+
+    token = _analysis_result_token(value)
+    class_name = value.__class__.__name__.lower() if value is not None else ""
+    return token in {"pose_result", "single_pose_result"} or class_name == "poseanalysisresult"
+
+
+def _is_multipose_result_container(value: Any) -> bool:
+    """Return whether ``value`` is an aggregate multipose result container."""
+
+    token = _analysis_result_token(value)
+    class_name = value.__class__.__name__.lower() if value is not None else ""
+    return token in {"multipose_result", "multi_pose_result"} or class_name == "multiposeanalysisresult"
+
+
+def _normalize_multipose_pose_items(poses: Iterable[Any]) -> List[Any]:
+    """Expand analysis wrappers and return unique concrete pose sources."""
+
+    normalized: List[Any] = []
+    seen: Set[int] = set()
+
+    def add(value: Any) -> None:
+        if value is None:
+            return
+        if _is_multipose_result_container(value):
+            nested = _plain_field_get(value, ("pose_results",), ())
+            if nested is None or isinstance(nested, (str, bytes, bytearray)):
+                return
+            try:
+                for item in nested:
+                    add(item)
+            except TypeError:
+                return
+            return
+        if _is_pose_result_container(value):
+            dock_model = _plain_field_get(value, ("dock_model",), None)
+            if dock_model is not None and dock_model is not value:
+                add(dock_model)
+                return
+            pose = _plain_field_get(value, ("pose",), None)
+            if pose is not None and pose is not value:
+                add(pose)
+                return
+        marker = id(value)
+        if marker not in seen:
+            seen.add(marker)
+            normalized.append(value)
+
+    for item in poses:
+        add(item)
+    return normalized
+
+
+
+_SCIENTIFIC_SUMMARY_COLUMNS: Final[Tuple[str, ...]] = (
+    "Pose",
+    "Rank",
+    "Total score",
+    "Total interactions",
+    "Contacts",
+    "H-bonds",
+    "Hydrophobic",
+    "Pi-pi",
+    "Cation-pi",
+    "Anion-pi",
+    "Amide-pi",
+    "Salt bridges",
+    "Clashes",
+    "Top residues",
+    "Top hotspot",
+    "Status",
+)
+_SCIENTIFIC_SUMMARY_SHEET_NAME: Final[str] = "Scientific Summary"
+_SCIENTIFIC_SUMMARY_DIRECTORY: Final[str] = "Excel"
+_SCIENTIFIC_SUMMARY_SUFFIX: Final[str] = "scientific_summary"
+_SCIENTIFIC_SUMMARY_TOP_RESIDUE_LIMIT: Final[int] = 5
+
+
+def _scientific_summary_mapping(value: Any) -> Mapping[str, Any]:
+    """Return ``value`` as a mapping when possible without deep conversion."""
+
+    if isinstance(value, Mapping):
+        return value
+    if value is None:
+        return {}
+    try:
+        namespace = vars(value)
+    except (TypeError, AttributeError):
+        return {}
+    return {
+        str(key): item
+        for key, item in namespace.items()
+        if not str(key).startswith("_")
+    }
+
+
+def _scientific_summary_number(value: Any) -> Optional[float]:
+    """Return a finite float for compact scientific output."""
+
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _scientific_summary_integer(value: Any) -> Optional[int]:
+    """Return an integer when ``value`` is numerically usable."""
+
+    number = _scientific_summary_number(value)
+    if number is None:
+        return None
+    return int(number)
+
+
+def _scientific_summary_rank_entry(record: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the authoritative multipose rank attached by analyze.py."""
+
+    metadata = _scientific_summary_mapping(record.get("metadata"))
+    multipose = _scientific_summary_mapping(metadata.get("multipose_analysis"))
+    rank = _scientific_summary_mapping(multipose.get("rank"))
+    return rank
+
+
+def _scientific_summary_pose_label(record: Mapping[str, Any]) -> str:
+    """Return a concise human-readable pose label."""
+
+    structure = _scientific_summary_mapping(record.get("structure"))
+    structure_name = structure.get("name")
+    pose_id = record.get("dock_model_id") or record.get("pose_id") or record.get("id")
+    if structure_name not in (None, "") and pose_id not in (None, ""):
+        return f"{structure_name} (#{pose_id})"
+    name = record.get("name")
+    if name not in (None, ""):
+        return str(name)
+    if pose_id not in (None, ""):
+        return f"#{pose_id}"
+    return "Unknown pose"
+
+
+def _scientific_summary_interaction_is_real(item: Any) -> bool:
+    """Reject detector summaries accidentally exposed through interaction fields."""
+
+    if not isinstance(item, Mapping):
+        return False
+    family = normalize_interaction_family(item.get("family"))
+    interaction_type = normalize_interaction_type(item.get("interaction_type"))
+    metadata = _scientific_summary_mapping(item.get("metadata"))
+    analysis_stage = normalize_interaction_type(metadata.get("analysis_stage"), "")
+    if analysis_stage in {
+        "complete_statistics_and_summaries",
+        "statistics_and_summaries",
+        "complete_summary",
+    }:
+        return False
+    if family == INTERACTION_UNKNOWN:
+        return False
+    if interaction_type in {"dict", "mapping", "summary", "statistics"}:
+        return False
+    object_type = normalize_interaction_type(item.get("object_type"), "")
+    return object_type == "interaction" or bool(item.get("participants"))
+
+
+def _scientific_summary_interactions(
+    record: Mapping[str, Any],
+) -> List[Tuple[str, Mapping[str, Any]]]:
+    """Return only true scientific interaction records for one pose."""
+
+    source = record.get("interactions")
+    output: List[Tuple[str, Mapping[str, Any]]] = []
+    if not isinstance(source, Mapping):
+        return output
+    for family_hint, items in source.items():
+        if not isinstance(items, Sequence) or isinstance(items, (str, bytes, bytearray)):
+            continue
+        for item in items:
+            if not _scientific_summary_interaction_is_real(item):
+                continue
+            family = normalize_interaction_family(
+                item.get("family") or family_hint
+            )
+            output.append((family, item))
+    return output
+
+
+def _scientific_summary_residue_candidate(
+    participant: Mapping[str, Any],
+) -> Optional[Tuple[Tuple[str, str], str, Optional[str], int]]:
+    """Return residue identity, display label, structure id and role priority."""
+
+    role = normalize_interaction_type(participant.get("role"), "")
+    atom = _scientific_summary_mapping(participant.get("atom"))
+    residue = _scientific_summary_mapping(participant.get("residue"))
+    structure_id = atom.get("structure_id") or participant.get("structure_id")
+    chain = residue.get("chain_id")
+    number = residue.get("number")
+    name = residue.get("name")
+    if chain not in (None, "") and number not in (None, ""):
+        key = (str(chain), str(number))
+        display = (
+            f"{chain}:{name}{number}"
+            if name not in (None, "")
+            else f"{chain}:{number}"
+        )
+    else:
+        residue_id = (
+            atom.get("residue_id")
+            or residue.get("id")
+            or participant.get("label")
+        )
+        match = re.search(r"/([^:/@]+):(-?\d+)", str(residue_id or ""))
+        if not match:
+            return None
+        key = (match.group(1), match.group(2))
+        display = f"{match.group(1)}:{match.group(2)}"
+    role_priority = 0 if role in {"receptor", "target", "protein"} else 1
+    return key, display, str(structure_id) if structure_id not in (None, "") else None, role_priority
+
+
+def _scientific_summary_receptor_residue(
+    record: Mapping[str, Any],
+    interaction: Mapping[str, Any],
+) -> Optional[Tuple[Tuple[str, str], str]]:
+    """Identify the receptor residue involved in one interaction."""
+
+    receptor = _scientific_summary_mapping(record.get("receptor"))
+    receptor_id = receptor.get("id") or receptor.get("model_id")
+    receptor_id_text = str(receptor_id) if receptor_id not in (None, "") else None
+    participants = interaction.get("participants")
+    if not isinstance(participants, Sequence) or isinstance(participants, (str, bytes, bytearray)):
+        return None
+    candidates: List[Tuple[int, Tuple[str, str], str]] = []
+    for participant in participants:
+        if not isinstance(participant, Mapping):
+            continue
+        candidate = _scientific_summary_residue_candidate(participant)
+        if candidate is None:
+            continue
+        key, display, structure_id, role_priority = candidate
+        structure_priority = 0 if receptor_id_text and structure_id == receptor_id_text else 1
+        candidates.append((structure_priority * 10 + role_priority, key, display))
+    if not candidates:
+        return None
+    _, key, display = min(candidates, key=lambda item: (item[0], item[2]))
+    return key, display
+
+
+def _scientific_summary_residue_name_map(
+    records: Sequence[Mapping[str, Any]],
+) -> Dict[Tuple[str, str], str]:
+    """Collect the best residue labels available across all analyzed poses."""
+
+    names: Dict[Tuple[str, str], str] = {}
+    for record in records:
+        source = record.get("interactions")
+        if not isinstance(source, Mapping):
+            continue
+        for items in source.values():
+            if not isinstance(items, Sequence) or isinstance(items, (str, bytes, bytearray)):
+                continue
+            for item in items:
+                if not isinstance(item, Mapping):
+                    continue
+                participants = item.get("participants")
+                if not isinstance(participants, Sequence) or isinstance(participants, (str, bytes, bytearray)):
+                    continue
+                for participant in participants:
+                    if not isinstance(participant, Mapping):
+                        continue
+                    candidate = _scientific_summary_residue_candidate(participant)
+                    if candidate is None:
+                        continue
+                    key, display, _, _ = candidate
+                    previous = names.get(key, "")
+                    if len(display) > len(previous):
+                        names[key] = display
+    return names
+
+
+def _scientific_summary_hotspot_label(value: Any) -> str:
+    """Normalize detector hotspot identifiers to the compact residue style."""
+
+    text = str(value or "").strip()
+    match = re.fullmatch(r"([^:]+):(-?\d+):([^:]+)", text)
+    if match:
+        residue_name, residue_number, chain = match.groups()
+        return f"{chain}:{residue_name}{residue_number}"
+    return text
+
+
+def _scientific_summary_top_residues(
+    record: Mapping[str, Any],
+    interactions: Sequence[Tuple[str, Mapping[str, Any]]],
+    *,
+    limit: int = _SCIENTIFIC_SUMMARY_TOP_RESIDUE_LIMIT,
+    residue_names: Optional[Mapping[Tuple[str, str], str]] = None,
+) -> str:
+    """Return the most frequently contacted receptor residues for one pose."""
+
+    counts: Dict[Tuple[str, str], int] = defaultdict(int)
+    displays: Dict[Tuple[str, str], str] = {}
+    for _, interaction in interactions:
+        residue = _scientific_summary_receptor_residue(record, interaction)
+        if residue is None:
+            continue
+        key, display = residue
+        counts[key] += 1
+        preferred = (residue_names or {}).get(key, display)
+        previous = displays.get(key, "")
+        # Prefer labels that contain a residue name over chain:number fallbacks.
+        if len(preferred) > len(previous):
+            displays[key] = preferred
+    ranked = sorted(
+        counts.items(),
+        key=lambda item: (-item[1], displays.get(item[0], "")),
+    )[: max(0, int(limit))]
+    return "; ".join(
+        f"{displays.get(key, ':'.join(key))} ({count})"
+        for key, count in ranked
+    )
+
+
+def _scientific_summary_top_hotspot(
+    record: Mapping[str, Any],
+    interactions: Sequence[Tuple[str, Mapping[str, Any]]],
+) -> str:
+    """Return the strongest explicit hotspot, with a residue-count fallback."""
+
+    candidates: List[Tuple[float, int, str]] = []
+    source = record.get("interactions")
+    if isinstance(source, Mapping):
+        for items in source.values():
+            if not isinstance(items, Sequence) or isinstance(items, (str, bytes, bytearray)):
+                continue
+            for item in items:
+                if not isinstance(item, Mapping) or _scientific_summary_interaction_is_real(item):
+                    continue
+                metadata = _scientific_summary_mapping(item.get("metadata"))
+                serializable = _scientific_summary_mapping(metadata.get("serializable_tables"))
+                hotspots = serializable.get("hotspots")
+                if not isinstance(hotspots, Sequence) or isinstance(hotspots, (str, bytes, bytearray)):
+                    continue
+                for hotspot in hotspots:
+                    if not isinstance(hotspot, Mapping):
+                        continue
+                    label = hotspot.get("residue_identifier")
+                    if label in (None, ""):
+                        continue
+                    score = _scientific_summary_number(hotspot.get("group_score")) or 0.0
+                    count = _scientific_summary_integer(hotspot.get("interaction_count")) or 0
+                    candidates.append((score, count, str(label)))
+    if candidates:
+        score, count, label = max(candidates, key=lambda item: (item[0], item[1], item[2]))
+        return f"{_scientific_summary_hotspot_label(label)} ({count})"
+
+    counts: Dict[Tuple[str, str], int] = defaultdict(int)
+    displays: Dict[Tuple[str, str], str] = {}
+    for _, interaction in interactions:
+        residue = _scientific_summary_receptor_residue(record, interaction)
+        if residue is None:
+            continue
+        key, display = residue
+        counts[key] += 1
+        if len(display) > len(displays.get(key, "")):
+            displays[key] = display
+    if not counts:
+        return ""
+    key, count = max(
+        counts.items(),
+        key=lambda item: (item[1], displays.get(item[0], "")),
+    )
+    return f"{displays.get(key, ':'.join(key))} ({count})"
+
+
+def _scientific_summary_row(
+    record: Mapping[str, Any],
+    *,
+    residue_names: Optional[Mapping[Tuple[str, str], str]] = None,
+) -> Dict[str, Any]:
+    """Build one compact scientific interpretation row for a pose."""
+
+    interactions = _scientific_summary_interactions(record)
+    counts = {
+        "Contacts": 0,
+        "H-bonds": 0,
+        "Hydrophobic": 0,
+        "Pi-pi": 0,
+        "Cation-pi": 0,
+        "Anion-pi": 0,
+        "Amide-pi": 0,
+        "Salt bridges": 0,
+        "Clashes": 0,
+    }
+    for family, interaction in interactions:
+        interaction_type = normalize_interaction_type(
+            interaction.get("interaction_type")
+        )
+        if family == INTERACTION_CONTACT:
+            counts["Contacts"] += 1
+        elif family == INTERACTION_HBOND:
+            counts["H-bonds"] += 1
+        elif family == INTERACTION_HYDROPHOBIC:
+            counts["Hydrophobic"] += 1
+        elif family in {"saltbridge", INTERACTION_SALT_BRIDGE}:
+            counts["Salt bridges"] += 1
+        elif family == INTERACTION_PI:
+            if interaction_type in {"pi_pi", "pi_stacking", "pi_pi_stacking"}:
+                counts["Pi-pi"] += 1
+            elif interaction_type in {"cation_pi", "cation_pi_interaction"}:
+                counts["Cation-pi"] += 1
+            elif interaction_type in {"anion_pi", "anion_pi_interaction"}:
+                counts["Anion-pi"] += 1
+            elif interaction_type in {"amide_pi", "amide_pi_interaction"}:
+                counts["Amide-pi"] += 1
+        if family == INTERACTION_CLASH or "clash" in interaction_type:
+            counts["Clashes"] += 1
+
+    rank_entry = _scientific_summary_rank_entry(record)
+    rank = _scientific_summary_integer(rank_entry.get("rank"))
+    if rank is None:
+        rank = _scientific_summary_integer(record.get("rank"))
+    total_score = _scientific_summary_number(rank_entry.get("score"))
+    if total_score is None:
+        metadata = _scientific_summary_mapping(record.get("metadata"))
+        scoring_meta = _scientific_summary_mapping(metadata.get("scoring"))
+        total_score = _scientific_summary_number(scoring_meta.get("scientific_score"))
+    if total_score is None:
+        total_score = _scientific_summary_number(record.get("total_score"))
+
+    total_interactions = _scientific_summary_integer(rank_entry.get("interaction_count"))
+    if total_interactions is None:
+        total_interactions = len(interactions)
+
+    metadata = _scientific_summary_mapping(record.get("metadata"))
+    status = rank_entry.get("status") or metadata.get("analysis_status") or record.get("status") or "unknown"
+
+    row: Dict[str, Any] = {
+        "Pose": _scientific_summary_pose_label(record),
+        "Rank": rank,
+        "Total score": total_score,
+        "Total interactions": total_interactions,
+        **counts,
+        "Top residues": _scientific_summary_top_residues(
+            record,
+            interactions,
+            residue_names=residue_names,
+        ),
+        "Top hotspot": _scientific_summary_top_hotspot(record, interactions),
+        "Status": str(getattr(status, "value", status)),
+    }
+    return {column: row.get(column) for column in _SCIENTIFIC_SUMMARY_COLUMNS}
+
+
+def _scientific_summary_rows(records: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    """Build and rank compact scientific rows while preserving one row per pose."""
+
+    residue_names = _scientific_summary_residue_name_map(records)
+    rows = [
+        _scientific_summary_row(record, residue_names=residue_names)
+        for record in records
+    ]
+    if any(row.get("Rank") is not None for row in rows):
+        rows.sort(
+            key=lambda row: (
+                row.get("Rank") is None,
+                row.get("Rank") if row.get("Rank") is not None else math.inf,
+                str(row.get("Pose") or ""),
+            )
+        )
+    return rows
+
+
+def _scientific_xlsx_column_letter(index: int) -> str:
+    """Return a 1-based Excel column letter without optional dependencies."""
+
+    if index < 1:
+        raise ValueError("Excel column index must be positive.")
+    letters = ""
+    value = int(index)
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
+def _scientific_xlsx_cell(reference: str, value: Any, *, style: int = 0) -> str:
+    """Render one dependency-free XLSX worksheet cell."""
+
+    style_attr = f' s="{style}"' if style else ""
+    if value is None:
+        return f'<c r="{reference}"{style_attr}/>'
+    if isinstance(value, bool):
+        return f'<c r="{reference}" t="b"{style_attr}><v>{1 if value else 0}</v></c>'
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        number = float(value)
+        if math.isfinite(number):
+            text = str(int(number)) if number.is_integer() else repr(number)
+            return f'<c r="{reference}"{style_attr}><v>{text}</v></c>'
+    text = _xml_escape(str(value), {"\"": "&quot;"})
+    return f'<c r="{reference}" t="inlineStr"{style_attr}><is><t>{text}</t></is></c>'
+
+
+def _scientific_summary_xlsx_bytes(rows: Sequence[Mapping[str, Any]]) -> bytes:
+    """Build a compact, styled XLSX workbook using only the Python standard library."""
+
+    from io import BytesIO
+
+    columns = _SCIENTIFIC_SUMMARY_COLUMNS
+    last_column = _scientific_xlsx_column_letter(len(columns))
+    last_row = len(rows) + 1
+    widths = (28, 8, 14, 18, 11, 11, 13, 10, 11, 11, 11, 13, 10, 42, 28, 14)
+    column_xml = "".join(
+        f'<col min="{index}" max="{index}" width="{width}" customWidth="1"/>'
+        for index, width in enumerate(widths, start=1)
+    )
+    header_cells = "".join(
+        _scientific_xlsx_cell(
+            f"{_scientific_xlsx_column_letter(index)}1",
+            column,
+            style=1,
+        )
+        for index, column in enumerate(columns, start=1)
+    )
+    data_rows: List[str] = []
+    for row_index, row in enumerate(rows, start=2):
+        cells: List[str] = []
+        for column_index, column in enumerate(columns, start=1):
+            style = 2 if column == "Total score" else 0
+            cells.append(
+                _scientific_xlsx_cell(
+                    f"{_scientific_xlsx_column_letter(column_index)}{row_index}",
+                    row.get(column),
+                    style=style,
+                )
+            )
+        data_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+
+    worksheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<dimension ref="A1:{last_column}{max(1, last_row)}"/>'
+        '<sheetViews><sheetView workbookViewId="0">'
+        '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
+        '</sheetView></sheetViews>'
+        '<sheetFormatPr defaultRowHeight="15"/>'
+        f'<cols>{column_xml}</cols>'
+        f'<sheetData><row r="1" ht="22" customHeight="1">{header_cells}</row>{"".join(data_rows)}</sheetData>'
+        f'<autoFilter ref="A1:{last_column}{max(1, last_row)}"/>'
+        '</worksheet>'
+    )
+    workbook_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="Scientific Summary" sheetId="1" r:id="rId1"/></sheets>'
+        '</workbook>'
+    )
+    workbook_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+        '</Relationships>'
+    )
+    root_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+        '</Relationships>'
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+        '</Types>'
+    )
+    styles_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<numFmts count="1"><numFmt numFmtId="164" formatCode="0.0000"/></numFmts>'
+        '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>'
+        '<font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/></font></fonts>'
+        '<fills count="3"><fill><patternFill patternType="none"/></fill>'
+        '<fill><patternFill patternType="gray125"/></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FF1F4E78"/><bgColor indexed="64"/></patternFill></fill></fills>'
+        '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+        '<cellXfs count="3">'
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+        '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>'
+        '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
+        '</cellXfs>'
+        '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+        '</styleSheet>'
+    )
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", root_rels)
+        archive.writestr("xl/workbook.xml", workbook_xml)
+        archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        archive.writestr("xl/styles.xml", styles_xml)
+        archive.writestr("xl/worksheets/sheet1.xml", worksheet_xml)
+    return buffer.getvalue()
+
+
+def _write_scientific_summary_excel(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    output_dir: Path,
+    basename: str,
+    overwrite: Any,
+) -> ExportedFile:
+    """Write the mandatory compact scientific summary workbook."""
+
+    summary_dir = Path(output_dir) / _SCIENTIFIC_SUMMARY_DIRECTORY
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    target = resolve_output_path(
+        None,
+        output_dir=summary_dir,
+        basename=f"{basename}_{_SCIENTIFIC_SUMMARY_SUFFIX}",
+        format_name=EXPORT_FORMAT_EXCEL,
+        overwrite=overwrite,
+    )
+    payload = _scientific_summary_xlsx_bytes(rows)
+    ensure_parent_directory(target)
+    with NamedTemporaryFile(
+        "wb",
+        dir=target.parent,
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        temp_path = Path(handle.name)
+        handle.write(payload)
+    try:
+        temp_path.replace(target)
+    except Exception as exc:
+        temp_path.unlink(missing_ok=True)
+        raise ExportWriteError(
+            "Unable to write scientific summary Excel workbook",
+            path=target,
+        ) from exc
+    exported = ExportedFile(
+        path=target,
+        format=EXPORT_FORMAT_EXCEL,
+        sheet_names=(_SCIENTIFIC_SUMMARY_SHEET_NAME,),
+        record_count=len(rows),
+        metadata={
+            "table": "scientific_summary",
+            "compact_scientific_output": True,
+            "dependency_free_xlsx": True,
+        },
+    )
+    exported.refresh_size()
+    return exported
+
+
+def _prepare_multipose_export_profiled(
+    poses: Iterable[Any],
+    *,
+    options: Optional[MultiposeExportOptions] = None,
+    output_dir: Optional[PathLike] = None,
+    basename: Optional[str] = None,
+) -> Tuple[MultiposeExportContext, Dict[str, float]]:
+    """Prepare multipose export data and return bounded phase timings."""
+
+    total_started = _time.perf_counter()
+    timings: Dict[str, float] = {}
+    if poses is None:
+        raise ExportInputError("Pose collection cannot be None.")
+
+    phase_started = _time.perf_counter()
+    opts = options or MultiposeExportOptions()
+    export_opts = opts.export
+    if output_dir is not None:
+        export_opts = export_opts.copy(output_dir=output_dir)
+        opts = replace(opts, export=export_opts)
+    timings["resolve_options_seconds"] = max(0.0, _time.perf_counter() - phase_started)
+
+    phase_started = _time.perf_counter()
+    values = _normalize_multipose_pose_items(poses)
+    timings["normalize_poses_seconds"] = max(0.0, _time.perf_counter() - phase_started)
+
+    phase_started = _time.perf_counter()
+    if opts.sort_poses:
+        try:
+            values = rank_dock_models(values)
+        except Exception:
+            pass
+    timings["rank_poses_seconds"] = max(0.0, _time.perf_counter() - phase_started)
+
+    phase_started = _time.perf_counter()
+    name = sanitize_filename(basename or export_opts.basename or "multipose")
+    directory = Path(export_opts.output_dir or Path.cwd())
+    directory.mkdir(parents=True, exist_ok=True)
+    timings["resolve_output_seconds"] = max(0.0, _time.perf_counter() - phase_started)
+
+    phase_started = _time.perf_counter()
+    records = [_pose_record(pose, export_opts) for pose in values]
+    timings["build_pose_records_seconds"] = max(0.0, _time.perf_counter() - phase_started)
+
+    phase_started = _time.perf_counter()
+    requested_formats = frozenset(_export_format_values(export_opts.formats))
+    tabular_requested = bool(requested_formats.intersection(TABULAR_EXPORT_FORMATS))
+    tables = TableCollection()
+    if tabular_requested:
+        tables.add(build_table(records, name="poses"))
+        interactions: List[Dict[str, Any]] = []
+        for index, record in enumerate(records, start=1):
+            source = record.get("interactions")
+            if isinstance(source, Mapping):
+                for family, items in source.items():
+                    if isinstance(items, Sequence) and not isinstance(items, (str, bytes)):
+                        for item in items:
+                            if isinstance(item, Mapping):
+                                row = dict(item)
+                                row.setdefault("family", family)
+                                row.setdefault("pose_index", index)
+                                interactions.append(row)
+            elif isinstance(source, Sequence) and not isinstance(source, (str, bytes)):
+                for item in source:
+                    if isinstance(item, Mapping):
+                        row = dict(item)
+                        row.setdefault("pose_index", index)
+                        interactions.append(row)
+        if interactions:
+            tables.add(build_table(interactions, name="interactions"))
+        if opts.include_ranking:
+            ranking_rows: List[Dict[str, Any]] = []
+            for index, record in enumerate(records, start=1):
+                ranking_rows.append({
+                    "pose_index": index,
+                    "pose_id": record.get("id") or record.get("pose_id") or record.get("name"),
+                    "rank": record.get("rank"),
+                    "total_score": (
+                        record.get("total_score")
+                        if record.get("total_score") is not None
+                        else record.get("score")
+                    ),
+                })
+            tables.add(build_table(ranking_rows, name="ranking"))
+    timings["build_tables_seconds"] = max(0.0, _time.perf_counter() - phase_started)
+    timings["prepare_total_seconds"] = max(0.0, _time.perf_counter() - total_started)
+    return MultiposeExportContext(values, records, tables, name, directory, opts), timings
+
+
 def prepare_multipose_export(
     poses: Iterable[Any],
     *,
@@ -10311,63 +11260,14 @@ def prepare_multipose_export(
     basename: Optional[str] = None,
 ) -> MultiposeExportContext:
     """Prepare multiple poses for export."""
-    if poses is None:
-        raise ExportInputError("Pose collection cannot be None.")
-    opts = options or MultiposeExportOptions()
-    export_opts = opts.export
-    if output_dir is not None:
-        export_opts = export_opts.copy(output_dir=output_dir)
-        opts = replace(opts, export=export_opts)
-    values = list(poses)
-    if opts.sort_poses:
-        try:
-            values = rank_dock_models(values)
-        except Exception:
-            pass
-    name = sanitize_filename(basename or export_opts.basename or "multipose")
-    directory = Path(export_opts.output_dir or Path.cwd())
-    directory.mkdir(parents=True, exist_ok=True)
-    records = [_pose_record(pose, export_opts) for pose in values]
-    tables = TableCollection()
-    try:
-        tables.add(dock_models_table(values, name="poses"))
-    except Exception:
-        tables.add(build_table(records, name="poses"))
-    interactions: List[Dict[str, Any]] = []
-    for index, record in enumerate(records, start=1):
-        source = record.get("interactions")
-        if isinstance(source, Mapping):
-            for family, items in source.items():
-                if isinstance(items, Sequence) and not isinstance(items, (str, bytes)):
-                    for item in items:
-                        if isinstance(item, Mapping):
-                            row = dict(item)
-                            row.setdefault("family", family)
-                            row.setdefault("pose_index", index)
-                            interactions.append(row)
-        elif isinstance(source, Sequence) and not isinstance(source, (str, bytes)):
-            for item in source:
-                if isinstance(item, Mapping):
-                    row = dict(item)
-                    row.setdefault("pose_index", index)
-                    interactions.append(row)
-    if interactions:
-        tables.add(interactions_table(interactions, name="interactions"))
-    if opts.include_ranking:
-        ranking_rows: List[Dict[str, Any]] = []
-        for index, record in enumerate(records, start=1):
-            ranking_rows.append({
-                "pose_index": index,
-                "pose_id": record.get("id") or record.get("pose_id") or record.get("name"),
-                "rank": record.get("rank"),
-                "total_score": (
-                    record.get("total_score")
-                    if record.get("total_score") is not None
-                    else record.get("score")
-                ),
-            })
-        tables.add(build_table(ranking_rows, name="ranking"))
-    return MultiposeExportContext(values, records, tables, name, directory, opts)
+
+    context, _ = _prepare_multipose_export_profiled(
+        poses,
+        options=options,
+        output_dir=output_dir,
+        basename=basename,
+    )
+    return context
 
 
 def export_multiple_poses(
@@ -10377,51 +11277,152 @@ def export_multiple_poses(
     output_dir: Optional[PathLike] = None,
     basename: Optional[str] = None,
 ) -> ExportResult:
-    """Export a multipose collection."""
-    context = prepare_multipose_export(
+    """Export a multipose collection with phase-level timing diagnostics."""
+
+    operation_started_at = datetime.now(timezone.utc)
+    operation_started = _time.perf_counter()
+    context, timings = _prepare_multipose_export_profiled(
         poses,
         options=options,
         output_dir=output_dir,
         basename=basename,
     )
     export_opts = context.options.export
+
+    phase_started = _time.perf_counter()
     payload: Dict[str, Any] = {
         "schema_version": MULTIPOSE_SCHEMA_VERSION,
         "name": context.name,
         "pose_count": len(context.records),
-        "poses": context.records,
         "metadata": context.options.metadata,
     }
+    if context.options.include_combined_payload:
+        payload["poses"] = context.records
+    tables_payload = {
+        name: table.normalized_rows()
+        for name, table in context.tables.tables.items()
+    }
+    timings["build_payload_seconds"] = max(0.0, _time.perf_counter() - phase_started)
+
     result = ExportResult(
         source_name=context.name,
         output_dir=context.output_dir,
         payload=payload,
-        tables={name: table.normalized_rows() for name, table in context.tables.tables.items()},
-        metadata={"pose_count": len(context.records), **context.options.metadata},
+        tables=tables_payload,
+        started_at=operation_started_at,
+        metadata={
+            "pose_count": len(context.records),
+            **context.options.metadata,
+            "export_timings": timings,
+        },
     )
+
     for format_name in _export_format_values(export_opts.formats):
         try:
             if format_name == EXPORT_FORMAT_JSON:
-                result.add_file(write_json(payload, output_dir=context.output_dir, basename=context.name, options=export_opts.json, overwrite=export_opts.overwrite))
+                phase_started = _time.perf_counter()
+                target = resolve_output_path(
+                    None,
+                    output_dir=context.output_dir,
+                    basename=context.name,
+                    format_name=EXPORT_FORMAT_JSON,
+                    overwrite=export_opts.overwrite,
+                )
+                text = json_dumps(payload, options=export_opts.json)
+                if not text.endswith("\n"):
+                    text += "\n"
+                timings["serialize_json_seconds"] = max(0.0, _time.perf_counter() - phase_started)
+
+                phase_started = _time.perf_counter()
+                _write_text_atomic(
+                    target,
+                    text,
+                    encoding=export_opts.encoding,
+                    append=False,
+                )
+                exported = ExportedFile(path=target, format=EXPORT_FORMAT_JSON, record_count=1)
+                exported.refresh_size()
+                result.add_file(exported)
+                timings["write_json_seconds"] = max(0.0, _time.perf_counter() - phase_started)
             elif format_name == EXPORT_FORMAT_JSONL:
-                result.add_file(write_json_lines(context.records, output_dir=context.output_dir, basename=context.name, options=export_opts.json, overwrite=export_opts.overwrite))
+                phase_started = _time.perf_counter()
+                result.add_file(write_json_lines(
+                    context.records,
+                    output_dir=context.output_dir,
+                    basename=context.name,
+                    options=export_opts.json,
+                    overwrite=export_opts.overwrite,
+                    encoding=export_opts.encoding,
+                ))
+                timings["write_jsonl_seconds"] = max(0.0, _time.perf_counter() - phase_started)
             elif format_name in {EXPORT_FORMAT_CSV, EXPORT_FORMAT_TSV}:
                 writer = write_csv if format_name == EXPORT_FORMAT_CSV else write_tsv
+                phase_started = _time.perf_counter()
                 for table_name, table in context.tables.tables.items():
                     if table.empty and not export_opts.include_empty_tables:
                         continue
-                    result.add_file(writer(table, output_dir=context.output_dir, basename=f"{context.name}_{sanitize_filename(table_name)}", table_name=table_name, options=export_opts.delimited, overwrite=export_opts.overwrite))
+                    result.add_file(writer(
+                        table,
+                        output_dir=context.output_dir,
+                        basename=f"{context.name}_{sanitize_filename(table_name)}",
+                        table_name=table_name,
+                        options=export_opts.delimited,
+                        overwrite=export_opts.overwrite,
+                    ))
+                timings[f"write_{format_name}_seconds"] = max(0.0, _time.perf_counter() - phase_started)
             elif format_name == EXPORT_FORMAT_EXCEL:
-                result.add_file(write_excel(context.tables, output_dir=context.output_dir, basename=context.name, options=export_opts.excel, overwrite=export_opts.overwrite))
+                phase_started = _time.perf_counter()
+                result.add_file(write_excel(
+                    context.tables,
+                    output_dir=context.output_dir,
+                    basename=context.name,
+                    options=export_opts.excel,
+                    overwrite=export_opts.overwrite,
+                ))
+                timings["write_excel_seconds"] = max(0.0, _time.perf_counter() - phase_started)
             elif format_name in {EXPORT_FORMAT_TEXT, "txt"}:
-                result.add_file(write_text(payload, output_dir=context.output_dir, basename=context.name, overwrite=export_opts.overwrite))
+                phase_started = _time.perf_counter()
+                result.add_file(write_text(
+                    payload,
+                    output_dir=context.output_dir,
+                    basename=context.name,
+                    overwrite=export_opts.overwrite,
+                ))
+                timings["write_text_seconds"] = max(0.0, _time.perf_counter() - phase_started)
             else:
                 raise ExportFormatError(f"Unsupported multipose format: {format_name!r}")
         except Exception as exc:
             result.add_error(exc)
             if export_opts.error_mode == ErrorMode.RAISE.value:
                 raise
+
+    # Always emit one compact scientific workbook for multipose interpretation.
+    # This writer is dependency-free so it works in ChimeraX even when openpyxl
+    # is unavailable. It intentionally uses the authoritative multipose rank
+    # attached by analyze.py rather than DockModel.total_score.
+    phase_started = _time.perf_counter()
+    try:
+        scientific_rows = _scientific_summary_rows(context.records)
+        result.add_file(
+            _write_scientific_summary_excel(
+                scientific_rows,
+                output_dir=context.output_dir,
+                basename=context.name,
+                overwrite=export_opts.overwrite,
+            )
+        )
+        result.metadata["scientific_summary_rows"] = len(scientific_rows)
+        timings["write_scientific_summary_excel_seconds"] = max(
+            0.0,
+            _time.perf_counter() - phase_started,
+        )
+    except Exception as exc:
+        result.add_error(exc)
+        if export_opts.error_mode == ErrorMode.RAISE.value:
+            raise
+
     if context.options.include_individual_poses:
+        phase_started = _time.perf_counter()
         pose_root = context.output_dir / "poses" if context.options.separate_pose_directories else context.output_dir
         for index, pose in enumerate(context.poses, start=1):
             pose_name = f"{context.options.pose_prefix}_{index:04d}"
@@ -10435,14 +11436,57 @@ def export_multiple_poses(
             result.files.extend(child.files)
             result.warnings.extend(child.warnings)
             result.errors.extend(child.errors)
+        timings["individual_pose_exports_seconds"] = max(0.0, _time.perf_counter() - phase_started)
+
     if export_opts.include_manifest:
-        provenance = collect_provenance(parameters=export_opts.to_dict(), metadata=context.options.metadata, root=context.output_dir) if export_opts.include_provenance else None
-        result.manifest = build_manifest(result.files, source_name=context.name, options=export_opts, provenance=provenance, metadata=result.metadata, include_hashes=bool(export_opts.hash_algorithm), hash_algorithm=export_opts.hash_algorithm or DEFAULT_HASH_ALGORITHM)
+        phase_started = _time.perf_counter()
+        provenance = (
+            collect_provenance(
+                parameters=export_opts.to_dict(),
+                metadata=context.options.metadata,
+                root=context.output_dir,
+            )
+            if export_opts.include_provenance
+            else None
+        )
+        timings["collect_provenance_seconds"] = max(0.0, _time.perf_counter() - phase_started)
+
+        phase_started = _time.perf_counter()
+        if export_opts.hash_algorithm:
+            for exported_file in result.files:
+                enrich_exported_file(
+                    exported_file,
+                    include_hash=True,
+                    hash_algorithm=export_opts.hash_algorithm,
+                )
+        timings["calculate_hashes_seconds"] = max(0.0, _time.perf_counter() - phase_started)
+
+        phase_started = _time.perf_counter()
+        result.manifest = build_manifest(
+            result.files,
+            source_name=context.name,
+            options=export_opts,
+            provenance=provenance,
+            metadata=result.metadata,
+            include_hashes=False,
+            hash_algorithm=export_opts.hash_algorithm or DEFAULT_HASH_ALGORITHM,
+        )
+        timings["build_manifest_seconds"] = max(0.0, _time.perf_counter() - phase_started)
         try:
-            result.add_file(write_manifest(result.manifest, output_dir=context.output_dir, basename=f"{context.name}_manifest", overwrite=export_opts.overwrite, json_options=export_opts.json))
+            phase_started = _time.perf_counter()
+            result.add_file(write_manifest(
+                result.manifest,
+                output_dir=context.output_dir,
+                basename=f"{context.name}_manifest",
+                overwrite=export_opts.overwrite,
+                json_options=export_opts.json,
+            ))
+            timings["write_manifest_seconds"] = max(0.0, _time.perf_counter() - phase_started)
         except Exception as exc:
             result.add_error(exc)
+
     if export_opts.update_model_files:
+        phase_started = _time.perf_counter()
         for pose in context.poses:
             if not (
                 hasattr(pose, "files")
@@ -10464,6 +11508,9 @@ def export_multiple_poses(
                         "message": "Unable to update DockModel.files",
                     }
                 )
+        timings["update_model_files_seconds"] = max(0.0, _time.perf_counter() - phase_started)
+
+    timings["total_seconds"] = max(0.0, _time.perf_counter() - operation_started)
     return result.finish()
 
 
@@ -11151,7 +12198,7 @@ def validate_export_result(
     if result.manifest is not None:
         report.merge(validate_manifest(result.manifest, validation=opts))
     if opts.check_serializable:
-        problems = find_non_serializable(result.to_dict(include_payload=True))
+        problems = find_non_serializable(result.to_dict(include_payload=False))
         for problem in problems:
             report.add(
                 "result.not_serializable",
@@ -13123,16 +14170,42 @@ def _test_single_pose_export() -> None:
 
 def _test_multipose_preparation() -> None:
     models = _self_test_dock_models()
-    context = prepare_multipose_export(
+    json_context = prepare_multipose_export(
         models,
         options=MultiposeExportOptions(
-            export=ExportOptions(include_manifest=False, update_model_files=False)
+            export=ExportOptions(
+                formats=(EXPORT_FORMAT_JSON,),
+                include_manifest=False,
+                update_model_files=False,
+            )
         ),
-        basename="multipose",
+        basename="multipose_json",
     )
-    self_test_equal(len(context.records), 2)
-    self_test_assert("poses" in context.tables.tables, "Poses table is missing")
-    self_test_assert("ranking" in context.tables.tables, "Ranking table is missing")
+    self_test_equal(len(json_context.records), 2)
+    self_test_assert(
+        not json_context.tables.tables,
+        "JSON-only preparation created unused tables",
+    )
+
+    tabular_context = prepare_multipose_export(
+        models,
+        options=MultiposeExportOptions(
+            export=ExportOptions(
+                formats=(EXPORT_FORMAT_CSV,),
+                include_manifest=False,
+                update_model_files=False,
+            )
+        ),
+        basename="multipose_csv",
+    )
+    self_test_assert(
+        "poses" in tabular_context.tables.tables,
+        "Poses table is missing",
+    )
+    self_test_assert(
+        "ranking" in tabular_context.tables.tables,
+        "Ranking table is missing",
+    )
 
 
 def _test_multipose_export() -> None:
@@ -13152,9 +14225,46 @@ def _test_multipose_export() -> None:
         )
         result = export_multiple_poses(models, options=options)
         self_test_assert(result.succeeded, "Multipose export failed")
+        self_test_assert(
+            isinstance(result.payload, Mapping) and "poses" in result.payload,
+            "The default multipose payload omitted pose records",
+        )
         suffixes = {item.path.suffix for item in result.files}
         self_test_assert(".json" in suffixes, "Multipose JSON file is missing")
         self_test_assert(".csv" in suffixes, "Multipose CSV files are missing")
+
+        summary_options = MultiposeExportOptions(
+            export=ExportOptions(
+                output_dir=workspace,
+                basename="multipose_summary",
+                formats=(EXPORT_FORMAT_JSON,),
+                include_manifest=False,
+                include_provenance=False,
+                update_model_files=False,
+                overwrite=OverwriteMode.OVERWRITE.value,
+            ),
+            include_combined_payload=False,
+        )
+        summary_result = export_multiple_poses(models, options=summary_options)
+        self_test_assert(summary_result.succeeded, "Summary-only multipose export failed")
+        self_test_assert(
+            isinstance(summary_result.payload, Mapping),
+            "Summary-only multipose payload is not a mapping",
+        )
+        self_test_assert(
+            "poses" not in summary_result.payload,
+            "include_combined_payload=False retained pose records",
+        )
+        self_test_equal(summary_result.payload.get("pose_count"), len(models))
+        summary_json = next(
+            item.path for item in summary_result.files if item.path.suffix == ".json"
+        )
+        written_payload = json.loads(summary_json.read_text(encoding=DEFAULT_ENCODING))
+        self_test_assert(
+            "poses" not in written_payload,
+            "Summary-only JSON retained combined pose records",
+        )
+        self_test_equal(written_payload.get("pose_count"), len(models))
 
 
 def _test_batch_dynamic_fields() -> None:
@@ -13478,6 +14588,7 @@ def _test_non_serializable_validation() -> None:
         status=ExportStatus.SUCCESS.value,
         source_name="non_serializable",
         payload=object(),
+        metadata={"unsupported": object()},
     ).finish()
     report = validate_export_result(
         result,
@@ -13487,10 +14598,17 @@ def _test_non_serializable_validation() -> None:
             check_serializable=True,
         ),
     )
-    self_test_assert(not report.valid, "Non-serializable payload was accepted")
+    self_test_assert(
+        not report.valid,
+        "Non-serializable export-result metadata was accepted",
+    )
     self_test_assert(
         any(issue.code == "result.not_serializable" for issue in report.issues),
-        "Non-serializable payload was not reported",
+        "Non-serializable export-result metadata was not reported",
+    )
+    self_test_assert(
+        all("payload" not in str(issue.path or "") for issue in report.issues),
+        "Payload content was traversed during compact result validation",
     )
 
 

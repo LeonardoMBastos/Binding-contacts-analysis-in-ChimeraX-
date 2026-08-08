@@ -61,8 +61,10 @@ import sys
 import time
 import traceback
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
+from collections import OrderedDict
 from collections.abc import Iterable
 from pathlib import Path
 from typing import (
@@ -1598,6 +1600,168 @@ if "TimerRecord" not in __all__:
 # =============================================================================
 # End of Section 3
 # =============================================================================
+
+
+# =============================================================================
+# Internal receptor preparation cache
+# =============================================================================
+
+_PREPARED_RECEPTOR_ATTRIBUTE = "_dockanalyzer_prepared_receptor"
+_PREPARED_RECEPTOR_CACHE_LIMIT = 8
+_PREPARED_RECEPTOR_CACHE_LOCK = threading.RLock()
+_PREPARED_RECEPTOR_CACHE: "OrderedDict[int, _PreparedReceptor]" = OrderedDict()
+
+
+@dataclass
+class _PreparedReceptor:
+    """Internal immutable-source cache shared across docking poses.
+
+    The cache stores receptor atoms, coordinates, one reusable spatial index,
+    and detector-specific derived values. It is deliberately private so the
+    public DockAnalyzer API remains unchanged.
+    """
+
+    source: Any
+    atoms: Tuple[Any, ...]
+    coordinates: Any
+    spatial_index: Any
+    derived: Dict[Any, Any] = field(default_factory=dict, repr=False)
+    created_at: float = field(default_factory=time.perf_counter, repr=False)
+    _lock: Any = field(default_factory=threading.RLock, repr=False, compare=False)
+
+    @property
+    def source_identity(self) -> int:
+        return id(self.source)
+
+    @property
+    def atom_count(self) -> int:
+        return len(self.atoms)
+
+    def matches(self, source: Any) -> bool:
+        return source is self.source
+
+    def get_or_create(self, key: Any, builder: Callable[[], Any]) -> Any:
+        """Return one derived receptor value, creating it once if needed."""
+
+        with self._lock:
+            if key in self.derived:
+                return self.derived[key]
+        value = builder()
+        with self._lock:
+            return self.derived.setdefault(key, value)
+
+    def nearby_indices(self, query_coordinates: Any, radius: float) -> Tuple[int, ...]:
+        return self.spatial_index.query_unique_indices(query_coordinates, radius)
+
+    def summary(self) -> Dict[str, Any]:
+        return {
+            "available": True,
+            "atom_count": self.atom_count,
+            "spatial_backend": getattr(self.spatial_index, "backend", "unknown"),
+            "derived_cache_entries": len(self.derived),
+        }
+
+
+def _materialize_receptor_atoms(source: Any) -> Tuple[Any, ...]:
+    """Extract a receptor atom tuple without importing interaction modules."""
+
+    if source is None:
+        raise ValueError("A receptor source is required for preparation.")
+    atom_collection = getattr(source, "atoms", None)
+    if atom_collection is None:
+        atom_collection = getattr(source, "all_atoms", None)
+    if atom_collection is None:
+        if isinstance(source, (str, bytes, Mapping)):
+            raise TypeError("The receptor source does not expose an atom collection.")
+        try:
+            atom_collection = tuple(source)
+        except TypeError as exc:
+            raise TypeError(
+                "The receptor source does not expose an iterable atom collection."
+            ) from exc
+    atoms = tuple(atom_collection)
+    if not atoms:
+        raise ValueError("The receptor atom collection is empty.")
+    return atoms
+
+
+def _prepare_receptor_cache(source: Any, *, prefer_scipy: bool = True) -> _PreparedReceptor:
+    """Return the process-local prepared receptor for one source object."""
+
+    cache_key = id(source)
+    with _PREPARED_RECEPTOR_CACHE_LOCK:
+        cached = _PREPARED_RECEPTOR_CACHE.get(cache_key)
+        if cached is not None and cached.matches(source):
+            _PREPARED_RECEPTOR_CACHE.move_to_end(cache_key)
+            return cached
+
+    atoms = _materialize_receptor_atoms(source)
+    from . import geometry as _geometry
+
+    coordinates = _geometry.get_coordinates(
+        atoms,
+        scene=True,
+        name="prepared receptor atoms",
+        allow_empty=False,
+        require_finite=True,
+        copy=True,
+    )
+    spatial_index = _geometry._build_spatial_neighbor_index(
+        coordinates,
+        prefer_scipy=prefer_scipy,
+    )
+    prepared = _PreparedReceptor(
+        source=source,
+        atoms=atoms,
+        coordinates=coordinates,
+        spatial_index=spatial_index,
+    )
+    with _PREPARED_RECEPTOR_CACHE_LOCK:
+        _PREPARED_RECEPTOR_CACHE[cache_key] = prepared
+        _PREPARED_RECEPTOR_CACHE.move_to_end(cache_key)
+        while len(_PREPARED_RECEPTOR_CACHE) > _PREPARED_RECEPTOR_CACHE_LIMIT:
+            _PREPARED_RECEPTOR_CACHE.popitem(last=False)
+    return prepared
+
+
+def _get_prepared_receptor_cache(source: Any) -> Optional[_PreparedReceptor]:
+    """Return an existing prepared receptor without constructing one."""
+
+    if source is None:
+        return None
+    with _PREPARED_RECEPTOR_CACHE_LOCK:
+        cached = _PREPARED_RECEPTOR_CACHE.get(id(source))
+        if cached is None or not cached.matches(source):
+            return None
+        _PREPARED_RECEPTOR_CACHE.move_to_end(id(source))
+        return cached
+
+
+def _attach_prepared_receptor_cache(
+    dock_models: Iterable[Any],
+    prepared: _PreparedReceptor,
+) -> None:
+    """Attach one private prepared receptor reference to several DockModels."""
+
+    for dock_model in dock_models:
+        try:
+            setattr(dock_model, _PREPARED_RECEPTOR_ATTRIBUTE, prepared)
+        except Exception:
+            continue
+
+
+def _prepared_receptor_from_dock_model(
+    dock_model: Any,
+    *,
+    receptor: Any = None,
+) -> Optional[_PreparedReceptor]:
+    """Resolve a prepared receptor attached to a DockModel or source cache."""
+
+    prepared = getattr(dock_model, _PREPARED_RECEPTOR_ATTRIBUTE, None)
+    if isinstance(prepared, _PreparedReceptor):
+        if receptor is None or prepared.matches(receptor):
+            return prepared
+    return _get_prepared_receptor_cache(receptor)
 
 
 # =============================================================================

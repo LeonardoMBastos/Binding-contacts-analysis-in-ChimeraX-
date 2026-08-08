@@ -81,7 +81,8 @@ from .contacts import (
     validate_atom,
     validate_atom_collection,
 )
-from .geometry import angle, distance
+from .geometry import angle, distance, _build_spatial_neighbor_index
+from . import utils as _utils
 from .utils import DockLogger, DockModel
 
 
@@ -12904,10 +12905,32 @@ def _iter_candidate_pair_indices(
         * normalized_cutoff
     )
 
-    donor_count = donor_coordinates.shape[
-        0
-    ]
+    try:
+        spatial_index = _build_spatial_neighbor_index(acceptor_coordinates)
+        neighborhoods = spatial_index.query_ball_points(
+            donor_coordinates,
+            float(normalized_cutoff),
+        )
+        for donor_index, acceptor_indices in enumerate(neighborhoods):
+            donor_coordinate = donor_coordinates[donor_index]
+            for acceptor_index in acceptor_indices:
+                offset = donor_coordinate - acceptor_coordinates[acceptor_index]
+                squared_distance = np.float64(np.dot(offset, offset))
+                if squared_distance > squared_cutoff:
+                    continue
+                if squared_distance < 0.0:
+                    squared_distance = np.float64(0.0)
+                yield (
+                    int(donor_index),
+                    int(acceptor_index),
+                    np.float64(np.sqrt(squared_distance)),
+                )
+        return
+    except Exception:
+        # Preserve the legacy blocked search as a compatibility fallback.
+        pass
 
+    donor_count = donor_coordinates.shape[0]
     for block_start in range(
         0,
         donor_count,
@@ -12915,41 +12938,22 @@ def _iter_candidate_pair_indices(
     ):
         block_end = min(
             donor_count,
-            block_start
-            + normalized_block_size,
+            block_start + normalized_block_size,
         )
-
-        donor_block = donor_coordinates[
-            block_start:block_end
-        ]
-
+        donor_block = donor_coordinates[block_start:block_end]
         differences = (
-            donor_block[
-                :,
-                np.newaxis,
-                :,
-            ]
-            - acceptor_coordinates[
-                np.newaxis,
-                :,
-                :,
-            ]
+            donor_block[:, np.newaxis, :]
+            - acceptor_coordinates[np.newaxis, :, :]
         )
-
         squared_distances = np.einsum(
             "ijk,ijk->ij",
             differences,
             differences,
             dtype=np.float64,
         )
-
-        local_donor_indices, acceptor_indices = (
-            np.nonzero(
-                squared_distances
-                <= squared_cutoff
-            )
+        local_donor_indices, acceptor_indices = np.nonzero(
+            squared_distances <= squared_cutoff
         )
-
         for local_donor_index, acceptor_index in zip(
             local_donor_indices,
             acceptor_indices,
@@ -12958,25 +12962,12 @@ def _iter_candidate_pair_indices(
                 local_donor_index,
                 acceptor_index,
             ]
-
             if squared_distance < 0.0:
-                squared_distance = np.float64(
-                    0.0
-                )
-
+                squared_distance = np.float64(0.0)
             yield (
-                block_start
-                + int(
-                    local_donor_index
-                ),
-                int(
-                    acceptor_index
-                ),
-                np.float64(
-                    np.sqrt(
-                        squared_distance
-                    )
-                ),
+                block_start + int(local_donor_index),
+                int(acceptor_index),
+                np.float64(np.sqrt(squared_distance)),
             )
 
 
@@ -26191,10 +26182,23 @@ def analyze_dockmodel_hydrogen_bonds(
         else ligand
     )
 
-    receptor_atoms = _extract_atoms_from_structure_like(
-        receptor_object,
-        name="DockModel receptor",
+    prepared_receptor = _utils._prepared_receptor_from_dock_model(
+        dock_model,
+        receptor=receptor_object,
     )
+    if prepared_receptor is not None:
+        receptor_atoms = prepared_receptor.get_or_create(
+            ("hbonds_receptor_atoms",),
+            lambda: _extract_atoms_from_structure_like(
+                receptor_object,
+                name="DockModel receptor",
+            ),
+        )
+    else:
+        receptor_atoms = _extract_atoms_from_structure_like(
+            receptor_object,
+            name="DockModel receptor",
+        )
 
     ligand_atoms = _extract_atoms_from_structure_like(
         ligand_object,
@@ -26346,10 +26350,23 @@ def analyze_dockmodel_pose_hydrogen_bonds(
         else receptor
     )
 
-    receptor_atoms = _extract_atoms_from_structure_like(
-        receptor_object,
-        name="DockModel receptor",
+    prepared_receptor = _utils._prepared_receptor_from_dock_model(
+        dock_model,
+        receptor=receptor_object,
     )
+    if prepared_receptor is not None:
+        receptor_atoms = prepared_receptor.get_or_create(
+            ("hbonds_receptor_atoms",),
+            lambda: _extract_atoms_from_structure_like(
+                receptor_object,
+                name="DockModel receptor",
+            ),
+        )
+    else:
+        receptor_atoms = _extract_atoms_from_structure_like(
+            receptor_object,
+            name="DockModel receptor",
+        )
 
     result_metadata = {
         "dockmodel_integration": True,

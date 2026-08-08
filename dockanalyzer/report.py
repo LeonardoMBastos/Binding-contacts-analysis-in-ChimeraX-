@@ -5723,8 +5723,37 @@ def normalize_interaction_input(
         )
 
     if is_sequence_like(value) or isinstance(value, (set, frozenset)):
+        items = list(iter_object_collection(value))
+        if items and all(
+            any(
+                True
+                for _ in iter_interaction_containers(
+                    item,
+                    include_empty=True,
+                )
+            )
+            for item in items
+        ):
+            output: List[NormalizedInteraction] = []
+            for item in items:
+                remaining = config.max_interactions - len(output)
+                if remaining <= 0:
+                    break
+                output.extend(
+                    normalize_interaction_containers(
+                        item,
+                        config=replace(config, max_interactions=remaining),
+                        strict=strict,
+                        errors=errors,
+                    )
+                )
+            if config.deduplicate:
+                output = deduplicate_interactions(output)
+            if config.sort_interactions:
+                output.sort(key=interaction_sort_key)
+            return output[: config.max_interactions]
         return normalize_interactions(
-            value,
+            items,
             config=config,
             strict=strict,
             errors=errors,
@@ -11814,11 +11843,50 @@ def build_overview_report_section(
     """Build the overview report section."""
 
     if context.overview is None:
-        context.overview = summarize_pose(
-            context.value,
-            config=context.config,
-            strict=context.strict,
-        )
+        values = list(iter_object_collection(context.value))
+        if len(values) > 1 and not isinstance(context.value, Mapping):
+            if context.interactions is None:
+                context.interactions = summarize_interactions(
+                    context.value,
+                    config=context.config,
+                    strict=context.strict,
+                )
+            normalized = context.interactions.interactions
+            context.overview = PoseOverview(
+                pose_name=f"{len(values)} poses",
+                interaction_count=len(normalized),
+                residue_count=len(interaction_unique_residues(normalized)),
+                favorable_count=sum(
+                    1 for interaction in normalized if interaction.family.favorable
+                ),
+                penalty_count=sum(
+                    1 for interaction in normalized if interaction.family.penalty
+                ),
+                family_counts=interaction_family_counts(normalized),
+                type_counts=interaction_type_counts(normalized),
+                distance_statistics=interaction_distance_statistics(normalized),
+                warnings=tuple(
+                    dict.fromkeys(
+                        message
+                        for value in values
+                        for message in get_pose_warnings(value)
+                    )
+                ),
+                errors=tuple(
+                    dict.fromkeys(
+                        message
+                        for value in values
+                        for message in get_pose_errors(value)
+                    )
+                ),
+                metadata={"scope": "multipose", "pose_count": len(values)},
+            )
+        else:
+            context.overview = summarize_pose(
+                context.value,
+                config=context.config,
+                strict=context.strict,
+            )
     overview = context.overview
     blocks = [
         key_value_block(
@@ -18591,15 +18659,61 @@ def create_pose_report(
     )
 
 
+def _multipose_report_pose_values(poses: Any) -> List[Any]:
+    """Return concrete pose/model values from multipose wrappers."""
+
+    output: List[Any] = []
+    seen: Set[int] = set()
+
+    def add(value: Any) -> None:
+        if value is None or value is MISSING:
+            return
+
+        pose_results = get_object_field(value, "pose_results", MISSING)
+        if pose_results is not MISSING and pose_results is not value:
+            for item in iter_object_collection(pose_results):
+                dock_model = get_object_field(item, "dock_model", MISSING)
+                add(item if dock_model is MISSING else dock_model)
+            return
+
+        dock_models = get_object_field(value, "dock_models", MISSING)
+        if dock_models is not MISSING and dock_models is not value:
+            for item in iter_object_collection(dock_models):
+                add(item)
+            return
+
+        if is_sequence_like(value) or isinstance(value, (set, frozenset)):
+            for item in iter_object_collection(value):
+                add(item)
+            return
+
+        dock_model = get_object_field(value, "dock_model", MISSING)
+        has_containers = any(
+            True
+            for _ in iter_interaction_containers(value, include_empty=True)
+        )
+        if dock_model is not MISSING and dock_model is not value and not has_containers:
+            add(dock_model)
+            return
+
+        marker = id(value)
+        if marker not in seen:
+            seen.add(marker)
+            output.append(value)
+
+    add(poses)
+    return output
+
+
 def create_multipose_report(
     poses: Any,
     *,
     config: ReportConfig = DEFAULT_REPORT_CONFIG,
     **kwargs: Any,
 ) -> ReportDocument:
-    """Create a report for multiple poses."""
+    """Create a report for multiple concrete poses or pose wrappers."""
 
-    pose_values = list(iter_object_collection(poses))
+    pose_values = _multipose_report_pose_values(poses)
     if not pose_values:
         raise ReportInputError("No poses were provided.")
     return create_report(

@@ -951,6 +951,12 @@ CLASSIFICATION_INFERRED: Final[str] = "inferred"
 CLASSIFICATION_CHARGE_ASSISTED: Final[str] = "charge_assisted"
 CLASSIFICATION_WATER_MEDIATED: Final[str] = "water_mediated"
 
+# Common detector-level hydrogen-bond classifications. These labels are
+# intentionally distinct because multiplier profiles may assign them
+# different values.
+CLASSIFICATION_CONVENTIONAL: Final[str] = "conventional"
+CLASSIFICATION_NONCONVENTIONAL: Final[str] = "nonconventional"
+
 CLASSIFICATION_MINOR: Final[str] = "minor"
 CLASSIFICATION_MODERATE: Final[str] = "moderate"
 CLASSIFICATION_SEVERE: Final[str] = "severe"
@@ -970,6 +976,8 @@ CANONICAL_CLASSIFICATIONS: Final[FrozenSet[str]] = frozenset(
         CLASSIFICATION_INFERRED,
         CLASSIFICATION_CHARGE_ASSISTED,
         CLASSIFICATION_WATER_MEDIATED,
+        CLASSIFICATION_CONVENTIONAL,
+        CLASSIFICATION_NONCONVENTIONAL,
         CLASSIFICATION_MINOR,
         CLASSIFICATION_MODERATE,
         CLASSIFICATION_SEVERE,
@@ -1221,7 +1229,9 @@ INTERACTION_TYPE_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
         # General pi aliases
         "pi": SCORE_TYPE_PI,
         "pi_interaction": SCORE_TYPE_PI,
+        "pi_interactions": SCORE_TYPE_PI,
         "aromatic_interaction": SCORE_TYPE_PI,
+        "aromatic_interactions": SCORE_TYPE_PI,
 
         "pi_stack": SCORE_TYPE_PI_STACKING,
         "pi_stacking": SCORE_TYPE_PI_STACKING,
@@ -1365,10 +1375,11 @@ GEOMETRY_QUALITY_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
         "accepted": GEOMETRY_FAVORABLE,
 
         "weak": GEOMETRY_WEAK,
-        "poor": GEOMETRY_WEAK,
+        "acceptable": GEOMETRY_WEAK,
         "suboptimal": GEOMETRY_WEAK,
 
         "borderline": GEOMETRY_BORDERLINE,
+        "poor": GEOMETRY_BORDERLINE,
         "marginal": GEOMETRY_BORDERLINE,
         "limit": GEOMETRY_BORDERLINE,
 
@@ -1442,6 +1453,11 @@ CLASSIFICATION_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
 
         "water_mediated": CLASSIFICATION_WATER_MEDIATED,
         "water_bridge": CLASSIFICATION_WATER_MEDIATED,
+
+        "conventional": CLASSIFICATION_CONVENTIONAL,
+        "standard": CLASSIFICATION_CONVENTIONAL,
+        "nonconventional": CLASSIFICATION_NONCONVENTIONAL,
+        "non_conventional": CLASSIFICATION_NONCONVENTIONAL,
 
         "minor": CLASSIFICATION_MINOR,
         "mild": CLASSIFICATION_MINOR,
@@ -1978,6 +1994,13 @@ def normalize_score_direction(
         "minimise": SCORE_DIRECTION_LOWER_IS_BETTER,
     }
 
+    extended_aliases = globals().get("_SCORE_DIRECTION_ALIASES")
+    if isinstance(extended_aliases, Mapping):
+        aliases.update(extended_aliases)
+
+    if normalized in SCORE_DIRECTIONS:
+        return normalized
+
     return aliases.get(
         normalized,
         default,
@@ -2377,6 +2400,8 @@ _SECTION_2_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "CLASSIFICATION_INFERRED",
     "CLASSIFICATION_CHARGE_ASSISTED",
     "CLASSIFICATION_WATER_MEDIATED",
+    "CLASSIFICATION_CONVENTIONAL",
+    "CLASSIFICATION_NONCONVENTIONAL",
     "CLASSIFICATION_MINOR",
     "CLASSIFICATION_MODERATE",
     "CLASSIFICATION_SEVERE",
@@ -2576,6 +2601,9 @@ DEFAULT_CLASSIFICATION_MULTIPLIERS: Final[Mapping[str, float]] = (
             CLASSIFICATION_INFERRED: 0.80,
             CLASSIFICATION_CHARGE_ASSISTED: 1.20,
             CLASSIFICATION_WATER_MEDIATED: 0.70,
+
+            CLASSIFICATION_CONVENTIONAL: 1.00,
+            CLASSIFICATION_NONCONVENTIONAL: 0.85,
 
             CLASSIFICATION_MINOR: 0.50,
             CLASSIFICATION_MODERATE: 1.00,
@@ -9404,9 +9432,20 @@ def validate_residue_score(
     Validate and return a residue score.
     """
 
+    aggregation_type = globals().get("ResidueAggregationScore")
+    aggregation_validator = globals().get(
+        "_validate_residue_aggregation_score"
+    )
+    if (
+        isinstance(aggregation_type, type)
+        and isinstance(result, aggregation_type)
+        and callable(aggregation_validator)
+    ):
+        return aggregation_validator(result)
+
     if not isinstance(result, ResidueScore):
         raise ScoringConfigurationError(
-            "Expected a ResidueScore instance."
+            "Expected a ResidueScore or ResidueAggregationScore instance."
         )
 
     for interaction in result.interactions:
@@ -9932,6 +9971,7 @@ EXPLANATION_SCOPE_INTERACTION: Final[str] = "interaction"
 EXPLANATION_SCOPE_RESIDUE: Final[str] = "residue"
 EXPLANATION_SCOPE_POSE: Final[str] = "pose"
 EXPLANATION_SCOPE_MULTIPOSE: Final[str] = "multipose"
+EXPLANATION_SCOPE_COLLECTION: Final[str] = "collection"
 EXPLANATION_SCOPE_STATISTICS: Final[str] = "statistics"
 EXPLANATION_SCOPE_GENERAL: Final[str] = "general"
 
@@ -9942,6 +9982,7 @@ EXPLANATION_SCOPES: Final[FrozenSet[str]] = frozenset(
         EXPLANATION_SCOPE_RESIDUE,
         EXPLANATION_SCOPE_POSE,
         EXPLANATION_SCOPE_MULTIPOSE,
+        EXPLANATION_SCOPE_COLLECTION,
         EXPLANATION_SCOPE_STATISTICS,
         EXPLANATION_SCOPE_GENERAL,
     }
@@ -10036,6 +10077,10 @@ _EXPLANATION_SCOPE_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
         "multipose": EXPLANATION_SCOPE_MULTIPOSE,
         "multi_pose": EXPLANATION_SCOPE_MULTIPOSE,
         "ranking": EXPLANATION_SCOPE_MULTIPOSE,
+
+        "collection": EXPLANATION_SCOPE_COLLECTION,
+        "aggregate": EXPLANATION_SCOPE_COLLECTION,
+        "aggregation": EXPLANATION_SCOPE_COLLECTION,
 
         "statistics": EXPLANATION_SCOPE_STATISTICS,
         "stats": EXPLANATION_SCOPE_STATISTICS,
@@ -12816,7 +12861,7 @@ def explain_score_component(
     )
 
 
-def explain_interaction_score(
+def _explain_core_interaction_score(
     result: InteractionScore,
     *,
     level: str = EXPLANATION_LEVEL_STANDARD,
@@ -12912,7 +12957,7 @@ def explain_interaction_score(
     )
 
 
-def explain_residue_score(
+def _explain_core_residue_score(
     result: ResidueScore,
     *,
     level: str = EXPLANATION_LEVEL_STANDARD,
@@ -12943,7 +12988,7 @@ def explain_residue_score(
 
     children = (
         tuple(
-            explain_interaction_score(
+            _explain_core_interaction_score(
                 interaction,
                 level=EXPLANATION_LEVEL_DETAILED,
                 include_components=False,
@@ -13020,7 +13065,7 @@ def explain_pose_score(
 
     if include_residues:
         children.extend(
-            explain_residue_score(
+            _explain_core_residue_score(
                 residue,
                 level=EXPLANATION_LEVEL_DETAILED,
                 include_interactions=False,
@@ -13030,7 +13075,7 @@ def explain_pose_score(
 
     if include_interactions:
         children.extend(
-            explain_interaction_score(
+            _explain_core_interaction_score(
                 interaction,
                 level=EXPLANATION_LEVEL_DETAILED,
                 include_components=False,
@@ -13673,6 +13718,7 @@ _SECTION_4_3_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "EXPLANATION_SCOPE_RESIDUE",
     "EXPLANATION_SCOPE_POSE",
     "EXPLANATION_SCOPE_MULTIPOSE",
+    "EXPLANATION_SCOPE_COLLECTION",
     "EXPLANATION_SCOPE_STATISTICS",
     "EXPLANATION_SCOPE_GENERAL",
     "EXPLANATION_SCOPES",
@@ -17420,7 +17466,7 @@ def extract_dock_model_interaction_groups(
     return MappingProxyType(groups)
 
 
-def extract_dock_model_interactions(
+def _extract_dock_model_interaction_objects(
     dock_model: Any,
 ) -> Tuple[Any, ...]:
     """
@@ -17564,7 +17610,7 @@ def adapt_to_pose_score(
     )
 
     interaction_source = (
-        extract_dock_model_interactions(
+        _extract_dock_model_interaction_objects(
             source
         )
         if isinstance(source, DockModel)
@@ -19238,6 +19284,12 @@ INTERACTION_RECOGNITION_PATTERNS: Final[
             "non_polar",
             "alkyl_contact",
             "van_der_waals",
+        ),
+        "pi": (
+            "pi_interaction",
+            "pi_interactions",
+            "aromatic_interaction",
+            "aromatic_interactions",
         ),
         "pi_stacking": (
             "pi_stacking",
@@ -26058,7 +26110,7 @@ def classify_base_weight(
     weight: Number,
 ) -> str:
     """
-    Classify a base weight as favorable, unfavorable or neutral.
+    Classify a base weight as favorable, penalizing or neutral.
     """
 
     normalized_weight = _coerce_finite_score_value(
@@ -26070,7 +26122,7 @@ def classify_base_weight(
         return POLARITY_FAVORABLE
 
     if normalized_weight < -SCORE_COMPARISON_TOLERANCE:
-        return POLARITY_UNFAVORABLE
+        return POLARITY_PENALTY
 
     return POLARITY_NEUTRAL
 
@@ -36279,6 +36331,22 @@ class ScoreAdjustmentContext:
                     )
                 )
 
+        geometry_metadata = metadata.get(
+            "geometry",
+            {},
+        )
+
+        def _metric_with_metadata_fallback(
+            extractor: Callable[[Any], Optional[float]],
+        ) -> Optional[float]:
+            value = extractor(interaction)
+            if (
+                value is None
+                and isinstance(geometry_metadata, Mapping)
+            ):
+                value = extractor(geometry_metadata)
+            return value
+
         return cls(
             interaction_id=score.interaction_id,
             interaction_type=score.interaction_type,
@@ -36291,20 +36359,20 @@ class ScoreAdjustmentContext:
             classification=score.classification,
             geometry_quality=score.geometry_quality,
             polarity=score.polarity,
-            distance=extract_interaction_distance(
-                interaction
+            distance=_metric_with_metadata_fallback(
+                extract_interaction_distance
             ),
-            angle=extract_interaction_angle(
-                interaction
+            angle=_metric_with_metadata_fallback(
+                extract_interaction_angle
             ),
-            offset=extract_interaction_offset(
-                interaction
+            offset=_metric_with_metadata_fallback(
+                extract_interaction_offset
             ),
-            planarity=extract_interaction_planarity(
-                interaction
+            planarity=_metric_with_metadata_fallback(
+                extract_interaction_planarity
             ),
-            overlap=extract_interaction_overlap(
-                interaction
+            overlap=_metric_with_metadata_fallback(
+                extract_interaction_overlap
             ),
             duplicate_count=duplicate_count,
             missing_geometry_metric_count=(
@@ -41013,6 +41081,9 @@ def try_score_individual_interaction(
     Score one interaction and return None when scoring fails.
     """
 
+    if interaction is None:
+        return None
+
     result = score_individual_interaction(
         interaction,
         profile=profile,
@@ -43167,7 +43238,7 @@ def materialize_interaction_collection(
     if isinstance(source, Iterable):
         return tuple(source)
 
-    extracted = extract_interaction_collection(
+    extracted = extract_interaction_data_collection(
         source,
         preserve_references=True,
         skip_errors=False,
@@ -45434,7 +45505,7 @@ class ResidueScoreContribution:
 # -----------------------------------------------------------------------------
 
 @dataclass(frozen=True, slots=True)
-class ResidueScore:
+class ResidueAggregationScore:
     """
     Aggregated score for one residue.
     """
@@ -45517,7 +45588,7 @@ class ResidueScore:
                 float(
                     _coerce_finite_score_value(
                         getattr(self, field_name),
-                        name=f"ResidueScore.{field_name}",
+                        name=f"ResidueAggregationScore.{field_name}",
                     )
                 ),
             )
@@ -45538,7 +45609,7 @@ class ResidueScore:
                     else float(
                         _coerce_finite_score_value(
                             value,
-                            name=f"ResidueScore.{field_name}",
+                            name=f"ResidueAggregationScore.{field_name}",
                         )
                     )
                 ),
@@ -45552,7 +45623,7 @@ class ResidueScore:
 
         if rank is not None and rank < 1:
             raise ResidueAggregationValidationError(
-                "ResidueScore.rank must be positive or None."
+                "ResidueAggregationScore.rank must be positive or None."
             )
 
         object.__setattr__(
@@ -45976,11 +46047,11 @@ class ResidueAggregationResult:
     """
 
     status: str
-    residues: Tuple[ResidueScore, ...]
-    hotspots: Tuple[ResidueScore, ...]
+    residues: Tuple[ResidueAggregationScore, ...]
+    hotspots: Tuple[ResidueAggregationScore, ...]
     summary: ResidueAggregationSummary
 
-    by_residue_id: Mapping[str, ResidueScore] = field(
+    by_residue_id: Mapping[str, ResidueAggregationScore] = field(
         default_factory=lambda: MappingProxyType({})
     )
     by_pose: Mapping[
@@ -46020,15 +46091,15 @@ class ResidueAggregationResult:
         hotspots = tuple(self.hotspots)
 
         for residue_score in residues:
-            if not isinstance(residue_score, ResidueScore):
+            if not isinstance(residue_score, ResidueAggregationScore):
                 raise ResidueAggregationValidationError(
-                    "residues must contain only ResidueScore instances."
+                    "residues must contain only ResidueAggregationScore instances."
                 )
 
         for hotspot in hotspots:
-            if not isinstance(hotspot, ResidueScore):
+            if not isinstance(hotspot, ResidueAggregationScore):
                 raise ResidueAggregationValidationError(
-                    "hotspots must contain only ResidueScore instances."
+                    "hotspots must contain only ResidueAggregationScore instances."
                 )
 
         if not isinstance(
@@ -46662,7 +46733,7 @@ def build_residue_score(
     contributions: Iterable[
         ResidueScoreContribution
     ],
-) -> ResidueScore:
+) -> ResidueAggregationScore:
     """
     Aggregate contributions assigned to one residue.
     """
@@ -46695,7 +46766,7 @@ def build_residue_score(
         if abs(value) <= SCORE_COMPARISON_TOLERANCE
     )
 
-    return ResidueScore(
+    return ResidueAggregationScore(
         residue=residue,
         contributions=normalized,
         interaction_count=len(
@@ -46746,7 +46817,7 @@ def build_residue_score(
 
 
 def residue_ranking_value(
-    residue_score: ResidueScore,
+    residue_score: ResidueAggregationScore,
     *,
     mode: str = DEFAULT_RESIDUE_RANKING_MODE,
 ) -> float:
@@ -46774,11 +46845,11 @@ def residue_ranking_value(
 
 
 def rank_residue_scores(
-    residue_scores: Iterable[ResidueScore],
+    residue_scores: Iterable[ResidueAggregationScore],
     *,
     ranking_mode: str = DEFAULT_RESIDUE_RANKING_MODE,
     hotspot_limit: int = DEFAULT_RESIDUE_HOTSPOT_LIMIT,
-) -> Tuple[ResidueScore, ...]:
+) -> Tuple[ResidueAggregationScore, ...]:
     """
     Sort, rank and label residue hotspots.
     """
@@ -46900,7 +46971,7 @@ def group_residue_contributions(
 def build_residue_aggregation_summary(
     *,
     scores: Iterable[InteractionScore],
-    residue_scores: Iterable[ResidueScore],
+    residue_scores: Iterable[ResidueAggregationScore],
     contributions: Iterable[
         ResidueScoreContribution
     ],
@@ -47235,7 +47306,7 @@ def score_and_aggregate_by_residue(
 def get_residue_score(
     result: ResidueAggregationResult,
     residue_id: str,
-) -> Optional[ResidueScore]:
+) -> Optional[ResidueAggregationScore]:
     """
     Return one residue score by canonical identifier.
     """
@@ -47251,7 +47322,7 @@ def residue_hotspots(
     result: ResidueAggregationResult,
     *,
     limit: Optional[int] = None,
-) -> Tuple[ResidueScore, ...]:
+) -> Tuple[ResidueAggregationScore, ...]:
     """
     Return top residue hotspots.
     """
@@ -47478,14 +47549,14 @@ def serialize_residue_aggregation_result(
 # 15.18. Explainability
 # -----------------------------------------------------------------------------
 
-def explain_residue_score(
-    residue_score: ResidueScore,
+def _explain_residue_aggregation_score(
+    residue_score: ResidueAggregationScore,
 ) -> ScoreExplanation:
     """
     Explain one aggregated residue score.
     """
 
-    validate_residue_score(residue_score)
+    _validate_residue_aggregation_score(residue_score)
 
     children = tuple(
         ScoreExplanation(
@@ -47616,7 +47687,7 @@ def explain_residue_aggregation_result(
             result.status,
         ),
         children=tuple(
-            explain_residue_score(residue_score)
+            _explain_residue_aggregation_score(residue_score)
             for residue_score in result.residues
         ),
         metadata={
@@ -47678,16 +47749,16 @@ def validate_residue_score_contribution(
     return contribution
 
 
-def validate_residue_score(
-    residue_score: ResidueScore,
-) -> ResidueScore:
+def _validate_residue_aggregation_score(
+    residue_score: ResidueAggregationScore,
+) -> ResidueAggregationScore:
     """
     Validate and return an aggregated residue score.
     """
 
-    if not isinstance(residue_score, ResidueScore):
+    if not isinstance(residue_score, ResidueAggregationScore):
         raise ResidueAggregationValidationError(
-            "Expected ResidueScore."
+            "Expected ResidueAggregationScore."
         )
 
     validate_residue_identity(
@@ -47780,7 +47851,7 @@ def validate_residue_aggregation_result(
         )
 
     for residue_score in result.residues:
-        validate_residue_score(residue_score)
+        _validate_residue_aggregation_score(residue_score)
 
     validate_residue_aggregation_summary(
         result.summary
@@ -47974,7 +48045,7 @@ def _validate_section_15_residue_aggregation() -> None:
     validate_residue_aggregation_options(
         DEFAULT_RESIDUE_AGGREGATION_OPTIONS
     )
-    validate_residue_score(lysine)
+    _validate_residue_aggregation_score(lysine)
     validate_residue_aggregation_summary(
         result.summary
     )
@@ -48040,7 +48111,7 @@ _SECTION_15_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     # Dataclasses
     "ResidueIdentity",
     "ResidueScoreContribution",
-    "ResidueScore",
+    "ResidueAggregationScore",
     "ResidueAggregationOptions",
     "ResidueAggregationSummary",
     "ResidueAggregationResult",
@@ -49612,7 +49683,7 @@ class PoseScoringResult:
         return self.summary.raw_interaction_score
 
     @property
-    def hotspots(self) -> Tuple[ResidueScore, ...]:
+    def hotspots(self) -> Tuple[ResidueAggregationScore, ...]:
         """
         Return pose residue hotspots.
         """
@@ -51001,7 +51072,7 @@ def explain_pose_score_component(
     )
 
 
-def explain_pose_scoring_result(
+def _explain_pose_scoring_result_v16(
     result: PoseScoringResult,
 ) -> ScoreExplanation:
     """
@@ -51515,7 +51586,7 @@ def _validate_section_16_total_pose_score() -> None:
             "Weighted pose scoring validation failed."
         )
 
-    explanation = explain_pose_scoring_result(
+    explanation = _explain_pose_scoring_result_v16(
         result
     )
 
@@ -52052,7 +52123,7 @@ def normalize_score_normalization_method(
     )
 
 
-def normalize_score_direction(
+def _normalize_score_normalization_direction(
     value: Any,
     *,
     default: str = DEFAULT_SCORE_NORMALIZATION_DIRECTION,
@@ -52360,7 +52431,7 @@ class ScoreNormalizationOptions:
         method = normalize_score_normalization_method(
             self.method
         )
-        direction = normalize_score_direction(
+        direction = _normalize_score_normalization_direction(
             self.direction
         )
         degenerate_policy = normalize_score_degenerate_policy(
@@ -52733,7 +52804,7 @@ class NormalizedPoseScore:
         object.__setattr__(
             self,
             "direction",
-            normalize_score_direction(
+            _normalize_score_normalization_direction(
                 self.direction
             ),
         )
@@ -52858,7 +52929,7 @@ class ScoreNormalizationResult:
         object.__setattr__(
             self,
             "direction",
-            normalize_score_direction(
+            _normalize_score_normalization_direction(
                 self.direction
             ),
         )
@@ -53259,7 +53330,7 @@ def orient_score_for_comparison(
             name="score for direction transformation",
         )
     )
-    normalized_direction = normalize_score_direction(
+    normalized_direction = _normalize_score_normalization_direction(
         direction
     )
 
@@ -57701,7 +57772,7 @@ def type_fingerprint_feature(
 
 
 def hotspot_fingerprint_feature(
-    residue_score: ResidueScore,
+    residue_score: ResidueAggregationScore,
 ) -> str:
     """
     Build a hotspot-level fingerprint feature.
@@ -66631,6 +66702,28 @@ class PoseSetSelectionResult:
         return result
 
 
+def pose_set_selection_result_to_dict(
+    result: PoseSetSelectionResult,
+    *,
+    include_metadata: bool = True,
+    include_candidates: bool = True,
+    include_profiles: bool = False,
+) -> Dict[str, Any]:
+    """Return the canonical dictionary representation of a pose-set result.
+
+    This convenience wrapper mirrors :meth:`PoseSetSelectionResult.to_dict`
+    and provides a stable function-level API for callers that serialize
+    Section 18 optimization results without depending on the dataclass method.
+    """
+
+    validate_pose_set_selection_result(result)
+    return result.to_dict(
+        include_metadata=include_metadata,
+        include_candidates=include_candidates,
+        include_profiles=include_profiles,
+    )
+
+
 # -----------------------------------------------------------------------------
 # 18.59. Optimization helper functions
 # -----------------------------------------------------------------------------
@@ -73244,6 +73337,7 @@ _SECTION_18_PART_4_PUBLIC_NAMES: Final[
     "pose_diversity_result_to_envelope",
     "pose_set_complementarity_result_to_envelope",
     "pose_set_selection_result_to_envelope",
+    "pose_set_selection_result_to_dict",
     "complementarity_explanation_to_envelope",
     "serialize_pose_set_complementarity_result",
     "serialize_pose_set_selection_result",
@@ -73375,7 +73469,7 @@ implemented in Sections 27 and 30.
 Supported inputs include:
 - ``InteractionScore`` objects and interaction-score collections;
 - ``CollectionScoringResult``;
-- the final residue-level ``ResidueScore`` and ``ResidueAggregationResult``;
+- the final residue-level ``ResidueAggregationScore`` and ``ResidueAggregationResult``;
 - ``PoseScore`` and ``PoseScoringResult``;
 - ``MultiPoseScoreResult``;
 - ``ScoreNormalizationResult``;
@@ -74524,12 +74618,12 @@ def collect_interaction_scores_for_statistics(
 
 def collect_residue_scores_for_statistics(
     source: Any,
-) -> Tuple[ResidueScore, ...]:
+) -> Tuple[ResidueAggregationScore, ...]:
     """Extract final Section 15 residue-score objects from supported inputs."""
 
     if source is None:
         return ()
-    if isinstance(source, ResidueScore):
+    if isinstance(source, ResidueAggregationScore):
         return (source,)
     if isinstance(source, ResidueAggregationResult):
         return tuple(source.residues)
@@ -74541,14 +74635,14 @@ def collect_residue_scores_for_statistics(
         return tuple(
             residue
             for residue in source.residues
-            if isinstance(residue, ResidueScore)
+            if isinstance(residue, ResidueAggregationScore)
         )
     if isinstance(source, MultiPoseScoreResult):
         return tuple(
             residue
             for pose in source.poses
             for residue in pose.residues
-            if isinstance(residue, ResidueScore)
+            if isinstance(residue, ResidueAggregationScore)
         )
     if isinstance(source, Mapping):
         for key in ("residues", "residue_scores", "hotspots"):
@@ -74559,7 +74653,7 @@ def collect_residue_scores_for_statistics(
         source,
         (str, bytes, bytearray),
     ):
-        collected: List[ResidueScore] = []
+        collected: List[ResidueAggregationScore] = []
         for value in source:
             collected.extend(collect_residue_scores_for_statistics(value))
         return tuple(collected)
@@ -75337,7 +75431,7 @@ class ResidueStatisticsSummary:
 
 
 def _residue_concentration_ids(
-    residues: Sequence[ResidueScore],
+    residues: Sequence[ResidueAggregationScore],
     fraction: float,
 ) -> Tuple[str, ...]:
     """Return the smallest residue set reaching an absolute-score fraction."""
@@ -94024,7 +94118,7 @@ def explain_residue_score(
     options: Optional[ScoringExplainabilityOptions] = None,
     entity_id: Optional[str] = None,
 ) -> ScoringEntityExplanation:
-    """Explain one ResidueScore-like object or equivalent mapping."""
+    """Explain one ResidueAggregationScore-like object or equivalent mapping."""
 
     configuration = options or ScoringExplainabilityOptions()
     if residue_score is None:
@@ -98218,6 +98312,7 @@ _CLASS_NAME_TO_ARTIFACT_TYPE: Final[Mapping[str, str]] = MappingProxyType(
             SCORING_SERIALIZATION_ARTIFACT_COLLECTION
         ),
         "ResidueScore": SCORING_SERIALIZATION_ARTIFACT_RESIDUE,
+        "ResidueAggregationScore": SCORING_SERIALIZATION_ARTIFACT_RESIDUE,
         "ResidueAggregationResult": "residue_aggregation_result",
         "PoseScore": "pose_score",
         "PoseScoringResult": SCORING_SERIALIZATION_ARTIFACT_POSE,
@@ -107574,7 +107669,11 @@ def _initialize_default_scoring_validators() -> None:
         ),
         (
             "residue",
-            _class_names("ResidueScore", "ResidueAggregationResult"),
+            _class_names(
+                "ResidueScore",
+                "ResidueAggregationScore",
+                "ResidueAggregationResult",
+            ),
             _validate_residue,
             60,
             "residue",
@@ -108588,7 +108687,10 @@ def safe_scoring_call(
         if fallback is not None
         else (
             SCORING_RECOVERY_DEFAULT
-            if mode == SCORING_ERROR_MODE_DEFAULT
+            if (
+                mode == SCORING_ERROR_MODE_DEFAULT
+                or default is not None
+            )
             else SCORING_RECOVERY_NONE
         )
     )
@@ -117469,6 +117571,7 @@ class MockScoringInteraction:
     distance: Optional[float] = None
     strength: str = SCORING_SELF_TEST_STRENGTH_MODERATE
     classification: str = SCORING_SELF_TEST_GEOMETRY_FAVORABLE
+    geometry_quality: str = SCORING_SELF_TEST_GEOMETRY_FAVORABLE
     score: Optional[float] = None
     geometry_score: Optional[float] = None
     confidence: float = 1.0
@@ -121154,17 +121257,15 @@ def test_scoring_default_configuration() -> None:
         )
     )
     summary = _section_30_2_call("summarize_scoring_config", default)
-    assert_scoring_test_mapping_contains(
-        summary,
-        {
-            "interaction_weight_count",
-            "family_weights",
-            "normalization_mode",
-            "aggregation_mode",
-            "deduplication_mode",
-            "score_direction",
-        },
-    )
+    for key in (
+        "interaction_weight_count",
+        "family_weights",
+        "normalization_mode",
+        "aggregation_mode",
+        "deduplication_mode",
+        "score_direction",
+    ):
+        assert_scoring_test_contains(summary, key)
     assert_scoring_test_equal(
         summary["interaction_weight_count"],
         len(default.interaction_weights),
@@ -123413,7 +123514,10 @@ def test_individual_geometry_explicit_quality() -> None:
         profile=build_scoring_individual_geometry_profile(),
     )
     assert_scoring_test_almost_equal(result.multiplier, 1.20)
-    assert_scoring_test_equal(result.quality, "ideal")
+    assert_scoring_test_equal(
+        result.quality,
+        _section_30_3_require("GEOMETRY_OPTIMAL"),
+    )
     _section_30_3_call("validate_geometry_quality_resolution", result)
 
 
@@ -123669,7 +123773,7 @@ def test_individual_family_score_integration() -> None:
     expected = pre_family.raw_score * 1.10 + 0.20
     assert_scoring_test_almost_equal(scored.raw_score, expected)
     assert_scoring_test_almost_equal(scored.final_score, expected)
-    assert_scoring_test_mapping_contains(scored.metadata, "family_scoring")
+    assert_scoring_test_contains(scored.metadata, "family_scoring")
 
 
 # -----------------------------------------------------------------------------
@@ -123945,7 +124049,7 @@ def test_individual_adjustment_score_integration() -> None:
             use_default_rules=True
         ),
     )
-    assert_scoring_test_mapping_contains(score.metadata, "score_adjustments")
+    assert_scoring_test_contains(score.metadata, "score_adjustments")
     _section_30_3_assert_score_consistency(score)
 
 
@@ -124178,7 +124282,8 @@ def test_individual_scoring_decomposition() -> None:
         "bonus_score",
         "final_score",
     )
-    assert_scoring_test_mapping_contains(decomposition, *required)
+    for key in required:
+        assert_scoring_test_contains(decomposition, key)
     assert_scoring_test_almost_equal(
         decomposition["multiplicative_score"],
         _section_30_3_expected_individual_score(),
@@ -125540,9 +125645,21 @@ def test_aggregation_residue_ranking_hotspots() -> None:
         result.residues,
         hotspot_limit=3,
     )
-    hotspots = _section_30_4_call("residue_hotspots", result)
+    ranked_hotspots = tuple(
+        item for item in ranked if item.hotspot
+    )
+    hotspots = _section_30_4_call(
+        "residue_hotspots",
+        result,
+        limit=3,
+    )
     assert_scoring_test_equal(len(ranked), len(result.residues))
+    assert_scoring_test_true(len(ranked_hotspots) <= 3)
     assert_scoring_test_true(len(hotspots) <= 3)
+    if ranked_hotspots:
+        assert_scoring_test_true(
+            all(item.hotspot for item in ranked_hotspots)
+        )
     if hotspots:
         assert_scoring_test_true(all(item.hotspot for item in hotspots))
 
@@ -126207,8 +126324,8 @@ def test_aggregation_consensus_levels() -> None:
     result = build_scoring_aggregation_integration_fixture().consensus_result
     features: List[Any] = []
     for group in result.groups:
-        for level in group.level_results:
-            features.extend(level.records)
+        for level_result in group.level_results.values():
+            features.extend(level_result.records)
     assert_scoring_test_true(bool(features))
     for feature in features:
         assert_scoring_test_between(
@@ -126689,12 +126806,13 @@ def test_aggregation_error_boundary() -> None:
 def test_aggregation_performance_benchmark() -> None:
     """Benchmark a deterministic aggregation callable."""
 
-    statistics = _section_30_4_call(
+    samples, statistics = _section_30_4_call(
         "benchmark_scoring_callable",
         lambda values: sum(values),
         (1.0, 2.0, 3.0),
         operation="section_30_4_sum",
     )
+    assert_scoring_test_true(len(samples) >= 1)
     sample_count = _section_30_4_attr(
         statistics,
         "sample_count",

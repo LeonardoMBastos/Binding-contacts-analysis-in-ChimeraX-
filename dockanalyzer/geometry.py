@@ -3204,6 +3204,157 @@ def minimum_distance(
 
 
 # -----------------------------------------------------------------------------
+# Internal spatial-neighbor index
+# -----------------------------------------------------------------------------
+
+@dataclass
+class _SpatialNeighborIndex:
+    """Reusable radius-search index with SciPy and cell-list backends.
+
+    This is intentionally private. It accelerates sparse molecular neighbor
+    searches without changing the public geometry API. Source indices are
+    always returned in ascending order so callers can preserve legacy pair
+    ordering exactly.
+    """
+
+    coordinates: FloatArray
+    backend: str = "cell_list"
+    cell_size: float = 4.0
+    tree: Any = field(default=None, repr=False, compare=False)
+    cells: Dict[Tuple[int, int, int], Tuple[int, ...]] = field(
+        default_factory=dict, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        coordinates = validate_coordinate_matrix(
+            self.coordinates,
+            name="spatial index coordinates",
+            minimum_rows=0,
+            allow_empty=True,
+            require_finite=True,
+            copy=True,
+        )
+        self.coordinates = coordinates
+        self.cell_size = float(self.cell_size)
+        if not math.isfinite(self.cell_size) or self.cell_size <= 0.0:
+            raise ValueError("cell_size must be a positive finite number.")
+
+    def query_ball_points(
+        self,
+        points: CoordinateCollection,
+        radius: float,
+    ) -> Tuple[Tuple[int, ...], ...]:
+        query = as_coordinate_matrix(
+            points,
+            name="spatial query coordinates",
+            minimum_rows=0,
+            allow_empty=True,
+            require_finite=True,
+            copy=False,
+        )
+        radius_value = float(radius)
+        if not math.isfinite(radius_value) or radius_value < 0.0:
+            raise ValueError("radius must be a non-negative finite number.")
+        if query.shape[0] == 0 or self.coordinates.shape[0] == 0:
+            return tuple(() for _ in range(query.shape[0]))
+
+        if self.backend == "scipy_ckdtree" and self.tree is not None:
+            raw = self.tree.query_ball_point(query, radius_value)
+            return tuple(tuple(sorted(int(i) for i in indices)) for indices in raw)
+
+        radius_squared = radius_value * radius_value
+        cell_size = self.cell_size
+        reach = int(math.ceil(radius_value / cell_size))
+        results: List[Tuple[int, ...]] = []
+        for point in query:
+            base = tuple(int(v) for v in np.floor(point / cell_size))
+            candidate_indices: List[int] = []
+            for dx in range(-reach, reach + 1):
+                for dy in range(-reach, reach + 1):
+                    for dz in range(-reach, reach + 1):
+                        candidate_indices.extend(
+                            self.cells.get(
+                                (base[0] + dx, base[1] + dy, base[2] + dz),
+                                (),
+                            )
+                        )
+            if not candidate_indices:
+                results.append(())
+                continue
+            unique = np.asarray(sorted(set(candidate_indices)), dtype=np.int64)
+            offsets = self.coordinates[unique] - point
+            squared = np.einsum("ij,ij->i", offsets, offsets)
+            accepted = unique[squared <= radius_squared + DEFAULT_TOLERANCE]
+            results.append(tuple(int(i) for i in accepted))
+        return tuple(results)
+
+    def query_unique_indices(
+        self,
+        points: CoordinateCollection,
+        radius: float,
+    ) -> Tuple[int, ...]:
+        return tuple(
+            sorted(
+                {
+                    index
+                    for indices in self.query_ball_points(points, radius)
+                    for index in indices
+                }
+            )
+        )
+
+
+def _build_spatial_neighbor_index(
+    coordinates: CoordinateCollection,
+    *,
+    prefer_scipy: bool = True,
+    cell_size: float = 4.0,
+) -> _SpatialNeighborIndex:
+    """Build a reusable radius-search index without requiring SciPy."""
+
+    matrix = as_coordinate_matrix(
+        coordinates,
+        name="spatial index coordinates",
+        minimum_rows=0,
+        allow_empty=True,
+        require_finite=True,
+        copy=True,
+    )
+    if prefer_scipy and matrix.shape[0]:
+        try:
+            from scipy.spatial import cKDTree  # type: ignore
+        except Exception:
+            pass
+        else:
+            try:
+                return _SpatialNeighborIndex(
+                    matrix,
+                    backend="scipy_ckdtree",
+                    cell_size=cell_size,
+                    tree=cKDTree(matrix),
+                )
+            except Exception:
+                pass
+
+    normalized_cell_size = float(cell_size)
+    if not math.isfinite(normalized_cell_size) or normalized_cell_size <= 0.0:
+        normalized_cell_size = 4.0
+    mutable_cells: Dict[Tuple[int, int, int], List[int]] = {}
+    if matrix.shape[0]:
+        cell_coordinates = np.floor(matrix / normalized_cell_size).astype(np.int64)
+        for index, cell in enumerate(cell_coordinates):
+            key = (int(cell[0]), int(cell[1]), int(cell[2]))
+            mutable_cells.setdefault(key, []).append(index)
+    cells = {key: tuple(values) for key, values in mutable_cells.items()}
+    return _SpatialNeighborIndex(
+        matrix,
+        backend="cell_list",
+        cell_size=normalized_cell_size,
+        cells=cells,
+    )
+
+
+# -----------------------------------------------------------------------------
 # Point-to-line distance
 # -----------------------------------------------------------------------------
 
