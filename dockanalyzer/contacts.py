@@ -185,6 +185,11 @@ DEFAULT_RESIDUE_SEPARATOR = ":"
 
 DEFAULT_CONTACT_ID_SEPARATOR = "|"
 
+# Score v2 contact descriptors. This constant controls only the neutral
+# residue-level saturation descriptor exported by contacts.py; scoring.py
+# remains responsible for assigning the final contact weight.
+DEFAULT_CONTACT_SATURATION_TAU = np.float64(3.0)
+
 # -----------------------------------------------------------------------------
 # Type aliases
 # -----------------------------------------------------------------------------
@@ -210,6 +215,8 @@ ResidueContactKey = Tuple[
 ContactIdentifier = str
 
 ContactClassification = str
+
+ContactPairIdentity = Tuple[str, str]
 
 # -----------------------------------------------------------------------------
 # Internal immutable empty objects
@@ -246,6 +253,8 @@ _SECTION_2_PUBLIC_NAMES = [
     "ResidueContactKey",
     "ContactIdentifier",
     "ContactClassification",
+    "ContactPairIdentity",
+    "DEFAULT_CONTACT_SATURATION_TAU",
 ]
 
 _register_public_names(_SECTION_2_PUBLIC_NAMES)
@@ -529,6 +538,131 @@ class AtomContact:
             self.atom_2_index,
         )
 
+    @property
+    def vdw_radius_sum(
+        self,
+    ) -> Optional[np.float64]:
+        """Return the cached or calculated van der Waals radius sum."""
+
+        value = self.metadata.get(
+            "vdw_radius_sum"
+        )
+        if value is not None:
+            try:
+                normalized = np.float64(value)
+            except (TypeError, ValueError):
+                normalized = np.float64(np.nan)
+            if np.isfinite(normalized) and normalized > 0.0:
+                return normalized
+
+        return get_vdw_radius_sum(
+            self.atom_1,
+            self.atom_2,
+        )
+
+    @property
+    def vdw_distance_deviation(
+        self,
+    ) -> Optional[np.float64]:
+        """Return ``distance - vdW radius sum`` when radii are available."""
+
+        value = self.metadata.get(
+            "vdw_distance_deviation"
+        )
+        if value is not None:
+            try:
+                normalized = np.float64(value)
+            except (TypeError, ValueError):
+                normalized = np.float64(np.nan)
+            if np.isfinite(normalized):
+                return normalized
+
+        radius_sum = self.vdw_radius_sum
+        if radius_sum is None:
+            return None
+        return np.float64(
+            self.distance - radius_sum
+        )
+
+    @property
+    def vdw_overlap(
+        self,
+    ) -> Optional[np.float64]:
+        """Return the positive van der Waals overlap in angstroms."""
+
+        value = self.metadata.get(
+            "vdw_overlap"
+        )
+        if value is not None:
+            try:
+                normalized = np.float64(value)
+            except (TypeError, ValueError):
+                normalized = np.float64(np.nan)
+            if np.isfinite(normalized) and normalized >= 0.0:
+                return normalized
+
+        deviation = self.vdw_distance_deviation
+        if deviation is None:
+            return None
+        return np.float64(
+            max(0.0, -float(deviation))
+        )
+
+    @property
+    def vdw_quality(
+        self,
+    ) -> Optional[np.float64]:
+        """Return the continuous non-clashing vdW quality descriptor."""
+
+        value = self.metadata.get(
+            "vdw_quality"
+        )
+        if value is not None:
+            try:
+                normalized = np.float64(value)
+            except (TypeError, ValueError):
+                normalized = np.float64(np.nan)
+            if np.isfinite(normalized):
+                return np.float64(
+                    min(1.0, max(0.0, float(normalized)))
+                )
+
+        return contact_vdw_quality(
+            self
+        )
+
+    @property
+    def geometry_details(
+        self,
+    ) -> Dict[str, Any]:
+        """Return scoring-safe contact geometry without live atom objects."""
+
+        details: Dict[str, Any] = {
+            "distance": float(self.distance),
+            "cutoff": float(self.cutoff),
+            "is_contact": bool(self.is_contact),
+            "classification": self.classification,
+        }
+
+        radius_sum = self.vdw_radius_sum
+        deviation = self.vdw_distance_deviation
+        overlap = self.vdw_overlap
+        quality = self.vdw_quality
+
+        details["vdw_radius_sum"] = (
+            None if radius_sum is None else float(radius_sum)
+        )
+        details["vdw_distance_deviation"] = (
+            None if deviation is None else float(deviation)
+        )
+        details["vdw_overlap"] = (
+            None if overlap is None else float(overlap)
+        )
+        details["vdw_quality"] = (
+            None if quality is None else float(quality)
+        )
+        return details
+
     def to_dict(
         self,
         *,
@@ -579,6 +713,26 @@ class AtomContact:
             ),
             "metadata": dict(
                 self.metadata
+            ),
+            "vdw_radius_sum": (
+                None
+                if self.vdw_radius_sum is None
+                else float(self.vdw_radius_sum)
+            ),
+            "vdw_distance_deviation": (
+                None
+                if self.vdw_distance_deviation is None
+                else float(self.vdw_distance_deviation)
+            ),
+            "vdw_overlap": (
+                None
+                if self.vdw_overlap is None
+                else float(self.vdw_overlap)
+            ),
+            "vdw_quality": (
+                None
+                if self.vdw_quality is None
+                else float(self.vdw_quality)
             ),
         }
 
@@ -6805,6 +6959,36 @@ def classify_atom_contact(
                 -deviation,
             )
         )
+        contact_metadata[
+            "vdw_gap"
+        ] = float(
+            max(
+                np.float64(0.0),
+                deviation,
+            )
+        )
+
+        # Stage 2 exposes a continuous geometry descriptor, but does not
+        # assign a scoring weight. The final score remains scoring.py's
+        # responsibility.
+        temporary_contact = replace(
+            contact,
+            classification=classification,
+            metadata=contact_metadata,
+        )
+        quality = contact_vdw_quality(
+            temporary_contact,
+            clash_overlap=clash_overlap,
+            vdw_tolerance=vdw_tolerance,
+            default_radius=default_radius,
+        )
+        contact_metadata[
+            "vdw_quality"
+        ] = (
+            None
+            if quality is None
+            else float(quality)
+        )
 
     else:
         contact_metadata[
@@ -6817,6 +7001,12 @@ def classify_atom_contact(
 
         contact_metadata[
             "vdw_overlap"
+        ] = None
+        contact_metadata[
+            "vdw_gap"
+        ] = None
+        contact_metadata[
+            "vdw_quality"
         ] = None
 
     return replace(
@@ -7962,9 +8152,28 @@ def contact_statistics(
         - within_cutoff_count
     )
 
+    unique_contacts = unique_atom_contacts(
+        normalized_contacts,
+        sort_by_distance=False,
+    )
+    non_clash_unique_contacts = tuple(
+        contact
+        for contact in unique_contacts
+        if not contact.is_clash
+    )
+
     statistics: Statistics = {
         "contact_count": len(
             normalized_contacts
+        ),
+        "unique_contact_pair_count": len(
+            unique_contacts
+        ),
+        "redundant_contact_count": (
+            len(normalized_contacts) - len(unique_contacts)
+        ),
+        "non_clash_unique_contact_pair_count": len(
+            non_clash_unique_contacts
         ),
         "has_contacts": bool(
             normalized_contacts
@@ -8093,7 +8302,311 @@ def contact_statistics(
             side=normalized_side,
         )
 
+    # Score v2 descriptors are additive diagnostics. They do not alter the
+    # historical contact count or classification behavior. Clashes are
+    # excluded from the positive coverage descriptor because scoring.py
+    # handles them as a separate penalty family.
+    statistics[
+        "contact_scoring_descriptors"
+    ] = contact_residue_coverage(
+        normalized_contacts,
+        side=normalized_side,
+        saturation_tau=DEFAULT_CONTACT_SATURATION_TAU,
+        exclude_clashes=True,
+        deduplicate_atom_pairs=True,
+    )
+
     return statistics
+
+
+# -----------------------------------------------------------------------------
+# Score v2 contact descriptors
+# -----------------------------------------------------------------------------
+
+def _validate_contact_saturation_tau(
+    value: Number,
+) -> np.float64:
+    """Validate a positive finite contact-saturation constant."""
+
+    if isinstance(value, bool) or not isinstance(
+        value,
+        (int, float, np.integer, np.floating),
+    ):
+        raise TypeError(
+            "saturation_tau must be numeric."
+        )
+
+    normalized = np.float64(value)
+    if not np.isfinite(normalized) or normalized <= 0.0:
+        raise ValueError(
+            "saturation_tau must be finite and greater than zero."
+        )
+    return normalized
+
+
+def get_contact_pair_identity(
+    contact: AtomContact,
+) -> ContactPairIdentity:
+    """
+    Return a stable, side-aware identity for one ligand-receptor atom pair.
+
+    Collection indices are preferred because they are compact and deterministic
+    within one analysis. Atom identifiers are used as a fallback.
+    """
+
+    if not isinstance(contact, AtomContact):
+        raise TypeError(
+            "contact must be an AtomContact instance."
+        )
+
+    if contact.index_pair is not None:
+        return (
+            f"atom_1_index:{contact.index_pair[0]}",
+            f"atom_2_index:{contact.index_pair[1]}",
+        )
+
+    return (
+        f"atom_1:{get_atom_identifier(contact.atom_1)}",
+        f"atom_2:{get_atom_identifier(contact.atom_2)}",
+    )
+
+
+def unique_atom_contacts(
+    contacts: Iterable[AtomContact],
+    *,
+    sort_by_distance: bool = True,
+) -> Tuple[AtomContact, ...]:
+    """
+    Deduplicate contacts by atom pair, retaining the shortest occurrence.
+
+    This helper prevents repeated representations of the same atomic pair from
+    contributing more than once to downstream contact descriptors.
+    """
+
+    normalized_contacts = _validate_atom_contacts(
+        contacts,
+        allow_empty=True,
+    )
+
+    shortest_by_pair: Dict[
+        ContactPairIdentity,
+        AtomContact,
+    ] = {}
+
+    for contact in normalized_contacts:
+        identity = get_contact_pair_identity(contact)
+        previous = shortest_by_pair.get(identity)
+        if previous is None or contact.distance < previous.distance:
+            shortest_by_pair[identity] = contact
+
+    result = list(shortest_by_pair.values())
+    if sort_by_distance:
+        result.sort(key=_contact_sort_key)
+    return tuple(result)
+
+
+def contact_vdw_quality(
+    contact: AtomContact,
+    *,
+    clash_overlap: Optional[Number] = None,
+    vdw_tolerance: Optional[Number] = None,
+    default_radius: Optional[Number] = None,
+) -> Optional[np.float64]:
+    """
+    Calculate a continuous van der Waals contact-quality descriptor.
+
+    The descriptor ranges from 0 to 1 and is maximal when the interatomic
+    distance equals the sum of the two vdW radii. Small overlaps and positive
+    gaps are down-weighted continuously. Contacts at or beyond the configured
+    clash-overlap threshold receive zero. Distances beyond the vdW-contact
+    tolerance also receive zero. The value is a geometry descriptor only; it
+    is not a DockAnalyzer scoring weight.
+    """
+
+    if not isinstance(contact, AtomContact):
+        raise TypeError(
+            "contact must be an AtomContact instance."
+        )
+
+    radius_sum = get_vdw_radius_sum(
+        contact.atom_1,
+        contact.atom_2,
+        default_radius=default_radius,
+    )
+    if radius_sum is None:
+        return None
+
+    clash_threshold = (
+        get_clash_overlap_threshold()
+        if clash_overlap is None
+        else _get_configured_float(
+            (), clash_overlap, minimum=0.0
+        )
+    )
+    vdw_threshold = (
+        get_vdw_contact_tolerance()
+        if vdw_tolerance is None
+        else _get_configured_float(
+            (), vdw_tolerance, minimum=0.0
+        )
+    )
+
+    deviation = np.float64(
+        contact.distance - radius_sum
+    )
+
+    if deviation < 0.0:
+        overlap = np.float64(-deviation)
+        if overlap >= clash_threshold:
+            return np.float64(0.0)
+        if clash_threshold == 0.0:
+            return np.float64(0.0)
+        quality = 1.0 - float(overlap / clash_threshold)
+    else:
+        if vdw_threshold == 0.0:
+            return np.float64(1.0 if deviation == 0.0 else 0.0)
+        if deviation >= vdw_threshold:
+            return np.float64(0.0)
+        quality = 1.0 - float(deviation / vdw_threshold)
+
+    return np.float64(
+        min(1.0, max(0.0, quality))
+    )
+
+
+def contact_residue_coverage(
+    contacts: Iterable[AtomContact],
+    *,
+    side: str = "receptor",
+    saturation_tau: Number = DEFAULT_CONTACT_SATURATION_TAU,
+    exclude_clashes: bool = True,
+    deduplicate_atom_pairs: bool = True,
+) -> Statistics:
+    """
+    Build non-redundant residue-level contact descriptors for Score v2.
+
+    For each contacted residue, atomic-pair multiplicity is converted to the
+    neutral saturation descriptor ``1 - exp(-n / tau)``. The helper reports the
+    descriptor but does not assign any scoring weight. This allows scoring.py to
+    use contact coverage without treating ten contacts with one residue as ten
+    independent interaction events.
+    """
+
+    normalized_side = _validate_contact_side(side)
+    tau = _validate_contact_saturation_tau(saturation_tau)
+    normalized_contacts = _validate_atom_contacts(
+        contacts,
+        allow_empty=True,
+    )
+
+    if exclude_clashes:
+        normalized_contacts = tuple(
+            contact
+            for contact in normalized_contacts
+            if not contact.is_clash
+        )
+
+    if deduplicate_atom_pairs:
+        normalized_contacts = unique_atom_contacts(
+            normalized_contacts,
+            sort_by_distance=True,
+        )
+
+    grouped = residue_contacts(
+        normalized_contacts,
+        side=normalized_side,
+        include_missing=False,
+        include_structure_identity=True,
+        sort_contacts=True,
+        sort_residues=True,
+    )
+
+    residue_metrics: Dict[str, Statistics] = {}
+    saturation_values: List[np.float64] = []
+    quality_values_all: List[np.float64] = []
+
+    for residue_result in grouped:
+        residue_contacts_unique = unique_atom_contacts(
+            residue_result.contacts,
+            sort_by_distance=True,
+        )
+        contact_count = len(residue_contacts_unique)
+        saturation = np.float64(
+            1.0 - np.exp(
+                -np.float64(contact_count) / tau
+            )
+        )
+        saturation_values.append(saturation)
+
+        quality_values = [
+            quality
+            for contact in residue_contacts_unique
+            for quality in (contact_vdw_quality(contact),)
+            if quality is not None and np.isfinite(quality)
+        ]
+        quality_values_all.extend(quality_values)
+
+        label = format_residue_contact_label(
+            residue_result.key,
+            include_chain=True,
+        )
+        residue_metrics[label] = {
+            "residue_key": tuple(residue_result.key),
+            "unique_contact_pair_count": contact_count,
+            "minimum_distance": float(residue_result.minimum_distance),
+            "contact_saturation": float(saturation),
+            "mean_vdw_quality": (
+                None
+                if not quality_values
+                else float(np.mean(quality_values, dtype=np.float64))
+            ),
+            "maximum_vdw_quality": (
+                None
+                if not quality_values
+                else float(np.max(quality_values))
+            ),
+        }
+
+    unique_pair_count = len(normalized_contacts)
+    effective_residue_count = float(
+        np.sum(saturation_values, dtype=np.float64)
+    ) if saturation_values else 0.0
+
+    return {
+        "residue_side": normalized_side,
+        "exclude_clashes": bool(exclude_clashes),
+        "deduplicate_atom_pairs": bool(deduplicate_atom_pairs),
+        "saturation_tau": float(tau),
+        "contacted_residue_count": len(grouped),
+        "unique_contact_pair_count": unique_pair_count,
+        "effective_residue_contact_count": effective_residue_count,
+        "mean_residue_saturation": (
+            None
+            if not saturation_values
+            else float(np.mean(saturation_values, dtype=np.float64))
+        ),
+        "mean_vdw_quality": (
+            None
+            if not quality_values_all
+            else float(np.mean(quality_values_all, dtype=np.float64))
+        ),
+        "maximum_vdw_quality": (
+            None
+            if not quality_values_all
+            else float(np.max(quality_values_all))
+        ),
+        "residues": residue_metrics,
+    }
+
+
+_register_public_names(
+    [
+        "get_contact_pair_identity",
+        "unique_atom_contacts",
+        "contact_vdw_quality",
+        "contact_residue_coverage",
+    ]
+)
 
 
 # -----------------------------------------------------------------------------
@@ -10697,6 +11210,70 @@ def _test_contact_classification(
     )
 
 
+def _test_score_v2_contact_descriptors(
+) -> None:
+    """Validate non-redundant contact coverage and vdW quality descriptors."""
+
+    ligand, receptor, _ = _build_synthetic_contact_system()
+    contacts = find_atom_contacts(
+        ligand.atoms,
+        receptor.atoms,
+        cutoff=4.5,
+        exclude_same_residue=True,
+        sort_by_distance=True,
+    )
+    classified = classify_contacts(
+        contacts,
+        sort_by_distance=True,
+    )
+
+    unique = unique_atom_contacts(classified)
+    _require(
+        len(unique) <= len(classified),
+        "Unique contact pairs cannot exceed raw contacts.",
+    )
+
+    for contact in classified:
+        quality = contact.vdw_quality
+        if quality is not None:
+            _require(
+                0.0 <= quality <= 1.0,
+                "vdW quality must remain in the [0, 1] interval.",
+            )
+        details = contact.geometry_details
+        _require(
+            "vdw_quality" in details
+            and "vdw_distance_deviation" in details,
+            "AtomContact geometry_details must expose Score v2 vdW geometry.",
+        )
+
+    coverage = contact_residue_coverage(
+        classified,
+        side="receptor",
+        saturation_tau=3.0,
+        exclude_clashes=True,
+        deduplicate_atom_pairs=True,
+    )
+    _require(
+        coverage["unique_contact_pair_count"] <= len(classified),
+        "Coverage must use non-redundant atom pairs.",
+    )
+    _require(
+        coverage["effective_residue_contact_count"]
+        <= coverage["contacted_residue_count"] + 1e-12,
+        "Saturated residue coverage cannot exceed raw contacted residues.",
+    )
+
+    statistics = contact_statistics(
+        classified,
+        residue_side="receptor",
+    )
+    _require(
+        "contact_scoring_descriptors" in statistics,
+        "Contact statistics must export Score v2 contact descriptors.",
+    )
+
+
 def _test_contact_statistics(
 ) -> None:
     """Test descriptive statistics and distance distributions."""
@@ -11437,6 +12014,10 @@ def run_self_tests(
         (
             "contact classification",
             _test_contact_classification,
+        ),
+        (
+            "Score v2 contact descriptors",
+            _test_score_v2_contact_descriptors,
         ),
         (
             "contact statistics",

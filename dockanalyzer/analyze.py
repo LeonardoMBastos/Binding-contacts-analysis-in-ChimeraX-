@@ -24885,6 +24885,39 @@ def hydrophobic_result_metadata(value: Any) -> Dict[str, Any]:
     return normalize_metadata_mapping(_hydrophobic_object_to_mapping(metadata))
 
 
+def _hydrophobic_performance_timings(value: Any) -> Dict[str, float]:
+    """Return native hydrophobic sub-stage timings without changing results."""
+
+    if isinstance(value, AnalysisStageResult):
+        direct = value.metadata.get("performance_timings_seconds")
+        if isinstance(direct, Mapping):
+            candidate = direct
+        else:
+            return _hydrophobic_performance_timings(value.value)
+    elif isinstance(value, HydrophobicStageOutput):
+        candidate = value.metadata.get("performance_timings_seconds")
+    else:
+        candidate = hydrophobic_result_metadata(value).get(
+            "performance_timings_seconds"
+        )
+
+    if not isinstance(candidate, Mapping):
+        return {}
+
+    timings: Dict[str, float] = {}
+    for raw_name, raw_value in candidate.items():
+        name = str(raw_name).strip()
+        if not name or not name.endswith("_seconds"):
+            continue
+        if not isinstance(raw_value, Real) or isinstance(raw_value, bool):
+            continue
+        numeric = float(raw_value)
+        if not math.isfinite(numeric) or numeric < 0.0:
+            continue
+        timings[name] = numeric
+    return timings
+
+
 def _hydrophobic_count_mapping(value: Any) -> Dict[str, int]:
     """Normalize a count mapping from native statistics or summary data."""
 
@@ -25389,6 +25422,11 @@ def _record_hydrophobic_stage_context(
             "attached": output.attached,
             "hotspot_count": output.hotspot_count,
         }
+        performance_timings = _hydrophobic_performance_timings(stage_result)
+        if performance_timings:
+            context.metadata[HYDROPHOBIC_STAGE_METADATA_KEY][
+                "performance_timings_seconds"
+            ] = dict(performance_timings)
 
 
 def execute_hydrophobic_stage(
@@ -25473,6 +25511,14 @@ def execute_hydrophobic_stage(
         stage_result.cached = output.reused
         stage_result.statistics = dict(output.statistics)
         stage_result.output_summary = output.summary.to_dict()
+        performance_timings = _hydrophobic_performance_timings(output)
+        if performance_timings:
+            stage_result.metadata["performance_timings_seconds"] = dict(
+                performance_timings
+            )
+            stage_result.output_summary["performance_timings_seconds"] = dict(
+                performance_timings
+            )
         stage_result.succeed(
             output,
             message=(
@@ -25723,6 +25769,9 @@ def summarize_hydrophobic_stage_result(value: Any) -> Dict[str, Any]:
         }
         if isinstance(value.value, HydrophobicStageOutput):
             result.update(value.value.summary.to_dict())
+        performance_timings = _hydrophobic_performance_timings(value)
+        if performance_timings:
+            result["performance_timings_seconds"] = performance_timings
         return result
     if isinstance(value, HydrophobicStageOutput):
         result = value.summary.to_dict()
@@ -25733,6 +25782,9 @@ def summarize_hydrophobic_stage_result(value: Any) -> Dict[str, Any]:
                 "module_version": value.module_version,
             }
         )
+        performance_timings = _hydrophobic_performance_timings(value)
+        if performance_timings:
+            result["performance_timings_seconds"] = performance_timings
         return result
     if is_hydrophobic_analysis_result(value):
         return summarize_hydrophobic_analysis_result(value).to_dict()
@@ -33844,6 +33896,193 @@ _SCORING_PI_TYPES: Final[Mapping[str, str]] = MappingProxyType(
     }
 )
 
+# Geometry fields transferred from detector outputs into scoring.py.  The
+# payload intentionally contains only inspection-safe values so live ChimeraX
+# atoms/groups are never leaked across the orchestration/scoring boundary.
+_SCORING_GEOMETRY_CONTAINER_FIELDS: Final[Tuple[str, ...]] = (
+    "geometry",
+    "geometry_details",
+    "geometric_data",
+    "geometry_metadata",
+    "contact_geometry",
+    "hydrogen_bond_geometry",
+)
+
+_SCORING_GEOMETRY_DETAIL_FIELDS: Final[Tuple[str, ...]] = (
+    # Hydrogen bonds.
+    "donor_acceptor_distance",
+    "hydrogen_acceptor_distance",
+    "donor_hydrogen_distance",
+    "dha_angle",
+    "donor_angle",
+    "acceptor_angle",
+    "linearity_deviation",
+    "has_explicit_hydrogen_geometry",
+    "has_angular_geometry",
+
+    # Pi interactions.
+    "centroid_distance",
+    "minimum_atomic_distance",
+    "maximum_atomic_distance",
+    "normal_angle",
+    "acute_normal_angle",
+    "plane_angle",
+    "lateral_offset",
+    "radial_offset",
+    "plane_height",
+    "signed_height",
+    "height",
+    "absolute_height",
+    "orientation_angle",
+    "direction_angle",
+    "carbonyl_normal_angle",
+    "carbonyl_centroid_angle",
+    "lateral_offset_ring_1",
+    "lateral_offset_ring_2",
+    "ring_1_lateral_offset",
+    "ring_2_lateral_offset",
+    "mean_lateral_offset",
+    "ring_1_planarity",
+    "ring_2_planarity",
+    "ring_planarity",
+    "group_planarity",
+    "amide_planarity",
+    "planarity_rmsd",
+    "planarity_quality",
+    "geometry_confidence",
+    "geometry_score",
+    "distance_score",
+    "angle_score",
+    "offset_score",
+    "planarity_score",
+    "charge_score",
+    "effective_charge",
+    "face",
+
+    # Salt bridges and grouped hydrophobic interactions.
+    "center_distance",
+    "minimum_atom_distance",
+    "maximum_atom_distance",
+    "mean_atom_distance",
+    "minimum_group_distance",
+    "maximum_group_distance",
+    "mean_group_distance",
+    "mean_contact_distance",
+    "local_centroid_distance",
+    "local_contact_count",
+    "contact_count",
+    "polar_penalty",
+
+    # Contacts/clashes and generic geometry state.
+    "distance",
+    "distance_angstrom",
+    "distance_a",
+    "separation",
+    "angle",
+    "angle_degrees",
+    "interaction_angle",
+    "dihedral",
+    "torsion",
+    "torsion_angle",
+    "offset",
+    "centroid_offset",
+    "planarity",
+    "overlap",
+    "overlap_ratio",
+    "vdw_overlap",
+    "overlap_depth",
+    "overlap_fraction",
+    "valid",
+    "borderline",
+    "warnings",
+)
+
+_SCORING_PRIMARY_GEOMETRY_ALIASES: Final[Mapping[str, Tuple[str, ...]]] = (
+    MappingProxyType(
+        {
+            "distance": (
+                "distance",
+                "distance_angstrom",
+                "distance_a",
+                "separation",
+                "donor_acceptor_distance",
+                "centroid_distance",
+                "center_distance",
+                "minimum_atomic_distance",
+                "minimum_atom_distance",
+                "minimum_contact_distance",
+                "mean_contact_distance",
+            ),
+            "angle": (
+                "angle",
+                "angle_degrees",
+                "interaction_angle",
+                "dha_angle",
+                "plane_angle",
+                "normal_angle",
+                "acute_normal_angle",
+                "orientation_angle",
+                "direction_angle",
+            ),
+            "dihedral": ("dihedral", "torsion", "torsion_angle"),
+            "offset": (
+                "offset",
+                "lateral_offset",
+                "centroid_offset",
+                "mean_lateral_offset",
+                "radial_offset",
+            ),
+            "planarity": (
+                "planarity",
+                "planarity_rmsd",
+                "ring_planarity",
+                "ring_1_planarity",
+                "group_planarity",
+                "amide_planarity",
+            ),
+            "overlap": (
+                "overlap",
+                "overlap_fraction",
+                "overlap_ratio",
+                "vdw_overlap",
+                "overlap_depth",
+            ),
+        }
+    )
+)
+
+_SCORING_GEOMETRY_SKIP: Final[object] = object()
+
+# Score v2 Stage 2 collection descriptors.  These values are produced by
+# contacts.py and transported as collection metadata only; they are not
+# represented as synthetic interactions and therefore cannot change the
+# historical contact score before scoring.py explicitly consumes them.
+_SCORING_CONTACT_STATISTICS_DESCRIPTOR_KEY: Final[str] = (
+    "contact_scoring_descriptors"
+)
+_SCORING_CONTACT_COLLECTION_DESCRIPTOR_KEY: Final[str] = (
+    "contact_collection_descriptors"
+)
+
+# Score v2 Stage 3 hydrophobic descriptors.  hydrophobic.py computes these
+# after final geometric classification.  They travel as collection metadata
+# only, so no synthetic hydrophobic interaction is introduced here.
+_SCORING_HYDROPHOBIC_STATISTICS_DESCRIPTOR_KEY: Final[str] = (
+    "hydrophobic_scoring_descriptors"
+)
+_SCORING_HYDROPHOBIC_COLLECTION_DESCRIPTOR_KEY: Final[str] = (
+    "hydrophobic_collection_descriptors"
+)
+
+# Score v2 Stage 4 ligand-opportunity descriptors.  analyze.py computes these
+# descriptors from the ligand itself and transports them without applying any
+# normalization.  scoring.py Stage 4 is responsible for deciding how strongly
+# each opportunity term should influence the final pose score.
+_SCORING_LIGAND_OPPORTUNITY_DESCRIPTOR_KEY: Final[str] = (
+    "ligand_opportunity_descriptors"
+)
+_SCORING_LIGAND_OPPORTUNITY_SCHEMA_VERSION: Final[str] = "1.0"
+
 SCORING_ATTACHMENT_MODES: Final[Tuple[str, ...]] = (
     "replace",
     "preserve",
@@ -34974,6 +35213,185 @@ def _scoring_type_for_interaction(
     return "unknown"
 
 
+def _scoring_safe_geometry_value(
+    value: Any,
+    *,
+    depth: int = 0,
+) -> Any:
+    """Return an inspection-safe geometry value or a private skip marker."""
+
+    if depth > 4:
+        return _SCORING_GEOMETRY_SKIP
+    if value is None:
+        return None
+    if isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, Enum):
+        return _scoring_safe_geometry_value(value.value, depth=depth + 1)
+    if isinstance(value, Real):
+        converted = float(value)
+        if not math.isfinite(converted):
+            return _SCORING_GEOMETRY_SKIP
+        if isinstance(value, int) and not isinstance(value, bool):
+            return int(value)
+        return converted
+    if isinstance(value, np.generic):
+        return _scoring_safe_geometry_value(value.item(), depth=depth + 1)
+    if isinstance(value, np.ndarray):
+        if value.size > 256:
+            return _SCORING_GEOMETRY_SKIP
+        return _scoring_safe_geometry_value(value.tolist(), depth=depth + 1)
+    if isinstance(value, Mapping):
+        result: Dict[str, Any] = {}
+        for raw_key, raw_value in value.items():
+            key = str(raw_key)
+            if not key or key.startswith("_"):
+                continue
+            converted = _scoring_safe_geometry_value(
+                raw_value,
+                depth=depth + 1,
+            )
+            if converted is _SCORING_GEOMETRY_SKIP:
+                continue
+            result[key] = converted
+        return result
+    if isinstance(value, (list, tuple, set, frozenset)):
+        if len(value) > 256:
+            return _SCORING_GEOMETRY_SKIP
+        items: List[Any] = []
+        for raw_value in value:
+            converted = _scoring_safe_geometry_value(
+                raw_value,
+                depth=depth + 1,
+            )
+            if converted is _SCORING_GEOMETRY_SKIP:
+                continue
+            items.append(converted)
+        return items
+    if is_dataclass(value) and not isinstance(value, type):
+        result = {}
+        for descriptor in fields(value):
+            name = str(descriptor.name)
+            if not name or name.startswith("_"):
+                continue
+            try:
+                raw_value = getattr(value, name)
+            except Exception:
+                continue
+            converted = _scoring_safe_geometry_value(
+                raw_value,
+                depth=depth + 1,
+            )
+            if converted is _SCORING_GEOMETRY_SKIP:
+                continue
+            result[name] = converted
+        return result
+    return _SCORING_GEOMETRY_SKIP
+
+
+def _scoring_geometry_container_items(value: Any) -> Tuple[Tuple[str, Any], ...]:
+    """Return public geometry fields without evaluating arbitrary methods."""
+
+    if value is None:
+        return ()
+    if isinstance(value, Mapping):
+        return tuple(
+            (str(key), item)
+            for key, item in value.items()
+            if str(key) and not str(key).startswith("_")
+        )
+    if is_dataclass(value) and not isinstance(value, type):
+        result: List[Tuple[str, Any]] = []
+        for descriptor in fields(value):
+            name = str(descriptor.name)
+            if not name or name.startswith("_"):
+                continue
+            try:
+                result.append((name, getattr(value, name)))
+            except Exception:
+                continue
+        return tuple(result)
+    namespace = getattr(value, "__dict__", None)
+    if isinstance(namespace, Mapping):
+        return tuple(
+            (str(key), item)
+            for key, item in namespace.items()
+            if str(key) and not str(key).startswith("_")
+        )
+    return ()
+
+
+def _scoring_geometry_payload(interaction: Any) -> Dict[str, Any]:
+    """Extract complete safe detector geometry for scoring.py Stage 1."""
+
+    details: Dict[str, Any] = {}
+
+    for container_name in _SCORING_GEOMETRY_CONTAINER_FIELDS:
+        container = get_object_value(
+            interaction,
+            container_name,
+            default=None,
+            skip_none=True,
+        )
+        if container is None or container is interaction:
+            continue
+        for raw_name, raw_value in _scoring_geometry_container_items(container):
+            name = str(raw_name)
+            converted = _scoring_safe_geometry_value(raw_value)
+            if converted is _SCORING_GEOMETRY_SKIP:
+                continue
+            details.setdefault(name, converted)
+
+        # Detector geometry dataclasses also expose computed properties that
+        # are not present in dataclass fields (for example H-bond linearity).
+        for field_name in _SCORING_GEOMETRY_DETAIL_FIELDS:
+            raw_value = get_object_value(
+                container,
+                field_name,
+                default=None,
+                skip_none=True,
+            )
+            if raw_value is None:
+                continue
+            converted = _scoring_safe_geometry_value(raw_value)
+            if converted is _SCORING_GEOMETRY_SKIP:
+                continue
+            details.setdefault(field_name, converted)
+
+    for field_name in _SCORING_GEOMETRY_DETAIL_FIELDS:
+        raw_value = get_object_value(
+            interaction,
+            field_name,
+            default=None,
+            skip_none=True,
+        )
+        if raw_value is None:
+            continue
+        converted = _scoring_safe_geometry_value(raw_value)
+        if converted is _SCORING_GEOMETRY_SKIP:
+            continue
+        details.setdefault(field_name, converted)
+
+    return details
+
+
+def _scoring_primary_geometry_values(
+    geometry_details: Mapping[str, Any],
+) -> Dict[str, float]:
+    """Resolve legacy canonical geometry values from detailed geometry."""
+
+    result: Dict[str, float] = {}
+    for canonical_name, aliases in _SCORING_PRIMARY_GEOMETRY_ALIASES.items():
+        for alias in aliases:
+            raw_value = geometry_details.get(alias)
+            value = _finite_optional_number(raw_value)
+            if value is None:
+                continue
+            result[canonical_name] = value
+            break
+    return result
+
+
 def _scoring_interaction_payload(
     interaction: Any,
     *,
@@ -34987,7 +35405,7 @@ def _scoring_interaction_payload(
     strength: Optional[Any] = None,
     accepted: bool = True,
 ) -> Dict[str, Any]:
-    """Build a compact scoring.py-compatible interaction mapping."""
+    """Build a geometry-preserving scoring.py-compatible interaction mapping."""
 
     canonical_family = canonicalize_interaction_family(family)
     scoring_type = _scoring_type_for_interaction(
@@ -35034,8 +35452,30 @@ def _scoring_interaction_payload(
     )
     if len(residue_pair) == 2:
         payload["residue_pair"] = residue_pair
+
+    geometry_details = _scoring_geometry_payload(interaction)
+    primary_geometry = _scoring_primary_geometry_values(geometry_details)
+
+    # The canonical distance resolved by consolidation remains authoritative.
+    # All other canonical geometry values are derived from detector geometry.
     if distance is not None:
-        payload["distance"] = float(distance)
+        primary_geometry["distance"] = float(distance)
+    elif "distance" in primary_geometry:
+        payload["distance"] = primary_geometry["distance"]
+
+    for geometry_name, geometry_value in primary_geometry.items():
+        payload[geometry_name] = geometry_value
+
+    if geometry_details:
+        payload["geometry"] = dict(geometry_details)
+        payload["geometry_details"] = dict(geometry_details)
+        payload["metadata"]["geometry_fields"] = tuple(
+            sorted(geometry_details)
+        )
+        payload["metadata"]["geometry_preserved"] = True
+    else:
+        payload["metadata"]["geometry_preserved"] = False
+
     if strength is not None:
         payload["strength"] = strength
     return payload
@@ -35060,6 +35500,863 @@ def _scoring_record_payload(
     )
 
 
+def _scoring_contact_residue_keys(
+    interaction: Any,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return receptor/ligand residue identities for one contact."""
+
+    receptor_residue = get_first_object_value(
+        interaction,
+        (
+            "residue_1",
+            "receptor_residue",
+            "protein_residue",
+            "target_residue",
+        ),
+        default=None,
+    )
+    ligand_residue = get_first_object_value(
+        interaction,
+        (
+            "residue_2",
+            "ligand_residue",
+            "pose_residue",
+        ),
+        default=None,
+    )
+    receptor_key = (
+        None
+        if receptor_residue is None
+        else canonical_participant_key(receptor_residue)
+    )
+    ligand_key = (
+        None
+        if ligand_residue is None
+        else canonical_participant_key(ligand_residue)
+    )
+    return receptor_key, ligand_key
+
+
+def _scoring_contact_collection_descriptors(
+    context: Optional[AnalysisContext],
+) -> Dict[str, Any]:
+    """Extract non-redundant contact descriptors produced by contacts.py."""
+
+    if context is None:
+        return {}
+    outputs = collect_interaction_stage_outputs(context=context)
+    output = outputs.get(INTERACTION_FAMILY_CONTACTS)
+    if output is None:
+        return {}
+    native, _ = _unwrap_interaction_stage_value(output)
+
+    statistics = get_object_value(native, "statistics", default={})
+    descriptors = (
+        statistics.get(_SCORING_CONTACT_STATISTICS_DESCRIPTOR_KEY)
+        if isinstance(statistics, Mapping)
+        else None
+    )
+    if descriptors is None:
+        analysis = get_object_value(native, "analysis", default=None)
+        analysis_statistics = get_object_value(
+            analysis,
+            "statistics",
+            default={},
+        )
+        if isinstance(analysis_statistics, Mapping):
+            descriptors = analysis_statistics.get(
+                _SCORING_CONTACT_STATISTICS_DESCRIPTOR_KEY
+            )
+    if not isinstance(descriptors, Mapping):
+        return {}
+
+    converted = _scoring_safe_geometry_value(descriptors)
+    if not isinstance(converted, Mapping):
+        return {}
+    return dict(converted)
+
+
+def _scoring_attach_contact_collection_descriptors(
+    sources: Mapping[str, Sequence[Any]],
+    descriptors: Mapping[str, Any],
+) -> Dict[str, Tuple[Any, ...]]:
+    """Attach one contact-collection descriptor carrier without duplication."""
+
+    result: Dict[str, Tuple[Any, ...]] = {
+        str(source): tuple(values)
+        for source, values in sources.items()
+    }
+    contacts = list(result.get(SCORING_SOURCE_CONTACT, ()))
+    if not contacts or not descriptors:
+        return result
+
+    safe_descriptors = _scoring_safe_geometry_value(descriptors)
+    if not isinstance(safe_descriptors, Mapping):
+        return result
+    descriptor_payload = dict(safe_descriptors)
+
+    # Store the collection metadata on one carrier only.  scoring.py can scan
+    # the contact source for this key, while the per-contact sequence remains
+    # unchanged and no extra interaction is introduced.
+    for index, interaction in enumerate(contacts):
+        if not isinstance(interaction, Mapping):
+            continue
+        payload = dict(interaction)
+        metadata = payload.get("metadata", {})
+        metadata = dict(metadata) if isinstance(metadata, Mapping) else {}
+        metadata[_SCORING_CONTACT_COLLECTION_DESCRIPTOR_KEY] = (
+            descriptor_payload
+        )
+        metadata["contact_collection_descriptor_carrier"] = True
+        payload["metadata"] = metadata
+        payload[_SCORING_CONTACT_COLLECTION_DESCRIPTOR_KEY] = descriptor_payload
+        contacts[index] = payload
+        break
+
+    result[SCORING_SOURCE_CONTACT] = tuple(contacts)
+    return result
+
+
+def _scoring_hydrophobic_collection_descriptors(
+    context: Optional[AnalysisContext],
+) -> Dict[str, Any]:
+    """Extract saturated hydrophobic descriptors produced by hydrophobic.py."""
+
+    if context is None:
+        return {}
+    outputs = collect_interaction_stage_outputs(context=context)
+    output = outputs.get(INTERACTION_FAMILY_HYDROPHOBIC)
+    if output is None:
+        return {}
+    native, _ = _unwrap_interaction_stage_value(output)
+
+    candidates: List[Any] = []
+
+    def add_from(value: Any) -> None:
+        if value is None:
+            return
+        metadata = get_object_value(value, "metadata", default={})
+        if isinstance(metadata, Mapping):
+            candidates.append(
+                metadata.get(_SCORING_HYDROPHOBIC_STATISTICS_DESCRIPTOR_KEY)
+            )
+        statistics = get_object_value(value, "statistics", default={})
+        if isinstance(statistics, Mapping):
+            candidates.append(
+                statistics.get(_SCORING_HYDROPHOBIC_STATISTICS_DESCRIPTOR_KEY)
+            )
+            statistic_metadata = statistics.get("metadata")
+            if isinstance(statistic_metadata, Mapping):
+                candidates.append(
+                    statistic_metadata.get(
+                        _SCORING_HYDROPHOBIC_STATISTICS_DESCRIPTOR_KEY
+                    )
+                )
+        else:
+            statistic_metadata = get_object_value(
+                statistics, "metadata", default={}
+            )
+            if isinstance(statistic_metadata, Mapping):
+                candidates.append(
+                    statistic_metadata.get(
+                        _SCORING_HYDROPHOBIC_STATISTICS_DESCRIPTOR_KEY
+                    )
+                )
+
+    add_from(native)
+    nested_result = get_object_value(native, "result", default=None)
+    if nested_result is not None and nested_result is not native:
+        add_from(nested_result)
+
+    for descriptors in candidates:
+        if not isinstance(descriptors, Mapping):
+            continue
+        converted = _scoring_safe_geometry_value(descriptors)
+        if isinstance(converted, Mapping):
+            return dict(converted)
+    return {}
+
+
+def _scoring_attach_hydrophobic_collection_descriptors(
+    sources: Mapping[str, Sequence[Any]],
+    descriptors: Mapping[str, Any],
+) -> Dict[str, Tuple[Any, ...]]:
+    """Attach one hydrophobic descriptor carrier without adding interactions."""
+
+    result: Dict[str, Tuple[Any, ...]] = {
+        str(source): tuple(values)
+        for source, values in sources.items()
+    }
+    hydrophobic = list(result.get(SCORING_SOURCE_HYDROPHOBIC, ()))
+    if not hydrophobic or not descriptors:
+        return result
+
+    safe_descriptors = _scoring_safe_geometry_value(descriptors)
+    if not isinstance(safe_descriptors, Mapping):
+        return result
+    descriptor_payload = dict(safe_descriptors)
+
+    for index, interaction in enumerate(hydrophobic):
+        if not isinstance(interaction, Mapping):
+            continue
+        payload = dict(interaction)
+        metadata = payload.get("metadata", {})
+        metadata = dict(metadata) if isinstance(metadata, Mapping) else {}
+        metadata[_SCORING_HYDROPHOBIC_COLLECTION_DESCRIPTOR_KEY] = (
+            descriptor_payload
+        )
+        metadata["hydrophobic_collection_descriptor_carrier"] = True
+        payload["metadata"] = metadata
+        payload[_SCORING_HYDROPHOBIC_COLLECTION_DESCRIPTOR_KEY] = (
+            descriptor_payload
+        )
+        hydrophobic[index] = payload
+        break
+
+    result[SCORING_SOURCE_HYDROPHOBIC] = tuple(hydrophobic)
+    return result
+
+
+def _scoring_ligand_source(
+    context: Optional[AnalysisContext],
+    *,
+    dock_model: Any = None,
+    pose_index: Optional[int] = None,
+) -> Any:
+    """Resolve the ligand/pose object used for Stage 4 opportunity analysis."""
+
+    resolved_model, resolved_index = _scoring_context_dock_model(
+        context,
+        dock_model=dock_model,
+        pose_index=pose_index,
+    )
+    if resolved_model is not None:
+        ligand = get_object_value(
+            resolved_model,
+            DOCK_MODEL_FIELD_LIGAND,
+            default=None,
+            aliases=OBJECT_FIELD_ALIASES.get(DOCK_MODEL_FIELD_LIGAND, ()),
+            skip_none=True,
+        )
+        if ligand is not None:
+            return ligand
+        pose = get_object_value(
+            resolved_model,
+            DOCK_MODEL_FIELD_POSE,
+            default=None,
+            aliases=OBJECT_FIELD_ALIASES.get(DOCK_MODEL_FIELD_POSE, ()),
+            skip_none=True,
+        )
+        if pose is not None:
+            return pose
+
+    if context is None:
+        return None
+    if resolved_index is not None and 0 <= resolved_index < len(context.poses):
+        return context.poses[resolved_index]
+    if context.current_pose is not None:
+        return context.current_pose
+    if len(context.poses) == 1:
+        return context.poses[0]
+    return None
+
+
+def _scoring_ligand_atoms(ligand: Any) -> Tuple[Any, ...]:
+    """Return ligand atoms without assuming a ChimeraX-specific collection."""
+
+    if ligand is None:
+        return ()
+    for field_name in ("atoms", "all_atoms"):
+        values = get_object_value(
+            ligand,
+            field_name,
+            default=None,
+            skip_none=True,
+        )
+        if values is not None:
+            return tuple(normalize_object_sequence(values))
+    if isinstance(ligand, Mapping):
+        for field_name in ("atoms", "all_atoms"):
+            values = ligand.get(field_name)
+            if values is not None:
+                return tuple(normalize_object_sequence(values))
+    if isinstance(ligand, (str, bytes, bytearray)):
+        return ()
+    try:
+        return tuple(ligand)
+    except (TypeError, AttributeError):
+        return ()
+
+
+def _scoring_atom_atomic_number(atom: Any) -> Optional[int]:
+    """Return one atom's atomic number when it can be resolved safely."""
+
+    element = get_object_value(atom, "element", default=None, skip_none=True)
+    candidates = (
+        get_object_value(atom, "atomic_number", default=None, skip_none=True),
+        get_object_value(element, "number", default=None, skip_none=True),
+        get_object_value(element, "atomic_number", default=None, skip_none=True),
+    )
+    for candidate in candidates:
+        if candidate is None or isinstance(candidate, bool):
+            continue
+        try:
+            value = int(candidate)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if value >= 0:
+            return value
+    return None
+
+
+def _scoring_atom_element_symbol(atom: Any) -> str:
+    """Return a normalized element symbol for opportunity descriptors."""
+
+    element = get_object_value(atom, "element", default=None, skip_none=True)
+    candidate = get_object_value(
+        element,
+        "symbol",
+        default=None,
+        aliases=("name",),
+        skip_none=True,
+    )
+    if candidate is None and isinstance(element, str):
+        candidate = element
+    if candidate is None:
+        candidate = get_object_value(
+            atom,
+            "element_name",
+            default=None,
+            aliases=("element_symbol",),
+            skip_none=True,
+        )
+    token = str(candidate or "").strip()
+    if not token:
+        number = _scoring_atom_atomic_number(atom)
+        small_periodic_table = {
+            1: "H", 6: "C", 7: "N", 8: "O", 9: "F", 15: "P",
+            16: "S", 17: "Cl", 35: "Br", 53: "I",
+        }
+        token = small_periodic_table.get(number, "")
+    if len(token) == 1:
+        return token.upper()
+    if token:
+        return token[0].upper() + token[1:].lower()
+    return ""
+
+
+def _scoring_atom_is_hydrogen(atom: Any) -> bool:
+    """Return whether an atom is hydrogen."""
+
+    number = _scoring_atom_atomic_number(atom)
+    if number is not None:
+        return number == 1
+    return _scoring_atom_element_symbol(atom) == "H"
+
+
+def _scoring_atom_formal_charge(atom: Any) -> Optional[float]:
+    """Return a finite formal/explicit atom charge when available."""
+
+    for field_name in ("formal_charge", "charge"):
+        value = get_object_value(atom, field_name, default=None, skip_none=True)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            converted = float(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(converted):
+            return converted
+    return None
+
+
+def _scoring_feature_is_ligand(value: Any) -> bool:
+    """Return whether a recognized chemical feature belongs to the ligand."""
+
+    participant = normalize_identifier(
+        get_object_value(
+            value,
+            "participant_type",
+            default="",
+            aliases=("participant", "role", "side"),
+            skip_none=True,
+        ),
+        default="",
+        lowercase=True,
+        maximum_length=64,
+    )
+    return participant in {"ligand", "pose", "compound", "drug", "small_molecule"}
+
+
+def _scoring_feature_atoms(value: Any) -> Tuple[Any, ...]:
+    """Return atom members of a ring/group-like recognized feature."""
+
+    atoms = get_object_value(
+        value,
+        "atoms",
+        default=None,
+        aliases=("members", "atom_members"),
+        skip_none=True,
+    )
+    return tuple(normalize_object_sequence(atoms)) if atoms is not None else ()
+
+
+def _scoring_pi_stage_ligand_features(
+    context: Optional[AnalysisContext],
+) -> Tuple[Tuple[Any, ...], Tuple[Any, ...], Tuple[Any, ...]]:
+    """Return ligand aromatic, positive and negative features from the PI stage."""
+
+    if context is None:
+        return (), (), ()
+    outputs = collect_interaction_stage_outputs(context=context)
+    output = outputs.get(INTERACTION_FAMILY_PI)
+    if output is None:
+        return (), (), ()
+    native, _ = _unwrap_interaction_stage_value(output)
+    features = get_object_value(
+        native,
+        "recognized_features",
+        default=None,
+        skip_none=True,
+    )
+    if features is None:
+        nested = get_object_value(native, "result", default=None, skip_none=True)
+        features = get_object_value(
+            nested,
+            "recognized_features",
+            default=None,
+            skip_none=True,
+        )
+    if features is None:
+        return (), (), ()
+
+    def ligand_only(name: str) -> Tuple[Any, ...]:
+        values = tuple(
+            normalize_object_sequence(
+                get_object_value(features, name, default=(), skip_none=True)
+            )
+        )
+        explicit = tuple(item for item in values if _scoring_feature_is_ligand(item))
+        return explicit
+
+    return (
+        ligand_only("aromatic_systems"),
+        ligand_only("positive_groups"),
+        ligand_only("negative_groups"),
+    )
+
+
+def _scoring_detect_hbond_opportunities(
+    atoms: Tuple[Any, ...],
+    warnings_list: List[str],
+) -> Tuple[Optional[int], Optional[int], str]:
+    """Count H-bond donor/acceptor opportunities using hbonds.py chemistry."""
+
+    module = load_analysis_module(HBONDS_MODULE_NAME, required=False)
+    donors_function = getattr(module, "select_hbond_donors", None) if module else None
+    acceptors_function = (
+        getattr(module, "select_hbond_acceptors", None) if module else None
+    )
+    if callable(donors_function) and callable(acceptors_function):
+        try:
+            donors = tuple(
+                donors_function(atoms, require_explicit_hydrogen=False)
+            )
+            acceptors = tuple(acceptors_function(atoms))
+            return len(donors), len(acceptors), "hbonds.py"
+        except Exception as exc:
+            warnings_list.append(
+                f"H-bond opportunity recognition failed: {type(exc).__name__}."
+            )
+
+    donor_count = sum(
+        1
+        for atom in atoms
+        if bool(
+            get_object_value(
+                atom,
+                "is_hbond_donor",
+                default=False,
+                aliases=("hbond_donor", "donor"),
+            )
+        )
+    )
+    acceptor_count = sum(
+        1
+        for atom in atoms
+        if bool(
+            get_object_value(
+                atom,
+                "is_hbond_acceptor",
+                default=False,
+                aliases=("hbond_acceptor", "acceptor"),
+            )
+        )
+    )
+    if donor_count or acceptor_count:
+        return donor_count, acceptor_count, "atom_flags"
+    return None, None, "unavailable"
+
+
+def _scoring_detect_hydrophobic_opportunities(
+    atoms: Tuple[Any, ...],
+    warnings_list: List[str],
+) -> Tuple[int, str]:
+    """Count ligand atoms chemically eligible for hydrophobic interactions."""
+
+    module = load_analysis_module(HYDROPHOBIC_MODULE_NAME, required=False)
+    detector = getattr(module, "is_hydrophobic_atom", None) if module else None
+    if callable(detector):
+        role = getattr(module, "HYDROPHOBIC_ROLE_LIGAND", "ligand")
+        try:
+            count = sum(
+                1
+                for atom in atoms
+                if not _scoring_atom_is_hydrogen(atom)
+                and detector(atom, role=role, ligand_atoms=atoms)
+            )
+            return count, "hydrophobic.py"
+        except Exception as exc:
+            warnings_list.append(
+                f"Hydrophobic opportunity recognition failed: {type(exc).__name__}."
+            )
+
+    # Conservative fallback: carbon, sulfur and halogens are possible nonpolar
+    # centers, excluding atoms with a clearly large explicit/formal charge.
+    fallback_elements = {"C", "S", "F", "Cl", "Br", "I"}
+    count = 0
+    for atom in atoms:
+        if _scoring_atom_is_hydrogen(atom):
+            continue
+        if _scoring_atom_element_symbol(atom) not in fallback_elements:
+            continue
+        charge = _scoring_atom_formal_charge(atom)
+        if charge is not None and abs(charge) > 0.5:
+            continue
+        count += 1
+    return count, "element_fallback"
+
+
+def _scoring_detect_pi_opportunities(
+    ligand: Any,
+    atoms: Tuple[Any, ...],
+    context: Optional[AnalysisContext],
+    warnings_list: List[str],
+) -> Tuple[int, int, int, int, str]:
+    """Count ligand aromatic systems and charged groups using PI recognition."""
+
+    stage_rings, stage_positive, stage_negative = _scoring_pi_stage_ligand_features(
+        context
+    )
+    if stage_rings or stage_positive or stage_negative:
+        aromatic_atoms = {
+            id(atom)
+            for ring in stage_rings
+            for atom in _scoring_feature_atoms(ring)
+        }
+        return (
+            len(stage_rings),
+            len(aromatic_atoms),
+            len(stage_positive),
+            len(stage_negative),
+            "pi_stage",
+        )
+
+    module = load_analysis_module(PI_MODULE_NAME, required=False)
+    ring_detector = (
+        getattr(module, "detect_ligand_aromatic_rings", None) if module else None
+    )
+    charge_detector = (
+        getattr(module, "detect_ligand_charged_groups", None) if module else None
+    )
+    if callable(ring_detector) or callable(charge_detector):
+        try:
+            rings = tuple(ring_detector(ligand)) if callable(ring_detector) else ()
+            groups = tuple(charge_detector(ligand)) if callable(charge_detector) else ()
+            aromatic_atoms = {
+                id(atom)
+                for ring in rings
+                for atom in _scoring_feature_atoms(ring)
+            }
+            positive = 0
+            negative = 0
+            for group in groups:
+                sign = normalize_identifier(
+                    get_object_value(
+                        group,
+                        "charge_sign",
+                        default="",
+                        aliases=("sign",),
+                        skip_none=True,
+                    ),
+                    default="",
+                    lowercase=True,
+                    maximum_length=32,
+                )
+                charge = get_object_value(
+                    group,
+                    "formal_charge",
+                    default=None,
+                    aliases=("charge", "effective_charge"),
+                    skip_none=True,
+                )
+                if sign in {"positive", "cation", "cationic", "+"}:
+                    positive += 1
+                elif sign in {"negative", "anion", "anionic", "-"}:
+                    negative += 1
+                elif charge is not None:
+                    try:
+                        numeric_charge = float(charge)
+                    except (TypeError, ValueError, OverflowError):
+                        numeric_charge = 0.0
+                    if numeric_charge > 0.0:
+                        positive += 1
+                    elif numeric_charge < 0.0:
+                        negative += 1
+            return (
+                len(rings),
+                len(aromatic_atoms),
+                positive,
+                negative,
+                "pi.py",
+            )
+        except Exception as exc:
+            warnings_list.append(
+                f"PI opportunity recognition failed: {type(exc).__name__}."
+            )
+
+    aromatic_atom_ids = {
+        id(atom)
+        for atom in atoms
+        if bool(
+            get_object_value(
+                atom,
+                "aromatic",
+                default=False,
+                aliases=("is_aromatic",),
+            )
+        )
+    }
+    positive = 0
+    negative = 0
+    for atom in atoms:
+        charge = _scoring_atom_formal_charge(atom)
+        if charge is None:
+            continue
+        if charge > 0.5:
+            positive += 1
+        elif charge < -0.5:
+            negative += 1
+    return (
+        0,
+        len(aromatic_atom_ids),
+        positive,
+        negative,
+        "atom_fallback",
+    )
+
+
+def _scoring_ligand_opportunity_descriptors(
+    context: Optional[AnalysisContext] = None,
+    *,
+    dock_model: Any = None,
+    pose_index: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Build serializable ligand size and chemical-opportunity descriptors."""
+
+    ligand = _scoring_ligand_source(
+        context,
+        dock_model=dock_model,
+        pose_index=pose_index,
+    )
+    atoms = _scoring_ligand_atoms(ligand)
+    warnings_list: List[str] = []
+
+    if not atoms:
+        return {
+            "schema_version": _SCORING_LIGAND_OPPORTUNITY_SCHEMA_VERSION,
+            "status": "unavailable",
+            "ligand_atom_count": 0,
+            "ligand_heavy_atom_count": 0,
+            "warnings": ["No ligand atoms were available for opportunity analysis."],
+        }
+
+    heavy_atoms = tuple(atom for atom in atoms if not _scoring_atom_is_hydrogen(atom))
+    hydrogen_count = len(atoms) - len(heavy_atoms)
+    carbon_count = sum(
+        1 for atom in heavy_atoms if _scoring_atom_element_symbol(atom) == "C"
+    )
+    heteroatom_count = sum(
+        1
+        for atom in heavy_atoms
+        if _scoring_atom_element_symbol(atom) not in {"", "C"}
+    )
+
+    donor_count, acceptor_count, hbond_source = _scoring_detect_hbond_opportunities(
+        atoms,
+        warnings_list,
+    )
+    hydrophobic_count, hydrophobic_source = _scoring_detect_hydrophobic_opportunities(
+        atoms,
+        warnings_list,
+    )
+    (
+        aromatic_ring_count,
+        aromatic_atom_count,
+        positive_group_count,
+        negative_group_count,
+        pi_source,
+    ) = _scoring_detect_pi_opportunities(
+        ligand,
+        atoms,
+        context,
+        warnings_list,
+    )
+
+    charged_group_count = positive_group_count + negative_group_count
+    hbond_opportunity_count = (
+        None
+        if donor_count is None or acceptor_count is None
+        else donor_count + acceptor_count
+    )
+
+    completeness_flags = (
+        donor_count is not None,
+        acceptor_count is not None,
+        hydrophobic_source != "unavailable",
+        pi_source not in {"unavailable"},
+    )
+    status = "complete" if all(completeness_flags) else "partial"
+
+    descriptors: Dict[str, Any] = {
+        "schema_version": _SCORING_LIGAND_OPPORTUNITY_SCHEMA_VERSION,
+        "status": status,
+        "ligand_identifier": _scoring_identifier(ligand, default="ligand"),
+        "ligand_atom_count": len(atoms),
+        "ligand_heavy_atom_count": len(heavy_atoms),
+        "ligand_hydrogen_atom_count": hydrogen_count,
+        "ligand_carbon_atom_count": carbon_count,
+        "ligand_heteroatom_count": heteroatom_count,
+        "ligand_nonpolar_atom_count": hydrophobic_count,
+        "ligand_hydrophobic_atom_count": hydrophobic_count,
+        "ligand_hbond_donor_count": donor_count,
+        "ligand_hbond_acceptor_count": acceptor_count,
+        "ligand_hbond_opportunity_count": hbond_opportunity_count,
+        "ligand_aromatic_atom_count": aromatic_atom_count,
+        "ligand_aromatic_ring_count": aromatic_ring_count,
+        "ligand_positive_group_count": positive_group_count,
+        "ligand_negative_group_count": negative_group_count,
+        "ligand_charged_group_count": charged_group_count,
+        # Family-specific opportunity denominators.  These are descriptors only
+        # in analyze.py; scoring.py Stage 4 decides how to transform them.
+        "contact_opportunity_count": len(heavy_atoms),
+        "hydrophobic_opportunity_count": hydrophobic_count,
+        "hbond_opportunity_count": hbond_opportunity_count,
+        "pi_opportunity_count": aromatic_ring_count,
+        "saltbridge_opportunity_count": charged_group_count,
+        "recognition_sources": {
+            "hbond": hbond_source,
+            "hydrophobic": hydrophobic_source,
+            "pi_and_charge": pi_source,
+        },
+        "warnings": list(dict.fromkeys(warnings_list)),
+    }
+    safe = _scoring_safe_geometry_value(descriptors)
+    return dict(safe) if isinstance(safe, Mapping) else {}
+
+
+def _scoring_store_ligand_opportunity_descriptors(
+    dock_model: Any,
+    descriptors: Mapping[str, Any],
+) -> None:
+    """Persist Stage 4 ligand descriptors in DockModel metadata for scoring."""
+
+    if dock_model is None or not descriptors:
+        return
+    metadata = get_object_value(
+        dock_model,
+        DOCK_MODEL_FIELD_METADATA,
+        default={},
+        skip_none=True,
+    )
+    normalized_metadata = dict(metadata) if isinstance(metadata, Mapping) else {}
+    normalized_metadata[_SCORING_LIGAND_OPPORTUNITY_DESCRIPTOR_KEY] = dict(
+        descriptors
+    )
+    try:
+        set_object_value(
+            dock_model,
+            DOCK_MODEL_FIELD_METADATA,
+            normalized_metadata,
+        )
+    except Exception:
+        # DockModel metadata is an audit transport, not a prerequisite for
+        # scoring.  Interaction/profile transport remains available.
+        return
+
+
+def _scoring_profile_with_ligand_opportunity_descriptors(
+    profile: Any,
+    descriptors: Mapping[str, Any],
+) -> Any:
+    """Return a profile copy carrying Stage 4 descriptors when possible."""
+
+    if profile is None or not descriptors:
+        return profile
+    metadata = get_object_value(profile, "metadata", default={}, skip_none=True)
+    merged = dict(metadata) if isinstance(metadata, Mapping) else {}
+    merged[_SCORING_LIGAND_OPPORTUNITY_DESCRIPTOR_KEY] = dict(descriptors)
+    updater = getattr(profile, "with_updates", None)
+    if callable(updater):
+        try:
+            return updater(metadata=merged)
+        except Exception:
+            pass
+    if is_dataclass(profile) and not isinstance(profile, type):
+        try:
+            return replace(profile, metadata=merged)
+        except Exception:
+            pass
+    return profile
+
+
+def _scoring_attach_ligand_opportunity_descriptors(
+    sources: Optional[Mapping[str, Sequence[Any]]],
+    descriptors: Mapping[str, Any],
+) -> Optional[Mapping[str, Tuple[Any, ...]]]:
+    """Attach one ligand-opportunity carrier without adding an interaction."""
+
+    if not sources or not descriptors:
+        return sources
+    result: Dict[str, Tuple[Any, ...]] = {
+        str(source): tuple(values)
+        for source, values in sources.items()
+    }
+    safe_descriptors = _scoring_safe_geometry_value(descriptors)
+    if not isinstance(safe_descriptors, Mapping):
+        return MappingProxyType(result)
+    descriptor_payload = dict(safe_descriptors)
+
+    for source in SCORING_SOURCE_ORDER:
+        values = list(result.get(source, ()))
+        if not values:
+            continue
+        for index, interaction in enumerate(values):
+            if not isinstance(interaction, Mapping):
+                continue
+            payload = dict(interaction)
+            metadata = payload.get("metadata", {})
+            metadata = dict(metadata) if isinstance(metadata, Mapping) else {}
+            metadata[_SCORING_LIGAND_OPPORTUNITY_DESCRIPTOR_KEY] = descriptor_payload
+            metadata["ligand_opportunity_descriptor_carrier"] = True
+            payload["metadata"] = metadata
+            payload[_SCORING_LIGAND_OPPORTUNITY_DESCRIPTOR_KEY] = descriptor_payload
+            values[index] = payload
+            result[source] = tuple(values)
+            return MappingProxyType(result)
+    return MappingProxyType(result)
+
+
 def _scoring_stage_outputs_by_source(
     context: AnalysisContext,
 ) -> Dict[str, Tuple[Any, ...]]:
@@ -35072,8 +36369,19 @@ def _scoring_stage_outputs_by_source(
         if source is None:
             continue
         interactions = interaction_output_interactions(family, output)
-        if interactions:
-            result[source] = tuple(
+        if not interactions:
+            continue
+
+        converted: List[Any] = []
+        for index, (subtype, interaction) in enumerate(interactions):
+            receptor_residue_key = None
+            ligand_residue_key = None
+            if family == INTERACTION_FAMILY_CONTACTS:
+                (
+                    receptor_residue_key,
+                    ligand_residue_key,
+                ) = _scoring_contact_residue_keys(interaction)
+            converted.append(
                 _scoring_interaction_payload(
                     interaction,
                     family=family,
@@ -35086,12 +36394,14 @@ def _scoring_stage_outputs_by_source(
                         canonical_participant_key(item)
                         for item in interaction_participants(interaction, family)
                     ),
+                    receptor_residue_key=receptor_residue_key,
+                    ligand_residue_key=ligand_residue_key,
                     distance=interaction_distance(interaction),
                     strength=interaction_strength(interaction),
                     accepted=interaction_is_accepted(interaction),
                 )
-                for index, (subtype, interaction) in enumerate(interactions)
             )
+        result[source] = tuple(converted)
     return result
 
 
@@ -35111,7 +36421,12 @@ def build_scoring_interaction_sources(
             if source not in effective.interaction_sources:
                 continue
             normalized[source] = tuple(normalize_object_sequence(values))
-        return MappingProxyType(normalized)
+        descriptors = _scoring_ligand_opportunity_descriptors(context)
+        attached = _scoring_attach_ligand_opportunity_descriptors(
+            normalized,
+            descriptors,
+        )
+        return attached if attached is not None else MappingProxyType(normalized)
     if context is None:
         return None
     resolved: Dict[str, Tuple[Any, ...]] = {}
@@ -35126,6 +36441,30 @@ def build_scoring_interaction_sources(
         for source, values in resolved.items()
         if source in effective.interaction_sources
     }
+    contact_descriptors = _scoring_contact_collection_descriptors(context)
+    if contact_descriptors and SCORING_SOURCE_CONTACT in filtered:
+        filtered = _scoring_attach_contact_collection_descriptors(
+            filtered,
+            contact_descriptors,
+        )
+    hydrophobic_descriptors = _scoring_hydrophobic_collection_descriptors(
+        context
+    )
+    if (
+        hydrophobic_descriptors
+        and SCORING_SOURCE_HYDROPHOBIC in filtered
+    ):
+        filtered = _scoring_attach_hydrophobic_collection_descriptors(
+            filtered,
+            hydrophobic_descriptors,
+        )
+    ligand_descriptors = _scoring_ligand_opportunity_descriptors(context)
+    attached_sources = _scoring_attach_ligand_opportunity_descriptors(
+        filtered,
+        ligand_descriptors,
+    )
+    if attached_sources is not None:
+        return attached_sources
     return MappingProxyType(filtered) if filtered else None
 
 
@@ -35143,6 +36482,9 @@ def _scoring_source_diagnostics(
             "type_counts": {},
             "resolved_weights": {},
             "unknown_types": [],
+            "contact_collection_descriptors": {},
+            "hydrophobic_collection_descriptors": {},
+            "ligand_opportunity_descriptors": {},
         }
     effective_profile = profile or getattr(
         scoring_module,
@@ -35181,10 +36523,88 @@ def _scoring_source_diagnostics(
     type_counts: Dict[str, int] = {}
     resolved_weights: Dict[str, float] = {}
     unknown_types: List[str] = []
+    contact_collection_descriptors: Dict[str, Any] = {}
+    hydrophobic_collection_descriptors: Dict[str, Any] = {}
+    ligand_opportunity_descriptors: Dict[str, Any] = {}
     for source, interactions in sources.items():
         values = tuple(interactions)
         source_counts[str(source)] = len(values)
         for interaction in values:
+            if not ligand_opportunity_descriptors:
+                descriptor_value = get_object_value(
+                    interaction,
+                    _SCORING_LIGAND_OPPORTUNITY_DESCRIPTOR_KEY,
+                    default=None,
+                )
+                if descriptor_value is None:
+                    interaction_metadata = get_object_value(
+                        interaction,
+                        "metadata",
+                        default={},
+                    )
+                    if isinstance(interaction_metadata, Mapping):
+                        descriptor_value = interaction_metadata.get(
+                            _SCORING_LIGAND_OPPORTUNITY_DESCRIPTOR_KEY
+                        )
+                if isinstance(descriptor_value, Mapping):
+                    safe_descriptor_value = _scoring_safe_geometry_value(
+                        descriptor_value
+                    )
+                    if isinstance(safe_descriptor_value, Mapping):
+                        ligand_opportunity_descriptors = dict(
+                            safe_descriptor_value
+                        )
+            if source == SCORING_SOURCE_CONTACT and not contact_collection_descriptors:
+                descriptor_value = get_object_value(
+                    interaction,
+                    _SCORING_CONTACT_COLLECTION_DESCRIPTOR_KEY,
+                    default=None,
+                )
+                if descriptor_value is None:
+                    interaction_metadata = get_object_value(
+                        interaction,
+                        "metadata",
+                        default={},
+                    )
+                    if isinstance(interaction_metadata, Mapping):
+                        descriptor_value = interaction_metadata.get(
+                            _SCORING_CONTACT_COLLECTION_DESCRIPTOR_KEY
+                        )
+                if isinstance(descriptor_value, Mapping):
+                    safe_descriptor_value = _scoring_safe_geometry_value(
+                        descriptor_value
+                    )
+                    if isinstance(safe_descriptor_value, Mapping):
+                        contact_collection_descriptors = dict(
+                            safe_descriptor_value
+                        )
+            if (
+                source == SCORING_SOURCE_HYDROPHOBIC
+                and not hydrophobic_collection_descriptors
+            ):
+                descriptor_value = get_object_value(
+                    interaction,
+                    _SCORING_HYDROPHOBIC_COLLECTION_DESCRIPTOR_KEY,
+                    default=None,
+                )
+                if descriptor_value is None:
+                    interaction_metadata = get_object_value(
+                        interaction,
+                        "metadata",
+                        default={},
+                    )
+                    if isinstance(interaction_metadata, Mapping):
+                        descriptor_value = interaction_metadata.get(
+                            _SCORING_HYDROPHOBIC_COLLECTION_DESCRIPTOR_KEY
+                        )
+                if isinstance(descriptor_value, Mapping):
+                    safe_descriptor_value = _scoring_safe_geometry_value(
+                        descriptor_value
+                    )
+                    if isinstance(safe_descriptor_value, Mapping):
+                        hydrophobic_collection_descriptors = dict(
+                            safe_descriptor_value
+                        )
             raw_type = (
                 extractor(interaction)
                 if callable(extractor)
@@ -35226,6 +36646,11 @@ def _scoring_source_diagnostics(
         "type_counts": type_counts,
         "resolved_weights": resolved_weights,
         "unknown_types": sorted(set(unknown_types)),
+        "contact_collection_descriptors": contact_collection_descriptors,
+        "hydrophobic_collection_descriptors": (
+            hydrophobic_collection_descriptors
+        ),
+        "ligand_opportunity_descriptors": ligand_opportunity_descriptors,
     }
 
 
@@ -35952,6 +37377,15 @@ def run_scoring_analysis(
         target.dock_model,
         dock_model_identifier=target.dock_model_identifier,
     )
+    ligand_opportunity_descriptors = _scoring_ligand_opportunity_descriptors(
+        context,
+        dock_model=target.dock_model,
+        pose_index=target.pose_index,
+    )
+    _scoring_store_ligand_opportunity_descriptors(
+        target.dock_model,
+        ligand_opportunity_descriptors,
+    )
     native_options = build_native_scoring_integration_options(
         effective,
         scoring_module=module,
@@ -35975,6 +37409,11 @@ def run_scoring_analysis(
             config=effective,
             explainability=explainability,
             reused=True,
+            source_diagnostics={
+                "ligand_opportunity_descriptors": (
+                    ligand_opportunity_descriptors
+                )
+            },
             scoring_module=module,
         )
     native_profile = build_native_scoring_profile(
@@ -35982,16 +37421,28 @@ def run_scoring_analysis(
         scoring_module=module,
         profile=profile,
     )
+    native_profile = _scoring_profile_with_ligand_opportunity_descriptors(
+        native_profile,
+        ligand_opportunity_descriptors,
+    )
     resolved_sources = build_scoring_interaction_sources(
         context,
         explicit_sources=interaction_sources,
         config=effective,
+    )
+    resolved_sources = _scoring_attach_ligand_opportunity_descriptors(
+        resolved_sources,
+        ligand_opportunity_descriptors,
     )
     source_diagnostics = _scoring_source_diagnostics(
         resolved_sources,
         profile=native_profile,
         scoring_module=module,
     )
+    if ligand_opportunity_descriptors:
+        source_diagnostics["ligand_opportunity_descriptors"] = dict(
+            ligand_opportunity_descriptors
+        )
     try:
         integration = module.integrate_dock_model_scoring(
             target.dock_model,
@@ -70360,6 +71811,12 @@ def _make_chimerax_autorun_stage_callback(
             f"{key}={value}"
             for key, value in list(count_fields.items())[:12]
         )
+        if stage == STAGE_HYDROPHOBIC:
+            performance_timings = _hydrophobic_performance_timings(stage_result)
+            details.extend(
+                f"{key}={float(value):.6f}"
+                for key, value in performance_timings.items()
+            )
         active_logger.info(
             f"Stage finished: {stage}; " + "; ".join(details)
         )
@@ -70593,6 +72050,165 @@ def _finalize_chimerax_autorun_logger(logger: DockLogger) -> None:
     logger.close()
 
 
+def _record_chimerax_autorun_performance_files(
+    result: ChimeraXAnalysisOutput,
+    files: Mapping[str, PathLike],
+) -> None:
+    """Attach generated performance figure paths to runtime file registries."""
+
+    normalized = {
+        str(name): str(Path(path))
+        for name, path in files.items()
+        if path not in (None, "")
+    }
+    if not normalized:
+        return
+    analysis_output = result.analysis_output
+    targets = (
+        getattr(analysis_output, "context", None),
+        getattr(analysis_output, "run_result", None),
+        getattr(analysis_output, "multipose_result", None),
+        getattr(analysis_output, "pose_result", None),
+    )
+    for target in targets:
+        target_files = getattr(target, "files", None)
+        if isinstance(target_files, MutableMapping):
+            target_files.update(normalized)
+    result.metadata.setdefault("performance_files", {}).update(normalized)
+
+
+def _performance_config_value(name: str, default: Any) -> Any:
+    """Return one performance configuration value with backward compatibility."""
+
+    return getattr(config, name, default)
+
+
+def _performance_output_filename(file_prefix: str, configured_name: Any, default_name: str) -> str:
+    """Return a run-specific PNG filename derived from the configured base name."""
+
+    raw_name = str(configured_name or default_name).strip()
+    candidate = Path(raw_name).name or default_name
+    suffix = Path(candidate).suffix or ".png"
+    stem = Path(candidate).stem or Path(default_name).stem
+    return f"{file_prefix}_{stem}{suffix}"
+
+
+def _generate_chimerax_autorun_performance_plots(
+    result: ChimeraXAnalysisOutput,
+    summary_payload: Mapping[str, Any],
+    *,
+    file_prefix: str,
+    logger: Optional[DockLogger] = None,
+) -> Dict[str, str]:
+    """Generate configured performance figures from the completed run summary."""
+
+    active_logger = logger or _LOGGER
+    enabled = bool(_performance_config_value("GENERATE_PERFORMANCE_PLOTS", True))
+    timeline_name = _performance_output_filename(
+        file_prefix,
+        _performance_config_value("PERFORMANCE_TIMELINE_FILENAME", "execution_timeline.png"),
+        "execution_timeline.png",
+    )
+    runtime_name = _performance_output_filename(
+        file_prefix,
+        _performance_config_value("PERFORMANCE_RUNTIME_FILENAME", "stage_runtime.png"),
+        "stage_runtime.png",
+    )
+    image_width = max(900, int(_performance_config_value("PERFORMANCE_IMAGE_WIDTH", 1800)))
+    include_global = bool(_performance_config_value("PERFORMANCE_INCLUDE_GLOBAL_STAGES", True))
+    include_zero = bool(_performance_config_value("PERFORMANCE_INCLUDE_ZERO_DURATION", False))
+    output_directory = Path(config.IMAGE_DIR)
+    result.metadata["performance_plot_config"] = {
+        "enabled": enabled,
+        "output_directory": str(output_directory),
+        "timeline_filename": timeline_name,
+        "runtime_filename": runtime_name,
+        "image_width": image_width,
+        "include_global_stages": include_global,
+        "include_zero_duration": include_zero,
+    }
+    if not enabled:
+        result.metadata["performance_plots"] = {
+            "enabled": False,
+            "generated": False,
+            "files": {},
+        }
+        active_logger.info("Performance plot generation is disabled by configuration.")
+        return {}
+
+    try:
+        module = importlib.import_module(f"{__package__}.performance")
+        if include_zero:
+            loader = getattr(module, "load_performance_data")
+            timeline_renderer = getattr(module, "render_execution_timeline")
+            runtime_renderer = getattr(module, "render_stage_runtime")
+            result_type = getattr(module, "PerformancePlotResult")
+            performance_data = loader(summary_payload)
+            output_directory.mkdir(parents=True, exist_ok=True)
+            timeline_path = timeline_renderer(
+                performance_data,
+                output_directory / timeline_name,
+                width=image_width,
+                include_zero_duration=True,
+            )
+            runtime_path = runtime_renderer(
+                performance_data,
+                output_directory / runtime_name,
+                width=image_width,
+                include_global=include_global,
+            )
+            plot_result = result_type(
+                timeline_path=timeline_path,
+                runtime_path=runtime_path,
+                backend="pillow",
+                data=performance_data,
+                warnings=tuple(getattr(performance_data, "warnings", ()) or ()),
+            )
+        else:
+            generator = getattr(module, "generate_performance_plots")
+            plot_result = generator(
+                summary_payload,
+                output_directory=output_directory,
+                timeline_filename=timeline_name,
+                runtime_filename=runtime_name,
+                include_global_runtime=include_global,
+                image_width=image_width,
+            )
+        files = {
+            "performance_timeline": str(plot_result.timeline_path),
+            "performance_stage_runtime": str(plot_result.runtime_path),
+        }
+        _record_chimerax_autorun_performance_files(result, files)
+        plot_metadata = (
+            plot_result.to_dict()
+            if callable(getattr(plot_result, "to_dict", None))
+            else to_json_compatible(plot_result)
+        )
+        if isinstance(plot_metadata, MutableMapping):
+            plot_metadata["enabled"] = True
+            plot_metadata["generated"] = True
+            plot_metadata["config"] = dict(result.metadata["performance_plot_config"])
+        result.metadata["performance_plots"] = plot_metadata
+        for name, path in files.items():
+            active_logger.info(f"Produced file [{name}]: {path}")
+        for warning in tuple(getattr(plot_result, "warnings", ()) or ()):
+            active_logger.warning(f"Performance plot warning: {warning}")
+        return files
+    except Exception as exc:
+        warning = (
+            "Performance plots could not be generated: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        result.warnings.append(warning)
+        result.metadata["performance_plot_error"] = {
+            "type": type(exc).__name__,
+            "message": str(exc),
+            "config": dict(result.metadata.get("performance_plot_config", {})),
+        }
+        active_logger.warning(warning)
+        return {}
+
+
 def _write_chimerax_autorun_summary(
     result: ChimeraXAnalysisOutput,
     *,
@@ -70601,6 +72217,13 @@ def _write_chimerax_autorun_summary(
     """Write an execution summary even when the analysis is partial or failed."""
 
     summary_path = Path(config.JSON_DIR) / f"{file_prefix}_run_summary.json"
+    initial_payload = result.to_run_summary_dict(summary_path=summary_path)
+    _generate_chimerax_autorun_performance_plots(
+        result,
+        initial_payload,
+        file_prefix=file_prefix,
+        logger=_LOGGER,
+    )
     payload = result.to_run_summary_dict(summary_path=summary_path)
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(

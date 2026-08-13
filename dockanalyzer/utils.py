@@ -49,6 +49,7 @@ from ._version import __version__
 
 import asyncio
 import contextvars
+import concurrent.futures as _concurrent_futures
 import copy
 import functools
 import inspect
@@ -1610,6 +1611,7 @@ _PREPARED_RECEPTOR_ATTRIBUTE = "_dockanalyzer_prepared_receptor"
 _PREPARED_RECEPTOR_CACHE_LIMIT = 8
 _PREPARED_RECEPTOR_CACHE_LOCK = threading.RLock()
 _PREPARED_RECEPTOR_CACHE: "OrderedDict[int, _PreparedReceptor]" = OrderedDict()
+_PREPARED_RECEPTOR_CACHE_INFLIGHT: Dict[int, Any] = {}
 
 
 @dataclass
@@ -1628,6 +1630,11 @@ class _PreparedReceptor:
     derived: Dict[Any, Any] = field(default_factory=dict, repr=False)
     created_at: float = field(default_factory=time.perf_counter, repr=False)
     _lock: Any = field(default_factory=threading.RLock, repr=False, compare=False)
+    _derived_inflight: Dict[Any, Any] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def source_identity(self) -> int:
@@ -1641,14 +1648,42 @@ class _PreparedReceptor:
         return source is self.source
 
     def get_or_create(self, key: Any, builder: Callable[[], Any]) -> Any:
-        """Return one derived receptor value, creating it once if needed."""
+        """Return one derived receptor value using single-flight construction.
+
+        Exactly one thread executes ``builder`` for a missing key. Concurrent
+        callers wait for that same build and receive the identical cached
+        value. This changes only execution scheduling; the cached value and
+        scientific calculation performed by ``builder`` are unchanged.
+        """
 
         with self._lock:
             if key in self.derived:
                 return self.derived[key]
-        value = builder()
+
+            future = self._derived_inflight.get(key)
+            if future is None:
+                future = _concurrent_futures.Future()
+                self._derived_inflight[key] = future
+                is_builder = True
+            else:
+                is_builder = False
+
+        if not is_builder:
+            return future.result()
+
+        try:
+            value = builder()
+        except BaseException as exc:
+            with self._lock:
+                self._derived_inflight.pop(key, None)
+            future.set_exception(exc)
+            raise
+
         with self._lock:
-            return self.derived.setdefault(key, value)
+            self.derived[key] = value
+            self._derived_inflight.pop(key, None)
+        future.set_result(value)
+        return value
 
     def nearby_indices(self, query_coordinates: Any, radius: float) -> Tuple[int, ...]:
         return self.spatial_index.query_unique_indices(query_coordinates, radius)
@@ -1686,7 +1721,12 @@ def _materialize_receptor_atoms(source: Any) -> Tuple[Any, ...]:
 
 
 def _prepare_receptor_cache(source: Any, *, prefer_scipy: bool = True) -> _PreparedReceptor:
-    """Return the process-local prepared receptor for one source object."""
+    """Return the process-local prepared receptor for one source object.
+
+    Construction is single-flight per receptor identity: concurrent callers
+    reuse one in-progress preparation instead of materializing coordinates and
+    building equivalent spatial indices multiple times.
+    """
 
     cache_key = id(source)
     with _PREPARED_RECEPTOR_CACHE_LOCK:
@@ -1695,32 +1735,58 @@ def _prepare_receptor_cache(source: Any, *, prefer_scipy: bool = True) -> _Prepa
             _PREPARED_RECEPTOR_CACHE.move_to_end(cache_key)
             return cached
 
-    atoms = _materialize_receptor_atoms(source)
-    from . import geometry as _geometry
+        future = _PREPARED_RECEPTOR_CACHE_INFLIGHT.get(cache_key)
+        if future is None:
+            future = _concurrent_futures.Future()
+            _PREPARED_RECEPTOR_CACHE_INFLIGHT[cache_key] = future
+            is_builder = True
+        else:
+            is_builder = False
 
-    coordinates = _geometry.get_coordinates(
-        atoms,
-        scene=True,
-        name="prepared receptor atoms",
-        allow_empty=False,
-        require_finite=True,
-        copy=True,
-    )
-    spatial_index = _geometry._build_spatial_neighbor_index(
-        coordinates,
-        prefer_scipy=prefer_scipy,
-    )
-    prepared = _PreparedReceptor(
-        source=source,
-        atoms=atoms,
-        coordinates=coordinates,
-        spatial_index=spatial_index,
-    )
+    if not is_builder:
+        prepared = future.result()
+        if not prepared.matches(source):
+            # Defensive guard against an impossible identity mismatch while an
+            # in-flight state still holds the source alive. Retry rather than
+            # returning a cache prepared for another object.
+            return _prepare_receptor_cache(source, prefer_scipy=prefer_scipy)
+        return prepared
+
+    try:
+        atoms = _materialize_receptor_atoms(source)
+        from . import geometry as _geometry
+
+        coordinates = _geometry.get_coordinates(
+            atoms,
+            scene=True,
+            name="prepared receptor atoms",
+            allow_empty=False,
+            require_finite=True,
+            copy=True,
+        )
+        spatial_index = _geometry._build_spatial_neighbor_index(
+            coordinates,
+            prefer_scipy=prefer_scipy,
+        )
+        prepared = _PreparedReceptor(
+            source=source,
+            atoms=atoms,
+            coordinates=coordinates,
+            spatial_index=spatial_index,
+        )
+    except BaseException as exc:
+        with _PREPARED_RECEPTOR_CACHE_LOCK:
+            _PREPARED_RECEPTOR_CACHE_INFLIGHT.pop(cache_key, None)
+        future.set_exception(exc)
+        raise
+
     with _PREPARED_RECEPTOR_CACHE_LOCK:
         _PREPARED_RECEPTOR_CACHE[cache_key] = prepared
         _PREPARED_RECEPTOR_CACHE.move_to_end(cache_key)
+        _PREPARED_RECEPTOR_CACHE_INFLIGHT.pop(cache_key, None)
         while len(_PREPARED_RECEPTOR_CACHE) > _PREPARED_RECEPTOR_CACHE_LIMIT:
             _PREPARED_RECEPTOR_CACHE.popitem(last=False)
+    future.set_result(prepared)
     return prepared
 
 

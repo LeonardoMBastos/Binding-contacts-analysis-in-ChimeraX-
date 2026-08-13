@@ -108,6 +108,15 @@ IMAGE_HEIGHT = 1800
 IMAGE_DPI = 300
 
 
+# Performance plots
+GENERATE_PERFORMANCE_PLOTS = True
+PERFORMANCE_TIMELINE_FILENAME = "execution_timeline.png"
+PERFORMANCE_RUNTIME_FILENAME = "stage_runtime.png"
+PERFORMANCE_IMAGE_WIDTH = 1800
+PERFORMANCE_INCLUDE_GLOBAL_STAGES = True
+PERFORMANCE_INCLUDE_ZERO_DURATION = False
+
+
 # Export options
 EXPORT_CSV = True
 EXPORT_EXCEL = False
@@ -124,6 +133,49 @@ SCORE = {
     "pi_cation": 2,
     "salt_bridge": 3,
     "clash": -2,
+}
+
+
+# Score v2 Stage 4: ligand size/opportunity normalization
+#
+# These values mirror the conservative defaults validated in
+# scoring_scorev2_stage1-4.py. Affinity and RMSD are intentionally absent:
+# they remain external validation variables and never enter the score.
+SCORING_OPPORTUNITY_NORMALIZATION_ENABLED = True
+SCORING_OPPORTUNITY_SIZE_REFERENCE_HEAVY_ATOMS = 8.0
+SCORING_OPPORTUNITY_SIZE_EXPONENT = 0.20
+SCORING_OPPORTUNITY_SIZE_MIN_FACTOR = 0.70
+SCORING_OPPORTUNITY_FAMILY_MIN_FACTOR = 0.65
+
+SCORING_OPPORTUNITY_REFERENCE_COUNTS = {
+    "contact": 8.0,
+    "hydrophobic": 4.0,
+    "hydrogen_bond": 3.0,
+    "pi": 1.0,
+    "salt_bridge": 1.0,
+}
+
+SCORING_OPPORTUNITY_FAMILY_EXPONENTS = {
+    "contact": 0.10,
+    "hydrophobic": 0.20,
+    "hydrogen_bond": 0.15,
+    "pi": 0.15,
+    "salt_bridge": 0.15,
+}
+
+# Ready-to-consume Stage 4 settings block. Keeping the flat constants above
+# makes individual parameters easy to inspect and override, while this mapping
+# provides one reproducible configuration object for the scoring integration.
+SCORING_OPPORTUNITY_NORMALIZATION = {
+    "enabled": SCORING_OPPORTUNITY_NORMALIZATION_ENABLED,
+    "size_reference_heavy_atoms": (
+        SCORING_OPPORTUNITY_SIZE_REFERENCE_HEAVY_ATOMS
+    ),
+    "size_exponent": SCORING_OPPORTUNITY_SIZE_EXPONENT,
+    "size_min_factor": SCORING_OPPORTUNITY_SIZE_MIN_FACTOR,
+    "family_min_factor": SCORING_OPPORTUNITY_FAMILY_MIN_FACTOR,
+    "reference_counts": dict(SCORING_OPPORTUNITY_REFERENCE_COUNTS),
+    "family_exponents": dict(SCORING_OPPORTUNITY_FAMILY_EXPONENTS),
 }
 
 
@@ -176,9 +228,122 @@ def validate_configuration():
         "IMAGE_WIDTH": IMAGE_WIDTH,
         "IMAGE_HEIGHT": IMAGE_HEIGHT,
         "IMAGE_DPI": IMAGE_DPI,
+        "PERFORMANCE_IMAGE_WIDTH": PERFORMANCE_IMAGE_WIDTH,
     }.items():
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
             raise ValueError("{} must be a positive integer".format(name))
+
+    for name, value in {
+        "GENERATE_PERFORMANCE_PLOTS": GENERATE_PERFORMANCE_PLOTS,
+        "PERFORMANCE_INCLUDE_GLOBAL_STAGES": PERFORMANCE_INCLUDE_GLOBAL_STAGES,
+        "PERFORMANCE_INCLUDE_ZERO_DURATION": PERFORMANCE_INCLUDE_ZERO_DURATION,
+    }.items():
+        if not isinstance(value, bool):
+            raise ValueError("{} must be a boolean".format(name))
+
+    for name, value in {
+        "PERFORMANCE_TIMELINE_FILENAME": PERFORMANCE_TIMELINE_FILENAME,
+        "PERFORMANCE_RUNTIME_FILENAME": PERFORMANCE_RUNTIME_FILENAME,
+    }.items():
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("{} must be a non-empty filename".format(name))
+        if Path(value).name != value:
+            raise ValueError("{} must be a filename without directories".format(name))
+        if Path(value).suffix.lower() != ".png":
+            raise ValueError("{} must use the .png extension".format(name))
+
+    if not isinstance(SCORING_OPPORTUNITY_NORMALIZATION_ENABLED, bool):
+        raise ValueError(
+            "SCORING_OPPORTUNITY_NORMALIZATION_ENABLED must be a boolean"
+        )
+
+    positive_opportunity_values = {
+        "SCORING_OPPORTUNITY_SIZE_REFERENCE_HEAVY_ATOMS": (
+            SCORING_OPPORTUNITY_SIZE_REFERENCE_HEAVY_ATOMS
+        ),
+    }
+    for name, value in positive_opportunity_values.items():
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or value <= 0.0
+        ):
+            raise ValueError("{} must be a positive number".format(name))
+
+    unit_interval_values = {
+        "SCORING_OPPORTUNITY_SIZE_MIN_FACTOR": (
+            SCORING_OPPORTUNITY_SIZE_MIN_FACTOR
+        ),
+        "SCORING_OPPORTUNITY_FAMILY_MIN_FACTOR": (
+            SCORING_OPPORTUNITY_FAMILY_MIN_FACTOR
+        ),
+    }
+    for name, value in unit_interval_values.items():
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not 0.0 <= float(value) <= 1.0
+        ):
+            raise ValueError("{} must be between 0 and 1".format(name))
+
+    nonnegative_exponents = {
+        "SCORING_OPPORTUNITY_SIZE_EXPONENT": (
+            SCORING_OPPORTUNITY_SIZE_EXPONENT
+        ),
+        **{
+            "SCORING_OPPORTUNITY_FAMILY_EXPONENTS[{}]".format(family): value
+            for family, value in SCORING_OPPORTUNITY_FAMILY_EXPONENTS.items()
+        },
+    }
+    for name, value in nonnegative_exponents.items():
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or value < 0.0
+        ):
+            raise ValueError("{} must be a non-negative number".format(name))
+
+    opportunity_families = {
+        "contact",
+        "hydrophobic",
+        "hydrogen_bond",
+        "pi",
+        "salt_bridge",
+    }
+    if set(SCORING_OPPORTUNITY_REFERENCE_COUNTS) != opportunity_families:
+        raise ValueError(
+            "SCORING_OPPORTUNITY_REFERENCE_COUNTS must define every "
+            "Score v2 opportunity family"
+        )
+    if set(SCORING_OPPORTUNITY_FAMILY_EXPONENTS) != opportunity_families:
+        raise ValueError(
+            "SCORING_OPPORTUNITY_FAMILY_EXPONENTS must define every "
+            "Score v2 opportunity family"
+        )
+    for family, value in SCORING_OPPORTUNITY_REFERENCE_COUNTS.items():
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or value <= 0.0
+        ):
+            raise ValueError(
+                "SCORING_OPPORTUNITY_REFERENCE_COUNTS[{}] must be a "
+                "positive number".format(family)
+            )
+
+    expected_opportunity_settings = {
+        "enabled",
+        "size_reference_heavy_atoms",
+        "size_exponent",
+        "size_min_factor",
+        "family_min_factor",
+        "reference_counts",
+        "family_exponents",
+    }
+    if set(SCORING_OPPORTUNITY_NORMALIZATION) != expected_opportunity_settings:
+        raise ValueError(
+            "SCORING_OPPORTUNITY_NORMALIZATION contains an invalid key set"
+        )
 
     if any(not extension.startswith(".") for extension in SUPPORTED_EXTENSIONS):
         raise ValueError("supported file extensions must start with a period")
@@ -210,6 +375,21 @@ def print_configuration():
     print("Hydrophobic   : {:.1f} Å".format(HYDROPHOBIC_DISTANCE))
     print("π-π cutoff    : {:.1f} Å".format(PI_STACK_MAX_DISTANCE))
     print("π-cation      : {:.1f} Å".format(PI_CATION_MAX_DISTANCE))
+    print("Performance   : {}".format("enabled" if GENERATE_PERFORMANCE_PLOTS else "disabled"))
+    print("Performance dir: {}".format(IMAGE_DIR))
+    print(
+        "Score v2 opp. : {}".format(
+            "enabled"
+            if SCORING_OPPORTUNITY_NORMALIZATION_ENABLED
+            else "disabled"
+        )
+    )
+    print(
+        "Score v2 size : ref={:.1f} heavy atoms, exponent={:.2f}".format(
+            SCORING_OPPORTUNITY_SIZE_REFERENCE_HEAVY_ATOMS,
+            SCORING_OPPORTUNITY_SIZE_EXPONENT,
+        )
+    )
     print("=" * 70)
 
 
@@ -227,6 +407,19 @@ def _self_test():
         "salt_bridge",
         "clash",
     }
+    assert isinstance(GENERATE_PERFORMANCE_PLOTS, bool)
+    assert PERFORMANCE_TIMELINE_FILENAME.endswith(".png")
+    assert PERFORMANCE_RUNTIME_FILENAME.endswith(".png")
+    assert PERFORMANCE_IMAGE_WIDTH > 0
+    assert SCORING_OPPORTUNITY_NORMALIZATION_ENABLED is True
+    assert SCORING_OPPORTUNITY_SIZE_REFERENCE_HEAVY_ATOMS == 8.0
+    assert SCORING_OPPORTUNITY_SIZE_EXPONENT == 0.20
+    assert SCORING_OPPORTUNITY_SIZE_MIN_FACTOR == 0.70
+    assert SCORING_OPPORTUNITY_FAMILY_MIN_FACTOR == 0.65
+    assert SCORING_OPPORTUNITY_REFERENCE_COUNTS["hydrophobic"] == 4.0
+    assert SCORING_OPPORTUNITY_FAMILY_EXPONENTS["contact"] == 0.10
+    assert "affinity" not in SCORING_OPPORTUNITY_NORMALIZATION
+    assert "rmsd" not in SCORING_OPPORTUNITY_NORMALIZATION
     return True
 
 

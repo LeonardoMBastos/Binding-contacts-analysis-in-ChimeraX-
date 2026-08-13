@@ -55,8 +55,10 @@ import time
 import traceback
 import warnings
 from collections import OrderedDict
+from copy import deepcopy as _deepcopy
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
+from threading import RLock
 from typing import (
     Any,
     Callable,
@@ -3870,6 +3872,42 @@ class HydrophobicInteraction:
             HYDROPHOBIC_CLASS_VERY_STRONG,
         }
 
+    @property
+    def geometry_details(self) -> Dict[str, Any]:
+        """Return scoring-safe hydrophobic geometry and quality descriptors.
+
+        Only serializable scalar values are exposed. Live ChimeraX atoms and
+        residues are intentionally excluded so analyze.py can forward the
+        descriptors to scoring.py without adding a runtime dependency.
+        """
+
+        details: Dict[str, Any] = {}
+        geometry = self.metadata.get("geometry")
+        if isinstance(geometry, Mapping):
+            for key, value in geometry.items():
+                if isinstance(value, (str, bool, int, float, np.integer, np.floating)):
+                    if isinstance(value, np.integer):
+                        details[str(key)] = int(value)
+                    elif isinstance(value, np.floating):
+                        details[str(key)] = float(value)
+                    else:
+                        details[str(key)] = value
+
+        details.update(
+            {
+                "distance": float(self.distance),
+                "strength": float(self.strength),
+                "interaction_score": float(self.score),
+                "polar_penalty": float(self.polar_penalty),
+                "local_contact_count": int(self.local_contact_count),
+                "interaction_type": self.interaction_type,
+                "classification": self.classification,
+                "is_aromatic_contact": bool(self.is_aromatic_contact),
+                "is_purely_aliphatic": bool(self.is_purely_aliphatic),
+            }
+        )
+        return details
+
     def to_dict(
         self,
         *,
@@ -3912,6 +3950,7 @@ class HydrophobicInteraction:
             "is_aromatic_contact": self.is_aromatic_contact,
             "is_purely_aliphatic": self.is_purely_aliphatic,
             "is_strong": self.is_strong,
+            "geometry_details": self.geometry_details,
             "metadata": dict(self.metadata),
         }
 
@@ -13349,6 +13388,10 @@ DEFAULT_REMOVE_DUPLICATE_PAIRS: Final[bool] = True
 DEFAULT_SORT_HYDROPHOBIC_INTERACTIONS: Final[bool] = True
 DEFAULT_INCLUDE_PAIR_GEOMETRY_METADATA: Final[bool] = True
 
+# Score v2 collection descriptors. This constant controls descriptor
+# construction only; it does not assign a DockAnalyzer scoring weight.
+DEFAULT_HYDROPHOBIC_RESIDUE_SATURATION_TAU: Final[np.float64] = np.float64(3.0)
+
 DEFAULT_REJECT_ZERO_DISTANCE_PAIRS: Final[bool] = True
 
 DEFAULT_MINIMUM_VALID_PAIR_DISTANCE: Final[np.float64] = np.float64(
@@ -13854,6 +13897,220 @@ def deduplicate_hydrophobic_interactions(
     return tuple(
         interaction_map[key]
         for key in ordered_keys
+    )
+
+
+# -----------------------------------------------------------------------------
+# Score v2 non-redundant hydrophobic descriptors
+# -----------------------------------------------------------------------------
+
+def _validate_hydrophobic_residue_saturation_tau(
+    value: Number,
+) -> np.float64:
+    """Validate the positive residue-level hydrophobic saturation constant."""
+
+    if isinstance(value, bool) or not isinstance(
+        value,
+        (int, float, np.integer, np.floating),
+    ):
+        raise TypeError("saturation_tau must be numeric.")
+
+    normalized = np.float64(value)
+    if not np.isfinite(normalized) or normalized <= 0.0:
+        raise ValueError(
+            "saturation_tau must be finite and greater than zero."
+        )
+    return normalized
+
+
+def unique_hydrophobic_interactions(
+    interactions: Iterable[HydrophobicInteraction],
+    *,
+    prefer_highest_score: bool = True,
+) -> Tuple[HydrophobicInteraction, ...]:
+    """Return one hydrophobic interaction per receptor-ligand atom pair."""
+
+    normalized = tuple(interactions)
+    for index, interaction in enumerate(normalized):
+        if not isinstance(interaction, HydrophobicInteraction):
+            raise TypeError(
+                "interactions must contain HydrophobicInteraction instances. "
+                f"Invalid entry at index {index}."
+            )
+
+    return deduplicate_hydrophobic_interactions(
+        normalized,
+        prefer_highest_score=bool(prefer_highest_score),
+    )
+
+
+def hydrophobic_residue_coverage(
+    interactions: Iterable[HydrophobicInteraction],
+    *,
+    saturation_tau: Number = DEFAULT_HYDROPHOBIC_RESIDUE_SATURATION_TAU,
+    deduplicate_atom_pairs: bool = True,
+) -> Dict[str, Any]:
+    """Build non-redundant residue-level hydrophobic descriptors for Score v2.
+
+    Atom-pair multiplicity within one receptor residue is converted to
+    ``1 - exp(-n / tau)``. The helper reports neutral descriptors only; the
+    hydrophobic family weight and family-level saturation remain the
+    responsibility of scoring.py.
+    """
+
+    tau = _validate_hydrophobic_residue_saturation_tau(saturation_tau)
+    normalized = tuple(interactions)
+    raw_interaction_count = len(normalized)
+
+    for index, interaction in enumerate(normalized):
+        if not isinstance(interaction, HydrophobicInteraction):
+            raise TypeError(
+                "interactions must contain HydrophobicInteraction instances. "
+                f"Invalid entry at index {index}."
+            )
+
+    if deduplicate_atom_pairs:
+        normalized = unique_hydrophobic_interactions(
+            normalized,
+            prefer_highest_score=True,
+        )
+
+    grouped: Dict[str, List[HydrophobicInteraction]] = {}
+    for interaction in normalized:
+        residue_identifier = (
+            interaction.receptor_residue_identifier
+            or "residue-unknown"
+        )
+        grouped.setdefault(residue_identifier, []).append(interaction)
+
+    residue_metrics: Dict[str, Dict[str, Any]] = {}
+    saturation_values: List[np.float64] = []
+    quality_weighted_values: List[np.float64] = []
+    all_strengths: List[float] = []
+    all_scores: List[float] = []
+    all_polar_penalties: List[float] = []
+    ligand_atom_keys = set()
+    receptor_atom_keys = set()
+
+    for residue_identifier, residue_interactions in grouped.items():
+        interaction_count = len(residue_interactions)
+        saturation = np.float64(
+            1.0 - np.exp(-np.float64(interaction_count) / tau)
+        )
+        saturation_values.append(saturation)
+
+        strengths = np.asarray(
+            [float(interaction.strength) for interaction in residue_interactions],
+            dtype=np.float64,
+        )
+        scores = np.asarray(
+            [float(interaction.score) for interaction in residue_interactions],
+            dtype=np.float64,
+        )
+        polar_penalties = np.asarray(
+            [float(interaction.polar_penalty) for interaction in residue_interactions],
+            dtype=np.float64,
+        )
+        distances = np.asarray(
+            [float(interaction.distance) for interaction in residue_interactions],
+            dtype=np.float64,
+        )
+
+        mean_score = np.float64(np.mean(scores))
+        quality_weighted = np.float64(saturation * mean_score)
+        quality_weighted_values.append(quality_weighted)
+
+        residue_ligand_keys = {
+            atom_deduplication_key(interaction.ligand_atom, strategy="auto")
+            for interaction in residue_interactions
+        }
+        residue_receptor_keys = {
+            atom_deduplication_key(interaction.receptor_atom, strategy="auto")
+            for interaction in residue_interactions
+        }
+        ligand_atom_keys.update(residue_ligand_keys)
+        receptor_atom_keys.update(residue_receptor_keys)
+
+        all_strengths.extend(float(value) for value in strengths)
+        all_scores.extend(float(value) for value in scores)
+        all_polar_penalties.extend(float(value) for value in polar_penalties)
+
+        residue_metrics[residue_identifier] = {
+            "receptor_residue_key": residue_interactions[0].receptor_residue_key,
+            "unique_interaction_pair_count": interaction_count,
+            "unique_receptor_atom_count": len(residue_receptor_keys),
+            "unique_ligand_atom_count": len(residue_ligand_keys),
+            "minimum_distance": float(np.min(distances)),
+            "mean_distance": float(np.mean(distances)),
+            "hydrophobic_saturation": float(saturation),
+            "mean_strength": float(np.mean(strengths)),
+            "maximum_strength": float(np.max(strengths)),
+            "mean_interaction_score": float(mean_score),
+            "maximum_interaction_score": float(np.max(scores)),
+            "mean_polar_penalty": float(np.mean(polar_penalties)),
+            "quality_weighted_saturation": float(quality_weighted),
+        }
+
+    effective_residue_count = (
+        float(np.sum(saturation_values, dtype=np.float64))
+        if saturation_values
+        else 0.0
+    )
+    quality_weighted_effective_count = (
+        float(np.sum(quality_weighted_values, dtype=np.float64))
+        if quality_weighted_values
+        else 0.0
+    )
+
+    return {
+        "deduplicate_atom_pairs": bool(deduplicate_atom_pairs),
+        "saturation_tau": float(tau),
+        "raw_interaction_count": raw_interaction_count,
+        "unique_interaction_pair_count": len(normalized),
+        "contacted_residue_count": len(grouped),
+        "effective_residue_hydrophobic_count": effective_residue_count,
+        "quality_weighted_effective_hydrophobic_count": (
+            quality_weighted_effective_count
+        ),
+        "mean_residue_saturation": (
+            None
+            if not saturation_values
+            else float(np.mean(saturation_values, dtype=np.float64))
+        ),
+        "unique_receptor_atom_count": len(receptor_atom_keys),
+        "unique_ligand_atom_count": len(ligand_atom_keys),
+        "mean_strength": (
+            None
+            if not all_strengths
+            else float(np.mean(all_strengths, dtype=np.float64))
+        ),
+        "mean_interaction_score": (
+            None
+            if not all_scores
+            else float(np.mean(all_scores, dtype=np.float64))
+        ),
+        "mean_polar_penalty": (
+            None
+            if not all_polar_penalties
+            else float(np.mean(all_polar_penalties, dtype=np.float64))
+        ),
+        "residues": residue_metrics,
+    }
+
+
+def hydrophobic_scoring_descriptors(
+    interactions: Iterable[HydrophobicInteraction],
+    *,
+    saturation_tau: Number = DEFAULT_HYDROPHOBIC_RESIDUE_SATURATION_TAU,
+    deduplicate_atom_pairs: bool = True,
+) -> Dict[str, Any]:
+    """Return the canonical Score v2 hydrophobic collection descriptors."""
+
+    interactions_tuple = tuple(interactions)
+    return hydrophobic_residue_coverage(
+        interactions_tuple,
+        saturation_tau=saturation_tau,
+        deduplicate_atom_pairs=deduplicate_atom_pairs,
     )
 
 
@@ -15413,6 +15670,9 @@ def _build_detection_statistics(
         metadata={
             "statistics_stage": "detection",
             "residue_grouping_completed": False,
+            "hydrophobic_scoring_descriptors": (
+                hydrophobic_scoring_descriptors(interactions_tuple)
+            ),
         },
     )
 
@@ -15587,6 +15847,9 @@ def detect_hydrophobic_interactions(
             "score_is_preliminary": True,
             "residue_grouping_completed": False,
             "aromatic_aromatic_is_not_pi_stacking": True,
+            "hydrophobic_scoring_descriptors": (
+                hydrophobic_scoring_descriptors(interactions)
+            ),
             "performance_timings_seconds": performance_timings,
             "performance_optimization": "stage8_cached_local_geometry",
         }
@@ -15757,6 +16020,9 @@ def run_hydrophobic_detection(
             "valid_pair_count_after_deduplication": len(
                 unique_pairs
             ),
+            "hydrophobic_scoring_descriptors": (
+                hydrophobic_scoring_descriptors(interactions)
+            ),
         }
     )
 
@@ -15803,6 +16069,12 @@ _SECTION_7_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "hydrophobic_interaction_pair_key",
     "deduplicate_hydrophobic_pairs",
     "deduplicate_hydrophobic_interactions",
+
+    # Score v2 collection descriptors
+    "DEFAULT_HYDROPHOBIC_RESIDUE_SATURATION_TAU",
+    "unique_hydrophobic_interactions",
+    "hydrophobic_residue_coverage",
+    "hydrophobic_scoring_descriptors",
 
     # Preliminary classification and scores
     "classify_hydrophobic_distance",
@@ -19789,6 +20061,386 @@ def _unique_interaction_atoms(
     return receptor_atoms, ligand_atoms
 
 
+# -----------------------------------------------------------------------------
+# Private assessment context (performance stage 6)
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class _HydrophobicAssessmentContext:
+    """Cache deterministic inputs reused within one strength assessment."""
+
+    interactions: Tuple[HydrophobicInteraction, ...]
+    distances: NDArray[np.float64]
+    receptor_atoms: Tuple[AtomLike, ...]
+    ligand_atoms: Tuple[AtomLike, ...]
+    all_atoms: Tuple[AtomLike, ...]
+    contact_count: int
+    minimum_distance: np.float64
+    mean_distance: np.float64
+    maximum_distance: np.float64
+
+
+def _build_hydrophobic_assessment_context(
+    interactions: HydrophobicInteractionCollection,
+) -> _HydrophobicAssessmentContext:
+    """Build exact reusable values for one local hydrophobic assessment."""
+
+    interaction_tuple = _normalize_strength_interactions(
+        interactions
+    )
+
+    if not interaction_tuple:
+        raise ValueError(
+            "At least one hydrophobic interaction is required."
+        )
+
+    distances = _interaction_distance_array(
+        interaction_tuple
+    )
+
+    receptor_atoms, ligand_atoms = (
+        _unique_interaction_atoms(
+            interaction_tuple
+        )
+    )
+
+    return _HydrophobicAssessmentContext(
+        interactions=interaction_tuple,
+        distances=distances,
+        receptor_atoms=receptor_atoms,
+        ligand_atoms=ligand_atoms,
+        all_atoms=(
+            *receptor_atoms,
+            *ligand_atoms,
+        ),
+        contact_count=len(interaction_tuple),
+        minimum_distance=np.float64(
+            np.min(distances)
+        ),
+        mean_distance=np.float64(
+            np.mean(distances)
+        ),
+        maximum_distance=np.float64(
+            np.max(distances)
+        ),
+    )
+
+
+def _hydrophobic_distance_component_from_context(
+    context: _HydrophobicAssessmentContext,
+    *,
+    minimum_cutoff: Optional[Number] = None,
+    maximum_cutoff: Optional[Number] = None,
+) -> Tuple[np.float64, np.float64]:
+    """Return the existing distance components from cached distances."""
+
+    minimum_limit = (
+        get_default_minimum_hydrophobic_distance()
+        if minimum_cutoff is None
+        else _nonnegative_float(
+            minimum_cutoff,
+            name="minimum hydrophobic cutoff",
+        )
+    )
+
+    maximum_limit = (
+        get_default_maximum_hydrophobic_distance()
+        if maximum_cutoff is None
+        else _positive_float(
+            maximum_cutoff,
+            name="maximum hydrophobic cutoff",
+        )
+    )
+
+    if minimum_limit >= maximum_limit:
+        raise ValueError(
+            "minimum cutoff must be smaller than maximum cutoff."
+        )
+
+    minimum_component = distance_compaction_score(
+        context.minimum_distance,
+        reference_distance=maximum_limit,
+        minimum_distance=minimum_limit,
+    )
+
+    mean_component = distance_compaction_score(
+        context.mean_distance,
+        reference_distance=maximum_limit,
+        minimum_distance=minimum_limit,
+    )
+
+    combined_distance_component = (
+        0.65 * float(minimum_component)
+        + 0.35 * float(mean_component)
+    )
+
+    return (
+        validate_hydrophobic_score(
+            combined_distance_component
+        ),
+        minimum_component,
+    )
+
+
+def _hydrophobic_compaction_component_from_context(
+    context: _HydrophobicAssessmentContext,
+) -> np.float64:
+    """Return the existing compaction component from cached unique atoms."""
+
+    if not context.receptor_atoms or not context.ligand_atoms:
+        return np.float64(0.0)
+
+    return group_compaction_score(
+        context.receptor_atoms,
+        context.ligand_atoms,
+        minimum_distance=0.0,
+        maximum_distance=(
+            get_default_maximum_hydrophobic_distance()
+        ),
+    )
+
+
+def _hydrophobic_density_component_from_context(
+    context: _HydrophobicAssessmentContext,
+) -> np.float64:
+    """Return the existing density component from cached unique atoms."""
+
+    if not context.receptor_atoms or not context.ligand_atoms:
+        return np.float64(0.0)
+
+    return approximate_contact_density(
+        context.receptor_atoms,
+        context.ligand_atoms,
+        minimum_distance=0.0,
+        maximum_distance=(
+            get_default_maximum_hydrophobic_distance()
+        ),
+    )
+
+
+def _hydrophobic_contact_count_component_from_context(
+    context: _HydrophobicAssessmentContext,
+) -> np.float64:
+    """Return the existing contact-count component from cached count."""
+
+    return saturating_hydrophobic_score(
+        context.contact_count,
+        HYDROPHOBIC_CONTACT_COUNT_SATURATION,
+    )
+
+
+def _hydrophobic_atom_diversity_component_from_context(
+    context: _HydrophobicAssessmentContext,
+) -> np.float64:
+    """Return the existing atom-diversity component from cached atoms."""
+
+    receptor_diversity = saturating_hydrophobic_score(
+        len(context.receptor_atoms),
+        HYDROPHOBIC_ATOM_DIVERSITY_SATURATION,
+    )
+
+    ligand_diversity = saturating_hydrophobic_score(
+        len(context.ligand_atoms),
+        HYDROPHOBIC_ATOM_DIVERSITY_SATURATION,
+    )
+
+    return validate_hydrophobic_score(
+        (
+            float(receptor_diversity)
+            + float(ligand_diversity)
+        ) / 2.0
+    )
+
+
+def _hydrophobic_group_size_component_from_context(
+    context: _HydrophobicAssessmentContext,
+) -> np.float64:
+    """Return the existing group-size component from cached atoms."""
+
+    return saturating_hydrophobic_score(
+        len(context.all_atoms),
+        HYDROPHOBIC_GROUP_SIZE_SATURATION,
+    )
+
+
+def _hydrophobic_atom_character_components_from_context(
+    context: _HydrophobicAssessmentContext,
+) -> Tuple[np.float64, np.float64]:
+    """Return existing aromatic/aliphatic components from cached atoms."""
+
+    if not context.all_atoms:
+        return (
+            np.float64(0.0),
+            np.float64(0.0),
+        )
+
+    aromatic_count = sum(
+        is_aromatic_atom(atom)
+        for atom in context.all_atoms
+    )
+
+    aliphatic_count = sum(
+        is_aliphatic_atom(atom)
+        for atom in context.all_atoms
+    )
+
+    atom_count = len(context.all_atoms)
+
+    return (
+        validate_hydrophobic_score(
+            aromatic_count / atom_count
+        ),
+        validate_hydrophobic_score(
+            aliphatic_count / atom_count
+        ),
+    )
+
+
+def _hydrophobic_polar_penalty_from_context(
+    context: _HydrophobicAssessmentContext,
+) -> np.float64:
+    """Return the existing polarity penalty from cached interaction atoms."""
+
+    polar_neighbor_total = 0
+
+    for atom in context.all_atoms:
+        polar_neighbor_total += count_polar_neighbors(
+            atom
+        )
+
+    polar_neighbor_reference = max(
+        len(context.all_atoms)
+        * HYDROPHOBIC_MAXIMUM_POLAR_NEIGHBOR_REFERENCE,
+        1,
+    )
+
+    neighbor_penalty = min(
+        polar_neighbor_total
+        / polar_neighbor_reference,
+        1.0,
+    )
+
+    absolute_partial_charges: List[float] = []
+
+    for atom in context.all_atoms:
+        partial_charge = get_atom_partial_charge(
+            atom
+        )
+
+        if partial_charge is not None:
+            absolute_partial_charges.append(
+                abs(float(partial_charge))
+            )
+
+    if absolute_partial_charges:
+        partial_charge_limit = max(
+            float(
+                get_default_maximum_absolute_partial_charge()
+            ),
+            1.0e-6,
+        )
+
+        charge_penalty = min(
+            float(
+                np.mean(
+                    absolute_partial_charges
+                )
+            )
+            / partial_charge_limit,
+            1.0,
+        )
+    else:
+        charge_penalty = 0.0
+
+    pair_penalty = float(
+        np.mean(
+            [
+                interaction.polar_penalty
+                for interaction
+                in context.interactions
+            ]
+        )
+    )
+
+    combined_penalty = (
+        0.45 * neighbor_penalty
+        + 0.35 * charge_penalty
+        + 0.20 * pair_penalty
+    )
+
+    return validate_hydrophobic_score(
+        combined_penalty
+    )
+
+
+def _hydrophobic_redundancy_penalty_from_context(
+    context: _HydrophobicAssessmentContext,
+) -> np.float64:
+    """Return the existing redundancy penalty from cached counts."""
+
+    if context.contact_count <= 1:
+        return np.float64(0.0)
+
+    unique_atom_total = len(context.all_atoms)
+    maximum_unique_atom_total = 2 * context.contact_count
+
+    if maximum_unique_atom_total == 0:
+        return np.float64(0.0)
+
+    diversity_fraction = (
+        unique_atom_total
+        / maximum_unique_atom_total
+    )
+
+    return validate_hydrophobic_score(
+        1.0 - diversity_fraction
+    )
+
+
+def _additional_hydrophobic_penalty_from_context(
+    context: _HydrophobicAssessmentContext,
+    interaction_type: HydrophobicInteractionType,
+) -> np.float64:
+    """Return the existing additional penalty from cached group size."""
+
+    additional_penalty = 0.0
+
+    if interaction_type == HYDROPHOBIC_TYPE_UNKNOWN:
+        additional_penalty += float(
+            HYDROPHOBIC_UNKNOWN_TYPE_PENALTY
+        )
+
+    total_group_size = len(context.all_atoms)
+
+    if (
+        total_group_size
+        > HYDROPHOBIC_MAXIMUM_RECOMMENDED_GROUP_SIZE
+    ):
+        excess_fraction = min(
+            (
+                total_group_size
+                - HYDROPHOBIC_MAXIMUM_RECOMMENDED_GROUP_SIZE
+            )
+            / HYDROPHOBIC_MAXIMUM_RECOMMENDED_GROUP_SIZE,
+            1.0,
+        )
+
+        additional_penalty += (
+            float(
+                HYDROPHOBIC_EXCESSIVE_GROUP_SIZE_PENALTY
+            )
+            * excess_fraction
+        )
+
+    return validate_hydrophobic_score(
+        additional_penalty
+    )
+
+
+
 def find_related_hydrophobic_interactions(
     interaction: HydrophobicInteraction,
     interactions: HydrophobicInteractionCollection,
@@ -20634,6 +21286,9 @@ def assess_hydrophobic_interaction_strength(
     - a sequence of interactions;
     - one residue group;
     - one local interaction region.
+
+    Performance stage 6 preserves the original formulas while caching
+    deterministic distances, unique atoms and counts once per assessment.
     """
 
     if isinstance(
@@ -20665,69 +21320,57 @@ def assess_hydrophobic_interaction_strength(
             interactions
         )
 
-    interaction_tuple = (
-        _normalize_strength_interactions(
-            interaction_tuple
-        )
-    )
-
-    if not interaction_tuple:
-        raise ValueError(
-            "At least one hydrophobic interaction is required."
-        )
-
-    distances = _interaction_distance_array(
+    context = _build_hydrophobic_assessment_context(
         interaction_tuple
     )
+    interaction_tuple = context.interactions
 
-    minimum_observed_distance = np.float64(
-        np.min(distances)
+    minimum_observed_distance = (
+        context.minimum_distance
     )
-
-    mean_observed_distance = np.float64(
-        np.mean(distances)
+    mean_observed_distance = (
+        context.mean_distance
     )
-
-    maximum_observed_distance = np.float64(
-        np.max(distances)
+    maximum_observed_distance = (
+        context.maximum_distance
     )
 
     (
         distance_component,
         minimum_distance_component,
-    ) = calculate_hydrophobic_distance_component(
-        interaction_tuple,
+    ) = _hydrophobic_distance_component_from_context(
+        context,
         minimum_cutoff=minimum_distance,
         maximum_cutoff=maximum_distance,
     )
 
     compaction_component = (
-        calculate_hydrophobic_compaction_component(
-            interaction_tuple
+        _hydrophobic_compaction_component_from_context(
+            context
         )
     )
 
     density_component = (
-        calculate_hydrophobic_density_component(
-            interaction_tuple
+        _hydrophobic_density_component_from_context(
+            context
         )
     )
 
     contact_count_component = (
-        calculate_hydrophobic_contact_count_component(
-            interaction_tuple
+        _hydrophobic_contact_count_component_from_context(
+            context
         )
     )
 
     atom_diversity_component = (
-        calculate_hydrophobic_atom_diversity_component(
-            interaction_tuple
+        _hydrophobic_atom_diversity_component_from_context(
+            context
         )
     )
 
     group_size_component = (
-        calculate_hydrophobic_group_size_component(
-            interaction_tuple
+        _hydrophobic_group_size_component_from_context(
+            context
         )
     )
 
@@ -20741,8 +21384,8 @@ def assess_hydrophobic_interaction_strength(
     (
         aromatic_character_component,
         aliphatic_character_component,
-    ) = calculate_hydrophobic_atom_character_components(
-        interaction_tuple
+    ) = _hydrophobic_atom_character_components_from_context(
+        context
     )
 
     aromatic_aliphatic_component = (
@@ -20760,20 +21403,20 @@ def assess_hydrophobic_interaction_strength(
     )
 
     polar_penalty = (
-        calculate_hydrophobic_polar_penalty(
-            interaction_tuple
+        _hydrophobic_polar_penalty_from_context(
+            context
         )
     )
 
     redundancy_penalty = (
-        calculate_hydrophobic_redundancy_penalty(
-            interaction_tuple
+        _hydrophobic_redundancy_penalty_from_context(
+            context
         )
     )
 
     additional_penalty = (
-        calculate_additional_hydrophobic_penalty(
-            interaction_tuple,
+        _additional_hydrophobic_penalty_from_context(
+            context,
             interaction_type,
         )
     )
@@ -20828,8 +21471,6 @@ def assess_hydrophobic_interaction_strength(
         1.0,
     )
 
-    # Strength emphasizes geometric quality more strongly, while the
-    # final score also includes chemical type and group-level context.
     strength = (
         0.45 * float(distance_component)
         + 0.25 * float(compaction_component)
@@ -20851,12 +21492,6 @@ def assess_hydrophobic_interaction_strength(
     classification = (
         classify_hydrophobic_strength_score(
             final_score
-        )
-    )
-
-    receptor_atoms, ligand_atoms = (
-        _unique_interaction_atoms(
-            interaction_tuple
         )
     )
 
@@ -20938,14 +21573,12 @@ def assess_hydrophobic_interaction_strength(
         additional_penalty=(
             additional_penalty
         ),
-        contact_count=len(
-            interaction_tuple
-        ),
+        contact_count=context.contact_count,
         unique_receptor_atom_count=len(
-            receptor_atoms
+            context.receptor_atoms
         ),
         unique_ligand_atom_count=len(
-            ligand_atoms
+            context.ligand_atoms
         ),
         minimum_distance=(
             minimum_observed_distance
@@ -20960,6 +21593,7 @@ def assess_hydrophobic_interaction_strength(
         interaction_type=interaction_type,
         metadata=assessment_metadata,
     )
+
 
 
 # -----------------------------------------------------------------------------
@@ -21209,18 +21843,40 @@ def refine_hydrophobic_interactions(
 
     refined: List[HydrophobicInteraction] = []
 
+    # Conservative per-pose memoization.  The multifactor assessment is a
+    # deterministic function of the exact local interaction context and the
+    # shared weights used for this refinement call.  When two interactions
+    # have the same canonical closed-neighborhood of interaction indices, the
+    # original implementation recomputed the same assessment.  Reuse that
+    # exact result within this pose only; no context is shared across poses.
+    assessment_cache: Dict[
+        Tuple[int, ...],
+        HydrophobicStrengthAssessment,
+    ] = {}
+
     for interaction_index, interaction in enumerate(interaction_tuple):
-        related_indices = sorted(
-            {interaction_index, *adjacency[interaction_index]}
+        context_key = tuple(
+            sorted(
+                {
+                    interaction_index,
+                    *adjacency[interaction_index],
+                }
+            )
         )
-        related = tuple(
-            interaction_tuple[index]
-            for index in related_indices
-        )
-        assessment = assess_hydrophobic_interaction_strength(
-            related,
-            weights=weights,
-        )
+
+        if context_key in assessment_cache:
+            assessment = assessment_cache[context_key]
+        else:
+            related = tuple(
+                interaction_tuple[index]
+                for index in context_key
+            )
+            assessment = assess_hydrophobic_interaction_strength(
+                related,
+                weights=weights,
+            )
+            assessment_cache[context_key] = assessment
+
         refined.append(
             _rebuild_refined_hydrophobic_interaction_from_assessment(
                 interaction,
@@ -21334,6 +21990,310 @@ def rebuild_hydrophobic_residue_groups(
 
 
 # -----------------------------------------------------------------------------
+# Conservative performance instrumentation helpers
+# -----------------------------------------------------------------------------
+
+def _merge_hydrophobic_performance_timings(
+    result: HydrophobicAnalysisResult,
+    timings: Mapping[str, Number],
+) -> HydrophobicAnalysisResult:
+    """Return *result* with additional non-scientific timing metadata.
+
+    This helper never changes interactions, geometry, classifications, scores,
+    atom collections, grouping, or statistics. It only augments the existing
+    ``performance_timings_seconds`` metadata mapping with finite, non-negative
+    elapsed times.
+    """
+
+    if not isinstance(result, HydrophobicAnalysisResult):
+        raise TypeError(
+            "result must be a HydrophobicAnalysisResult."
+        )
+
+    updated_metadata = dict(result.metadata)
+    existing = updated_metadata.get(
+        "performance_timings_seconds",
+        {},
+    )
+    merged: Dict[str, float] = (
+        dict(existing)
+        if isinstance(existing, Mapping)
+        else {}
+    )
+
+    for raw_name, raw_value in timings.items():
+        name = str(raw_name).strip()
+        if not name or not name.endswith("_seconds"):
+            continue
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not bool(np.isfinite(value)) or value < 0.0:
+            continue
+        merged[name] = value
+
+    updated_metadata[
+        "performance_timings_seconds"
+    ] = merged
+
+    return replace(
+        result,
+        metadata=updated_metadata,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Conservative final-grouping reuse cache
+# -----------------------------------------------------------------------------
+
+_HYDROPHOBIC_GROUPING_REUSE_CACHE_MAXSIZE: Final[int] = 64
+
+_HYDROPHOBIC_GROUPING_REUSE_CACHE: "OrderedDict[Tuple[Any, ...], HydrophobicGroupingResult]" = (
+    OrderedDict()
+)
+
+_HYDROPHOBIC_GROUPING_REUSE_LOCK: Final[RLock] = RLock()
+
+
+def _normalized_hydrophobic_grouping_reuse_options(
+    *,
+    grouping_distance: Optional[Number],
+    identify_hotspots: bool,
+    hotspot_minimum_contact_count: Optional[int] = None,
+    hotspot_minimum_group_score: Optional[Number] = None,
+    hotspot_minimum_contact_area: Optional[Number] = None,
+    hotspot_minimum_ligand_atom_count: Optional[int] = None,
+) -> Tuple[float, bool, int, float, float, int]:
+    """Return the exact normalized options used by complete grouping."""
+
+    resolved_grouping_distance = float(
+        DEFAULT_LOCAL_INTERACTION_CLUSTER_DISTANCE
+        if grouping_distance is None
+        else _positive_float(
+            grouping_distance,
+            name="grouping distance",
+        )
+    )
+
+    resolved_contact_count = int(
+        DEFAULT_HOTSPOT_MINIMUM_CONTACT_COUNT
+        if hotspot_minimum_contact_count is None
+        else _nonnegative_integer(
+            hotspot_minimum_contact_count,
+            name="minimum hotspot contact count",
+        )
+    )
+
+    resolved_group_score = float(
+        DEFAULT_HOTSPOT_MINIMUM_SCORE
+        if hotspot_minimum_group_score is None
+        else _nonnegative_float(
+            hotspot_minimum_group_score,
+            name="minimum hotspot group score",
+        )
+    )
+
+    resolved_contact_area = float(
+        DEFAULT_HOTSPOT_MINIMUM_CONTACT_AREA
+        if hotspot_minimum_contact_area is None
+        else _nonnegative_float(
+            hotspot_minimum_contact_area,
+            name="minimum hotspot contact area",
+        )
+    )
+
+    resolved_ligand_atom_count = int(
+        DEFAULT_HOTSPOT_MINIMUM_LIGAND_ATOM_COUNT
+        if hotspot_minimum_ligand_atom_count is None
+        else _nonnegative_integer(
+            hotspot_minimum_ligand_atom_count,
+            name="minimum hotspot ligand atom count",
+        )
+    )
+
+    return (
+        resolved_grouping_distance,
+        bool(identify_hotspots),
+        resolved_contact_count,
+        resolved_group_score,
+        resolved_contact_area,
+        resolved_ligand_atom_count,
+    )
+
+
+def _hydrophobic_grouping_reuse_key(
+    interactions: HydrophobicInteractionCollection,
+    *,
+    grouping_distance: Optional[Number],
+    identify_hotspots: bool,
+    hotspot_minimum_contact_count: Optional[int] = None,
+    hotspot_minimum_group_score: Optional[Number] = None,
+    hotspot_minimum_contact_area: Optional[Number] = None,
+    hotspot_minimum_ligand_atom_count: Optional[int] = None,
+) -> Tuple[Any, ...]:
+    """Build an exact, geometry-aware key for one final grouping result.
+
+    Object identities prevent reuse across different interaction objects, while
+    receptor and ligand coordinates invalidate the entry if ChimeraX atomic
+    coordinates are modified after the grouping was created.  This keeps the
+    optimization observationally equivalent to recomputing the grouping.
+    """
+
+    interaction_tuple = tuple(interactions)
+
+    interaction_state = tuple(
+        (
+            id(interaction),
+            tuple(
+                float(value)
+                for value in np.asarray(
+                    get_hydrophobic_coordinate(
+                        interaction.receptor_atom
+                    ),
+                    dtype=np.float64,
+                ).reshape(-1)
+            ),
+            tuple(
+                float(value)
+                for value in np.asarray(
+                    get_hydrophobic_coordinate(
+                        interaction.ligand_atom
+                    ),
+                    dtype=np.float64,
+                ).reshape(-1)
+            ),
+        )
+        for interaction in interaction_tuple
+    )
+
+    return (
+        interaction_state,
+        _normalized_hydrophobic_grouping_reuse_options(
+            grouping_distance=grouping_distance,
+            identify_hotspots=identify_hotspots,
+            hotspot_minimum_contact_count=(
+                hotspot_minimum_contact_count
+            ),
+            hotspot_minimum_group_score=(
+                hotspot_minimum_group_score
+            ),
+            hotspot_minimum_contact_area=(
+                hotspot_minimum_contact_area
+            ),
+            hotspot_minimum_ligand_atom_count=(
+                hotspot_minimum_ligand_atom_count
+            ),
+        ),
+    )
+
+
+def _remember_hydrophobic_grouping_for_reuse(
+    interactions: HydrophobicInteractionCollection,
+    grouping: HydrophobicGroupingResult,
+    *,
+    grouping_distance: Optional[Number],
+    identify_hotspots: bool,
+    hotspot_minimum_contact_count: Optional[int] = None,
+    hotspot_minimum_group_score: Optional[Number] = None,
+    hotspot_minimum_contact_area: Optional[Number] = None,
+    hotspot_minimum_ligand_atom_count: Optional[int] = None,
+) -> None:
+    """Remember one exact grouping result for immediate downstream reuse."""
+
+    if not isinstance(grouping, HydrophobicGroupingResult):
+        raise TypeError(
+            "grouping must be a HydrophobicGroupingResult."
+        )
+
+    key = _hydrophobic_grouping_reuse_key(
+        interactions,
+        grouping_distance=grouping_distance,
+        identify_hotspots=identify_hotspots,
+        hotspot_minimum_contact_count=(
+            hotspot_minimum_contact_count
+        ),
+        hotspot_minimum_group_score=(
+            hotspot_minimum_group_score
+        ),
+        hotspot_minimum_contact_area=(
+            hotspot_minimum_contact_area
+        ),
+        hotspot_minimum_ligand_atom_count=(
+            hotspot_minimum_ligand_atom_count
+        ),
+    )
+
+    with _HYDROPHOBIC_GROUPING_REUSE_LOCK:
+        _HYDROPHOBIC_GROUPING_REUSE_CACHE[key] = grouping
+        _HYDROPHOBIC_GROUPING_REUSE_CACHE.move_to_end(key)
+
+        while (
+            len(_HYDROPHOBIC_GROUPING_REUSE_CACHE)
+            > _HYDROPHOBIC_GROUPING_REUSE_CACHE_MAXSIZE
+        ):
+            _HYDROPHOBIC_GROUPING_REUSE_CACHE.popitem(
+                last=False
+            )
+
+
+def _cached_hydrophobic_grouping_for_reuse(
+    interactions: HydrophobicInteractionCollection,
+    *,
+    grouping_distance: Optional[Number],
+    identify_hotspots: bool,
+    hotspot_minimum_contact_count: Optional[int] = None,
+    hotspot_minimum_group_score: Optional[Number] = None,
+    hotspot_minimum_contact_area: Optional[Number] = None,
+    hotspot_minimum_ligand_atom_count: Optional[int] = None,
+) -> Optional[HydrophobicGroupingResult]:
+    """Return a cached grouping only for the exact same objects and geometry."""
+
+    interaction_tuple = tuple(interactions)
+    key = _hydrophobic_grouping_reuse_key(
+        interaction_tuple,
+        grouping_distance=grouping_distance,
+        identify_hotspots=identify_hotspots,
+        hotspot_minimum_contact_count=(
+            hotspot_minimum_contact_count
+        ),
+        hotspot_minimum_group_score=(
+            hotspot_minimum_group_score
+        ),
+        hotspot_minimum_contact_area=(
+            hotspot_minimum_contact_area
+        ),
+        hotspot_minimum_ligand_atom_count=(
+            hotspot_minimum_ligand_atom_count
+        ),
+    )
+
+    with _HYDROPHOBIC_GROUPING_REUSE_LOCK:
+        grouping = _HYDROPHOBIC_GROUPING_REUSE_CACHE.get(
+            key
+        )
+
+        if grouping is None:
+            return None
+
+        if (
+            len(grouping.interactions)
+            != len(interaction_tuple)
+            or any(
+                cached is not current
+                for cached, current in zip(
+                    grouping.interactions,
+                    interaction_tuple,
+                )
+            )
+        ):
+            return None
+
+        _HYDROPHOBIC_GROUPING_REUSE_CACHE.move_to_end(key)
+        return grouping
+
+
+# -----------------------------------------------------------------------------
 # Complete result refinement
 # -----------------------------------------------------------------------------
 
@@ -21373,6 +22333,9 @@ def add_hydrophobic_classification_to_result(
         )
     )
 
+    classification_workflow_started = time.perf_counter()
+
+    refinement_started = time.perf_counter()
     refined_interactions = (
         refine_hydrophobic_interactions(
             result.interactions,
@@ -21383,7 +22346,11 @@ def add_hydrophobic_classification_to_result(
             sort_interactions=True,
         )
     )
+    refinement_seconds = (
+        time.perf_counter() - refinement_started
+    )
 
+    regrouping_started = time.perf_counter()
     if regroup_interactions:
         grouping = group_hydrophobic_interactions(
             refined_interactions,
@@ -21407,6 +22374,11 @@ def add_hydrophobic_classification_to_result(
             )
         )
 
+    regrouping_seconds = (
+        time.perf_counter() - regrouping_started
+    )
+
+    classification_metadata_started = time.perf_counter()
     updated_metadata = dict(
         result.metadata
     )
@@ -21450,6 +22422,9 @@ def add_hydrophobic_classification_to_result(
                 HYDROPHOBIC_REDUNDANCY_PENALTY_WEIGHT
             ),
             "aromatic_aromatic_is_not_pi_stacking": True,
+            "hydrophobic_scoring_descriptors": (
+                hydrophobic_scoring_descriptors(refined_interactions)
+            ),
         }
     )
 
@@ -21497,6 +22472,11 @@ def add_hydrophobic_classification_to_result(
             }
         )
 
+    classification_metadata_seconds = (
+        time.perf_counter() - classification_metadata_started
+    )
+
+    classification_statistics_started = time.perf_counter()
     updated_statistics = (
         _build_detection_statistics(
             refined_interactions,
@@ -21655,7 +22635,12 @@ def add_hydrophobic_classification_to_result(
         metadata=statistic_metadata,
     )
 
-    return HydrophobicAnalysisResult(
+    classification_statistics_seconds = (
+        time.perf_counter() - classification_statistics_started
+    )
+
+    classification_result_build_started = time.perf_counter()
+    classified_result = HydrophobicAnalysisResult(
         interactions=refined_interactions,
         residue_groups=residue_groups,
         receptor_hydrophobic_atoms=(
@@ -21683,6 +22668,34 @@ def add_hydrophobic_classification_to_result(
         ),
         metadata=updated_metadata,
     )
+    classification_result_build_seconds = (
+        time.perf_counter() - classification_result_build_started
+    )
+
+    if grouping is not None:
+        _remember_hydrophobic_grouping_for_reuse(
+            classified_result.interactions,
+            grouping,
+            grouping_distance=resolved_grouping_distance,
+            identify_hotspots=identify_hotspots,
+        )
+
+    classification_workflow_seconds = (
+        time.perf_counter() - classification_workflow_started
+    )
+
+    return _merge_hydrophobic_performance_timings(
+        classified_result,
+        {
+            "classification_refinement_seconds": refinement_seconds,
+            "classification_regrouping_seconds": regrouping_seconds,
+            "classification_metadata_seconds": classification_metadata_seconds,
+            "classification_statistics_seconds": classification_statistics_seconds,
+            "classification_result_build_seconds": classification_result_build_seconds,
+            "classification_workflow_seconds": classification_workflow_seconds,
+        },
+    )
+
 
 
 # -----------------------------------------------------------------------------
@@ -21714,6 +22727,9 @@ def analyze_and_classify_hydrophobic_interactions(
     Run detection, grouping and final geometric classification.
     """
 
+    detection_grouping_classification_started = time.perf_counter()
+
+    detection_call_started = time.perf_counter()
     detected_result = detect_hydrophobic_interactions(
         receptor,
         ligand,
@@ -21727,20 +22743,46 @@ def analyze_and_classify_hydrophobic_interactions(
         analysis_identifier=analysis_identifier,
         metadata=metadata,
     )
+    detection_call_seconds = (
+        time.perf_counter() - detection_call_started
+    )
 
+    initial_grouping_started = time.perf_counter()
     grouped_result = add_hydrophobic_grouping_to_result(
         detected_result,
         grouping_distance=grouping_distance,
         identify_hotspots=identify_hotspots,
     )
 
-    return add_hydrophobic_classification_to_result(
+    initial_grouping_seconds = (
+        time.perf_counter() - initial_grouping_started
+    )
+
+    classification_call_started = time.perf_counter()
+    classified_result = add_hydrophobic_classification_to_result(
         grouped_result,
         grouping_distance=grouping_distance,
         weights=weights,
         regroup_interactions=True,
         identify_hotspots=identify_hotspots,
     )
+    classification_call_seconds = (
+        time.perf_counter() - classification_call_started
+    )
+    detection_grouping_classification_seconds = (
+        time.perf_counter() - detection_grouping_classification_started
+    )
+
+    return _merge_hydrophobic_performance_timings(
+        classified_result,
+        {
+            "detection_call_seconds": detection_call_seconds,
+            "initial_grouping_seconds": initial_grouping_seconds,
+            "classification_call_seconds": classification_call_seconds,
+            "detection_grouping_classification_seconds": detection_grouping_classification_seconds,
+        },
+    )
+
 
 
 # -----------------------------------------------------------------------------
@@ -22130,7 +23172,13 @@ def _resolve_statistics_grouping(
     grouping_distance: Optional[Number] = None,
     identify_hotspots: bool = True,
 ) -> HydrophobicGroupingResult:
-    """Resolve or create complete grouping information."""
+    """Resolve or create complete grouping information.
+
+    A previously computed final grouping is reused only when the interaction
+    objects, their current receptor/ligand coordinates, grouping distance and
+    hotspot semantics are exactly the same.  Otherwise the original grouping
+    implementation is executed unchanged.
+    """
 
     if isinstance(
         source,
@@ -22142,11 +23190,31 @@ def _resolve_statistics_grouping(
         source
     )
 
-    return group_hydrophobic_interactions(
+    cached_grouping = (
+        _cached_hydrophobic_grouping_for_reuse(
+            interactions,
+            grouping_distance=grouping_distance,
+            identify_hotspots=identify_hotspots,
+        )
+    )
+
+    if cached_grouping is not None:
+        return cached_grouping
+
+    grouping = group_hydrophobic_interactions(
         interactions,
         grouping_distance=grouping_distance,
         identify_hotspots=identify_hotspots,
     )
+
+    _remember_hydrophobic_grouping_for_reuse(
+        interactions,
+        grouping,
+        grouping_distance=grouping_distance,
+        identify_hotspots=identify_hotspots,
+    )
+
+    return grouping
 
 
 def _resolve_total_receptor_atom_count(
@@ -23729,6 +24797,588 @@ class HydrophobicSummary:
 
 
 # -----------------------------------------------------------------------------
+# Conservative summary context reuse
+# -----------------------------------------------------------------------------
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class _HydrophobicSummaryContext:
+    """Precomputed inputs used only within one complete summary calculation.
+
+    The context does not change any scientific definition.  It stores values
+    that the public summary workflow previously reconstructed in several
+    independent passes over the same final interaction collection.
+    """
+
+    interactions: Tuple[HydrophobicInteraction, ...]
+    grouping: HydrophobicGroupingResult
+
+    distances: Tuple[np.float64, ...]
+    scores: Tuple[np.float64, ...]
+    strengths: Tuple[np.float64, ...]
+
+    classification_counts: Mapping[str, int]
+    classification_fractions: Mapping[str, np.float64]
+    interaction_type_counts: Mapping[str, int]
+    interaction_type_fractions: Mapping[str, np.float64]
+
+    residue_contact_counts: Mapping[str, int]
+    residue_scores: Mapping[str, np.float64]
+    residue_minimum_distances: Mapping[str, Optional[np.float64]]
+    residue_contact_areas: Mapping[str, float]
+
+    resolved_pose_identifiers: Tuple[str, ...]
+    residue_pose_occupancy: Mapping[str, np.float64]
+    chain_pose_occupancy: Mapping[str, np.float64]
+    interaction_pose_occupancy: Mapping[str, np.float64]
+
+    receptor_atoms: Tuple[Any, ...]
+    ligand_atoms: Tuple[Any, ...]
+
+    residue_identifiers: Tuple[str, ...]
+    chain_identifiers: Tuple[str, ...]
+
+    classification_is_final: bool
+    score_is_final: bool
+
+
+def _summary_residue_records(
+    interactions: Tuple[HydrophobicInteraction, ...],
+) -> Tuple[
+    Tuple[
+        str,
+        Tuple[HydrophobicInteraction, ...],
+        np.float64,
+        Optional[np.float64],
+        float,
+    ],
+    ...,
+]:
+    """Build residue summary records once without changing grouping semantics."""
+
+    grouped_interactions: Dict[
+        Tuple[Any, ...],
+        List[HydrophobicInteraction],
+    ] = {}
+    group_order: List[Tuple[Any, ...]] = []
+
+    for interaction in interactions:
+        key = hydrophobic_residue_group_key(interaction)
+        if key not in grouped_interactions:
+            grouped_interactions[key] = []
+            group_order.append(key)
+        grouped_interactions[key].append(interaction)
+
+    records: List[
+        Tuple[
+            str,
+            Tuple[HydrophobicInteraction, ...],
+            np.float64,
+            Optional[np.float64],
+            float,
+        ]
+    ] = []
+
+    for key in group_order:
+        residue_interactions = tuple(grouped_interactions[key])
+        first_interaction = residue_interactions[0]
+        residue_identifier = (
+            first_interaction.receptor_residue_identifier
+            or "residue-unknown"
+        )
+        group_score = calculate_residue_group_score(
+            residue_interactions
+        )
+        minimum_distance = (
+            None
+            if not residue_interactions
+            else np.float64(
+                min(
+                    interaction.distance
+                    for interaction in residue_interactions
+                )
+            )
+        )
+        contact_area = float(
+            approximate_hydrophobic_surface_area(
+                residue_interactions
+            )
+        )
+        records.append(
+            (
+                residue_identifier,
+                residue_interactions,
+                group_score,
+                minimum_distance,
+                contact_area,
+            )
+        )
+
+    return tuple(records)
+
+
+def _summary_residue_mappings(
+    records: Sequence[
+        Tuple[
+            str,
+            Tuple[HydrophobicInteraction, ...],
+            np.float64,
+            Optional[np.float64],
+            float,
+        ]
+    ],
+) -> Tuple[
+    Mapping[str, int],
+    Mapping[str, np.float64],
+    Mapping[str, Optional[np.float64]],
+    Mapping[str, float],
+]:
+    """Derive all residue-level summary mappings from one record collection."""
+
+    score_order = sorted(
+        records,
+        key=lambda record: (
+            -float(record[2]),
+            float(
+                record[3]
+                if record[3] is not None
+                else np.inf
+            ),
+            record[0],
+        ),
+    )
+    identifier_order = sorted(
+        records,
+        key=lambda record: record[0],
+    )
+
+    contact_counts: Dict[str, int] = {}
+    contact_areas: Dict[str, float] = {}
+    for (
+        residue_identifier,
+        residue_interactions,
+        _group_score,
+        _minimum_distance,
+        contact_area,
+    ) in score_order:
+        contact_counts[residue_identifier] = len(
+            residue_interactions
+        )
+        contact_areas[residue_identifier] = contact_area
+
+    residue_scores: Dict[str, np.float64] = {}
+    residue_minimum_distances: Dict[
+        str,
+        Optional[np.float64],
+    ] = {}
+    for (
+        residue_identifier,
+        _residue_interactions,
+        group_score,
+        minimum_distance,
+        _contact_area,
+    ) in identifier_order:
+        residue_scores[residue_identifier] = np.float64(
+            group_score
+        )
+        residue_minimum_distances[
+            residue_identifier
+        ] = minimum_distance
+
+    return (
+        MappingProxyType(contact_counts),
+        _sorted_mapping_proxy(residue_scores),
+        _sorted_mapping_proxy(residue_minimum_distances),
+        MappingProxyType(contact_areas),
+    )
+
+
+def _summary_residue_pose_occupancy(
+    interactions: Tuple[HydrophobicInteraction, ...],
+    *,
+    resolved_pose_identifiers: Tuple[str, ...],
+    minimum_group_score: Number,
+) -> Mapping[str, np.float64]:
+    """Calculate residue occupancy without rebuilding full pose group objects."""
+
+    minimum_score = _nonnegative_float(
+        minimum_group_score,
+        name="minimum occupancy group score",
+    )
+    pose_count = len(resolved_pose_identifiers)
+    if pose_count == 0:
+        return MappingProxyType({})
+
+    pose_identifier_set = set(resolved_pose_identifiers)
+    grouped: Dict[
+        str,
+        Dict[
+            Tuple[Any, ...],
+            List[HydrophobicInteraction],
+        ],
+    ] = {}
+    group_orders: Dict[str, List[Tuple[Any, ...]]] = {}
+
+    for interaction in interactions:
+        pose_identifier = get_interaction_pose_identifier(
+            interaction
+        )
+        if pose_identifier not in pose_identifier_set:
+            continue
+        residue_key = hydrophobic_residue_group_key(
+            interaction
+        )
+        pose_groups = grouped.setdefault(
+            pose_identifier,
+            {},
+        )
+        pose_order = group_orders.setdefault(
+            pose_identifier,
+            [],
+        )
+        if residue_key not in pose_groups:
+            pose_groups[residue_key] = []
+            pose_order.append(residue_key)
+        pose_groups[residue_key].append(interaction)
+
+    residue_pose_presence: Dict[str, Set[str]] = {}
+    for pose_identifier, pose_groups in grouped.items():
+        for residue_key in group_orders[pose_identifier]:
+            residue_interactions = tuple(
+                pose_groups[residue_key]
+            )
+            group_score = float(
+                calculate_residue_group_score(
+                    residue_interactions
+                )
+            )
+            if group_score < minimum_score:
+                continue
+            first_interaction = residue_interactions[0]
+            residue_identifier = (
+                first_interaction.receptor_residue_identifier
+                or "residue-unknown"
+            )
+            residue_pose_presence.setdefault(
+                residue_identifier,
+                set(),
+            ).add(pose_identifier)
+
+    return _sorted_mapping_proxy(
+        {
+            residue_identifier: np.float64(
+                len(present_poses) / pose_count
+            )
+            for residue_identifier, present_poses
+            in residue_pose_presence.items()
+        }
+    )
+
+
+def _build_hydrophobic_summary_context(
+    source: Union[
+        HydrophobicAnalysisResult,
+        HydrophobicGroupingResult,
+        HydrophobicDetectionResult,
+        HydrophobicInteractionCollection,
+    ],
+    *,
+    interactions: Tuple[HydrophobicInteraction, ...],
+    grouping: HydrophobicGroupingResult,
+    pose_identifiers: Optional[Iterable[str]],
+    occupancy_minimum_group_score: Number,
+) -> _HydrophobicSummaryContext:
+    """Build one immutable context for the current summary call only."""
+
+    distances: List[np.float64] = []
+    scores: List[np.float64] = []
+    strengths: List[np.float64] = []
+
+    classification_counts_mutable: Dict[str, int] = {
+        classification: 0
+        for classification
+        in _VALID_HYDROPHOBIC_CLASSIFICATIONS
+    }
+    interaction_type_counts_mutable: Dict[str, int] = {
+        interaction_type: 0
+        for interaction_type
+        in _VALID_HYDROPHOBIC_TYPES
+    }
+
+    residue_identifiers_set: Set[str] = set()
+    chain_identifiers_set: Set[str] = set()
+    detected_pose_identifiers: Set[str] = set()
+
+    receptor_atom_values: List[Any] = []
+    ligand_atom_values: List[Any] = []
+
+    chain_presence: Dict[str, Set[str]] = {}
+    signature_presence: Dict[str, Set[str]] = {}
+
+    classification_is_final = True
+    score_is_final = True
+
+    for interaction in interactions:
+        distances.append(interaction.distance)
+        scores.append(interaction.score)
+        strengths.append(interaction.strength)
+
+        classification_counts_mutable[
+            interaction.classification
+        ] = (
+            classification_counts_mutable.get(
+                interaction.classification,
+                0,
+            )
+            + 1
+        )
+        interaction_type_counts_mutable[
+            interaction.interaction_type
+        ] = (
+            interaction_type_counts_mutable.get(
+                interaction.interaction_type,
+                0,
+            )
+            + 1
+        )
+
+        residue_identifier = (
+            interaction.receptor_residue_identifier
+            or "residue-unknown"
+        )
+        chain_identifier = (
+            get_interaction_chain_identifier(
+                interaction,
+                default="chain-unknown",
+            )
+            or "chain-unknown"
+        )
+        pose_identifier = get_interaction_pose_identifier(
+            interaction
+        )
+
+        residue_identifiers_set.add(residue_identifier)
+        chain_identifiers_set.add(chain_identifier)
+        detected_pose_identifiers.add(pose_identifier)
+
+        receptor_atom_values.append(interaction.receptor_atom)
+        ligand_atom_values.append(interaction.ligand_atom)
+
+        chain_presence.setdefault(
+            chain_identifier,
+            set(),
+        ).add(pose_identifier)
+
+        receptor_identifier = (
+            interaction.receptor_atom_identifier
+            or _safe_atom_identifier(
+                interaction.receptor_atom,
+                fallback="receptor-atom",
+            )
+            or "receptor-atom"
+        )
+        ligand_identifier = (
+            interaction.ligand_atom_identifier
+            or _safe_atom_identifier(
+                interaction.ligand_atom,
+                fallback="ligand-atom",
+            )
+            or "ligand-atom"
+        )
+        signature = (
+            f"{residue_identifier}|"
+            f"{receptor_identifier}|"
+            f"{ligand_identifier}"
+        )
+        signature_presence.setdefault(
+            signature,
+            set(),
+        ).add(pose_identifier)
+
+        if bool(
+            interaction.metadata.get(
+                "preliminary_classification",
+                False,
+            )
+        ):
+            classification_is_final = False
+        if bool(
+            interaction.metadata.get(
+                "preliminary_score",
+                False,
+            )
+        ):
+            score_is_final = False
+
+    classification_counts = _sorted_mapping_proxy(
+        classification_counts_mutable
+    )
+    classification_total = sum(
+        classification_counts.values()
+    )
+    classification_fractions = MappingProxyType(
+        {
+            classification: _normalized_fraction(
+                count,
+                classification_total,
+            )
+            for classification, count
+            in classification_counts.items()
+        }
+    )
+
+    interaction_type_counts = _sorted_mapping_proxy(
+        interaction_type_counts_mutable
+    )
+    interaction_type_total = sum(
+        interaction_type_counts.values()
+    )
+    interaction_type_fractions = MappingProxyType(
+        {
+            interaction_type: _normalized_fraction(
+                count,
+                interaction_type_total,
+            )
+            for interaction_type, count
+            in interaction_type_counts.items()
+        }
+    )
+
+    residue_records = _summary_residue_records(
+        interactions
+    )
+    (
+        residue_contact_counts,
+        residue_scores,
+        residue_minimum_distances,
+        residue_contact_areas,
+    ) = _summary_residue_mappings(
+        residue_records
+    )
+
+    resolved_pose_identifiers = (
+        tuple(
+            sorted(
+                {
+                    str(value).strip()
+                    for value in pose_identifiers
+                    if str(value).strip()
+                }
+            )
+        )
+        if pose_identifiers is not None
+        else tuple(sorted(detected_pose_identifiers))
+    )
+
+    residue_pose_occupancy = (
+        _summary_residue_pose_occupancy(
+            interactions,
+            resolved_pose_identifiers=(
+                resolved_pose_identifiers
+            ),
+            minimum_group_score=(
+                occupancy_minimum_group_score
+            ),
+        )
+    )
+
+    pose_count = len(resolved_pose_identifiers)
+    if pose_count == 0:
+        chain_pose_occupancy: Mapping[
+            str,
+            np.float64,
+        ] = MappingProxyType({})
+        interaction_pose_occupancy: Mapping[
+            str,
+            np.float64,
+        ] = MappingProxyType({})
+    else:
+        chain_pose_occupancy = _sorted_mapping_proxy(
+            {
+                chain_identifier: np.float64(
+                    len(present_poses) / pose_count
+                )
+                for chain_identifier, present_poses
+                in chain_presence.items()
+            }
+        )
+        interaction_pose_occupancy = _sorted_mapping_proxy(
+            {
+                signature: np.float64(
+                    len(present_poses) / pose_count
+                )
+                for signature, present_poses
+                in signature_presence.items()
+            }
+        )
+
+    receptor_atoms = deduplicate_atoms(
+        receptor_atom_values,
+        strategy="auto",
+    )
+    ligand_atoms = deduplicate_atoms(
+        ligand_atom_values,
+        strategy="auto",
+    )
+
+    return _HydrophobicSummaryContext(
+        interactions=interactions,
+        grouping=grouping,
+        distances=tuple(distances),
+        scores=tuple(scores),
+        strengths=tuple(strengths),
+        classification_counts=(
+            classification_counts
+        ),
+        classification_fractions=(
+            classification_fractions
+        ),
+        interaction_type_counts=(
+            interaction_type_counts
+        ),
+        interaction_type_fractions=(
+            interaction_type_fractions
+        ),
+        residue_contact_counts=(
+            residue_contact_counts
+        ),
+        residue_scores=residue_scores,
+        residue_minimum_distances=(
+            residue_minimum_distances
+        ),
+        residue_contact_areas=(
+            residue_contact_areas
+        ),
+        resolved_pose_identifiers=(
+            resolved_pose_identifiers
+        ),
+        residue_pose_occupancy=(
+            residue_pose_occupancy
+        ),
+        chain_pose_occupancy=(
+            chain_pose_occupancy
+        ),
+        interaction_pose_occupancy=(
+            interaction_pose_occupancy
+        ),
+        receptor_atoms=tuple(receptor_atoms),
+        ligand_atoms=tuple(ligand_atoms),
+        residue_identifiers=tuple(
+            sorted(residue_identifiers_set)
+        ),
+        chain_identifiers=tuple(
+            sorted(chain_identifiers_set)
+        ),
+        classification_is_final=(
+            classification_is_final
+        ),
+        score_is_final=score_is_final,
+    )
+
+
+# -----------------------------------------------------------------------------
 # Complete summary calculation
 # -----------------------------------------------------------------------------
 
@@ -23750,6 +25400,10 @@ def calculate_hydrophobic_summary(
 ) -> HydrophobicSummary:
     """
     Calculate the complete hydrophobic statistical summary.
+
+    Stage 8 keeps the public behavior unchanged while collecting repeated
+    per-interaction inputs in one private summary context.  No result is
+    shared between poses or between independent summary calls.
     """
 
     interactions = _resolve_statistics_interactions(
@@ -23762,123 +25416,86 @@ def calculate_hydrophobic_summary(
         identify_hotspots=identify_hotspots,
     )
 
-    distance_statistics = (
-        hydrophobic_distance_statistics(
-            interactions
-        )
+    context = _build_hydrophobic_summary_context(
+        source,
+        interactions=interactions,
+        grouping=grouping,
+        pose_identifiers=pose_identifiers,
+        occupancy_minimum_group_score=(
+            occupancy_minimum_group_score
+        ),
     )
 
-    score_statistics = (
-        hydrophobic_score_statistics(
-            interactions
-        )
-    )
-
-    strength_statistics = (
-        hydrophobic_strength_statistics(
-            interactions
-        )
-    )
-
-    classification_counts = (
-        hydrophobic_classification_distribution(
-            interactions
-        )
-    )
-
-    classification_fractions = (
-        hydrophobic_classification_fraction_distribution(
-            interactions
-        )
-    )
-
-    interaction_type_counts = (
-        hydrophobic_interaction_type_distribution(
-            interactions
-        )
-    )
-
-    interaction_type_fractions = (
-        hydrophobic_type_fraction_distribution(
-            interactions
-        )
-    )
-
-    residue_contact_counts = (
-        hydrophobic_contact_count_by_residue(
-            interactions
-        )
-    )
-
-    residue_scores = (
-        hydrophobic_score_by_residue(
-            interactions,
-            grouped_score=True,
-        )
-    )
-
-    residue_minimum_distances = (
-        hydrophobic_minimum_distance_by_residue(
-            interactions
-        )
-    )
-
-    residue_contact_areas = (
-        hydrophobic_surface_by_residue(
-            interactions
-        )
-    )
-
-    resolved_pose_identifiers = (
-        tuple(
-            sorted(
-                {
-                    str(value).strip()
-                    for value in pose_identifiers
-                    if str(value).strip()
-                }
-            )
-        )
-        if pose_identifiers is not None
-        else hydrophobic_pose_identifiers(
-            interactions
-        )
-    )
-
-    residue_pose_occupancy = (
-        calculate_hydrophobic_residue_pose_occupancy(
-            interactions,
-            pose_identifiers=(
-                resolved_pose_identifiers
+    distance_statistics = MappingProxyType(
+        {
+            "minimum": _safe_minimum(
+                context.distances
             ),
-            minimum_group_score=(
-                occupancy_minimum_group_score
+            "mean": _safe_mean(
+                context.distances
             ),
-        )
+            "median": _safe_median(
+                context.distances
+            ),
+            "maximum": _safe_maximum(
+                context.distances
+            ),
+            "standard_deviation": (
+                _safe_standard_deviation(
+                    context.distances
+                )
+            ),
+        }
     )
 
-    chain_pose_occupancy = (
-        calculate_hydrophobic_chain_pose_occupancy(
-            interactions,
-            pose_identifiers=(
-                resolved_pose_identifiers
+    score_statistics = MappingProxyType(
+        {
+            "minimum": _safe_minimum(
+                context.scores
             ),
-        )
+            "mean": _safe_mean(
+                context.scores
+            ),
+            "median": _safe_median(
+                context.scores
+            ),
+            "maximum": _safe_maximum(
+                context.scores
+            ),
+            "standard_deviation": (
+                _safe_standard_deviation(
+                    context.scores
+                )
+            ),
+            "total": _safe_sum(
+                context.scores
+            ),
+        }
     )
 
-    interaction_pose_occupancy = (
-        calculate_hydrophobic_interaction_pose_occupancy(
-            interactions,
-            pose_identifiers=(
-                resolved_pose_identifiers
+    strength_statistics = MappingProxyType(
+        {
+            "minimum": _safe_minimum(
+                context.strengths
             ),
-        )
-    )
-
-    receptor_atoms, ligand_atoms = (
-        _unique_interaction_atoms(
-            interactions
-        )
+            "mean": _safe_mean(
+                context.strengths
+            ),
+            "median": _safe_median(
+                context.strengths
+            ),
+            "maximum": _safe_maximum(
+                context.strengths
+            ),
+            "standard_deviation": (
+                _safe_standard_deviation(
+                    context.strengths
+                )
+            ),
+            "total": _safe_sum(
+                context.strengths
+            ),
+        }
     )
 
     total_receptor_atom_count = (
@@ -23913,27 +25530,15 @@ def calculate_hydrophobic_summary(
     summary_metadata.update(
         {
             "statistics_stage": "complete_summary",
-            "classification_is_final": all(
-                not bool(
-                    interaction.metadata.get(
-                        "preliminary_classification",
-                        False,
-                    )
-                )
-                for interaction in interactions
+            "classification_is_final": (
+                context.classification_is_final
             ),
-            "score_is_final": all(
-                not bool(
-                    interaction.metadata.get(
-                        "preliminary_score",
-                        False,
-                    )
-                )
-                for interaction in interactions
+            "score_is_final": (
+                context.score_is_final
             ),
             "surface_is_approximate": True,
             "occupancy_denominator_pose_count": len(
-                resolved_pose_identifiers
+                context.resolved_pose_identifiers
             ),
             "occupancy_minimum_group_score": float(
                 _nonnegative_float(
@@ -23949,7 +25554,7 @@ def calculate_hydrophobic_summary(
         interaction_count=len(
             interactions
         ),
-        atomic_pair_count=count_hydrophobic_atomic_pairs(
+        atomic_pair_count=len(
             interactions
         ),
         local_interaction_count=len(
@@ -23962,7 +25567,7 @@ def calculate_hydrophobic_summary(
             grouping.chain_groups
         ),
         pose_count=len(
-            resolved_pose_identifiers
+            context.resolved_pose_identifiers
         ),
         hotspot_count=len(
             grouping.hotspot_groups
@@ -23974,10 +25579,10 @@ def calculate_hydrophobic_summary(
             total_ligand_atom_count
         ),
         contacted_receptor_atom_count=len(
-            receptor_atoms
+            context.receptor_atoms
         ),
         contacted_ligand_atom_count=len(
-            ligand_atoms
+            context.ligand_atoms
         ),
         minimum_distance=(
             distance_statistics["minimum"]
@@ -24032,48 +25637,46 @@ def calculate_hydrophobic_summary(
             grouping.approximate_contact_area
         ),
         classification_counts=(
-            classification_counts
+            context.classification_counts
         ),
         classification_fractions=(
-            classification_fractions
+            context.classification_fractions
         ),
         interaction_type_counts=(
-            interaction_type_counts
+            context.interaction_type_counts
         ),
         interaction_type_fractions=(
-            interaction_type_fractions
+            context.interaction_type_fractions
         ),
         residue_contact_counts=(
-            residue_contact_counts
+            context.residue_contact_counts
         ),
-        residue_scores=residue_scores,
+        residue_scores=(
+            context.residue_scores
+        ),
         residue_minimum_distances=(
-            residue_minimum_distances
+            context.residue_minimum_distances
         ),
         residue_contact_areas=(
-            residue_contact_areas
+            context.residue_contact_areas
         ),
         residue_pose_occupancy=(
-            residue_pose_occupancy
+            context.residue_pose_occupancy
         ),
         chain_pose_occupancy=(
-            chain_pose_occupancy
+            context.chain_pose_occupancy
         ),
         interaction_pose_occupancy=(
-            interaction_pose_occupancy
+            context.interaction_pose_occupancy
         ),
         residue_identifiers=(
-            hydrophobic_residue_identifiers(
-                interactions
-            )
+            context.residue_identifiers
         ),
         chain_identifiers=(
-            hydrophobic_chain_identifiers(
-                interactions
-            )
+            context.chain_identifiers
         ),
         pose_identifiers=(
-            resolved_pose_identifiers
+            context.resolved_pose_identifiers
         ),
         hotspot_residue_identifiers=(
             hotspot_identifiers
@@ -25428,6 +27031,877 @@ class HydrophobicSerializableTables:
         }
 
 
+
+# -----------------------------------------------------------------------------
+# Stage 9 private table-reuse helpers
+# -----------------------------------------------------------------------------
+
+
+def _standard_hydrophobic_table_grouping_for_reuse(
+    source: Union[
+        HydrophobicAnalysisResult,
+        HydrophobicGroupingResult,
+        HydrophobicDetectionResult,
+        HydrophobicInteractionCollection,
+    ],
+    interactions: Tuple[HydrophobicInteraction, ...],
+    *,
+    grouping_distance: Optional[Number],
+) -> Optional[HydrophobicGroupingResult]:
+    """Return an exact standard grouping suitable for table reuse.
+
+    A caller-supplied ``HydrophobicGroupingResult`` may have been created with
+    nonstandard hotspot options.  The public table functions historically
+    rebuild their own standard groups from its interactions, so Stage 9 keeps
+    that case on the original path.  For all other supported sources the Stage
+    7 geometry-aware grouping cache guarantees the same interaction objects,
+    coordinates, grouping distance and standard hotspot semantics.
+    """
+
+    if isinstance(source, HydrophobicGroupingResult):
+        return None
+
+    grouping = _resolve_statistics_grouping(
+        source,
+        grouping_distance=grouping_distance,
+        identify_hotspots=True,
+    )
+
+    if (
+        len(grouping.interactions) != len(interactions)
+        or any(
+            grouped is not current
+            for grouped, current in zip(
+                grouping.interactions,
+                interactions,
+            )
+        )
+    ):
+        return None
+
+    return grouping
+
+
+def _hydrophobic_table_residue_pose_occupancy_from_grouping(
+    grouping: HydrophobicGroupingResult,
+    *,
+    pose_identifiers: Optional[Iterable[str]],
+    minimum_group_score: Number,
+) -> Mapping[str, np.float64]:
+    """Reproduce residue occupancy using already built pose/residue groups."""
+
+    minimum_score = _nonnegative_float(
+        minimum_group_score,
+        name="minimum occupancy group score",
+    )
+
+    resolved_pose_identifiers = (
+        tuple(
+            sorted(
+                {
+                    str(value).strip()
+                    for value in pose_identifiers
+                    if str(value).strip()
+                }
+            )
+        )
+        if pose_identifiers is not None
+        else tuple(
+            sorted(
+                group.pose_identifier
+                for group in grouping.pose_groups
+            )
+        )
+    )
+
+    pose_count = len(resolved_pose_identifiers)
+    if pose_count == 0:
+        return MappingProxyType({})
+
+    pose_identifier_set = set(resolved_pose_identifiers)
+    residue_pose_presence: Dict[str, Set[str]] = {}
+
+    for pose_group in grouping.pose_groups:
+        if pose_group.pose_identifier not in pose_identifier_set:
+            continue
+
+        for residue_group in pose_group.residue_groups:
+            if float(residue_group.group_score or 0.0) < minimum_score:
+                continue
+
+            residue_identifier = (
+                residue_group.residue_identifier
+                or "residue-unknown"
+            )
+            residue_pose_presence.setdefault(
+                residue_identifier,
+                set(),
+            ).add(pose_group.pose_identifier)
+
+    return _sorted_mapping_proxy(
+        {
+            residue_identifier: np.float64(
+                len(present_poses) / pose_count
+            )
+            for residue_identifier, present_poses
+            in residue_pose_presence.items()
+        }
+    )
+
+
+def _hydrophobic_table_residue_pose_presence_from_grouping(
+    grouping: HydrophobicGroupingResult,
+) -> Mapping[str, Tuple[str, ...]]:
+    """Return unthresholded residue presence from existing pose groups."""
+
+    presence: Dict[str, Set[str]] = {}
+
+    for pose_group in grouping.pose_groups:
+        for residue_group in pose_group.residue_groups:
+            residue_identifier = (
+                residue_group.residue_identifier
+                or "residue-unknown"
+            )
+            presence.setdefault(
+                residue_identifier,
+                set(),
+            ).add(pose_group.pose_identifier)
+
+    return MappingProxyType(
+        {
+            residue_identifier: tuple(
+                sorted(pose_ids)
+            )
+            for residue_identifier, pose_ids
+            in sorted(presence.items())
+        }
+    )
+
+
+def _hydrophobic_residue_table_from_grouping(
+    grouping: HydrophobicGroupingResult,
+    *,
+    pose_identifiers: Optional[Iterable[str]] = None,
+    include_metadata: bool = DEFAULT_SERIALIZE_GROUP_METADATA,
+    round_digits: int = DEFAULT_HYDROPHOBIC_ROUND_DIGITS,
+    sort_by: Literal[
+        "score",
+        "distance",
+        "count",
+        "occupancy",
+        "identifier",
+    ] = DEFAULT_RESIDUE_TABLE_SORTING,
+) -> HydrophobicSerializableTable:
+    """Build the public residue-table representation from existing groups."""
+
+    digits = _nonnegative_integer(
+        round_digits,
+        name="rounding digits",
+    )
+    groups = list(grouping.residue_groups)
+    occupancy = _hydrophobic_table_residue_pose_occupancy_from_grouping(
+        grouping,
+        pose_identifiers=pose_identifiers,
+        minimum_group_score=DEFAULT_HYDROPHOBIC_OCCUPANCY_THRESHOLD,
+    )
+
+    normalized_sorting = str(sort_by).strip().lower()
+    if normalized_sorting == "score":
+        groups.sort(
+            key=lambda group: (
+                -float(group.group_score or 0.0),
+                float(
+                    group.minimum_distance
+                    if group.minimum_distance is not None
+                    else np.inf
+                ),
+            )
+        )
+    elif normalized_sorting == "distance":
+        groups.sort(
+            key=lambda group: (
+                float(
+                    group.minimum_distance
+                    if group.minimum_distance is not None
+                    else np.inf
+                ),
+                -float(group.group_score or 0.0),
+            )
+        )
+    elif normalized_sorting == "count":
+        groups.sort(
+            key=lambda group: (
+                -group.interaction_count,
+                -float(group.group_score or 0.0),
+            )
+        )
+    elif normalized_sorting == "occupancy":
+        groups.sort(
+            key=lambda group: (
+                -float(
+                    occupancy.get(
+                        group.residue_identifier
+                        or "residue-unknown",
+                        0.0,
+                    )
+                ),
+                -float(group.group_score or 0.0),
+            )
+        )
+    elif normalized_sorting == "identifier":
+        groups.sort(
+            key=lambda group: (
+                group.residue_identifier or ""
+            )
+        )
+    else:
+        raise ValueError(
+            "sort_by must be 'score', 'distance', 'count', "
+            "'occupancy' or 'identifier'."
+        )
+
+    rows: List[HydrophobicSerializableRow] = []
+    for group in groups:
+        residue_identifier = (
+            group.residue_identifier
+            or "residue-unknown"
+        )
+        closest = select_closest_hydrophobic_interaction(
+            group.interactions
+        )
+        representative = select_highest_scoring_hydrophobic_interaction(
+            group.interactions
+        )
+        unique_receptor_atoms, unique_ligand_atoms = (
+            _unique_interaction_atoms(group.interactions)
+        )
+        assessment = assess_hydrophobic_interaction_strength(
+            group.interactions,
+            metadata={
+                "assessment_level": "residue_table",
+            },
+        )
+
+        row: HydrophobicSerializableRow = {
+            "residue_identifier": residue_identifier,
+            "chain_identifier": (
+                str(
+                    group.metadata.get(
+                        "chain_identifier",
+                        "",
+                    )
+                ).strip()
+                or "chain-unknown"
+            ),
+            "pose_identifiers": list(
+                group.metadata.get(
+                    "pose_identifiers",
+                    (),
+                )
+            ),
+            "interaction_count": group.interaction_count,
+            "atomic_pair_count": group.interaction_count,
+            "unique_receptor_atom_count": len(
+                unique_receptor_atoms
+            ),
+            "unique_ligand_atom_count": len(
+                unique_ligand_atoms
+            ),
+            "minimum_distance": _round_optional_float(
+                group.minimum_distance,
+                digits=digits,
+            ),
+            "mean_distance": _round_optional_float(
+                _safe_mean(
+                    [
+                        interaction.distance
+                        for interaction in group.interactions
+                    ]
+                ),
+                digits=digits,
+            ),
+            "maximum_distance": _round_optional_float(
+                _safe_maximum(
+                    [
+                        interaction.distance
+                        for interaction in group.interactions
+                    ]
+                ),
+                digits=digits,
+            ),
+            "group_score": _round_optional_float(
+                group.group_score,
+                digits=digits,
+            ),
+            "final_strength": _round_optional_float(
+                assessment.strength,
+                digits=digits,
+            ),
+            "final_classification": assessment.classification,
+            "predominant_interaction_type": assessment.interaction_type,
+            "approximate_contact_area": _round_optional_float(
+                approximate_hydrophobic_surface_area(
+                    group.interactions
+                ),
+                digits=digits,
+            ),
+            "contact_density": _round_optional_float(
+                calculate_hydrophobic_density_component(
+                    group.interactions
+                ),
+                digits=digits,
+            ),
+            "pose_occupancy": _round_optional_float(
+                occupancy.get(
+                    residue_identifier,
+                    0.0,
+                ),
+                digits=digits,
+            ),
+            "is_hotspot": bool(
+                group.metadata.get(
+                    "is_hotspot",
+                    False,
+                )
+            ),
+            "closest_interaction_identifier": (
+                None
+                if closest is None
+                else closest.interaction_identifier
+            ),
+            "representative_interaction_identifier": (
+                None
+                if representative is None
+                else representative.interaction_identifier
+            ),
+        }
+
+        if include_metadata:
+            row["metadata"] = dict(group.metadata)
+
+        rows.append(row)
+
+    return tuple(rows)
+
+
+def _hydrophobic_pose_table_from_grouping(
+    grouping: HydrophobicGroupingResult,
+    *,
+    include_metadata: bool = DEFAULT_SERIALIZE_GROUP_METADATA,
+    round_digits: int = DEFAULT_HYDROPHOBIC_ROUND_DIGITS,
+    sort_by: Literal[
+        "pose",
+        "score",
+        "count",
+        "area",
+    ] = DEFAULT_POSE_TABLE_SORTING,
+) -> HydrophobicSerializableTable:
+    """Build the public pose-table representation from existing pose groups."""
+
+    digits = _nonnegative_integer(
+        round_digits,
+        name="rounding digits",
+    )
+    pose_groups = list(grouping.pose_groups)
+    normalized_sorting = str(sort_by).strip().lower()
+
+    if normalized_sorting == "pose":
+        pose_groups.sort(
+            key=lambda group: group.pose_identifier
+        )
+    elif normalized_sorting == "score":
+        pose_groups.sort(
+            key=lambda group: (
+                -float(group.total_score),
+                group.pose_identifier,
+            )
+        )
+    elif normalized_sorting == "count":
+        pose_groups.sort(
+            key=lambda group: (
+                -group.interaction_count,
+                -float(group.total_score),
+            )
+        )
+    elif normalized_sorting == "area":
+        pose_groups.sort(
+            key=lambda group: (
+                -float(group.approximate_contact_area),
+                -float(group.total_score),
+            )
+        )
+    else:
+        raise ValueError(
+            "sort_by must be 'pose', 'score', 'count' or 'area'."
+        )
+
+    rows: List[HydrophobicSerializableRow] = []
+    for pose_group in pose_groups:
+        distance_stats = hydrophobic_distance_statistics(
+            pose_group.interactions
+        )
+        score_stats = hydrophobic_score_statistics(
+            pose_group.interactions
+        )
+        classification_counts = hydrophobic_classification_distribution(
+            pose_group.interactions
+        )
+        type_counts = hydrophobic_interaction_type_distribution(
+            pose_group.interactions
+        )
+
+        row: HydrophobicSerializableRow = {
+            "pose_identifier": pose_group.pose_identifier,
+            "interaction_count": pose_group.interaction_count,
+            "atomic_pair_count": pose_group.interaction_count,
+            "residue_count": pose_group.residue_count,
+            "chain_count": len(pose_group.chain_groups),
+            "local_region_count": len(pose_group.local_regions),
+            "hotspot_count": pose_group.hotspot_count,
+            "minimum_distance": _round_optional_float(
+                distance_stats["minimum"],
+                digits=digits,
+            ),
+            "mean_distance": _round_optional_float(
+                distance_stats["mean"],
+                digits=digits,
+            ),
+            "maximum_distance": _round_optional_float(
+                distance_stats["maximum"],
+                digits=digits,
+            ),
+            "mean_score": _round_optional_float(
+                score_stats["mean"],
+                digits=digits,
+            ),
+            "total_score": _round_optional_float(
+                score_stats["total"],
+                digits=digits,
+            ),
+            "approximate_contact_area": _round_optional_float(
+                pose_group.approximate_contact_area,
+                digits=digits,
+            ),
+            "classification_counts": dict(classification_counts),
+            "interaction_type_counts": dict(type_counts),
+            "residue_identifiers": [
+                group.residue_identifier
+                or "residue-unknown"
+                for group in pose_group.residue_groups
+            ],
+        }
+
+        if include_metadata:
+            row["metadata"] = dict(pose_group.metadata)
+
+        rows.append(row)
+
+    return tuple(rows)
+
+
+def _hydrophobic_local_region_table_from_grouping(
+    grouping: HydrophobicGroupingResult,
+    *,
+    include_metadata: bool = DEFAULT_SERIALIZE_GROUP_METADATA,
+    round_digits: int = DEFAULT_HYDROPHOBIC_ROUND_DIGITS,
+) -> HydrophobicSerializableTable:
+    """Build local-region rows from the already clustered standard regions."""
+
+    digits = _nonnegative_integer(
+        round_digits,
+        name="rounding digits",
+    )
+    regions = list(grouping.local_regions)
+    regions.sort(
+        key=lambda region: (
+            -float(region.total_score or 0.0),
+            float(
+                region.minimum_distance
+                if region.minimum_distance is not None
+                else np.inf
+            ),
+            region.region_identifier or "",
+        )
+    )
+
+    rows: List[HydrophobicSerializableRow] = []
+    for region in regions:
+        assessment = classify_hydrophobic_local_region(region)
+        row: HydrophobicSerializableRow = {
+            "region_identifier": region.region_identifier,
+            "pose_identifier": region.pose_identifier,
+            "chain_identifiers": list(region.chain_identifiers),
+            "residue_identifiers": list(region.residue_identifiers),
+            "interaction_count": region.interaction_count,
+            "atomic_pair_count": region.interaction_count,
+            "residue_count": region.residue_count,
+            "unique_receptor_atom_count": region.unique_receptor_atom_count,
+            "unique_ligand_atom_count": region.unique_ligand_atom_count,
+            "minimum_distance": _round_optional_float(
+                region.minimum_distance,
+                digits=digits,
+            ),
+            "total_score": _round_optional_float(
+                region.total_score,
+                digits=digits,
+            ),
+            "final_strength": _round_optional_float(
+                assessment.strength,
+                digits=digits,
+            ),
+            "final_classification": assessment.classification,
+            "predominant_interaction_type": assessment.interaction_type,
+            "contact_density": _round_optional_float(
+                region.contact_density,
+                digits=digits,
+            ),
+            "approximate_contact_area": _round_optional_float(
+                region.approximate_contact_area,
+                digits=digits,
+            ),
+            "is_hotspot": bool(region.is_hotspot),
+            "closest_interaction_identifier": (
+                None
+                if region.closest_interaction is None
+                else region.closest_interaction.interaction_identifier
+            ),
+            "representative_interaction_identifier": (
+                None
+                if region.representative_interaction is None
+                else region.representative_interaction.interaction_identifier
+            ),
+        }
+        if include_metadata:
+            row["metadata"] = dict(region.metadata)
+        rows.append(row)
+
+    return tuple(rows)
+
+
+def _hydrophobic_classification_table_from_summary(
+    summary: HydrophobicSummary,
+    *,
+    round_digits: int,
+) -> HydrophobicSerializableTable:
+    """Build the standard classification table from summary distributions."""
+
+    ordered_classifications = (
+        HYDROPHOBIC_CLASS_VERY_STRONG,
+        HYDROPHOBIC_CLASS_STRONG,
+        HYDROPHOBIC_CLASS_MODERATE,
+        HYDROPHOBIC_CLASS_WEAK,
+        HYDROPHOBIC_CLASS_MARGINAL,
+        HYDROPHOBIC_CLASS_UNKNOWN,
+    )
+    return tuple(
+        {
+            "classification": classification,
+            "count": summary.classification_counts.get(
+                classification,
+                0,
+            ),
+            "fraction": _round_optional_float(
+                summary.classification_fractions.get(
+                    classification,
+                    0.0,
+                ),
+                digits=round_digits,
+            ),
+        }
+        for classification in ordered_classifications
+    )
+
+
+def _hydrophobic_type_table_from_summary(
+    summary: HydrophobicSummary,
+    *,
+    round_digits: int,
+) -> HydrophobicSerializableTable:
+    """Build the standard interaction-type table from summary distributions."""
+
+    ordered_types = (
+        HYDROPHOBIC_TYPE_ALIPHATIC_ALIPHATIC,
+        HYDROPHOBIC_TYPE_ALIPHATIC_AROMATIC,
+        HYDROPHOBIC_TYPE_AROMATIC_ALIPHATIC,
+        HYDROPHOBIC_TYPE_AROMATIC_AROMATIC,
+        HYDROPHOBIC_TYPE_MIXED,
+        HYDROPHOBIC_TYPE_UNKNOWN,
+    )
+    return tuple(
+        {
+            "interaction_type": interaction_type,
+            "count": summary.interaction_type_counts.get(
+                interaction_type,
+                0,
+            ),
+            "fraction": _round_optional_float(
+                summary.interaction_type_fractions.get(
+                    interaction_type,
+                    0.0,
+                ),
+                digits=round_digits,
+            ),
+            "pi_stacking_assigned": False,
+        }
+        for interaction_type in ordered_types
+    )
+
+
+def _hydrophobic_occupancy_table_from_summary_and_grouping(
+    summary: HydrophobicSummary,
+    grouping: HydrophobicGroupingResult,
+    *,
+    pose_identifiers: Optional[Iterable[str]],
+    minimum_group_score: Number,
+    round_digits: int,
+) -> HydrophobicSerializableTable:
+    """Build occupancy rows from an equivalent summary and existing groups."""
+
+    requested_threshold = float(
+        _nonnegative_float(
+            minimum_group_score,
+            name="minimum occupancy group score",
+        )
+    )
+    summary_threshold = summary.metadata.get(
+        "occupancy_minimum_group_score"
+    )
+
+    if (
+        summary_threshold is not None
+        and float(summary_threshold) == requested_threshold
+    ):
+        occupancy = summary.residue_pose_occupancy
+    else:
+        occupancy = _hydrophobic_table_residue_pose_occupancy_from_grouping(
+            grouping,
+            pose_identifiers=pose_identifiers,
+            minimum_group_score=requested_threshold,
+        )
+
+    presence = _hydrophobic_table_residue_pose_presence_from_grouping(
+        grouping
+    )
+
+    return tuple(
+        {
+            "residue_identifier": residue_identifier,
+            "occupancy": _round_optional_float(
+                occupancy_value,
+                digits=round_digits,
+            ),
+            "pose_count_with_contact": len(
+                presence.get(
+                    residue_identifier,
+                    (),
+                )
+            ),
+            "poses_with_contact": list(
+                presence.get(
+                    residue_identifier,
+                    (),
+                )
+            ),
+        }
+        for residue_identifier, occupancy_value
+        in sorted(
+            occupancy.items(),
+            key=lambda item: (
+                -float(item[1]),
+                item[0],
+            ),
+        )
+    )
+
+def _build_hydrophobic_serializable_tables_from_summary(
+    source: Union[
+        HydrophobicAnalysisResult,
+        HydrophobicGroupingResult,
+        HydrophobicDetectionResult,
+        HydrophobicInteractionCollection,
+    ],
+    summary: HydrophobicSummary,
+    *,
+    grouping_distance: Optional[Number] = None,
+    pose_identifiers: Optional[Iterable[str]] = None,
+    occupancy_minimum_group_score: Number = (
+        DEFAULT_HYDROPHOBIC_OCCUPANCY_THRESHOLD
+    ),
+    include_interaction_metadata: bool = (
+        DEFAULT_SERIALIZE_INTERACTION_METADATA
+    ),
+    include_group_metadata: bool = (
+        DEFAULT_SERIALIZE_GROUP_METADATA
+    ),
+    round_digits: int = (
+        DEFAULT_HYDROPHOBIC_ROUND_DIGITS
+    ),
+) -> HydrophobicSerializableTables:
+    """Build standard tables while reusing finalized summary/grouping data.
+
+    Stage 9 keeps every public table function unchanged.  The optimized path is
+    used only when the exact standard grouping for the same interaction objects
+    and current coordinates can be proven.  Otherwise this helper executes the
+    original Stage 8 table-building calls unchanged.
+    """
+
+    if not isinstance(summary, HydrophobicSummary):
+        raise TypeError(
+            "summary must be a HydrophobicSummary."
+        )
+
+    interactions = _resolve_statistics_interactions(source)
+    summary_row = summary.to_dict(round_digits=round_digits)
+
+    grouping = _standard_hydrophobic_table_grouping_for_reuse(
+        source,
+        interactions,
+        grouping_distance=grouping_distance,
+    )
+
+    if (
+        grouping is None
+        or summary.interaction_count != len(interactions)
+    ):
+        return HydrophobicSerializableTables(
+            summary=(summary_row,),
+            interactions=hydrophobic_interaction_table(
+                interactions,
+                include_metadata=include_interaction_metadata,
+                round_digits=round_digits,
+            ),
+            residues=hydrophobic_residue_table(
+                interactions,
+                pose_identifiers=pose_identifiers,
+                include_metadata=include_group_metadata,
+                round_digits=round_digits,
+            ),
+            poses=hydrophobic_pose_table(
+                interactions,
+                include_metadata=include_group_metadata,
+                round_digits=round_digits,
+            ),
+            local_regions=hydrophobic_local_region_table(
+                interactions,
+                grouping_distance=grouping_distance,
+                include_metadata=include_group_metadata,
+                round_digits=round_digits,
+            ),
+            hotspots=hydrophobic_hotspot_table(
+                interactions,
+                pose_identifiers=pose_identifiers,
+                include_metadata=include_group_metadata,
+                round_digits=round_digits,
+            ),
+            classification_distribution=(
+                hydrophobic_classification_table(
+                    interactions,
+                    round_digits=round_digits,
+                )
+            ),
+            type_distribution=hydrophobic_type_table(
+                interactions,
+                round_digits=round_digits,
+            ),
+            pose_occupancy=hydrophobic_occupancy_table(
+                interactions,
+                pose_identifiers=pose_identifiers,
+                minimum_group_score=(
+                    occupancy_minimum_group_score
+                ),
+                round_digits=round_digits,
+            ),
+            metadata={
+                "table_format": "tuple_of_serializable_dictionaries",
+                "round_digits": int(round_digits),
+                "interaction_metadata_included": bool(
+                    include_interaction_metadata
+                ),
+                "group_metadata_included": bool(
+                    include_group_metadata
+                ),
+            },
+        )
+
+    residue_rows = _hydrophobic_residue_table_from_grouping(
+        grouping,
+        pose_identifiers=pose_identifiers,
+        include_metadata=include_group_metadata,
+        round_digits=round_digits,
+        sort_by=DEFAULT_RESIDUE_TABLE_SORTING,
+    )
+
+    if DEFAULT_RESIDUE_TABLE_SORTING == "score":
+        hotspot_source_rows = residue_rows
+    else:
+        hotspot_source_rows = _hydrophobic_residue_table_from_grouping(
+            grouping,
+            pose_identifiers=pose_identifiers,
+            include_metadata=include_group_metadata,
+            round_digits=round_digits,
+            sort_by="score",
+        )
+
+    hotspot_rows = tuple(
+        row
+        for row in hotspot_source_rows
+        if bool(row.get("is_hotspot", False))
+    )
+
+    return HydrophobicSerializableTables(
+        summary=(summary_row,),
+        interactions=hydrophobic_interaction_table(
+            interactions,
+            include_metadata=include_interaction_metadata,
+            round_digits=round_digits,
+        ),
+        residues=residue_rows,
+        poses=_hydrophobic_pose_table_from_grouping(
+            grouping,
+            include_metadata=include_group_metadata,
+            round_digits=round_digits,
+            sort_by=DEFAULT_POSE_TABLE_SORTING,
+        ),
+        local_regions=_hydrophobic_local_region_table_from_grouping(
+            grouping,
+            include_metadata=include_group_metadata,
+            round_digits=round_digits,
+        ),
+        hotspots=hotspot_rows,
+        classification_distribution=(
+            _hydrophobic_classification_table_from_summary(
+                summary,
+                round_digits=round_digits,
+            )
+        ),
+        type_distribution=_hydrophobic_type_table_from_summary(
+            summary,
+            round_digits=round_digits,
+        ),
+        pose_occupancy=(
+            _hydrophobic_occupancy_table_from_summary_and_grouping(
+                summary,
+                grouping,
+                pose_identifiers=pose_identifiers,
+                minimum_group_score=(
+                    occupancy_minimum_group_score
+                ),
+                round_digits=round_digits,
+            )
+        ),
+        metadata={
+            "table_format": "tuple_of_serializable_dictionaries",
+            "round_digits": int(round_digits),
+            "interaction_metadata_included": bool(
+                include_interaction_metadata
+            ),
+            "group_metadata_included": bool(
+                include_group_metadata
+            ),
+        },
+    )
+
+
 def build_hydrophobic_serializable_tables(
     source: Union[
         HydrophobicAnalysisResult,
@@ -25455,10 +27929,6 @@ def build_hydrophobic_serializable_tables(
     Build all standard serializable hydrophobic tables.
     """
 
-    interactions = _resolve_statistics_interactions(
-        source
-    )
-
     summary = calculate_hydrophobic_summary(
         source,
         grouping_distance=grouping_distance,
@@ -25468,92 +27938,21 @@ def build_hydrophobic_serializable_tables(
         ),
     )
 
-    summary_row = summary.to_dict(
-        round_digits=round_digits
-    )
-
-    return HydrophobicSerializableTables(
-        summary=(
-            summary_row,
+    return _build_hydrophobic_serializable_tables_from_summary(
+        source,
+        summary,
+        grouping_distance=grouping_distance,
+        pose_identifiers=pose_identifiers,
+        occupancy_minimum_group_score=(
+            occupancy_minimum_group_score
         ),
-        interactions=hydrophobic_interaction_table(
-            interactions,
-            include_metadata=(
-                include_interaction_metadata
-            ),
-            round_digits=round_digits,
+        include_interaction_metadata=(
+            include_interaction_metadata
         ),
-        residues=hydrophobic_residue_table(
-            interactions,
-            pose_identifiers=pose_identifiers,
-            include_metadata=(
-                include_group_metadata
-            ),
-            round_digits=round_digits,
+        include_group_metadata=(
+            include_group_metadata
         ),
-        poses=hydrophobic_pose_table(
-            interactions,
-            include_metadata=(
-                include_group_metadata
-            ),
-            round_digits=round_digits,
-        ),
-        local_regions=(
-            hydrophobic_local_region_table(
-                interactions,
-                grouping_distance=(
-                    grouping_distance
-                ),
-                include_metadata=(
-                    include_group_metadata
-                ),
-                round_digits=round_digits,
-            )
-        ),
-        hotspots=hydrophobic_hotspot_table(
-            interactions,
-            pose_identifiers=pose_identifiers,
-            include_metadata=(
-                include_group_metadata
-            ),
-            round_digits=round_digits,
-        ),
-        classification_distribution=(
-            hydrophobic_classification_table(
-                interactions,
-                round_digits=round_digits,
-            )
-        ),
-        type_distribution=(
-            hydrophobic_type_table(
-                interactions,
-                round_digits=round_digits,
-            )
-        ),
-        pose_occupancy=(
-            hydrophobic_occupancy_table(
-                interactions,
-                pose_identifiers=pose_identifiers,
-                minimum_group_score=(
-                    occupancy_minimum_group_score
-                ),
-                round_digits=round_digits,
-            )
-        ),
-        metadata={
-            "table_format": (
-                "tuple_of_serializable_dictionaries"
-            ),
-            "round_digits": int(
-                round_digits
-            ),
-            "interaction_metadata_included": bool(
-                include_interaction_metadata
-            ),
-            "group_metadata_included": bool(
-                include_group_metadata
-            ),
-        },
+        round_digits=round_digits,
     )
 
 
@@ -25741,6 +28140,9 @@ def add_hydrophobic_statistics_to_result(
         )
     )
 
+    statistics_workflow_started = time.perf_counter()
+
+    summary_started = time.perf_counter()
     summary = calculate_hydrophobic_summary(
         result,
         grouping_distance=(
@@ -25751,21 +28153,33 @@ def add_hydrophobic_statistics_to_result(
             occupancy_minimum_group_score
         ),
     )
+    summary_calculation_seconds = (
+        time.perf_counter() - summary_started
+    )
 
+    statistics_conversion_started = time.perf_counter()
     statistics = (
         summary_to_hydrophobic_statistics(
             summary
         )
     )
+    statistics_conversion_seconds = (
+        time.perf_counter() - statistics_conversion_started
+    )
 
-    grouping = group_hydrophobic_interactions(
-        result.interactions,
+    statistics_regrouping_started = time.perf_counter()
+    grouping = _resolve_statistics_grouping(
+        result,
         grouping_distance=(
             resolved_grouping_distance
         ),
         identify_hotspots=True,
     )
+    statistics_regrouping_seconds = (
+        time.perf_counter() - statistics_regrouping_started
+    )
 
+    statistics_metadata_started = time.perf_counter()
     updated_metadata = dict(
         result.metadata
     )
@@ -25809,10 +28223,17 @@ def add_hydrophobic_statistics_to_result(
         }
     )
 
+    statistics_metadata_seconds = (
+        time.perf_counter() - statistics_metadata_started
+    )
+
+    serializable_tables_seconds = 0.0
     if include_serializable_tables:
+        serializable_tables_started = time.perf_counter()
         tables = (
-            build_hydrophobic_serializable_tables(
+            _build_hydrophobic_serializable_tables_from_summary(
                 result,
+                summary,
                 grouping_distance=(
                     resolved_grouping_distance
                 ),
@@ -25827,8 +28248,12 @@ def add_hydrophobic_statistics_to_result(
         updated_metadata[
             "serializable_tables"
         ] = tables.to_dict()
+        serializable_tables_seconds = (
+            time.perf_counter() - serializable_tables_started
+        )
 
-    return HydrophobicAnalysisResult(
+    statistics_result_build_started = time.perf_counter()
+    completed_result = HydrophobicAnalysisResult(
         interactions=result.interactions,
         residue_groups=(
             grouping.residue_groups
@@ -25858,6 +28283,26 @@ def add_hydrophobic_statistics_to_result(
         ),
         metadata=updated_metadata,
     )
+    statistics_result_build_seconds = (
+        time.perf_counter() - statistics_result_build_started
+    )
+    statistics_workflow_seconds = (
+        time.perf_counter() - statistics_workflow_started
+    )
+
+    return _merge_hydrophobic_performance_timings(
+        completed_result,
+        {
+            "summary_calculation_seconds": summary_calculation_seconds,
+            "statistics_conversion_seconds": statistics_conversion_seconds,
+            "statistics_regrouping_seconds": statistics_regrouping_seconds,
+            "statistics_metadata_seconds": statistics_metadata_seconds,
+            "serializable_tables_seconds": serializable_tables_seconds,
+            "statistics_result_build_seconds": statistics_result_build_seconds,
+            "statistics_workflow_seconds": statistics_workflow_seconds,
+        },
+    )
+
 
 
 # -----------------------------------------------------------------------------
@@ -25894,6 +28339,9 @@ def analyze_hydrophobic_interactions(
     Run detection, grouping, classification and statistical summaries.
     """
 
+    complete_workflow_started = time.perf_counter()
+
+    classification_pipeline_started = time.perf_counter()
     classified_result = (
         analyze_and_classify_hydrophobic_interactions(
             receptor,
@@ -25919,8 +28367,12 @@ def analyze_hydrophobic_interactions(
             metadata=metadata,
         )
     )
+    classification_pipeline_seconds = (
+        time.perf_counter() - classification_pipeline_started
+    )
 
-    return add_hydrophobic_statistics_to_result(
+    statistics_pipeline_started = time.perf_counter()
+    completed_result = add_hydrophobic_statistics_to_result(
         classified_result,
         grouping_distance=grouping_distance,
         pose_identifiers=pose_identifiers,
@@ -25931,6 +28383,22 @@ def analyze_hydrophobic_interactions(
             include_serializable_tables
         ),
     )
+    statistics_pipeline_seconds = (
+        time.perf_counter() - statistics_pipeline_started
+    )
+    complete_hydrophobic_workflow_seconds = (
+        time.perf_counter() - complete_workflow_started
+    )
+
+    return _merge_hydrophobic_performance_timings(
+        completed_result,
+        {
+            "classification_pipeline_seconds": classification_pipeline_seconds,
+            "statistics_pipeline_seconds": statistics_pipeline_seconds,
+            "complete_hydrophobic_workflow_seconds": complete_hydrophobic_workflow_seconds,
+        },
+    )
+
 
 
 # -----------------------------------------------------------------------------
@@ -26501,6 +28969,188 @@ def merge_hydrophobic_result_entries(
 
 
 # -----------------------------------------------------------------------------
+# Conservative reuse of finalized per-pose derived data
+# -----------------------------------------------------------------------------
+
+def _normalized_cached_pose_identifier(
+    result: HydrophobicAnalysisResult,
+) -> str:
+    """Return the pose identifier associated with finalized cached data."""
+
+    return (
+        _normalize_optional_string(
+            result.metadata.get(
+                "pose_identifier"
+            )
+        )
+        or result.ligand_identifier
+        or "pose-unknown"
+    )
+
+
+def _cached_hydrophobic_summary_dict(
+    result: HydrophobicAnalysisResult,
+    *,
+    pose_identifier: Optional[str] = None,
+    round_digits: int = (
+        DEFAULT_HYDROPHOBIC_ROUND_DIGITS
+    ),
+) -> Optional[Dict[str, Any]]:
+    """Return a defensive copy of the finalized summary when equivalent.
+
+    The cache is reused only when the requested pose identity and rounding
+    exactly match the standard summary produced by
+    :func:`add_hydrophobic_statistics_to_result`. Otherwise callers fall back
+    to the original calculation path.
+    """
+
+    if not isinstance(
+        result,
+        HydrophobicAnalysisResult,
+    ):
+        return None
+
+    try:
+        digits = _nonnegative_integer(
+            round_digits,
+            name="rounding digits",
+        )
+    except (TypeError, ValueError):
+        return None
+
+    if digits != int(
+        DEFAULT_HYDROPHOBIC_ROUND_DIGITS
+    ):
+        return None
+
+    requested_pose = (
+        _normalize_optional_string(
+            pose_identifier
+        )
+        or _normalized_cached_pose_identifier(
+            result
+        )
+    )
+
+    if requested_pose != (
+        _normalized_cached_pose_identifier(
+            result
+        )
+    ):
+        return None
+
+    cached = result.metadata.get(
+        "summary"
+    )
+
+    if not isinstance(cached, Mapping):
+        return None
+
+    return _deepcopy(
+        dict(cached)
+    )
+
+
+def _cached_hydrophobic_tables_dict(
+    result: HydrophobicAnalysisResult,
+    *,
+    pose_identifier: Optional[str] = None,
+    round_digits: int = (
+        DEFAULT_HYDROPHOBIC_ROUND_DIGITS
+    ),
+) -> Optional[Dict[str, Any]]:
+    """Return finalized serializable tables when request semantics match."""
+
+    requested_pose = (
+        _normalize_optional_string(
+            pose_identifier
+        )
+        or _normalized_cached_pose_identifier(
+            result
+        )
+    )
+
+    if requested_pose != (
+        _normalized_cached_pose_identifier(
+            result
+        )
+    ):
+        return None
+
+    cached = result.metadata.get(
+        "serializable_tables"
+    )
+
+    if not isinstance(cached, Mapping):
+        return None
+
+    table_metadata = cached.get(
+        "metadata"
+    )
+
+    if not isinstance(
+        table_metadata,
+        Mapping,
+    ):
+        return None
+
+    try:
+        cached_digits = int(
+            table_metadata.get(
+                "round_digits",
+                -1,
+            )
+        )
+        requested_digits = _nonnegative_integer(
+            round_digits,
+            name="rounding digits",
+        )
+    except (TypeError, ValueError):
+        return None
+
+    if cached_digits != requested_digits:
+        return None
+
+    if bool(
+        table_metadata.get(
+            "interaction_metadata_included",
+            False,
+        )
+    ) != bool(
+        DEFAULT_SERIALIZE_INTERACTION_METADATA
+    ):
+        return None
+
+    if bool(
+        table_metadata.get(
+            "group_metadata_included",
+            False,
+        )
+    ) != bool(
+        DEFAULT_SERIALIZE_GROUP_METADATA
+    ):
+        return None
+
+    return _deepcopy(
+        dict(cached)
+    )
+
+
+def _cached_summary_value(
+    summary: Mapping[str, Any],
+    section: str,
+    key: str,
+    default: Any = None,
+) -> Any:
+    """Read one nested finalized-summary value without recomputation."""
+
+    nested = summary.get(section)
+    if not isinstance(nested, Mapping):
+        return default
+    return nested.get(key, default)
+
+
+# -----------------------------------------------------------------------------
 # DockModel serialization
 # -----------------------------------------------------------------------------
 
@@ -26518,8 +29168,10 @@ def serialize_hydrophobic_analysis_result_for_dock_model(
     """
     Serialize a hydrophobic result for storage in ``DockModel.hydrophobic``.
 
-    The serialized form contains no requirement for DockModel to know the
-    internal implementation of this module.
+    Finalized per-pose summaries and tables are reused when the requested
+    serialization semantics match those already computed by the analysis.
+    Any non-equivalent request automatically falls back to the original
+    calculation path.
     """
 
     if not isinstance(
@@ -26543,12 +29195,195 @@ def serialize_hydrophobic_analysis_result_for_dock_model(
         or "pose-unknown"
     )
 
-    summary = calculate_hydrophobic_summary(
-        result,
-        pose_identifiers=(
-            resolved_pose_identifier,
-        ),
+    cached_summary = (
+        _cached_hydrophobic_summary_dict(
+            result,
+            pose_identifier=(
+                resolved_pose_identifier
+            ),
+            round_digits=round_digits,
+        )
     )
+
+    summary: Optional[
+        HydrophobicSummary
+    ] = None
+
+    if cached_summary is None:
+        summary = calculate_hydrophobic_summary(
+            result,
+            pose_identifiers=(
+                resolved_pose_identifier,
+            ),
+        )
+
+        summary_dict = summary.to_dict(
+            round_digits=round_digits
+        )
+
+        interaction_count = (
+            summary.interaction_count
+        )
+        atomic_pair_count = (
+            summary.atomic_pair_count
+        )
+        local_interaction_count = (
+            summary.local_interaction_count
+        )
+        residue_count = summary.residue_count
+        hotspot_count = summary.hotspot_count
+        total_score = float(
+            summary.total_score
+        )
+        mean_score = (
+            None
+            if summary.mean_score is None
+            else float(summary.mean_score)
+        )
+        minimum_distance_value = (
+            None
+            if summary.minimum_distance is None
+            else float(summary.minimum_distance)
+        )
+        mean_distance_value = (
+            None
+            if summary.mean_distance is None
+            else float(summary.mean_distance)
+        )
+        maximum_distance_value = (
+            None
+            if summary.maximum_distance is None
+            else float(summary.maximum_distance)
+        )
+        approximate_contact_area = float(
+            summary.approximate_contact_area
+        )
+        classification_counts = dict(
+            summary.classification_counts
+        )
+        interaction_type_counts = dict(
+            summary.interaction_type_counts
+        )
+        residue_scores = {
+            key: float(value)
+            for key, value
+            in summary.residue_scores.items()
+        }
+        residue_pose_occupancy = {
+            key: float(value)
+            for key, value
+            in summary.residue_pose_occupancy.items()
+        }
+        hotspot_residue_identifiers = list(
+            summary.hotspot_residue_identifiers
+        )
+
+    else:
+        summary_dict = cached_summary
+        counts = summary_dict.get(
+            "counts",
+            {},
+        )
+        if not isinstance(counts, Mapping):
+            counts = {}
+
+        statistics = result.statistics
+
+        interaction_count = (
+            statistics.interaction_count
+        )
+        atomic_pair_count = int(
+            counts.get(
+                "atomic_pairs",
+                result.metadata.get(
+                    "total_atomic_pairs",
+                    interaction_count,
+                ),
+            )
+        )
+        local_interaction_count = int(
+            counts.get(
+                "local_interactions",
+                0,
+            )
+        )
+        residue_count = statistics.residue_count
+        hotspot_count = statistics.hotspot_count
+        total_score = float(
+            statistics.total_score
+        )
+        mean_score = (
+            None
+            if statistics.mean_score is None
+            else float(statistics.mean_score)
+        )
+        minimum_distance_value = (
+            None
+            if statistics.minimum_distance is None
+            else float(statistics.minimum_distance)
+        )
+        mean_distance_value = (
+            None
+            if statistics.mean_distance is None
+            else float(statistics.mean_distance)
+        )
+        maximum_distance_value = (
+            None
+            if statistics.maximum_distance is None
+            else float(statistics.maximum_distance)
+        )
+        approximate_contact_area = float(
+            result.metadata.get(
+                "approximate_contact_area",
+                _cached_summary_value(
+                    summary_dict,
+                    "surface",
+                    "approximate_contact_area",
+                    0.0,
+                )
+                or 0.0,
+            )
+        )
+        classification_counts = dict(
+            statistics.classification_counts
+        )
+        interaction_type_counts = dict(
+            statistics.interaction_type_counts
+        )
+        residue_scores = {
+            key: float(value)
+            for key, value
+            in statistics.residue_scores.items()
+        }
+
+        cached_occupancy = result.metadata.get(
+            "residue_pose_occupancy",
+            summary_dict.get(
+                "residue_pose_occupancy",
+                {},
+            ),
+        )
+        residue_pose_occupancy = (
+            {
+                str(key): float(value)
+                for key, value
+                in cached_occupancy.items()
+            }
+            if isinstance(
+                cached_occupancy,
+                Mapping,
+            )
+            else {}
+        )
+
+        cached_hotspots = summary_dict.get(
+            "hotspot_residue_identifiers",
+            (),
+        )
+        hotspot_residue_identifiers = [
+            str(value)
+            for value in cached_hotspots
+        ]
 
     serialized: Dict[str, Any] = {
         "schema": "dockanalyzer.hydrophobic",
@@ -26577,74 +29412,44 @@ def serialize_hydrophobic_analysis_result_for_dock_model(
             result.grouping_distance
         ),
         "interaction_count": (
-            summary.interaction_count
+            interaction_count
         ),
         "atomic_pair_count": (
-            summary.atomic_pair_count
+            atomic_pair_count
         ),
         "local_interaction_count": (
-            summary.local_interaction_count
+            local_interaction_count
         ),
-        "residue_count": (
-            summary.residue_count
-        ),
-        "hotspot_count": (
-            summary.hotspot_count
-        ),
-        "total_score": float(
-            summary.total_score
-        ),
-        "mean_score": (
-            None
-            if summary.mean_score is None
-            else float(summary.mean_score)
-        ),
+        "residue_count": residue_count,
+        "hotspot_count": hotspot_count,
+        "total_score": total_score,
+        "mean_score": mean_score,
         "minimum_distance": (
-            None
-            if summary.minimum_distance is None
-            else float(
-                summary.minimum_distance
-            )
+            minimum_distance_value
         ),
         "mean_distance": (
-            None
-            if summary.mean_distance is None
-            else float(
-                summary.mean_distance
-            )
+            mean_distance_value
         ),
         "maximum_distance": (
-            None
-            if summary.maximum_distance is None
-            else float(
-                summary.maximum_distance
-            )
+            maximum_distance_value
         ),
-        "approximate_contact_area": float(
-            summary.approximate_contact_area
+        "approximate_contact_area": (
+            approximate_contact_area
         ),
-        "classification_counts": dict(
-            summary.classification_counts
+        "classification_counts": (
+            classification_counts
         ),
-        "interaction_type_counts": dict(
-            summary.interaction_type_counts
+        "interaction_type_counts": (
+            interaction_type_counts
         ),
-        "residue_scores": {
-            key: float(value)
-            for key, value
-            in summary.residue_scores.items()
-        },
-        "residue_pose_occupancy": {
-            key: float(value)
-            for key, value
-            in summary.residue_pose_occupancy.items()
-        },
-        "hotspot_residue_identifiers": list(
-            summary.hotspot_residue_identifiers
+        "residue_scores": residue_scores,
+        "residue_pose_occupancy": (
+            residue_pose_occupancy
         ),
-        "summary": summary.to_dict(
-            round_digits=round_digits
+        "hotspot_residue_identifiers": (
+            hotspot_residue_identifiers
         ),
+        "summary": summary_dict,
         "metadata": {
             **dict(result.metadata),
             "dock_model_serialization": True,
@@ -26665,19 +29470,35 @@ def serialize_hydrophobic_analysis_result_for_dock_model(
         ]
 
     if include_tables:
-        tables = (
-            build_hydrophobic_serializable_tables(
+        cached_tables = (
+            _cached_hydrophobic_tables_dict(
                 result,
-                pose_identifiers=(
-                    resolved_pose_identifier,
+                pose_identifier=(
+                    resolved_pose_identifier
                 ),
                 round_digits=round_digits,
             )
         )
 
-        serialized["tables"] = (
-            tables.to_dict()
-        )
+        if cached_tables is not None:
+            serialized["tables"] = (
+                cached_tables
+            )
+
+        else:
+            tables = (
+                build_hydrophobic_serializable_tables(
+                    result,
+                    pose_identifiers=(
+                        resolved_pose_identifier,
+                    ),
+                    round_digits=round_digits,
+                )
+            )
+
+            serialized["tables"] = (
+                tables.to_dict()
+            )
 
     return serialized
 
@@ -26695,9 +29516,8 @@ def calculate_dock_model_hydrophobic_score(
     """
     Calculate the score exposed to DockModel.
 
-    By default, the complete hydrophobic total score is returned.
-    Optional normalization can support comparisons between ligands of
-    different sizes.
+    Final aggregate statistics are reused whenever possible. This preserves
+    the exact score semantics while avoiding another complete summary pass.
     """
 
     if not isinstance(
@@ -26708,28 +29528,56 @@ def calculate_dock_model_hydrophobic_score(
             "result must be a HydrophobicAnalysisResult."
         )
 
-    summary = calculate_hydrophobic_summary(
-        result
-    )
-
     score = float(
-        summary.total_score
+        result.statistics.total_score
     )
 
     if normalize_by_ligand_atom_count:
-        denominator = max(
-            summary.contacted_ligand_atom_count,
-            1,
+        cached_summary = (
+            _cached_hydrophobic_summary_dict(
+                result
+            )
         )
 
+        contacted_ligand_atom_count: Optional[
+            int
+        ] = None
+
+        if cached_summary is not None:
+            counts = cached_summary.get(
+                "counts",
+                {},
+            )
+            if isinstance(counts, Mapping):
+                try:
+                    contacted_ligand_atom_count = int(
+                        counts.get(
+                            "contacted_ligand_atoms",
+                            0,
+                        )
+                    )
+                except (TypeError, ValueError):
+                    contacted_ligand_atom_count = None
+
+        if contacted_ligand_atom_count is None:
+            summary = calculate_hydrophobic_summary(
+                result
+            )
+            contacted_ligand_atom_count = (
+                summary.contacted_ligand_atom_count
+            )
+
+        denominator = max(
+            contacted_ligand_atom_count,
+            1,
+        )
         score /= denominator
 
     if normalize_by_residue_count:
         denominator = max(
-            summary.residue_count,
+            result.statistics.residue_count,
             1,
         )
-
         score /= denominator
 
     return np.float64(
@@ -27326,14 +30174,47 @@ def attach_hydrophobic_results(
 
     if update_statistics:
         try:
-            update_dock_model_hydrophobic_statistics(
-                dock_model,
-                result,
-                serialize=True,
-                strict=strict,
+            cached_summary = (
+                _cached_hydrophobic_summary_dict(
+                    result,
+                    pose_identifier=(
+                        resolved_pose_identifier
+                    ),
+                )
             )
 
-            statistics_updated = True
+            if cached_summary is not None:
+                updated = False
+
+                for attribute_name in (
+                    DEFAULT_HYDROPHOBIC_STATISTICS_ATTRIBUTE_NAMES
+                ):
+                    if _safe_set_dock_model_attribute(
+                        dock_model,
+                        attribute_name,
+                        cached_summary,
+                        strict=False,
+                    ):
+                        updated = True
+                        break
+
+                if not updated and strict:
+                    raise AttributeError(
+                        "Could not update a hydrophobic statistics "
+                        "attribute on DockModel."
+                    )
+
+                statistics_updated = updated
+
+            else:
+                update_dock_model_hydrophobic_statistics(
+                    dock_model,
+                    result,
+                    serialize=True,
+                    strict=strict,
+                )
+
+                statistics_updated = True
 
         except Exception:
             if strict:
@@ -39027,6 +41908,79 @@ def _test_find_hydrophobic_hotspots() -> None:
 # -----------------------------------------------------------------------------
 # Section 9 — Normalization and threshold tests
 # -----------------------------------------------------------------------------
+
+@hydrophobic_test(
+    "section_9.score_v2.hydrophobic_saturation_descriptors",
+    section="12.3",
+    description=(
+        "Validate non-redundant residue-level hydrophobic saturation descriptors."
+    ),
+    tags=(
+        "classification",
+        "score-v2",
+        "saturation",
+        "section-9",
+    ),
+)
+def _test_score_v2_hydrophobic_saturation_descriptors() -> None:
+    """Validate Score v2 hydrophobic collection descriptors."""
+
+    interactions = tuple(_test_make_multi_residue_interactions())
+    duplicated = interactions + interactions[:1]
+
+    descriptors = hydrophobic_scoring_descriptors(
+        duplicated,
+        saturation_tau=3.0,
+        deduplicate_atom_pairs=True,
+    )
+
+    assert_hydrophobic_true(
+        descriptors["unique_interaction_pair_count"]
+        <= descriptors["raw_interaction_count"]
+    )
+    assert_hydrophobic_true(
+        descriptors["effective_residue_hydrophobic_count"]
+        <= descriptors["contacted_residue_count"] + 1e-12
+    )
+    assert_hydrophobic_true(
+        descriptors["quality_weighted_effective_hydrophobic_count"]
+        <= descriptors["effective_residue_hydrophobic_count"] + 1e-12
+    )
+    assert_hydrophobic_true(
+        descriptors["unique_ligand_atom_count"] >= 1
+    )
+
+    for interaction in interactions:
+        details = interaction.geometry_details
+        assert_hydrophobic_true(
+            "strength" in details
+            and "polar_penalty" in details
+            and "local_contact_count" in details
+        )
+
+    first_residue = interactions[0].receptor_residue_identifier
+    one_residue = tuple(
+        interaction
+        for interaction in interactions
+        if interaction.receptor_residue_identifier == first_residue
+    )
+    if one_residue:
+        small = hydrophobic_scoring_descriptors(
+            one_residue[:1],
+            saturation_tau=3.0,
+        )
+        large = hydrophobic_scoring_descriptors(
+            one_residue,
+            saturation_tau=3.0,
+        )
+        assert_hydrophobic_true(
+            large["effective_residue_hydrophobic_count"]
+            >= small["effective_residue_hydrophobic_count"]
+        )
+        assert_hydrophobic_true(
+            large["effective_residue_hydrophobic_count"] <= 1.0 + 1e-12
+        )
+
 
 @hydrophobic_test(
     "section_9.normalization.saturating_score",

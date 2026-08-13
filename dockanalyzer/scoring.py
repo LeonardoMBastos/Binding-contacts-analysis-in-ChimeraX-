@@ -13971,16 +13971,44 @@ INTERACTION_RESIDUE_PAIR_FIELDS: Final[
 
 
 DISTANCE_FIELDS: Final[Tuple[str, ...]] = (
+    # Generic detector-independent names.
     "distance",
     "distance_angstrom",
     "distance_a",
     "separation",
+
+    # Hydrogen-bond geometry.
+    "donor_acceptor_distance",
+
+    # Pi and charged-group geometry.
+    "centroid_distance",
+    "center_distance",
+
+    # Group/contact geometry.
+    "minimum_atomic_distance",
+    "minimum_atom_distance",
+    "minimum_contact_distance",
+    "mean_contact_distance",
 )
 
 ANGLE_FIELDS: Final[Tuple[str, ...]] = (
+    # Generic detector-independent names.
     "angle",
     "angle_degrees",
     "interaction_angle",
+
+    # Hydrogen-bond geometry.  D-H...A is the canonical primary H-bond
+    # angle.  Inferred donor/acceptor deviation angles are preserved in the
+    # detailed geometry payload instead of being incorrectly interpreted as
+    # a D-H...A angle.
+    "dha_angle",
+
+    # Pi geometry.
+    "plane_angle",
+    "normal_angle",
+    "acute_normal_angle",
+    "orientation_angle",
+    "direction_angle",
 )
 
 DIHEDRAL_FIELDS: Final[Tuple[str, ...]] = (
@@ -13993,17 +14021,104 @@ OFFSET_FIELDS: Final[Tuple[str, ...]] = (
     "offset",
     "lateral_offset",
     "centroid_offset",
+    "mean_lateral_offset",
+    "radial_offset",
 )
 
 PLANARITY_FIELDS: Final[Tuple[str, ...]] = (
     "planarity",
     "planarity_rmsd",
+    "ring_planarity",
+    "ring_1_planarity",
+    "group_planarity",
+    "amide_planarity",
 )
 
 OVERLAP_FIELDS: Final[Tuple[str, ...]] = (
     "overlap",
     "overlap_fraction",
     "overlap_ratio",
+    "vdw_overlap",
+    "overlap_depth",
+)
+
+# Detector-specific geometric fields retained verbatim in canonical extracted
+# data.  These fields are intentionally broader than the six legacy primary
+# geometry metrics above.  Stage 1 preserves the complete detector geometry
+# so later score revisions can use family-specific rules without reopening the
+# detector modules or losing information at the scoring boundary.
+INTERACTION_GEOMETRY_DETAIL_FIELDS: Final[Tuple[str, ...]] = (
+    # Hydrogen bonds.
+    "donor_acceptor_distance",
+    "hydrogen_acceptor_distance",
+    "donor_hydrogen_distance",
+    "dha_angle",
+    "donor_angle",
+    "acceptor_angle",
+    "linearity_deviation",
+    "has_explicit_hydrogen_geometry",
+    "has_angular_geometry",
+
+    # Pi interactions.
+    "centroid_distance",
+    "minimum_atomic_distance",
+    "maximum_atomic_distance",
+    "normal_angle",
+    "acute_normal_angle",
+    "plane_angle",
+    "lateral_offset",
+    "radial_offset",
+    "plane_height",
+    "signed_height",
+    "height",
+    "absolute_height",
+    "orientation_angle",
+    "direction_angle",
+    "carbonyl_normal_angle",
+    "carbonyl_centroid_angle",
+    "lateral_offset_ring_1",
+    "lateral_offset_ring_2",
+    "ring_1_lateral_offset",
+    "ring_2_lateral_offset",
+    "mean_lateral_offset",
+    "ring_1_planarity",
+    "ring_2_planarity",
+    "ring_planarity",
+    "group_planarity",
+    "amide_planarity",
+    "planarity_rmsd",
+    "planarity_quality",
+    "geometry_confidence",
+    "geometry_score",
+    "distance_score",
+    "angle_score",
+    "offset_score",
+    "planarity_score",
+    "charge_score",
+    "effective_charge",
+    "face",
+
+    # Salt bridges and grouped hydrophobic interactions.
+    "center_distance",
+    "minimum_atom_distance",
+    "maximum_atom_distance",
+    "mean_atom_distance",
+    "minimum_group_distance",
+    "maximum_group_distance",
+    "mean_group_distance",
+    "mean_contact_distance",
+    "local_centroid_distance",
+    "local_contact_count",
+    "contact_count",
+    "polar_penalty",
+
+    # Contacts/clashes and generic geometry state.
+    "vdw_overlap",
+    "overlap_depth",
+    "overlap_fraction",
+    "valid",
+    "borderline",
+    "warnings",
 )
 
 
@@ -15987,6 +16102,214 @@ def extract_interaction_residue_pair(
 # 5.11. Geometry extraction
 # -----------------------------------------------------------------------------
 
+def _interaction_geometry_containers(
+    interaction: Any,
+) -> Tuple[Any, ...]:
+    """Return nested detector geometry containers in priority order."""
+
+    containers: List[Any] = []
+
+    for field_name in (
+        "geometry",
+        "geometry_details",
+        "geometric_data",
+        "geometry_metadata",
+    ):
+        extracted = extract_named_value(
+            interaction,
+            (field_name,),
+            allow_none=False,
+            call_methods=False,
+        )
+
+        if not extracted.found:
+            continue
+
+        value = extracted.value
+
+        if value is interaction:
+            continue
+
+        if any(value is existing for existing in containers):
+            continue
+
+        containers.append(value)
+
+    return tuple(containers)
+
+
+def _extract_geometry_numeric_value(
+    interaction: Any,
+    field_names: Iterable[str],
+    *,
+    default: Optional[float] = None,
+) -> Optional[float]:
+    """Extract a numeric geometry value from top-level or nested data."""
+
+    direct = extract_numeric_value(
+        interaction,
+        field_names,
+        default=None,
+    )
+
+    if direct is not None:
+        return direct
+
+    for container in _interaction_geometry_containers(interaction):
+        nested = extract_numeric_value(
+            container,
+            field_names,
+            default=None,
+        )
+
+        if nested is not None:
+            return nested
+
+    return default
+
+
+def _geometry_container_items(
+    source: Any,
+) -> Iterable[Tuple[str, Any]]:
+    """Iterate safe fields from a detector-specific geometry object."""
+
+    if source is None:
+        return ()
+
+    if isinstance(source, Mapping):
+        return tuple(
+            (str(key), value)
+            for key, value in source.items()
+        )
+
+    if is_dataclass(source):
+        return tuple(
+            (
+                dataclass_field.name,
+                safe_getattr(
+                    source,
+                    dataclass_field.name,
+                    None,
+                ),
+            )
+            for dataclass_field in fields(source)
+        )
+
+    to_dict = safe_getattr(source, "to_dict", None)
+    if callable(to_dict):
+        try:
+            converted = to_dict()
+        except (
+            TypeError,
+            ValueError,
+            AttributeError,
+            RuntimeError,
+        ):
+            converted = None
+
+        if isinstance(converted, Mapping):
+            return tuple(
+                (str(key), value)
+                for key, value in converted.items()
+            )
+
+    try:
+        namespace = vars(source)
+    except (TypeError, AttributeError):
+        namespace = None
+
+    if isinstance(namespace, Mapping):
+        return tuple(
+            (str(key), value)
+            for key, value in namespace.items()
+            if not str(key).startswith("_")
+        )
+
+    return ()
+
+
+def extract_interaction_geometry_details(
+    interaction: Any,
+    *,
+    include_missing: bool = False,
+) -> Mapping[str, Any]:
+    """
+    Preserve detector-specific geometry without collapsing it to six fields.
+
+    Nested ``geometry`` objects produced by the H-bond, pi and salt-bridge
+    detectors are retained together with known top-level geometry fields.
+    The returned mapping is immutable and contains no scoring weights.
+    """
+
+    details: Dict[str, Any] = {}
+
+    # Nested detector geometry is authoritative because it normally contains
+    # the richest representation (for example D-H...A angles or pi offsets).
+    for container in _interaction_geometry_containers(interaction):
+        for raw_name, value in _geometry_container_items(container):
+            name = _coerce_identifier(raw_name)
+            if not name or name.startswith("_"):
+                continue
+            if value is None and not include_missing:
+                continue
+            details.setdefault(name, value)
+
+    # Preserve selected geometry fields exposed directly on interaction
+    # objects.  These include convenience properties not duplicated inside a
+    # nested geometry dataclass.
+    for field_name in INTERACTION_GEOMETRY_DETAIL_FIELDS:
+        extracted = extract_named_value(
+            interaction,
+            (field_name,),
+            allow_none=include_missing,
+            call_methods=False,
+        )
+
+        if not extracted.found:
+            continue
+
+        if extracted.value is None and not include_missing:
+            continue
+
+        details.setdefault(field_name, extracted.value)
+
+    # Always expose the canonical legacy geometry when available so callers
+    # can audit how detector-specific metrics were mapped to scoring fields.
+    canonical = {
+        "distance": _extract_geometry_numeric_value(
+            interaction,
+            DISTANCE_FIELDS,
+        ),
+        "angle": _extract_geometry_numeric_value(
+            interaction,
+            ANGLE_FIELDS,
+        ),
+        "dihedral": _extract_geometry_numeric_value(
+            interaction,
+            DIHEDRAL_FIELDS,
+        ),
+        "offset": _extract_geometry_numeric_value(
+            interaction,
+            OFFSET_FIELDS,
+        ),
+        "planarity": _extract_geometry_numeric_value(
+            interaction,
+            PLANARITY_FIELDS,
+        ),
+        "overlap": _extract_geometry_numeric_value(
+            interaction,
+            OVERLAP_FIELDS,
+        ),
+    }
+
+    for key, value in canonical.items():
+        if value is None and not include_missing:
+            continue
+        details.setdefault(key, value)
+
+    return _freeze_result_metadata(details)
+
+
 def extract_interaction_distance(
     interaction: Any,
     *,
@@ -15996,7 +16319,7 @@ def extract_interaction_distance(
     Extract an interaction distance in ångströms.
     """
 
-    return extract_numeric_value(
+    return _extract_geometry_numeric_value(
         interaction,
         DISTANCE_FIELDS,
         default=default,
@@ -16012,7 +16335,7 @@ def extract_interaction_angle(
     Extract a primary interaction angle in degrees.
     """
 
-    return extract_numeric_value(
+    return _extract_geometry_numeric_value(
         interaction,
         ANGLE_FIELDS,
         default=default,
@@ -16028,7 +16351,7 @@ def extract_interaction_dihedral(
     Extract a dihedral or torsion angle in degrees.
     """
 
-    return extract_numeric_value(
+    return _extract_geometry_numeric_value(
         interaction,
         DIHEDRAL_FIELDS,
         default=default,
@@ -16044,7 +16367,7 @@ def extract_interaction_offset(
     Extract a lateral or centroid offset.
     """
 
-    return extract_numeric_value(
+    return _extract_geometry_numeric_value(
         interaction,
         OFFSET_FIELDS,
         default=default,
@@ -16060,7 +16383,7 @@ def extract_interaction_planarity(
     Extract a planarity metric.
     """
 
-    return extract_numeric_value(
+    return _extract_geometry_numeric_value(
         interaction,
         PLANARITY_FIELDS,
         default=default,
@@ -16076,7 +16399,7 @@ def extract_interaction_overlap(
     Extract an overlap metric.
     """
 
-    return extract_numeric_value(
+    return _extract_geometry_numeric_value(
         interaction,
         OVERLAP_FIELDS,
         default=default,
@@ -16381,6 +16704,11 @@ def build_interaction_metadata(
                 interaction
             )
         )
+        metadata["geometry_details"] = dict(
+            extract_interaction_geometry_details(
+                interaction
+            )
+        )
 
     if include_source_metadata:
         metadata["source_metadata"] = dict(
@@ -16580,6 +16908,13 @@ class ExtractedInteractionData:
     )
 
     metadata: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_METADATA,
+        compare=False,
+        hash=False,
+        repr=False,
+    )
+
+    geometry_details: Mapping[str, Any] = field(
         default_factory=lambda: _EMPTY_METADATA,
         compare=False,
         hash=False,
@@ -16787,6 +17122,13 @@ class ExtractedInteractionData:
                 self.metadata
             ),
         )
+        object.__setattr__(
+            self,
+            "geometry_details",
+            _freeze_result_metadata(
+                self.geometry_details
+            ),
+        )
 
     @property
     def geometry(self) -> Mapping[str, float]:
@@ -16892,6 +17234,7 @@ class ExtractedInteractionData:
             "ligand_id": self.ligand_id,
             "container_name": self.container_name,
             "geometry": dict(self.geometry),
+            "geometry_details": dict(self.geometry_details),
             "source": self.source,
         }
 
@@ -17041,6 +17384,11 @@ def extract_interaction_data(
                 else None
             ),
             metadata=metadata,
+            geometry_details=(
+                metadata.get("geometry_details", {})
+                if isinstance(metadata, Mapping)
+                else {}
+            ),
         )
 
     canonical_type = extract_interaction_type(
@@ -17162,6 +17510,9 @@ def extract_interaction_data(
             else None
         ),
         metadata=metadata,
+        geometry_details=extract_interaction_geometry_details(
+            interaction
+        ),
     )
 
 
@@ -17252,6 +17603,9 @@ def interaction_score_from_extracted_data(
     )
     metadata["geometry"] = dict(
         data.geometry
+    )
+    metadata["geometry_details"] = dict(
+        data.geometry_details
     )
     metadata["ligand_id"] = data.ligand_id
     metadata["container_name"] = data.container_name
@@ -17883,6 +18237,7 @@ _SECTION_5_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "EXTRACTION_SOURCE_INFERRED",
     "EXTRACTION_SOURCE_UNKNOWN",
     "EXTRACTION_SOURCES",
+    "INTERACTION_GEOMETRY_DETAIL_FIELDS",
 
     # Exceptions
     "ScoringExtractionError",
@@ -17953,6 +18308,7 @@ _SECTION_5_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "extract_interaction_planarity",
     "extract_interaction_overlap",
     "extract_geometry_metadata",
+    "extract_interaction_geometry_details",
 
     # Context extraction
     "extract_pose_id",
@@ -30452,8 +30808,29 @@ class GeometryQualityProfile:
             preserve_unknown=True,
         )
 
-        return self.rules_by_type.get(
+        direct_rules = self.rules_by_type.get(
             canonical_type,
+        )
+
+        if direct_rules is not None:
+            return direct_rules
+
+        # Detector adapters frequently emit scoring subtypes rather than the
+        # family-level names used by the original geometry profile.  Preserve
+        # subtype-specific pi behavior and otherwise inherit the family rule
+        # set so geometry is not silently discarded.
+        if canonical_type in {
+            SCORE_TYPE_PI_PARALLEL,
+            SCORE_TYPE_PI_OFFSET,
+        }:
+            fallback_type = SCORE_TYPE_PI_STACKING
+        else:
+            fallback_type = canonical_interaction_family(
+                canonical_type
+            )
+
+        return self.rules_by_type.get(
+            fallback_type,
             (),
         )
 
@@ -40335,6 +40712,17 @@ def extracted_interaction_data_from_mapping(
         )
     )
 
+    mapping_geometry = value.get("geometry", {})
+    if not isinstance(mapping_geometry, Mapping):
+        mapping_geometry = {}
+
+    mapping_geometry_details = value.get(
+        "geometry_details",
+        mapping_geometry,
+    )
+    if not isinstance(mapping_geometry_details, Mapping):
+        mapping_geometry_details = {}
+
     data = ExtractedInteractionData(
         interaction_id=_coerce_identifier(
             value.get(
@@ -40363,6 +40751,10 @@ def extracted_interaction_data_from_mapping(
             "polarity",
             POLARITY_UNKNOWN,
         ),
+        accepted=bool(value.get("accepted", True)),
+        rejection_reason=_coerce_optional_text(
+            value.get("rejection_reason", "")
+        ),
         atom_pair=(
             None
             if not value.get("atom_pair")
@@ -40373,11 +40765,30 @@ def extracted_interaction_data_from_mapping(
             if not value.get("residue_pair")
             else tuple(value["residue_pair"])
         ),
-        distance=value.get("distance"),
-        angle=value.get("angle"),
-        offset=value.get("offset"),
-        planarity=value.get("planarity"),
-        overlap=value.get("overlap"),
+        distance=value.get(
+            "distance",
+            mapping_geometry.get("distance"),
+        ),
+        angle=value.get(
+            "angle",
+            mapping_geometry.get("angle"),
+        ),
+        dihedral=value.get(
+            "dihedral",
+            mapping_geometry.get("dihedral"),
+        ),
+        offset=value.get(
+            "offset",
+            mapping_geometry.get("offset"),
+        ),
+        planarity=value.get(
+            "planarity",
+            mapping_geometry.get("planarity"),
+        ),
+        overlap=value.get(
+            "overlap",
+            mapping_geometry.get("overlap"),
+        ),
         pose_id=_coerce_identifier(
             value.get(
                 "pose_id",
@@ -40411,6 +40822,7 @@ def extracted_interaction_data_from_mapping(
             "metadata",
             {},
         ),
+        geometry_details=mapping_geometry_details,
     )
 
     validate_extracted_interaction_data(data)
@@ -48291,6 +48703,270 @@ DEFAULT_POSE_INCLUDE_RESIDUE_AGGREGATION: Final[bool] = True
 DEFAULT_POSE_PRESERVE_COLLECTION_RESULT: Final[bool] = True
 DEFAULT_POSE_VALIDATE_RESULT: Final[bool] = True
 
+# Score v2 Stage 2: bounded, non-redundant contact-coverage contribution.
+# Generic contacts retain zero per-interaction base weight.  The pose-level
+# component below uses residue coverage, unique atom-pair support and vdW
+# geometry instead of summing every contact independently.
+CONTACT_COLLECTION_DESCRIPTOR_KEY: Final[str] = (
+    "contact_collection_descriptors"
+)
+CONTACT_COVERAGE_COMPONENT_KIND: Final[str] = "contact_coverage"
+DEFAULT_CONTACT_COVERAGE_MAX_SCORE: Final[float] = 3.0
+DEFAULT_CONTACT_COVERAGE_RESIDUE_SCALE: Final[float] = 4.0
+DEFAULT_CONTACT_COVERAGE_PAIR_SCALE: Final[float] = 12.0
+DEFAULT_CONTACT_COVERAGE_RESIDUE_WEIGHT: Final[float] = 0.75
+DEFAULT_CONTACT_COVERAGE_PAIR_WEIGHT: Final[float] = 0.25
+DEFAULT_CONTACT_COVERAGE_MISSING_QUALITY: Final[float] = 0.50
+DEFAULT_CONTACT_COVERAGE_SATURATION_TAU: Final[float] = 3.0
+
+# Score v2 Stage 3: bounded hydrophobic-family contribution.  Individual
+# hydrophobic interactions remain fully scored so their chemistry and geometry
+# stay auditable, but their positive pose-level contribution is replaced by a
+# residue-aware saturating family term.
+HYDROPHOBIC_COLLECTION_DESCRIPTOR_KEY: Final[str] = (
+    "hydrophobic_collection_descriptors"
+)
+HYDROPHOBIC_SATURATION_COMPONENT_KIND: Final[str] = (
+    "hydrophobic_saturation"
+)
+DEFAULT_HYDROPHOBIC_SATURATION_MAX_SCORE: Final[float] = 4.0
+DEFAULT_HYDROPHOBIC_SATURATION_RESIDUE_SCALE: Final[float] = 3.0
+DEFAULT_HYDROPHOBIC_SATURATION_MISSING_QUALITY: Final[float] = 0.50
+DEFAULT_HYDROPHOBIC_SATURATION_RESIDUE_TAU: Final[float] = 3.0
+
+# Score v2 Stage 4: moderate ligand size/opportunity normalization.  The
+# normalization is deliberately one-sided: abundant chemical opportunities can
+# reduce positive evidence, but small ligands are not boosted above their raw
+# score and unfavorable/steric contributions are never diluted.  Affinity and
+# RMSD are not inputs.  Project configuration is authoritative; pose metadata
+# may still override it for controlled per-run experiments.
+LIGAND_OPPORTUNITY_DESCRIPTOR_KEY: Final[str] = (
+    "ligand_opportunity_descriptors"
+)
+OPPORTUNITY_NORMALIZATION_SETTINGS_KEY: Final[str] = (
+    "opportunity_normalization"
+)
+OPPORTUNITY_NORMALIZATION_COMPONENT_KIND: Final[str] = (
+    "ligand_opportunity_normalization"
+)
+
+# Legacy values are retained only as backwards-compatible fallbacks for older
+# config.py files that predate Score v2 Stage 4.  When the Stage 4 settings are
+# present in config.py, those values are the runtime source of truth.
+_LEGACY_OPPORTUNITY_NORMALIZATION_ENABLED: Final[bool] = True
+_LEGACY_OPPORTUNITY_SIZE_REFERENCE_HEAVY_ATOMS: Final[float] = 8.0
+_LEGACY_OPPORTUNITY_SIZE_EXPONENT: Final[float] = 0.20
+_LEGACY_OPPORTUNITY_SIZE_MIN_FACTOR: Final[float] = 0.70
+_LEGACY_OPPORTUNITY_FAMILY_MIN_FACTOR: Final[float] = 0.65
+_LEGACY_OPPORTUNITY_REFERENCE_COUNTS: Final[Mapping[str, float]] = (
+    MappingProxyType(
+        {
+            SCORE_FAMILY_CONTACT: 8.0,
+            SCORE_FAMILY_HYDROPHOBIC: 4.0,
+            SCORE_FAMILY_HYDROGEN_BOND: 3.0,
+            SCORE_FAMILY_PI: 1.0,
+            SCORE_FAMILY_IONIC: 1.0,
+        }
+    )
+)
+_LEGACY_OPPORTUNITY_FAMILY_EXPONENTS: Final[Mapping[str, float]] = (
+    MappingProxyType(
+        {
+            SCORE_FAMILY_CONTACT: 0.10,
+            SCORE_FAMILY_HYDROPHOBIC: 0.20,
+            SCORE_FAMILY_HYDROGEN_BOND: 0.15,
+            SCORE_FAMILY_PI: 0.15,
+            SCORE_FAMILY_IONIC: 0.15,
+        }
+    )
+)
+
+
+def _score_v2_stage4_config_block() -> Mapping[str, Any]:
+    """Return the Stage 4 settings declared by :mod:`config` when present."""
+
+    block = getattr(config, "SCORING_OPPORTUNITY_NORMALIZATION", None)
+    if block is None:
+        return MappingProxyType({})
+    if not isinstance(block, Mapping):
+        raise ValueError(
+            "config.SCORING_OPPORTUNITY_NORMALIZATION must be a mapping"
+        )
+    return MappingProxyType(dict(block))
+
+
+def _score_v2_stage4_config_value(
+    block_key: str,
+    flat_name: str,
+    fallback: Any,
+) -> Any:
+    """Resolve one Stage 4 value from config with legacy fallback support."""
+
+    block = _score_v2_stage4_config_block()
+    if block_key in block:
+        return block[block_key]
+    return getattr(config, flat_name, fallback)
+
+
+def _score_v2_stage4_config_bool(
+    block_key: str,
+    flat_name: str,
+    fallback: bool,
+) -> bool:
+    """Resolve one strictly boolean Stage 4 config value."""
+
+    value = _score_v2_stage4_config_value(block_key, flat_name, fallback)
+    if not isinstance(value, bool):
+        raise ValueError(f"config.{flat_name} must be a boolean")
+    return value
+
+
+def _score_v2_stage4_config_float(
+    block_key: str,
+    flat_name: str,
+    fallback: float,
+    *,
+    positive: bool = False,
+    unit_interval: bool = False,
+) -> float:
+    """Resolve and validate one scalar Stage 4 config value."""
+
+    value = _score_v2_stage4_config_value(block_key, flat_name, fallback)
+    if isinstance(value, bool):
+        raise ValueError(f"config.{flat_name} must be numeric")
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"config.{flat_name} must be numeric") from exc
+    if not isfinite(result):
+        raise ValueError(f"config.{flat_name} must be finite")
+    if positive and result <= 0.0:
+        raise ValueError(f"config.{flat_name} must be positive")
+    if unit_interval and not 0.0 <= result <= 1.0:
+        raise ValueError(f"config.{flat_name} must be between 0 and 1")
+    if not positive and not unit_interval and result < 0.0:
+        raise ValueError(f"config.{flat_name} must be non-negative")
+    return result
+
+
+def _score_v2_stage4_config_family_mapping(
+    block_key: str,
+    flat_name: str,
+    fallback: Mapping[str, float],
+    *,
+    positive: bool,
+) -> Mapping[str, float]:
+    """Resolve one complete per-family Stage 4 mapping from config."""
+
+    raw = _score_v2_stage4_config_value(block_key, flat_name, fallback)
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"config.{flat_name} must be a mapping")
+    expected = (
+        SCORE_FAMILY_CONTACT,
+        SCORE_FAMILY_HYDROPHOBIC,
+        SCORE_FAMILY_HYDROGEN_BOND,
+        SCORE_FAMILY_PI,
+        SCORE_FAMILY_IONIC,
+    )
+    result: Dict[str, float] = {}
+    for family in expected:
+        if family not in raw:
+            raise ValueError(
+                f"config.{flat_name} is missing family {family!r}"
+            )
+        value = raw[family]
+        if isinstance(value, bool):
+            raise ValueError(
+                f"config.{flat_name}[{family!r}] must be numeric"
+            )
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                f"config.{flat_name}[{family!r}] must be numeric"
+            ) from exc
+        if not isfinite(number):
+            raise ValueError(
+                f"config.{flat_name}[{family!r}] must be finite"
+            )
+        if positive and number <= 0.0:
+            raise ValueError(
+                f"config.{flat_name}[{family!r}] must be positive"
+            )
+        if not positive and number < 0.0:
+            raise ValueError(
+                f"config.{flat_name}[{family!r}] must be non-negative"
+            )
+        result[family] = number
+    return MappingProxyType(result)
+
+
+DEFAULT_OPPORTUNITY_NORMALIZATION_ENABLED: Final[bool] = (
+    _score_v2_stage4_config_bool(
+        "enabled",
+        "SCORING_OPPORTUNITY_NORMALIZATION_ENABLED",
+        _LEGACY_OPPORTUNITY_NORMALIZATION_ENABLED,
+    )
+)
+DEFAULT_OPPORTUNITY_SIZE_REFERENCE_HEAVY_ATOMS: Final[float] = (
+    _score_v2_stage4_config_float(
+        "size_reference_heavy_atoms",
+        "SCORING_OPPORTUNITY_SIZE_REFERENCE_HEAVY_ATOMS",
+        _LEGACY_OPPORTUNITY_SIZE_REFERENCE_HEAVY_ATOMS,
+        positive=True,
+    )
+)
+DEFAULT_OPPORTUNITY_SIZE_EXPONENT: Final[float] = (
+    _score_v2_stage4_config_float(
+        "size_exponent",
+        "SCORING_OPPORTUNITY_SIZE_EXPONENT",
+        _LEGACY_OPPORTUNITY_SIZE_EXPONENT,
+    )
+)
+DEFAULT_OPPORTUNITY_SIZE_MIN_FACTOR: Final[float] = (
+    _score_v2_stage4_config_float(
+        "size_min_factor",
+        "SCORING_OPPORTUNITY_SIZE_MIN_FACTOR",
+        _LEGACY_OPPORTUNITY_SIZE_MIN_FACTOR,
+        unit_interval=True,
+    )
+)
+DEFAULT_OPPORTUNITY_FAMILY_MIN_FACTOR: Final[float] = (
+    _score_v2_stage4_config_float(
+        "family_min_factor",
+        "SCORING_OPPORTUNITY_FAMILY_MIN_FACTOR",
+        _LEGACY_OPPORTUNITY_FAMILY_MIN_FACTOR,
+        unit_interval=True,
+    )
+)
+DEFAULT_OPPORTUNITY_REFERENCE_COUNTS: Final[Mapping[str, float]] = (
+    _score_v2_stage4_config_family_mapping(
+        "reference_counts",
+        "SCORING_OPPORTUNITY_REFERENCE_COUNTS",
+        _LEGACY_OPPORTUNITY_REFERENCE_COUNTS,
+        positive=True,
+    )
+)
+DEFAULT_OPPORTUNITY_FAMILY_EXPONENTS: Final[Mapping[str, float]] = (
+    _score_v2_stage4_config_family_mapping(
+        "family_exponents",
+        "SCORING_OPPORTUNITY_FAMILY_EXPONENTS",
+        _LEGACY_OPPORTUNITY_FAMILY_EXPONENTS,
+        positive=False,
+    )
+)
+OPPORTUNITY_DESCRIPTOR_FIELD_BY_FAMILY: Final[Mapping[str, str]] = (
+    MappingProxyType(
+        {
+            SCORE_FAMILY_CONTACT: "contact_opportunity_count",
+            SCORE_FAMILY_HYDROPHOBIC: "hydrophobic_opportunity_count",
+            SCORE_FAMILY_HYDROGEN_BOND: "hbond_opportunity_count",
+            SCORE_FAMILY_PI: "pi_opportunity_count",
+            SCORE_FAMILY_IONIC: "saltbridge_opportunity_count",
+        }
+    )
+)
+
 
 # -----------------------------------------------------------------------------
 # 16.2. Normalization
@@ -49904,7 +50580,1251 @@ def resolve_pose_ligand_identifier(
 
 
 # -----------------------------------------------------------------------------
-# 16.12. Per-interaction pose weights
+# 16.12. Score v2 contact-coverage component
+# -----------------------------------------------------------------------------
+
+def _contact_score_nonnegative_float(
+    value: Any,
+    *,
+    default: float = 0.0,
+) -> float:
+    """Return one finite non-negative contact descriptor."""
+
+    if value is None or isinstance(value, bool):
+        return float(default)
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return float(default)
+    if not math.isfinite(normalized) or normalized < 0.0:
+        return float(default)
+    return normalized
+
+
+def _contact_score_unit_float(
+    value: Any,
+    *,
+    default: float = DEFAULT_CONTACT_COVERAGE_MISSING_QUALITY,
+) -> float:
+    """Return one finite descriptor constrained to the inclusive 0..1 range."""
+
+    normalized = _contact_score_nonnegative_float(
+        value,
+        default=default,
+    )
+    return float(min(1.0, max(0.0, normalized)))
+
+
+def _contact_score_atom_pair_key(
+    score: InteractionScore,
+) -> Tuple[str, ...]:
+    """Return a stable atom-pair identity for contact deduplication."""
+
+    pair = score.atom_pair
+    if not pair:
+        pair = score.metadata.get("atom_pair")
+    if not pair:
+        return ("interaction", score.interaction_id)
+    return tuple(str(item) for item in pair)
+
+
+def _contact_score_receptor_residue_key(
+    score: InteractionScore,
+) -> str:
+    """Return the receptor-side residue key used by contact coverage."""
+
+    pair = score.residue_pair
+    if not pair:
+        pair = score.metadata.get("residue_pair")
+    if pair:
+        try:
+            first = tuple(pair)[0]
+        except (TypeError, IndexError):
+            first = None
+        if first is not None:
+            return str(first)
+    return "unknown"
+
+
+def _contact_score_vdw_quality(
+    score: InteractionScore,
+) -> Optional[float]:
+    """Extract the vdW quality descriptor retained by Score v2 Stage 1."""
+
+    for container in (
+        score.metadata.get("geometry_details"),
+        score.metadata.get("geometry"),
+        score.metadata,
+    ):
+        if not isinstance(container, Mapping):
+            continue
+        value = container.get("vdw_quality")
+        if value is None:
+            continue
+        try:
+            normalized = float(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(normalized):
+            return float(min(1.0, max(0.0, normalized)))
+    return None
+
+
+def infer_contact_collection_descriptors(
+    scores: Iterable[InteractionScore],
+    *,
+    saturation_tau: Number = DEFAULT_CONTACT_COVERAGE_SATURATION_TAU,
+) -> Mapping[str, Any]:
+    """
+    Infer non-redundant contact descriptors from scored contact interactions.
+
+    This is a compatibility fallback.  The preferred path is the descriptor
+    block produced by contacts.py Stage 2 and transported by analyze.py.
+    """
+
+    tau = _coerce_finite_score_value(
+        saturation_tau,
+        name="contact saturation tau",
+    )
+    if tau <= 0.0:
+        raise PoseScoringInputError(
+            "contact saturation tau must be greater than zero."
+        )
+
+    contact_scores = tuple(
+        score
+        for score in scores
+        if score.interaction_family == SCORE_FAMILY_CONTACT
+        or score.interaction_type in CONTACT_INTERACTION_TYPES
+    )
+    if not contact_scores:
+        return MappingProxyType({})
+
+    shortest_by_pair: Dict[Tuple[str, ...], InteractionScore] = {}
+    for score in contact_scores:
+        key = _contact_score_atom_pair_key(score)
+        previous = shortest_by_pair.get(key)
+        if previous is None:
+            shortest_by_pair[key] = score
+            continue
+        previous_distance = previous.metadata.get("geometry", {}).get(
+            "distance"
+        ) if isinstance(previous.metadata.get("geometry"), Mapping) else None
+        current_distance = score.metadata.get("geometry", {}).get(
+            "distance"
+        ) if isinstance(score.metadata.get("geometry"), Mapping) else None
+        previous_value = _contact_score_nonnegative_float(
+            previous_distance,
+            default=math.inf,
+        )
+        current_value = _contact_score_nonnegative_float(
+            current_distance,
+            default=math.inf,
+        )
+        if current_value < previous_value:
+            shortest_by_pair[key] = score
+
+    unique_scores = tuple(shortest_by_pair.values())
+    residue_counts: Dict[str, int] = {}
+    quality_values: List[float] = []
+    residue_quality_values: Dict[str, List[float]] = {}
+
+    for score in unique_scores:
+        residue_key = _contact_score_receptor_residue_key(score)
+        residue_counts[residue_key] = residue_counts.get(residue_key, 0) + 1
+        quality = _contact_score_vdw_quality(score)
+        if quality is not None:
+            quality_values.append(quality)
+            residue_quality_values.setdefault(residue_key, []).append(quality)
+
+    residues: Dict[str, Dict[str, Any]] = {}
+    effective_residue_count = 0.0
+    for residue_key, count in sorted(residue_counts.items()):
+        saturation = float(1.0 - math.exp(-float(count) / float(tau)))
+        effective_residue_count += saturation
+        residue_qualities = residue_quality_values.get(residue_key, ())
+        residues[residue_key] = {
+            "residue_key": residue_key,
+            "unique_contact_pair_count": int(count),
+            "contact_saturation": saturation,
+            "mean_vdw_quality": (
+                None
+                if not residue_qualities
+                else float(statistics.fmean(residue_qualities))
+            ),
+            "maximum_vdw_quality": (
+                None
+                if not residue_qualities
+                else float(max(residue_qualities))
+            ),
+        }
+
+    return MappingProxyType(
+        {
+            "descriptor_source": "scoring_fallback",
+            "residue_side": "receptor",
+            "exclude_clashes": True,
+            "deduplicate_atom_pairs": True,
+            "saturation_tau": float(tau),
+            "contacted_residue_count": len(residue_counts),
+            "unique_contact_pair_count": len(unique_scores),
+            "effective_residue_contact_count": float(effective_residue_count),
+            "mean_residue_saturation": (
+                None
+                if not residue_counts
+                else float(effective_residue_count / len(residue_counts))
+            ),
+            "mean_vdw_quality": (
+                None
+                if not quality_values
+                else float(statistics.fmean(quality_values))
+            ),
+            "maximum_vdw_quality": (
+                None
+                if not quality_values
+                else float(max(quality_values))
+            ),
+            "residues": residues,
+        }
+    )
+
+
+def extract_contact_collection_descriptors(
+    scores: Iterable[InteractionScore],
+) -> Mapping[str, Any]:
+    """Return the Stage 2 contact descriptor block carried by the score set."""
+
+    normalized_scores = tuple(scores)
+    for score in normalized_scores:
+        metadata = score.metadata
+        descriptors = metadata.get(CONTACT_COLLECTION_DESCRIPTOR_KEY)
+        if isinstance(descriptors, Mapping):
+            result = dict(descriptors)
+            result.setdefault("descriptor_source", "contacts_stage2")
+            return MappingProxyType(result)
+
+        interaction = score.interaction
+        if isinstance(interaction, Mapping):
+            descriptors = interaction.get(CONTACT_COLLECTION_DESCRIPTOR_KEY)
+            if descriptors is None:
+                interaction_metadata = interaction.get("metadata", {})
+                if isinstance(interaction_metadata, Mapping):
+                    descriptors = interaction_metadata.get(
+                        CONTACT_COLLECTION_DESCRIPTOR_KEY
+                    )
+            if isinstance(descriptors, Mapping):
+                result = dict(descriptors)
+                result.setdefault("descriptor_source", "contacts_stage2")
+                return MappingProxyType(result)
+
+    return infer_contact_collection_descriptors(normalized_scores)
+
+
+def calculate_contact_coverage_score(
+    scores: Iterable[InteractionScore],
+    *,
+    descriptors: Optional[Mapping[str, Any]] = None,
+    maximum_score: Number = DEFAULT_CONTACT_COVERAGE_MAX_SCORE,
+    residue_scale: Number = DEFAULT_CONTACT_COVERAGE_RESIDUE_SCALE,
+    pair_scale: Number = DEFAULT_CONTACT_COVERAGE_PAIR_SCALE,
+    residue_weight: Number = DEFAULT_CONTACT_COVERAGE_RESIDUE_WEIGHT,
+    pair_weight: Number = DEFAULT_CONTACT_COVERAGE_PAIR_WEIGHT,
+    missing_quality: Number = DEFAULT_CONTACT_COVERAGE_MISSING_QUALITY,
+) -> Tuple[float, Mapping[str, Any]]:
+    """
+    Calculate the bounded Score v2 contact-coverage contribution.
+
+    Formula::
+
+        S_contact = Wmax * Q_vdw * (
+            wr * (1 - exp(-E_res / Kr))
+            + wp * (1 - exp(-N_pair / Kp))
+        )
+
+    ``E_res`` is the sum of per-residue saturated contact counts generated by
+    contacts.py.  ``N_pair`` is the number of unique atom pairs.  This keeps the
+    term bounded and prevents repeated contacts with one residue from growing
+    linearly.  Affinity and RMSD are intentionally absent from the calculation.
+    """
+
+    normalized_scores = tuple(scores)
+    descriptor_map = (
+        extract_contact_collection_descriptors(normalized_scores)
+        if descriptors is None
+        else MappingProxyType(dict(descriptors))
+    )
+
+    max_score = _coerce_finite_score_value(
+        maximum_score,
+        name="maximum contact coverage score",
+    )
+    residue_k = _coerce_finite_score_value(
+        residue_scale,
+        name="contact residue scale",
+    )
+    pair_k = _coerce_finite_score_value(
+        pair_scale,
+        name="contact pair scale",
+    )
+    residue_w = _coerce_finite_score_value(
+        residue_weight,
+        name="contact residue weight",
+    )
+    pair_w = _coerce_finite_score_value(
+        pair_weight,
+        name="contact pair weight",
+    )
+    missing_q = _contact_score_unit_float(
+        missing_quality,
+        default=DEFAULT_CONTACT_COVERAGE_MISSING_QUALITY,
+    )
+
+    if max_score < 0.0:
+        raise PoseScoringInputError(
+            "maximum contact coverage score cannot be negative."
+        )
+    if residue_k <= 0.0 or pair_k <= 0.0:
+        raise PoseScoringInputError(
+            "contact coverage scales must be greater than zero."
+        )
+    if residue_w < 0.0 or pair_w < 0.0:
+        raise PoseScoringInputError(
+            "contact coverage weights cannot be negative."
+        )
+    weight_total = residue_w + pair_w
+    if weight_total <= 0.0:
+        raise PoseScoringInputError(
+            "at least one contact coverage weight must be positive."
+        )
+    residue_w /= weight_total
+    pair_w /= weight_total
+
+    effective_residues = _contact_score_nonnegative_float(
+        descriptor_map.get("effective_residue_contact_count"),
+    )
+    unique_pairs = _contact_score_nonnegative_float(
+        descriptor_map.get("unique_contact_pair_count"),
+    )
+    contacted_residues = int(
+        _contact_score_nonnegative_float(
+            descriptor_map.get("contacted_residue_count"),
+        )
+    )
+
+    if effective_residues <= 0.0 or unique_pairs <= 0.0:
+        details = {
+            "applied": False,
+            "score": 0.0,
+            "reason": "no_nonredundant_contacts",
+            "descriptor_source": descriptor_map.get(
+                "descriptor_source",
+                "unavailable",
+            ),
+            "contacted_residue_count": contacted_residues,
+            "unique_contact_pair_count": int(unique_pairs),
+            "effective_residue_contact_count": effective_residues,
+        }
+        return 0.0, MappingProxyType(details)
+
+    raw_quality = descriptor_map.get("mean_vdw_quality")
+    quality = _contact_score_unit_float(
+        raw_quality,
+        default=missing_q,
+    )
+    residue_signal = float(
+        1.0 - math.exp(-effective_residues / residue_k)
+    )
+    pair_signal = float(
+        1.0 - math.exp(-unique_pairs / pair_k)
+    )
+    structural_signal = float(
+        residue_w * residue_signal
+        + pair_w * pair_signal
+    )
+    component = float(
+        min(
+            max_score,
+            max(0.0, max_score * quality * structural_signal),
+        )
+    )
+
+    details = {
+        "applied": component > SCORE_COMPARISON_TOLERANCE,
+        "score": component,
+        "maximum_score": float(max_score),
+        "descriptor_source": descriptor_map.get(
+            "descriptor_source",
+            "unknown",
+        ),
+        "contacted_residue_count": contacted_residues,
+        "unique_contact_pair_count": int(unique_pairs),
+        "effective_residue_contact_count": effective_residues,
+        "mean_vdw_quality": quality,
+        "quality_was_missing": raw_quality is None,
+        "residue_signal": residue_signal,
+        "pair_signal": pair_signal,
+        "structural_signal": structural_signal,
+        "residue_scale": float(residue_k),
+        "pair_scale": float(pair_k),
+        "residue_weight": float(residue_w),
+        "pair_weight": float(pair_w),
+        "bounded": True,
+        "per_contact_base_weight": 0.0,
+    }
+    return component, MappingProxyType(details)
+
+
+def build_contact_coverage_pose_component(
+    scores: Iterable[InteractionScore],
+    *,
+    score: Number,
+    details: Mapping[str, Any],
+) -> PoseScoreComponent:
+    """Build the auditable family component for the aggregate contact term."""
+
+    contact_scores = tuple(
+        item
+        for item in scores
+        if item.interaction_family == SCORE_FAMILY_CONTACT
+        or item.interaction_type in CONTACT_INTERACTION_TYPES
+    )
+    value = float(
+        _coerce_finite_score_value(
+            score,
+            name="contact coverage component",
+        )
+    )
+    return PoseScoreComponent(
+        key=SCORE_FAMILY_CONTACT,
+        component_kind=CONTACT_COVERAGE_COMPONENT_KIND,
+        interaction_count=len(contact_scores),
+        raw_score=value,
+        weighted_score=value,
+        final_score=value,
+        weight=1.0,
+        favorable_score=max(0.0, value),
+        unfavorable_score=min(0.0, value),
+        penalty_score=0.0,
+        bonus_score=max(0.0, value),
+        interaction_ids=tuple(
+            item.interaction_id for item in contact_scores
+        ),
+        metadata={
+            "score_v2_stage": 2,
+            "aggregation": "nonredundant_contact_coverage",
+            **dict(details),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 16.12a. Score v2 hydrophobic-family saturation component
+# -----------------------------------------------------------------------------
+
+def _is_hydrophobic_interaction_score(score: InteractionScore) -> bool:
+    """Return whether one score belongs to the hydrophobic family."""
+
+    return bool(
+        score.interaction_family == SCORE_FAMILY_HYDROPHOBIC
+        or score.interaction_type in HYDROPHOBIC_INTERACTION_TYPES
+    )
+
+
+def _hydrophobic_score_atom_pair_key(
+    score: InteractionScore,
+) -> Tuple[str, ...]:
+    """Return a stable atom-pair identity for hydrophobic deduplication."""
+
+    pair = score.atom_pair
+    if not pair:
+        pair = score.metadata.get("atom_pair")
+    if not pair:
+        return ("interaction", score.interaction_id)
+    return tuple(str(item) for item in pair)
+
+
+def _hydrophobic_score_receptor_residue_key(
+    score: InteractionScore,
+) -> str:
+    """Return the receptor residue key used for hydrophobic coverage."""
+
+    pair = score.residue_pair
+    if not pair:
+        pair = score.metadata.get("residue_pair")
+    if pair:
+        try:
+            first = tuple(pair)[0]
+        except (TypeError, IndexError):
+            first = None
+        if first is not None:
+            return str(first)
+    return "unknown"
+
+
+def _hydrophobic_score_quality(score: InteractionScore) -> float:
+    """Return a bounded per-interaction hydrophobic quality fallback."""
+
+    for container in (
+        score.metadata.get("geometry_details"),
+        score.metadata.get("geometry"),
+        score.metadata,
+    ):
+        if not isinstance(container, Mapping):
+            continue
+        for key in (
+            "interaction_score",
+            "hydrophobic_score",
+            "quality",
+            "strength",
+        ):
+            value = container.get(key)
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(numeric):
+                return float(min(1.0, max(0.0, numeric)))
+
+    base = abs(float(score.base_weight))
+    if base <= SCORE_COMPARISON_TOLERANCE:
+        return DEFAULT_HYDROPHOBIC_SATURATION_MISSING_QUALITY
+    ratio = max(0.0, float(score.final_score)) / base
+    return float(min(1.0, max(0.0, ratio)))
+
+
+def infer_hydrophobic_collection_descriptors(
+    scores: Iterable[InteractionScore],
+    *,
+    saturation_tau: Number = (
+        DEFAULT_HYDROPHOBIC_SATURATION_RESIDUE_TAU
+    ),
+) -> Mapping[str, Any]:
+    """Infer Stage 3 hydrophobic descriptors when no carrier is available."""
+
+    tau = _coerce_finite_score_value(
+        saturation_tau,
+        name="hydrophobic residue saturation tau",
+    )
+    if tau <= 0.0:
+        raise PoseScoringInputError(
+            "hydrophobic residue saturation tau must be greater than zero."
+        )
+
+    hydrophobic_scores = tuple(
+        score for score in scores if _is_hydrophobic_interaction_score(score)
+    )
+    if not hydrophobic_scores:
+        return MappingProxyType({})
+
+    best_by_pair: Dict[Tuple[str, ...], InteractionScore] = {}
+    for score in hydrophobic_scores:
+        key = _hydrophobic_score_atom_pair_key(score)
+        previous = best_by_pair.get(key)
+        if (
+            previous is None
+            or float(score.final_score) > float(previous.final_score)
+        ):
+            best_by_pair[key] = score
+
+    unique_scores = tuple(best_by_pair.values())
+    grouped: Dict[str, List[InteractionScore]] = {}
+    for score in unique_scores:
+        grouped.setdefault(
+            _hydrophobic_score_receptor_residue_key(score),
+            [],
+        ).append(score)
+
+    residues: Dict[str, Dict[str, Any]] = {}
+    effective_residues = 0.0
+    quality_weighted_effective = 0.0
+    quality_values: List[float] = []
+
+    for residue_key, residue_scores in sorted(grouped.items()):
+        count = len(residue_scores)
+        saturation = float(1.0 - math.exp(-float(count) / float(tau)))
+        qualities = tuple(_hydrophobic_score_quality(item) for item in residue_scores)
+        mean_quality = (
+            float(statistics.fmean(qualities))
+            if qualities
+            else DEFAULT_HYDROPHOBIC_SATURATION_MISSING_QUALITY
+        )
+        effective_residues += saturation
+        quality_weighted_effective += saturation * mean_quality
+        quality_values.extend(qualities)
+        residues[residue_key] = {
+            "residue_key": residue_key,
+            "unique_interaction_pair_count": count,
+            "hydrophobic_saturation": saturation,
+            "mean_interaction_score": mean_quality,
+            "quality_weighted_saturation": saturation * mean_quality,
+        }
+
+    return MappingProxyType(
+        {
+            "descriptor_source": "scoring_fallback",
+            "deduplicate_atom_pairs": True,
+            "saturation_tau": float(tau),
+            "raw_interaction_count": len(hydrophobic_scores),
+            "unique_interaction_pair_count": len(unique_scores),
+            "contacted_residue_count": len(grouped),
+            "effective_residue_hydrophobic_count": float(effective_residues),
+            "quality_weighted_effective_hydrophobic_count": float(
+                quality_weighted_effective
+            ),
+            "mean_residue_saturation": (
+                None
+                if not grouped
+                else float(effective_residues / len(grouped))
+            ),
+            "mean_interaction_score": (
+                None
+                if not quality_values
+                else float(statistics.fmean(quality_values))
+            ),
+            "residues": residues,
+        }
+    )
+
+
+def extract_hydrophobic_collection_descriptors(
+    scores: Iterable[InteractionScore],
+) -> Mapping[str, Any]:
+    """Return the Stage 3 hydrophobic descriptor block carried by the pose."""
+
+    normalized_scores = tuple(scores)
+    for score in normalized_scores:
+        metadata = score.metadata
+        descriptors = metadata.get(HYDROPHOBIC_COLLECTION_DESCRIPTOR_KEY)
+        if isinstance(descriptors, Mapping):
+            result = dict(descriptors)
+            result.setdefault("descriptor_source", "hydrophobic_stage3")
+            return MappingProxyType(result)
+
+        interaction = score.interaction
+        if isinstance(interaction, Mapping):
+            descriptors = interaction.get(HYDROPHOBIC_COLLECTION_DESCRIPTOR_KEY)
+            if descriptors is None:
+                interaction_metadata = interaction.get("metadata", {})
+                if isinstance(interaction_metadata, Mapping):
+                    descriptors = interaction_metadata.get(
+                        HYDROPHOBIC_COLLECTION_DESCRIPTOR_KEY
+                    )
+            if isinstance(descriptors, Mapping):
+                result = dict(descriptors)
+                result.setdefault("descriptor_source", "hydrophobic_stage3")
+                return MappingProxyType(result)
+
+    return infer_hydrophobic_collection_descriptors(normalized_scores)
+
+
+def calculate_hydrophobic_saturation_score(
+    scores: Iterable[InteractionScore],
+    *,
+    descriptors: Optional[Mapping[str, Any]] = None,
+    maximum_score: Number = DEFAULT_HYDROPHOBIC_SATURATION_MAX_SCORE,
+    residue_scale: Number = DEFAULT_HYDROPHOBIC_SATURATION_RESIDUE_SCALE,
+    missing_quality: Number = (
+        DEFAULT_HYDROPHOBIC_SATURATION_MISSING_QUALITY
+    ),
+) -> Tuple[float, Mapping[str, Any]]:
+    """Calculate the bounded Score v2 hydrophobic-family contribution.
+
+    The hydrophobic detector first converts repeated atom-pair contacts within
+    each receptor residue into a saturating residue contribution.  Scoring then
+    applies a second saturation across the effective residue coverage::
+
+        Q_hyd = E_quality / E_residue
+        S_hyd = Wmax * Q_hyd * (1 - exp(-E_residue / K_hyd))
+
+    The term is therefore bounded, rewards distributed high-quality coverage,
+    and cannot grow linearly with the raw hydrophobic-contact count.  Affinity
+    and RMSD are intentionally absent.
+    """
+
+    normalized_scores = tuple(scores)
+    descriptor_map = (
+        extract_hydrophobic_collection_descriptors(normalized_scores)
+        if descriptors is None
+        else MappingProxyType(dict(descriptors))
+    )
+
+    max_score = _coerce_finite_score_value(
+        maximum_score,
+        name="maximum hydrophobic saturation score",
+    )
+    residue_k = _coerce_finite_score_value(
+        residue_scale,
+        name="hydrophobic residue scale",
+    )
+    missing_q = _contact_score_unit_float(
+        missing_quality,
+        default=DEFAULT_HYDROPHOBIC_SATURATION_MISSING_QUALITY,
+    )
+    if max_score < 0.0:
+        raise PoseScoringInputError(
+            "maximum hydrophobic saturation score cannot be negative."
+        )
+    if residue_k <= 0.0:
+        raise PoseScoringInputError(
+            "hydrophobic residue scale must be greater than zero."
+        )
+
+    effective_residues = _contact_score_nonnegative_float(
+        descriptor_map.get("effective_residue_hydrophobic_count"),
+    )
+    quality_weighted_effective = _contact_score_nonnegative_float(
+        descriptor_map.get("quality_weighted_effective_hydrophobic_count"),
+    )
+    unique_pairs = int(
+        _contact_score_nonnegative_float(
+            descriptor_map.get("unique_interaction_pair_count"),
+        )
+    )
+    contacted_residues = int(
+        _contact_score_nonnegative_float(
+            descriptor_map.get("contacted_residue_count"),
+        )
+    )
+
+    if effective_residues <= 0.0 or unique_pairs <= 0:
+        details = {
+            "applied": False,
+            "score": 0.0,
+            "reason": "no_nonredundant_hydrophobic_interactions",
+            "descriptor_source": descriptor_map.get(
+                "descriptor_source",
+                "unavailable",
+            ),
+            "unique_interaction_pair_count": unique_pairs,
+            "contacted_residue_count": contacted_residues,
+            "effective_residue_hydrophobic_count": effective_residues,
+        }
+        return 0.0, MappingProxyType(details)
+
+    if quality_weighted_effective > 0.0:
+        quality = float(
+            min(
+                1.0,
+                max(0.0, quality_weighted_effective / effective_residues),
+            )
+        )
+        quality_source = "quality_weighted_effective_hydrophobic_count"
+    else:
+        raw_quality = descriptor_map.get("mean_interaction_score")
+        quality = _contact_score_unit_float(raw_quality, default=missing_q)
+        quality_source = (
+            "mean_interaction_score"
+            if raw_quality is not None
+            else "missing_quality_default"
+        )
+
+    family_signal = float(
+        1.0 - math.exp(-effective_residues / residue_k)
+    )
+    component = float(
+        min(
+            max_score,
+            max(0.0, max_score * quality * family_signal),
+        )
+    )
+
+    hydrophobic_scores = tuple(
+        item for item in normalized_scores if _is_hydrophobic_interaction_score(item)
+    )
+    legacy_linear_score = float(
+        sum(float(item.final_score) for item in hydrophobic_scores)
+    )
+
+    details = {
+        "applied": component > SCORE_COMPARISON_TOLERANCE,
+        "score": component,
+        "maximum_score": float(max_score),
+        "descriptor_source": descriptor_map.get(
+            "descriptor_source",
+            "unknown",
+        ),
+        "raw_interaction_count": int(
+            _contact_score_nonnegative_float(
+                descriptor_map.get("raw_interaction_count"),
+                default=float(len(hydrophobic_scores)),
+            )
+        ),
+        "unique_interaction_pair_count": unique_pairs,
+        "contacted_residue_count": contacted_residues,
+        "effective_residue_hydrophobic_count": effective_residues,
+        "quality_weighted_effective_hydrophobic_count": (
+            quality_weighted_effective
+        ),
+        "hydrophobic_quality": quality,
+        "quality_source": quality_source,
+        "family_signal": family_signal,
+        "residue_scale": float(residue_k),
+        "legacy_linear_hydrophobic_score": legacy_linear_score,
+        "bounded": True,
+        "replaces_linear_hydrophobic_sum": True,
+    }
+    return component, MappingProxyType(details)
+
+
+def build_hydrophobic_saturation_pose_component(
+    scores: Iterable[InteractionScore],
+    *,
+    score: Number,
+    details: Mapping[str, Any],
+) -> PoseScoreComponent:
+    """Build the auditable family component for Stage 3 hydrophobic scoring."""
+
+    hydrophobic_scores = tuple(
+        item for item in scores if _is_hydrophobic_interaction_score(item)
+    )
+    value = float(
+        _coerce_finite_score_value(
+            score,
+            name="hydrophobic saturation component",
+        )
+    )
+    return PoseScoreComponent(
+        key=SCORE_FAMILY_HYDROPHOBIC,
+        component_kind=HYDROPHOBIC_SATURATION_COMPONENT_KIND,
+        interaction_count=len(hydrophobic_scores),
+        raw_score=value,
+        weighted_score=value,
+        final_score=value,
+        weight=1.0,
+        favorable_score=max(0.0, value),
+        unfavorable_score=min(0.0, value),
+        penalty_score=0.0,
+        bonus_score=max(0.0, value),
+        interaction_ids=tuple(
+            item.interaction_id for item in hydrophobic_scores
+        ),
+        metadata={
+            "score_v2_stage": 3,
+            "aggregation": "residue_aware_hydrophobic_saturation",
+            **dict(details),
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# 16.12d. Score v2 Stage 4 ligand opportunity normalization
+# -----------------------------------------------------------------------------
+
+def _opportunity_nonnegative_float(
+    value: Any,
+    *,
+    default: float = 0.0,
+) -> float:
+    """Return one finite non-negative opportunity value."""
+
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return float(default)
+    if not isfinite(result) or result < 0.0:
+        return float(default)
+    return result
+
+
+def _opportunity_settings(
+    options: PoseScoringOptions,
+) -> Mapping[str, Any]:
+    """Return validated Stage 4 override metadata without mutating options."""
+
+    metadata = options.metadata
+    nested = metadata.get(OPPORTUNITY_NORMALIZATION_SETTINGS_KEY, {})
+    result: Dict[str, Any] = {}
+    if isinstance(nested, Mapping):
+        result.update(nested)
+    # Direct keys remain supported so config integrations do not need to build
+    # a nested mapping merely to change one value.
+    for key in (
+        "enabled",
+        "size_reference_heavy_atoms",
+        "size_exponent",
+        "size_min_factor",
+        "family_min_factor",
+        "reference_counts",
+        "family_exponents",
+    ):
+        direct_key = f"score_v2_opportunity_{key}"
+        if direct_key in metadata:
+            result[key] = metadata[direct_key]
+    return MappingProxyType(result)
+
+
+def extract_ligand_opportunity_descriptors(
+    scores: Iterable[InteractionScore],
+    *,
+    options: Optional[PoseScoringOptions] = None,
+) -> Mapping[str, Any]:
+    """Return the ligand size/opportunity descriptor block carried by a pose."""
+
+    def candidate(value: Any) -> Optional[Mapping[str, Any]]:
+        if not isinstance(value, Mapping):
+            return None
+        descriptors = value.get(LIGAND_OPPORTUNITY_DESCRIPTOR_KEY)
+        if isinstance(descriptors, Mapping):
+            return descriptors
+        nested = value.get("metadata")
+        if isinstance(nested, Mapping):
+            descriptors = nested.get(LIGAND_OPPORTUNITY_DESCRIPTOR_KEY)
+            if isinstance(descriptors, Mapping):
+                return descriptors
+        source_metadata = value.get("source_metadata")
+        if isinstance(source_metadata, Mapping):
+            descriptors = source_metadata.get(LIGAND_OPPORTUNITY_DESCRIPTOR_KEY)
+            if isinstance(descriptors, Mapping):
+                return descriptors
+        return None
+
+    if options is not None:
+        descriptors = candidate(options.metadata)
+        if descriptors is not None:
+            result = dict(descriptors)
+            result.setdefault("descriptor_source", "pose_options_metadata")
+            return MappingProxyType(result)
+
+    for score in tuple(scores):
+        descriptors = candidate(score.metadata)
+        if descriptors is not None:
+            result = dict(descriptors)
+            result.setdefault("descriptor_source", "interaction_metadata")
+            return MappingProxyType(result)
+        interaction = score.interaction
+        descriptors = candidate(interaction)
+        if descriptors is not None:
+            result = dict(descriptors)
+            result.setdefault("descriptor_source", "interaction_payload")
+            return MappingProxyType(result)
+
+    return MappingProxyType(
+        {
+            "status": "unavailable",
+            "descriptor_source": "unavailable",
+        }
+    )
+
+
+def _opportunity_bounded_factor(
+    count: Any,
+    *,
+    reference: Any,
+    exponent: Any,
+    minimum_factor: Any,
+) -> float:
+    """Return a one-sided factor in ``[minimum_factor, 1]``.
+
+    Counts at or below the reference are not boosted.  Counts above the
+    reference are reduced sublinearly according to ``(reference/count)^alpha``.
+    """
+
+    n = _opportunity_nonnegative_float(count)
+    ref = _opportunity_nonnegative_float(reference, default=1.0)
+    alpha = _opportunity_nonnegative_float(exponent)
+    minimum = _opportunity_nonnegative_float(minimum_factor, default=0.0)
+    minimum = min(1.0, max(0.0, minimum))
+    if n <= 0.0 or ref <= 0.0 or alpha <= 0.0 or n <= ref:
+        return 1.0
+    factor = float((ref / n) ** alpha)
+    return float(min(1.0, max(minimum, factor)))
+
+
+def _opportunity_family_raw_scores(
+    scores: Sequence[InteractionScore],
+    *,
+    options: PoseScoringOptions,
+    contact_score: float,
+    hydrophobic_score: float,
+) -> Mapping[str, float]:
+    """Return additive Stage 3 family contributions before Stage 4."""
+
+    grouped: Dict[str, List[InteractionScore]] = defaultdict(list)
+    for score in scores:
+        if score.interaction_family in {
+            SCORE_FAMILY_CONTACT,
+            SCORE_FAMILY_HYDROPHOBIC,
+        }:
+            continue
+        grouped[score.interaction_family].append(score)
+
+    result: Dict[str, float] = {
+        SCORE_FAMILY_CONTACT: float(contact_score),
+        SCORE_FAMILY_HYDROPHOBIC: float(hydrophobic_score),
+    }
+    for family, family_scores in grouped.items():
+        result[family] = float(
+            aggregate_pose_interaction_scores(
+                tuple(family_scores),
+                options=options,
+            )
+        )
+    return MappingProxyType(result)
+
+
+def calculate_ligand_opportunity_normalized_score(
+    scores: Iterable[InteractionScore],
+    *,
+    pre_normalization_score: Number,
+    contact_score: Number,
+    hydrophobic_score: Number,
+    options: PoseScoringOptions = DEFAULT_POSE_SCORING_OPTIONS,
+    descriptors: Optional[Mapping[str, Any]] = None,
+) -> Tuple[float, Mapping[str, Any]]:
+    """Apply moderate Score v2 size/opportunity normalization.
+
+    Positive family evidence is down-weighted only when the ligand has more
+    corresponding chemical opportunities than a conservative reference count.
+    A second mild heavy-atom factor reduces the remaining positive size
+    advantage.  Negative contributions are unchanged, so clashes and other
+    penalties are never diluted.  No docking affinity or RMSD value is read.
+    """
+
+    normalized_scores = tuple(scores)
+    pre_score = float(
+        _coerce_finite_score_value(
+            pre_normalization_score,
+            name="pre-opportunity pose score",
+        )
+    )
+    settings = _opportunity_settings(options)
+    enabled = bool(
+        settings.get("enabled", DEFAULT_OPPORTUNITY_NORMALIZATION_ENABLED)
+    )
+    descriptor_map = (
+        extract_ligand_opportunity_descriptors(
+            normalized_scores,
+            options=options,
+        )
+        if descriptors is None
+        else MappingProxyType(dict(descriptors))
+    )
+
+    status = str(descriptor_map.get("status", "")).strip().lower()
+    available = status not in {"", "unavailable", "failed", "error"}
+    if not enabled or not available:
+        details = {
+            "applied": False,
+            "reason": (
+                "disabled" if not enabled else "ligand_descriptors_unavailable"
+            ),
+            "score_before": pre_score,
+            "score_after": pre_score,
+            "descriptor_source": descriptor_map.get(
+                "descriptor_source", "unavailable"
+            ),
+            "descriptor_status": status or "unavailable",
+            "default_settings_source": "config.SCORING_OPPORTUNITY_NORMALIZATION",
+            "affinity_used": False,
+            "rmsd_used": False,
+        }
+        return pre_score, MappingProxyType(details)
+
+    additive_modes = {
+        POSE_AGGREGATION_SUM,
+        POSE_AGGREGATION_WEIGHTED_SUM,
+        POSE_AGGREGATION_NORMALIZED_SUM,
+    }
+    if options.aggregation_mode not in additive_modes:
+        # Family opportunity corrections are only mathematically decomposable
+        # for additive aggregation modes.  Preserve the Stage 3 score for
+        # alternative aggregation strategies rather than silently changing
+        # their semantics.
+        details = {
+            "applied": False,
+            "reason": "nonadditive_aggregation_mode",
+            "aggregation_mode": options.aggregation_mode,
+            "score_before": pre_score,
+            "score_after": pre_score,
+            "descriptor_source": descriptor_map.get(
+                "descriptor_source", "unknown"
+            ),
+            "descriptor_status": status,
+            "default_settings_source": "config.SCORING_OPPORTUNITY_NORMALIZATION",
+            "affinity_used": False,
+            "rmsd_used": False,
+        }
+        return pre_score, MappingProxyType(details)
+
+    size_reference = _opportunity_nonnegative_float(
+        settings.get(
+            "size_reference_heavy_atoms",
+            DEFAULT_OPPORTUNITY_SIZE_REFERENCE_HEAVY_ATOMS,
+        ),
+        default=DEFAULT_OPPORTUNITY_SIZE_REFERENCE_HEAVY_ATOMS,
+    )
+    size_exponent = _opportunity_nonnegative_float(
+        settings.get("size_exponent", DEFAULT_OPPORTUNITY_SIZE_EXPONENT),
+        default=DEFAULT_OPPORTUNITY_SIZE_EXPONENT,
+    )
+    size_min_factor = _opportunity_nonnegative_float(
+        settings.get("size_min_factor", DEFAULT_OPPORTUNITY_SIZE_MIN_FACTOR),
+        default=DEFAULT_OPPORTUNITY_SIZE_MIN_FACTOR,
+    )
+    family_min_factor = _opportunity_nonnegative_float(
+        settings.get(
+            "family_min_factor", DEFAULT_OPPORTUNITY_FAMILY_MIN_FACTOR
+        ),
+        default=DEFAULT_OPPORTUNITY_FAMILY_MIN_FACTOR,
+    )
+
+    reference_counts = dict(DEFAULT_OPPORTUNITY_REFERENCE_COUNTS)
+    raw_reference_counts = settings.get("reference_counts")
+    if isinstance(raw_reference_counts, Mapping):
+        for raw_family, raw_value in raw_reference_counts.items():
+            family = canonical_interaction_family(raw_family)
+            value = _opportunity_nonnegative_float(raw_value)
+            if family and value > 0.0:
+                reference_counts[family] = value
+
+    family_exponents = dict(DEFAULT_OPPORTUNITY_FAMILY_EXPONENTS)
+    raw_exponents = settings.get("family_exponents")
+    if isinstance(raw_exponents, Mapping):
+        for raw_family, raw_value in raw_exponents.items():
+            family = canonical_interaction_family(raw_family)
+            value = _opportunity_nonnegative_float(raw_value)
+            if family:
+                family_exponents[family] = value
+
+    heavy_atoms = _opportunity_nonnegative_float(
+        descriptor_map.get(
+            "ligand_heavy_atom_count",
+            descriptor_map.get("contact_opportunity_count"),
+        )
+    )
+    size_factor = _opportunity_bounded_factor(
+        heavy_atoms,
+        reference=size_reference,
+        exponent=size_exponent,
+        minimum_factor=size_min_factor,
+    )
+
+    raw_family_scores = dict(
+        _opportunity_family_raw_scores(
+            normalized_scores,
+            options=options,
+            contact_score=float(contact_score),
+            hydrophobic_score=float(hydrophobic_score),
+        )
+    )
+    raw_family_total = float(sum(raw_family_scores.values()))
+    residual = float(pre_score - raw_family_total)
+
+    normalized_family_scores: Dict[str, float] = {}
+    family_opportunity_counts: Dict[str, Optional[float]] = {}
+    family_opportunity_factors: Dict[str, float] = {}
+    family_combined_factors: Dict[str, float] = {}
+
+    for family, raw_score in raw_family_scores.items():
+        field = OPPORTUNITY_DESCRIPTOR_FIELD_BY_FAMILY.get(family)
+        opportunity_count: Optional[float] = None
+        opportunity_factor = 1.0
+        if field is not None:
+            raw_count = descriptor_map.get(field)
+            if raw_count is not None:
+                opportunity_count = _opportunity_nonnegative_float(raw_count)
+            if raw_score > 0.0 and opportunity_count is not None:
+                opportunity_factor = _opportunity_bounded_factor(
+                    opportunity_count,
+                    reference=reference_counts.get(family, 1.0),
+                    exponent=family_exponents.get(family, 0.0),
+                    minimum_factor=family_min_factor,
+                )
+
+        # Global ligand-size moderation also acts only on positive evidence.
+        combined_factor = (
+            float(opportunity_factor * size_factor)
+            if raw_score > 0.0
+            else 1.0
+        )
+        normalized_value = float(raw_score * combined_factor)
+        normalized_family_scores[family] = normalized_value
+        family_opportunity_counts[family] = opportunity_count
+        family_opportunity_factors[family] = float(opportunity_factor)
+        family_combined_factors[family] = float(combined_factor)
+
+    normalized_total = float(sum(normalized_family_scores.values()) + residual)
+    details = {
+        "applied": True,
+        "score_before": pre_score,
+        "score_after": normalized_total,
+        "descriptor_source": descriptor_map.get("descriptor_source", "unknown"),
+        "descriptor_status": status,
+        "default_settings_source": "config.SCORING_OPPORTUNITY_NORMALIZATION",
+        "pose_metadata_overrides_present": bool(settings),
+        "ligand_heavy_atom_count": heavy_atoms,
+        "size_reference_heavy_atoms": size_reference,
+        "size_exponent": size_exponent,
+        "size_factor": size_factor,
+        "size_min_factor": size_min_factor,
+        "family_min_factor": family_min_factor,
+        "reference_counts": dict(reference_counts),
+        "family_exponents": dict(family_exponents),
+        "family_opportunity_counts": family_opportunity_counts,
+        "family_opportunity_factors": family_opportunity_factors,
+        "family_combined_factors": family_combined_factors,
+        "raw_family_scores": raw_family_scores,
+        "normalized_family_scores": normalized_family_scores,
+        "family_recomposition_residual": residual,
+        "positive_evidence_only": True,
+        "penalties_diluted": False,
+        "affinity_used": False,
+        "rmsd_used": False,
+    }
+    return normalized_total, MappingProxyType(details)
+
+
+def apply_ligand_opportunity_normalization_to_family_components(
+    components: Mapping[str, PoseScoreComponent],
+    *,
+    details: Mapping[str, Any],
+) -> Mapping[str, PoseScoreComponent]:
+    """Return family components whose final values match Stage 4 scoring."""
+
+    if not bool(details.get("applied", False)):
+        return MappingProxyType(dict(components))
+    raw_scores = details.get("raw_family_scores", {})
+    normalized_scores = details.get("normalized_family_scores", {})
+    combined_factors = details.get("family_combined_factors", {})
+    if not isinstance(raw_scores, Mapping) or not isinstance(
+        normalized_scores, Mapping
+    ):
+        return MappingProxyType(dict(components))
+
+    result: Dict[str, PoseScoreComponent] = dict(components)
+    for family, component in tuple(result.items()):
+        if family not in normalized_scores:
+            continue
+        raw = float(raw_scores.get(family, component.final_score))
+        normalized = float(normalized_scores[family])
+        factor = float(combined_factors.get(family, 1.0))
+        metadata = dict(component.metadata)
+        metadata.update(
+            {
+                "score_v2_stage": 4,
+                "opportunity_normalization_applied": True,
+                "pre_opportunity_score": raw,
+                "opportunity_normalization_factor": factor,
+                "opportunity_normalized_score": normalized,
+            }
+        )
+        result[family] = replace(
+            component,
+            raw_score=raw,
+            weight=factor,
+            weighted_score=normalized,
+            final_score=normalized,
+            favorable_score=max(0.0, normalized),
+            unfavorable_score=min(0.0, normalized),
+            metadata=metadata,
+        )
+    return MappingProxyType(result)
+
+
+# -----------------------------------------------------------------------------
+# 16.13. Per-interaction pose weights
 # -----------------------------------------------------------------------------
 
 def resolve_pose_interaction_weight(
@@ -49953,7 +51873,7 @@ def weighted_pose_interaction_score(
 
 
 # -----------------------------------------------------------------------------
-# 16.13. Family and type components
+# 16.14. Family and type components
 # -----------------------------------------------------------------------------
 
 def build_pose_score_component(
@@ -50094,7 +52014,7 @@ def build_pose_type_components(
 
 
 # -----------------------------------------------------------------------------
-# 16.14. Pose aggregation
+# 16.15. Pose aggregation
 # -----------------------------------------------------------------------------
 
 def aggregate_pose_interaction_scores(
@@ -50162,7 +52082,7 @@ def aggregate_pose_interaction_scores(
 
 
 # -----------------------------------------------------------------------------
-# 16.15. Pose normalization
+# 16.16. Pose normalization
 # -----------------------------------------------------------------------------
 
 def resolve_pose_normalization_denominator(
@@ -50245,7 +52165,7 @@ def normalize_total_pose_score(
 
 
 # -----------------------------------------------------------------------------
-# 16.16. Pose corrections
+# 16.17. Pose corrections
 # -----------------------------------------------------------------------------
 
 def apply_pose_score_corrections(
@@ -50298,7 +52218,7 @@ def apply_pose_score_corrections(
 
 
 # -----------------------------------------------------------------------------
-# 16.17. Pose polarity
+# 16.18. Pose polarity
 # -----------------------------------------------------------------------------
 
 def resolve_total_pose_polarity(
@@ -50337,7 +52257,7 @@ def resolve_total_pose_polarity(
 
 
 # -----------------------------------------------------------------------------
-# 16.18. Pose summary construction
+# 16.19. Pose summary construction
 # -----------------------------------------------------------------------------
 
 def build_pose_score_summary(
@@ -50492,7 +52412,7 @@ def build_pose_score_summary(
 
 
 # -----------------------------------------------------------------------------
-# 16.19. Scoring existing InteractionScore objects
+# 16.20. Scoring existing InteractionScore objects
 # -----------------------------------------------------------------------------
 
 def calculate_total_pose_score(
@@ -50595,9 +52515,53 @@ def calculate_total_pose_score(
         )
     )
 
-    aggregated_score = aggregate_pose_interaction_scores(
+    # Preserve the legacy aggregate for diagnostics, then remove the linear
+    # hydrophobic family contribution from the pose total.  Stage 3 replaces
+    # that unlimited accumulation with one bounded family component below.
+    interaction_aggregated_score = aggregate_pose_interaction_scores(
         normalized_scores,
         options=options,
+    )
+    nonhydrophobic_scores = tuple(
+        score
+        for score in normalized_scores
+        if not _is_hydrophobic_interaction_score(score)
+    )
+    nonhydrophobic_interaction_aggregated_score = (
+        aggregate_pose_interaction_scores(
+            nonhydrophobic_scores,
+            options=options,
+        )
+    )
+
+    contact_coverage_score, contact_coverage_details = (
+        calculate_contact_coverage_score(
+            normalized_scores
+        )
+    )
+    hydrophobic_saturation_score, hydrophobic_saturation_details = (
+        calculate_hydrophobic_saturation_score(
+            normalized_scores
+        )
+    )
+
+    # Score v2 Stages 2-3 first build the chemically weighted pose score with
+    # bounded generic-contact and hydrophobic-family terms.  Stage 4 then
+    # moderates only positive evidence according to ligand size and the
+    # corresponding chemical opportunities.  Penalties are never diluted.
+    pre_opportunity_aggregated_score = float(
+        nonhydrophobic_interaction_aggregated_score
+        + contact_coverage_score
+        + hydrophobic_saturation_score
+    )
+    aggregated_score, opportunity_normalization_details = (
+        calculate_ligand_opportunity_normalized_score(
+            normalized_scores,
+            pre_normalization_score=pre_opportunity_aggregated_score,
+            contact_score=contact_coverage_score,
+            hydrophobic_score=hydrophobic_saturation_score,
+            options=options,
+        )
     )
 
     normalized_score = normalize_total_pose_score(
@@ -50614,10 +52578,49 @@ def calculate_total_pose_score(
         )
     )
 
-    family_components = build_pose_family_components(
-        normalized_scores,
-        options=options,
+    family_components = dict(
+        build_pose_family_components(
+            normalized_scores,
+            options=options,
+        )
     )
+    if (
+        contact_coverage_score > SCORE_COMPARISON_TOLERANCE
+        or any(
+            score.interaction_family == SCORE_FAMILY_CONTACT
+            or score.interaction_type in CONTACT_INTERACTION_TYPES
+            for score in normalized_scores
+        )
+    ):
+        family_components[SCORE_FAMILY_CONTACT] = (
+            build_contact_coverage_pose_component(
+                normalized_scores,
+                score=contact_coverage_score,
+                details=contact_coverage_details,
+            )
+        )
+    if (
+        hydrophobic_saturation_score > SCORE_COMPARISON_TOLERANCE
+        or any(
+            _is_hydrophobic_interaction_score(score)
+            for score in normalized_scores
+        )
+    ):
+        family_components[SCORE_FAMILY_HYDROPHOBIC] = (
+            build_hydrophobic_saturation_pose_component(
+                normalized_scores,
+                score=hydrophobic_saturation_score,
+                details=hydrophobic_saturation_details,
+            )
+        )
+
+    family_components = dict(
+        apply_ligand_opportunity_normalization_to_family_components(
+            family_components,
+            details=opportunity_normalization_details,
+        )
+    )
+
     type_components = build_pose_type_components(
         normalized_scores,
         options=options,
@@ -50693,6 +52696,31 @@ def calculate_total_pose_score(
                     options=options,
                 )
             ),
+            "interaction_aggregated_score": float(
+                interaction_aggregated_score
+            ),
+            "nonhydrophobic_interaction_aggregated_score": float(
+                nonhydrophobic_interaction_aggregated_score
+            ),
+            "contact_coverage_score": float(
+                contact_coverage_score
+            ),
+            "contact_coverage": dict(
+                contact_coverage_details
+            ),
+            "hydrophobic_saturation_score": float(
+                hydrophobic_saturation_score
+            ),
+            "hydrophobic_saturation": dict(
+                hydrophobic_saturation_details
+            ),
+            "pre_opportunity_aggregated_score": float(
+                pre_opportunity_aggregated_score
+            ),
+            "ligand_opportunity_normalization": dict(
+                opportunity_normalization_details
+            ),
+            "score_v2_stage": 4,
         },
     )
 
@@ -50703,7 +52731,7 @@ def calculate_total_pose_score(
 
 
 # -----------------------------------------------------------------------------
-# 16.20. Main pose-scoring API
+# 16.21. Main pose-scoring API
 # -----------------------------------------------------------------------------
 
 def score_pose(
@@ -50738,9 +52766,19 @@ def score_pose(
         ligand_id=ligand_id,
     )
 
+    # Stage 4 descriptors may arrive in profile metadata even when no detector
+    # interaction is available to act as the metadata carrier.  Merge profile
+    # metadata into a transient options copy so calculate_total_pose_score can
+    # resolve the same descriptors through either transport path.
+    pose_options = profile.options
+    if profile.metadata:
+        merged_metadata = dict(pose_options.metadata)
+        merged_metadata.update(dict(profile.metadata))
+        pose_options = pose_options.with_updates(metadata=merged_metadata)
+
     return calculate_total_pose_score(
         collection_result.scores,
-        options=profile.options,
+        options=pose_options,
         residue_options=profile.residue_options,
         pose_id=pose_id,
         model_id=model_id,
@@ -50838,7 +52876,7 @@ def pose_score_from_collection_result(
 
 
 # -----------------------------------------------------------------------------
-# 16.21. Pose summaries and lookups
+# 16.22. Pose summaries and lookups
 # -----------------------------------------------------------------------------
 
 def get_pose_family_component(
@@ -51626,7 +53664,7 @@ if _RUN_IMPORT_VALIDATIONS:
 
 
 # -----------------------------------------------------------------------------
-# 16.26. Section public interface
+# 16.27. Section public interface
 # -----------------------------------------------------------------------------
 
 _SECTION_16_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
@@ -51682,6 +53720,39 @@ _SECTION_16_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "DEFAULT_POSE_INCLUDE_RESIDUE_AGGREGATION",
     "DEFAULT_POSE_PRESERVE_COLLECTION_RESULT",
     "DEFAULT_POSE_VALIDATE_RESULT",
+
+    # Score v2 Stage 2 contact coverage
+    "CONTACT_COLLECTION_DESCRIPTOR_KEY",
+    "CONTACT_COVERAGE_COMPONENT_KIND",
+    "DEFAULT_CONTACT_COVERAGE_MAX_SCORE",
+    "DEFAULT_CONTACT_COVERAGE_RESIDUE_SCALE",
+    "DEFAULT_CONTACT_COVERAGE_PAIR_SCALE",
+    "DEFAULT_CONTACT_COVERAGE_RESIDUE_WEIGHT",
+    "DEFAULT_CONTACT_COVERAGE_PAIR_WEIGHT",
+    "DEFAULT_CONTACT_COVERAGE_MISSING_QUALITY",
+    "DEFAULT_CONTACT_COVERAGE_SATURATION_TAU",
+
+    # Score v2 Stage 3 hydrophobic saturation
+    "HYDROPHOBIC_COLLECTION_DESCRIPTOR_KEY",
+    "HYDROPHOBIC_SATURATION_COMPONENT_KIND",
+    "DEFAULT_HYDROPHOBIC_SATURATION_MAX_SCORE",
+    "DEFAULT_HYDROPHOBIC_SATURATION_RESIDUE_SCALE",
+    "DEFAULT_HYDROPHOBIC_SATURATION_MISSING_QUALITY",
+    "DEFAULT_HYDROPHOBIC_SATURATION_RESIDUE_TAU",
+
+    # Score v2 Stage 4 ligand opportunity normalization
+    "LIGAND_OPPORTUNITY_DESCRIPTOR_KEY",
+    "OPPORTUNITY_NORMALIZATION_SETTINGS_KEY",
+    "OPPORTUNITY_NORMALIZATION_COMPONENT_KIND",
+    "DEFAULT_OPPORTUNITY_NORMALIZATION_ENABLED",
+    "DEFAULT_OPPORTUNITY_SIZE_REFERENCE_HEAVY_ATOMS",
+    "DEFAULT_OPPORTUNITY_SIZE_EXPONENT",
+    "DEFAULT_OPPORTUNITY_SIZE_MIN_FACTOR",
+    "DEFAULT_OPPORTUNITY_FAMILY_MIN_FACTOR",
+    "DEFAULT_OPPORTUNITY_REFERENCE_COUNTS",
+    "DEFAULT_OPPORTUNITY_FAMILY_EXPONENTS",
+    "OPPORTUNITY_DESCRIPTOR_FIELD_BY_FAMILY",
+
     "DEFAULT_POSE_SCORING_OPTIONS",
     "DEFAULT_POSE_SCORING_PROFILE",
 
@@ -51713,6 +53784,23 @@ _SECTION_16_PUBLIC_NAMES: Final[Tuple[str, ...]] = (
     "resolve_pose_identifier",
     "resolve_pose_model_identifier",
     "resolve_pose_ligand_identifier",
+
+    # Contact coverage
+    "infer_contact_collection_descriptors",
+    "extract_contact_collection_descriptors",
+    "calculate_contact_coverage_score",
+    "build_contact_coverage_pose_component",
+
+    # Hydrophobic saturation
+    "infer_hydrophobic_collection_descriptors",
+    "extract_hydrophobic_collection_descriptors",
+    "calculate_hydrophobic_saturation_score",
+    "build_hydrophobic_saturation_pose_component",
+
+    # Ligand opportunity normalization
+    "extract_ligand_opportunity_descriptors",
+    "calculate_ligand_opportunity_normalized_score",
+    "apply_ligand_opportunity_normalization_to_family_components",
 
     # Weights
     "resolve_pose_interaction_weight",
