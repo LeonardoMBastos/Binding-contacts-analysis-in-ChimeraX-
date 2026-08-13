@@ -195,6 +195,72 @@
             line-height: 1.5;
         }
 
+        /*
+        ============================================================
+        PRIMARY RESULTS TABLE
+        ============================================================
+        */
+
+        .scientific-summary-preview {
+            margin-top: 22px;
+            overflow-x: auto;
+            background: #ffffff;
+            border: 1px solid #ecc3c7;
+            border-radius: 8px;
+        }
+
+        .scientific-summary-preview table {
+            width: 100%;
+            min-width: 2050px;
+            border-collapse: collapse;
+        }
+
+        .scientific-summary-preview th,
+        .scientific-summary-preview td {
+            padding: 10px 12px;
+            text-align: left;
+            vertical-align: top;
+            white-space: nowrap;
+            font-size: 12px;
+            border-bottom: 1px solid #eed9dc;
+        }
+
+        .scientific-summary-preview th {
+            color: #ffffff;
+            background: #8f101d;
+            font-weight: 700;
+        }
+
+        .scientific-summary-preview td {
+            color: #55494b;
+            line-height: 1.55;
+        }
+
+        .scientific-summary-preview tbody tr:nth-child(even) {
+            background: #fffafa;
+        }
+
+        .scientific-summary-preview tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        .scientific-summary-preview td.long-value {
+            min-width: 330px;
+            white-space: normal;
+        }
+
+        .scientific-summary-caption {
+            margin-top: 10px;
+            color: #6f6062;
+            font-size: 12px;
+            line-height: 1.55;
+        }
+
+        .inline-link {
+            color: #8f101d;
+            font-weight: 700;
+        }
+
         .navigation {
             display: grid;
             grid-template-columns:
@@ -519,6 +585,121 @@
                         </span>
                     </div>
                 </div>
+            </section>
+
+            <!-- PRIMARY RESULTS -->
+
+            <section class="content-section">
+                <h2>Primary Results</h2>
+
+                <p>
+                    The Scientific Summary Excel workbook provides a compact
+                    overview of the main results generated for each analyzed
+                    docking pose. The table below illustrates the structure of
+                    this primary DockAnalyzer output.
+                </p>
+
+                <div
+                    class="scientific-summary-preview"
+                    aria-label="Scientific Summary example table"
+                >
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Pose</th>
+                                <th>Rank</th>
+                                <th>Total score</th>
+                                <th>Total interactions</th>
+                                <th>Contacts</th>
+                                <th>H-bonds</th>
+                                <th>Hydrophobic</th>
+                                <th>Pi-pi</th>
+                                <th>Cation-pi</th>
+                                <th>Anion-pi</th>
+                                <th>Amide-pi</th>
+                                <th>Salt bridges</th>
+                                <th>Clashes</th>
+                                <th>Top residues</th>
+                                <th>Top hotspot</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>pose_example1</td>
+                                <td>1</td>
+                                <td>14.77</td>
+                                <td>141</td>
+                                <td>82</td>
+                                <td>4</td>
+                                <td>49</td>
+                                <td>3</td>
+                                <td>1</td>
+                                <td>0</td>
+                                <td>0</td>
+                                <td>2</td>
+                                <td>0</td>
+                                <td class="long-value">D:PHE65 (21); C:TYR157 (16); C:TYR205 (7); C:THR202 (5); C:GLU155 (4)</td>
+                                <td>D:PHE65</td>
+                                <td>succeeded</td>
+                            </tr>
+                            <tr>
+                                <td>pose_example2</td>
+                                <td>2</td>
+                                <td>12.91</td>
+                                <td>162</td>
+                                <td>96</td>
+                                <td>3</td>
+                                <td>57</td>
+                                <td>2</td>
+                                <td>0</td>
+                                <td>0</td>
+                                <td>1</td>
+                                <td>1</td>
+                                <td>2</td>
+                                <td class="long-value">D:TYR160 (18); D:TYR210 (14); E:PHE77 (11); D:PHE100 (8); E:TYR58 (6)</td>
+                                <td>D:TYR160</td>
+                                <td>succeeded</td>
+                            </tr>
+                            <tr>
+                                <td>pose_example3</td>
+                                <td>3</td>
+                                <td>8.31</td>
+                                <td>107</td>
+                                <td>63</td>
+                                <td>2</td>
+                                <td>37</td>
+                                <td>1</td>
+                                <td>0</td>
+                                <td>0</td>
+                                <td>0</td>
+                                <td>1</td>
+                                <td>3</td>
+                                <td class="long-value">E:PHE77 (15); D:TYR210 (12); D:VAL203 (9); D:TYR160 (7); E:ALA79 (4)</td>
+                                <td>E:PHE77</td>
+                                <td>succeeded</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <p class="scientific-summary-caption">
+                    <strong>Example:</strong> the values above are illustrative
+                    and are shown only to demonstrate the structure of the
+                    Scientific Summary workbook.
+                </p>
+
+                <p>
+                    For more information about generated results, see the
+                    <a
+                        class="inline-link"
+                        href="https://leonardombastos.github.io/Binding-contacts-analysis-in-ChimeraX-/dockanalyzer-user-guide.html"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
+                        DockAnalyzer User Guide
+                    </a>.
+                </p>
             </section>
 
             <!-- SOFTWARE ARCHITECTURE -->
