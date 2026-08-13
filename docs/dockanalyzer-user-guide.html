@@ -296,6 +296,37 @@
             margin: 0;
         }
 
+        .scientific-summary-preview {
+            margin-top: 18px;
+            overflow-x: auto;
+            background: #ffffff;
+            border: 1px solid #ecc3c7;
+            border-radius: 8px;
+        }
+
+        .scientific-summary-preview table {
+            min-width: 2050px;
+        }
+
+        .scientific-summary-preview th,
+        .scientific-summary-preview td {
+            padding: 10px 12px;
+            white-space: nowrap;
+            font-size: 12px;
+        }
+
+        .scientific-summary-preview td.long-value {
+            white-space: normal;
+            min-width: 330px;
+        }
+
+        .scientific-summary-caption {
+            margin-top: 10px !important;
+            color: #6f6062 !important;
+            font-size: 12px;
+            line-height: 1.55 !important;
+        }
+
         .result-badge {
             display: inline-block;
             margin-bottom: 10px;
@@ -642,6 +673,91 @@
                         analyzed poses in a compact spreadsheet, making it the main
                         output to consult when reviewing and comparing DockAnalyzer
                         results. It is saved in the <code>Excel</code> subfolder.
+                    </p>
+
+                    <div class="scientific-summary-preview" aria-label="Scientific Summary example table">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Pose</th>
+                                    <th>Rank</th>
+                                    <th>Total score</th>
+                                    <th>Total interactions</th>
+                                    <th>Contacts</th>
+                                    <th>H-bonds</th>
+                                    <th>Hydrophobic</th>
+                                    <th>Pi-pi</th>
+                                    <th>Cation-pi</th>
+                                    <th>Anion-pi</th>
+                                    <th>Amide-pi</th>
+                                    <th>Salt bridges</th>
+                                    <th>Clashes</th>
+                                    <th>Top residues</th>
+                                    <th>Top hotspot</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>pose_example1</td>
+                                    <td>1</td>
+                                    <td>14.77</td>
+                                    <td>141</td>
+                                    <td>82</td>
+                                    <td>4</td>
+                                    <td>49</td>
+                                    <td>3</td>
+                                    <td>1</td>
+                                    <td>0</td>
+                                    <td>0</td>
+                                    <td>2</td>
+                                    <td>0</td>
+                                    <td class="long-value">D:PHE65 (21); C:TYR157 (16); C:TYR205 (7); C:THR202 (5); C:GLU155 (4)</td>
+                                    <td>D:PHE65</td>
+                                    <td>succeeded</td>
+                                </tr>
+                                <tr>
+                                    <td>pose_example2</td>
+                                    <td>2</td>
+                                    <td>12.91</td>
+                                    <td>162</td>
+                                    <td>96</td>
+                                    <td>3</td>
+                                    <td>57</td>
+                                    <td>2</td>
+                                    <td>0</td>
+                                    <td>0</td>
+                                    <td>1</td>
+                                    <td>1</td>
+                                    <td>2</td>
+                                    <td class="long-value">D:TYR160 (18); D:TYR210 (14); E:PHE77 (11); D:PHE100 (8); E:TYR58 (6)</td>
+                                    <td>D:TYR160</td>
+                                    <td>succeeded</td>
+                                </tr>
+                                <tr>
+                                    <td>pose_example3</td>
+                                    <td>3</td>
+                                    <td>8.31</td>
+                                    <td>107</td>
+                                    <td>63</td>
+                                    <td>2</td>
+                                    <td>37</td>
+                                    <td>1</td>
+                                    <td>0</td>
+                                    <td>0</td>
+                                    <td>0</td>
+                                    <td>1</td>
+                                    <td>3</td>
+                                    <td class="long-value">E:PHE77 (15); D:TYR210 (12); D:VAL203 (9); D:TYR160 (7); E:ALA79 (4)</td>
+                                    <td>E:PHE77</td>
+                                    <td>succeeded</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <p class="scientific-summary-caption">
+                        <strong>Example:</strong> the values above are illustrative and are shown only to demonstrate the structure of the Scientific Summary workbook. Actual values depend on the receptor, ligand poses, and detected interactions.
                     </p>
                 </div>
 
