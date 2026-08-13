@@ -276,6 +276,45 @@
 
         /*
         ============================================================
+        PRIMARY RESULT / NOTES
+        ============================================================
+        */
+
+        .primary-result {
+            margin-top: 22px;
+            padding: 22px;
+            background: #fff8f8;
+            border: 2px solid #a11220;
+            border-radius: 10px;
+        }
+
+        .primary-result h3 {
+            margin-bottom: 10px;
+        }
+
+        .primary-result p {
+            margin: 0;
+        }
+
+        .result-badge {
+            display: inline-block;
+            margin-bottom: 10px;
+            padding: 5px 9px;
+            color: #ffffff;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            background: #8f101d;
+            border-radius: 999px;
+        }
+
+        .note-list {
+            margin-top: 14px;
+        }
+
+        /*
+        ============================================================
         PROJECT NAVIGATION
         ============================================================
         */
@@ -432,102 +471,130 @@
                 <h2>Running DockAnalyzer</h2>
 
                 <p>
-                    Complete the following steps to prepare and run a
-                    DockAnalyzer analysis:
+                    DockAnalyzer identifies the receptor and docking poses from
+                    the ChimeraX model IDs. For this reason, the structures must
+                    be opened in the correct order before running the analysis.
                 </p>
 
                 <div class="steps">
                     <div class="step">
                         <span class="step-number">1</span>
-
                         <div class="step-content">
                             <h3>Download and Extract</h3>
-
                             <p>
-                                Download the DockAnalyzer package and extract
-                                the ZIP archive while preserving its original
-                                directory structure.
+                                Download the DockAnalyzer package and extract the
+                                ZIP archive while preserving its original directory
+                                structure.
                             </p>
                         </div>
                     </div>
 
                     <div class="step">
                         <span class="step-number">2</span>
-
                         <div class="step-content">
                             <h3>Open UCSF ChimeraX</h3>
-
                             <p>
-                                Start UCSF ChimeraX before loading the
-                                structures or running the analysis script.
+                                Start UCSF ChimeraX before loading the receptor,
+                                ligand poses, or the DockAnalyzer analysis script.
                             </p>
                         </div>
                     </div>
 
                     <div class="step">
                         <span class="step-number">3</span>
-
                         <div class="step-content">
-                            <h3>Open the Receptor</h3>
-
+                            <h3>Open the Receptor First — It Must Be Model #1</h3>
                             <p>
-                                Open the prepared receptor structure in the
-                                ChimeraX session.
+                                Open the prepared receptor or target protein before
+                                any ligand pose. DockAnalyzer reserves ChimeraX model
+                                <code>#1</code> for the receptor. Model <code>#1</code>
+                                is therefore not treated as a docking pose.
                             </p>
                         </div>
                     </div>
 
                     <div class="step">
                         <span class="step-number">4</span>
-
                         <div class="step-content">
-                            <h3>Open All Ligand Poses</h3>
-
+                            <h3>Open All Ligand Poses After the Receptor</h3>
                             <p>
-                                Open every individual ligand pose in the same
-                                ChimeraX session as the receptor.
+                                Open each ligand pose as an individual structure in
+                                the same ChimeraX session. Models loaded after the
+                                receptor — normally <code>#2</code>, <code>#3</code>,
+                                <code>#4</code>, and so on — are considered poses to
+                                be analyzed.
                             </p>
                         </div>
                     </div>
 
                     <div class="step">
                         <span class="step-number">5</span>
-
                         <div class="step-content">
-                            <h3>Check the Loaded Models</h3>
-
+                            <h3>Verify the Model IDs</h3>
                             <p>
-                                Confirm that the receptor and all ligand poses
-                                are correctly displayed and available as
-                                separate models.
+                                Before running DockAnalyzer, confirm that the target
+                                protein is model <code>#1</code> and that every intended
+                                ligand pose is loaded as a separate subsequent model.
+                                If the receptor is not <code>#1</code>, restart or
+                                reorganize the ChimeraX session before analysis.
                             </p>
                         </div>
                     </div>
 
                     <div class="step">
                         <span class="step-number">6</span>
-
                         <div class="step-content">
                             <h3>Run analyze.py</h3>
-
                             <p>
-                                Run <code>analyze.py</code> directly from the
-                                extracted DockAnalyzer directory using the
-                                ChimeraX Python environment.
+                                Run <code>analyze.py</code> from the extracted
+                                DockAnalyzer directory using the ChimeraX Python
+                                environment. DockAnalyzer will analyze the loaded
+                                poses against receptor model <code>#1</code>.
                             </p>
                         </div>
                     </div>
 
                     <div class="step">
                         <span class="step-number">7</span>
-
                         <div class="step-content">
-                            <h3>Confirm the Output Directory</h3>
-
+                            <h3>Automatic Output Folder</h3>
                             <p>
-                                Select or confirm the directory where the
-                                analysis results will be written, if requested
-                                by the final DockAnalyzer interface.
+                                Results are automatically saved to
+                                <code>DockAnalyzer_Output</code> on the user's Desktop.
+                                If this folder does not already exist, DockAnalyzer
+                                creates it automatically. Generated files are organized
+                                into subfolders according to file type or extension,
+                                such as CSV, Excel, JSON, Reports, Images, and Logs.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <span class="step-number">8</span>
+                        <div class="step-content">
+                            <h3>Choose Whether to Generate Pose Snapshots</h3>
+                            <p>
+                                At the end of the workflow, DockAnalyzer asks whether
+                                a snapshot should be generated for each analyzed pose.
+                                If enabled, snapshots are produced in ranking order and
+                                saved in the Images output folder using rank-first names,
+                                for example <code>rank1_pose_2.png</code>,
+                                <code>rank2_pose_4.png</code>, and
+                                <code>rank3_pose_3.png</code>.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <span class="step-number">9</span>
+                        <div class="step-content">
+                            <h3>Choose Whether to Generate Performance Data</h3>
+                            <p>
+                                DockAnalyzer also asks whether performance information
+                                should be generated. When enabled, these outputs record
+                                how long the analysis and individual processing stages
+                                required, allowing the runtime of the workflow to be
+                                evaluated.
                             </p>
                         </div>
                     </div>
@@ -535,22 +602,19 @@
 
                 <div class="highlight-box">
                     <p>
-                        <strong>Important:</strong>
-                        the receptor and all ligand poses must be opened in
-                        the same ChimeraX session. Each ligand pose should be
-                        provided as an individual structure file.
+                        <strong>Critical model-ID rule:</strong> the receptor must be
+                        loaded first and must be ChimeraX model <code>#1</code>. All
+                        models loaded after it are interpreted as docking poses for
+                        analysis.
                     </p>
 
                     <p>
-                        When a docking output contains multiple poses in a
-                        single <code>.pdbqt</code> file, use the
-                        <a
-                            class="inline-link"
-                            href="splitting-poses.html"
-                        >
+                        When a docking output contains multiple poses in a single
+                        <code>.pdbqt</code> file, use the
+                        <a class="inline-link" href="splitting-poses.html">
                             Splitting Poses Code
                         </a>
-                        before running DockAnalyzer.
+                        before loading the poses into ChimeraX.
                     </p>
                 </div>
             </section>
@@ -561,9 +625,25 @@
                 <h2>Generated Results</h2>
 
                 <p>
-                    Depending on the selected analysis and export settings,
-                    DockAnalyzer may generate the following result types:
+                    DockAnalyzer generates complementary outputs for scientific
+                    interpretation, detailed inspection, reproducibility, and
+                    performance evaluation. The most important file for routine
+                    interpretation is the Scientific Summary workbook.
                 </p>
+
+                <div class="primary-result">
+                    <span class="result-badge">Primary result</span>
+                    <h3>Scientific Summary — Excel Workbook</h3>
+                    <p>
+                        The file
+                        <code>dockanalyzer_&lt;timestamp&gt;_scientific_summary.xlsx</code>
+                        provides the consolidated scientific summary of the analysis.
+                        It brings together the key information generated for the
+                        analyzed poses in a compact spreadsheet, making it the main
+                        output to consult when reviewing and comparing DockAnalyzer
+                        results. It is saved in the <code>Excel</code> subfolder.
+                    </p>
+                </div>
 
                 <div class="table-wrapper">
                     <table>
@@ -571,95 +651,112 @@
                             <tr>
                                 <th>Result</th>
                                 <th>Content</th>
-                                <th>Format</th>
+                                <th>Typical format / location</th>
                             </tr>
                         </thead>
 
                         <tbody>
                             <tr>
-                                <td>Interaction tables</td>
+                                <td><strong>Scientific Summary</strong></td>
                                 <td>
-                                    Detected contacts and interaction
-                                    classifications.
+                                    Consolidated scientific information for all
+                                    analyzed poses, including the principal interaction,
+                                    scoring, ranking, and residue-level results used for
+                                    rapid interpretation and comparison.
                                 </td>
                                 <td class="format">
-                                    .csv, .tsv, .xlsx
+                                    .xlsx — Excel
                                 </td>
                             </tr>
 
                             <tr>
-                                <td>Analysis report</td>
+                                <td>Pose table</td>
                                 <td>
-                                    Pose summaries, residues, hotspots,
-                                    scores, and interpretation.
+                                    Per-pose information exported for detailed analysis
+                                    and downstream processing.
                                 </td>
                                 <td class="format">
-                                    .html, .md, .txt
+                                    .csv — CSV
                                 </td>
                             </tr>
 
                             <tr>
-                                <td>Structured results</td>
+                                <td>Interaction table</td>
                                 <td>
-                                    Complete machine-readable analysis data.
+                                    Detected protein–ligand interactions and their
+                                    classifications for the analyzed poses.
                                 </td>
                                 <td class="format">
-                                    .json
+                                    .csv — CSV
                                 </td>
                             </tr>
 
                             <tr>
                                 <td>Pose ranking</td>
                                 <td>
-                                    Comparative scores and ranking of the
-                                    analyzed poses.
+                                    Comparative DockAnalyzer scores and rank assigned
+                                    to each analyzed pose.
                                 </td>
-                                <td>
-                                    Included in reports and tables
+                                <td class="format">
+                                    .csv — CSV
                                 </td>
                             </tr>
 
                             <tr>
-                                <td>Residue summary</td>
+                                <td>Structured analysis data</td>
                                 <td>
-                                    Interactions and scores grouped by protein
-                                    residue.
+                                    Machine-readable analysis output and supporting
+                                    metadata for reproducibility or further processing.
                                 </td>
                                 <td class="format">
-                                    .csv, .xlsx, report
+                                    .json — JSON
                                 </td>
                             </tr>
 
                             <tr>
-                                <td>Interaction statistics</td>
+                                <td>Reports</td>
                                 <td>
-                                    Counts, distributions, strengths, and
-                                    geometric measurements.
+                                    Human-readable analysis summaries and report
+                                    information generated by the workflow.
                                 </td>
                                 <td class="format">
-                                    .csv, .json, report
+                                    .md / related report files — Reports
                                 </td>
                             </tr>
 
                             <tr>
-                                <td>Visual outputs</td>
+                                <td>Pose snapshots</td>
                                 <td>
-                                    Interaction representations and molecular
-                                    snapshots.
+                                    Optional image of each analyzed pose, generated
+                                    only when requested at the end of the run and saved
+                                    in pose-ranking order.
                                 </td>
                                 <td class="format">
-                                    .png
+                                    .png — Images
                                 </td>
                             </tr>
 
                             <tr>
-                                <td>Analysis metadata</td>
+                                <td>Performance outputs</td>
                                 <td>
-                                    Input files, settings, software versions,
-                                    and execution information.
+                                    Optional runtime information showing the time spent
+                                    in the complete workflow and its analysis stages,
+                                    including performance visualizations when generated.
                                 </td>
                                 <td class="format">
-                                    .json, .txt
+                                    .png / runtime data — Images / Logs
+                                </td>
+                            </tr>
+
+                            <tr>
+                                <td>Execution log and run summary</td>
+                                <td>
+                                    Execution messages, stage information, diagnostics,
+                                    and run-level metadata useful for validation and
+                                    troubleshooting.
+                                </td>
+                                <td class="format">
+                                    .log / .json — Logs / JSON
                                 </td>
                             </tr>
                         </tbody>
@@ -668,59 +765,79 @@
 
                 <div class="highlight-box">
                     <p>
-                        <strong>Output note:</strong>
-                        the final set of generated files and supported formats
-                        should be confirmed after validation of the completed
-                        <code>analyze.py</code> workflow.
+                        <strong>Where to start:</strong> for routine scientific
+                        interpretation, open the
+                        <code>*_scientific_summary.xlsx</code> file first. The other
+                        outputs provide more detailed, machine-readable, visual, or
+                        diagnostic information when needed.
                     </p>
                 </div>
             </section>
 
-       
-            <!--
-            ============================================================
-            PROJECT NAVIGATION
-            The current DockAnalyzer User Guide page is not repeated here.
-            ============================================================
-            -->
+            <!-- IMPORTANT NOTES -->
+
+            <section class="content-section">
+                <h2>Important Notes</h2>
+
+                <ul class="note-list">
+                    <li>
+                        <strong>Model <code>#1</code> is reserved for the receptor.</strong>
+                        Do not load a ligand pose before the target protein.
+                    </li>
+                    <li>
+                        Each docking pose should be loaded as an individual ChimeraX
+                        model after the receptor. If necessary, see the
+                        <a
+                            class="inline-link"
+                            href="https://leonardombastos.github.io/Binding-contacts-analysis-in-ChimeraX-/splitting-poses.html"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                        >
+                            Pose Splitting Code
+                        </a>.
+                    </li>
+                    <li>
+                        The output destination is automatic:
+                        <code>Desktop/DockAnalyzer_Output</code>. The directory is
+                        created when absent and files are separated into type-based
+                        subfolders.
+                    </li>
+                    <li>
+                        The <code>*_scientific_summary.xlsx</code> workbook is the main
+                        consolidated scientific result and should normally be reviewed
+                        before the more detailed exports.
+                    </li>
+                    <li>
+                        Pose snapshots and performance timing data are optional and are
+                        selected through questions presented at the end of the workflow.
+                    </li>
+                </ul>
+            </section>
+
+            <!-- PROJECT NAVIGATION -->
 
             <section class="content-section">
                 <h2>Explore the Project</h2>
 
                 <p>
-                    Return to the main page or continue to another
-                    DockAnalyzer resource.
+                    Return to the main page or continue to another DockAnalyzer
+                    resource.
                 </p>
 
-                <nav
-                    class="navigation"
-                    aria-label="Project resources"
-                >
-                    <a
-                        class="navigation-button home-button"
-                        href="index.html"
-                    >
+                <nav class="navigation" aria-label="Project resources">
+                    <a class="navigation-button home-button" href="index.html">
                         Return to Home
                     </a>
 
-                    <a
-                        class="navigation-button"
-                        href="project-description.html"
-                    >
+                    <a class="navigation-button" href="project-description.html">
                         Project Description
                     </a>
 
-                    <a
-                        class="navigation-button"
-                        href="dockanalyzer-download.html"
-                    >
+                    <a class="navigation-button" href="dockanalyzer-download.html">
                         DockAnalyzer — Download
                     </a>
 
-                    <a
-                        class="navigation-button"
-                        href="splitting-poses.html"
-                    >
+                    <a class="navigation-button" href="splitting-poses.html">
                         Splitting Poses Code
                     </a>
 
@@ -733,10 +850,7 @@
                         Source Code
                     </a>
 
-                    <a
-                        class="navigation-button"
-                        href="citations-license.html"
-                    >
+                    <a class="navigation-button" href="citations-license.html">
                         Citations and License
                     </a>
                 </nav>
